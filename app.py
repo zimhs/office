@@ -705,7 +705,7 @@ if not full_df.empty:
                 st.info("표시할 그래프 데이터가 없습니다.")
 
     # ------------------------------------
-    # TAB 2: 거래처 분석
+    # TAB 2: 거래처 분석 (아이패드 최적화 적용됨)
     # ------------------------------------
     with tab2:
         st.markdown(
@@ -713,30 +713,12 @@ if not full_df.empty:
             unsafe_allow_html=True,
         )
         if not client_pivot.empty:
-
-            def style_client_pivot(df):
-                styles = pd.DataFrame("", index=df.index, columns=df.columns)
-                num_years = len(years) if len(years) > 0 else 1
-                for i, col in enumerate(df.columns):
-                    group_idx = i // num_years
-                    bg = (
-                        "background-color: #F1F5F9;"
-                        if group_idx % 2 == 1
-                        else "background-color: #FFFFFF;"
-                    )
-                    border = (
-                        "; border-left: 3px solid #2563EB !important;"
-                        if (i > 0 and i % num_years == 0)
-                        else ""
-                    )
-                    styles[col] = bg + border
-                return styles
-
-            styled_client_pivot = client_pivot.style.apply(
-                style_client_pivot, axis=None
-            ).format("{:,.0f}")
-
-            st.dataframe(styled_client_pivot, use_container_width=True)
+            # 아이패드 렌더링 부하를 줄이기 위해 복잡한 셀 단위 스타일 적용을 제거하고 기본 포맷 적용
+            st.dataframe(
+                client_pivot.style.format("{:,.0f}"),
+                use_container_width=True,
+                height=500,
+            )
         else:
             st.info("거래처별 데이터가 없습니다.")
 
