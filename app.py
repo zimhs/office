@@ -12,7 +12,7 @@ st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide"
 
 
 # ==========================================
-# 1. 스타일 및 디자인 Injection (아이패드/태블릿 최적화 추가)
+# 1. 스타일 및 디자인 Injection (아이패드/다크모드 대응 최적화)
 # ==========================================
 def inject_custom_css():
     st.markdown(
@@ -220,7 +220,6 @@ def normalize_items_vectorized(df):
 
 
 def open_macos_note(client_name):
-    # macOS 로컬 서버 실행 환경 대응 (AppleScript)
     script = f"""
     tell application "Notes"
         activate
@@ -810,7 +809,7 @@ if not full_df.empty:
                 st.info("표시할 그래프 데이터가 없습니다.")
 
     # ------------------------------------
-    # TAB 2: 거래처 분석
+    # TAB 2: 거래처 분석 (다크모드 글자색 묻힘 현상 보완 완료)
     # ------------------------------------
     with tab2:
         st.markdown(
@@ -824,10 +823,11 @@ if not full_df.empty:
                 num_years = len(years) if len(years) > 0 else 1
                 for i, col in enumerate(df.columns):
                     group_idx = i // num_years
+                    # 글자색(color: #0F172A !important;)을 명시적으로 추가하여 다크모드에서 텍스트 보장
                     bg = (
-                        "background-color: #F1F5F9;"
+                        "background-color: #F1F5F9; color: #0F172A !important;"
                         if group_idx % 2 == 1
-                        else "background-color: #FFFFFF;"
+                        else "background-color: #FFFFFF; color: #0F172A !important;"
                     )
                     border = (
                         "; border-left: 3px solid #2563EB !important;"
@@ -867,7 +867,6 @@ if not full_df.empty:
                             f"📱 아이패드에서는 [iOS 메모 앱]을 직접 열거나 아래 딥링크 버튼을 활용해주세요."
                         )
 
-                # 아이패드 웹 브라우저 호환용 메모 앱 호출 링크 추가
                 notes_url = f"mobilenotes://"
                 st.link_button("📱 아이패드 메모 앱 바로가기", notes_url, use_container_width=True)
 
@@ -960,7 +959,6 @@ if not full_df.empty:
                         )
                 return styles
 
-            # 매출액 품목별 팝업 그래프 대화상자 함수
             @st.dialog("🎯 [매출액] 품목별 연도별 비교 (원형 그래프)")
             def show_sales_item_pie_chart(item_name):
                 st.markdown(f"**📦 선택 품목: `{item_name}`**")
@@ -1040,7 +1038,6 @@ if not full_df.empty:
             )
             st.dataframe(styled_sales_p, use_container_width=True)
 
-            # 출고량 품목별 팝업 그래프 대화상자 함수
             @st.dialog("🎯 [출고량] 품목별 연도별 비교 (원형 그래프)")
             def show_qty_item_pie_chart(item_name):
                 st.markdown(f"**📦 선택 품목: `{item_name}`**")
