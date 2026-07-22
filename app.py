@@ -7,13 +7,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# 페이지 설정
+# 페이지 및 파이썬 설정
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide")
 
 
 # ==========================================
-# 1. 스타일 및 디자인 Injection (라이트 테마 적용)
+# 1. 커스텀 CSS 및 테마 적용
 # ==========================================
 def inject_custom_css():
     st.markdown(
@@ -99,7 +99,7 @@ def inject_custom_css():
 
 
 # ==========================================
-# 2. 고속 및 안전한 날짜 파싱 및 변환 유틸리티
+# 2. 유틸리티 함수 (날짜 파싱, 품목 정규화)
 # ==========================================
 def parse_date_series_robust(series, default_year="2026"):
     if series.empty:
@@ -241,9 +241,9 @@ def convert_dfs_to_excel(dfs_dict):
 
 
 # ==========================================
-# 3. 데이터 로딩 & 메모리 캐싱 (@st.cache_data)
+# 3. 데이터 로딩 & 캐싱
 # ==========================================
-@st.cache_data(show_spinner="주소록을 읽어오는 중입니다...")
+@st.cache_data(show_spinner="주소록 읽는 중...")
 def load_address_file(address_bytes):
     if not address_bytes:
         return {}
@@ -268,7 +268,7 @@ def load_address_file(address_bytes):
     return {}
 
 
-@st.cache_data(show_spinner="데이터를 최초 파싱 및 캐싱 중입니다...")
+@st.cache_data(show_spinner="데이터 파싱 및 캐싱 중...")
 def load_uploaded_files(uploaded_files):
     if not uploaded_files:
         return pd.DataFrame()
@@ -439,7 +439,7 @@ def load_uploaded_files(uploaded_files):
 
 
 # ==========================================
-# 4. 메인 실행 흐름 (UI 구성)
+# 4. 앱 메인 화면 구성
 # ==========================================
 inject_custom_css()
 
@@ -530,6 +530,8 @@ if not full_df.empty:
         else df_client_filtered.copy()
     )
 
+    all_months = [f"{i:02d}월" for i in range(1, 13)]
+
     if not df_f.empty:
         df_f["연도"] = df_f["매출일_dt"].dt.year.astype(str)
         df_f["월"] = df_f["매출일_dt"].dt.strftime("%m월")
@@ -538,15 +540,16 @@ if not full_df.empty:
         sorted_cols = [
             (y, m)
             for y in existing_years
-            for m in [f"{i:02d}월" for i in range(1, 13)]
+            for m in all_months
         ]
     else:
         existing_years = []
         sorted_cols = []
 
-    all_months = [f"{i:02d}월" for i in range(1, 13)]
-
-    # 1. 연도별 월 매출 (VAT 포함, 만원 단위)
+    # ------------------------------------
+    # 데이터 피벗 계산 영역
+    # ------------------------------------
+    # 1. 연도별 월 매출
     pivot_m = pd.DataFrame()
     if not df_f.empty:
         pivot_m = (
@@ -558,14 +561,15 @@ if not full_df.empty:
         )
         pivot_m = pivot_m.reindex(columns=all_months, fill_value=0)
 
-    # 2. 거래처별 월별 매출 (아이패드 미출력 문제 수정 완료)
+    # 2. 거래처별 월별 매출 (거래처 분석 시트 안정화 강화)
     client_pivot = pd.DataFrame()
-    years = existing_years if existing_years else ["2026"]
     if not df_f.empty:
         df_f["연도월_정렬"] = (
             df_f["연도"].astype(str).str[2:] + "년 " + df_f["월"].astype(str)
         )
-        desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
+        years_for_pivot = existing_years if existing_years else ["2026"]
+        desired_order = [f"{y[2:]}년 {m}" for y in years_for_pivot for m in all_months]
+        
         client_pivot = (
             df_f.pivot_table(
                 index="거래처",
@@ -575,9 +579,10 @@ if not full_df.empty:
             ).fillna(0)
             / 10000
         )
+        # 존재하지 않는 월/연도 컬럼 채우기
         client_pivot = client_pivot.reindex(columns=desired_order, fill_value=0)
 
-    # 3. 품목 및 단가 분석용 데이터 (매출액 및 출고량 연도별 총합 포함 처리)
+    # 3. 품목 및 단가 분석용 피벗
     main_df = (
         df_f[df_f["품목명"].isin(target_items)].copy()
         if not df_f.empty
@@ -603,28 +608,20 @@ if not full_df.empty:
             aggfunc="sum",
         ).fillna(0)
 
-        sales_expanded_cols = []
         sales_expanded_data = {}
-        
-        qty_expanded_cols = []
         qty_expanded_data = {}
 
         for yr in existing_years:
             for m in all_months:
                 col_key = (yr, m)
                 sales_expanded_data[col_key] = sales_raw_p[col_key] if col_key in sales_raw_p.columns else 0
-                sales_expanded_cols.append(col_key)
-                
                 qty_expanded_data[col_key] = qty_raw_p[col_key] if col_key in qty_raw_p.columns else 0
-                qty_expanded_cols.append(col_key)
             
             yr_sales_sum = sum(sales_raw_p[(yr, m)] for m in all_months if (yr, m) in sales_raw_p.columns)
             sales_expanded_data[(yr, "연간총합")] = yr_sales_sum
-            sales_expanded_cols.append((yr, "연간총합"))
 
             yr_qty_sum = sum(qty_raw_p[(yr, m)] for m in all_months if (yr, m) in qty_raw_p.columns)
             qty_expanded_data[(yr, "연간총합")] = yr_qty_sum
-            qty_expanded_cols.append((yr, "연간총합"))
 
         sales_p = pd.DataFrame(sales_expanded_data, index=sales_raw_p.index)
         qty_p = pd.DataFrame(qty_expanded_data, index=qty_raw_p.index)
@@ -655,7 +652,7 @@ if not full_df.empty:
         if valid_cols and not staff_pivot.empty:
             staff_pivot = staff_pivot.reindex(columns=valid_cols, fill_value=0)
 
-    # 5. 상세 거래 내역
+    # 5. 상세 내역
     df_detail = pd.DataFrame()
     if not df_f.empty:
         detail_cols = [
@@ -669,6 +666,7 @@ if not full_df.empty:
         ]
         df_detail = df_f[detail_cols].copy()
 
+    # 사이드바 엑셀 다운로드
     st.sidebar.markdown("---")
     st.sidebar.subheader("📥 엑셀 내보내기")
     if not df_f.empty:
@@ -690,6 +688,7 @@ if not full_df.empty:
             use_container_width=True,
         )
 
+    # 상단 요약 KPI
     total_sales = df_f["매출액"].sum() if not df_f.empty else 0
     total_qty = df_f["출고량"].sum() if not df_f.empty else 0
     label_suffix = "(선택 품목)" if selected_item else "(전체 품목)"
@@ -716,7 +715,7 @@ if not full_df.empty:
     )
 
     # ------------------------------------
-    # TAB 1: 영업 종합 요약 (background_gradient 제거 - ImportError 조치)
+    # TAB 1: 영업 종합 요약
     # ------------------------------------
     with tab1:
         st.markdown(
@@ -760,7 +759,7 @@ if not full_df.empty:
 
             def style_client_pivot(df):
                 styles = pd.DataFrame("", index=df.index, columns=df.columns)
-                num_years = len(years) if len(years) > 0 else 1
+                num_years = len(existing_years) if len(existing_years) > 0 else 1
                 for i, col in enumerate(df.columns):
                     group_idx = i // num_years
                     bg = (
@@ -780,8 +779,7 @@ if not full_df.empty:
                 style_client_pivot, axis=None
             ).format("{:,.0f}")
 
-            # height 옵션 추가로 아이패드 터치 스크롤 최적화
-            st.dataframe(styled_client_pivot, use_container_width=True, height=500)
+            st.dataframe(styled_client_pivot, use_container_width=True, height=550)
         else:
             st.info("거래처별 데이터가 없습니다.")
 
@@ -888,7 +886,6 @@ if not full_df.empty:
                         styles[col] = "background-color: #FEF08A; font-weight: bold; color: #854D0E;"
                 return styles
 
-            # 매출액 품목별 팝업 그래프 대화상자 함수
             @st.dialog("🎯 [매출액] 품목별 연도별 비교 (원형 그래프)")
             def show_sales_item_pie_chart(item_name):
                 st.markdown(f"**📦 선택 품목: `{item_name}`**")
@@ -927,7 +924,6 @@ if not full_df.empty:
             styled_sales_p = (sales_p / 10000).style.apply(highlight_annual_total, axis=None).format("{:,.0f}")
             st.dataframe(styled_sales_p, use_container_width=True)
 
-            # 출고량 품목별 팝업 그래프 대화상자 함수
             @st.dialog("🎯 [출고량] 품목별 연도별 비교 (원형 그래프)")
             def show_qty_item_pie_chart(item_name):
                 st.markdown(f"**📦 선택 품목: `{item_name}`**")
@@ -977,7 +973,7 @@ if not full_df.empty:
             st.info("품목별 상세 분석 데이터가 없습니다.")
 
     # ------------------------------------
-    # TAB 4: 담당자 & 상세내역 (background_gradient 제거 - ImportError 조치)
+    # TAB 4: 담당자 & 상세내역
     # ------------------------------------
     with tab4:
         st.markdown(
