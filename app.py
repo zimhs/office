@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# 페이지 설정
+# 페이지 및 Styler 가동 한도 설정
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide")
 
@@ -40,20 +40,6 @@ def inject_custom_css():
                 color: #334155 !important;
             }
             
-            /* 표(DataFrame) 내부 글자색 및 다크모드 강제 오버라이드 */
-            .stDataFrame, div[data-testid="stTable"], [data-testid="stDataFrameContainer"] {
-                overflow-x: auto !important;
-                -webkit-overflow-scrolling: touch;
-            }
-            
-            /* Streamlit 표 셀 텍스트 검은색 강제 설정 */
-            .stDataFrame td, .stDataFrame th, 
-            div[data-testid="stDataFrame"] td, div[data-testid="stDataFrame"] th,
-            div[role="gridcell"], div[role="columnheader"] {
-                color: #0F172A !important;
-                font-weight: 500 !important;
-            }
-
             /* KPI 메트릭 카드 */
             .metric-box {
                 background: #FFFFFF;
@@ -117,7 +103,7 @@ def inject_custom_css():
 
 
 # ==========================================
-# 2. 고속 및 안전한 날짜 파싱 및 변환 유틸리티
+# 2. 날짜 파싱 및 데이터 정규화 유틸리티
 # ==========================================
 def parse_date_series_robust(series, default_year="2026"):
     if series.empty:
@@ -610,7 +596,7 @@ if not full_df.empty:
         df_f["연도월_정렬"] = (
             df_f["연도"].astype(str).str[2:] + "년 " + df_f["월"].astype(str)
         )
-        # 연도별 동월 순 정렬 (예: 23년 01월, 24년 01월, 25년 01월...)
+        # 연도별 동월 순 정렬 (예: 20년 01월, 21년 01월, 22년 01월...)
         desired_order = [f"{y[2:]}년 {m}" for m in all_months for y in years]
         
         client_pivot_raw = (
@@ -622,11 +608,10 @@ if not full_df.empty:
             ).fillna(0)
             / 10000
         )
-        # 존재하는 컬럼만 안전하게 필터링하여 순서 정렬
         actual_cols = [c for c in desired_order if c in client_pivot_raw.columns]
         client_pivot = client_pivot_raw.reindex(columns=actual_cols, fill_value=0)
 
-    # 3. 품목 및 단가 분석용 데이터 (매출액 및 출고량 연도별 총합 포함 처리)
+    # 3. 품목 및 단가 분석용 데이터
     main_df = (
         df_f[df_f["품목명"].isin(target_items)].copy()
         if not df_f.empty
@@ -819,7 +804,7 @@ if not full_df.empty:
                 st.info("표시할 그래프 데이터가 없습니다.")
 
     # ------------------------------------
-    # TAB 2: 거래처 분석 (시각화 및 텍스트 묻힘 방지 최적화)
+    # TAB 2: 거래처 분석 (아이패드 글자 묻힘 완벽 방지 커스텀 HTML 표)
     # ------------------------------------
     with tab2:
         st.markdown(
@@ -827,22 +812,38 @@ if not full_df.empty:
             unsafe_allow_html=True,
         )
         if not client_pivot.empty:
-            def style_client_pivot(df):
-                styles = pd.DataFrame("", index=df.index, columns=df.columns)
-                num_years = len(years) if len(years) > 0 else 1
-                for i, col in enumerate(df.columns):
-                    group_idx = i // num_years
-                    bg = "background-color: #F1F5F9;" if group_idx % 2 == 1 else "background-color: #FFFFFF;"
-                    border = "; border-left: 3px solid #2563EB !important;" if (i > 0 and i % num_years == 0) else ""
-                    # text-shadow를 추가하여 다크모드/라이트모드 상관없이 무조건 글자가 잘 보이도록 보장
-                    styles[col] = bg + border + "; color: #000000 !important; text-shadow: none !important;"
-                return styles
+            # st.dataframe의 아이패드/다크모드 Canvas 텍스트 반전 버그를 우회하는 Pure HTML 테이블
+            html_table = """
+            <div style="max-height: 500px; overflow-y: auto; overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid #E2E8F0; border-radius: 8px; margin-bottom: 20px; background-color: #FFFFFF;">
+                <table style="width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; font-family: -apple-system, sans-serif;">
+                    <thead>
+                        <tr style="background-color: #F8FAFC; position: sticky; top: 0; z-index: 10;">
+                            <th style="padding: 10px 12px; text-align: left; color: #0F172A !important; font-weight: 700; position: sticky; left: 0; background-color: #F8FAFC; z-index: 20; min-width: 180px; border-bottom: 2px solid #CBD5E1; border-right: 1px solid #E2E8F0;">거래처</th>
+            """
+            
+            # 헤더(컬럼) 생성
+            for col in client_pivot.columns:
+                html_table += f'<th style="padding: 10px 12px; text-align: right; color: #0F172A !important; font-weight: 600; min-width: 90px; white-space: nowrap; border-bottom: 2px solid #CBD5E1;">{col}</th>'
+            html_table += "</tr></thead><tbody>"
 
-            styled_client_pivot = client_pivot.style.apply(
-                style_client_pivot, axis=None
-            ).format("{:,.0f}")
-
-            st.dataframe(styled_client_pivot, use_container_width=True)
+            # 바디(데이터 셀) 생성
+            for idx, row in client_pivot.iterrows():
+                html_table += '<tr style="border-bottom: 1px solid #F1F5F9;">'
+                # 거래처명 (좌측 고정 및 검은색 강제 지정)
+                html_table += f'<td style="padding: 8px 12px; text-align: left; color: #0F172A !important; font-weight: 600; position: sticky; left: 0; background-color: #FFFFFF; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #F1F5F9;">{idx}</td>'
+                
+                # 월별 매출 데이터 셀
+                for val in row:
+                    val_str = f"{val:,.0f}" if val != 0 else "-"
+                    text_color = "#0F172A" if val != 0 else "#94A3B8"  # 값이 있으면 검은색, 0이면 연회색
+                    html_table += f'<td style="padding: 8px 12px; text-align: right; color: {text_color} !important; font-weight: 500; border-bottom: 1px solid #F1F5F9;">{val_str}</td>'
+                html_table += "</tr>"
+                
+            html_table += "</tbody></table></div>"
+            
+            # HTML 직접 출력
+            st.markdown(html_table, unsafe_allow_html=True)
+            
         else:
             st.info("거래처별 데이터가 없습니다.")
 
