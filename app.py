@@ -2,7 +2,6 @@ import io
 import re
 import subprocess
 import urllib.parse
-import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -13,7 +12,7 @@ st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide"
 
 
 # ==========================================
-# 1. 스타일 및 디자인 Injection (팝업 즉시 강제 종료 JS 개선)
+# 1. 스타일 및 디자인 Injection (라이트 테마 적용)
 # ==========================================
 def inject_custom_css():
     st.markdown(
@@ -26,157 +25,74 @@ def inject_custom_css():
         <style>
             html, body, .stApp {
                 background-color: #F8FAFC !important;
-                color: #0F172A !important;
-                font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Segoe UI", Roboto, sans-serif !important;
-                -webkit-font-smoothing: antialiased;
+                color: #1E293B !important;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             }
-
             [data-testid="stSidebar"] {
                 background-color: #F1F5F9 !important;
-                border-right: 1px solid #CBD5E1 !important;
+                border-right: 1px solid #E2E8F0;
             }
             [data-testid="stSidebar"] .block-container { padding-top: 1.5rem; }
             [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, 
             [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown {
                 color: #334155 !important;
-                font-weight: 500;
             }
-
-            [data-testid="stDataFrame"] {
-                border: 1px solid #CBD5E1 !important;
-                border-radius: 8px !important;
-                overflow: hidden;
-            }
-            .stDataFrame table {
-                font-size: 13.5px !important;
-                color: #0F172A !important;
-            }
-            .stDataFrame th {
-                background-color: #E2E8F0 !important;
-                color: #1E293B !important;
-                font-weight: 700 !important;
-                border-bottom: 2px solid #94A3B8 !important;
-            }
-            .stDataFrame td {
-                padding: 6px 10px !important;
-                border-bottom: 1px solid #F1F5F9 !important;
-            }
-
+            
+            /* KPI 메트릭 카드 */
             .metric-box {
                 background: #FFFFFF;
-                padding: 18px 22px;
-                border-radius: 12px;
-                border: 1px solid #CBD5E1;
-                box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+                padding: 16px 20px;
+                border-radius: 10px;
+                border: 1px solid #E2E8F0;
+                box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
             }
             .metric-label {
-                color: #475569;
-                font-size: 13.5px;
-                font-weight: 600;
+                color: #64748B;
+                font-size: 13px;
+                font-weight: 500;
                 margin-bottom: 6px;
             }
             .metric-value {
                 color: #0F172A;
-                font-size: 24px;
-                font-weight: 800;
-                letter-spacing: -0.5px;
+                font-size: 22px;
+                font-weight: 700;
             }
-
+            
+            /* 서브 헤더 */
             .sub-header {
-                color: #1D4ED8;
-                font-size: 17.5px;
-                font-weight: 800;
-                margin-top: 18px;
+                color: #2563EB;
+                font-size: 17px;
+                font-weight: 700;
+                margin-top: 15px;
                 margin-bottom: 12px;
-                border-left: 5px solid #1D4ED8;
+                border-left: 4px solid #2563EB;
                 padding-left: 10px;
-                letter-spacing: -0.3px;
             }
-
+            
+            /* 탭 디자인 */
             .stTabs [data-baseweb="tab-list"] {
-                gap: 6px;
-                border-bottom: 2px solid #E2E8F0;
+                gap: 8px;
+                border-bottom: 1px solid #E2E8F0;
             }
             .stTabs [data-baseweb="tab"] {
-                height: 46px;
+                height: 45px;
                 white-space: pre-wrap;
                 background-color: #F1F5F9;
                 border-radius: 8px 8px 0px 0px;
                 color: #475569;
                 font-weight: 600;
-                font-size: 14.5px;
-                padding: 0px 18px;
-                border: 1px solid #E2E8F0;
-                border-bottom: none;
+                padding: 0px 16px;
             }
             .stTabs [aria-selected="true"] {
                 background-color: #FFFFFF !important;
-                color: #1D4ED8 !important;
-                font-weight: 700 !important;
-                border-bottom: 3px solid #1D4ED8 !important;
-                border-top: 1px solid #CBD5E1;
-                border-left: 1px solid #CBD5E1;
-                border-right: 1px solid #CBD5E1;
-            }
-
-            div[data-baseweb="select"] > div {
-                border-color: #CBD5E1 !important;
-                background-color: #FFFFFF !important;
-                border-radius: 8px !important;
-            }
-            .stMultiSelect label, .stSelectbox label, .stTextInput label {
-                font-weight: 700 !important;
-                color: #1E293B !important;
-                font-size: 14px !important;
-            }
-
-            /* multiselect 드롭다운 팝업 최대 높이 설정 */
-            div[data-baseweb="select"] div[role="listbox"] {
-                max-height: 280px !important;
-            }
-
-            .stMultiSelect [data-baseweb="popover"] {
-                z-index: 999999 !important;
+                color: #2563EB !important;
+                border-bottom: 2px solid #2563EB !important;
+                border-top: 1px solid #E2E8F0;
+                border-left: 1px solid #E2E8F0;
+                border-right: 1px solid #E2E8F0;
             }
         </style>
     """,
-        unsafe_allow_html=True,
-    )
-
-    # 엔터(Enter) 입력 시 Streamlit multiselect 팝업을 강제로 닫는 스크립트
-    st.markdown(
-        """
-        <script>
-        const doc = window.parent.document;
-        
-        function closePopovers() {
-            // 팝업 popover 엘리먼트 강제 숨김
-            const popovers = doc.querySelectorAll('[data-baseweb="popover"]');
-            popovers.forEach(p => {
-                p.style.display = 'none';
-            });
-            // 활성화된 입력창 포커스 해제
-            const activeEl = doc.activeElement;
-            if (activeEl) {
-                activeEl.blur();
-            }
-        }
-
-        doc.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                setTimeout(closePopovers, 10);
-            }
-        }, true);
-        
-        // 항목을 클릭 선택할 때도 팝업이 바로 안 닫히는 경우 방지
-        doc.addEventListener('click', function(e) {
-            const isOption = e.target.closest('[role="option"]');
-            if (isOption) {
-                setTimeout(closePopovers, 100);
-            }
-        }, true);
-        </script>
-        """,
         unsafe_allow_html=True,
     )
 
@@ -309,7 +225,7 @@ def open_macos_note(client_name):
     try:
         subprocess.run(["osascript", "-e", script], check=True)
         return True
-    except Exception:
+    except Exception as e:
         return False
 
 
@@ -324,7 +240,7 @@ def convert_dfs_to_excel(dfs_dict):
 
 
 # ==========================================
-# 3. 데이터 로딩 & 연산 캐싱 최적화 (@st.cache_data)
+# 3. 데이터 로딩 & 메모리 캐싱 (@st.cache_data)
 # ==========================================
 @st.cache_data(show_spinner="주소록을 읽어오는 중입니다...")
 def load_address_file(address_bytes):
@@ -351,7 +267,7 @@ def load_address_file(address_bytes):
     return {}
 
 
-@st.cache_data(show_spinner="데이터를 파싱 및 최적화 중입니다...")
+@st.cache_data(show_spinner="데이터를 최초 파싱 및 캐싱 중입니다...")
 def load_uploaded_files(uploaded_files):
     if not uploaded_files:
         return pd.DataFrame()
@@ -521,59 +437,6 @@ def load_uploaded_files(uploaded_files):
     return result_df
 
 
-@st.cache_data
-def compute_dashboard_pivots(df_f, existing_years, all_months, target_items, sorted_cols, years):
-    if df_f.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-    # 1. 연도별 월 매출 (VAT 포함, 만원 단위)
-    pivot_m = (
-        df_f.pivot_table(index="연도", columns="월", values="매출액", aggfunc="sum").fillna(0)
-        * 1.1 / 10000
-    ).reindex(columns=all_months, fill_value=0)
-
-    # 2. 거래처별 월별 매출
-    df_f_copy = df_f.copy()
-    df_f_copy["연도월_정렬"] = df_f_copy["연도"].astype(str).str[2:] + "년 " + df_f_copy["월"].astype(str)
-    desired_order = [f"{y[2:]}년 {m}" for m in all_months for y in years]
-    client_pivot = (
-        df_f_copy.pivot_table(index="거래처", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0)
-        / 10000
-    ).reindex(columns=desired_order, fill_value=0)
-
-    # 3. 품목 및 단가 분석용 데이터
-    sales_raw_p = df_f.pivot_table(index="품목명", columns=["연도", "월"], values="매출액", aggfunc="sum").fillna(0)
-    qty_raw_p = df_f.pivot_table(index="품목명", columns=["연도", "월"], values="출고량", aggfunc="sum").fillna(0)
-
-    sales_expanded_data, qty_expanded_data = {}, {}
-    for yr in existing_years:
-        for m in all_months:
-            col_key = (yr, m)
-            sales_expanded_data[col_key] = sales_raw_p[col_key] if col_key in sales_raw_p.columns else 0
-            qty_expanded_data[col_key] = qty_raw_p[col_key] if col_key in qty_raw_p.columns else 0
-        
-        sales_expanded_data[(yr, "연간총합")] = sum(sales_raw_p[(yr, m)] for m in all_months if (yr, m) in sales_raw_p.columns)
-        qty_expanded_data[(yr, "연간총합")] = sum(qty_raw_p[(yr, m)] for m in all_months if (yr, m) in qty_raw_p.columns)
-
-    sales_p = pd.DataFrame(sales_expanded_data, index=sales_raw_p.index)
-    qty_p = pd.DataFrame(qty_expanded_data, index=qty_raw_p.index)
-
-    valid_cols = [c for c in sorted_cols if not df_f.empty]
-    unit_price_p = df_f[df_f["단가"] > 0].pivot_table(index="품목명", columns=["연도", "월"], values="단가", aggfunc="first")
-    if valid_cols and not unit_price_p.empty:
-        unit_price_p = unit_price_p.reindex(index=sales_raw_p.index, columns=valid_cols, fill_value=0)
-
-    # 4. 담당자별 매출
-    staff_pivot = (
-        df_f.pivot_table(index="담당자", columns=["연도", "월"], values="매출액", aggfunc="sum").fillna(0)
-        / 10000
-    )
-    if valid_cols and not staff_pivot.empty:
-        staff_pivot = staff_pivot.reindex(columns=valid_cols, fill_value=0)
-
-    return pivot_m, client_pivot, sales_p, qty_p, unit_price_p, staff_pivot
-
-
 # ==========================================
 # 4. 메인 실행 흐름 (UI 구성)
 # ==========================================
@@ -581,7 +444,7 @@ inject_custom_css()
 
 st.title("📊 통합 영업 분석 대시보드")
 st.markdown(
-    "<p style='color: #475569; font-weight: 500; margin-bottom: 20px;'>실시간 영업 데이터 모니터링 및 품목·거래처별 다차원 분석 시스템</p>",
+    "<p style='color: #64748B; margin-bottom: 20px;'>실시간 영업 데이터 모니터링 및 품목·거래처별 다차원 분석 시스템</p>",
     unsafe_allow_html=True,
 )
 
@@ -598,7 +461,7 @@ full_df = load_uploaded_files(uploaded_files) if uploaded_files else pd.DataFram
 
 if not full_df.empty:
     is_deposit_row = full_df["품목명"].astype(str).str.contains("입금", na=False)
-    full_df = full_df[~is_deposit_row]
+    full_df = full_df[~is_deposit_row].copy()
 
 target_items = [
     "CO2 (kg, Bulk)",
@@ -618,7 +481,7 @@ if not full_df.empty:
 
     df_base = full_df[
         (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
-    ]
+    ].copy()
 
     st.markdown("### 🔎 다차원 필터링")
     c1, c2, c3 = st.columns(3)
@@ -630,7 +493,7 @@ if not full_df.empty:
     df_staff_filtered = (
         df_base[df_base["담당자"].isin(selected_staff)]
         if selected_staff
-        else df_base
+        else df_base.copy()
     )
 
     all_clients = (
@@ -638,17 +501,21 @@ if not full_df.empty:
         if not df_staff_filtered.empty
         else []
     )
-
-    selected_clients = c2.multiselect(
-        "🏢 거래처 검색 및 다중 선택", 
+    
+    # [수정 포인트] multiselect + max_selections=1을 이용해
+    # 기존 글자를 지울 필요 없이 클릭 후 바로 검색 가능하도록 변경
+    selected_client_list = c2.multiselect(
+        "🏢 거래처 검색 및 선택", 
         options=all_clients,
-        placeholder="여러 거래처를 검색하여 선택하세요..."
+        max_selections=1,
+        placeholder="거래처 검색 및 선택..."
     )
+    selected_client = selected_client_list[0] if selected_client_list else "전체 거래처"
 
     df_client_filtered = (
-        df_staff_filtered[df_staff_filtered["거래처"].isin(selected_clients)]
-        if selected_clients
-        else df_staff_filtered
+        df_staff_filtered[df_staff_filtered["거래처"] == selected_client]
+        if selected_client != "전체 거래처"
+        else df_staff_filtered.copy()
     )
 
     available_items = (
@@ -661,11 +528,10 @@ if not full_df.empty:
     df_f = (
         df_client_filtered[df_client_filtered["품목명"].isin(selected_item)]
         if selected_item
-        else df_client_filtered
+        else df_client_filtered.copy()
     )
 
     if not df_f.empty:
-        df_f = df_f.copy()
         df_f["연도"] = df_f["매출일_dt"].dt.year.astype(str)
         df_f["월"] = df_f["매출일_dt"].dt.strftime("%m월")
         df_f["분기"] = df_f["매출일_dt"].dt.to_period("Q").astype(str)
@@ -680,25 +546,121 @@ if not full_df.empty:
         sorted_cols = []
 
     all_months = [f"{i:02d}월" for i in range(1, 13)]
+
+    # 1. 연도별 월 매출 (VAT 포함, 만원 단위)
+    pivot_m = pd.DataFrame()
+    if not df_f.empty:
+        pivot_m = (
+            df_f.pivot_table(
+                index="연도", columns="월", values="매출액", aggfunc="sum"
+            ).fillna(0)
+            * 1.1
+            / 10000
+        )
+        pivot_m = pivot_m.reindex(columns=all_months, fill_value=0)
+
+    # 2. 거래처별 월별 매출
+    client_pivot = pd.DataFrame()
     years = (
-        sorted(full_df["매출일_dt"].dt.year.astype(str).unique())
-        if not full_df.empty
+        sorted(full_df["연도"].unique())
+        if not full_df.empty and "연도" in full_df.columns
         else (sorted(df_f["연도"].unique()) if not df_f.empty else ["2026"])
     )
+    if not df_f.empty:
+        df_f["연도월_정렬"] = (
+            df_f["연도"].astype(str).str[2:] + "년 " + df_f["월"].astype(str)
+        )
+        desired_order = [f"{y[2:]}년 {m}" for m in all_months for y in years]
+        client_pivot = (
+            df_f.pivot_table(
+                index="거래처",
+                columns="연도월_정렬",
+                values="매출액",
+                aggfunc="sum",
+            ).fillna(0)
+            / 10000
+        )
+        client_pivot = client_pivot.reindex(columns=desired_order, fill_value=0)
 
-    # Pivot 연산 캐싱 실행
-    pivot_m, client_pivot, sales_p, qty_p, unit_price_p, staff_pivot = compute_dashboard_pivots(
-        df_f, existing_years, all_months, target_items, sorted_cols, years
-    )
-
-    # 주요 품목 분기별 데이터
+    # 3. 품목 및 단가 분석용 데이터 (매출액 및 출고량 연도별 총합 포함 처리)
     main_df = (
-        df_f[df_f["품목명"].isin(target_items)]
+        df_f[df_f["품목명"].isin(target_items)].copy()
         if not df_f.empty
         else pd.DataFrame()
     )
+    sales_p = pd.DataFrame()
+    qty_p = pd.DataFrame()
+    unit_price_p = pd.DataFrame()
+    valid_cols = [c for c in sorted_cols if not df_f.empty]
 
-    # 상세 거래 내역
+    if not df_f.empty:
+        sales_raw_p = df_f.pivot_table(
+            index="품목명",
+            columns=["연도", "월"],
+            values="매출액",
+            aggfunc="sum",
+        ).fillna(0)
+        
+        qty_raw_p = df_f.pivot_table(
+            index="품목명",
+            columns=["연도", "월"],
+            values="출고량",
+            aggfunc="sum",
+        ).fillna(0)
+
+        sales_expanded_cols = []
+        sales_expanded_data = {}
+        
+        qty_expanded_cols = []
+        qty_expanded_data = {}
+
+        for yr in existing_years:
+            for m in all_months:
+                col_key = (yr, m)
+                sales_expanded_data[col_key] = sales_raw_p[col_key] if col_key in sales_raw_p.columns else 0
+                sales_expanded_cols.append(col_key)
+                
+                qty_expanded_data[col_key] = qty_raw_p[col_key] if col_key in qty_raw_p.columns else 0
+                qty_expanded_cols.append(col_key)
+            
+            yr_sales_sum = sum(sales_raw_p[(yr, m)] for m in all_months if (yr, m) in sales_raw_p.columns)
+            sales_expanded_data[(yr, "연간총합")] = yr_sales_sum
+            sales_expanded_cols.append((yr, "연간총합"))
+
+            yr_qty_sum = sum(qty_raw_p[(yr, m)] for m in all_months if (yr, m) in qty_raw_p.columns)
+            qty_expanded_data[(yr, "연간총합")] = yr_qty_sum
+            qty_expanded_cols.append((yr, "연간총합"))
+
+        sales_p = pd.DataFrame(sales_expanded_data, index=sales_raw_p.index)
+        qty_p = pd.DataFrame(qty_expanded_data, index=qty_raw_p.index)
+
+        unit_price_p = df_f[df_f["단가"] > 0].pivot_table(
+            index="품목명",
+            columns=["연도", "월"],
+            values="단가",
+            aggfunc="first",
+        )
+        if valid_cols and not unit_price_p.empty:
+            unit_price_p = unit_price_p.reindex(
+                index=sales_raw_p.index, columns=valid_cols, fill_value=0
+            )
+
+    # 4. 담당자별 매출
+    staff_pivot = pd.DataFrame()
+    if not df_f.empty:
+        staff_pivot = (
+            df_f.pivot_table(
+                index="담당자",
+                columns=["연도", "월"],
+                values="매출액",
+                aggfunc="sum",
+            ).fillna(0)
+            / 10000
+        )
+        if valid_cols and not staff_pivot.empty:
+            staff_pivot = staff_pivot.reindex(columns=valid_cols, fill_value=0)
+
+    # 5. 상세 거래 내역
     df_detail = pd.DataFrame()
     if not df_f.empty:
         detail_cols = [
@@ -710,7 +672,7 @@ if not full_df.empty:
             "단가",
             "매출액",
         ]
-        df_detail = df_f[detail_cols]
+        df_detail = df_f[detail_cols].copy()
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("📥 엑셀 내보내기")
@@ -735,13 +697,7 @@ if not full_df.empty:
 
     total_sales = df_f["매출액"].sum() if not df_f.empty else 0
     total_qty = df_f["출고량"].sum() if not df_f.empty else 0
-    
-    filter_info = []
-    if selected_clients:
-        filter_info.append(f"선택 거래처 {len(selected_clients)}곳")
-    if selected_item:
-        filter_info.append("선택 품목")
-    label_suffix = f"({', '.join(filter_info)})" if filter_info else "(전체 기준)"
+    label_suffix = "(선택 품목)" if selected_item else "(전체 품목)"
 
     m1, m2 = st.columns(2)
     m1.markdown(
@@ -817,12 +773,12 @@ if not full_df.empty:
                 for i, col in enumerate(df.columns):
                     group_idx = i // num_years
                     bg = (
-                        "background-color: #F8FAFC;"
+                        "background-color: #F1F5F9;"
                         if group_idx % 2 == 1
                         else "background-color: #FFFFFF;"
                     )
                     border = (
-                        "; border-left: 2px solid #3B82F6 !important;"
+                        "; border-left: 3px solid #2563EB !important;"
                         if (i > 0 and i % num_years == 0)
                         else ""
                     )
@@ -837,22 +793,21 @@ if not full_df.empty:
         else:
             st.info("거래처별 데이터가 없습니다.")
 
-        if selected_clients:
+        if selected_client and selected_client != "전체 거래처":
             st.markdown(
-                f'<div class="sub-header">📝 선택 거래처 메모 연동 (선택 {len(selected_clients)}개)</div>',
+                f'<div class="sub-header">📝 거래처 메모 연동 ({selected_client})</div>',
                 unsafe_allow_html=True,
             )
             col_memo1, col_memo2 = st.columns(2)
 
             with col_memo1:
-                target_memo_client = st.selectbox("메모를 열 거래처 선택", selected_clients)
                 if st.button(
-                    f"📝 '{target_memo_client}' 메모 열기/생성"
+                    f"📝 '{selected_client}' 메모 열기/생성"
                 ):
-                    success = open_macos_note(target_memo_client)
+                    success = open_macos_note(selected_client)
                     if success:
                         st.success(
-                            f"메모 앱에서 '{target_memo_client}' 노트를 열거나 생성했습니다."
+                            f"메모 앱에서 '{selected_client}' 노트를 열거나 생성했습니다."
                         )
                     else:
                         st.warning(
@@ -861,7 +816,7 @@ if not full_df.empty:
 
             with col_memo2:
                 st.info(
-                    "💡 선택된 거래처 중 구체적인 영업 메모 작성이 필요한 대상을 위 드롭다운에서 선택하여 애플 메모 앱과 바로 연동할 수 있습니다."
+                    "💡 기기 제약 없는 웹 기반 노트 서비스 또는 대시보드 내 직접 입력 기능을 활용하실 수 있습니다."
                 )
 
         if addr_dict and not df_f.empty:
@@ -933,90 +888,177 @@ if not full_df.empty:
             unsafe_allow_html=True,
         )
         if not df_f.empty and not sales_p.empty:
-
+            
             def highlight_annual_total(df):
                 styles = pd.DataFrame("", index=df.index, columns=df.columns)
                 for col in df.columns:
                     if isinstance(col, tuple) and len(col) > 1 and col[1] == "연간총합":
-                        styles[col] = (
-                            "background-color: #FEF3C7; font-weight: bold;"
-                        )
+                        styles[col] = "background-color: #FEF08A; font-weight: bold; color: #854D0E;"
                 return styles
 
-            sub_t1, sub_t2, sub_t3 = st.tabs(
-                ["💵 매출액 (만 원)", "📦 출고량", "🏷️ 실질 적용 단가 (원)"]
-            )
-
-            with sub_t1:
-                styled_sales = (
-                    (sales_p / 10000)
-                    .style.apply(highlight_annual_total, axis=None)
-                    .format("{:,.0f}")
-                )
-                st.dataframe(styled_sales, use_container_width=True)
-
-            with sub_t2:
-                styled_qty = qty_p.style.apply(
-                    highlight_annual_total, axis=None
-                ).format("{:,.0f}")
-                st.dataframe(styled_qty, use_container_width=True)
-
-            with sub_t3:
-                if not unit_price_p.empty:
-                    styled_price = unit_price_p.style.format("{:,.1f}")
-                    st.dataframe(styled_price, use_container_width=True)
+            # 매출액 품목별 팝업 그래프 대화상자 함수
+            @st.dialog("🎯 [매출액] 품목별 연도별 비교 (원형 그래프)")
+            def show_sales_item_pie_chart(item_name):
+                st.markdown(f"**📦 선택 품목: `{item_name}`**")
+                item_df = df_f[df_f["품목명"] == item_name]
+                if not item_df.empty:
+                    yr_sales = item_df.groupby("연도")["매출액"].sum() / 10000
+                    
+                    import altair as alt
+                    chart_data = yr_sales.reset_index()
+                    chart_data.columns = ["연도", "매출액"]
+                    
+                    pie_chart = alt.Chart(chart_data).mark_arc(innerRadius=50).encode(
+                        theta=alt.Theta(field="매출액", type="quantitative"),
+                        color=alt.Color(field="연도", type="nominal", legend=alt.Legend(title="연도")),
+                        tooltip=["연도", alt.Tooltip("매출액:Q", format=",.1f", title="매출액(만원)")]
+                    ).properties(width=400, height=300)
+                    
+                    st.altair_chart(pie_chart, use_container_width=True)
+                    
+                    st.markdown("---")
+                    st.markdown("**📋 연도별 매출 상세 내역 (만 원)**")
+                    st.dataframe(yr_sales.to_frame(name="매출액(만원)").style.format("{:,.1f}"), use_container_width=True)
                 else:
-                    st.info("적용 단가 데이터가 없습니다.")
+                    st.warning("선택한 품목의 상세 데이터가 없습니다.")
+
+            st.markdown("**📋 [매출액] 품목별 월별 합계 및 연도별 총합 (만 원)**")
+            items_list = list(sales_p.index)
+            col_sel1, col_btn1 = st.columns([2, 1])
+            with col_sel1:
+                selected_sales_popup_item = st.selectbox("🔍 연도별 매출 비교를 확인할 품목 선택", items_list, key="sales_popup_item_select")
+            with col_btn1:
+                st.write("") 
+                st.write("")
+                if st.button("📊 매출액 팝업 그래프 보기", use_container_width=True, key="btn_sales_popup"):
+                    show_sales_item_pie_chart(selected_sales_popup_item)
+
+            styled_sales_p = (sales_p / 10000).style.apply(highlight_annual_total, axis=None).format("{:,.0f}")
+            st.dataframe(styled_sales_p, use_container_width=True)
+
+            st.markdown("---")
+
+            # 출고량 품목별 팝업 그래프 대화상자 함수
+            @st.dialog("🎯 [출고량] 품목별 연도별 비교 (원형 그래프)")
+            def show_qty_item_pie_chart(item_name):
+                st.markdown(f"**📦 선택 품목: `{item_name}`**")
+                item_df = df_f[df_f["품목명"] == item_name]
+                if not item_df.empty:
+                    yr_qty = item_df.groupby("연도")["출고량"].sum()
+
+                    import altair as alt
+
+                    chart_data = yr_qty.reset_index()
+                    chart_data.columns = ["연도", "출고량"]
+
+                    pie_chart = (
+                        alt.Chart(chart_data)
+                        .mark_arc(innerRadius=50)
+                        .encode(
+                            theta=alt.Theta(
+                                field="출고량", type="quantitative"
+                            ),
+                            color=alt.Color(
+                                field="연도",
+                                type="nominal",
+                                legend=alt.Legend(title="연도"),
+                            ),
+                            tooltip=[
+                                "연도",
+                                alt.Tooltip(
+                                    "출고량:Q", format=",.1f", title="출고량"
+                                ),
+                            ],
+                        )
+                        .properties(width=400, height=300)
+                    )
+
+                    st.altair_chart(pie_chart, use_container_width=True)
+
+                    st.markdown("---")
+                    st.markdown("**📋 연도별 출고량 상세 내역**")
+                    st.dataframe(
+                        yr_qty.to_frame(name="출고량").style.format(
+                            "{:,.1f}"
+                        ),
+                        use_container_width=True,
+                    )
+                else:
+                    st.warning("선택한 품목의 상세 데이터가 없습니다.")
+
+            st.markdown(
+                "**📋 [출고량] 품목별 월별 합계 및 연도별 총합 (개/kg)**"
+            )
+            col_sel2, col_btn2 = st.columns([2, 1])
+            with col_sel2:
+                selected_qty_popup_item = st.selectbox(
+                    "🔍 연도별 출고량 비교를 확인할 품목 선택",
+                    items_list,
+                    key="qty_popup_item_select",
+                )
+            with col_btn2:
+                st.write("")
+                st.write("")
+                if st.button(
+                    "📊 출고량 팝업 그래프 보기",
+                    use_container_width=True,
+                    key="btn_qty_popup",
+                ):
+                    show_qty_item_pie_chart(selected_qty_popup_item)
+
+            styled_qty_p = (
+                qty_p.style.apply(highlight_annual_total, axis=None)
+                .format("{:,.0f}")
+            )
+            st.dataframe(styled_qty_p, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown(
+                "**📋 [단가] 품목별 실질 적용 단가 추이 (원 단위)**"
+            )
+            if not unit_price_p.empty:
+                st.dataframe(
+                    unit_price_p.style.format("{:,.0f}"),
+                    use_container_width=True,
+                )
+            else:
+                st.info("단가 정보가 없습니다.")
         else:
-            st.info("품목별 데이터가 없습니다.")
+            st.info("품목별 분석 데이터를 생성할 수 없습니다.")
 
     # ------------------------------------
     # TAB 4: 담당자 & 상세내역
     # ------------------------------------
     with tab4:
         st.markdown(
-            '<div class="sub-header">👤 담당자별 월별 매출 (만 원 단위)</div>',
+            '<div class="sub-header">👤 담당자별 월별 매출 현황 (만 원 단위)</div>',
             unsafe_allow_html=True,
         )
         if not staff_pivot.empty:
-            styled_staff = staff_pivot.style.format("{:,.0f}").background_gradient(
-                cmap="Blues", axis=None
+            st.dataframe(
+                staff_pivot.style.format("{:,.0f}"), use_container_width=True
             )
-            st.dataframe(styled_staff, use_container_width=True)
         else:
             st.info("담당자별 데이터가 없습니다.")
 
         st.markdown(
-            '<div class="sub-header">📄 상세 거래 내역 데이터 (필터링 적용)</div>',
+            '<div class="sub-header">📑 상세 거래 내역 조회</div>',
             unsafe_allow_html=True,
         )
         if not df_detail.empty:
-            df_detail_display = df_detail.copy()
-            df_detail_display["매출일자"] = df_detail_display[
-                "매출일_dt"
-            ].dt.strftime("%Y-%m-%d")
-            df_detail_display = df_detail_display.drop(columns=["매출일_dt"])
-
-            # 컬럼 순서 정리
-            cols_order = [
-                "매출일자",
-                "담당자",
-                "거래처",
-                "품목명",
-                "출고량",
-                "단가",
-                "매출액",
-            ]
-            df_detail_display = df_detail_display[cols_order]
-
             st.dataframe(
-                df_detail_display.style.format(
-                    {"출고량": "{:,.0f}", "단가": "{:,.0f}", "매출액": "{:,.0f}"}
+                df_detail.sort_values(by="매출일_dt", ascending=False).style.format(
+                    {
+                        "출고량": "{:,.1f}",
+                        "단가": "{:,.0f}",
+                        "매출액": "{:,.0f}",
+                    }
                 ),
                 use_container_width=True,
-                height=500,
             )
         else:
-            st.info("조회된 상세 거래 내역이 없습니다.")
+            st.info("상세 거래 내역이 없습니다.")
 else:
-    st.info("👈 좌측 사이드바에서 매출 데이터 CSV 파일을 업로드해주세요.")
+    st.info(
+        "👈 좌측 사이드바에서 매출 데이터 CSV 파일들을 업로드하여 대시보드를 활성화하세요."
+    )
