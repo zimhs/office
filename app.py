@@ -12,7 +12,7 @@ st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide"
 
 
 # ==========================================
-# 1. 스타일 및 디자인 Injection (아이패드/다크모드 대응 최적화)
+# 1. 스타일 및 디자인 Injection (다크모드 & 아이패드 완벽 대응)
 # ==========================================
 def inject_custom_css():
     st.markdown(
@@ -40,10 +40,18 @@ def inject_custom_css():
                 color: #334155 !important;
             }
             
-            /* 아이패드 표 터치 스크롤 및 레이아웃 최적화 */
-            .stDataFrame, div[data-testid="stTable"] {
+            /* 표(DataFrame) 내부 글자색 및 다크모드 강제 오버라이드 */
+            .stDataFrame, div[data-testid="stTable"], [data-testid="stDataFrameContainer"] {
                 overflow-x: auto !important;
                 -webkit-overflow-scrolling: touch;
+            }
+            
+            /* Streamlit 표 셀 텍스트 검은색 강제 설정 */
+            .stDataFrame td, .stDataFrame th, 
+            div[data-testid="stDataFrame"] td, div[data-testid="stDataFrame"] th,
+            div[role="gridcell"], div[role="columnheader"] {
+                color: #0F172A !important;
+                font-weight: 500 !important;
             }
 
             /* KPI 메트릭 카드 */
@@ -602,8 +610,10 @@ if not full_df.empty:
         df_f["연도월_정렬"] = (
             df_f["연도"].astype(str).str[2:] + "년 " + df_f["월"].astype(str)
         )
+        # 연도별 동월 순 정렬 (예: 23년 01월, 24년 01월, 25년 01월...)
         desired_order = [f"{y[2:]}년 {m}" for m in all_months for y in years]
-        client_pivot = (
+        
+        client_pivot_raw = (
             df_f.pivot_table(
                 index="거래처",
                 columns="연도월_정렬",
@@ -612,9 +622,9 @@ if not full_df.empty:
             ).fillna(0)
             / 10000
         )
-        client_pivot = client_pivot.reindex(
-            columns=desired_order, fill_value=0
-        )
+        # 존재하는 컬럼만 안전하게 필터링하여 순서 정렬
+        actual_cols = [c for c in desired_order if c in client_pivot_raw.columns]
+        client_pivot = client_pivot_raw.reindex(columns=actual_cols, fill_value=0)
 
     # 3. 품목 및 단가 분석용 데이터 (매출액 및 출고량 연도별 총합 포함 처리)
     main_df = (
@@ -809,7 +819,7 @@ if not full_df.empty:
                 st.info("표시할 그래프 데이터가 없습니다.")
 
     # ------------------------------------
-    # TAB 2: 거래처 분석 (다크모드 글자색 묻힘 현상 보완 완료)
+    # TAB 2: 거래처 분석 (시각화 및 텍스트 묻힘 방지 최적화)
     # ------------------------------------
     with tab2:
         st.markdown(
@@ -817,24 +827,15 @@ if not full_df.empty:
             unsafe_allow_html=True,
         )
         if not client_pivot.empty:
-
             def style_client_pivot(df):
                 styles = pd.DataFrame("", index=df.index, columns=df.columns)
                 num_years = len(years) if len(years) > 0 else 1
                 for i, col in enumerate(df.columns):
                     group_idx = i // num_years
-                    # 글자색(color: #0F172A !important;)을 명시적으로 추가하여 다크모드에서 텍스트 보장
-                    bg = (
-                        "background-color: #F1F5F9; color: #0F172A !important;"
-                        if group_idx % 2 == 1
-                        else "background-color: #FFFFFF; color: #0F172A !important;"
-                    )
-                    border = (
-                        "; border-left: 3px solid #2563EB !important;"
-                        if (i > 0 and i % num_years == 0)
-                        else ""
-                    )
-                    styles[col] = bg + border
+                    bg = "background-color: #F1F5F9;" if group_idx % 2 == 1 else "background-color: #FFFFFF;"
+                    border = "; border-left: 3px solid #2563EB !important;" if (i > 0 and i % num_years == 0) else ""
+                    # text-shadow를 추가하여 다크모드/라이트모드 상관없이 무조건 글자가 잘 보이도록 보장
+                    styles[col] = bg + border + "; color: #000000 !important; text-shadow: none !important;"
                 return styles
 
             styled_client_pivot = client_pivot.style.apply(
