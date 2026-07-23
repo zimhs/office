@@ -262,7 +262,7 @@ def convert_dfs_to_excel(dfs_dict):
     return output.getvalue()
 
 
-# 🎯 [수정됨] 팝업 대신 화면 본문에 연도별 요약과 월별 상세추이를 한 번에 보여주는 렌더링 함수
+# 🎯 인라인 품목 상세 분석 렌더링 함수 (팝업 에러 원천 차단)
 def render_item_detail_section(item_name, df_item, view_type, unique_key_suffix):
     unit_label = "만 원" if view_type == "매출액" else "kg / 개"
     
@@ -974,13 +974,35 @@ if not full_df.empty:
             st.bar_chart(m_curr_sales, use_container_width=True, height=320)
 
     # ------------------------------------
-    # TAB 2: 거래처 분석
+    # TAB 2: 거래처 분석 (주소 및 카카오맵 연동 복구 완료)
     # ------------------------------------
     with tab2:
         st.markdown(
-            '<div class="sub-header">🏢 거래처별 월별 비교 현황 (만 원 단위)</div>',
+            '<div class="sub-header">🏢 거래처별 주소 및 월별 비교 현황 (만 원 단위)</div>',
             unsafe_allow_html=True,
         )
+
+        # 🎯 선택된 거래처의 주소 및 카카오맵 연동 영역 복구
+        if selected_client and selected_client != "전체 거래처":
+            client_address = addr_dict.get(selected_client, "등록되지 않은 주소입니다.")
+            encoded_addr = urllib.parse.quote(client_address if client_address != "등록되지 않은 주소입니다." else selected_client)
+            kakao_map_url = f"https://map.kakao.com/?q={encoded_addr}"
+
+            st.markdown(
+                f"""
+                <div style="background-color: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.04);">
+                    <div style="font-weight: 700; color: #1E3A8A; font-size: 16px; margin-bottom: 6px;">📍 [{selected_client}] 위치 정보</div>
+                    <div style="color: #334155; font-size: 14px; margin-bottom: 12px;"><strong>주소:</strong> {client_address}</div>
+                    <div>
+                        <a href="{kakao_map_url}" target="_blank" style="background-color: #FEE500; color: #191919; padding: 8px 14px; border-radius: 6px; text-decoration: none; font-weight: 700; font-size: 13px; display: inline-block;">
+                            🗺️ 카카오맵에서 위치 확인
+                        </a>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
         if not client_pivot.empty:
             year_groups = {}
             for col in client_pivot.columns:
@@ -1093,7 +1115,6 @@ if not full_df.empty:
                 use_container_width=True,
             )
 
-            # 매출액 선택 시 본문 하단에 연도별/월별 상세 표시
             if sel_sales_item != "선택하세요...":
                 df_target_sales = df_f[df_f["품목명"] == sel_sales_item]
                 render_item_detail_section(sel_sales_item, df_target_sales, "매출액", "sales_sec")
@@ -1115,7 +1136,6 @@ if not full_df.empty:
                 qty_p.style.format("{:,.0f}"), use_container_width=True
             )
 
-            # 출고량 선택 시 본문 하단에 연도별/월별 상세 표시
             if sel_qty_item != "선택하세요...":
                 df_target_qty = df_f[df_f["품목명"] == sel_qty_item]
                 render_item_detail_section(sel_qty_item, df_target_qty, "출고량", "qty_sec")
