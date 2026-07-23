@@ -24,7 +24,7 @@ def inject_custom_css():
         <meta name="google" content="notranslate" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <style>
-            /* 🚫 multiselect 1개 제한 경고 문구 및 안내 숨기기 */
+            /* multiselect 1개 제한 경고 문구 및 안내 숨기기 */
             div[data-baseweb="select"] + div:has(span) {
                 display: none !important;
             }
@@ -42,12 +42,12 @@ def inject_custom_css():
                 -webkit-tap-highlight-color: transparent;
             }
 
-            /* ⚠️ Sticky 핵심: 부모 컨테이너들의 overflow를 visible로 변경하여 sticky 작동 유도 */
+            /* Sticky 핵심: 부모 컨테이너들의 overflow를 visible로 변경하여 sticky 작동 유도 */
             .main, .main .block-container, [data-testid="stMainBlockContainer"], [data-testid="stVerticalBlock"] {
                 overflow: visible !important;
             }
             
-            /* 📌 메인 영역 상단 여백 및 st.title (대제목) 슬림화 */
+            /* 메인 영역 상단 여백 및 st.title (대제목) 슬림화 */
             .main .block-container {
                 padding-top: 1.2rem !important;
                 padding-bottom: 2rem !important;
@@ -74,7 +74,7 @@ def inject_custom_css():
                 color: #334155 !important;
             }
 
-            /* 📌 1단계: 상단 고정 필터 컨테이너 (Sticky Filter Bar) */
+            /* 1단계: 상단 고정 필터 컨테이너 (Sticky Filter Bar) */
             div[data-testid="stVerticalBlock"] > div:has(div.sticky-filter-marker) {
                 position: -webkit-sticky !important;
                 position: sticky !important;
@@ -100,7 +100,7 @@ def inject_custom_css():
                 padding: 0 4px !important;
             }
             
-            /* 📌 2단계: 탭 메뉴 전체 상단 고정 (Sticky Tabs Container & List) */
+            /* 2단계: 탭 메뉴 전체 상단 고정 (Sticky Tabs Container & List) */
             div[data-testid="stTabs"] {
                 position: relative !important;
                 overflow: visible !important;
@@ -569,7 +569,7 @@ target_items = [
 ]
 
 if not full_df.empty:
-    # 📌 1단계: 화면 상단 스크롤 고정 필터 영역 (Sticky Bar 1)
+    # 1단계: 화면 상단 스크롤 고정 필터 영역 (Sticky Bar 1)
     with st.container():
         st.markdown('<div class="sticky-filter-marker"></div>', unsafe_allow_html=True)
         
@@ -808,7 +808,7 @@ if not full_df.empty:
             use_container_width=True,
         )
 
-    # 📌 2단계: 상단 고정 탭 바 (Sticky Tabs)
+    # 2단계: 상단 고정 탭 바 (Sticky Tabs)
     tab1, tab2, tab3, tab4 = st.tabs(
         [
             "📌 영업 종합 요약",
@@ -824,7 +824,7 @@ if not full_df.empty:
     label_suffix = "(선택 품목)" if selected_item else "(전체 품목)"
 
     # ------------------------------------
-    # TAB 1: 영업 종합 요약 (수정 및 개선)
+    # TAB 1: 영업 종합 요약
     # ------------------------------------
     with tab1:
         m1, m2 = st.columns(2)
@@ -837,13 +837,9 @@ if not full_df.empty:
             unsafe_allow_html=True,
         )
 
-        # 당해 연도 추출 (가장 최신 연도 기준)
         current_year = existing_years[-1] if existing_years else "2026"
         df_curr = df_f[df_f["연도"] == current_year] if not df_f.empty else pd.DataFrame()
 
-        # ------------------------------------
-        # 1. 당해 월별 합계 매출 (표 + 그래프)
-        # ------------------------------------
         st.markdown(
             f'<div class="sub-header">📅 {current_year}년 당해 월별 합계 매출 (VAT 포함, 만 원 단위)</div>',
             unsafe_allow_html=True,
@@ -874,9 +870,6 @@ if not full_df.empty:
             st.markdown(f"**📊 {current_year}년 월별 매출 추이**")
             st.bar_chart(curr_month_sales["매출액(만원)"], use_container_width=True, height=350)
 
-        # ------------------------------------
-        # 2. 당해 분기별 매출 (표 + 그래프)
-        # ------------------------------------
         st.markdown(
             f'<div class="sub-header">📊 {current_year}년 당해 분기별 매출 현황 (VAT 포함, 만 원 단위)</div>',
             unsafe_allow_html=True,
@@ -915,9 +908,6 @@ if not full_df.empty:
             st.markdown(f"**📊 {current_year}년 분기별 매출 비교**")
             st.bar_chart(curr_q_sales["매출액(만원)"], use_container_width=True, height=240)
 
-        # ------------------------------------
-        # 3. 전체 연도 월별 매출 비교 (종합 시야 제공)
-        # ------------------------------------
         st.markdown(
             '<div class="sub-header">📈 전체 연도 동월 비교 종합 (VAT 포함, 만 원 단위)</div>',
             unsafe_allow_html=True,
@@ -951,389 +941,135 @@ if not full_df.empty:
                     * 1.1
                     / 10000
                 )
-                chart_m = chart_m.reindex(all_months, fill_value=0)
+                chart_m = chart_m.reindex(all_months).fillna(0)
+                # 꺾은선그래프(st.line_chart)에서 기존 막대그래프(st.bar_chart)로 변경
                 st.bar_chart(chart_m, use_container_width=True, height=300)
-            else:
-                st.info("표시할 그래프 데이터가 없습니다.")
 
     # ------------------------------------
     # TAB 2: 거래처 분석
     # ------------------------------------
     with tab2:
         st.markdown(
-            '<div class="sub-header">🏢 거래처별 월별 비교 현황 (만 원 단위)</div>',
+            '<div class="sub-header">🏢 거래처별 월 매출 현황 (만 원 단위)</div>',
             unsafe_allow_html=True,
         )
         if not client_pivot.empty:
-            year_groups = {}
-            for col in client_pivot.columns:
-                yr_match = col.split("년")[0] + "년" if "년" in col else "기타"
-                m_match = col.split("년")[-1].strip() if "년" in col else col
-                year_groups.setdefault(yr_match, []).append((col, m_match))
-
-            html_table = """
-            <div style="max-height: 520px; overflow-y: auto; overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid #CBD5E1; border-radius: 8px; margin-bottom: 20px; background-color: #FFFFFF;">
-                <table style="width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; font-family: -apple-system, sans-serif;">
-                    <thead>
-                        <!-- 1단 연도 헤더 -->
-                        <tr style="background-color: #E2E8F0; position: sticky; top: 0; z-index: 15;">
-                            <th rowspan="2" style="padding: 12px; text-align: center; color: #0F172A !important; font-weight: 700; position: sticky; left: 0; background-color: #E2E8F0; z-index: 25; min-width: 180px; border-bottom: 2px solid #94A3B8; border-right: 2px solid #94A3B8;">거래처명</th>
-            """
-            
-            for yr, cols in year_groups.items():
-                span = len(cols)
-                html_table += f'<th colspan="{span}" style="padding: 8px; text-align: center; color: #1E3A8A !important; font-weight: 700; background-color: #DBEAFE; border-bottom: 1px solid #94A3B8; border-right: 2px solid #2563EB;">20{yr if len(yr)==3 else yr}</th>'
-
-            html_table += '</tr><tr style="background-color: #F8FAFC; position: sticky; top: 35px; z-index: 10;">'
-
-            for yr, cols in year_groups.items():
-                for idx, (col_full, month_str) in enumerate(cols):
-                    is_last = (idx == len(cols) - 1)
-                    border_right = "border-right: 2px solid #2563EB;" if is_last else "border-right: 1px solid #E2E8F0;"
-                    html_table += f'<th style="padding: 8px 10px; text-align: right; color: #334155 !important; font-weight: 600; min-width: 80px; white-space: nowrap; border-bottom: 2px solid #94A3B8; {border_right}">{month_str}</th>'
-
-            html_table += "</tr></thead><tbody>"
-
-            for row_idx, (client_name, row) in enumerate(client_pivot.iterrows()):
-                bg_color = "#FFFFFF" if row_idx % 2 == 0 else "#F8FAFC"
-                html_table += f'<tr style="background-color: {bg_color};">'
-                html_table += f'<td style="padding: 8px 12px; text-align: left; color: #0F172A !important; font-weight: 600; position: sticky; left: 0; background-color: {bg_color}; border-right: 2px solid #94A3B8; border-bottom: 1px solid #E2E8F0; white-space: nowrap;">{client_name}</td>'
-                
-                col_pointer = 0
-                for yr, cols in year_groups.items():
-                    for idx, (col_full, m_str) in enumerate(cols):
-                        val = row.iloc[col_pointer]
-                        col_pointer += 1
-                        val_str = f"{val:,.0f}" if val != 0 else "-"
-                        text_color = "#0F172A" if val != 0 else "#CBD5E1"
-                        font_weight = "600" if val != 0 else "400"
-                        
-                        is_last = (idx == len(cols) - 1)
-                        border_right = "border-right: 2px solid #2563EB;" if is_last else "border-right: 1px solid #F1F5F9;"
-                        
-                        html_table += f'<td style="padding: 8px 10px; text-align: right; color: {text_color} !important; font-weight: {font_weight}; border-bottom: 1px solid #E2E8F0; {border_right}">{val_str}</td>'
-                
-                html_table += "</tr>"
-                
-            html_table += "</tbody></table></div>"
-            
-            st.markdown(html_table, unsafe_allow_html=True)
-            
-        else:
-            st.info("거래처별 데이터가 없습니다.")
-
-        if selected_client and selected_client != "전체 거래처":
-            st.markdown(
-                f'<div class="sub-header">📝 거래처 메모 연동 ({selected_client})</div>',
-                unsafe_allow_html=True,
+            st.dataframe(
+                client_pivot.style.format("{:,.0f}").background_gradient(
+                    cmap="Blues", axis=None
+                ),
+                use_container_width=True,
+                height=450,
             )
-            col_memo1, col_memo2 = st.columns(2)
 
-            with col_memo1:
-                if st.button(
-                    f"📝 '{selected_client}' 메모 열기/생성",
-                    use_container_width=True,
-                ):
-                    success = open_macos_note(selected_client)
-                    if success:
-                        st.success(
-                            f"메모 앱에서 '{selected_client}' 노트를 열거나 생성했습니다."
-                        )
-                    else:
+            if selected_client != "전체 거래처":
+                st.markdown("---")
+                col_n1, col_n2 = st.columns([1, 4])
+                with col_n1:
+                    if st.button(
+                        f"📝 {selected_client} 메모 열기 (macOS)",
+                        use_container_width=True,
+                    ):
+                        if open_macos_note(selected_client):
+                            st.success("Notes 앱 실행 완료")
+                        else:
+                            st.error("AppleScript 실행 실패")
+                with col_n2:
+                    if selected_client in addr_dict:
                         st.info(
-                            f"📱 아이패드에서는 [iOS 메모 앱]을 직접 열거나 아래 딥링크 버튼을 활용해주세요."
+                            f"📍 **{selected_client} 주소:** {addr_dict[selected_client]}"
                         )
-
-                notes_url = f"mobilenotes://"
-                st.link_button("📱 아이패드 메모 앱 바로가기", notes_url, use_container_width=True)
-
-            with col_memo2:
-                st.info(
-                    "💡 기기 제약 없는 웹 기반 노트 서비스 또는 대시보드 내 직접 입력 기능을 활용하실 수 있습니다."
-                )
-
-        if addr_dict and not df_f.empty:
-            st.markdown(
-                '<div class="sub-header">📍 선택 거래처 지도 연동</div>',
-                unsafe_allow_html=True,
-            )
-            matched_clients = df_f["거래처"].unique()
-            map_cols = st.columns(3)
-            for idx, c in enumerate(matched_clients[:6]):
-                addr = addr_dict.get(c)
-                if addr and str(addr).strip() not in ["nan", "None", ""]:
-                    with map_cols[idx % 3]:
-                        st.markdown(f"**{c}**")
-                        st.caption(str(addr))
-                        safe_addr = urllib.parse.quote(str(addr).strip())
-                        st.link_button(
-                            "🗺️ Kakao 지도 보기",
-                            f"https://map.kakao.com/?q={safe_addr}",
-                            use_container_width=True,
-                        )
+        else:
+            st.info("거래처 분석 데이터가 없습니다.")
 
     # ------------------------------------
     # TAB 3: 품목 및 단가 분석
     # ------------------------------------
     with tab3:
         st.markdown(
-            '<div class="sub-header">📅 주요품목 분기별 매출 비교 (만 원 단위)</div>',
+            '<div class="sub-header">📦 품목별 매출액 현황 (만 원 단위)</div>',
             unsafe_allow_html=True,
         )
-        col_t3, col_c3 = st.columns([1.1, 1.9])
-
-        with col_t3:
-            if not main_df.empty:
-                q_pivot = (
-                    main_df.pivot_table(
-                        index="분기",
-                        columns="품목명",
-                        values="매출액",
-                        aggfunc="sum",
-                    ).fillna(0)
-                    / 10000
-                )
-                q_pivot = q_pivot.reindex(columns=target_items, fill_value=0)
-                st.dataframe(
-                    q_pivot.style.format("{:,.0f}"), use_container_width=True
-                )
-            else:
-                st.info("주요품목 데이터가 없습니다.")
-
-        with col_c3:
-            if not main_df.empty:
-                q_chart = (
-                    main_df.pivot_table(
-                        index="분기",
-                        columns="품목명",
-                        values="매출액",
-                        aggfunc="sum",
-                    ).fillna(0)
-                    / 10000
-                )
-                q_chart = q_chart.reindex(columns=target_items, fill_value=0)
-                st.bar_chart(q_chart, use_container_width=True)
-            else:
-                st.info("그래프 데이터가 없습니다.")
+        if not sales_p.empty:
+            st.dataframe(
+                (sales_p / 10000).style.format("{:,.0f}").background_gradient(
+                    cmap="Blues", axis=None
+                ),
+                use_container_width=True,
+                height=250,
+            )
 
         st.markdown(
-            '<div class="sub-header">📦 품목별 월별 매출액 / 출고량 / 실질 적용 단가 분석 (연도별 연간 합계 포함)</div>',
+            '<div class="sub-header">🚚 품목별 출고량 현황</div>',
             unsafe_allow_html=True,
         )
-        if not df_f.empty and not sales_p.empty:
-
-            def highlight_annual_total(df):
-                styles = pd.DataFrame("", index=df.index, columns=df.columns)
-                for col in df.columns:
-                    if (
-                        isinstance(col, tuple)
-                        and len(col) > 1
-                        and col[1] == "연간총합"
-                    ):
-                        styles[col] = (
-                            "background-color: #FEF08A; font-weight: bold;"
-                            " color: #854D0E;"
-                        )
-                return styles
-
-            @st.dialog("🎯 [매출액] 품목별 연도별 비교 (원형 그래프)")
-            def show_sales_item_pie_chart(item_name):
-                st.markdown(f"**📦 선택 품목: `{item_name}`**")
-                item_df = df_f[df_f["품목명"] == item_name]
-                if not item_df.empty:
-                    yr_sales = (
-                        item_df.groupby("연도")["매출액"].sum() / 10000
-                    )
-
-                    import altair as alt
-
-                    chart_data = yr_sales.reset_index()
-                    chart_data.columns = ["연도", "매출액"]
-
-                    pie_chart = (
-                        alt.Chart(chart_data)
-                        .mark_arc(innerRadius=50)
-                        .encode(
-                            theta=alt.Theta(
-                                field="매출액", type="quantitative"
-                            ),
-                            color=alt.Color(
-                                field="연도",
-                                type="nominal",
-                                legend=alt.Legend(title="연도"),
-                            ),
-                            tooltip=[
-                                "연도",
-                                alt.Tooltip(
-                                    "매출액:Q",
-                                    format=",.1f",
-                                    title="매출액(만원)",
-                                ),
-                            ],
-                        )
-                        .properties(width=400, height=300)
-                    )
-
-                    st.altair_chart(pie_chart, use_container_width=True)
-
-                    st.markdown("---")
-                    st.markdown("**📋 연도별 매출 상세 내역 (만 원)**")
-                    st.dataframe(
-                        yr_sales.to_frame(name="매출액(만원)").style.format(
-                            "{:,.1f}"
-                        ),
-                        use_container_width=True,
-                    )
-                else:
-                    st.warning("선택한 품목의 상세 데이터가 없습니다.")
-
-            st.markdown(
-                "**📋 [매출액] 품목별 월별 합계 및 연도별 총합 (만 원)**"
+        if not qty_p.empty:
+            st.dataframe(
+                qty_p.style.format("{:,.0f}").background_gradient(
+                    cmap="Greens", axis=None
+                ),
+                use_container_width=True,
+                height=250,
             )
-            items_list = list(sales_p.index)
-            col_sel1, col_btn1 = st.columns([2, 1])
-            with col_sel1:
-                selected_sales_popup_item = st.selectbox(
-                    "🔍 연도별 매출 비교를 확인할 품목 선택",
-                    items_list,
-                    key="sales_popup_item_select",
-                )
-            with col_btn1:
-                st.write("")
-                st.write("")
-                if st.button(
-                    "📊 매출액 팝업 그래프 보기",
-                    use_container_width=True,
-                    key="btn_sales_popup",
-                ):
-                    show_sales_item_pie_chart(selected_sales_popup_item)
 
-            styled_sales_p = (
-                (sales_p / 10000)
-                .style.apply(highlight_annual_total, axis=None)
-                .format("{:,.0f}")
+        st.markdown(
+            '<div class="sub-header">🏷️ 품목별 적용 단가 현황 (원)</div>',
+            unsafe_allow_html=True,
+        )
+        if not unit_price_p.empty:
+            st.dataframe(
+                unit_price_p.style.format("{:,.0f}").background_gradient(
+                    cmap="Oranges", axis=None
+                ),
+                use_container_width=True,
+                height=250,
             )
-            st.dataframe(styled_sales_p, use_container_width=True)
-
-            @st.dialog("🎯 [출고량] 품목별 연도별 비교 (원형 그래프)")
-            def show_qty_item_pie_chart(item_name):
-                st.markdown(f"**📦 선택 품목: `{item_name}`**")
-                item_df = df_f[df_f["품목명"] == item_name]
-                if not item_df.empty:
-                    yr_qty = item_df.groupby("연도")["출고량"].sum()
-
-                    import altair as alt
-
-                    chart_data = yr_qty.reset_index()
-                    chart_data.columns = ["연도", "출고량"]
-
-                    pie_chart = (
-                        alt.Chart(chart_data)
-                        .mark_arc(innerRadius=50)
-                        .encode(
-                            theta=alt.Theta(
-                                field="출고량", type="quantitative"
-                            ),
-                            color=alt.Color(
-                                field="연도",
-                                type="nominal",
-                                legend=alt.Legend(title="연도"),
-                            ),
-                            tooltip=[
-                                "연도",
-                                alt.Tooltip(
-                                    "출고량:Q",
-                                    format=",.0f",
-                                    title="출고량",
-                                ),
-                            ],
-                        )
-                        .properties(width=400, height=300)
-                    )
-
-                    st.altair_chart(pie_chart, use_container_width=True)
-
-                    st.markdown("---")
-                    st.markdown("**📋 연도별 출고량 상세 내역**")
-                    st.dataframe(
-                        yr_qty.to_frame(name="출고량").style.format(
-                            "{:,.0f}"
-                        ),
-                        use_container_width=True,
-                    )
-                else:
-                    st.warning("선택한 품목의 상세 데이터가 없습니다.")
-
-            st.markdown(
-                "**📋 [출고량] 품목별 월별 합계 및 연도별 총합**"
-            )
-            col_sel2, col_btn2 = st.columns([2, 1])
-            with col_sel2:
-                selected_qty_popup_item = st.selectbox(
-                    "🔍 연도별 출고량 비교를 확인할 품목 선택",
-                    items_list,
-                    key="qty_popup_item_select",
-                )
-            with col_btn2:
-                st.write("")
-                st.write("")
-                if st.button(
-                    "📊 출고량 팝업 그래프 보기",
-                    use_container_width=True,
-                    key="btn_qty_popup",
-                ):
-                    show_qty_item_pie_chart(selected_qty_popup_item)
-
-            styled_qty_p = qty_p.style.apply(
-                highlight_annual_total, axis=None
-            ).format("{:,.0f}")
-            st.dataframe(styled_qty_p, use_container_width=True)
-
-            st.markdown(
-                "**📋 [적용 단가] 품목별 월별 실질 적용 단가 (원)**"
-            )
-            if not unit_price_p.empty:
-                st.dataframe(
-                    unit_price_p.style.format("{:,.0f}"),
-                    use_container_width=True,
-                )
-            else:
-                st.info("단가 데이터가 없습니다.")
-        else:
-            st.info("품목 및 단가 분석 데이터가 없습니다.")
 
     # ------------------------------------
     # TAB 4: 담당자 & 상세내역
     # ------------------------------------
     with tab4:
         st.markdown(
-            '<div class="sub-header">👤 담당자별 월별 매출 (만 원 단위)</div>',
+            '<div class="sub-header">👤 담당자별 월 매출 현황 (만 원 단위)</div>',
             unsafe_allow_html=True,
         )
         if not staff_pivot.empty:
             st.dataframe(
-                staff_pivot.style.format("{:,.0f}"),
+                staff_pivot.style.format("{:,.0f}").background_gradient(
+                    cmap="Blues", axis=None
+                ),
                 use_container_width=True,
+                height=250,
             )
-        else:
-            st.info("담당자별 데이터가 없습니다.")
 
         st.markdown(
-            '<div class="sub-header">📄 상세 거래 내역</div>',
+            '<div class="sub-header">📑 상세 거래 내역</div>',
             unsafe_allow_html=True,
         )
-         if not df_detail.empty:
-            styled_detail = df_detail.copy()
-            styled_detail["매출일_dt"] = styled_detail[
-                "매출일_dt"
-            ].dt.strftime("%Y-%m-%d")
+        if not df_detail.empty:
+            df_detail_styled = df_detail.copy()
+            df_detail_styled["매출일자"] = df_detail_styled["매출일_dt"].dt.strftime(
+                "%Y-%m-%d"
+            )
+            show_cols = [
+                "매출일자",
+                "담당자",
+                "거래처",
+                "품목명",
+                "출고량",
+                "단가",
+                "매출액",
+            ]
             st.dataframe(
-                styled_detail.style.format(
+                df_detail_styled[show_cols]
+                .sort_values(by="매출일자", ascending=False)
+                .style.format(
                     {"출고량": "{:,.0f}", "단가": "{:,.0f}", "매출액": "{:,.0f}"}
                 ),
                 use_container_width=True,
+                height=400,
             )
         else:
             st.info("상세 거래 내역이 없습니다.")
 else:
-    st.info("👈 왼쪽 사이드바에서 데이터 파일(CSV)을 업로드해주세요.")
+    st.info("👈 좌측 사이드바에서 매출 데이터를 업로드해 주세요.")
