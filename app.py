@@ -287,6 +287,82 @@ def convert_dfs_to_excel(dfs_dict):
     return output.getvalue()
 
 
+# 🎯 가독성을 극대화한 팝업창 (월별 추이 데이터 표 포함)
+@st.dialog("📊 품목 상세 분석", width="medium")
+def show_item_detail_dialog(item_name, df_item, view_type):
+    st.markdown(f"### 📌 {item_name} — `{view_type}` 상세 분석")
+    
+    unit_label = "만 원" if view_type == "매출액" else "단위량/kg"
+    
+    df_calc = df_item.copy()
+    if view_type == "매출액":
+        df_calc["표시값"] = df_calc["매출액"] / 10000
+    else:
+        df_calc["표시값"] = df_calc["출고량"]
+
+    # 1. 상단: 도넛 차트 & 연도별 총계 비중
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        st.markdown("**🍩 연도별 비중**")
+        yr_summary = df_calc.groupby("연도")["표시값"].sum().reset_index()
+        if not yr_summary.empty and yr_summary["표시값"].sum() > 0:
+            import plotly.express as px
+            fig = px.pie(
+                yr_summary,
+                values="표시값",
+                names="연도",
+                hole=0.45,
+                color_discrete_sequence=px.colors.qualitative.Pastel
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            fig.update_layout(margin=dict(t=5, b=5, l=5, r=5), showlegend=False, height=180)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("데이터가 없습니다.")
+
+    with col2:
+        st.markdown(f"**📋 연도별 총계 ({unit_label})**")
+        if not yr_summary.empty:
+            total_val = yr_summary["표시값"].sum()
+            yr_summary["비중"] = (yr_summary["표시값"] / total_val * 100).map("{:.1f}%".format)
+            yr_summary.rename(columns={"표시값": f"{view_type}"}, inplace=True)
+            
+            st.dataframe(
+                yr_summary.style.format({f"{view_type}": "{:,.1f}"}),
+                use_container_width=True,
+                height=180
+            )
+        else:
+            st.info("데이터가 없습니다.")
+
+    st.markdown("---")
+
+    # 2. 하단: 월별/연도별 상세 추이 표 (가독성 향상 스타일링 적용)
+    st.markdown(f"**📅 월별 추이 및 연간 합계 ({unit_label})**")
+    
+    all_months = [f"{i:02d}월" for i in range(1, 13)]
+    pivot_detail = df_calc.pivot_table(
+        index="연도",
+        columns="월",
+        values="표시값",
+        aggfunc="sum"
+    ).fillna(0)
+    
+    pivot_detail = pivot_detail.reindex(columns=all_months, fill_value=0)
+    pivot_detail["연간 합계"] = pivot_detail.sum(axis=1)
+
+    if not pivot_detail.empty:
+        st.dataframe(
+            pivot_detail.style
+            .format("{:,.1f}")
+            .background_gradient(cmap="Blues", axis=1),
+            use_container_width=True
+        )
+    else:
+        st.info("상세 월별 데이터가 없습니다.")
+
+
 # ==========================================
 # 3. 데이터 로딩 & 메모리 캐싱
 # ==========================================
@@ -618,7 +694,7 @@ if not full_df.empty:
 
     all_months = [f"{i:02d}월" for i in range(1, 13)]
 
-    # 1. 연도별 월 매출 (VAT 포함, 만 원 단위)
+    # 1. 연도별 월 매출
     pivot_m = pd.DataFrame()
     if not df_f.empty:
         pivot_m = (
@@ -805,13 +881,11 @@ if not full_df.empty:
     # TAB 1: 영업 종합 요약
     # ------------------------------------
     with tab1:
-        # 최근 연도(당해년도) 추출
         current_year = existing_years[-1] if existing_years else "2026"
         df_current_year = (
             df_f[df_f["연도"] == current_year] if not df_f.empty else pd.DataFrame()
         )
 
-        # 1. 전체 연도별 월 매출 추이
         st.markdown(
             '<div class="sub-header">📈 전체 월별 매출 추이 및 연도별 비교 (만 원 단위)</div>',
             unsafe_allow_html=True,
@@ -852,7 +926,6 @@ if not full_df.empty:
 
         st.markdown("---")
 
-        # 2. 당해년도 분기별 매출
         st.markdown(
             f'<div class="sub-header">📅 당해년도({current_year}년) 분기별 매출 현황 (만 원 단위)</div>',
             unsafe_allow_html=True,
@@ -890,7 +963,6 @@ if not full_df.empty:
 
         st.markdown("---")
 
-        # 3. 당해년도 월별 매출
         st.markdown(
             f'<div class="sub-header">📆 당해년도({current_year}년) 월별 매출 현황 (만 원 단위)</div>',
             unsafe_allow_html=True,
@@ -1026,19 +1098,54 @@ if not full_df.empty:
             unsafe_allow_html=True,
         )
         if not sales_p.empty:
-            st.markdown("**💵 품목별 매출액 (만 원)**")
+            itemList = list(sales_p.index)
+
+            # 1. [매출액 전용] 품목 선택 + 표
+            c1_s, c2_s = st.columns([1, 1])
+            with c1_s:
+                st.markdown("#### 💵 품목별 매출액 (만 원)")
+            with c2_s:
+                sel_sales_item = st.selectbox(
+                    "🔍 매출액 분석 품목 선택",
+                    options=["선택하세요..."] + itemList,
+                    key="sales_popup_selector",
+                )
+
+            if sel_sales_item != "선택하세요...":
+                df_target = df_f[df_f["품목명"] == sel_sales_item]
+                show_item_detail_dialog(sel_sales_item, df_target, "매출액")
+
             st.dataframe(
                 (sales_p / 10000).style.format("{:,.0f}"),
                 use_container_width=True,
             )
 
-            st.markdown("**🚚 품목별 출고량**")
+            st.markdown("---")
+
+            # 2. [출고량 전용] 품목 선택 + 표
+            c1_q, c2_q = st.columns([1, 1])
+            with c1_q:
+                st.markdown("#### 🚚 품목별 출고량")
+            with c2_q:
+                sel_qty_item = st.selectbox(
+                    "🔍 출고량 분석 품목 선택",
+                    options=["선택하세요..."] + itemList,
+                    key="qty_popup_selector",
+                )
+
+            if sel_qty_item != "선택하세요...":
+                df_target = df_f[df_f["품목명"] == sel_qty_item]
+                show_item_detail_dialog(sel_qty_item, df_target, "출고량")
+
             st.dataframe(
                 qty_p.style.format("{:,.0f}"), use_container_width=True
             )
 
+            st.markdown("---")
+
+            # 3. 품목별 적용 단가 표
             if not unit_price_p.empty:
-                st.markdown("**🏷️ 품목별 적용 단가 (원)**")
+                st.markdown("#### 🏷️ 품목별 적용 단가 (원)")
                 st.dataframe(
                     unit_price_p.style.format("{:,.0f}"),
                     use_container_width=True,
