@@ -52,7 +52,7 @@ def inject_custom_css():
                 color: #334155 !important;
             }
 
-            /* 🎯 [수정] 상단 검색창/필터 높이 및 정렬 통일 */
+            /* 🎯 상단 검색창/필터 높이 및 정렬 통일 */
             div[data-testid="column"] {
                 align-self: flex-start;
             }
@@ -94,7 +94,7 @@ def inject_custom_css():
                 color: #2563EB;
                 font-size: 17px;
                 font-weight: 700;
-                margin-top: 15px;
+                margin-top: 20px;
                 margin-bottom: 12px;
                 border-left: 4px solid #2563EB;
                 padding-left: 10px;
@@ -538,7 +538,6 @@ target_items = [
 ]
 
 if not full_df.empty:
-    # 📌 🎯 [수정] 아이패드 반응형 필터 레이아웃 (균등 5등분 배치)
     filter_container = st.container()
     with filter_container:
         fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
@@ -606,7 +605,7 @@ if not full_df.empty:
     if not df_f.empty:
         df_f["연도"] = df_f["매출일_dt"].dt.year.astype(str)
         df_f["월"] = df_f["매출일_dt"].dt.strftime("%m월")
-        df_f["분기"] = df_f["매출일_dt"].dt.to_period("Q").astype(str)
+        df_f["분기"] = df_f["매출일_dt"].dt.to_period("Q").astype(str).str[-2:]
         existing_years = sorted(df_f["연도"].unique())
         sorted_cols = [
             (y, m)
@@ -619,7 +618,7 @@ if not full_df.empty:
 
     all_months = [f"{i:02d}월" for i in range(1, 13)]
 
-    # 1. 연도별 월 매출 (VAT 포함, 만원 단위)
+    # 1. 연도별 월 매출 (VAT 포함, 만 원 단위)
     pivot_m = pd.DataFrame()
     if not df_f.empty:
         pivot_m = (
@@ -803,14 +802,20 @@ if not full_df.empty:
     )
 
     # ------------------------------------
-    # TAB 1: 영업 종합 요약 (표 & 그래프 정렬 수정)
+    # TAB 1: 영업 종합 요약
     # ------------------------------------
     with tab1:
+        # 최근 연도(당해년도) 추출
+        current_year = existing_years[-1] if existing_years else "2026"
+        df_current_year = (
+            df_f[df_f["연도"] == current_year] if not df_f.empty else pd.DataFrame()
+        )
+
+        # 1. 전체 연도별 월 매출 추이
         st.markdown(
             '<div class="sub-header">📈 전체 월별 매출 추이 및 연도별 비교 (만 원 단위)</div>',
             unsafe_allow_html=True,
         )
-        # 🎯 [수정] 1:1 동일 비율 컬럼으로 지정하여 수평 균형 맞춤
         col_table1, col_chart1 = st.columns([1, 1])
 
         with col_table1:
@@ -821,9 +826,8 @@ if not full_df.empty:
                         cmap="Blues", axis=None
                     )
                 )
-                # 🎯 [수정] 그래프 높이와 일치하도록 400px 설정
                 st.dataframe(
-                    styled_pivot_m, use_container_width=True, height=400
+                    styled_pivot_m, use_container_width=True, height=360
                 )
             else:
                 st.info("데이터 없음")
@@ -842,10 +846,83 @@ if not full_df.empty:
                     / 10000
                 )
                 chart_m = chart_m.reindex(all_months, fill_value=0)
-                # 🎯 [수정] 표와 높이를 맞추고 완벽한 라인 일치
-                st.bar_chart(chart_m, use_container_width=True, height=400)
+                st.bar_chart(chart_m, use_container_width=True, height=360)
             else:
                 st.info("표시할 그래프 데이터가 없습니다.")
+
+        st.markdown("---")
+
+        # 2. 당해년도 분기별 매출
+        st.markdown(
+            f'<div class="sub-header">📅 당해년도({current_year}년) 분기별 매출 현황 (만 원 단위)</div>',
+            unsafe_allow_html=True,
+        )
+        col_table2, col_chart2 = st.columns([1, 1])
+
+        q_order = ["Q1", "Q2", "Q3", "Q4"]
+
+        if not df_current_year.empty:
+            q_sales = (
+                df_current_year.pivot_table(
+                    index="분기", values="매출액", aggfunc="sum"
+                ).fillna(0)
+                * 1.1
+                / 10000
+            )
+            q_sales = q_sales.reindex(q_order, fill_value=0)
+            q_sales.columns = ["매출액(만원)"]
+        else:
+            q_sales = pd.DataFrame(0, index=q_order, columns=["매출액(만원)"])
+
+        with col_table2:
+            st.markdown(f"**📋 {current_year}년 분기별 매출 데이터 (VAT 포함)**")
+            st.dataframe(
+                q_sales.style.format("{:,.0f}").background_gradient(
+                    cmap="Blues"
+                ),
+                use_container_width=True,
+                height=260,
+            )
+
+        with col_chart2:
+            st.markdown(f"**📊 {current_year}년 분기별 매출 그래프**")
+            st.bar_chart(q_sales, use_container_width=True, height=260)
+
+        st.markdown("---")
+
+        # 3. 당해년도 월별 매출
+        st.markdown(
+            f'<div class="sub-header">📆 당해년도({current_year}년) 월별 매출 현황 (만 원 단위)</div>',
+            unsafe_allow_html=True,
+        )
+        col_table3, col_chart3 = st.columns([1, 1])
+
+        if not df_current_year.empty:
+            m_curr_sales = (
+                df_current_year.pivot_table(
+                    index="월", values="매출액", aggfunc="sum"
+                ).fillna(0)
+                * 1.1
+                / 10000
+            )
+            m_curr_sales = m_curr_sales.reindex(all_months, fill_value=0)
+            m_curr_sales.columns = ["매출액(만원)"]
+        else:
+            m_curr_sales = pd.DataFrame(0, index=all_months, columns=["매출액(만원)"])
+
+        with col_table3:
+            st.markdown(f"**📋 {current_year}년 월별 매출 데이터 (VAT 포함)**")
+            st.dataframe(
+                m_curr_sales.style.format("{:,.0f}").background_gradient(
+                    cmap="Blues"
+                ),
+                use_container_width=True,
+                height=320,
+            )
+
+        with col_chart3:
+            st.markdown(f"**📊 {current_year}년 월별 매출 그래프**")
+            st.bar_chart(m_curr_sales, use_container_width=True, height=320)
 
     # ------------------------------------
     # TAB 2: 거래처 분석
