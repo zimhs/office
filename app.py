@@ -99,31 +99,6 @@ def inject_custom_css():
                 border-left: 4px solid #2563EB;
                 padding-left: 10px;
             }
-            
-            /* 탭 디자인 */
-            .stTabs [data-baseweb="tab-list"] {
-                gap: 8px;
-                border-bottom: 1px solid #E2E8F0;
-                overflow-x: auto;
-                -webkit-overflow-scrolling: touch;
-            }
-            .stTabs [data-baseweb="tab"] {
-                height: 45px;
-                white-space: pre-wrap;
-                background-color: #F1F5F9;
-                border-radius: 8px 8px 0px 0px;
-                color: #475569;
-                font-weight: 600;
-                padding: 0px 16px;
-            }
-            .stTabs [aria-selected="true"] {
-                background-color: #FFFFFF !important;
-                color: #2563EB !important;
-                border-bottom: 2px solid #2563EB !important;
-                border-top: 1px solid #E2E8F0;
-                border-left: 1px solid #E2E8F0;
-                border-right: 1px solid #E2E8F0;
-            }
         </style>
     """,
         unsafe_allow_html=True,
@@ -287,9 +262,8 @@ def convert_dfs_to_excel(dfs_dict):
     return output.getvalue()
 
 
-# 🎯 Plotly 대신 Streamlit 내장 차트로 변경된 팝업창
-@st.dialog("📊 품목 상세 분석", width="medium")
-def show_item_detail_dialog(item_name, df_item, view_type):
+# 🎯 [수정됨] 팝업 대신 화면 본문에 연도별 요약과 월별 상세추이를 한 번에 보여주는 렌더링 함수
+def render_item_detail_section(item_name, df_item, view_type, unique_key_suffix):
     unit_label = "만 원" if view_type == "매출액" else "kg / 개"
     
     if view_type == "매출액":
@@ -299,65 +273,71 @@ def show_item_detail_dialog(item_name, df_item, view_type):
 
     total_sum = val_series.sum()
 
-    st.markdown(f"### 📦 {item_name}")
     st.markdown(
         f"""
-        <div style="background-color: #F1F5F9; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
-            <span style="color: #475569; font-weight: 600; font-size: 14px;">총 {view_type} 누계</span>
-            <span style="color: #2563EB; font-weight: 800; font-size: 22px;">{total_sum:,.0f} <span style="font-size: 14px; font-weight: 500; color: #64748B;">{unit_label}</span></span>
-        </div>
+        <div style="background-color: #F8FAFC; border: 1px solid #CBD5E1; border-radius: 10px; padding: 20px; margin-top: 15px; margin-bottom: 25px;">
+            <h4 style="color: #1E3A8A; margin-top: 0; margin-bottom: 10px;">📦 [{item_name}] 상세 분석 보고서 ({view_type})</h4>
+            <div style="background-color: #FFFFFF; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; border: 1px solid #E2E8F0; display: flex; justify-content: space-between; align-items: center;">
+                <span style="color: #475569; font-weight: 600; font-size: 14px;">총 {view_type} 누계</span>
+                <span style="color: #2563EB; font-weight: 800; font-size: 20px;">{total_sum:,.0f} <span style="font-size: 14px; font-weight: 500; color: #64748B;">{unit_label}</span></span>
+            </div>
         """,
         unsafe_allow_html=True
     )
 
-    tab_pop1, tab_pop2 = st.tabs(["📈 연도별 요약", "📅 월별 상세 추이"])
+    # --- 1. 상단: 연도별 요약 ---
+    st.markdown("<h5 style='color: #1E3A8A; font-weight: 700;'>📈 1. 연도별 요약</h5>", unsafe_allow_html=True)
+    col_c, col_t = st.columns([1, 1])
+    yr_summary = df_item.assign(표시값=val_series).groupby("연도", as_index=False)["표시값"].sum()
 
-    with tab_pop1:
-        col_c, col_t = st.columns([1, 1])
-        yr_summary = df_item.assign(표시값=val_series).groupby("연도", as_index=False)["표시값"].sum()
+    with col_c:
+        st.markdown("<p style='font-size: 13px; font-weight: 700; color: #334155;'>📊 연도별 추이</p>", unsafe_allow_html=True)
+        if not yr_summary.empty and total_sum > 0:
+            chart_data = yr_summary.set_index("연도")["표시값"]
+            st.bar_chart(chart_data, height=180)
+        else:
+            st.info("데이터가 없습니다.")
 
-        with col_c:
-            st.markdown("<p style='font-size: 13px; font-weight: 700; color: #334155;'>📊 연도별 추이</p>", unsafe_allow_html=True)
-            if not yr_summary.empty and total_sum > 0:
-                # Streamlit 내장 막대 차트 사용 (외부 라이브러리 미사용)
-                chart_data = yr_summary.set_index("연도")["표시값"]
-                st.bar_chart(chart_data, height=200)
-            else:
-                st.info("데이터가 없습니다.")
-
-        with col_t:
-            st.markdown(f"<p style='font-size: 13px; font-weight: 700; color: #334155;'>📋 연도별 {view_type} 요약</p>", unsafe_allow_html=True)
-            if not yr_summary.empty:
-                yr_summary["비중"] = (yr_summary["표시값"] / total_sum * 100).map("{:.1f}%".format)
-                yr_summary_disp = yr_summary.rename(columns={"표시값": f"{view_type}({unit_label})"})
-                st.dataframe(
-                    yr_summary_disp.style.format({f"{view_type}({unit_label})": "{:,.0f}"}),
-                    use_container_width=True,
-                    height=200
-                )
-            else:
-                st.info("데이터가 없습니다.")
-
-    with tab_pop2:
-        all_months = [f"{i:02d}월" for i in range(1, 13)]
-        pivot_detail = df_item.assign(표시값=val_series).pivot_table(
-            index="연도",
-            columns="월",
-            values="표시값",
-            aggfunc="sum"
-        ).fillna(0)
-        
-        pivot_detail = pivot_detail.reindex(columns=all_months, fill_value=0)
-        pivot_detail.insert(0, "연간 총합계", pivot_detail.sum(axis=1))
-
-        if not pivot_detail.empty:
+    with col_t:
+        st.markdown(f"<p style='font-size: 13px; font-weight: 700; color: #334155;'>📋 연도별 {view_type} 요약</p>", unsafe_allow_html=True)
+        if not yr_summary.empty:
+            yr_summary["비중"] = (yr_summary["표시값"] / total_sum * 100).map("{:.1f}%".format)
+            yr_summary_disp = yr_summary.rename(columns={"표시값": f"{view_type}({unit_label})"})
             st.dataframe(
-                pivot_detail.style.format("{:,.0f}"),
+                yr_summary_disp.style.format({f"{view_type}({unit_label})": "{:,.0f}"}),
                 use_container_width=True,
-                height=240
+                height=180,
+                key=f"yr_df_{unique_key_suffix}"
             )
         else:
-            st.info("상세 월별 데이터가 없습니다.")
+            st.info("데이터가 없습니다.")
+
+    st.markdown("<hr style='margin: 20px 0;'>", unsafe_allow_html=True)
+
+    # --- 2. 하단: 월별 상세 추이 ---
+    st.markdown("<h5 style='color: #1E3A8A; font-weight: 700;'>📅 2. 월별 상세 추이</h5>", unsafe_allow_html=True)
+    all_months = [f"{i:02d}월" for i in range(1, 13)]
+    pivot_detail = df_item.assign(표시값=val_series).pivot_table(
+        index="연도",
+        columns="월",
+        values="표시값",
+        aggfunc="sum"
+    ).fillna(0)
+    
+    pivot_detail = pivot_detail.reindex(columns=all_months, fill_value=0)
+    pivot_detail.insert(0, "연간 총합계", pivot_detail.sum(axis=1))
+
+    if not pivot_detail.empty:
+        st.dataframe(
+            pivot_detail.style.format("{:,.0f}"),
+            use_container_width=True,
+            height=200,
+            key=f"m_df_{unique_key_suffix}"
+        )
+    else:
+        st.info("상세 월별 데이터가 없습니다.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ==========================================
@@ -1097,7 +1077,7 @@ if not full_df.empty:
         if not sales_p.empty:
             itemList = list(sales_p.index)
 
-            # 1. [매출액 전용] 품목 선택 + 표
+            # 1. [매출액 전용] 품목 선택
             c1_s, c2_s = st.columns([1, 1])
             with c1_s:
                 st.markdown("#### 💵 품목별 매출액 (만 원)")
@@ -1105,21 +1085,22 @@ if not full_df.empty:
                 sel_sales_item = st.selectbox(
                     "🔍 매출액 분석 품목 선택",
                     options=["선택하세요..."] + itemList,
-                    key="sales_popup_selector",
+                    key="sales_section_selector",
                 )
-
-            if sel_sales_item != "선택하세요...":
-                df_target = df_f[df_f["품목명"] == sel_sales_item]
-                show_item_detail_dialog(sel_sales_item, df_target, "매출액")
 
             st.dataframe(
                 (sales_p / 10000).style.format("{:,.0f}"),
                 use_container_width=True,
             )
 
+            # 매출액 선택 시 본문 하단에 연도별/월별 상세 표시
+            if sel_sales_item != "선택하세요...":
+                df_target_sales = df_f[df_f["품목명"] == sel_sales_item]
+                render_item_detail_section(sel_sales_item, df_target_sales, "매출액", "sales_sec")
+
             st.markdown("---")
 
-            # 2. [출고량 전용] 품목 선택 + 표
+            # 2. [출고량 전용] 품목 선택
             c1_q, c2_q = st.columns([1, 1])
             with c1_q:
                 st.markdown("#### 🚚 품목별 출고량")
@@ -1127,16 +1108,17 @@ if not full_df.empty:
                 sel_qty_item = st.selectbox(
                     "🔍 출고량 분석 품목 선택",
                     options=["선택하세요..."] + itemList,
-                    key="qty_popup_selector",
+                    key="qty_section_selector",
                 )
-
-            if sel_qty_item != "선택하세요...":
-                df_target = df_f[df_f["품목명"] == sel_qty_item]
-                show_item_detail_dialog(sel_qty_item, df_target, "출고량")
 
             st.dataframe(
                 qty_p.style.format("{:,.0f}"), use_container_width=True
             )
+
+            # 출고량 선택 시 본문 하단에 연도별/월별 상세 표시
+            if sel_qty_item != "선택하세요...":
+                df_target_qty = df_f[df_f["품목명"] == sel_qty_item]
+                render_item_detail_section(sel_qty_item, df_target_qty, "출고량", "qty_sec")
 
             st.markdown("---")
 
