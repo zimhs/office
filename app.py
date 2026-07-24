@@ -282,7 +282,7 @@ def render_item_detail_section(item_name, df_item, view_type, unique_key_suffix)
                 <span style="color: #2563EB; font-weight: 800; font-size: 20px;">{total_sum:,.0f} <span style="font-size: 14px; font-weight: 500; color: #64748B;">{unit_label}</span></span>
             </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
     # --- 1. 상단: 연도별 요약 ---
@@ -974,210 +974,302 @@ if not full_df.empty:
             st.bar_chart(m_curr_sales, use_container_width=True, height=320)
 
     # ------------------------------------
-    # TAB 2: 거래처 분석 (주소 및 카카오맵 연동 복구 완료)
+    # TAB 2: 거래처 분석 (아이패드 최적화 & 대기업 대시보드 스타일)
     # ------------------------------------
     with tab2:
         st.markdown(
-            '<div class="sub-header">🏢 거래처별 주소 및 월별 비교 현황 (만 원 단위)</div>',
+            """
+            <style>
+                /* 대기업 대시보드 스타일 카드 컨테이너 */
+                .corp-dashboard-card {
+                    background: #FFFFFF;
+                    border: 1px solid #E2E8F0;
+                    border-radius: 12px;
+                    padding: 20px;
+                    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -1px rgba(0, 0, 0, 0.01);
+                    margin-bottom: 20px;
+                }
+                .corp-card-title {
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: #0F172A;
+                    margin-bottom: 14px;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+                /* 아이패드 터치 최적화 KPI 박스 */
+                .corp-kpi-grid {
+                    display: grid;
+                    grid-template-columns: repeat(2, 1fr);
+                    gap: 12px;
+                    margin-bottom: 16px;
+                }
+                .corp-kpi-item {
+                    background: #F8FAFC;
+                    border: 1px solid #CBD5E1;
+                    border-radius: 8px;
+                    padding: 14px 16px;
+                }
+                .corp-kpi-label {
+                    font-size: 12px;
+                    color: #64748B;
+                    font-weight: 600;
+                    margin-bottom: 4px;
+                }
+                .corp-kpi-val {
+                    font-size: 18px;
+                    font-weight: 800;
+                    color: #1E3A8A;
+                }
+            </style>
+            """,
             unsafe_allow_html=True,
         )
 
-        # 🎯 선택된 거래처의 주소 및 카카오맵 연동 영역 복구
-        if selected_client and selected_client != "전체 거래처":
-            client_address = addr_dict.get(selected_client, "등록되지 않은 주소입니다.")
-            encoded_addr = urllib.parse.quote(client_address if client_address != "등록되지 않은 주소입니다." else selected_client)
-            kakao_map_url = f"https://map.kakao.com/?q={encoded_addr}"
-
-            st.markdown(
-                f"""
-                <div style="background-color: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.04);">
-                    <div style="font-weight: 700; color: #1E3A8A; font-size: 16px; margin-bottom: 6px;">📍 [{selected_client}] 위치 정보</div>
-                    <div style="color: #334155; font-size: 14px; margin-bottom: 12px;"><strong>주소:</strong> {client_address}</div>
-                    <div>
-                        <a href="{kakao_map_url}" target="_blank" style="background-color: #FEE500; color: #191919; padding: 8px 14px; border-radius: 6px; text-decoration: none; font-weight: 700; font-size: 13px; display: inline-block;">
-                            🗺️ 카카오맵에서 위치 확인
-                        </a>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+        st.markdown(
+            '<div class="sub-header">🏢 거래처별 다차원 월별 매출 대시보드</div>',
+            unsafe_allow_html=True,
+        )
 
         if not client_pivot.empty:
-            year_groups = {}
-            for col in client_pivot.columns:
-                yr_match = col.split("년")[0] + "년" if "년" in col else "기타"
-                m_match = col.split("년")[-1].strip() if "년" in col else col
-                year_groups.setdefault(yr_match, []).append((col, m_match))
-
-            html_table = """
-            <div style="max-height: 520px; overflow-y: auto; overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid #CBD5E1; border-radius: 8px; margin-bottom: 20px; background-color: #FFFFFF;">
-                <table style="width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; font-family: -apple-system, sans-serif;">
-                    <thead>
-                        <tr style="background-color: #E2E8F0; position: sticky; top: 0; z-index: 15;">
-                            <th rowspan="2" style="padding: 12px; text-align: center; color: #0F172A !important; font-weight: 700; position: sticky; left: 0; background-color: #E2E8F0; z-index: 25; min-width: 180px; border-bottom: 2px solid #94A3B8; border-right: 2px solid #94A3B8;">거래처명</th>
-            """
-
-            for yr, cols in year_groups.items():
-                span = len(cols)
-                html_table += f'<th colspan="{span}" style="padding: 8px; text-align: center; color: #1E3A8A !important; font-weight: 700; background-color: #DBEAFE; border-bottom: 1px solid #94A3B8; border-right: 2px solid #2563EB;">20{yr if len(yr)==3 else yr}</th>'
-
-            html_table += '</tr><tr style="background-color: #F8FAFC; position: sticky; top: 35px; z-index: 10;">'
-
-            for yr, cols in year_groups.items():
-                for idx, (col_full, month_str) in enumerate(cols):
-                    is_last = idx == len(cols) - 1
-                    border_right = (
-                        "border-right: 2px solid #2563EB;"
-                        if is_last
-                        else "border-right: 1px solid #E2E8F0;"
-                    )
-                    html_table += f'<th style="padding: 8px 10px; text-align: right; color: #334155 !important; font-weight: 600; min-width: 80px; white-space: nowrap; border-bottom: 2px solid #94A3B8; {border_right}">{month_str}</th>'
-
-            html_table += "</tr></thead><tbody>"
-
-            for row_idx, (client_name, row) in enumerate(client_pivot.iterrows()):
-                bg_color = "#FFFFFF" if row_idx % 2 == 0 else "#F8FAFC"
-                html_table += f'<tr style="background-color: {bg_color};">'
-                html_table += f'<td style="padding: 8px 12px; text-align: left; color: #0F172A !important; font-weight: 600; position: sticky; left: 0; background-color: {bg_color}; border-right: 2px solid #94A3B8; border-bottom: 1px solid #E2E8F0; white-space: nowrap;">{client_name}</td>'
-
-                for yr, cols in year_groups.items():
-                    for idx, (col_full, m_str) in enumerate(cols):
-                        val = row[col_full] if col_full in row else 0
-                        val_str = f"{val:,.0f}" if val != 0 else "-"
-                        text_color = "#0F172A" if val != 0 else "#CBD5E1"
-                        font_weight = "600" if val != 0 else "400"
-
-                        is_last = idx == len(cols) - 1
-                        border_right = (
-                            "border-right: 2px solid #2563EB;"
-                            if is_last
-                            else "border-right: 1px solid #F1F5F9;"
-                        )
-
-                        html_table += f'<td style="padding: 8px 10px; text-align: right; color: {text_color} !important; font-weight: {font_weight}; border-bottom: 1px solid #E2E8F0; {border_right}">{val_str}</td>'
-
-                html_table += "</tr>"
-
-            html_table += "</tbody></table></div>"
-
-            st.markdown(html_table, unsafe_allow_html=True)
-
+            styled_client_pivot = client_pivot.style.format("{:,.0f}").background_gradient(
+                cmap="YlGnBu", axis=1
+            )
+            st.dataframe(
+                styled_client_pivot,
+                use_container_width=True,
+                height=400,
+            )
         else:
-            st.info("거래처별 데이터가 없습니다.")
+            st.info("조건에 일치하는 거래처 데이터가 없습니다.")
 
-        if selected_client and selected_client != "전체 거래처":
+        if selected_client != "전체 거래처":
+            st.markdown("---")
             st.markdown(
-                f'<div class="sub-header">📝 거래처 메모 연동 ({selected_client})</div>',
+                f'<div class="sub-header">🔍 [{selected_client}] 프리미엄 거래처 심층 분석 센터</div>',
                 unsafe_allow_html=True,
             )
-            col_memo1, col_memo2 = st.columns(2)
 
-            with col_memo1:
-                if st.button(
-                    f"📝 '{selected_client}' 메모 열기/생성",
-                    use_container_width=True,
-                ):
-                    success = open_macos_note(selected_client)
-                    if success:
-                        st.success(
-                            f"메모 앱에서 '{selected_client}' 노트를 열거나 생성했습니다."
-                        )
-                    else:
-                        st.info(
-                            f"📱 맥 환경이 아니거나 앱 제어가 불가능합니다. [iOS/macOS 메모 앱]을 활용해 주세요."
-                        )
+            client_sub_df = df_f[df_f["거래처"] == selected_client]
+            c_sales_sum = client_sub_df["매출액"].sum()
+            c_qty_sum = client_sub_df["출고량"].sum()
+            client_addr = addr_dict.get(selected_client, "등록된 주소 정보 없음")
+
+            col_dash1, col_dash2 = st.columns([1, 1], gap="medium")
+
+            with col_dash1:
+                encoded_addr = urllib.parse.quote(client_addr if client_addr != "등록된 주소 정보 없음" else selected_client)
+                kakao_map_url = f"https://map.kakao.com/?q={encoded_addr}"
+
+                st.markdown(
+                    f"""
+                    <div class="corp-dashboard-card">
+                        <div class="corp-card-title">📍 거래처 기본 프로필 및 위치 정보</div>
+                        <div style="background: #F1F5F9; border-radius: 8px; padding: 14px; margin-bottom: 14px; border-left: 4px solid #2563EB;">
+                            <span style="font-size: 13px; color: #475569; font-weight: 600;">등록 주소지</span><br>
+                            <span style="font-size: 15px; color: #0F172A; font-weight: 700;">{client_addr}</span><br>
+                            <a href="{kakao_map_url}" target="_blank" style="display: inline-block; margin-top: 10px; font-size: 13px; font-weight: 600; color: #2563EB; text-decoration: none;">🗺️ 카카오맵에서 위치 및 지도 보기 &rarr;</a>
+                        </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                if sys.platform == "darwin":
+                    if st.button(
+                        f"📝 macOS 'Notes' 앱에서 [{selected_client}] 영업 노트 즉시 호출",
+                        use_container_width=True,
+                    ):
+                        success = open_macos_note(selected_client)
+                        if success:
+                            st.success(f"'{selected_client}' 메모가 맥 메모 앱에서 연동되었습니다.")
+                        else:
+                            st.error("맥 메모 앱을 실행하는 중 오류가 발생했습니다.")
+                else:
+                    st.caption(
+                        "💡 macOS 환경에서는 기본 '메모' 앱과 연동하여 실시간 영업 노트를 관리할 수 있습니다."
+                    )
+
+                st.markdown("</div>", unsafe_allow_html=True)
+
+            with col_dash2:
+                st.markdown(
+                    f"""
+                    <div class="corp-dashboard-card">
+                        <div class="corp-card-title">📊 핵심 영업 성과 요약</div>
+                        <div class="corp-kpi-grid">
+                            <div class="corp-kpi-item">
+                                <div class="corp-kpi-label">총 누적 매출액</div>
+                                <div class="corp-kpi-val">{c_sales_sum:,.0f} <span style="font-size: 12px; color: #64748B;">원</span></div>
+                            </div>
+                            <div class="corp-kpi-item">
+                                <div class="corp-kpi-label">총 누적 출고량</div>
+                                <div class="corp-kpi-val">{c_qty_sum:,.0f} <span style="font-size: 12px; color: #64748B;">개/kg</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
     # ------------------------------------
     # TAB 3: 품목 및 단가 분석
     # ------------------------------------
     with tab3:
         st.markdown(
-            '<div class="sub-header">📦 주요 품목별 매출, 출고량 및 적용 단가 현황</div>',
+            '<div class="sub-header">📦 품목별 매출액 현황 (만 원)</div>',
             unsafe_allow_html=True,
         )
         if not sales_p.empty:
-            itemList = list(sales_p.index)
-
-            # 1. [매출액 전용] 품목 선택
-            c1_s, c2_s = st.columns([1, 1])
-            with c1_s:
-                st.markdown("#### 💵 품목별 매출액 (만 원)")
-            with c2_s:
-                sel_sales_item = st.selectbox(
-                    "🔍 매출액 분석 품목 선택",
-                    options=["선택하세요..."] + itemList,
-                    key="sales_section_selector",
-                )
-
             st.dataframe(
-                (sales_p / 10000).style.format("{:,.0f}"),
+                (sales_p).style.format("{:,.0f}").background_gradient(
+                    cmap="Blues", axis=None
+                ),
                 use_container_width=True,
+                height=250,
             )
-
-            if sel_sales_item != "선택하세요...":
-                df_target_sales = df_f[df_f["품목명"] == sel_sales_item]
-                render_item_detail_section(sel_sales_item, df_target_sales, "매출액", "sales_sec")
-
-            st.markdown("---")
-
-            # 2. [출고량 전용] 품목 선택
-            c1_q, c2_q = st.columns([1, 1])
-            with c1_q:
-                st.markdown("#### 🚚 품목별 출고량")
-            with c2_q:
-                sel_qty_item = st.selectbox(
-                    "🔍 출고량 분석 품목 선택",
-                    options=["선택하세요..."] + itemList,
-                    key="qty_section_selector",
-                )
-
-            st.dataframe(
-                qty_p.style.format("{:,.0f}"), use_container_width=True
-            )
-
-            if sel_qty_item != "선택하세요...":
-                df_target_qty = df_f[df_f["품목명"] == sel_qty_item]
-                render_item_detail_section(sel_qty_item, df_target_qty, "출고량", "qty_sec")
-
-            st.markdown("---")
-
-            # 3. 품목별 적용 단가 표
-            if not unit_price_p.empty:
-                st.markdown("#### 🏷️ 품목별 적용 단가 (원)")
-                st.dataframe(
-                    unit_price_p.style.format("{:,.0f}"),
-                    use_container_width=True,
-                )
         else:
-            st.info("선택된 조건에 해당하는 품목 데이터가 없습니다.")
+            st.info("품목별 매출 데이터가 없습니다.")
+
+        st.markdown(
+            '<div class="sub-header">🚚 품목별 출고량 현황 (kg / 개)</div>',
+            unsafe_allow_html=True,
+        )
+        if not qty_p.empty:
+            st.dataframe(
+                qty_p.style.format("{:,.0f}").background_gradient(
+                    cmap="Greens", axis=None
+                ),
+                use_container_width=True,
+                height=250,
+            )
+        else:
+            st.info("품목별 출고량 데이터가 없습니다.")
+
+        st.markdown(
+            '<div class="sub-header">💵 품목별 적용 단가 추이 (원)</div>',
+            unsafe_allow_html=True,
+        )
+        if not unit_price_p.empty:
+            st.dataframe(
+                unit_price_p.style.format("{:,.0f}"),
+                use_container_width=True,
+                height=250,
+            )
+        else:
+            st.info("단가 데이터가 없습니다.")
+
+        # --- 인라인 품목 심층 분석 구역 ---
+        st.markdown("---")
+        st.markdown(
+            '<div class="sub-header">🔎 핵심 품목 인라인 심층 분석</div>',
+            unsafe_allow_html=True,
+        )
+
+        # 거래처 선택 필터 추가 (전체 거래처 또는 개별 거래처 선택 시 해당 거래처의 주요 품목 자동 연동)
+        all_client_options = ["전체 거래처"] + sorted(full_df["거래처"].unique()) if not full_df.empty else ["전체 거래처"]
+        selected_client_for_inline = st.selectbox(
+            "🏢 거래처 선택 (선택 시 해당 거래처의 주요 품목만 필터링)",
+            options=all_client_options,
+            key="inline_client_selector"
+        )
+
+        # 선택된 거래처에 따른 품목 필터링 수행
+        if selected_client_for_inline != "전체 거래처":
+            df_inline_base = full_df[full_df["거래처"] == selected_client_for_inline]
+        else:
+            df_inline_base = df_f.copy() if not df_f.empty else full_df
+
+        filtered_available_items = sorted(df_inline_base["품목명"].unique()) if not df_inline_base.empty else []
+
+        analysis_item = st.selectbox(
+            "분석할 품목을 선택하세요",
+            options=filtered_available_items,
+            key="inline_analysis_item_select",
+        )
+
+        view_metric_type = st.radio(
+            "지표 선택",
+            options=["매출액", "출고량"],
+            horizontal=True,
+            key="inline_view_metric_type",
+        )
+
+        if analysis_item:
+            # 거래처 연동이 적용된 상태에서 해당 품목의 데이터를 정확히 추출
+            df_item_target = df_inline_base[df_inline_base["품목명"] == analysis_item].copy()
+            if not df_item_target.empty:
+                render_item_detail_section(
+                    analysis_item,
+                    df_item_target,
+                    view_metric_type,
+                    unique_key_suffix="main_tab3",
+                )
+            else:
+                st.warning(
+                    f"선택한 조건에 '{analysis_item}'에 대한 데이터가 존재하지 않습니다."
+                )
 
     # ------------------------------------
     # TAB 4: 담당자 & 상세내역
     # ------------------------------------
     with tab4:
         st.markdown(
-            '<div class="sub-header">👤 담당자별 매출 현황 및 상세 거래 내역</div>',
+            '<div class="sub-header">👤 담당자별 월별 매출 현황 (만 원 단위)</div>',
             unsafe_allow_html=True,
         )
         if not staff_pivot.empty:
-            st.markdown("**📊 담당자별 매출 현황 (만 원)**")
             st.dataframe(
-                staff_pivot.style.format("{:,.0f}"), use_container_width=True
+                staff_pivot.style.format("{:,.0f}").background_gradient(
+                    cmap="Blues", axis=None
+                ),
+                use_container_width=True,
+                height=300,
             )
+        else:
+            st.info("담당자별 데이터가 없습니다.")
 
-        st.markdown("**🔍 상세 거래 내역**")
+        st.markdown("---")
+        st.markdown(
+            '<div class="sub-header">📋 상세 거래 내역 원본</div>',
+            unsafe_allow_html=True,
+        )
         if not df_detail.empty:
+            display_detail = df_detail.sort_values(
+                by="매출일_dt", ascending=False
+            ).copy()
+            display_detail["매출일자"] = display_detail[
+                "매출일_dt"
+            ].dt.strftime("%Y-%m-%d")
+            display_detail = display_detail.drop(columns=["매출일_dt"])
+
+            col_order = [
+                "매출일자",
+                "담당자",
+                "거래처",
+                "품목명",
+                "출고량",
+                "단가",
+                "매출액",
+            ]
+            display_detail = display_detail[
+                [c for c in col_order if c in display_detail.columns]
+            ]
+
             st.dataframe(
-                df_detail.style.format(
-                    {"출고량": "{:,.0f}", "단가": "{:,.0f}", "매출액": "{:,.0f}"}
+                display_detail.style.format(
+                    {
+                        "출고량": "{:,.1f}",
+                        "단가": "{:,.0f}",
+                        "매출액": "{:,.0f}",
+                    }
                 ),
                 use_container_width=True,
                 height=400,
             )
         else:
-            st.info("표시할 상세 거래 내역이 없습니다.")
+            st.info("상세 거래 내역이 없습니다.")
 else:
     st.info(
-        "👈 왼쪽 사이드바에서 매출 데이터 CSV 파일들을 업로드해 주시기 바랍니다."
+        "👈 왼쪽 사이드바에서 매출 데이터 CSV 파일을 업로드하여 대시보드를 활성화하세요."
     )
