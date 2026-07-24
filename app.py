@@ -262,8 +262,18 @@ def convert_dfs_to_excel(dfs_dict):
     return output.getvalue()
 
 
-# 🎯 인라인 품목 상세 분석 렌더링 함수 (팝업 에러 원천 차단)
+# 🎯 인라인 품목 상세 분석 렌더링 함수
 def render_item_detail_section(item_name, df_item, view_type, unique_key_suffix):
+    if df_item.empty:
+        st.info("데이터가 없습니다.")
+        return
+
+    # 필수 컬럼(연도, 월)이 누락된 경우 안전하게 생성
+    if "연도" not in df_item.columns and "매출일_dt" in df_item.columns:
+        df_item["연도"] = df_item["매출일_dt"].dt.year.astype(str)
+    if "월" not in df_item.columns and "매출일_dt" in df_item.columns:
+        df_item["월"] = df_item["매출일_dt"].dt.strftime("%m월")
+
     unit_label = "만 원" if view_type == "매출액" else "kg / 개"
     
     if view_type == "매출액":
@@ -540,6 +550,10 @@ def load_uploaded_files(uploaded_files):
             df = normalize_items_vectorized(df)
             df = df.dropna(subset=["매출일_dt"])
 
+            # 공통 연도 및 월 컬럼 사전 생성
+            df["연도"] = df["매출일_dt"].dt.year.astype(str)
+            df["월"] = df["매출일_dt"].dt.strftime("%m월")
+
             if not df.empty:
                 df_list.append(df)
         except Exception as e:
@@ -656,8 +670,10 @@ if not full_df.empty:
     )
 
     if not df_f.empty:
-        df_f["연도"] = df_f["매출일_dt"].dt.year.astype(str)
-        df_f["월"] = df_f["매출일_dt"].dt.strftime("%m월")
+        if "연도" not in df_f.columns:
+            df_f["연도"] = df_f["매출일_dt"].dt.year.astype(str)
+        if "월" not in df_f.columns:
+            df_f["월"] = df_f["매출일_dt"].dt.strftime("%m월")
         df_f["분기"] = df_f["매출일_dt"].dt.to_period("Q").astype(str).str[-2:]
         existing_years = sorted(df_f["연도"].unique())
         sorted_cols = [
@@ -974,13 +990,12 @@ if not full_df.empty:
             st.bar_chart(m_curr_sales, use_container_width=True, height=320)
 
     # ------------------------------------
-    # TAB 2: 거래처 분석 (아이패드 최적화 & 대기업 대시보드 스타일)
+    # TAB 2: 거래처 분석
     # ------------------------------------
     with tab2:
         st.markdown(
             """
             <style>
-                /* 대기업 대시보드 스타일 카드 컨테이너 */
                 .corp-dashboard-card {
                     background: #FFFFFF;
                     border: 1px solid #E2E8F0;
@@ -998,7 +1013,6 @@ if not full_df.empty:
                     align-items: center;
                     gap: 8px;
                 }
-                /* 아이패드 터치 최적화 KPI 박스 */
                 .corp-kpi-grid {
                     display: grid;
                     grid-template-columns: repeat(2, 1fr);
@@ -1166,19 +1180,13 @@ if not full_df.empty:
             unsafe_allow_html=True,
         )
 
-        # 거래처 선택 필터 추가 (전체 거래처 또는 개별 거래처 선택 시 해당 거래처의 주요 품목 자동 연동)
-        all_client_options = ["전체 거래처"] + sorted(full_df["거래처"].unique()) if not full_df.empty else ["전체 거래처"]
-        selected_client_for_inline = st.selectbox(
-            "🏢 거래처 선택 (선택 시 해당 거래처의 주요 품목만 필터링)",
-            options=all_client_options,
-            key="inline_client_selector"
-        )
-
-        # 선택된 거래처에 따른 품목 필터링 수행
-        if selected_client_for_inline != "전체 거래처":
-            df_inline_base = full_df[full_df["거래처"] == selected_client_for_inline]
+        # 상단 공통 필터에서 선택된 거래처(selected_client)를 그대로 반영하여 연동
+        if selected_client != "전체 거래처":
+            st.info(f"🏢 **상단에서 선택된 거래처 적용 중**: [{selected_client}] 의 주요 품목만 조회됩니다.")
+            df_inline_base = full_df[full_df["거래처"] == selected_client]
         else:
-            df_inline_base = df_f.copy() if not df_f.empty else full_df
+            st.info("💡 상단 '거래처' 필터에서 특정 거래처를 선택하시면 해당 거래처의 주요 품목이 자동으로 연동됩니다. (현재: 전체 거래처 기준)")
+            df_inline_base = full_df.copy()
 
         filtered_available_items = sorted(df_inline_base["품목명"].unique()) if not df_inline_base.empty else []
 
@@ -1196,7 +1204,6 @@ if not full_df.empty:
         )
 
         if analysis_item:
-            # 거래처 연동이 적용된 상태에서 해당 품목의 데이터를 정확히 추출
             df_item_target = df_inline_base[df_inline_base["품목명"] == analysis_item].copy()
             if not df_item_target.empty:
                 render_item_detail_section(
