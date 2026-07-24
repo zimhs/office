@@ -6,15 +6,8 @@ import urllib.parse
 import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.express as px
-import plotly.graph_objects as go
 
-# ==========================================
-# 0. 전역 상수 설정 & 페이지 기본 구성
-# ==========================================
-VAT_RATE = 1.1          # 부가세 포함 비율
-UNIT_KRW_WAN = 10000    # 원 -> 만 원 단위 환산값
-
+# 페이지 및 Styler 가동 한도 설정
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide")
 
@@ -32,7 +25,7 @@ def inject_custom_css():
         <meta name="google" content="notranslate" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <style>
-            /* multiselect 경고 문구 및 안내 숨기기 */
+            /* 🚫 multiselect 경고 문구 및 안내 숨기기 */
             div[data-baseweb="select"] + div:has(span) {
                 display: none !important;
             }
@@ -59,7 +52,7 @@ def inject_custom_css():
                 color: #334155 !important;
             }
 
-            /* 상단 검색창/필터 높이 및 정렬 통일 */
+            /* 🎯 상단 검색창/필터 높이 및 정렬 통일 */
             div[data-testid="column"] {
                 align-self: flex-start;
             }
@@ -269,12 +262,12 @@ def convert_dfs_to_excel(dfs_dict):
     return output.getvalue()
 
 
-# 인라인 품목 상세 분석 렌더링 함수 (Plotly 적용)
+# 🎯 인라인 품목 상세 분석 렌더링 함수 (팝업 에러 원천 차단)
 def render_item_detail_section(item_name, df_item, view_type, unique_key_suffix):
     unit_label = "만 원" if view_type == "매출액" else "kg / 개"
     
     if view_type == "매출액":
-        val_series = (df_item["매출액"] * VAT_RATE) / UNIT_KRW_WAN
+        val_series = df_item["매출액"] / 10000
     else:
         val_series = df_item["출고량"]
 
@@ -300,23 +293,8 @@ def render_item_detail_section(item_name, df_item, view_type, unique_key_suffix)
     with col_c:
         st.markdown("<p style='font-size: 13px; font-weight: 700; color: #334155;'>📊 연도별 추이</p>", unsafe_allow_html=True)
         if not yr_summary.empty and total_sum > 0:
-            fig_detail_yr = px.bar(
-                yr_summary,
-                x="연도",
-                y="표시값",
-                text_auto=",.0f",
-                color_discrete_sequence=["#2563EB"]
-            )
-            fig_detail_yr.update_traces(
-                hovertemplate=f"<b>%{{x}}년</b><br>수치: %{{y:,.0f}} {unit_label}<extra></extra>"
-            )
-            fig_detail_yr.update_layout(
-                height=200,
-                margin=dict(l=10, r=10, t=10, b=10),
-                xaxis_title=None,
-                yaxis_title=None
-            )
-            st.plotly_chart(fig_detail_yr, use_container_width=True, key=f"plotly_yr_{unique_key_suffix}")
+            chart_data = yr_summary.set_index("연도")["표시값"]
+            st.bar_chart(chart_data, height=180)
         else:
             st.info("데이터가 없습니다.")
 
@@ -328,7 +306,7 @@ def render_item_detail_section(item_name, df_item, view_type, unique_key_suffix)
             st.dataframe(
                 yr_summary_disp.style.format({f"{view_type}({unit_label})": "{:,.0f}"}),
                 use_container_width=True,
-                height=200,
+                height=180,
                 key=f"yr_df_{unique_key_suffix}"
             )
         else:
@@ -501,10 +479,22 @@ def load_uploaded_files(uploaded_files):
                 if req not in df.columns:
                     df[req] = "미지정"
 
-            # 정규식을 활용한 동적 연도 추출
-            match = re.search(r"(20\d{2})", file.name)
-            file_year = match.group(1) if match else "2026"
-
+            file_year = next(
+                (
+                    y
+                    for y in [
+                        "2020",
+                        "2021",
+                        "2022",
+                        "2023",
+                        "2024",
+                        "2025",
+                        "2026",
+                    ]
+                    if y in file.name
+                ),
+                "2026",
+            )
             date_col = (
                 "매출일자_raw" if "매출일자_raw" in df.columns else df.columns[0]
             )
@@ -688,8 +678,8 @@ if not full_df.empty:
             df_f.pivot_table(
                 index="연도", columns="월", values="매출액", aggfunc="sum"
             ).fillna(0)
-            * VAT_RATE
-            / UNIT_KRW_WAN
+            * 1.1
+            / 10000
         )
         pivot_m = pivot_m.reindex(columns=all_months, fill_value=0)
 
@@ -713,7 +703,7 @@ if not full_df.empty:
                 values="매출액",
                 aggfunc="sum",
             ).fillna(0)
-            / UNIT_KRW_WAN
+            / 10000
         )
         actual_cols = [
             c for c in desired_order if c in client_pivot_raw.columns
@@ -799,7 +789,7 @@ if not full_df.empty:
                 values="매출액",
                 aggfunc="sum",
             ).fillna(0)
-            / UNIT_KRW_WAN
+            / 10000
         )
         if valid_cols and not staff_pivot.empty:
             staff_pivot = staff_pivot.reindex(columns=valid_cols, fill_value=0)
@@ -824,7 +814,7 @@ if not full_df.empty:
         sheets_dict = {
             "연도별_월매출(만원)": (pivot_m, True),
             "거래처별_월별매출(만원)": (client_pivot, True),
-            "품목별_매출액(만원)": (sales_p / UNIT_KRW_WAN, True),
+            "품목별_매출액(만원)": (sales_p / 10000, True),
             "품목별_출고량": (qty_p, True),
             "품목별_적용단가": (unit_price_p, True),
             "담당자별_매출(만원)": (staff_pivot, True),
@@ -894,31 +884,20 @@ if not full_df.empty:
                 st.info("데이터 없음")
 
         with col_chart1:
-            st.markdown("**📊 연도 동월 비교 그래프 (Plotly 인터랙티브)**")
-            if not pivot_m.empty:
-                chart_m_melted = pivot_m.reset_index().melt(
-                    id_vars="연도", var_name="월", value_name="매출액(만원)"
+            st.markdown("**📊 연도 동월 비교 그래프 (VAT 포함)**")
+            if not df_f.empty:
+                chart_m = (
+                    df_f.pivot_table(
+                        index="월",
+                        columns="연도",
+                        values="매출액",
+                        aggfunc="sum",
+                    ).fillna(0)
+                    * 1.1
+                    / 10000
                 )
-                fig_bar1 = px.bar(
-                    chart_m_melted,
-                    x="월",
-                    y="매출액(만원)",
-                    color="연도",
-                    barmode="group",
-                    text_auto=",.0f",
-                    color_discrete_sequence=px.colors.qualitative.Set2
-                )
-                fig_bar1.update_traces(
-                    hovertemplate="%{x} %{fullData.name}<br><b>매출액: %{y:,.0f}만 원</b><extra></extra>"
-                )
-                fig_bar1.update_layout(
-                    height=360,
-                    margin=dict(l=10, r=10, t=30, b=10),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    xaxis_title=None,
-                    yaxis_title="만 원"
-                )
-                st.plotly_chart(fig_bar1, use_container_width=True)
+                chart_m = chart_m.reindex(all_months, fill_value=0)
+                st.bar_chart(chart_m, use_container_width=True, height=360)
             else:
                 st.info("표시할 그래프 데이터가 없습니다.")
 
@@ -937,8 +916,8 @@ if not full_df.empty:
                 df_current_year.pivot_table(
                     index="분기", values="매출액", aggfunc="sum"
                 ).fillna(0)
-                * VAT_RATE
-                / UNIT_KRW_WAN
+                * 1.1
+                / 10000
             )
             q_sales = q_sales.reindex(q_order, fill_value=0)
             q_sales.columns = ["매출액(만원)"]
@@ -957,28 +936,12 @@ if not full_df.empty:
 
         with col_chart2:
             st.markdown(f"**📊 {current_year}년 분기별 매출 그래프**")
-            fig_q = px.bar(
-                q_sales.reset_index(),
-                x="분기",
-                y="매출액(만원)",
-                text_auto=",.0f",
-                color_discrete_sequence=["#2563EB"]
-            )
-            fig_q.update_traces(
-                hovertemplate="<b>%{x}</b><br>매출액: %{y:,.0f}만 원<extra></extra>"
-            )
-            fig_q.update_layout(
-                height=260,
-                margin=dict(l=10, r=10, t=20, b=10),
-                xaxis_title=None,
-                yaxis_title="만 원"
-            )
-            st.plotly_chart(fig_q, use_container_width=True)
+            st.bar_chart(q_sales, use_container_width=True, height=260)
 
         st.markdown("---")
 
         st.markdown(
-            f'<div class="sub-header">📆 당해년도({current_year}년) 월별 및 누적 매출 추이 (만 원 단위)</div>',
+            f'<div class="sub-header">📆 당해년도({current_year}년) 월별 매출 현황 (만 원 단위)</div>',
             unsafe_allow_html=True,
         )
         col_table3, col_chart3 = st.columns([1, 1])
@@ -988,8 +951,8 @@ if not full_df.empty:
                 df_current_year.pivot_table(
                     index="월", values="매출액", aggfunc="sum"
                 ).fillna(0)
-                * VAT_RATE
-                / UNIT_KRW_WAN
+                * 1.1
+                / 10000
             )
             m_curr_sales = m_curr_sales.reindex(all_months, fill_value=0)
             m_curr_sales.columns = ["매출액(만원)"]
@@ -1007,41 +970,11 @@ if not full_df.empty:
             )
 
         with col_chart3:
-            st.markdown(f"**📊 {current_year}년 월별 및 누적 콤보 그래프**")
-            monthly_combo_df = m_curr_sales.copy()
-            monthly_combo_df["누적매출(만원)"] = monthly_combo_df["매출액(만원)"].cumsum()
-
-            fig_combo = go.Figure()
-            fig_combo.add_trace(go.Bar(
-                x=monthly_combo_df.index,
-                y=monthly_combo_df["매출액(만원)"],
-                name="당월 매출",
-                marker_color="#2563EB",
-                text=monthly_combo_df["매출액(만원)"],
-                texttemplate="%{text:,.0f}",
-                textposition="auto"
-            ))
-            fig_combo.add_trace(go.Scatter(
-                x=monthly_combo_df.index,
-                y=monthly_combo_df["누적매출(만원)"],
-                name="누적 매출",
-                mode="lines+markers+text",
-                line=dict(color="#DC2626", width=2.5),
-                text=monthly_combo_df["누적매출(만원)"],
-                texttemplate="%{text:,.0f}",
-                textposition="top center"
-            ))
-            fig_combo.update_layout(
-                height=320,
-                margin=dict(l=10, r=10, t=30, b=10),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                xaxis_title=None,
-                yaxis_title="만 원"
-            )
-            st.plotly_chart(fig_combo, use_container_width=True)
+            st.markdown(f"**📊 {current_year}년 월별 매출 그래프**")
+            st.bar_chart(m_curr_sales, use_container_width=True, height=320)
 
     # ------------------------------------
-    # TAB 2: 거래처 분석
+    # TAB 2: 거래처 분석 (주소 및 카카오맵 연동 복구 완료)
     # ------------------------------------
     with tab2:
         st.markdown(
@@ -1049,6 +982,7 @@ if not full_df.empty:
             unsafe_allow_html=True,
         )
 
+        # 🎯 선택된 거래처의 주소 및 카카오맵 연동 영역 복구
         if selected_client and selected_client != "전체 거래처":
             client_address = addr_dict.get(selected_client, "등록되지 않은 주소입니다.")
             encoded_addr = urllib.parse.quote(client_address if client_address != "등록되지 않은 주소입니다." else selected_client)
@@ -1159,30 +1093,10 @@ if not full_df.empty:
     # ------------------------------------
     with tab3:
         st.markdown(
-            '<div class="sub-header">📦 주요 품목별 매출 점유율, 출고량 및 적용 단가 현황</div>',
+            '<div class="sub-header">📦 주요 품목별 매출, 출고량 및 적용 단가 현황</div>',
             unsafe_allow_html=True,
         )
-
         if not sales_p.empty:
-            # 품목별 매출 점유율 (도넛 차트)
-            item_sales_sum = df_f.groupby("품목명")["매출액"].sum() * VAT_RATE / UNIT_KRW_WAN
-            fig_donut = px.pie(
-                names=item_sales_sum.index,
-                values=item_sales_sum.values,
-                hole=0.45,
-                title="🍩 주요 품목별 매출 점유율 (VAT 포함, 만 원)",
-                color_discrete_sequence=px.colors.qualitative.Safe
-            )
-            fig_donut.update_traces(
-                textposition="inside",
-                textinfo="percent+label",
-                hovertemplate="<b>%{label}</b><br>매출액: %{value:,.0f}만 원 (%{percent})"
-            )
-            fig_donut.update_layout(height=340, margin=dict(l=20, r=20, t=40, b=20))
-            st.plotly_chart(fig_donut, use_container_width=True)
-
-            st.markdown("---")
-
             itemList = list(sales_p.index)
 
             # 1. [매출액 전용] 품목 선택
@@ -1197,7 +1111,7 @@ if not full_df.empty:
                 )
 
             st.dataframe(
-                (sales_p / UNIT_KRW_WAN).style.format("{:,.0f}"),
+                (sales_p / 10000).style.format("{:,.0f}"),
                 use_container_width=True,
             )
 
