@@ -240,6 +240,71 @@ def load_address_file(address_bytes):
     return {}
 
 
+@st.cache_data(show_spinner="채권 데이터를 읽어오는 중입니다...")
+def load_debt_file(debt_bytes):
+    if not debt_bytes:
+        return pd.DataFrame()
+    try:
+        for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
+            try:
+                df_raw = pd.read_csv(
+                    io.BytesIO(debt_bytes), encoding=enc, header=None
+                )
+                if df_raw.shape[0] > 6:
+                    months_map = {
+                        8: "1월",
+                        11: "2월",
+                        12: "3월",
+                        16: "4월",
+                        18: "5월",
+                        19: "6월",
+                        20: "7월",
+                    }
+                    parsed_rows = []
+                    current_client = ""
+                    for idx in range(6, df_raw.shape[0]):
+                        c_val = df_raw.iloc[idx, 0]
+                        if pd.notna(c_val) and str(c_val).strip() != "":
+                            current_client = str(c_val).strip()
+
+                        g_val = df_raw.iloc[idx, 7]
+                        if pd.notna(g_val):
+                            g_str = str(g_val).strip()
+                            if g_str in ["매출", "수금", "잔액"]:
+                                gubun = g_str
+                            elif g_str not in ["", "nan"]:
+                                gubun = "이월"
+                            else:
+                                continue
+
+                            if current_client:
+                                row_data = {
+                                    "거래처": current_client,
+                                    "구분": gubun,
+                                }
+                                for col_idx, m_name in months_map.items():
+                                    if col_idx < df_raw.shape[1]:
+                                        val_str = str(
+                                            df_raw.iloc[idx, col_idx]
+                                        ).replace(",", "")
+                                        try:
+                                            row_data[m_name] = float(val_str)
+                                        except:
+                                            row_data[m_name] = 0.0
+                                    else:
+                                        row_data[m_name] = 0.0
+                                parsed_rows.append(row_data)
+
+                    if parsed_rows:
+                        return pd.DataFrame(parsed_rows)
+                break
+            except UnicodeDecodeError:
+                continue
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
 @st.cache_data(show_spinner="데이터를 파싱 및 캐싱 중입니다...")
 def load_uploaded_files(uploaded_files):
     if not uploaded_files:
@@ -445,11 +510,13 @@ st.markdown(
 
 st.sidebar.header("📁 데이터 업로드")
 address_file = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
+debt_file = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
 uploaded_files = st.sidebar.file_uploader(
     "매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True
 )
 
 addr_dict = load_address_file(address_file.getvalue()) if address_file else {}
+debt_df = load_debt_file(debt_file.getvalue()) if debt_file else pd.DataFrame()
 full_df = (
     load_uploaded_files(uploaded_files) if uploaded_files else pd.DataFrame()
 )
@@ -465,7 +532,7 @@ target_items = [
     "AR (kg, Bulk)",
 ]
 
-if not full_df.empty:
+if not full_df.empty or not debt_df.empty:
     filter_container = st.container()
     with filter_container:
         fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
@@ -481,9 +548,14 @@ if not full_df.empty:
         if pd.isna(end_dt):
             end_dt = pd.Timestamp("2099-12-31")
 
-        df_base = full_df[
-            (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
-        ].copy()
+        df_base = (
+            full_df[
+                (full_df["매출일_dt"] >= start_dt)
+                & (full_df["매출일_dt"] <= end_dt)
+            ].copy()
+            if not full_df.empty
+            else pd.DataFrame()
+        )
 
         selected_staff = fc3.multiselect(
             "👤 담당자",
@@ -491,14 +563,14 @@ if not full_df.empty:
         )
         df_staff_filtered = (
             df_base[df_base["담당자"].isin(selected_staff)]
-            if selected_staff
+            if selected_staff and not df_base.empty
             else df_base.copy()
         )
 
         all_clients = (
             sorted(df_staff_filtered["거래처"].unique())
             if not df_staff_filtered.empty
-            else []
+            else (sorted(debt_df["거래처"].unique()) if not debt_df.empty else [])
         )
 
         selected_client_list = fc4.multiselect(
@@ -513,7 +585,7 @@ if not full_df.empty:
 
         df_client_filtered = (
             df_staff_filtered[df_staff_filtered["거래처"] == selected_client]
-            if selected_client != "전체 거래처"
+            if selected_client != "전체 거래처" and not df_staff_filtered.empty
             else df_staff_filtered.copy()
         )
 
@@ -526,7 +598,7 @@ if not full_df.empty:
 
     df_f = (
         df_client_filtered[df_client_filtered["품목명"].isin(selected_item)]
-        if selected_item
+        if selected_item and not df_client_filtered.empty
         else df_client_filtered.copy()
     )
 
@@ -541,7 +613,6 @@ if not full_df.empty:
 
     all_months = [f"{i:02d}월" for i in range(1, 13)]
 
-    # 공통: 연도월 포맷 정렬키 생성 ("24년 01월")
     if not df_f.empty:
         df_f["연도월_정렬"] = (
             df_f["연도"].astype(str).str[2:] + "년 " + df_f["월"].astype(str)
@@ -555,18 +626,14 @@ if not full_df.empty:
             full_df["연도"].astype(str).str[2:] + "년 " + full_df["월"].astype(str)
         )
 
-    # 요청 사항: 연도 순서를 최신 연도(26년)가 먼저 오도록 역순 정렬
     raw_years = (
         sorted(full_df["연도"].unique())
         if not full_df.empty and "연도" in full_df.columns
         else (sorted(df_f["연도"].unique()) if not df_f.empty else ["2026"])
     )
     years = sorted(raw_years, reverse=True)
-    
-    # 'YY년 MM월' 형태의 순서 리스트 생성 (최신 연도가 앞으로 오도록)
     desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
 
-    # 1. 연도별 월 매출 (전체 데이터 기반 요약용)
     pivot_m = pd.DataFrame()
     if not full_df.empty:
         pivot_m = (
@@ -577,10 +644,8 @@ if not full_df.empty:
             / 10000
         )
         pivot_m = pivot_m.reindex(columns=all_months, fill_value=0)
-        # 연도 행도 최신순 정렬
         pivot_m = pivot_m.reindex(sorted(pivot_m.index, reverse=True))
 
-    # 2. 거래처별 월별 매출 (연도월 형식)
     client_pivot = pd.DataFrame()
     if not df_f.empty:
         client_pivot_raw = (
@@ -599,7 +664,6 @@ if not full_df.empty:
             columns=actual_cols, fill_value=0
         )
 
-    # 3. 품목 및 단가 분석용 데이터 ('YY년 MM월' 컬럼 및 연간총합 컬럼 구성)
     sales_p = pd.DataFrame()
     qty_p = pd.DataFrame()
     unit_price_p = pd.DataFrame()
@@ -628,23 +692,25 @@ if not full_df.empty:
             yr_qty_sum = 0
             for m in all_months:
                 col_key = f"{yr_short}년 {m}"
-                s_val = sales_raw_p[col_key] if col_key in sales_raw_p.columns else 0
+                s_val = (
+                    sales_raw_p[col_key]
+                    if col_key in sales_raw_p.columns
+                    else 0
+                )
                 q_val = qty_raw_p[col_key] if col_key in qty_raw_p.columns else 0
-                
+
                 sales_expanded_data[col_key] = s_val
                 qty_expanded_data[col_key] = q_val
-                
+
                 yr_sales_sum = yr_sales_sum + s_val
                 yr_qty_sum = yr_qty_sum + q_val
-            
+
             sales_expanded_data[f"{yr_short}년 연간총합"] = yr_sales_sum
             qty_expanded_data[f"{yr_short}년 연간총합"] = yr_qty_sum
 
         sales_p = pd.DataFrame(sales_expanded_data, index=sales_raw_p.index)
         qty_p = pd.DataFrame(qty_expanded_data, index=qty_raw_p.index)
 
-        # 요청 사항: 당월(가장 최신 월 또는 현재 월 데이터 기준) 출고량이 많은 품목이 위에 오도록 정렬
-        # 1순위로 현재 연도의 가장 최신 월 컬럼을 찾고, 없으면 전체 컬럼 중 가장 마지막 컬럼을 기준으로 정렬
         latest_col = None
         for yr in years:
             for m in reversed(all_months):
@@ -670,11 +736,12 @@ if not full_df.empty:
         if not raw_up.empty:
             unit_price_p = raw_up.fillna(0)
             if latest_col in unit_price_p.columns:
-                unit_price_p = unit_price_p.sort_values(by=latest_col, ascending=False)
+                unit_price_p = unit_price_p.sort_values(
+                    by=latest_col, ascending=False
+                )
         else:
             unit_price_p = pd.DataFrame()
 
-    # 4. 담당자별 매출
     staff_pivot = pd.DataFrame()
     if not df_f.empty:
         staff_raw = (
@@ -689,7 +756,6 @@ if not full_df.empty:
         staff_cols = [c for c in desired_order if c in staff_raw.columns]
         staff_pivot = staff_raw.reindex(columns=staff_cols, fill_value=0)
 
-    # 5. 상세 거래 내역
     df_detail = pd.DataFrame()
     if not df_f.empty:
         detail_cols = [
@@ -705,16 +771,23 @@ if not full_df.empty:
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("📥 엑셀 내보내기")
-    if not df_f.empty:
-        sheets_dict = {
-            "연도별_월매출(만원)": (pivot_m, True),
-            "거래처별_월별매출(만원)": (client_pivot, True),
-            "품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
-            "품목별_출고량": (qty_p, True),
-            "품목별_적용단가": (unit_price_p, True),
-            "담당자별_매출(만원)": (staff_pivot, True),
-            "상세거래내역": (df_detail, False),
-        }
+    if not df_f.empty or not debt_df.empty:
+        sheets_dict = {}
+        if not df_f.empty:
+            sheets_dict.update(
+                {
+                    "연도별_월매출(만원)": (pivot_m, True),
+                    "거래처별_월별매출(만원)": (client_pivot, True),
+                    "품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
+                    "품목별_출고량": (qty_p, True),
+                    "품목별_적용단가": (unit_price_p, True),
+                    "담당자별_매출(만원)": (staff_pivot, True),
+                    "상세거래내역": (df_detail, False),
+                }
+            )
+        if not debt_df.empty:
+            sheets_dict["채권관리_현황"] = (debt_df, False)
+
         excel_data = convert_dfs_to_excel(sheets_dict)
         st.sidebar.download_button(
             label="📊 전체 분석 시트별 엑셀 다운로드",
@@ -740,12 +813,13 @@ if not full_df.empty:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
         [
             "📌 영업 종합 요약",
             "🏢 거래처 분석",
             "📦 품목 및 단가 분석",
             "👤 담당자 & 상세내역",
+            "📌 채권 관리",
         ]
     )
 
@@ -787,7 +861,6 @@ if not full_df.empty:
                     / 10000
                 )
                 chart_m = chart_m.reindex(all_months, fill_value=0)
-                # 차트도 최신 연도가 먼저 오도록 컬럼 정렬
                 chart_cols_sorted = sorted(chart_m.columns, reverse=True)
                 chart_m = chart_m[chart_cols_sorted]
                 st.bar_chart(chart_m, use_container_width=True, height=360)
@@ -825,19 +898,26 @@ if not full_df.empty:
 
                 if not df_sub_item.empty:
                     if "매출액" in selected_metric_type:
-                        item_raw_p = df_sub_item.pivot_table(
-                            index="품목명",
-                            columns="연도월_정렬",
-                            values="매출액",
-                            aggfunc="sum",
-                        ).fillna(0) * 1.1 / 10000
+                        item_raw_p = (
+                            df_sub_item.pivot_table(
+                                index="품목명",
+                                columns="연도월_정렬",
+                                values="매출액",
+                                aggfunc="sum",
+                            ).fillna(0)
+                            * 1.1
+                            / 10000
+                        )
                     else:
-                        item_raw_p = df_sub_item.pivot_table(
-                            index="품목명",
-                            columns="연도월_정렬",
-                            values="출고량",
-                            aggfunc="sum",
-                        ).fillna(0) / 1000
+                        item_raw_p = (
+                            df_sub_item.pivot_table(
+                                index="품목명",
+                                columns="연도월_정렬",
+                                values="출고량",
+                                aggfunc="sum",
+                            ).fillna(0)
+                            / 1000
+                        )
 
                     major_expanded = {}
                     for yr in years:
@@ -845,13 +925,24 @@ if not full_df.empty:
                         yr_tot = 0
                         for m in all_months:
                             ck = f"{yr_s}년 {m}"
-                            val = item_raw_p.loc[selected_analysis_item, ck] if (not item_raw_p.empty and selected_analysis_item in item_raw_p.index and ck in item_raw_p.columns) else 0
+                            val = (
+                                item_raw_p.loc[selected_analysis_item, ck]
+                                if (
+                                    not item_raw_p.empty
+                                    and selected_analysis_item
+                                    in item_raw_p.index
+                                    and ck in item_raw_p.columns
+                                )
+                                else 0
+                            )
                             major_expanded[ck] = val
                             yr_tot = yr_tot + val
                         major_expanded[f"{yr_s}년 연간총합"] = yr_tot
 
                     major_display_df = pd.DataFrame([major_expanded])
-                    sum_cols = [c for c in major_display_df.columns if "연간총합" in c]
+                    sum_cols = [
+                        c for c in major_display_df.columns if "연간총합" in c
+                    ]
 
                     col_t2, col_c2 = st.columns([1, 1])
                     with col_t2:
@@ -859,7 +950,9 @@ if not full_df.empty:
                             f"**📋 [{selected_analysis_item}] 연도별 월별 데이터 및 합계**"
                         )
                         st.dataframe(
-                            major_display_df.style.format("{:,.0f}").background_gradient(
+                            major_display_df.style.format(
+                                "{:,.0f}"
+                            ).background_gradient(
                                 cmap="Greens", subset=sum_cols, axis=None
                             ),
                             use_container_width=True,
@@ -869,8 +962,17 @@ if not full_df.empty:
                         st.markdown(
                             f"**📊 [{selected_analysis_item}] 월별 추이 비교 그래프**"
                         )
-                        chart_plot_data = {m: [major_expanded.get(f"{yr[2:]}년 {m}", 0) for yr in years] for m in all_months}
-                        chart_plot_df = pd.DataFrame(chart_plot_data, index=[f"{yr[2:]}년" for yr in years]).T
+                        chart_plot_data = {
+                            m: [
+                                major_expanded.get(f"{yr[2:]}년 {m}", 0)
+                                for yr in years
+                            ]
+                            for m in all_months
+                        }
+                        chart_plot_df = pd.DataFrame(
+                            chart_plot_data,
+                            index=[f"{yr[2:]}년" for yr in years],
+                        ).T
                         st.bar_chart(
                             chart_plot_df, use_container_width=True, height=280
                         )
@@ -901,9 +1003,12 @@ if not full_df.empty:
                 unsafe_allow_html=True,
             )
 
-            client_all_data = full_df[full_df["거래처"] == selected_client].copy()
-            
-            # 선택한 거래처의 전체 품목별 월별 출고량 표 ('YY년 MM월' + 연간 총합 포함)
+            client_all_data = (
+                full_df[full_df["거래처"] == selected_client].copy()
+                if not full_df.empty
+                else pd.DataFrame()
+            )
+
             st.markdown(
                 f'<div class="sub-header">📦 [{selected_client}] 전체 품목별 월별 출고량 현황 (YY년 MM월 & 연간 총합)</div>',
                 unsafe_allow_html=True,
@@ -913,7 +1018,7 @@ if not full_df.empty:
                     index="품목명",
                     columns="연도월_정렬",
                     values="출고량",
-                    aggfunc="sum"
+                    aggfunc="sum",
                 ).fillna(0)
 
                 c_expanded_dict = {}
@@ -924,22 +1029,31 @@ if not full_df.empty:
                         yr_tot = 0
                         for m in all_months:
                             ck = f"{yr_s}년 {m}"
-                            val = c_qty_raw.loc[idx_item, ck] if ck in c_qty_raw.columns else 0
+                            val = (
+                                c_qty_raw.loc[idx_item, ck]
+                                if ck in c_qty_raw.columns
+                                else 0
+                            )
                             row_data[ck] = val
                             yr_tot = yr_tot + val
                         row_data[f"{yr_s}년 연간총합"] = yr_tot
                     c_expanded_dict[idx_item] = row_data
 
-                c_qty_display = pd.DataFrame.from_dict(c_expanded_dict, orient="index")
-                
-                # 거래처 품목별 표도 당월 출고량 기준 내림차순 정렬 및 연간총합 색상 적용
+                c_qty_display = pd.DataFrame.from_dict(
+                    c_expanded_dict, orient="index"
+                )
+
                 if latest_col and latest_col in c_qty_display.columns:
-                    c_qty_display = c_qty_display.sort_values(by=latest_col, ascending=False)
-                
+                    c_qty_display = c_qty_display.sort_values(
+                        by=latest_col, ascending=False
+                    )
+
                 c_sum_cols = [c for c in c_qty_display.columns if "연간총합" in c]
 
                 st.dataframe(
-                    c_qty_display.style.format("{:,.0f}").background_gradient(cmap="Purples", subset=c_sum_cols, axis=None),
+                    c_qty_display.style.format("{:,.0f}").background_gradient(
+                        cmap="Purples", subset=c_sum_cols, axis=None
+                    ),
                     use_container_width=True,
                     height=300,
                 )
@@ -948,7 +1062,9 @@ if not full_df.empty:
 
             st.markdown("<br>", unsafe_allow_html=True)
         else:
-            st.info("💡 상단 [거래처] 검색창에서 특정 거래처를 선택하시면 해당 거래처의 상세 주소 및 품목별 월별 출고량 표가 표시됩니다.")
+            st.info(
+                "💡 상단 [거래처] 검색창에서 특정 거래처를 선택하시면 해당 거래처의 상세 주소 및 품목별 월별 출고량 표가 표시됩니다."
+            )
 
         st.markdown(
             '<div class="sub-header">🏢 거래처별 월별 매출 비교 분석 (YY년 MM월, 만 원 단위, VAT 포함)</div>',
@@ -1051,5 +1167,42 @@ if not full_df.empty:
             )
         else:
             st.info("상세 내역이 없습니다.")
+
+    # ------------------------------------
+    # TAB 5: 채권 관리 (이월/매출/수금/잔액 구분)
+    # ------------------------------------
+    with tab5:
+        st.markdown(
+            '<div class="sub-header">📌 업체별 채권 관리 현황 (이월 / 매출 / 수금 / 잔액)</div>',
+            unsafe_allow_html=True,
+        )
+        if not debt_df.empty:
+            # 거래처 필터 적용 (상단 거래처 선택과 연동)
+            filtered_debt_df = debt_df.copy()
+            if selected_client != "전체 거래처":
+                filtered_debt_df = filtered_debt_df[
+                    filtered_debt_df["거래처"] == selected_client
+                ]
+
+            st.dataframe(
+                filtered_debt_df.style.format(
+                    {
+                        "1월": "{:,.0f}",
+                        "2월": "{:,.0f}",
+                        "3월": "{:,.0f}",
+                        "4월": "{:,.0f}",
+                        "5월": "{:,.0f}",
+                        "6월": "{:,.0f}",
+                        "7월": "{:,.0f}",
+                    },
+                    na_rep="0",
+                ),
+                use_container_width=True,
+                height=550,
+            )
+        else:
+            st.info(
+                "👈 사이드바에서 `채권 데이터 (채권.csv)` 파일을 업로드해주세요."
+            )
 else:
     st.info("👈 사이드바에서 거래처 주소록 및 매출 데이터 파일(CSV)을 업로드해주세요.")
