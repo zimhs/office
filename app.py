@@ -268,32 +268,27 @@ def load_debt_file(debt_bytes):
                             current_client = str(c_val).strip()
 
                         g_val = df_raw.iloc[idx, 7]
-                        if pd.notna(g_val):
-                            g_str = str(g_val).strip()
-                            if g_str in ["매출", "수금", "잔액"]:
-                                gubun = g_str
-                            elif g_str not in ["", "nan"]:
-                                gubun = "이월"
-                            else:
-                                continue
-
-                            if current_client:
-                                row_data = {
-                                    "거래처": current_client,
-                                    "구분": gubun,
-                                }
-                                for col_idx, m_name in months_map.items():
-                                    if col_idx < df_raw.shape[1]:
-                                        val_str = str(
-                                            df_raw.iloc[idx, col_idx]
-                                        ).replace(",", "")
-                                        try:
-                                            row_data[m_name] = float(val_str)
-                                        except:
-                                            row_data[m_name] = 0.0
-                                    else:
+                        if (
+                            pd.notna(g_val)
+                            and str(g_val).strip() in ["이월", "매출", "수금", "잔액"]
+                            and current_client
+                        ):
+                            row_data = {
+                                "거래처": current_client,
+                                "구분": str(g_val).strip(),
+                            }
+                            for col_idx, m_name in months_map.items():
+                                if col_idx < df_raw.shape[1]:
+                                    val_str = str(
+                                        df_raw.iloc[idx, col_idx]
+                                    ).replace(",", "")
+                                    try:
+                                        row_data[m_name] = float(val_str)
+                                    except:
                                         row_data[m_name] = 0.0
-                                parsed_rows.append(row_data)
+                                else:
+                                    row_data[m_name] = 0.0
+                            parsed_rows.append(row_data)
 
                     if parsed_rows:
                         return pd.DataFrame(parsed_rows)
@@ -532,7 +527,7 @@ target_items = [
     "AR (kg, Bulk)",
 ]
 
-if not full_df.empty or not debt_df.empty:
+if not full_df.empty:
     filter_container = st.container()
     with filter_container:
         fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
@@ -548,14 +543,9 @@ if not full_df.empty or not debt_df.empty:
         if pd.isna(end_dt):
             end_dt = pd.Timestamp("2099-12-31")
 
-        df_base = (
-            full_df[
-                (full_df["매출일_dt"] >= start_dt)
-                & (full_df["매출일_dt"] <= end_dt)
-            ].copy()
-            if not full_df.empty
-            else pd.DataFrame()
-        )
+        df_base = full_df[
+            (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
+        ].copy()
 
         selected_staff = fc3.multiselect(
             "👤 담당자",
@@ -563,14 +553,14 @@ if not full_df.empty or not debt_df.empty:
         )
         df_staff_filtered = (
             df_base[df_base["담당자"].isin(selected_staff)]
-            if selected_staff and not df_base.empty
+            if selected_staff
             else df_base.copy()
         )
 
         all_clients = (
             sorted(df_staff_filtered["거래처"].unique())
             if not df_staff_filtered.empty
-            else (sorted(debt_df["거래처"].unique()) if not debt_df.empty else [])
+            else []
         )
 
         selected_client_list = fc4.multiselect(
@@ -585,7 +575,7 @@ if not full_df.empty or not debt_df.empty:
 
         df_client_filtered = (
             df_staff_filtered[df_staff_filtered["거래처"] == selected_client]
-            if selected_client != "전체 거래처" and not df_staff_filtered.empty
+            if selected_client != "전체 거래처"
             else df_staff_filtered.copy()
         )
 
@@ -598,7 +588,7 @@ if not full_df.empty or not debt_df.empty:
 
     df_f = (
         df_client_filtered[df_client_filtered["품목명"].isin(selected_item)]
-        if selected_item and not df_client_filtered.empty
+        if selected_item
         else df_client_filtered.copy()
     )
 
@@ -771,20 +761,16 @@ if not full_df.empty or not debt_df.empty:
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("📥 엑셀 내보내기")
-    if not df_f.empty or not debt_df.empty:
-        sheets_dict = {}
-        if not df_f.empty:
-            sheets_dict.update(
-                {
-                    "연도별_월매출(만원)": (pivot_m, True),
-                    "거래처별_월별매출(만원)": (client_pivot, True),
-                    "품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
-                    "품목별_출고량": (qty_p, True),
-                    "품목별_적용단가": (unit_price_p, True),
-                    "담당자별_매출(만원)": (staff_pivot, True),
-                    "상세거래내역": (df_detail, False),
-                }
-            )
+    if not df_f.empty:
+        sheets_dict = {
+            "연도별_월매출(만원)": (pivot_m, True),
+            "거래처별_월별매출(만원)": (client_pivot, True),
+            "품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
+            "품목별_출고량": (qty_p, True),
+            "품목별_적용단가": (unit_price_p, True),
+            "담당자별_매출(만원)": (staff_pivot, True),
+            "상세거래내역": (df_detail, False),
+        }
         if not debt_df.empty:
             sheets_dict["채권관리_현황"] = (debt_df, False)
 
@@ -1003,11 +989,9 @@ if not full_df.empty or not debt_df.empty:
                 unsafe_allow_html=True,
             )
 
-            client_all_data = (
-                full_df[full_df["거래처"] == selected_client].copy()
-                if not full_df.empty
-                else pd.DataFrame()
-            )
+            client_all_data = full_df[
+                full_df["거래처"] == selected_client
+            ].copy()
 
             st.markdown(
                 f'<div class="sub-header">📦 [{selected_client}] 전체 품목별 월별 출고량 현황 (YY년 MM월 & 연간 총합)</div>',
@@ -1169,23 +1153,16 @@ if not full_df.empty or not debt_df.empty:
             st.info("상세 내역이 없습니다.")
 
     # ------------------------------------
-    # TAB 5: 채권 관리 (이월/매출/수금/잔액 구분)
+    # TAB 5: 채권 관리 (신규 추가)
     # ------------------------------------
     with tab5:
         st.markdown(
-            '<div class="sub-header">📌 업체별 채권 관리 현황 (이월 / 매출 / 수금 / 잔액)</div>',
+            '<div class="sub-header">📌 거래처별 채권 관리 현황 (이월 / 매출 / 수금 / 잔액)</div>',
             unsafe_allow_html=True,
         )
         if not debt_df.empty:
-            # 거래처 필터 적용 (상단 거래처 선택과 연동)
-            filtered_debt_df = debt_df.copy()
-            if selected_client != "전체 거래처":
-                filtered_debt_df = filtered_debt_df[
-                    filtered_debt_df["거래처"] == selected_client
-                ]
-
             st.dataframe(
-                filtered_debt_df.style.format(
+                debt_df.style.format(
                     {
                         "1월": "{:,.0f}",
                         "2월": "{:,.0f}",
@@ -1198,7 +1175,7 @@ if not full_df.empty or not debt_df.empty:
                     na_rep="0",
                 ),
                 use_container_width=True,
-                height=550,
+                height=500,
             )
         else:
             st.info(
