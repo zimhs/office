@@ -1077,27 +1077,14 @@ if not full_df.empty:
             unsafe_allow_html=True,
         )
 
-        unique_clients_list = (
-            sorted(full_df["거래처"].unique())
-            if not full_df.empty and "거래처" in full_df.columns
-            else []
-        )
+        # 상단 필터에서 선택된 거래처를 연동 (전체 거래처일 경우 안내 메시지 표시)
+        target_client_analysis = selected_client
 
-        if unique_clients_list:
-            c_col1, c_col2, c_col3 = st.columns([2, 1, 1])
-            with c_col1:
-                default_idx = (
-                    unique_clients_list.index(selected_client)
-                    if selected_client in unique_clients_list
-                    else 0
-                )
-                target_client_analysis = st.selectbox(
-                    "🔍 분석할 거래처 선택",
-                    unique_clients_list,
-                    index=default_idx,
-                    key="tab2_client_selectbox",
-                )
-
+        if target_client_analysis == "전체 거래처":
+            st.info(
+                "💡 상단 필터(🏢 거래처)에서 특정 거래처를 선택하시면 해당 거래처의 상세 메모, 지도, 품목 비중 및 히스토리를 확인하실 수 있습니다."
+            )
+        else:
             client_address = addr_dict.get(
                 target_client_analysis, "주소록 정보 없음"
             )
@@ -1108,10 +1095,8 @@ if not full_df.empty:
                 "border: 1px solid #E2E8F0; line-height: 22px; text-decoration: none;"
             )
 
-            with c_col2:
-                st.markdown(
-                    "<div style='height: 28px;'></div>", unsafe_allow_html=True
-                )
+            c_col1, c_col2 = st.columns([1, 1])
+            with c_col1:
                 if st.button(
                     "📝 macOS 메모 앱 연동",
                     use_container_width=True,
@@ -1127,10 +1112,7 @@ if not full_df.empty:
                             f"[안내] macOS 환경이 아니거나 메모 앱을 실행할 수 없습니다."
                         )
 
-            with c_col3:
-                st.markdown(
-                    "<div style='height: 28px;'></div>", unsafe_allow_html=True
-                )
+            with c_col2:
                 encoded_addr = urllib.parse.quote(
                     f"{target_client_analysis} {client_address if client_address != '주소록 정보 없음' else ''}"
                 )
@@ -1248,8 +1230,6 @@ if not full_df.empty:
                 st.warning(
                     f"선택하신 '{target_client_analysis}' 거래처에 대한 매출 데이터가 없습니다."
                 )
-        else:
-            st.info("등록된 거래처 데이터가 없습니다.")
 
         st.markdown("---")
         st.markdown(
