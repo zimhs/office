@@ -536,48 +536,53 @@ if not full_df.empty:
         if "월" not in df_f.columns:
             df_f["월"] = df_f["매출일_dt"].dt.strftime("%m월")
         existing_years = sorted(df_f["연도"].unique())
-        sorted_cols = [
-            (y, m)
-            for y in existing_years
-            for m in [f"{i:02d}월" for i in range(1, 13)]
-        ]
     else:
         existing_years = []
-        sorted_cols = []
 
     all_months = [f"{i:02d}월" for i in range(1, 13)]
+
+    # 공통: 연도월 포맷 정렬키 생성 ("24년 01월")
+    if not df_f.empty:
+        df_f["연도월_정렬"] = (
+            df_f["연도"].astype(str).str[2:] + "년 " + df_f["월"].astype(str)
+        )
+    if not full_df.empty:
+        if "연도" not in full_df.columns:
+            full_df["연도"] = full_df["매출일_dt"].dt.year.astype(str)
+        if "월" not in full_df.columns:
+            full_df["월"] = full_df["매출일_dt"].dt.strftime("%m월")
+        full_df["연도월_정렬"] = (
+            full_df["연도"].astype(str).str[2:] + "년 " + full_df["월"].astype(str)
+        )
+
+    # 요청 사항: 연도 순서를 최신 연도(26년)가 먼저 오도록 역순 정렬
+    raw_years = (
+        sorted(full_df["연도"].unique())
+        if not full_df.empty and "연도" in full_df.columns
+        else (sorted(df_f["연도"].unique()) if not df_f.empty else ["2026"])
+    )
+    years = sorted(raw_years, reverse=True)
+    
+    # 'YY년 MM월' 형태의 순서 리스트 생성 (최신 연도가 앞으로 오도록)
+    desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
 
     # 1. 연도별 월 매출 (전체 데이터 기반 요약용)
     pivot_m = pd.DataFrame()
     if not full_df.empty:
-        full_df_temp = full_df.copy()
-        if "연도" not in full_df_temp.columns:
-            full_df_temp["연도"] = full_df_temp["매출일_dt"].dt.year.astype(str)
-        if "월" not in full_df_temp.columns:
-            full_df_temp["월"] = full_df_temp["매출일_dt"].dt.strftime("%m월")
-
         pivot_m = (
-            full_df_temp.pivot_table(
+            full_df.pivot_table(
                 index="연도", columns="월", values="매출액", aggfunc="sum"
             ).fillna(0)
             * 1.1
             / 10000
         )
         pivot_m = pivot_m.reindex(columns=all_months, fill_value=0)
+        # 연도 행도 최신순 정렬
+        pivot_m = pivot_m.reindex(sorted(pivot_m.index, reverse=True))
 
-    # 2. 거래처별 월별 매출
+    # 2. 거래처별 월별 매출 (연도월 형식)
     client_pivot = pd.DataFrame()
-    years = (
-        sorted(full_df["연도"].unique())
-        if not full_df.empty and "연도" in full_df.columns
-        else (sorted(df_f["연도"].unique()) if not df_f.empty else ["2026"])
-    )
     if not df_f.empty:
-        df_f["연도월_정렬"] = (
-            df_f["연도"].astype(str).str[2:] + "년 " + df_f["월"].astype(str)
-        )
-        desired_order = [f"{y[2:]}년 {m}" for m in all_months for y in years]
-
         client_pivot_raw = (
             df_f.pivot_table(
                 index="거래처",
@@ -594,23 +599,22 @@ if not full_df.empty:
             columns=actual_cols, fill_value=0
         )
 
-    # 3. 품목 및 단가 분석용 데이터
+    # 3. 품목 및 단가 분석용 데이터 ('YY년 MM월' 컬럼 및 연간총합 컬럼 구성)
     sales_p = pd.DataFrame()
     qty_p = pd.DataFrame()
     unit_price_p = pd.DataFrame()
-    valid_cols = [c for c in sorted_cols if not df_f.empty]
 
     if not df_f.empty:
         sales_raw_p = df_f.pivot_table(
             index="품목명",
-            columns=["연도", "월"],
+            columns="연도월_정렬",
             values="매출액",
             aggfunc="sum",
         ).fillna(0)
 
         qty_raw_p = df_f.pivot_table(
             index="품목명",
-            columns=["연도", "월"],
+            columns="연도월_정렬",
             values="출고량",
             aggfunc="sum",
         ).fillna(0)
@@ -618,63 +622,72 @@ if not full_df.empty:
         sales_expanded_data = {}
         qty_expanded_data = {}
 
-        for yr in existing_years:
+        for yr in years:
+            yr_short = yr[2:]
+            yr_sales_sum = 0
+            yr_qty_sum = 0
             for m in all_months:
-                col_key = (yr, m)
-                sales_expanded_data[col_key] = (
-                    sales_raw_p[col_key] if col_key in sales_raw_p.columns else 0
-                )
-                qty_expanded_data[col_key] = (
-                    qty_raw_p[col_key] if col_key in qty_raw_p.columns else 0
-                )
-
-            yr_sales_sum = sum(
-                sales_raw_p[(yr, m)]
-                for m in all_months
-                if (yr, m) in sales_raw_p.columns
-            )
-            sales_expanded_data[(yr, "연간총합")] = yr_sales_sum
-
-            yr_qty_sum = sum(
-                qty_raw_p[(yr, m)]
-                for m in all_months
-                if (yr, m) in qty_raw_p.columns
-            )
-            qty_expanded_data[(yr, "연간총합")] = yr_qty_sum
+                col_key = f"{yr_short}년 {m}"
+                s_val = sales_raw_p[col_key] if col_key in sales_raw_p.columns else 0
+                q_val = qty_raw_p[col_key] if col_key in qty_raw_p.columns else 0
+                
+                sales_expanded_data[col_key] = s_val
+                qty_expanded_data[col_key] = q_val
+                
+                yr_sales_sum = yr_sales_sum + s_val
+                yr_qty_sum = yr_qty_sum + q_val
+            
+            sales_expanded_data[f"{yr_short}년 연간총합"] = yr_sales_sum
+            qty_expanded_data[f"{yr_short}년 연간총합"] = yr_qty_sum
 
         sales_p = pd.DataFrame(sales_expanded_data, index=sales_raw_p.index)
         qty_p = pd.DataFrame(qty_expanded_data, index=qty_raw_p.index)
 
-        # 🟢 단가 데이터프레임 구성 (멀티인덱스 컬럼을 평탄화하여 0 또는 빈값에 대한 스타일 오류 원천 차단)
+        # 요청 사항: 당월(가장 최신 월 또는 현재 월 데이터 기준) 출고량이 많은 품목이 위에 오도록 정렬
+        # 1순위로 현재 연도의 가장 최신 월 컬럼을 찾고, 없으면 전체 컬럼 중 가장 마지막 컬럼을 기준으로 정렬
+        latest_col = None
+        for yr in years:
+            for m in reversed(all_months):
+                chk_c = f"{yr[2:]}년 {m}"
+                if chk_c in qty_p.columns and qty_p[chk_c].sum() > 0:
+                    latest_col = chk_c
+                    break
+            if latest_col:
+                break
+        if not latest_col and len(qty_p.columns) > 0:
+            latest_col = qty_p.columns[0]
+
+        if latest_col and latest_col in qty_p.columns:
+            qty_p = qty_p.sort_values(by=latest_col, ascending=False)
+            sales_p = sales_p.reindex(qty_p.index)
+
         raw_up = df_f[df_f["단가"] > 0].pivot_table(
             index="품목명",
-            columns=["연도", "월"],
+            columns="연도월_정렬",
             values="단가",
             aggfunc="first",
         )
         if not raw_up.empty:
-            if isinstance(raw_up.columns, pd.MultiIndex):
-                raw_up.columns = [
-                    f"{y} {m}" for y, m in raw_up.columns
-                ]
             unit_price_p = raw_up.fillna(0)
+            if latest_col in unit_price_p.columns:
+                unit_price_p = unit_price_p.sort_values(by=latest_col, ascending=False)
         else:
             unit_price_p = pd.DataFrame()
 
     # 4. 담당자별 매출
     staff_pivot = pd.DataFrame()
     if not df_f.empty:
-        staff_pivot = (
+        staff_raw = (
             df_f.pivot_table(
                 index="담당자",
-                columns=["연도", "월"],
+                columns="연도월_정렬",
                 values="매출액",
                 aggfunc="sum",
             ).fillna(0)
             / 10000
         )
-        if valid_cols and not staff_pivot.empty:
-            staff_pivot = staff_pivot.reindex(columns=valid_cols, fill_value=0)
+        staff_cols = [c for c in desired_order if c in staff_raw.columns]
+        staff_pivot = staff_raw.reindex(columns=staff_cols, fill_value=0)
 
     # 5. 상세 거래 내역
     df_detail = pd.DataFrame()
@@ -740,95 +753,8 @@ if not full_df.empty:
     # TAB 1: 영업 종합 요약
     # ------------------------------------
     with tab1:
-        all_df_clean = full_df.copy()
-        if not all_df_clean.empty and "매출일_dt" in all_df_clean.columns:
-            all_df_clean["연도"] = all_df_clean["매출일_dt"].dt.year.astype(str)
-            all_df_clean["월숫자"] = all_df_clean["매출일_dt"].dt.month
-            max_yr = all_df_clean["연도"].max()
-            df_max_yr = all_df_clean[all_df_clean["연도"] == max_yr]
-            max_m = (
-                df_max_yr["월숫자"].max() if not df_max_yr.empty else 1
-            )
-            prev_m = max_m - 1 if max_m > 1 else 12
-            prev_m_yr = max_yr if max_m > 1 else str(int(max_yr) - 1)
-            prev_yr = str(int(max_yr) - 1)
-
-            cur_sales = (
-                df_max_yr[df_max_yr["월숫자"] == max_m]["매출액"].sum() * 1.1
-            )
-            prev_month_sales = (
-                all_df_clean[
-                    (all_df_clean["연도"] == prev_m_yr)
-                    & (all_df_clean["월숫자"] == prev_m)
-                ]["매출액"].sum()
-                * 1.1
-            )
-            prev_year_sales = (
-                all_df_clean[
-                    (all_df_clean["연도"] == prev_yr)
-                    & (all_df_clean["월숫자"] == max_m)
-                ]["매출액"].sum()
-                * 1.1
-            )
-
-            mom_diff = (
-                ((cur_sales - prev_month_sales) / prev_month_sales * 100)
-                if prev_month_sales > 0
-                else 0
-            )
-            yoy_diff = (
-                ((cur_sales - prev_year_sales) / prev_year_sales * 100)
-                if prev_year_sales > 0
-                else 0
-            )
-
-            cur_qty = df_max_yr[df_max_yr["월숫자"] == max_m]["출고량"].sum()
-            prev_month_qty = all_df_clean[
-                (all_df_clean["연도"] == prev_m_yr)
-                & (all_df_clean["월숫자"] == prev_m)
-            ]["출고량"].sum()
-            qty_mom_diff = (
-                ((cur_qty - prev_month_qty) / prev_month_qty * 100)
-                if prev_month_qty > 0
-                else 0
-            )
-        else:
-            max_yr, max_m, cur_sales, mom_diff, yoy_diff, cur_qty, qty_mom_diff = (
-                "2026",
-                12,
-                0,
-                0,
-                0,
-                0,
-                0,
-            )
-
         st.markdown(
-            f'<div class="sub-header">📊 최근 전체 실적 요약 지표 ({max_yr}년 {max_m}월 기준)</div>',
-            unsafe_allow_html=True,
-        )
-        um1, um2, um3, um4 = st.columns(4)
-        um1.markdown(
-            f"""<div class="metric-box"><div class="metric-label">💰 당월 매출액 (VAT포함)</div><div class="metric-value">{cur_sales:,.0f} <span style="font-size: 13px; color: #64748B;">원</span></div></div>""",
-            unsafe_allow_html=True,
-        )
-        um2.markdown(
-            f"""<div class="metric-box"><div class="metric-label">📈 전월 대비 매출증감</div><div class="metric-value" style="color: {'#EF4444' if mom_diff < 0 else '#10B981'};">{mom_diff:+.1f}%</div></div>""",
-            unsafe_allow_html=True,
-        )
-        um3.markdown(
-            f"""<div class="metric-box"><div class="metric-label">📊 전년 동월 대비 매출증감</div><div class="metric-value" style="color: {'#EF4444' if yoy_diff < 0 else '#10B981'};">{yoy_diff:+.1f}%</div></div>""",
-            unsafe_allow_html=True,
-        )
-        um4.markdown(
-            f"""<div class="metric-box"><div class="metric-label">📦 당월 출고량 / 전월비</div><div class="metric-value">{cur_qty:,.0f} <span style="font-size: 13px; color: #64748B;">수량</span> <span style="font-size: 14px; color: {'#EF4444' if qty_mom_diff < 0 else '#10B981'};">({qty_mom_diff:+.1f}%)</span></div></div>""",
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        st.markdown(
-            '<div class="sub-header">📈 전체 월별 매출 추이 및 연도별 비교 (만 원 단위)</div>',
+            '<div class="sub-header">📈 전체 월별 매출 추이 (만 원 단위)</div>',
             unsafe_allow_html=True,
         )
         col_table1, col_chart1 = st.columns([1, 1])
@@ -848,7 +774,7 @@ if not full_df.empty:
                 st.info("데이터 없음")
 
         with col_chart1:
-            st.markdown("**📊 연도 동월 비교 그래프 (VAT 포함)**")
+            st.markdown("**📊 연도별 월 매출 비교 그래프 (VAT 포함)**")
             if not full_df.empty:
                 chart_m = (
                     full_df.pivot_table(
@@ -861,6 +787,9 @@ if not full_df.empty:
                     / 10000
                 )
                 chart_m = chart_m.reindex(all_months, fill_value=0)
+                # 차트도 최신 연도가 먼저 오도록 컬럼 정렬
+                chart_cols_sorted = sorted(chart_m.columns, reverse=True)
+                chart_m = chart_m[chart_cols_sorted]
                 st.bar_chart(chart_m, use_container_width=True, height=360)
             else:
                 st.info("표시할 그래프 데이터가 없습니다.")
@@ -868,7 +797,7 @@ if not full_df.empty:
         st.markdown("---")
 
         st.markdown(
-            '<div class="sub-header">🧪 주요 품목별 매출액 및 출고량 상세 분석 (연도 × 월)</div>',
+            '<div class="sub-header">🧪 주요 품목별 매출액 및 출고량 상세 분석 (연도별 월별 + 연간 총합)</div>',
             unsafe_allow_html=True,
         )
 
@@ -896,208 +825,193 @@ if not full_df.empty:
 
                 if not df_sub_item.empty:
                     if "매출액" in selected_metric_type:
-                        item_pivot_table = (
-                            df_sub_item.pivot_table(
-                                index="연도",
-                                columns="월",
-                                values="매출액",
-                                aggfunc="sum",
-                            ).fillna(0)
-                            * 1.1
-                            / 10000
-                        )
-                        item_chart_data = (
-                            df_sub_item.pivot_table(
-                                index="월",
-                                columns="연도",
-                                values="매출액",
-                                aggfunc="sum",
-                            ).fillna(0)
-                            * 1.1
-                            / 10000
-                        )
+                        item_raw_p = df_sub_item.pivot_table(
+                            index="품목명",
+                            columns="연도월_정렬",
+                            values="매출액",
+                            aggfunc="sum",
+                        ).fillna(0) * 1.1 / 10000
                     else:
-                        item_pivot_table = (
-                            df_sub_item.pivot_table(
-                                index="연도",
-                                columns="월",
-                                values="출고량",
-                                aggfunc="sum",
-                            ).fillna(0)
-                            / 1000
-                        )
-                        item_chart_data = (
-                            df_sub_item.pivot_table(
-                                index="월",
-                                columns="연도",
-                                values="출고량",
-                                aggfunc="sum",
-                            ).fillna(0)
-                            / 1000
-                        )
+                        item_raw_p = df_sub_item.pivot_table(
+                            index="품목명",
+                            columns="연도월_정렬",
+                            values="출고량",
+                            aggfunc="sum",
+                        ).fillna(0) / 1000
 
-                    item_pivot_table = item_pivot_table.reindex(
-                        columns=all_months, fill_value=0
-                    )
-                    item_chart_data = item_chart_data.reindex(
-                        all_months, fill_value=0
-                    )
+                    major_expanded = {}
+                    for yr in years:
+                        yr_s = yr[2:]
+                        yr_tot = 0
+                        for m in all_months:
+                            ck = f"{yr_s}년 {m}"
+                            val = item_raw_p.loc[selected_analysis_item, ck] if (not item_raw_p.empty and selected_analysis_item in item_raw_p.index and ck in item_raw_p.columns) else 0
+                            major_expanded[ck] = val
+                            yr_tot = yr_tot + val
+                        major_expanded[f"{yr_s}년 연간총합"] = yr_tot
 
-                    col_itbl, col_ichart = st.columns([1, 1])
-                    with col_itbl:
-                        st.markdown(f"**📋 [{selected_analysis_item}] 월별 데이터표**")
-                        styled_item_tbl = item_pivot_table.style.format(
-                            "{:,.1f}"
-                        ).background_gradient(cmap="Purples", axis=None)
-                        st.dataframe(
-                            styled_item_tbl,
-                            use_container_width=True,
-                            height=320,
-                        )
-                    with col_ichart:
+                    major_display_df = pd.DataFrame([major_expanded])
+                    sum_cols = [c for c in major_display_df.columns if "연간총합" in c]
+
+                    col_t2, col_c2 = st.columns([1, 1])
+                    with col_t2:
                         st.markdown(
-                            f"**📊 [{selected_analysis_item}] 연도별 월 비교 그래프**"
+                            f"**📋 [{selected_analysis_item}] 연도별 월별 데이터 및 합계**"
                         )
+                        st.dataframe(
+                            major_display_df.style.format("{:,.0f}").background_gradient(
+                                cmap="Greens", subset=sum_cols, axis=None
+                            ),
+                            use_container_width=True,
+                            height=200,
+                        )
+                    with col_c2:
+                        st.markdown(
+                            f"**📊 [{selected_analysis_item}] 월별 추이 비교 그래프**"
+                        )
+                        chart_plot_data = {m: [major_expanded.get(f"{yr[2:]}년 {m}", 0) for yr in years] for m in all_months}
+                        chart_plot_df = pd.DataFrame(chart_plot_data, index=[f"{yr[2:]}년" for yr in years]).T
                         st.bar_chart(
-                            item_chart_data, use_container_width=True, height=320
+                            chart_plot_df, use_container_width=True, height=280
                         )
 
     # ------------------------------------
     # TAB 2: 거래처 분석
     # ------------------------------------
     with tab2:
+        if selected_client != "전체 거래처":
+            client_address = addr_dict.get(
+                selected_client,
+                "등록된 주소가 없습니다. (주소록 CSV를 확인해주세요)",
+            )
+            kakaomap_url = f"https://map.kakao.com/?q={selected_client}"
+            memo_search_url = f"notes://search?query={selected_client}"
+
+            st.markdown(
+                f"""
+                <div style="background: #EFF6FF; border: 1px solid #BFDBFE; padding: 14px 18px; border-radius: 8px; margin-bottom: 15px;">
+                    <span style="font-weight: 700; color: #1E3A8A; font-size: 15px;">📍 [{selected_client}] 연동 정보</span><br>
+                    <span style="color: #475569; font-size: 13px;"><b>공식 주소:</b> {client_address}</span><br>
+                    <div style="margin-top: 10px; display: flex; gap: 10px;">
+                        <a href="{kakaomap_url}" target="_blank" style="background: #FEE500; color: #191919; padding: 6px 12px; border-radius: 4px; text-decoration: none; font-size: 13px; font-weight: 600;">🗺️ 카카오맵에서 위치 보기</a>
+                        <a href="{memo_search_url}" style="background: #2563EB; color: #FFFFFF; padding: 6px 12px; border-radius: 4px; text-decoration: none; font-size: 13px; font-weight: 600;">📝 메모 앱에서 [{selected_client}] 폴더 열기</a>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            client_all_data = full_df[full_df["거래처"] == selected_client].copy()
+            
+            # 선택한 거래처의 전체 품목별 월별 출고량 표 ('YY년 MM월' + 연간 총합 포함)
+            st.markdown(
+                f'<div class="sub-header">📦 [{selected_client}] 전체 품목별 월별 출고량 현황 (YY년 MM월 & 연간 총합)</div>',
+                unsafe_allow_html=True,
+            )
+            if not client_all_data.empty:
+                c_qty_raw = client_all_data.pivot_table(
+                    index="품목명",
+                    columns="연도월_정렬",
+                    values="출고량",
+                    aggfunc="sum"
+                ).fillna(0)
+
+                c_expanded_dict = {}
+                for idx_item in c_qty_raw.index:
+                    row_data = {}
+                    for yr in years:
+                        yr_s = yr[2:]
+                        yr_tot = 0
+                        for m in all_months:
+                            ck = f"{yr_s}년 {m}"
+                            val = c_qty_raw.loc[idx_item, ck] if ck in c_qty_raw.columns else 0
+                            row_data[ck] = val
+                            yr_tot = yr_tot + val
+                        row_data[f"{yr_s}년 연간총합"] = yr_tot
+                    c_expanded_dict[idx_item] = row_data
+
+                c_qty_display = pd.DataFrame.from_dict(c_expanded_dict, orient="index")
+                
+                # 거래처 품목별 표도 당월 출고량 기준 내림차순 정렬 및 연간총합 색상 적용
+                if latest_col and latest_col in c_qty_display.columns:
+                    c_qty_display = c_qty_display.sort_values(by=latest_col, ascending=False)
+                
+                c_sum_cols = [c for c in c_qty_display.columns if "연간총합" in c]
+
+                st.dataframe(
+                    c_qty_display.style.format("{:,.0f}").background_gradient(cmap="Purples", subset=c_sum_cols, axis=None),
+                    use_container_width=True,
+                    height=300,
+                )
+            else:
+                st.info("해당 거래처의 출고량 데이터가 없습니다.")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+        else:
+            st.info("💡 상단 [거래처] 검색창에서 특정 거래처를 선택하시면 해당 거래처의 상세 주소 및 품목별 월별 출고량 표가 표시됩니다.")
+
         st.markdown(
-            '<div class="sub-header">🏢 거래처별 월별 매출 현황 (만 원 단위, VAT 포함)</div>',
+            '<div class="sub-header">🏢 거래처별 월별 매출 비교 분석 (YY년 MM월, 만 원 단위, VAT 포함)</div>',
             unsafe_allow_html=True,
         )
+
         if not client_pivot.empty:
-            client_display = client_pivot * 1.1
-            styled_client = client_display.style.format(
-                "{:,.0f}"
-            ).background_gradient(cmap="Blues", axis=None)
-            st.dataframe(styled_client, use_container_width=True, height=450)
+            st.dataframe(
+                client_pivot.style.format("{:,.0f}").background_gradient(
+                    cmap="Blues", axis=None
+                ),
+                use_container_width=True,
+                height=450,
+            )
         else:
-            st.info("조건에 해당하는 거래처 데이터가 없습니다.")
+            st.info("조건에 맞는 거래처 데이터가 없습니다.")
 
     # ------------------------------------
     # TAB 3: 품목 및 단가 분석
     # ------------------------------------
     with tab3:
         st.markdown(
-            '<div class="sub-header">🔍 선택된 거래처의 품목별 상세 데이터 및 월별 누적 비교</div>',
+            '<div class="sub-header">📦 품목별 매출액 (VAT 포함, 만 원) 및 연간 총합</div>',
             unsafe_allow_html=True,
         )
-
-        tab3_view_mode = st.radio(
-            "조회 지표 선택",
-            ["매출액 (만 원, VAT 포함)", "출고량"],
-            horizontal=True,
-            key="tab3_metric_radio",
-        )
-
-        if not df_client_filtered.empty:
-            all_client_items = sorted(df_client_filtered["품목명"].unique())
-
-            if all_client_items:
-                selected_analysis_item = st.selectbox(
-                    "📦 상세 내역 및 그래프를 조회할 품목 선택",
-                    all_client_items,
-                    key="tab3_major_item_selector",
-                )
-
-                df_sub_item = df_client_filtered[
-                    df_client_filtered["품목명"] == selected_analysis_item
-                ]
-
-                if not df_sub_item.empty:
-                    if "매출액" in tab3_view_mode:
-                        item_pivot_table = (
-                            df_sub_item.pivot_table(
-                                index="연도",
-                                columns="월",
-                                values="매출액",
-                                aggfunc="sum",
-                            ).fillna(0)
-                            * 1.1
-                            / 10000
-                        )
-                        item_chart_data = (
-                            df_sub_item.pivot_table(
-                                index="월",
-                                columns="연도",
-                                values="매출액",
-                                aggfunc="sum",
-                            ).fillna(0)
-                            * 1.1
-                            / 10000
-                        )
-                        unit_label = "매출액 (만 원)"
-                    else:
-                        item_pivot_table = df_sub_item.pivot_table(
-                            index="연도",
-                            columns="월",
-                            values="출고량",
-                            aggfunc="sum",
-                        ).fillna(0)
-                        item_chart_data = df_sub_item.pivot_table(
-                            index="월",
-                            columns="연도",
-                            values="출고량",
-                            aggfunc="sum",
-                        ).fillna(0)
-                        unit_label = "출고량"
-
-                    item_pivot_table = item_pivot_table.reindex(
-                        columns=all_months, fill_value=0
-                    )
-                    item_chart_data = item_chart_data.reindex(
-                        all_months, fill_value=0
-                    )
-
-                    col_itbl, col_ichart = st.columns([1, 1])
-                    with col_itbl:
-                        st.markdown(
-                            f"**📋 [{selected_analysis_item}] 연도별·월별 {unit_label} 표**"
-                        )
-                        styled_item_tbl = item_pivot_table.style.format(
-                            "{:,.0f}"
-                        ).background_gradient(cmap="Blues", axis=None)
-                        st.dataframe(
-                            styled_item_tbl,
-                            use_container_width=True,
-                            height=360,
-                        )
-                    with col_ichart:
-                        st.markdown(
-                            f"**📊 [{selected_analysis_item}] 월별 연도 비교 그래프 (누적 바)**"
-                        )
-                        st.bar_chart(
-                            item_chart_data, use_container_width=True, height=360
-                        )
-            else:
-                st.info("선택된 거래처에 품목 데이터가 없습니다.")
+        if not sales_p.empty:
+            sales_display = sales_p * 1.1 / 10000
+            total_cols_s = [c for c in sales_display.columns if "연간총합" in c]
+            st.dataframe(
+                sales_display.style.format("{:,.0f}").background_gradient(
+                    cmap="Oranges", subset=total_cols_s, axis=None
+                ),
+                use_container_width=True,
+                height=300,
+            )
         else:
-            st.info("좌측 상단 필터에서 거래처를 선택해주세요.")
-
-        st.markdown("---")
+            st.info("매출액 데이터가 없습니다.")
 
         st.markdown(
-            '<div class="sub-header">🏷️ 품목별 적용 단가 추이</div>',
+            '<div class="sub-header">📦 품목별 출고량 분석 및 연간 총합 (YY년 MM월)</div>',
+            unsafe_allow_html=True,
+        )
+        if not qty_p.empty:
+            total_cols_q = [c for c in qty_p.columns if "연간총합" in c]
+            st.dataframe(
+                qty_p.style.format("{:,.0f}").background_gradient(
+                    cmap="Purples", subset=total_cols_q, axis=None
+                ),
+                use_container_width=True,
+                height=300,
+            )
+        else:
+            st.info("출고량 데이터가 없습니다.")
+
+        st.markdown(
+            '<div class="sub-header">💰 품목별 적용 단가 분석</div>',
             unsafe_allow_html=True,
         )
         if not unit_price_p.empty:
-            # 🟢 단가 데이터프레임의 0원/결측치 셀에 스타일이 잘못 적용되어 검은색 배경으로 깨지는 현상을 방지하는 커스텀 스타일 적용
-            def color_non_zero_price(val):
-                if pd.isna(val) or val == 0:
-                    return "color: #94A3B8; background-color: #F8FAFC;"
-                return "color: #0F172A; background-color: #ECFDF5; font-weight: 600;"
-
-            styled_up = unit_price_p.style.format(
-                lambda x: f"{x:,.0f}" if pd.notna(x) and x > 0 else "-"
-            ).map(color_non_zero_price)
-
             st.dataframe(
-                styled_up,
+                unit_price_p.style.format("{:,.0f}").background_gradient(
+                    cmap="YlGnBu", axis=None
+                ),
                 use_container_width=True,
                 height=300,
             )
@@ -1109,34 +1023,33 @@ if not full_df.empty:
     # ------------------------------------
     with tab4:
         st.markdown(
-            '<div class="sub-header">👤 담당자별 월 매출 현황 (만 원, VAT 포함)</div>',
+            '<div class="sub-header">👤 담당자별 월 매출 현황 (만 원 단위, VAT 포함)</div>',
             unsafe_allow_html=True,
         )
         if not staff_pivot.empty:
-            staff_display = staff_pivot * 1.1
             st.dataframe(
-                staff_display.style.format("{:,.0f}").background_gradient(
-                    cmap="PuBu", axis=None
-                ),
+                (staff_pivot * 1.1)
+                .style.format("{:,.0f}")
+                .background_gradient(cmap="Blues", axis=None),
                 use_container_width=True,
-                height=300,
+                height=320,
             )
         else:
             st.info("담당자별 데이터가 없습니다.")
 
         st.markdown(
-            '<div class="sub-header">📄 조건별 상세 거래 내역 원본</div>',
+            '<div class="sub-header">📋 상세 거래 내역 원본</div>',
             unsafe_allow_html=True,
         )
         if not df_detail.empty:
-            detail_view = df_detail.copy()
-            detail_view["매출일_dt"] = detail_view["매출일_dt"].dt.strftime(
-                "%Y-%m-%d"
+            st.dataframe(
+                df_detail.style.format(
+                    {"출고량": "{:,.0f}", "단가": "{:,.0f}", "매출액": "{:,.0f}"}
+                ),
+                use_container_width=True,
+                height=400,
             )
-            st.dataframe(detail_view, use_container_width=True, height=400)
         else:
-            st.info("상세 거래 내역이 없습니다.")
+            st.info("상세 내역이 없습니다.")
 else:
-    st.info(
-        "👈 좌측 사이드바에서 **매출 데이터(CSV)** 파일을 업로드하여 대시보드를 활성화하세요."
-    )
+    st.info("👈 사이드바에서 거래처 주소록 및 매출 데이터 파일(CSV)을 업로드해주세요.")
