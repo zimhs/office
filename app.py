@@ -492,13 +492,15 @@ def load_uploaded_files(uploaded_files):
     return result_df
 
 
-# 맥북 메모 앱 연동용 AppleScript 함수
+# 맥북 메모 앱 연동용 AppleScript 함수 ('거래처' 하위 폴더 계층 구조 적용)
 def open_macos_notes_folder(client_name):
     script = f'''
     tell application "Notes"
         activate
         try
-            set targetFolder to folder "{client_name}" of default account
+            set defaultFolder to folder "거래처" of default account
+            set targetFolder to folder "{client_name}" of defaultFolder
+            
             if (count of notes of targetFolder) > 0 then
                 show note 1 of targetFolder
             else
@@ -508,10 +510,13 @@ def open_macos_notes_folder(client_name):
         on error
             try
                 set defaultFolder to folder "거래처" of default account
-                set targetFolder to folder "{client_name}" of defaultFolder
-                show note 1 of targetFolder
+                set targetFolder to make new folder at defaultFolder with properties {{name:"{client_name}"}}
+                set newNote to make new note at targetFolder with properties {{name:"{client_name}", body:"{client_name} 관련 영업 및 특이사항 입력"}}
+                show newNote
             on error
-                set newNote to make new note with properties {{name:"{client_name}", body:"{client_name} 관련 영업 및 특이사항 입력"}}
+                set defaultFolder to make new folder at default account with properties {{name:"거래처"}}
+                set targetFolder to make new folder at defaultFolder with properties {{name:"{client_name}"}}
+                set newNote to make new note at targetFolder with properties {{name:"{client_name}", body:"{client_name} 관련 영업 및 특이사항 입력"}}
                 show newNote
             end try
         end try
@@ -658,7 +663,6 @@ if not full_df.empty:
 
     pivot_m = pd.DataFrame()
     if not full_df.empty:
-        # [수정] 첫 번째 표와 완벽히 동일한 구조(행: 월, 열: 연도)로 피벗 테이블 생성
         pivot_m = (
             full_df.pivot_table(
                 index="월", columns="연도", values="매출액", aggfunc="sum"
@@ -667,10 +671,13 @@ if not full_df.empty:
             / 10000
         )
         pivot_m = pivot_m.reindex(index=all_months, fill_value=0)
-        pivot_m = pivot_m.reindex(columns=sorted(pivot_m.columns, reverse=True), fill_value=0)
+        pivot_m = pivot_m.reindex(
+            columns=sorted(pivot_m.columns, reverse=True), fill_value=0
+        )
 
     client_pivot = pd.DataFrame()
     if not df_f.empty:
+        # 부가세(VAT) 포함 반영을 위해 * 1.1 처리 추가
         client_pivot_raw = (
             df_f.pivot_table(
                 index="거래처",
@@ -678,6 +685,7 @@ if not full_df.empty:
                 values="매출액",
                 aggfunc="sum",
             ).fillna(0)
+            * 1.1
             / 10000
         )
         actual_cols = [
@@ -720,7 +728,9 @@ if not full_df.empty:
                     if col_key in sales_raw_p.columns
                     else 0
                 )
-                q_val = qty_raw_p[col_key] if col_key in qty_raw_p.columns else 0
+                q_val = (
+                    qty_raw_p[col_key] if col_key in qty_raw_p.columns else 0
+                )
 
                 sales_expanded_data[col_key] = s_val
                 qty_expanded_data[col_key] = q_val
@@ -754,7 +764,7 @@ if not full_df.empty:
             index="품목명",
             columns="연도월_정렬",
             values="단가",
-            aggfunc="first",
+            aggfunc="median",
         )
         if not raw_up.empty:
             unit_price_p = raw_up.fillna(0)
@@ -857,7 +867,6 @@ if not full_df.empty:
                 "**📋 연도별 전체 월 매출 데이터 (VAT 포함, 만 원)**"
             )
             if not pivot_m.empty:
-                # [수정] axis=None을 주어 표 전체 셀 기준으로 그라데이션이 강하게 들어가도록 처리
                 styled_pivot_m = pivot_m.style.format(
                     "{:,.0f}"
                 ).background_gradient(cmap="Blues", axis=None)
@@ -895,9 +904,7 @@ if not full_df.empty:
         )
 
         if not full_df.empty:
-            df_major = full_df[
-                full_df["품목명"].isin(target_items)
-            ].copy()
+            df_major = full_df[full_df["품목명"].isin(target_items)].copy()
 
             if not df_major.empty:
                 selected_analysis_item = st.selectbox(
@@ -939,148 +946,140 @@ if not full_df.empty:
                             / 1000
                         )
 
-                    item_raw_p = item_raw_p.reindex(index=all_months, fill_value=0)
-                    item_raw_p = item_raw_p.reindex(columns=sorted(item_raw_p.columns, reverse=True), fill_value=0)
+                    item_raw_p = item_raw_p.reindex(
+                        index=all_months, fill_value=0
+                    )
+                    item_raw_p = item_raw_p.reindex(
+                        columns=sorted(item_raw_p.columns, reverse=True),
+                        fill_value=0,
+                    )
                     item_raw_p.loc["연간총합"] = item_raw_p.sum(axis=0)
 
-                    col_t2, col_c2 = st.columns([1, 1])
-                    with col_t2:
+                    col_t1, col_c1 = st.columns([1, 1])
+                    with col_t1:
                         st.markdown(
-                            f"**📋 [{selected_analysis_item}] 월별 연도 데이터 및 총합**"
+                            f"**📋 [{selected_analysis_item}] {selected_metric_type} 상세표**"
                         )
-                        styled_major_df_final = item_raw_p.style.format(
-                            "{:,.0f}"
+                        styled_item_p = item_raw_p.style.format(
+                            "{:,.1f}"
                         ).background_gradient(cmap="Blues", axis=None)
-                        
                         st.dataframe(
-                            styled_major_df_final,
-                            use_container_width=True,
-                            height=320,
+                            styled_item_p, use_container_width=True, height=380
                         )
 
-                    with col_c2:
+                    with col_c1:
                         st.markdown(
-                            f"**📊 [{selected_analysis_item}] 월별 연도 비교 그래프**"
+                            f"**📊 [{selected_analysis_item}] {selected_metric_type} 추이 그래프**"
                         )
-                        if not item_raw_p.empty:
-                            chart_df = item_raw_p.drop(index="연간총합", errors="ignore")
-                            st.bar_chart(
-                                chart_df, use_container_width=True, height=320
-                            )
-                        else:
-                            st.info("시각화할 데이터가 없습니다.")
+                        chart_data_src = item_raw_p.drop(
+                            index="연간총합", errors="ignore"
+                        )
+                        st.bar_chart(
+                            chart_data_src, use_container_width=True, height=380
+                        )
+                else:
+                    st.info("선택한 품목에 대한 데이터가 없습니다.")
+            else:
+                st.info(
+                    "주요 품목(CO2, N2, O2, AR) 데이터가 존재하지 않습니다."
+                )
 
     # ------------------------------------
     # TAB 2: 거래처 분석
     # ------------------------------------
     with tab2:
         if selected_client != "전체 거래처":
+            c_addr = addr_dict.get(selected_client, "주소 정보 없음")
             st.markdown(
-                f'<div class="sub-header">📍 [{selected_client}] 상세 정보 및 메모앱 연동</div>',
-                unsafe_allow_html=True,
+                f"> **🏢 선택 거래처:** `{selected_client}` &nbsp;&nbsp;|&nbsp;&nbsp; **📍 주소:** `{c_addr}`"
             )
-            addr_val = addr_dict.get(selected_client, "등록된 주소 없음")
-            
-            col_addr, col_map, col_memo_app = st.columns([2, 1, 1])
-            with col_addr:
-                st.markdown(
-                    f"""
-                    <div style="background: #FFFFFF; padding: 12px 15px; border-radius: 10px; border: 1px solid #E2E8F0; margin-bottom: 15px; font-size: 14px;">
-                        <span style="font-weight: 600; color: #2563EB;">배송지:</span> {addr_val}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            with col_map:
-                if addr_val != "등록된 주소 없음":
-                    kakao_url = f"https://map.kakao.com/?q={addr_val}"
-                    st.link_button("🗺️ 카카오맵 길찾기", kakao_url, use_container_width=True)
-                else:
-                    st.link_button("🗺️ 카카오맵 검색", f"https://map.kakao.com/?q={selected_client}", use_container_width=True)
-            
-            with col_memo_app:
-                if st.button("📓 맥북 메모앱 띄우기", use_container_width=True):
+
+            btn_col1, btn_col2 = st.columns([1, 1])
+
+            with btn_col1:
+                if st.button(
+                    f"📝 맥북 '메모' 앱 '거래처' 폴더에서 [{selected_client}] 노트 열기/생성",
+                    use_container_width=True,
+                ):
                     success = open_macos_notes_folder(selected_client)
                     if success:
-                        st.success(f"'{selected_client}' 메모 폴더/노트를 열었습니다!")
+                        st.success(
+                            f"'{selected_client}' 메모 연동이 실행되었습니다."
+                        )
                     else:
-                        st.warning("macOS 환경이 아니거나 메모 앱 제어 권한을 확인해주세요.")
+                        st.warning(
+                            "macOS 환경이 아니거나 AppleScript 실행 중 오류가 발생했습니다."
+                        )
 
-            st.markdown("---")
+            with btn_col2:
+                kakao_map_url = f"https://map.kakao.com/?q={selected_client}"
+                if c_addr != "주소 정보 없음":
+                    kakao_map_url = f"https://map.kakao.com/?q={c_addr}"
+
+                st.link_button(
+                    f"🗺️ 카카오맵에서 [{selected_client}] 위치 보기",
+                    url=kakao_map_url,
+                    use_container_width=True,
+                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
 
         st.markdown(
-            '<div class="sub-header">🏢 거래처별 월별 매출 추이 (VAT 포함, 만 원 단위)</div>',
+            '<div class="sub-header">🏢 거래처별 월별 매출액 추이 (VAT 포함, 만 원 단위)</div>',
             unsafe_allow_html=True,
         )
-        if not client_pivot.empty:
-            styled_client = client_pivot.style.format("{:,.0f}").background_gradient(
-                cmap="YlGnBu", axis=None
-            )
-            st.dataframe(styled_client, use_container_width=True, height=450)
-        else:
-            st.info("조건에 맞는 거래처 데이터가 없습니다.")
 
-        if selected_client != "전체 거래처":
-            st.markdown("---")
-            st.markdown(
-                f"**📋 [{selected_client}] 품목별/월별 상세 거래 내역**"
+        if not client_pivot.empty:
+            styled_client_p = client_pivot.style.format(
+                "{:,.0f}"
+            ).background_gradient(cmap="Blues", axis=None)
+            st.dataframe(
+                styled_client_p, use_container_width=True, height=450
             )
-            sub_client_df = df_f[df_f["거래처"] == selected_client]
-            if not sub_client_df.empty:
-                c_detail_p = (
-                    sub_client_df.pivot_table(
-                        index="품목명",
-                        columns="연도월_정렬",
-                        values="매출액",
-                        aggfunc="sum",
-                    ).fillna(0)
-                    * 1.1
-                    / 10000
-                )
-                st.dataframe(
-                    c_detail_p.style.format("{:,.0f}"), use_container_width=True
-                )
+        else:
+            st.info(
+                "조건에 해당하는 거래처 매출 데이터가 없습니다. (사이드바 또는 필터에서 거래처를 확인해주세요)"
+            )
 
     # ------------------------------------
     # TAB 3: 품목 및 단가 분석
     # ------------------------------------
     with tab3:
         st.markdown(
-            '<div class="sub-header">📦 품목별 매출액 (VAT 포함, 만 원 단위)</div>',
+            '<div class="sub-header">📦 품목별 매출액 현황 (VAT 포함, 만 원)</div>',
             unsafe_allow_html=True,
         )
         if not sales_p.empty:
+            styled_sales_p = (sales_p * 1.1 / 10000).style.format(
+                "{:,.0f}"
+            ).background_gradient(cmap="Blues", axis=None)
             st.dataframe(
-                (sales_p * 1.1 / 10000).style.format("{:,.0f}").background_gradient(
-                    cmap="Oranges", axis=None
-                ),
-                use_container_width=True,
+                styled_sales_p, use_container_width=True, height=300
             )
         else:
-            st.info("데이터가 없습니다.")
+            st.info("매출액 데이터가 없습니다.")
 
         st.markdown(
-            '<div class="sub-header">🚚 품목별 출고량 분석</div>',
+            '<div class="sub-header">📊 품목별 출고량 현황</div>',
             unsafe_allow_html=True,
         )
         if not qty_p.empty:
-            st.dataframe(
-                qty_p.style.format("{:,.0f}").background_gradient(
-                    cmap="Purples", axis=None
-                ),
-                use_container_width=True,
+            styled_qty_p = qty_p.style.format("{:,.0f}").background_gradient(
+                cmap="Blues", axis=None
             )
+            st.dataframe(styled_qty_p, use_container_width=True, height=300)
         else:
-            st.info("데이터가 없습니다.")
+            st.info("출고량 데이터가 없습니다.")
 
         st.markdown(
             '<div class="sub-header">🏷️ 품목별 적용 단가 현황</div>',
             unsafe_allow_html=True,
         )
         if not unit_price_p.empty:
-            st.dataframe(
-                unit_price_p.style.format("{:,.0f}"), use_container_width=True
-            )
+            styled_up_p = unit_price_p.style.format(
+                "{:,.0f}"
+            ).background_gradient(cmap="Blues", axis=None)
+            st.dataframe(styled_up_p, use_container_width=True, height=300)
         else:
             st.info("단가 데이터가 없습니다.")
 
@@ -1089,54 +1088,31 @@ if not full_df.empty:
     # ------------------------------------
     with tab4:
         st.markdown(
-            '<div class="sub-header">👤 담당자별 월별 매출 현황 (VAT 포함, 만 원)</div>',
+            '<div class="sub-header">👤 담당자별 월별 매출액 (만 원 단위)</div>',
             unsafe_allow_html=True,
         )
         if not staff_pivot.empty:
+            styled_staff_p = staff_pivot.style.format(
+                "{:,.0f}"
+            ).background_gradient(cmap="Blues", axis=None)
             st.dataframe(
-                (staff_pivot * 1.1).style.format("{:,.0f}").background_gradient(
-                    cmap="Greens", axis=None
-                ),
-                use_container_width=True,
+                styled_staff_p, use_container_width=True, height=350
             )
         else:
-            st.info("담당자 데이터가 없습니다.")
+            st.info("담당자별 데이터가 없습니다.")
 
-        st.markdown("---")
         st.markdown(
-            '<div class="sub-header">🔍 상세 거래 원본 내역</div>',
+            '<div class="sub-header">🔍 상세 거래 내역 원본</div>',
             unsafe_allow_html=True,
         )
         if not df_detail.empty:
             disp_detail = df_detail.copy()
-            disp_detail["매출일자"] = disp_detail["매출일_dt"].dt.strftime(
-                "%Y-%m-%d"
-            )
-            disp_detail = disp_detail.drop(columns=["매출일_dt"])
-            cols_order = [
-                "매출일자",
-                "담당자",
-                "거래처",
-                "품목명",
-                "출고량",
-                "단가",
-                "매출액",
-            ]
-            disp_detail = disp_detail[[c for c in cols_order if c in disp_detail.columns]]
-
-            st.dataframe(
-                disp_detail.style.format(
-                    {
-                        "출고량": "{:,.1f}",
-                        "단가": "{:,.0f}",
-                        "매출액": "{:,.0f}",
-                    }
-                ),
-                use_container_width=True,
-                height=400,
-            )
+            disp_detail["매출일_dt"] = disp_detail[
+                "매출일_dt"
+            ].dt.strftime("%Y-%m-%d")
+            st.dataframe(disp_detail, use_container_width=True, height=400)
         else:
-            st.info("조회된 상세 내역이 없습니다.")
+            st.info("상세 내역이 없습니다.")
 
     # ------------------------------------
     # TAB 5: 채권 관리
@@ -1147,22 +1123,13 @@ if not full_df.empty:
             unsafe_allow_html=True,
         )
         if not debt_df.empty:
-            st.dataframe(
-                debt_df.style.format(
-                    {
-                        col: "{:,.0f}"
-                        for col in debt_df.select_dtypes(
-                            include=["float64", "int64"]
-                        ).columns
-                    }
-                ),
-                use_container_width=True,
-                height=500,
-            )
+            st.dataframe(debt_df, use_container_width=True, height=500)
         else:
-            st.info("채권 데이터(채권.csv)가 업로드되지 않았거나 형식이 올바르지 않습니다.")
+            st.info(
+                "채권 데이터가 업로드되지 않았거나 형식이 올바르지 않습니다. 사이드바에서 '채권.csv' 파일을 업로드해주세요."
+            )
 
 else:
     st.info(
-        "👈 왼쪽 사이드바에서 매출 데이터 CSV 파일을 업로드하여 대시보드를 활성화하세요."
+        "👋 좌측 사이드바에서 **매출 데이터 CSV 파일들**을 업로드해주시면 대시보드가 활성화됩니다."
     )
