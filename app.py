@@ -492,7 +492,7 @@ def load_uploaded_files(uploaded_files):
     return result_df
 
 
-# 맥북 메모 앱 연동용 AppleScript 함수 ('거래처' 폴더 내 동일 이름 폴더 또는 노트 연동)
+# 맥북 메모 앱 연동용 AppleScript 함수
 def open_macos_notes_folder(client_name):
     script = f'''
     tell application "Notes"
@@ -506,7 +506,6 @@ def open_macos_notes_folder(client_name):
                 show newNote
             end if
         on error
-            -- 폴더가 없을 경우 루트 계정에서 검색 또는 생성 시도
             try
                 set defaultFolder to folder "거래처" of default account
                 set targetFolder to folder "{client_name}" of defaultFolder
@@ -948,6 +947,7 @@ if not full_df.empty:
                         st.markdown(
                             f"**📋 [{selected_analysis_item}] 월별 연도 데이터 및 총합**"
                         )
+                        # background_gradient 적용 수정 완료
                         styled_major_df = item_raw_p.style.format(
                             "{:,.0f}"
                         ).background_gradient(cmap="Blues", axis=None)
@@ -970,30 +970,16 @@ if not full_df.empty:
                             st.info("시각화할 데이터가 없습니다.")
 
     # ------------------------------------
-    # TAB 2: 거래처 분석 (맥북 메모앱 띄우기 연동)
+    # TAB 2: 거래처 분석
     # ------------------------------------
     with tab2:
-        st.markdown(
-            '<div class="sub-header">🏢 거래처별 월별 매출 추이 (VAT 포함, 만 원 단위)</div>',
-            unsafe_allow_html=True,
-        )
-        if not client_pivot.empty:
-            styled_client = client_pivot.style.format("{:,.0f}").background_gradient(
-                cmap="YlGnBu", axis=None
-            )
-            st.dataframe(styled_client, use_container_width=True, height=450)
-        else:
-            st.info("조건에 맞는 거래처 데이터가 없습니다.")
-
         if selected_client != "전체 거래처":
-            st.markdown("---")
             st.markdown(
                 f'<div class="sub-header">📍 [{selected_client}] 상세 정보 및 메모앱 연동</div>',
                 unsafe_allow_html=True,
             )
             addr_val = addr_dict.get(selected_client, "등록된 주소 없음")
             
-            # 주소 / 카카오맵 길찾기 / 맥북 메모앱 띄우기 버튼 배치
             col_addr, col_map, col_memo_app = st.columns([2, 1, 1])
             with col_addr:
                 st.markdown(
@@ -1019,6 +1005,21 @@ if not full_df.empty:
                     else:
                         st.warning("macOS 환경이 아니거나 메모 앱 제어 권한을 확인해주세요.")
 
+            st.markdown("---")
+
+        st.markdown(
+            '<div class="sub-header">🏢 거래처별 월별 매출 추이 (VAT 포함, 만 원 단위)</div>',
+            unsafe_allow_html=True,
+        )
+        if not client_pivot.empty:
+            styled_client = client_pivot.style.format("{:,.0f}").background_gradient(
+                cmap="YlGnBu", axis=None
+            )
+            st.dataframe(styled_client, use_container_width=True, height=450)
+        else:
+            st.info("조건에 맞는 거래처 데이터가 없습니다.")
+
+        if selected_client != "전체 거래처":
             st.markdown("---")
             st.markdown(
                 f"**📋 [{selected_client}] 품목별/월별 상세 거래 내역**"
