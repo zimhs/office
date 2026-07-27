@@ -658,15 +658,16 @@ if not full_df.empty:
 
     pivot_m = pd.DataFrame()
     if not full_df.empty:
+        # [수정] 첫 번째 표와 완벽히 동일한 구조(행: 월, 열: 연도)로 피벗 테이블 생성
         pivot_m = (
             full_df.pivot_table(
-                index="연도", columns="월", values="매출액", aggfunc="sum"
+                index="월", columns="연도", values="매출액", aggfunc="sum"
             ).fillna(0)
             * 1.1
             / 10000
         )
-        pivot_m = pivot_m.reindex(columns=all_months, fill_value=0)
-        pivot_m = pivot_m.reindex(sorted(pivot_m.index, reverse=True))
+        pivot_m = pivot_m.reindex(index=all_months, fill_value=0)
+        pivot_m = pivot_m.reindex(columns=sorted(pivot_m.columns, reverse=True), fill_value=0)
 
     client_pivot = pd.DataFrame()
     if not df_f.empty:
@@ -856,6 +857,7 @@ if not full_df.empty:
                 "**📋 연도별 전체 월 매출 데이터 (VAT 포함, 만 원)**"
             )
             if not pivot_m.empty:
+                # [수정] axis=None을 주어 표 전체 셀 기준으로 그라데이션이 강하게 들어가도록 처리
                 styled_pivot_m = pivot_m.style.format(
                     "{:,.0f}"
                 ).background_gradient(cmap="Blues", axis=None)
@@ -937,9 +939,8 @@ if not full_df.empty:
                             / 1000
                         )
 
-                    item_raw_p = item_raw_p.reindex(all_months, fill_value=0)
-                    item_raw_p = item_raw_p.reindex(columns=sorted(item_raw_p.columns, reverse=True)).fillna(0)
-                    
+                    item_raw_p = item_raw_p.reindex(index=all_months, fill_value=0)
+                    item_raw_p = item_raw_p.reindex(columns=sorted(item_raw_p.columns, reverse=True), fill_value=0)
                     item_raw_p.loc["연간총합"] = item_raw_p.sum(axis=0)
 
                     col_t2, col_c2 = st.columns([1, 1])
@@ -947,12 +948,12 @@ if not full_df.empty:
                         st.markdown(
                             f"**📋 [{selected_analysis_item}] 월별 연도 데이터 및 총합**"
                         )
-                        # background_gradient 적용 수정 완료
-                        styled_major_df = item_raw_p.style.format(
+                        styled_major_df_final = item_raw_p.style.format(
                             "{:,.0f}"
                         ).background_gradient(cmap="Blues", axis=None)
+                        
                         st.dataframe(
-                            styled_major_df,
+                            styled_major_df_final,
                             use_container_width=True,
                             height=320,
                         )
