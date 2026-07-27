@@ -677,7 +677,6 @@ if not full_df.empty:
 
     client_pivot = pd.DataFrame()
     if not df_f.empty:
-        # 부가세(VAT) 포함 반영을 위해 * 1.1 처리 추가
         client_pivot_raw = (
             df_f.pivot_table(
                 index="거래처",
@@ -990,8 +989,19 @@ if not full_df.empty:
     with tab2:
         if selected_client != "전체 거래처":
             c_addr = addr_dict.get(selected_client, "주소 정보 없음")
+            
+            # 주소 글자 크기를 더 크게(17px, font-weight bold 등) 수정 적용
             st.markdown(
-                f"> **🏢 선택 거래처:** `{selected_client}` &nbsp;&nbsp;|&nbsp;&nbsp; **📍 주소:** `{c_addr}`"
+                f"""
+                <div style="background-color: #FFFFFF; padding: 14px 18px; border-radius: 8px; border: 1px solid #E2E8F0; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+                    <span style="font-size: 16px; font-weight: 700; color: #1E293B;">🏢 선택 거래처:</span> 
+                    <span style="font-size: 17px; font-weight: 700; color: #2563EB;">{selected_client}</span> 
+                    &nbsp;&nbsp;|&nbsp;&nbsp; 
+                    <span style="font-size: 16px; font-weight: 700; color: #1E293B;">📍 주소:</span> 
+                    <span style="font-size: 17px; font-weight: 700; color: #059669;">{c_addr}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
             btn_col1, btn_col2 = st.columns([1, 1])
