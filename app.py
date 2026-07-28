@@ -507,7 +507,7 @@ if not full_df.empty:
         if pd.isna(start_dt): start_dt = pd.Timestamp("2000-01-01")
         if pd.isna(end_dt): end_dt = pd.Timestamp("2099-12-31")
 
-        # 기간 기본 필터링
+        # 기간 기본 필터링 데이터 (전체 데이터)
         df_base = full_df[(full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)].copy()
 
         selected_staff = fc3.multiselect("👤 담당자", sorted(df_base["담당자"].unique()) if not df_base.empty else [])
@@ -522,7 +522,7 @@ if not full_df.empty:
         available_items = sorted(df_client_filtered["품목명"].unique()) if not df_client_filtered.empty else []
         selected_item = fc5.multiselect("📦 품목명", available_items)
 
-        # Tab1/Tab2 상세 필터 데이터
+        # Tab2/상세용 필터 데이터
         df_f = df_client_filtered[df_client_filtered["품목명"].isin(selected_item)] if selected_item else df_client_filtered.copy()
 
     all_months = [f"{i:02d}월" for i in range(1, 13)]
@@ -544,10 +544,10 @@ if not full_df.empty:
         pvt = pvt.reindex(columns=all_yrs, fill_value=0)
         return pvt
 
-    # Tab 1 데이터 (필터 반영)
-    pivot_m = get_yearly_monthly_pivot(df_f)
+    # Tab 1 데이터 (거래처 선택에 무관하게 항상 전체 df_base 기준)
+    pivot_m_total = get_yearly_monthly_pivot(df_base)
 
-    # Tab 2 데이터 (거래처 분석)
+    # Tab 2 데이터 (거래처 분석 전용)
     client_item_qty_pivot = pd.DataFrame()
     if not df_client_filtered.empty:
         raw_ci_qty = df_client_filtered.pivot_table(
@@ -564,7 +564,7 @@ if not full_df.empty:
 
         client_item_qty_pivot = pd.DataFrame(ci_expanded_data, index=raw_ci_qty.index)
 
-    # Tab 3 데이터 (품목 및 단가 분석 - 원본 df_base 기반 구동)
+    # Tab 3 데이터 (품목 및 단가 분석 - 전체 df_base 기반)
     sales_p = pd.DataFrame()
     qty_p = pd.DataFrame()
     unit_price_p = pd.DataFrame()
@@ -619,7 +619,7 @@ if not full_df.empty:
             if latest_col in unit_price_p.columns:
                 unit_price_p = unit_price_p.sort_values(by=latest_col, ascending=False)
 
-    # Tab 4 데이터 (담당자 실적 및 상세내역 - df_base 기반)
+    # Tab 4 데이터 (담당자 실적 - 전체 df_base 기반)
     staff_pivot = pd.DataFrame()
     if not target_tab3_df.empty:
         staff_raw = (target_tab3_df.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) / 10000)
@@ -629,11 +629,10 @@ if not full_df.empty:
     detail_cols = ["매출일_dt", "담당자", "거래처", "품목명", "출고량", "단가", "매출액"]
     df_detail = df_f[detail_cols].copy() if not df_f.empty else target_tab3_df[detail_cols].copy()
 
-    # 지표 연산
-    df_total_monthly = full_df.groupby(full_df["매출일_dt"].dt.to_period("M"))["매출액"].sum()
-    latest_period_total = df_total_monthly.index.max() if not df_total_monthly.empty else None
-    
-    if latest_period_total:
+    # --- 전체 영업 지표 계산 (df_base 기준) ---
+    if not df_base.empty:
+        df_total_monthly = df_base.groupby(df_base["매출일_dt"].dt.to_period("M"))["매출액"].sum()
+        latest_period_total = df_total_monthly.index.max()
         cur_month_sales_total = df_total_monthly.loc[latest_period_total]
         prev_period_total = latest_period_total - 1
         prev_month_sales_total = df_total_monthly.get(prev_period_total, 0.0)
@@ -646,6 +645,7 @@ if not full_df.empty:
         cur_month_sales_total = prev_month_sales_total = mom_rate_total = avg_monthly_sales_total = avg_rate_total = 0.0
         latest_month_str_total = "-"
 
+    # --- 선택 거래처 지표 계산 (Tab 2 전용) ---
     if not df_client_filtered.empty:
         df_client_monthly = df_client_filtered.groupby(df_client_filtered["매출일_dt"].dt.to_period("M"))["매출액"].sum()
         latest_period_client = df_client_monthly.index.max()
@@ -665,7 +665,7 @@ if not full_df.empty:
     st.sidebar.markdown("---")
     st.sidebar.subheader("📥 엑셀 내보내기")
     sheets_dict = {
-        "연도별_월매출(만원)": (pivot_m, True),
+        "연도별_월매출(만원)": (pivot_m_total, True),
         "거래처별_품목별사용량": (client_item_qty_pivot, True),
         "품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
         "품목별_출고량": (qty_p, True),
@@ -696,13 +696,13 @@ if not full_df.empty:
     )
 
     # ==========================================
-    # Tab 1: 📌 영업 종합 요약
+    # Tab 1: 📌 영업 종합 요약 (거래처 필터 무관 - 항상 전체)
     # ==========================================
     with tab1:
         st.markdown("<div class='sub-header'>📊 전체 영업 주요 실적 지표</div>", unsafe_allow_html=True)
         m1, m2, m3, m4 = st.columns(4)
         
-        tot_sales_val = df_f["매출액"].sum() * 1.1 / 10000 if not df_f.empty else 0.0
+        tot_sales_val = df_base["매출액"].sum() * 1.1 / 10000 if not df_base.empty else 0.0
         cur_sales_val = cur_month_sales_total * 1.1 / 10000
 
         m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_val:,.1f} 만원</div></div>", unsafe_allow_html=True)
@@ -716,40 +716,76 @@ if not full_df.empty:
         with col_left:
             st.markdown("##### 📋 연도별 월별 매출액 (만원) 데이터 (원 (VAT 포함, 만원))")
             st.dataframe(
-                pivot_m.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None),
+                pivot_m_total.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None),
                 use_container_width=True,
                 height=450
             )
 
         with col_right:
-            fig_total = create_stacked_bar_chart(pivot_m, "📊 연도별 월별 매출액 (만원) 비교 그래프")
+            fig_total = create_stacked_bar_chart(pivot_m_total, "📊 연도별 월별 매출액 (만원) 비교 그래프")
             st.plotly_chart(fig_total, use_container_width=True)
 
         st.markdown("---")
-        st.markdown("<div class='sub-header'>📦 주요 품목별 연도별 월 매출 추이</div>", unsafe_allow_html=True)
+        st.markdown("<div class='sub-header'>📦 주요 품목별 연도별 월 추이 (전체 기준)</div>", unsafe_allow_html=True)
         
-        selected_target = st.radio(
-            "분석할 주요 품목을 선택하세요:",
-            options=target_items,
-            horizontal=True,
-            index=0
-        )
+        # 품목 선택 및 지표(매출액/출고량) 선택 라디오 버튼
+        col_select1, col_select2 = st.columns([1, 1])
+        with col_select1:
+            selected_target = st.radio(
+                "분석할 주요 품목을 선택하세요:",
+                options=target_items,
+                horizontal=True,
+                index=0
+            )
+        with col_select2:
+            metric_type = st.radio(
+                "분석 지표를 선택하세요:",
+                options=["매출액", "출고량"],
+                horizontal=True,
+                index=0
+            )
 
-        item_df = df_f[df_f["품목명"] == selected_target] if not df_f.empty else pd.DataFrame()
-        pivot_item = get_yearly_monthly_pivot(item_df)
+        # 지표에 따라 피벗을 생성해주는 전용 동적 함수 (출고량 선택 시 1,000 나누기 적용)
+        def get_yearly_monthly_pivot_by_metric(data_df, metric):
+            if data_df.empty:
+                return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
+            
+            if metric == "매출액":
+                pvt = data_df.pivot_table(
+                    index="월", columns="연도", values="매출액", aggfunc="sum"
+                ).fillna(0) * 1.1 / 10000
+            else:
+                # 출고량: 천 단위 축소 (1,000 나누기)
+                pvt = data_df.pivot_table(
+                    index="월", columns="연도", values="출고량", aggfunc="sum"
+                ).fillna(0) / 1000
+            
+            pvt = pvt.reindex(index=all_months, fill_value=0)
+            all_yrs = [str(y) for y in years]
+            pvt = pvt.reindex(columns=all_yrs, fill_value=0)
+            return pvt
+
+        item_df_total = df_base[df_base["품목명"] == selected_target] if not df_base.empty else pd.DataFrame()
+        pivot_item_total = get_yearly_monthly_pivot_by_metric(item_df_total, metric_type)
+
+        unit_str = "(만원)" if metric_type == "매출액" else "(천 단위)"
+        fmt_str = "{:,.0f}" if metric_type == "매출액" else "{:,.1f}"
 
         col_item_left, col_item_right = st.columns([1, 1])
 
         with col_item_left:
-            st.markdown(f"##### 📋 {selected_target} - 연도별 월별 매출액 (만원) 데이터")
+            st.markdown(f"##### 📋 {selected_target} - 연도별 월별 {metric_type} {unit_str} 데이터")
             st.dataframe(
-                pivot_item.style.format("{:,.0f}").background_gradient(cmap="Purples", axis=None),
+                pivot_item_total.style.format(fmt_str).background_gradient(cmap="Purples", axis=None),
                 use_container_width=True,
                 height=450
             )
 
         with col_item_right:
-            fig_item = create_stacked_bar_chart(pivot_item, f"📊 {selected_target} - 연도별 월별 매출액 (만원) 비교 그래프")
+            fig_item = create_stacked_bar_chart(
+                pivot_item_total, 
+                f"📊 {selected_target} - 연도별 월별 {metric_type} {unit_str} 비교 그래프"
+            )
             st.plotly_chart(fig_item, use_container_width=True)
 
     # ==========================================
@@ -779,7 +815,7 @@ if not full_df.empty:
 
         st.markdown("<div class='sub-header'>📦 품목별 월간 출고량 추이</div>", unsafe_allow_html=True)
         if not client_item_qty_pivot.empty:
-            st.dataframe(client_item_qty_pivot.style.format("{:,.1f}"), use_container_width=True)
+            st.dataframe(client_item_qty_pivot.style.format("{:,.0f}"), use_container_width=True)
         else:
             st.info("해당 거래처의 출고량 데이터가 없습니다.")
 
@@ -790,13 +826,15 @@ if not full_df.empty:
         st.markdown("<div class='sub-header'>📦 품목별 매출액 (단위: 만원, VAT포함)</div>", unsafe_allow_html=True)
         if not sales_p.empty:
             sales_p_vat = sales_p * 1.1 / 10000
-            st.dataframe(sales_p_vat.style.format("{:,.1f}").background_gradient(cmap="Purples", axis=1), use_container_width=True)
+            # 소수점 제거 포맷 적용 ({:,.0f})
+            st.dataframe(sales_p_vat.style.format("{:,.0f}").background_gradient(cmap="Purples", axis=1), use_container_width=True)
         else:
             st.info("품목별 매출 데이터가 없습니다.")
 
         st.markdown("<div class='sub-header'>📊 품목별 출고량 현황</div>", unsafe_allow_html=True)
         if not qty_p.empty:
-            st.dataframe(qty_p.style.format("{:,.1f}"), use_container_width=True)
+            # 소수점 제거 포맷 적용 ({:,.0f})
+            st.dataframe(qty_p.style.format("{:,.0f}"), use_container_width=True)
         else:
             st.info("품목별 출고량 데이터가 없습니다.")
 
@@ -820,7 +858,7 @@ if not full_df.empty:
         if not df_detail.empty:
             st.dataframe(
                 df_detail.sort_values(by="매출일_dt", ascending=False).style.format({
-                    "출고량": "{:,.1f}",
+                    "출고량": "{:,.0f}",
                     "단가": "{:,.0f}",
                     "매출액": "{:,.0f}"
                 }),
