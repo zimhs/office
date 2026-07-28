@@ -21,7 +21,7 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 # ==========================================
-# 1. 아이패드/모바일 최적화 CSS Injection
+# 1. 아이패드/모바일 최적화 및 상단 틀고정 CSS Injection
 # ==========================================
 def inject_custom_css():
   st.markdown(
@@ -51,6 +51,18 @@ def inject_custom_css():
             [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, 
             [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown {
                 color: #334155 !important;
+            }
+
+            /* 상단 검색 필터 영역 스크롤 틀고정 (Sticky) */
+            [data-testid="stHorizontalBlock"]:has(input[aria-label="조회 시작"]) {
+                position: sticky;
+                top: 0px;
+                z-index: 999;
+                background-color: #F8FAFC;
+                padding: 12px 10px;
+                margin-bottom: 10px;
+                border-bottom: 1px solid #E2E8F0;
+                box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
             }
 
             div[data-testid="column"] { align-self: flex-start; }
@@ -527,13 +539,6 @@ def load_uploaded_files_from_bytes(file_tuples):
 # ==========================================
 inject_custom_css()
 
-st.title("📊 통합 영업 분석 대시보드")
-st.markdown(
-    "<p style='color: #64748B; margin-bottom: 15px;'>실시간 영업 데이터 모니터링 및"
-    " 품목·거래처별 다차원 분석 시스템</p>",
-    unsafe_allow_html=True,
-)
-
 st.sidebar.header("📁 데이터 업로드 및 유지")
 
 # 1. 파일 업로더
@@ -940,14 +945,14 @@ if not full_df.empty:
 
     m1.markdown(
         f"<div class='metric-box'><div class='metric-label'>총 누적 매출"
-        f" (VAT포함)</div><div class='metric-value'>{tot_sales_val:,.1f}"
+        f" (VAT포함)</div><div class='metric-value'>{tot_sales_val:,.0f}"
         " 만원</div></div>",
         unsafe_allow_html=True,
     )
     m2.markdown(
         f"<div class='metric-box'><div class='metric-label'>최근 월 매출"
         f" ({latest_month_str_total})</div><div"
-        f" class='metric-value'>{cur_sales_val:,.1f} 만원</div></div>",
+        f" class='metric-value'>{cur_sales_val:,.0f} 만원</div></div>",
         unsafe_allow_html=True,
     )
     m3.markdown(
@@ -995,7 +1000,6 @@ if not full_df.empty:
 
     col_select1, col_select2, col_select3 = st.columns([1, 1, 1])
     with col_select1:
-      # 주요 품목 선택: 세로 정렬 (horizontal=False)
       selected_target = st.radio(
           "분석할 주요 품목:",
           options=target_items,
@@ -1064,7 +1068,6 @@ if not full_df.empty:
     col_item_left, col_item_right = st.columns([1, 1])
 
     with col_item_left:
-      # 3번 방식: 보기 전환 토글(라디오)에 따라 금액 또는 비중(%) 테이블 표시
       if metric_type == "매출액" and view_mode_option == "비중 보기 (%)":
         st.markdown(
             f"##### 📋 {selected_target} - 연도별 월별 매출 비중 (%)"
@@ -1166,13 +1169,13 @@ if not full_df.empty:
       cm1.markdown(
           f"<div class='metric-box'><div class='metric-label'>거래처 누적 매출"
           f" (VAT포함)</div><div"
-          f" class='metric-value'>{c_tot_sales:,.1f} 만원</div></div>",
+          f" class='metric-value'>{c_tot_sales:,.0f} 만원</div></div>",
           unsafe_allow_html=True,
       )
       cm2.markdown(
           f"<div class='metric-box'><div class='metric-label'>최근 월 매출"
           f" ({latest_month_str_client})</div><div"
-          f" class='metric-value'>{c_cur_sales:,.1f} 만원</div></div>",
+          f" class='metric-value'>{c_cur_sales:,.0f} 만원</div></div>",
           unsafe_allow_html=True,
       )
       cm3.markdown(
