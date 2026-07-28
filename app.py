@@ -1,4 +1,5 @@
 import io
+import os
 import re
 import sys
 import subprocess
@@ -11,6 +12,12 @@ import plotly.graph_objects as go
 # 페이지 및 Styler 가동 한도 설정
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide")
+
+# ==========================================
+# 0. 로컬 파일 자동 저장을 위한 디렉토리 설정
+# ==========================================
+CACHE_DIR = "./uploaded_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 # ==========================================
@@ -358,14 +365,14 @@ def load_debt_file(debt_bytes):
 
 
 @st.cache_data(show_spinner="데이터를 파싱 및 캐싱 중입니다...")
-def load_uploaded_files(uploaded_files):
-    if not uploaded_files:
+def load_uploaded_files_from_bytes(file_tuples):
+    """(파일명, 바이트 내용)의 튜플 리스트를 받아 DataFrame으로 병합"""
+    if not file_tuples:
         return pd.DataFrame()
 
     df_list = []
-    for file in uploaded_files:
+    for file_name, content in file_tuples:
         try:
-            content = file.getvalue()
             decoded_text = None
             for enc in ["cp949", "euc-kr", "utf-8-sig", "utf-8"]:
                 try:
@@ -428,7 +435,7 @@ def load_uploaded_files(uploaded_files):
                     df[req] = "미지정"
 
             file_year = next(
-                (y for y in ["2020", "2021", "2022", "2023", "2024", "2025", "2026"] if y in file.name),
+                (y for y in ["2020", "2021", "2022", "2023", "2024", "2025", "2026"] if y in file_name),
                 "2026"
             )
             date_col = "매출일자_raw" if "매출일자_raw" in df.columns else df.columns[0]
@@ -460,28 +467,90 @@ def load_uploaded_files(uploaded_files):
             if not df.empty:
                 df_list.append(df)
         except Exception as e:
-            st.sidebar.error(f"파일 읽기 오류 ({file.name}): {e}")
+            st.sidebar.error(f"파일 읽기 오류 ({file_name}): {e}")
 
     result_df = pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
     return result_df
 
 
 # ==========================================
-# 4. 메인 실행 흐름
+# 4. 메인 실행 흐름 및 영구 캐싱 관리
 # ==========================================
 inject_custom_css()
 
 st.title("📊 통합 영업 분석 대시보드")
 st.markdown("<p style='color: #64748B; margin-bottom: 15px;'>실시간 영업 데이터 모니터링 및 품목·거래처별 다차원 분석 시스템</p>", unsafe_allow_html=True)
 
-st.sidebar.header("📁 데이터 업로드")
-address_file = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
-debt_file = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
-uploaded_files = st.sidebar.file_uploader("매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True)
+st.sidebar.header("📁 데이터 업로드 및 유지")
 
-addr_dict = load_address_file(address_file.getvalue()) if address_file else {}
-debt_df = load_debt_file(debt_file.getvalue()) if debt_file else pd.DataFrame()
-full_df = load_uploaded_files(uploaded_files) if uploaded_files else pd.DataFrame()
+# 1. 파일 업로더
+address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
+debt_file_up = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
+uploaded_files_up = st.sidebar.file_uploader("매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True)
+
+# 2. 로컬 캐시 경로 설정
+addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
+debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
+sales_cache_dir = os.path.join(CACHE_DIR, "sales")
+os.makedirs(sales_cache_dir, exist_ok=True)
+
+# --- 주소록 처리 (업로드 시 로컬 저장, 미업로드 시 기존 캐시 로드) ---
+if address_file_up is not None:
+    addr_bytes = address_file_up.getvalue()
+    with open(addr_cache_path, "wb") as f:
+        f.write(addr_bytes)
+elif os.path.exists(addr_cache_path):
+    with open(addr_cache_path, "rb") as f:
+        addr_bytes = f.read()
+else:
+    addr_bytes = None
+
+# --- 채권 파일 처리 ---
+if debt_file_up is not None:
+    debt_bytes = debt_file_up.getvalue()
+    with open(debt_cache_path, "wb") as f:
+        f.write(debt_bytes)
+elif os.path.exists(debt_cache_path):
+    with open(debt_cache_path, "rb") as f:
+        debt_bytes = f.read()
+else:
+    debt_bytes = None
+
+# --- 매출 데이터 파일들 처리 ---
+if uploaded_files_up and len(uploaded_files_up) > 0:
+    # 기존 캐시된 매출 파일 삭제 후 새로 저장
+    for f_name in os.listdir(sales_cache_dir):
+        os.remove(os.path.join(sales_cache_dir, f_name))
+    
+    sales_file_tuples = []
+    for f in uploaded_files_up:
+        f_bytes = f.getvalue()
+        f_path = os.path.join(sales_cache_dir, f.name)
+        with open(f_path, "wb") as sf:
+            sf.write(f_bytes)
+        sales_file_tuples.append((f.name, f_bytes))
+else:
+    # 로컬 캐시 폴더에 저장된 파일들 읽어오기
+    sales_file_tuples = []
+    if os.path.exists(sales_cache_dir):
+        for f_name in os.listdir(sales_cache_dir):
+            if f_name.endswith(".csv"):
+                f_path = os.path.join(sales_cache_dir, f_name)
+                with open(f_path, "rb") as sf:
+                    sales_file_tuples.append((f_name, sf.read()))
+
+# 캐시 초기화 버튼 제공 (필요시 새로 업로드 가능하도록)
+if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
+    for p in [addr_cache_path, debt_cache_path]:
+        if os.path.exists(p): os.remove(p)
+    for f_name in os.listdir(sales_cache_dir):
+        os.remove(os.path.join(sales_cache_dir, f_name))
+    st.rerun()
+
+# 데이터 로딩 실행
+addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
+debt_df = load_debt_file(debt_bytes) if debt_bytes else pd.DataFrame()
+full_df = load_uploaded_files_from_bytes(sales_file_tuples) if sales_file_tuples else pd.DataFrame()
 
 if not full_df.empty:
     is_deposit_row = full_df["품목명"].astype(str).str.contains("입금", na=False)
@@ -788,7 +857,6 @@ if not full_df.empty:
             c_addr = addr_dict.get(selected_client, "주소 정보 없음")
             st.caption(f"📍 **사업장 주소:** {c_addr}")
 
-            # 메모 버튼 및 카카오맵 연동 버튼 배치
             col_btn1, col_btn2, col_btn3 = st.columns([1.2, 1.2, 2.6])
             with col_btn1:
                 if st.button("📝 macOS 메모장에서 열기", use_container_width=True):
