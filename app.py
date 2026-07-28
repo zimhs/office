@@ -14,9 +14,10 @@ pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide")
 
 # ==========================================
-# 0. 로컬 파일 자동 저장을 위한 디렉토리 설정
+# 0. 로컬 파일 자동 저장 및 기본 데이터 경로 설정
 # ==========================================
 CACHE_DIR = "./uploaded_cache"
+DATA_DIR = "./data"  # GitHub 기본 데이터 폴더 예시
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
@@ -488,19 +489,26 @@ address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["c
 debt_file_up = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
 uploaded_files_up = st.sidebar.file_uploader("매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True)
 
-# 2. 로컬 캐시 경로 설정
+# 2. 로컬 캐시 및 기본 경로 설정 (Fallback 지원)
 addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
+addr_default_path = os.path.join(DATA_DIR, "address.csv")
+
 debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
+debt_default_path = os.path.join(DATA_DIR, "debt.csv")
+
 sales_cache_dir = os.path.join(CACHE_DIR, "sales")
 os.makedirs(sales_cache_dir, exist_ok=True)
 
-# --- 주소록 처리 (업로드 시 로컬 저장, 미업로드 시 기존 캐시 로드) ---
+# --- 주소록 처리 ---
 if address_file_up is not None:
     addr_bytes = address_file_up.getvalue()
     with open(addr_cache_path, "wb") as f:
         f.write(addr_bytes)
 elif os.path.exists(addr_cache_path):
     with open(addr_cache_path, "rb") as f:
+        addr_bytes = f.read()
+elif os.path.exists(addr_default_path):
+    with open(addr_default_path, "rb") as f:
         addr_bytes = f.read()
 else:
     addr_bytes = None
@@ -513,12 +521,14 @@ if debt_file_up is not None:
 elif os.path.exists(debt_cache_path):
     with open(debt_cache_path, "rb") as f:
         debt_bytes = f.read()
+elif os.path.exists(debt_default_path):
+    with open(debt_default_path, "rb") as f:
+        debt_bytes = f.read()
 else:
     debt_bytes = None
 
 # --- 매출 데이터 파일들 처리 ---
 if uploaded_files_up and len(uploaded_files_up) > 0:
-    # 기존 캐시된 매출 파일 삭제 후 새로 저장
     for f_name in os.listdir(sales_cache_dir):
         os.remove(os.path.join(sales_cache_dir, f_name))
     
@@ -530,7 +540,6 @@ if uploaded_files_up and len(uploaded_files_up) > 0:
             sf.write(f_bytes)
         sales_file_tuples.append((f.name, f_bytes))
 else:
-    # 로컬 캐시 폴더에 저장된 파일들 읽어오기
     sales_file_tuples = []
     if os.path.exists(sales_cache_dir):
         for f_name in os.listdir(sales_cache_dir):
@@ -539,7 +548,7 @@ else:
                 with open(f_path, "rb") as sf:
                     sales_file_tuples.append((f_name, sf.read()))
 
-# 캐시 초기화 버튼 제공 (필요시 새로 업로드 가능하도록)
+# 캐시 초기화 버튼
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     for p in [addr_cache_path, debt_cache_path]:
         if os.path.exists(p): os.remove(p)
@@ -920,7 +929,7 @@ if not full_df.empty:
 
             st.markdown("##### 🚚 품목별 출고량 현황")
             st.dataframe(
-                qty_p.style.format("{:,.1f}").background_gradient(cmap="Blues", axis=1),
+                qty_p.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=1),
                 use_container_width=True
             )
 
@@ -977,13 +986,44 @@ if not full_df.empty:
                 debt_disp = debt_df
 
             if not debt_disp.empty:
-                val_cols = [c for c in debt_disp.columns if c not in ["거래처", "구분"]]
-                fmt_dict = {c: "{:,.0f}" for c in val_cols}
-                st.dataframe(
-                    debt_disp.style.format(fmt_dict).background_gradient(cmap="Reds", subset=val_cols, axis=None),
-                    use_container_width=True,
-                    height=500
+                # 아이패드 세로모드 등 좁은 화면에서 가로 스크롤 없이 수직으로 볼 수 있는 보기 방식 선택 옵션
+                view_mode = st.radio(
+                    "보기 방식:",
+                    options=["기본 보기 (가로형)", "세로형 보기 (수직 스크롤 추천)"],
+                    horizontal=True,
+                    index=1
                 )
+
+                val_cols = [c for c in debt_disp.columns if c not in ["거래처", "구분"]]
+
+                if view_mode == "세로형 보기 (수직 스크롤 추천)":
+                    melted_debt = debt_disp.melt(id_vars=["거래처", "구분"], value_vars=val_cols, var_name="월", value_name="금액")
+                    
+                    if selected_client != "전체 거래처":
+                        pivot_debt_v = melted_debt.pivot_table(index="월", columns="구분", values="금액", aggfunc="first").reset_index()
+                    else:
+                        pivot_debt_v = melted_debt.pivot_table(index=["거래처", "월"], columns="구분", values="금액", aggfunc="first").reset_index()
+                    
+                    desired_order_cols = ["거래처", "월", "익월", "이월", "매출", "수금", "잔액"]
+                    existing_cols = [c for c in desired_order_cols if c in pivot_debt_v.columns]
+                    other_cols = [c for c in pivot_debt_v.columns if c not in existing_cols]
+                    pivot_debt_v = pivot_debt_v[existing_cols + other_cols]
+
+                    num_cols_v = [c for c in pivot_debt_v.columns if c not in ["거래처", "월"]]
+                    fmt_dict_v = {c: "{:,.0f}" for c in num_cols_v}
+                    
+                    st.dataframe(
+                        pivot_debt_v.style.format(fmt_dict_v).background_gradient(cmap="Reds", subset=num_cols_v, axis=None),
+                        use_container_width=True,
+                        height=550
+                    )
+                else:
+                    fmt_dict = {c: "{:,.0f}" for c in val_cols}
+                    st.dataframe(
+                        debt_disp.style.format(fmt_dict).background_gradient(cmap="Reds", subset=val_cols, axis=None),
+                        use_container_width=True,
+                        height=500
+                    )
             else:
                 st.info(f"'{selected_client}'에 대한 채권 데이터가 존재하지 않습니다.")
         else:
