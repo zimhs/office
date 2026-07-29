@@ -4,6 +4,8 @@ import re
 import sys
 import subprocess
 import urllib.parse
+import requests
+from bs4 import BeautifulSoup
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -85,7 +87,7 @@ def inject_custom_css():
                 padding-left: 10px;
             }
             
-            /* Radio 버튼 그룹을 좀 더 돋보이게 */
+            /* Radio 버튼 그룹 최적화 */
             div[role="radiogroup"] {
                 padding: 10px;
                 background: white;
@@ -227,8 +229,86 @@ def convert_dfs_to_excel(dfs_dict):
     return output.getvalue()
 
 
+# ==========================================
+# ★ 네이버 크롤링 유틸리티 (업체명 정제 기능 강화) ★
+# ==========================================
+def get_naver_company_info(company_name):
+    clean_name = re.sub(r'\(.*?\)|\[.*?\]|주식회사|㈜|\(주\)|주\)', '', company_name).strip()
+    if not clean_name:
+        clean_name = company_name 
+        
+    info = {
+        "ceo": "정보 없음",
+        "industry": "정보 없음",
+        "revenue": "정보 없음",
+        "profit": "정보 없음",
+        "clean_name": clean_name
+    }
+    
+    try:
+        search_query = urllib.parse.quote(clean_name + " 기업정보")
+        url = f"https://search.naver.com/search.naver?query={search_query}"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        response = requests.get(url, headers=headers, timeout=3)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            texts = list(soup.stripped_strings)
+            
+            for i, text in enumerate(texts):
+                if text in ["대표자", "대표자명"]:
+                    if info["ceo"] == "정보 없음" and i + 1 < len(texts):
+                        info["ceo"] = texts[i + 1]
+                elif text in ["업종", "산업(업종)"]:
+                    if info["industry"] == "정보 없음" and i + 1 < len(texts):
+                        info["industry"] = texts[i + 1]
+                elif text in ["매출액"]:
+                    if info["revenue"] == "정보 없음" and i + 1 < len(texts):
+                        info["revenue"] = texts[i + 1]
+                elif text in ["영업이익"]:
+                    if info["profit"] == "정보 없음" and i + 1 < len(texts):
+                        info["profit"] = texts[i + 1]
+    except Exception as e:
+        pass
+        
+    return info
+
+
+# ==========================================
+# ★ 메모 생성 AppleScript (iCloud 거래처 폴더 강제 지정 최적화) ★
+# ==========================================
 def open_macos_notes_folder(client_name):
     safe_client_name = client_name.replace('"', '\\"')
+
+    info = get_naver_company_info(client_name)
+    encoded_name = urllib.parse.quote(info['clean_name'])
+    
+    note_content = f"""
+    <h1>{safe_client_name}</h1>
+    <br>
+    <h3>📌 요약 기업 정보</h3>
+    <ul>
+        <li><b>대표자:</b> {info['ceo']}</li>
+        <li><b>업종:</b> {info['industry']}</li>
+        <li><b>매출액:</b> {info['revenue']}</li>
+        <li><b>영업이익:</b> {info['profit']}</li>
+    </ul>
+    <br>
+    <h3>🔗 상세 정보 원클릭 검색</h3>
+    <ul>
+        <li><a href="https://search.naver.com/search.naver?query={encoded_name} 기업정보">네이버에서 '{info['clean_name']}' 재무정보 보기</a></li>
+        <li><a href="https://www.saramin.co.kr/zf_user/search/company?searchword={encoded_name}">사람인에서 '{info['clean_name']}' 기업/채용 검색</a></li>
+        <li><a href="https://www.jobkorea.co.kr/Search/?stext={encoded_name}&tabType=corp">잡코리아에서 '{info['clean_name']}' 기업 검색</a></li>
+    </ul>
+    <br>
+    <h3>📝 영업 및 특이사항</h3>
+    <p></p>
+    """
+    safe_note_content = note_content.replace('"', '\\"')
 
     script = f"""
     tell application "Notes"
@@ -237,21 +317,10 @@ def open_macos_notes_folder(client_name):
         set targetFolderName to "거래처"
         set noteName to "{safe_client_name}"
         set noteFound to false
+        set targetAcc to missing value
         
-        try
-            set targetAccount to account "iCloud"
-            if exists folder targetFolderName of targetAccount then
-                set parentFolder to folder targetFolderName of targetAccount
-                set foundNotes to (notes of parentFolder whose name is noteName)
-                if (count of foundNotes) > 0 then
-                    show (item 1 of foundNotes)
-                    set noteFound to true
-                end if
-            end if
-        end try
-        
-        if not noteFound then
-            repeat with acc in accounts
+        repeat with acc in accounts
+            try
                 if exists folder targetFolderName of acc then
                     set parentFolder to folder targetFolderName of acc
                     set foundNotes to (notes of parentFolder whose name is noteName)
@@ -261,22 +330,31 @@ def open_macos_notes_folder(client_name):
                         exit repeat
                     end if
                 end if
-            end repeat
-        end if
+            end try
+        end repeat
         
         if not noteFound then
-            try
-                set targetAccount to account "iCloud"
-            on error
-                set targetAccount to first account
-            end try
+            repeat with acc in accounts
+                if name of acc is "iCloud" then
+                    set targetAcc to acc
+                    exit repeat
+                end if
+            end repeat
             
-            if not (exists folder targetFolderName of targetAccount) then
-                make new folder at targetAccount with properties {{name:targetFolderName}}
+            if targetAcc is missing value then
+                set targetAcc to first account
             end if
             
-            set parentFolder to folder targetFolderName of targetAccount
-            set newNote to make new note at parentFolder with properties {{name:noteName, body:"<h1>" & noteName & "</h1><br><p>영업 및 특이사항:</p>"}}
+            if not (exists folder targetFolderName of targetAcc) then
+                make new folder at targetAcc with properties {{name:targetFolderName}}
+            end if
+            
+            set parentFolder to folder targetFolderName of targetAcc
+            
+            tell parentFolder
+                set newNote to make new note with properties {{body:"{safe_note_content}"}}
+            end tell
+            
             show newNote
         end if
     end tell
@@ -348,7 +426,7 @@ def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0
 
 
 # ==========================================
-# 3. 데이터 로딩 & 메모리 캐싱
+# 3. 데이터 로딩 & 메모리 캐싱 (최적화)
 # ==========================================
 @st.cache_data(show_spinner="주소록을 읽어오는 중입니다...")
 def load_address_file(address_bytes):
@@ -519,11 +597,51 @@ def load_uploaded_files_from_bytes(file_tuples):
 
 
 # ==========================================
-# 4. 메인 실행 흐름 및 영구 캐싱 관리
+# 4. 피벗 및 지표 계산 연산 캐싱 (속도 극대화)
+# ==========================================
+@st.cache_data
+def cached_get_yearly_monthly_pivot(data_df, all_months, years):
+    if data_df.empty:
+        return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
+    
+    pvt = data_df.pivot_table(
+        index="월", columns="연도", values="매출액", aggfunc="sum"
+    ).fillna(0) * 1.1 / 10000
+    
+    pvt = pvt.reindex(index=all_months, fill_value=0)
+    all_yrs = [str(y) for y in years]
+    pvt = pvt.reindex(columns=all_yrs, fill_value=0)
+    return pvt
+
+
+@st.cache_data
+def cached_get_item_pivot(data_df, item_name, metric, all_months, years):
+    if data_df.empty:
+        return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
+        
+    df_item = data_df[data_df["품목명"] == item_name]
+    if df_item.empty:
+        return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
+        
+    if metric == "매출액 (만원)":
+        pvt = df_item.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+    elif metric == "출고량 (kg)":
+        pvt = df_item.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0)
+    elif metric == "총매출 대비 비중 (%)":
+        pvt_item = df_item.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
+        pvt_total = data_df.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
+        pvt = (pvt_item / pvt_total.replace(0, np.nan) * 100).fillna(0)
+        
+    pvt = pvt.reindex(index=all_months, fill_value=0)
+    all_yrs = [str(y) for y in years]
+    pvt = pvt.reindex(columns=all_yrs, fill_value=0)
+    return pvt
+
+
+# ==========================================
+# 5. 메인 실행 흐름 및 영구 캐싱 관리
 # ==========================================
 inject_custom_css()
-
-# 최상단 대시보드 타이틀 라벨 및 설명 제거
 
 st.sidebar.header("📁 데이터 업로드 및 유지")
 
@@ -641,44 +759,7 @@ if not full_df.empty:
     years = sorted(raw_years, reverse=True)
     desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
 
-    # --- Pivot 계산 유틸리티 ---
-    def get_yearly_monthly_pivot(data_df):
-        if data_df.empty:
-            return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
-        
-        pvt = data_df.pivot_table(
-            index="월", columns="연도", values="매출액", aggfunc="sum"
-        ).fillna(0) * 1.1 / 10000
-        
-        pvt = pvt.reindex(index=all_months, fill_value=0)
-        all_yrs = [str(y) for y in years]
-        pvt = pvt.reindex(columns=all_yrs, fill_value=0)
-        return pvt
-
-    # 특정 품목에 대한 지표별(매출액/출고량/비중) 피벗을 계산하는 함수
-    def get_item_pivot(data_df, item_name, metric):
-        if data_df.empty:
-            return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
-            
-        df_item = data_df[data_df["품목명"] == item_name]
-        if df_item.empty:
-            return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
-            
-        if metric == "매출액 (만원)":
-            pvt = df_item.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
-        elif metric == "출고량 (kg)":
-            pvt = df_item.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0)
-        elif metric == "총매출 대비 비중 (%)":
-            pvt_item = df_item.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
-            pvt_total = data_df.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
-            pvt = (pvt_item / pvt_total.replace(0, np.nan) * 100).fillna(0)
-            
-        pvt = pvt.reindex(index=all_months, fill_value=0)
-        all_yrs = [str(y) for y in years]
-        pvt = pvt.reindex(columns=all_yrs, fill_value=0)
-        return pvt
-
-    pivot_m_total = get_yearly_monthly_pivot(df_base)
+    pivot_m_total = cached_get_yearly_monthly_pivot(df_base, all_months, years)
 
     client_item_qty_pivot = pd.DataFrame()
     if not df_client_filtered.empty:
@@ -804,6 +885,13 @@ if not full_df.empty:
         if selected_client != "전체 거래처":
             filtered_debt_df = filtered_debt_df[filtered_debt_df["거래처"] == selected_client].copy()
 
+    # '가스코아산' 등 빈 주소 예외처리
+    client_addr_raw = addr_dict.get(selected_client, "등록된 주소 정보가 없습니다.")
+    if pd.isna(client_addr_raw) or str(client_addr_raw).strip().lower() == 'nan' or not str(client_addr_raw).strip():
+        client_addr = "등록된 주소 정보가 없습니다."
+    else:
+        client_addr = str(client_addr_raw)
+
     st.sidebar.markdown("---")
     st.sidebar.subheader("📥 엑셀 내보내기")
     sheets_dict = {
@@ -877,7 +965,7 @@ if not full_df.empty:
         with sel_col2:
             selected_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량 (kg)", "총매출 대비 비중 (%)"], horizontal=True, key="overall_metric_radio")
             
-        item_pivot = get_item_pivot(df_base, selected_target_item, selected_metric)
+        item_pivot = cached_get_item_pivot(df_base, selected_target_item, selected_metric, all_months, years)
         
         i_col_left, i_col_right = st.columns([1, 1])
         with i_col_left:
@@ -914,17 +1002,17 @@ if not full_df.empty:
     with tab2:
         st.markdown(f"<div class='sub-header'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
         
-        client_addr = addr_dict.get(selected_client, "등록된 주소 정보가 없습니다.")
         st.info(f"📍 주소: {client_addr}")
         
         btn_c1, btn_c2 = st.columns([1, 1])
         
         with btn_c1:
             if st.button("📝 macOS 메모 앱에서 거래처 노트 열기/생성", key="btn_notes"):
-                if open_macos_notes_folder(selected_client):
-                    st.success(f"'{selected_client}' 메모가 활성화되었습니다.")
-                else:
-                    st.error("메모 앱을 열 수 없습니다. (macOS 환경인지 확인해주세요)")
+                with st.spinner('정보를 검색하고 메모를 작성 중입니다...'):
+                    if open_macos_notes_folder(selected_client):
+                        st.success(f"'{selected_client}' 메모가 활성화되었습니다.")
+                    else:
+                        st.error("메모 앱을 열 수 없습니다. (macOS 환경인지 확인해주세요)")
                     
         with btn_c2:
             if client_addr != "등록된 주소 정보가 없습니다.":
@@ -943,7 +1031,7 @@ if not full_df.empty:
         m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
 
         if not df_client_filtered.empty:
-            pivot_m_client = get_yearly_monthly_pivot(df_client_filtered)
+            pivot_m_client = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
             cl, cr = st.columns([1, 1])
             with cl:
                 st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 거래처 월별 매출액 (만원)</div>", unsafe_allow_html=True)
@@ -968,7 +1056,7 @@ if not full_df.empty:
                 with sel_col2_c:
                     selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량 (kg)", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
                     
-                client_item_pivot = get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c)
+                client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
                 
                 i_col_left_c, i_col_right_c = st.columns([1, 1])
                 with i_col_left_c:
