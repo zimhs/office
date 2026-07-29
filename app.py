@@ -286,13 +286,11 @@ def get_naver_company_info(company_name):
 def get_lat_lon_kakao(company_name, address, rest_api_key):
     headers = {"Authorization": f"KakaoAK {rest_api_key}"}
     
-    # 1. 주소 기반 검색 준비 (정제)
     clean_addr = ""
     if address and address != "등록된 주소 정보가 없습니다.":
         clean_addr = re.sub(r'\(.*?\)|\[.*?\]', '', str(address))
         clean_addr = clean_addr.split(',')[0].strip()
         
-    # 2. 거래처명 기반 검색 준비 (정제)
     temp_name = re.sub(r'\(주\)|\(유\)|\(합\)|주식회사|㈜', '', str(company_name))
     match = re.search(r'\((.*?)\)', temp_name)
     
@@ -302,7 +300,6 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
     else:
         clean_name = re.sub(r'^[zZ]', '', temp_name).strip()
 
-    # [STEP 1] 정제된 주소로 '주소 검색'
     if clean_addr:
         try:
             res = requests.get("https://dapi.kakao.com/v2/local/search/address.json", headers=headers, params={"query": clean_addr}, timeout=3)
@@ -310,14 +307,12 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
                 return float(res.json()['documents'][0]['y']), float(res.json()['documents'][0]['x'])
         except: pass
         
-        # [STEP 2] 정제된 주소로 '키워드 검색' 
         try:
             res = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json", headers=headers, params={"query": clean_addr}, timeout=3)
             if res.status_code == 200 and res.json().get('documents'):
                 return float(res.json()['documents'][0]['y']), float(res.json()['documents'][0]['x'])
         except: pass
         
-    # [STEP 3] 주소가 없거나 1,2단계 실패 시 -> '괄호 안 상호명'으로 검색
     if clean_name:
         try:
             res = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json", headers=headers, params={"query": clean_name}, timeout=3)
@@ -325,7 +320,6 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
                 return float(res.json()['documents'][0]['y']), float(res.json()['documents'][0]['x'])
         except: pass
         
-    # [STEP 4] 최후의 보루 -> 원본 상호명 전체로 검색
     if company_name:
         try:
             res = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json", headers=headers, params={"query": str(company_name)}, timeout=3)
@@ -424,8 +418,6 @@ def open_macos_notes_folder(client_name):
         if process.returncode == 0:
             return True
         else:
-            error_msg = stderr.decode('utf-8', errors='ignore')
-            st.warning(f"AppleScript 오류: {error_msg}")
             return False
     except Exception as e:
         return False
@@ -683,8 +675,8 @@ def cached_get_item_pivot(data_df, item_name, metric, all_months, years):
         
     if metric == "매출액 (만원)":
         pvt = df_item.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
-    elif metric == "출고량 (kg)":
-        pvt = df_item.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0)
+    elif "출고량" in metric:
+        pvt = df_item.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
     elif metric == "총매출 대비 비중 (%)":
         pvt_item = df_item.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
         pvt_total = data_df.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
@@ -1037,7 +1029,7 @@ if not full_df.empty:
         with sel_col1:
             selected_target_item = st.radio("🔍 분석할 품목 선택", target_items, horizontal=True, key="overall_item_radio")
         with sel_col2:
-            selected_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량 (kg)", "총매출 대비 비중 (%)"], horizontal=True, key="overall_metric_radio")
+            selected_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량 (천 kg)", "총매출 대비 비중 (%)"], horizontal=True, key="overall_metric_radio")
             
         item_pivot = cached_get_item_pivot(df_base, selected_target_item, selected_metric, all_months, years)
         
@@ -1050,9 +1042,9 @@ if not full_df.empty:
                 y_suf = "%"
                 y_fmt = ",.1f"
             elif "출고량" in selected_metric:
-                st.dataframe(item_pivot.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
-                y_suf = " kg"
-                y_fmt = ",.0f"
+                st.dataframe(item_pivot.style.format("{:,.1f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
+                y_suf = " 천kg"
+                y_fmt = ",.1f"
             else:
                 st.dataframe(item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
                 y_suf = " 만원"
@@ -1082,11 +1074,8 @@ if not full_df.empty:
         
         with btn_c1:
             if st.button("📝 macOS 메모 앱에서 거래처 노트 열기/생성", key="btn_notes"):
-                with st.spinner('정보를 검색하고 메모를 작성 중입니다...'):
-                    if open_macos_notes_folder(selected_client):
-                        st.success(f"'{selected_client}' 메모가 활성화되었습니다.")
-                    else:
-                        st.error("메모 앱을 열 수 없습니다. (macOS 환경인지 확인해주세요)")
+                with st.spinner('메모를 작성 중입니다...'):
+                    open_macos_notes_folder(selected_client)
                     
         with btn_c2:
             if client_addr != "등록된 주소 정보가 없습니다.":
@@ -1128,7 +1117,7 @@ if not full_df.empty:
                 with sel_col1_c:
                     selected_target_item_c = st.selectbox("🔍 분석할 품목 선택 (전체 거래 품목)", client_available_items, key="client_item_selectbox")
                 with sel_col2_c:
-                    selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량 (kg)", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
+                    selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량 (천 kg)", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
                     
                 client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
                 
@@ -1141,9 +1130,9 @@ if not full_df.empty:
                         y_suf_c = "%"
                         y_fmt_c = ",.1f"
                     elif "출고량" in selected_metric_c:
-                        st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
-                        y_suf_c = " kg"
-                        y_fmt_c = ",.0f"
+                        st.dataframe(client_item_pivot.style.format("{:,.1f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
+                        y_suf_c = " 천kg"
+                        y_fmt_c = ",.1f"
                     else:
                         st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
                         y_suf_c = " 만원"
@@ -1166,7 +1155,7 @@ if not full_df.empty:
             st.warning("선택한 조건에 해당하는 거래처 데이터가 없습니다.")
 
     # ==========================================
-    # Tab 3: 📦 품목 및 단가 분석 (그라데이션 스타일 복구)
+    # Tab 3: 📦 품목 및 단가 분석
     # ==========================================
     with tab3:
         st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
@@ -1190,7 +1179,7 @@ if not full_df.empty:
             st.info("데이터가 없습니다.")
 
     # ==========================================
-    # Tab 4: 👤 담당자 & 상세내역 (그라데이션 스타일 복구)
+    # Tab 4: 👤 담당자 & 상세내역
     # ==========================================
     with tab4:
         st.markdown("<div class='sub-header'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
@@ -1262,8 +1251,6 @@ if not full_df.empty:
     # ==========================================
     with tab6:
         st.markdown("<div class='sub-header'>📍 담당자별 거래처 지도 분포 (대한민국 V-World 지도)</div>", unsafe_allow_html=True)
-        
-        st.info("💡 아래의 **[지도 전용 담당자 필터]**를 사용해 독립적으로 지도에 표시할 담당자를 선택할 수 있습니다.")
         
         rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
         
@@ -1355,7 +1342,6 @@ if not full_df.empty:
 
                     fig_map.update_traces(marker=dict(size=14, opacity=0.9))
                     
-                    # 국토교통부 V-World 타일 주소 설정 (완벽한 한글 지원 및 고해상도 위성)
                     vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
                     vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
                     vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
@@ -1365,14 +1351,13 @@ if not full_df.empty:
                             {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
                         ]
                     else:
-                        # 위성 지도와 지역 라벨(하이브리드) 겹치기
                         mapbox_layers = [
                             {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
                             {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
                         ]
                     
                     fig_map.update_layout(
-                        mapbox_style="white-bg", # 외부 래스터 타일 사용을 위한 필수 설정
+                        mapbox_style="white-bg",
                         mapbox_layers=mapbox_layers,
                         margin={"r": 0, "t": 10, "l": 0, "b": 0},
                         legend=dict(
