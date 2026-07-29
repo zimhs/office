@@ -751,7 +751,20 @@ def cached_staff_pivot(df_base, desired_order):
         return pd.DataFrame()
     staff_raw = (df_base.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) / 10000)
     staff_cols = [c for c in desired_order if c in staff_raw.columns]
-    return staff_raw.reindex(columns=staff_cols, fill_value=0)
+    
+    # 순서에 맞게 컬럼 정리
+    df_p = staff_raw.reindex(columns=staff_cols, fill_value=0)
+    
+    # 💡 담당자별 전체 매출 비중 (%) 계산 및 첫 번째 열 삽입
+    total_all = df_p.sum().sum()
+    if total_all > 0:
+        prop = df_p.sum(axis=1) / total_all * 100
+    else:
+        prop = 0.0
+        
+    df_p.insert(0, "매출 비중 (%)", prop)
+    
+    return df_p
 
 @st.cache_data
 def cached_client_item_qty_pivot(df_client_filtered, years, all_months):
@@ -1074,8 +1087,7 @@ if not full_df.empty:
         
         with btn_c1:
             if st.button("📝 macOS 메모 앱에서 거래처 노트 열기/생성", key="btn_notes"):
-                with st.spinner('메모를 작성 중입니다...'):
-                    open_macos_notes_folder(selected_client)
+                open_macos_notes_folder(selected_client)
                     
         with btn_c2:
             if client_addr != "등록된 주소 정보가 없습니다.":
@@ -1184,7 +1196,16 @@ if not full_df.empty:
     with tab4:
         st.markdown("<div class='sub-header'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
         if not staff_pivot.empty:
-            st.dataframe(staff_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=350)
+            # 💡 매출 비중(%) 컬럼과 일반 매출액(만원) 컬럼의 포맷 분리 적용
+            format_dict = {col: "{:,.0f}" for col in staff_pivot.columns if col != "매출 비중 (%)"}
+            format_dict["매출 비중 (%)"] = "{:,.1f}%"
+            
+            styled_staff = (
+                staff_pivot.style.format(format_dict)
+                .background_gradient(cmap="Blues", subset=[c for c in staff_pivot.columns if c != "매출 비중 (%)"])
+                .background_gradient(cmap="Purples", subset=["매출 비중 (%)"])
+            )
+            st.dataframe(styled_staff, use_container_width=True, height=350)
         else:
             st.info("데이터가 없습니다.")
 
