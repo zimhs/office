@@ -230,7 +230,7 @@ def convert_dfs_to_excel(dfs_dict):
 
 
 # ==========================================
-# ★ 네이버 크롤링 유틸리티 (업체명 정제 기능 강화) ★
+# ★ 네이버 크롤링 유틸리티 ★
 # ==========================================
 def get_naver_company_info(company_name):
     clean_name = re.sub(r'\(.*?\)|\[.*?\]|주식회사|㈜|\(주\)|주\)', '', company_name).strip()
@@ -279,7 +279,29 @@ def get_naver_company_info(company_name):
 
 
 # ==========================================
-# ★ 메모 생성 AppleScript (iCloud 거래처 폴더 강제 지정 최적화) ★
+# ★ 카카오 지오코딩 API ★
+# ==========================================
+@st.cache_data(show_spinner=False, max_entries=5000)
+def get_lat_lon_kakao(address, rest_api_key):
+    if not address or address == "등록된 주소 정보가 없습니다.":
+        return None, None
+        
+    try:
+        url = "https://dapi.kakao.com/v2/local/search/address.json"
+        headers = {"Authorization": f"KakaoAK {rest_api_key}"}
+        params = {"query": address}
+        res = requests.get(url, headers=headers, params=params, timeout=3)
+        if res.status_code == 200:
+            docs = res.json().get('documents')
+            if docs:
+                return float(docs[0]['y']), float(docs[0]['x'])
+    except Exception:
+        pass
+    return None, None
+
+
+# ==========================================
+# ★ 메모 생성 AppleScript ★
 # ==========================================
 def open_macos_notes_folder(client_name):
     safe_client_name = client_name.replace('"', '\\"')
@@ -597,7 +619,7 @@ def load_uploaded_files_from_bytes(file_tuples):
 
 
 # ==========================================
-# 4. 피벗 및 지표 계산 연산 캐싱 (속도 극대화)
+# 4. 피벗 및 지표 계산 연산 캐싱 (속도 극대화 🚀)
 # ==========================================
 @st.cache_data
 def cached_get_yearly_monthly_pivot(data_df, all_months, years):
@@ -636,6 +658,88 @@ def cached_get_item_pivot(data_df, item_name, metric, all_months, years):
     all_yrs = [str(y) for y in years]
     pvt = pvt.reindex(columns=all_yrs, fill_value=0)
     return pvt
+
+@st.cache_data
+def cached_tab3_pivots(target_tab3_df, years, all_months):
+    sales_p = pd.DataFrame()
+    qty_p = pd.DataFrame()
+    unit_price_p = pd.DataFrame()
+    
+    if target_tab3_df.empty:
+        return sales_p, qty_p, unit_price_p
+
+    sales_raw_p = target_tab3_df.pivot_table(index="품목명", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0)
+    qty_raw_p = target_tab3_df.pivot_table(index="품목명", columns="연도월_정렬", values="출고량", aggfunc="sum").fillna(0)
+
+    sales_expanded_data = {}
+    qty_expanded_data = {}
+
+    for yr in years:
+        yr_short = yr[2:]
+        yr_sales_sum = 0
+        yr_qty_sum = 0
+        for m in all_months:
+            col_key = f"{yr_short}년 {m}"
+            s_val = sales_raw_p[col_key] if col_key in sales_raw_p.columns else 0
+            q_val = qty_raw_p[col_key] if col_key in qty_raw_p.columns else 0
+
+            sales_expanded_data[col_key] = s_val
+            qty_expanded_data[col_key] = q_val
+            yr_sales_sum += s_val
+            yr_qty_sum += q_val
+
+        sales_expanded_data[f"{yr_short}년 연간총합"] = yr_sales_sum
+        qty_expanded_data[f"{yr_short}년 연간총합"] = yr_qty_sum
+
+    sales_p = pd.DataFrame(sales_expanded_data, index=sales_raw_p.index)
+    qty_p = pd.DataFrame(qty_expanded_data, index=qty_raw_p.index)
+
+    latest_col = None
+    for yr in years:
+        for m in reversed(all_months):
+            chk_c = f"{yr[2:]}년 {m}"
+            if chk_c in qty_p.columns and qty_p[chk_c].sum() > 0:
+                latest_col = chk_c
+                break
+        if latest_col: break
+    if not latest_col and len(qty_p.columns) > 0:
+        latest_col = qty_p.columns[0]
+
+    if latest_col and latest_col in qty_p.columns:
+        qty_p = qty_p.sort_values(by=latest_col, ascending=False)
+        sales_p = sales_p.reindex(qty_p.index)
+
+    raw_up = target_tab3_df[target_tab3_df["단가"] > 0].pivot_table(index="품목명", columns="연도월_정렬", values="단가", aggfunc="median")
+    if not raw_up.empty:
+        unit_price_p = raw_up.fillna(0)
+        if latest_col in unit_price_p.columns:
+            unit_price_p = unit_price_p.sort_values(by=latest_col, ascending=False)
+            
+    return sales_p, qty_p, unit_price_p
+
+@st.cache_data
+def cached_staff_pivot(df_base, desired_order):
+    if df_base.empty:
+        return pd.DataFrame()
+    staff_raw = (df_base.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) / 10000)
+    staff_cols = [c for c in desired_order if c in staff_raw.columns]
+    return staff_raw.reindex(columns=staff_cols, fill_value=0)
+
+@st.cache_data
+def cached_client_item_qty_pivot(df_client_filtered, years, all_months):
+    if df_client_filtered.empty:
+        return pd.DataFrame()
+    raw_ci_qty = df_client_filtered.pivot_table(
+        index="품목명", columns="연도월_정렬", values="출고량", aggfunc="sum"
+    ).fillna(0)
+    ci_expanded_data = {}
+    for yr in years:
+        yr_short = yr[2:]
+        for m in all_months:
+            col_key = f"{yr_short}년 {m}"
+            q_val = raw_ci_qty[col_key] if col_key in raw_ci_qty.columns else 0
+            ci_expanded_data[col_key] = q_val
+    return pd.DataFrame(ci_expanded_data, index=raw_ci_qty.index)
 
 
 # ==========================================
@@ -761,81 +865,14 @@ if not full_df.empty:
 
     pivot_m_total = cached_get_yearly_monthly_pivot(df_base, all_months, years)
 
-    client_item_qty_pivot = pd.DataFrame()
-    if not df_client_filtered.empty:
-        raw_ci_qty = df_client_filtered.pivot_table(
-            index="품목명", columns="연도월_정렬", values="출고량", aggfunc="sum"
-        ).fillna(0)
+    # 탭 2 피벗 렌더링 최적화 
+    client_item_qty_pivot = cached_client_item_qty_pivot(df_client_filtered, years, all_months)
 
-        ci_expanded_data = {}
-        for yr in years:
-            yr_short = yr[2:]
-            for m in all_months:
-                col_key = f"{yr_short}년 {m}"
-                q_val = raw_ci_qty[col_key] if col_key in raw_ci_qty.columns else 0
-                ci_expanded_data[col_key] = q_val
+    # 탭 3 피벗 렌더링 초고속 최적화
+    sales_p, qty_p, unit_price_p = cached_tab3_pivots(df_f, years, all_months)
 
-        client_item_qty_pivot = pd.DataFrame(ci_expanded_data, index=raw_ci_qty.index)
-
-    sales_p = pd.DataFrame()
-    qty_p = pd.DataFrame()
-    unit_price_p = pd.DataFrame()
-
-    target_tab3_df = df_f
-    if not target_tab3_df.empty:
-        sales_raw_p = target_tab3_df.pivot_table(index="품목명", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0)
-        qty_raw_p = target_tab3_df.pivot_table(index="품목명", columns="연도월_정렬", values="출고량", aggfunc="sum").fillna(0)
-
-        sales_expanded_data = {}
-        qty_expanded_data = {}
-
-        for yr in years:
-            yr_short = yr[2:]
-            yr_sales_sum = 0
-            yr_qty_sum = 0
-            for m in all_months:
-                col_key = f"{yr_short}년 {m}"
-                s_val = sales_raw_p[col_key] if col_key in sales_raw_p.columns else 0
-                q_val = qty_raw_p[col_key] if col_key in qty_raw_p.columns else 0
-
-                sales_expanded_data[col_key] = s_val
-                qty_expanded_data[col_key] = q_val
-
-                yr_sales_sum += s_val
-                yr_qty_sum += q_val
-
-            sales_expanded_data[f"{yr_short}년 연간총합"] = yr_sales_sum
-            qty_expanded_data[f"{yr_short}년 연간총합"] = yr_qty_sum
-
-        sales_p = pd.DataFrame(sales_expanded_data, index=sales_raw_p.index)
-        qty_p = pd.DataFrame(qty_expanded_data, index=qty_raw_p.index)
-
-        latest_col = None
-        for yr in years:
-            for m in reversed(all_months):
-                chk_c = f"{yr[2:]}년 {m}"
-                if chk_c in qty_p.columns and qty_p[chk_c].sum() > 0:
-                    latest_col = chk_c
-                    break
-            if latest_col: break
-        if not latest_col and len(qty_p.columns) > 0:
-            latest_col = qty_p.columns[0]
-
-        if latest_col and latest_col in qty_p.columns:
-            qty_p = qty_p.sort_values(by=latest_col, ascending=False)
-            sales_p = sales_p.reindex(qty_p.index)
-
-        raw_up = target_tab3_df[target_tab3_df["단가"] > 0].pivot_table(index="품목명", columns="연도월_정렬", values="단가", aggfunc="median")
-        if not raw_up.empty:
-            unit_price_p = raw_up.fillna(0)
-            if latest_col in unit_price_p.columns:
-                unit_price_p = unit_price_p.sort_values(by=latest_col, ascending=False)
-
-    staff_pivot = pd.DataFrame()
-    if not df_base.empty:
-        staff_raw = (df_base.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) / 10000)
-        staff_cols = [c for c in desired_order if c in staff_raw.columns]
-        staff_pivot = staff_raw.reindex(columns=staff_cols, fill_value=0)
+    # 탭 4 피벗 렌더링 초고속 최적화
+    staff_pivot = cached_staff_pivot(df_base, desired_order)
 
     detail_cols = ["매출일_dt", "담당자", "거래처", "품목명", "출고량", "단가", "매출액"]
     df_detail = df_f[detail_cols].copy() if not df_f.empty else pd.DataFrame(columns=detail_cols)
@@ -916,13 +953,14 @@ if not full_df.empty:
         use_container_width=True,
     )
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
             "📌 영업 종합 요약",
             "🏢 거래처 분석",
             "📦 품목 및 단가 분석",
             "👤 담당자 & 상세내역",
             "📌 채권 관리",
+            "📍 카카오맵"
         ]
     )
 
@@ -1092,47 +1130,61 @@ if not full_df.empty:
             st.warning("선택한 조건에 해당하는 거래처 데이터가 없습니다.")
 
     # ==========================================
-    # Tab 3: 📦 품목 및 단가 분석
+    # Tab 3: 📦 품목 및 단가 분석 (초고속 WebGL 렌더링 최적화 🚀)
     # ==========================================
     with tab3:
         st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
         
+        # 렉 유발 원인이었던 style.background_gradient를 제거하고, native column config 사용
+        tab3_fmt = {str(c): st.column_config.NumberColumn(format="%,.0f") for c in sales_p.columns} if not sales_p.empty else {}
+        
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
         if not sales_p.empty:
-            st.dataframe((sales_p * 1.1 / 10000).style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=400)
+            st.dataframe((sales_p * 1.1 / 10000), use_container_width=True, height=400, column_config=tab3_fmt)
         else:
             st.info("데이터가 없습니다.")
             
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
         if not qty_p.empty:
-            st.dataframe(qty_p.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=400)
+            st.dataframe(qty_p, use_container_width=True, height=400, column_config=tab3_fmt)
         else:
             st.info("데이터가 없습니다.")
             
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (중간값)</div>", unsafe_allow_html=True)
         if not unit_price_p.empty:
-            st.dataframe(unit_price_p.style.format("{:,.0f}").background_gradient(cmap="Oranges", axis=None), use_container_width=True, height=400)
+            st.dataframe(unit_price_p, use_container_width=True, height=400, column_config=tab3_fmt)
         else:
             st.info("데이터가 없습니다.")
 
     # ==========================================
-    # Tab 4: 👤 담당자 & 상세내역
+    # Tab 4: 👤 담당자 & 상세내역 (초고속 WebGL 렌더링 최적화 🚀)
     # ==========================================
     with tab4:
         st.markdown("<div class='sub-header'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
         if not staff_pivot.empty:
-            st.dataframe(staff_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=350)
+            # 렉 유발 원인이었던 style.background_gradient 제거
+            staff_fmt = {str(c): st.column_config.NumberColumn(format="%,.0f") for c in staff_pivot.columns}
+            st.dataframe(staff_pivot, use_container_width=True, height=350, column_config=staff_fmt)
         else:
             st.info("데이터가 없습니다.")
 
         st.markdown("<div class='sub-header'>📋 거래 상세 내역 (최신순)</div>", unsafe_allow_html=True)
         if not df_detail.empty:
+            # 엄청난 렉의 주범이었던 백그라운드 그라데이션 대신, WebGL 고속 네이티브 테이블을 사용합니다.
             st.dataframe(
-                df_detail.sort_values(by="매출일_dt", ascending=False)
-                .style.format({"출고량": "{:,.0f}", "단가": "{:,.0f}", "매출액": "{:,.0f}"})
-                .background_gradient(subset=["매출액", "출고량"], cmap="Blues"),
+                df_detail.sort_values(by="매출일_dt", ascending=False),
                 use_container_width=True,
-                height=600
+                height=600,
+                hide_index=True,
+                column_config={
+                    "매출일_dt": st.column_config.DateColumn("매출일자", format="YYYY-MM-DD"),
+                    "담당자": "담당자",
+                    "거래처": "거래처",
+                    "품목명": "품목명",
+                    "출고량": st.column_config.NumberColumn("출고량", format="%,.0f"),
+                    "단가": st.column_config.NumberColumn("단가", format="%,.0f"),
+                    "매출액": st.column_config.NumberColumn("매출액", format="%,.0f")
+                }
             )
         else:
             st.info("데이터가 없습니다.")
@@ -1178,6 +1230,117 @@ if not full_df.empty:
                 st.warning("선택한 담당자나 거래처에 해당하는 채권 데이터가 없습니다.")
         else:
             st.warning("업로드된 채권 데이터가 없습니다. 사이드바에서 파일을 등록해주세요.")
+
+    # ==========================================
+    # Tab 6: 📍 카카오맵 대체용 순정 Plotly 지도 (입력창 제거 & 캐싱 적용)
+    # ==========================================
+    with tab6:
+        st.markdown("<div class='sub-header'>📍 담당자별 거래처 지도 분포 (한글/위성 전환)</div>", unsafe_allow_html=True)
+        
+        st.info("💡 상단 필터에서 **[담당자]**를 선택하시면, 선택한 담당자의 거래처만 필터링되어 지도에 표시됩니다.")
+        
+        # 핵심 수정: 불필요한 st.text_input UI를 완전히 제거하고 파이썬 내부 변수로만 깔끔하게 처리합니다.
+        rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
+        
+        map_style_choice = st.radio(
+            "🗺️ 지도 배경 스타일 선택",
+            ["일반 지도 (깔끔한 밝은 배경)", "위성 대체 지도 (어두운 배경)"],
+            horizontal=True,
+            key="map_style_radio"
+        )
+        
+        if "show_map" not in st.session_state:
+            st.session_state.show_map = False
+            
+        if st.button("🗺️ 담당자별 거래처 지도 생성하기", type="primary"):
+            st.session_state.show_map = True
+                
+        if st.session_state.show_map:
+            target_map_df = df_staff_filtered if selected_staff else df_base
+            
+            if not target_map_df.empty:
+                unique_clients_df = target_map_df[['거래처', '담당자']].drop_duplicates(subset=['거래처'])
+                
+                map_data = []
+                total_cnt = len(unique_clients_df)
+                progress_text = "최초 1회 주소 좌표 변환 중입니다 (이후부터는 0.1초 만에 즉시 뜹니다) 🚀"
+                my_bar = st.progress(0, text=progress_text)
+                
+                for i, (_, row) in enumerate(unique_clients_df.iterrows()):
+                    c_name = row['거래처']
+                    c_staff = row['담당자']
+                    c_addr_raw = addr_dict.get(c_name, "")
+                    
+                    if pd.isna(c_addr_raw) or str(c_addr_raw).strip().lower() == 'nan' or not str(c_addr_raw).strip():
+                        c_addr = "등록된 주소 정보가 없습니다."
+                    else:
+                        c_addr = str(c_addr_raw)
+                    
+                    if c_addr != "등록된 주소 정보가 없습니다.":
+                        lat, lon = get_lat_lon_kakao(c_addr, rest_api_key)
+                        if lat is not None and lon is not None:
+                            map_data.append({
+                                "거래처": c_name,
+                                "담당자": c_staff,
+                                "주소": c_addr,
+                                "lat": lat,
+                                "lon": lon
+                            })
+                    # 진행률 게이지 업데이트
+                    my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i+1}/{total_cnt})")
+                
+                # 변환 완료 후 프로그레스 바 없애기
+                my_bar.empty()
+                            
+                if map_data:
+                    map_df = pd.DataFrame(map_data)
+                    
+                    fig_map = go.Figure()
+                    staffs = map_df['담당자'].unique()
+                    colors = ['#E11D48', '#2563EB', '#059669', '#D97706', '#7C3AED', '#4F46E5', '#DB2777', '#0891B2']
+                    
+                    for i, staff in enumerate(staffs):
+                        staff_df = map_df[map_df['담당자'] == staff]
+                        fig_map.add_trace(go.Scattermapbox(
+                            lat=staff_df['lat'],
+                            lon=staff_df['lon'],
+                            mode='markers',
+                            marker=go.scattermapbox.Marker(
+                                size=14,
+                                color=colors[i % len(colors)],
+                                opacity=0.9
+                            ),
+                            text=staff_df['거래처'] + "<br>👤 담당자: " + staff_df['담당자'] + "<br>📍 " + staff_df['주소'],
+                            name=staff,
+                            hoverinfo='text+name'
+                        ))
+                    
+                    center_lat = map_df['lat'].mean()
+                    center_lon = map_df['lon'].mean()
+                    
+                    mapbox_style_val = "carto-positron" if "일반" in map_style_choice else "carto-darkmatter"
+                    
+                    fig_map.update_layout(
+                        mapbox=dict(
+                            style=mapbox_style_val,
+                            center=dict(lat=center_lat, lon=center_lon),
+                            zoom=9
+                        ),
+                        margin={"r":0,"t":10,"l":0,"b":0},
+                        height=650,
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.15,
+                            xanchor="center",
+                            x=0.5
+                        )
+                    )
+                    st.plotly_chart(fig_map, use_container_width=True, key="tab6_map_chart")
+                else:
+                    st.warning("선택한 조건에 해당하는 거래처 중 유효한 주소가 등록된 곳이 없습니다.")
+            else:
+                st.warning("선택한 조건에 해당하는 거래처 데이터가 없습니다.")
 
 else:
     st.info("👈 왼쪽 사이드바에서 매출 데이터를 업로드하면 분석 대시보드가 활성화됩니다.")
