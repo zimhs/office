@@ -5,3 +5,5 @@ openpyxl
 altair
 matplotlib
 plotly
+requests
+beautifulsoup4
