@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+import plotly.express as px
 
 # 페이지 및 Styler 가동 한도 설정
 pd.set_option("styler.render.max_elements", 2000000)
@@ -279,24 +280,59 @@ def get_naver_company_info(company_name):
 
 
 # ==========================================
-# ★ 카카오 지오코딩 API ★
+# ★ 카카오 지오코딩 API (4단계 하이브리드 검색 적용) ★
 # ==========================================
 @st.cache_data(show_spinner=False, max_entries=5000)
-def get_lat_lon_kakao(address, rest_api_key):
-    if not address or address == "등록된 주소 정보가 없습니다.":
-        return None, None
+def get_lat_lon_kakao(company_name, address, rest_api_key):
+    headers = {"Authorization": f"KakaoAK {rest_api_key}"}
+    
+    # 1. 주소 기반 검색 준비 (정제)
+    clean_addr = ""
+    if address and address != "등록된 주소 정보가 없습니다.":
+        clean_addr = re.sub(r'\(.*?\)|\[.*?\]', '', str(address))
+        clean_addr = clean_addr.split(',')[0].strip()
         
-    try:
-        url = "https://dapi.kakao.com/v2/local/search/address.json"
-        headers = {"Authorization": f"KakaoAK {rest_api_key}"}
-        params = {"query": address}
-        res = requests.get(url, headers=headers, params=params, timeout=3)
-        if res.status_code == 200:
-            docs = res.json().get('documents')
-            if docs:
-                return float(docs[0]['y']), float(docs[0]['x'])
-    except Exception:
-        pass
+    # 2. 거래처명 기반 검색 준비 (정제)
+    temp_name = re.sub(r'\(주\)|\(유\)|\(합\)|주식회사|㈜', '', str(company_name))
+    match = re.search(r'\((.*?)\)', temp_name)
+    
+    clean_name = ""
+    if match:
+        clean_name = match.group(1).strip()
+    else:
+        clean_name = re.sub(r'^[zZ]', '', temp_name).strip()
+
+    # [STEP 1] 정제된 주소로 '주소 검색'
+    if clean_addr:
+        try:
+            res = requests.get("https://dapi.kakao.com/v2/local/search/address.json", headers=headers, params={"query": clean_addr}, timeout=3)
+            if res.status_code == 200 and res.json().get('documents'):
+                return float(res.json()['documents'][0]['y']), float(res.json()['documents'][0]['x'])
+        except: pass
+        
+        # [STEP 2] 정제된 주소로 '키워드 검색' 
+        try:
+            res = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json", headers=headers, params={"query": clean_addr}, timeout=3)
+            if res.status_code == 200 and res.json().get('documents'):
+                return float(res.json()['documents'][0]['y']), float(res.json()['documents'][0]['x'])
+        except: pass
+        
+    # [STEP 3] 주소가 없거나 1,2단계 실패 시 -> '괄호 안 상호명'으로 검색
+    if clean_name:
+        try:
+            res = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json", headers=headers, params={"query": clean_name}, timeout=3)
+            if res.status_code == 200 and res.json().get('documents'):
+                return float(res.json()['documents'][0]['y']), float(res.json()['documents'][0]['x'])
+        except: pass
+        
+    # [STEP 4] 최후의 보루 -> 원본 상호명 전체로 검색
+    if company_name:
+        try:
+            res = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json", headers=headers, params={"query": str(company_name)}, timeout=3)
+            if res.status_code == 200 and res.json().get('documents'):
+                return float(res.json()['documents'][0]['y']), float(res.json()['documents'][0]['x'])
+        except: pass
+
     return None, None
 
 
@@ -1222,28 +1258,26 @@ if not full_df.empty:
             st.warning("업로드된 채권 데이터가 없습니다. 사이드바에서 파일을 등록해주세요.")
 
     # ==========================================
-    # Tab 6: 📍 카카오맵 대체용 순정 Plotly 지도 (독립 필터 및 오류 수정)
+    # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
     # ==========================================
     with tab6:
-        st.markdown("<div class='sub-header'>📍 담당자별 거래처 지도 분포 (한글/위성 전환)</div>", unsafe_allow_html=True)
+        st.markdown("<div class='sub-header'>📍 담당자별 거래처 지도 분포 (대한민국 V-World 지도)</div>", unsafe_allow_html=True)
         
         st.info("💡 아래의 **[지도 전용 담당자 필터]**를 사용해 독립적으로 지도에 표시할 담당자를 선택할 수 있습니다.")
         
         rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
         
-        # 라디오 버튼과 담당자 선택을 좌우(1:1 비율)로 분리 배치
         map_col1, map_col2 = st.columns([1, 1])
         
         with map_col1:
             map_style_choice = st.radio(
                 "🗺️ 지도 배경 스타일 선택",
-                ["일반 지도 (깔끔한 밝은 배경)", "위성 대체 지도 (어두운 배경)"],
+                ["일반 지도 (V-World 한글 기본도)", "위성 지도 (V-World 고해상도 위성)"],
                 horizontal=True,
                 key="map_style_radio"
             )
             
         with map_col2:
-            # 글로벌 필터와 독립적인 전체 담당자 목록 생성
             all_staff_list = sorted(df_base["담당자"].unique()) if not df_base.empty else []
             map_selected_staff = st.multiselect(
                 "👤 지도 전용 담당자 선택", 
@@ -1259,7 +1293,6 @@ if not full_df.empty:
             st.session_state.show_map = True
                 
         if st.session_state.show_map:
-            # 오류 해결 핵심: 전역 필터(df_staff_filtered) 무시 후 순수 df_base에서 필터링 적용
             if map_selected_staff:
                 target_map_df = df_base[df_base["담당자"].isin(map_selected_staff)]
             else:
@@ -1273,30 +1306,28 @@ if not full_df.empty:
                 progress_text = "최초 1회 주소 좌표 변환 중입니다 (이후부터는 빠르게 로딩됩니다) 🚀"
                 my_bar = st.progress(0, text=progress_text)
                 
-                invalid_clients = [] # 좌표 변환 누락 거래처 수집용
+                invalid_clients = [] 
                 
                 for i, (_, row) in enumerate(unique_clients_df.iterrows()):
                     c_name = row['거래처']
                     c_staff = row['담당자']
-                    c_addr_raw = addr_dict.get(c_name, "")
                     
+                    c_addr_raw = addr_dict.get(c_name, "")
                     if pd.isna(c_addr_raw) or str(c_addr_raw).strip().lower() == 'nan' or not str(c_addr_raw).strip():
                         c_addr = "등록된 주소 정보가 없습니다."
                     else:
                         c_addr = str(c_addr_raw)
                     
-                    if c_addr != "등록된 주소 정보가 없습니다.":
-                        lat, lon = get_lat_lon_kakao(c_addr, rest_api_key)
-                        if lat is not None and lon is not None:
-                            map_data.append({
-                                "거래처": c_name,
-                                "담당자": c_staff,
-                                "주소": c_addr,
-                                "lat": lat,
-                                "lon": lon
-                            })
-                        else:
-                            invalid_clients.append(c_name)
+                    lat, lon = get_lat_lon_kakao(c_name, c_addr, rest_api_key)
+                    
+                    if lat is not None and lon is not None:
+                        map_data.append({
+                            "거래처": c_name,
+                            "담당자": c_staff,
+                            "주소": c_addr,
+                            "lat": lat,
+                            "lon": lon
+                        })
                     else:
                         invalid_clients.append(c_name)
                         
@@ -1307,39 +1338,43 @@ if not full_df.empty:
                 if map_data:
                     map_df = pd.DataFrame(map_data)
                     
-                    fig_map = go.Figure()
-                    staffs = map_df['담당자'].unique()
-                    colors = ['#E11D48', '#2563EB', '#059669', '#D97706', '#7C3AED', '#4F46E5', '#DB2777', '#0891B2']
-                    
-                    for i, staff in enumerate(staffs):
-                        staff_df = map_df[map_df['담당자'] == staff]
-                        fig_map.add_trace(go.Scattermapbox(
-                            lat=staff_df['lat'],
-                            lon=staff_df['lon'],
-                            mode='markers',
-                            marker=go.scattermapbox.Marker(
-                                size=14,
-                                color=colors[i % len(colors)],
-                                opacity=0.9
-                            ),
-                            text=staff_df['거래처'] + "<br>👤 담당자: " + staff_df['담당자'] + "<br>📍 " + staff_df['주소'],
-                            name=staff,
-                            hoverinfo='text+name'
-                        ))
-                    
                     center_lat = map_df['lat'].mean()
                     center_lon = map_df['lon'].mean()
                     
-                    mapbox_style_val = "carto-positron" if "일반" in map_style_choice else "carto-darkmatter"
+                    fig_map = px.scatter_mapbox(
+                        map_df,
+                        lat="lat",
+                        lon="lon",
+                        color="담당자",
+                        hover_name="거래처",
+                        hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
+                        zoom=8,
+                        center={"lat": center_lat, "lon": center_lon},
+                        height=650
+                    )
+
+                    fig_map.update_traces(marker=dict(size=14, opacity=0.9))
+                    
+                    # 국토교통부 V-World 타일 주소 설정 (완벽한 한글 지원 및 고해상도 위성)
+                    vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
+                    vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
+                    vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
+                    
+                    if "일반" in map_style_choice:
+                        mapbox_layers = [
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
+                        ]
+                    else:
+                        # 위성 지도와 지역 라벨(하이브리드) 겹치기
+                        mapbox_layers = [
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
+                        ]
                     
                     fig_map.update_layout(
-                        mapbox=dict(
-                            style=mapbox_style_val,
-                            center=dict(lat=center_lat, lon=center_lon),
-                            zoom=9
-                        ),
-                        margin={"r":0,"t":10,"l":0,"b":0},
-                        height=650,
+                        mapbox_style="white-bg", # 외부 래스터 타일 사용을 위한 필수 설정
+                        mapbox_layers=mapbox_layers,
+                        margin={"r": 0, "t": 10, "l": 0, "b": 0},
                         legend=dict(
                             orientation="h",
                             yanchor="bottom",
@@ -1348,9 +1383,10 @@ if not full_df.empty:
                             x=0.5
                         )
                     )
-                    st.plotly_chart(fig_map, use_container_width=True, key="tab6_map_chart")
                     
-                    # 주소가 없어 지도에 표시되지 않은 거래처를 하단에서 확인 가능
+                    dynamic_key = f"map_chart_{hash(str(map_selected_staff))}"
+                    st.plotly_chart(fig_map, use_container_width=True, key=dynamic_key)
+                    
                     if invalid_clients:
                         with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
                             st.write(", ".join(invalid_clients))
