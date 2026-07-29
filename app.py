@@ -1130,62 +1130,52 @@ if not full_df.empty:
             st.warning("선택한 조건에 해당하는 거래처 데이터가 없습니다.")
 
     # ==========================================
-    # Tab 3: 📦 품목 및 단가 분석 (초고속 WebGL 렌더링 최적화 🚀)
+    # Tab 3: 📦 품목 및 단가 분석 (그라데이션 스타일 복구)
     # ==========================================
     with tab3:
         st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
         
-        # 렉 유발 원인이었던 style.background_gradient를 제거하고, native column config 사용
-        tab3_fmt = {str(c): st.column_config.NumberColumn(format="%,.0f") for c in sales_p.columns} if not sales_p.empty else {}
-        
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
         if not sales_p.empty:
-            st.dataframe((sales_p * 1.1 / 10000), use_container_width=True, height=400, column_config=tab3_fmt)
+            st.dataframe((sales_p * 1.1 / 10000).style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=400)
         else:
             st.info("데이터가 없습니다.")
             
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
         if not qty_p.empty:
-            st.dataframe(qty_p, use_container_width=True, height=400, column_config=tab3_fmt)
+            st.dataframe(qty_p.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=400)
         else:
             st.info("데이터가 없습니다.")
             
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (중간값)</div>", unsafe_allow_html=True)
         if not unit_price_p.empty:
-            st.dataframe(unit_price_p, use_container_width=True, height=400, column_config=tab3_fmt)
+            st.dataframe(unit_price_p.style.format("{:,.0f}").background_gradient(cmap="Oranges", axis=None), use_container_width=True, height=400)
         else:
             st.info("데이터가 없습니다.")
 
     # ==========================================
-    # Tab 4: 👤 담당자 & 상세내역 (초고속 WebGL 렌더링 최적화 🚀)
+    # Tab 4: 👤 담당자 & 상세내역 (그라데이션 스타일 복구)
     # ==========================================
     with tab4:
         st.markdown("<div class='sub-header'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
         if not staff_pivot.empty:
-            # 렉 유발 원인이었던 style.background_gradient 제거
-            staff_fmt = {str(c): st.column_config.NumberColumn(format="%,.0f") for c in staff_pivot.columns}
-            st.dataframe(staff_pivot, use_container_width=True, height=350, column_config=staff_fmt)
+            st.dataframe(staff_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=350)
         else:
             st.info("데이터가 없습니다.")
 
         st.markdown("<div class='sub-header'>📋 거래 상세 내역 (최신순)</div>", unsafe_allow_html=True)
         if not df_detail.empty:
-            # 엄청난 렉의 주범이었던 백그라운드 그라데이션 대신, WebGL 고속 네이티브 테이블을 사용합니다.
-            st.dataframe(
-                df_detail.sort_values(by="매출일_dt", ascending=False),
-                use_container_width=True,
-                height=600,
-                hide_index=True,
-                column_config={
-                    "매출일_dt": st.column_config.DateColumn("매출일자", format="YYYY-MM-DD"),
-                    "담당자": "담당자",
-                    "거래처": "거래처",
-                    "품목명": "품목명",
-                    "출고량": st.column_config.NumberColumn("출고량", format="%,.0f"),
-                    "단가": st.column_config.NumberColumn("단가", format="%,.0f"),
-                    "매출액": st.column_config.NumberColumn("매출액", format="%,.0f")
-                }
+            styled_detail = (
+                df_detail.sort_values(by="매출일_dt", ascending=False)
+                .style.format({
+                    "출고량": "{:,.0f}",
+                    "단가": "{:,.0f}",
+                    "매출액": "{:,.0f}",
+                    "매출일_dt": lambda t: t.strftime("%Y-%m-%d") if pd.notnull(t) else ""
+                })
+                .background_gradient(subset=["매출액"], cmap="Blues")
             )
+            st.dataframe(styled_detail, use_container_width=True, height=600, hide_index=True)
         else:
             st.info("데이터가 없습니다.")
 
@@ -1232,22 +1222,35 @@ if not full_df.empty:
             st.warning("업로드된 채권 데이터가 없습니다. 사이드바에서 파일을 등록해주세요.")
 
     # ==========================================
-    # Tab 6: 📍 카카오맵 대체용 순정 Plotly 지도 (입력창 제거 & 캐싱 적용)
+    # Tab 6: 📍 카카오맵 대체용 순정 Plotly 지도 (독립 필터 및 오류 수정)
     # ==========================================
     with tab6:
         st.markdown("<div class='sub-header'>📍 담당자별 거래처 지도 분포 (한글/위성 전환)</div>", unsafe_allow_html=True)
         
-        st.info("💡 상단 필터에서 **[담당자]**를 선택하시면, 선택한 담당자의 거래처만 필터링되어 지도에 표시됩니다.")
+        st.info("💡 아래의 **[지도 전용 담당자 필터]**를 사용해 독립적으로 지도에 표시할 담당자를 선택할 수 있습니다.")
         
-        # 핵심 수정: 불필요한 st.text_input UI를 완전히 제거하고 파이썬 내부 변수로만 깔끔하게 처리합니다.
         rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
         
-        map_style_choice = st.radio(
-            "🗺️ 지도 배경 스타일 선택",
-            ["일반 지도 (깔끔한 밝은 배경)", "위성 대체 지도 (어두운 배경)"],
-            horizontal=True,
-            key="map_style_radio"
-        )
+        # 라디오 버튼과 담당자 선택을 좌우(1:1 비율)로 분리 배치
+        map_col1, map_col2 = st.columns([1, 1])
+        
+        with map_col1:
+            map_style_choice = st.radio(
+                "🗺️ 지도 배경 스타일 선택",
+                ["일반 지도 (깔끔한 밝은 배경)", "위성 대체 지도 (어두운 배경)"],
+                horizontal=True,
+                key="map_style_radio"
+            )
+            
+        with map_col2:
+            # 글로벌 필터와 독립적인 전체 담당자 목록 생성
+            all_staff_list = sorted(df_base["담당자"].unique()) if not df_base.empty else []
+            map_selected_staff = st.multiselect(
+                "👤 지도 전용 담당자 선택", 
+                options=all_staff_list, 
+                default=all_staff_list,
+                key="map_staff_multiselect"
+            )
         
         if "show_map" not in st.session_state:
             st.session_state.show_map = False
@@ -1256,15 +1259,21 @@ if not full_df.empty:
             st.session_state.show_map = True
                 
         if st.session_state.show_map:
-            target_map_df = df_staff_filtered if selected_staff else df_base
+            # 오류 해결 핵심: 전역 필터(df_staff_filtered) 무시 후 순수 df_base에서 필터링 적용
+            if map_selected_staff:
+                target_map_df = df_base[df_base["담당자"].isin(map_selected_staff)]
+            else:
+                target_map_df = df_base.copy()
             
             if not target_map_df.empty:
                 unique_clients_df = target_map_df[['거래처', '담당자']].drop_duplicates(subset=['거래처'])
                 
                 map_data = []
                 total_cnt = len(unique_clients_df)
-                progress_text = "최초 1회 주소 좌표 변환 중입니다 (이후부터는 0.1초 만에 즉시 뜹니다) 🚀"
+                progress_text = "최초 1회 주소 좌표 변환 중입니다 (이후부터는 빠르게 로딩됩니다) 🚀"
                 my_bar = st.progress(0, text=progress_text)
+                
+                invalid_clients = [] # 좌표 변환 누락 거래처 수집용
                 
                 for i, (_, row) in enumerate(unique_clients_df.iterrows()):
                     c_name = row['거래처']
@@ -1286,12 +1295,15 @@ if not full_df.empty:
                                 "lat": lat,
                                 "lon": lon
                             })
-                    # 진행률 게이지 업데이트
+                        else:
+                            invalid_clients.append(c_name)
+                    else:
+                        invalid_clients.append(c_name)
+                        
                     my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i+1}/{total_cnt})")
                 
-                # 변환 완료 후 프로그레스 바 없애기
                 my_bar.empty()
-                            
+                
                 if map_data:
                     map_df = pd.DataFrame(map_data)
                     
@@ -1337,10 +1349,16 @@ if not full_df.empty:
                         )
                     )
                     st.plotly_chart(fig_map, use_container_width=True, key="tab6_map_chart")
+                    
+                    # 주소가 없어 지도에 표시되지 않은 거래처를 하단에서 확인 가능
+                    if invalid_clients:
+                        with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
+                            st.write(", ".join(invalid_clients))
+                            
                 else:
-                    st.warning("선택한 조건에 해당하는 거래처 중 유효한 주소가 등록된 곳이 없습니다.")
+                    st.warning("선택한 조건에 해당하는 거래처 중 유효한 주소가 등록된 곳이 없어 지도를 그릴 수 없습니다.")
             else:
-                st.warning("선택한 조건에 해당하는 거래처 데이터가 없습니다.")
+                st.warning("선택한 담당자의 거래처 데이터가 없습니다.")
 
 else:
     st.info("👈 왼쪽 사이드바에서 매출 데이터를 업로드하면 분석 대시보드가 활성화됩니다.")
