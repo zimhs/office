@@ -295,7 +295,7 @@ def open_macos_notes_folder(client_name):
         return False
 
 
-def create_stacked_bar_chart(pivot_df, title_text, y_suffix="", y_format=",.0f"):
+def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0f"):
     fig = go.Figure()
     sorted_years = sorted(pivot_df.columns, key=lambda x: str(x))
     
@@ -322,8 +322,7 @@ def create_stacked_bar_chart(pivot_df, title_text, y_suffix="", y_format=",.0f")
             )
         )
 
-    fig.update_layout(
-        title=dict(text=title_text, font=dict(size=15, color="#1E293B")),
+    layout_args = dict(
         barmode='stack',
         xaxis=dict(title=None, tickangle=0),
         yaxis=dict(title=None, gridcolor='#E2E8F0'),
@@ -334,11 +333,17 @@ def create_stacked_bar_chart(pivot_df, title_text, y_suffix="", y_format=",.0f")
             xanchor="center",
             x=0.5
         ),
-        margin=dict(l=10, r=10, t=40, b=40),
+        margin=dict(l=10, r=10, t=10, b=40), 
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
         height=420
     )
+    
+    if title_text:
+        layout_args['title'] = dict(text=title_text, font=dict(size=14, color="#334155"))
+        layout_args['margin']['t'] = 40
+        
+    fig.update_layout(**layout_args)
     return fig
 
 
@@ -405,7 +410,7 @@ def load_debt_file(debt_bytes):
     return pd.DataFrame()
 
 
-@st.cache_data(show_spinner="데이터를 파싱 및 캐싱 중입니다...")
+@st.cache_data(show_spinner="데이터 파싱 중입니다...")
 def load_uploaded_files_from_bytes(file_tuples):
     if not file_tuples:
         return pd.DataFrame()
@@ -518,8 +523,7 @@ def load_uploaded_files_from_bytes(file_tuples):
 # ==========================================
 inject_custom_css()
 
-st.title("📊 통합 영업 분석 대시보드")
-st.markdown("<p style='color: #64748B; margin-bottom: 15px;'>실시간 영업 데이터 모니터링 및 품목·거래처별 다차원 분석 시스템</p>", unsafe_allow_html=True)
+# 최상단 대시보드 타이틀 라벨 및 설명 제거
 
 st.sidebar.header("📁 데이터 업로드 및 유지")
 
@@ -792,7 +796,6 @@ if not full_df.empty:
     filtered_debt_df = pd.DataFrame()
     if not debt_df.empty:
         if selected_staff:
-            # 선택된 담당자들의 거래처 목록 추출 (매출 데이터 기준)
             valid_staff_clients = full_df[full_df["담당자"].isin(selected_staff)]["거래처"].unique()
             filtered_debt_df = debt_df[debt_df["거래처"].isin(valid_staff_clients)].copy()
         else:
@@ -813,7 +816,6 @@ if not full_df.empty:
         "상세거래내역": (df_detail, False),
     }
     
-    # 엑셀 다운로드에도 담당자/거래처 필터가 종속 적용된 채권 데이터 사용
     if not filtered_debt_df.empty:
         sheets_dict["채권관리_현황"] = (filtered_debt_df, False)
 
@@ -851,23 +853,22 @@ if not full_df.empty:
         m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_total < 0 else '#2563EB'};'>{mom_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
         m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_total < 0 else '#2563EB'};'>{avg_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
 
-        # 전체 매출 표 & 차트 (히트맵 배경 적용)
         st.markdown("<div class='sub-header'>📊 전체 영업 연도별 월 매출 추이</div>", unsafe_allow_html=True)
         col_left, col_right = st.columns([1, 1])
         
         with col_left:
-            st.markdown("##### 📋 연도별 월별 매출액 (만원) 데이터 (VAT 포함)")
-            st.dataframe(pivot_m_total.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None))
+            st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 연도별 월별 매출액 (만원) 데이터 (VAT 포함)</div>", unsafe_allow_html=True)
+            st.dataframe(pivot_m_total.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
 
         with col_right:
+            st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 전체 영업 연도별 월 매출</div>", unsafe_allow_html=True)
             st.plotly_chart(
-                create_stacked_bar_chart(pivot_m_total, "전체 영업 연도별 월 매출", "만원"),
-                use_container_width=True
+                create_stacked_bar_chart(pivot_m_total, title_text=""),
+                use_container_width=True, key="tab1_total_chart"
             )
             
         st.markdown("---")
         
-        # 주요 4대 품목 상세 분석 표 & 차트 연동 섹션 (히트맵 배경 적용)
         st.markdown("<div class='sub-header'>📦 주요 4대 품목 상세 분석</div>", unsafe_allow_html=True)
         
         sel_col1, sel_col2 = st.columns([1, 1])
@@ -880,31 +881,31 @@ if not full_df.empty:
         
         i_col_left, i_col_right = st.columns([1, 1])
         with i_col_left:
-            st.markdown(f"##### 📋 {selected_target_item} {selected_metric.split(' ')[0]} 데이터")
+            st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 {selected_target_item} {selected_metric.split(' ')[0]} 데이터</div>", unsafe_allow_html=True)
             
-            # 선택된 지표에 맞춰 포맷팅 및 그라데이션(컬러맵) 다르게 적용
             if "비중" in selected_metric:
-                st.dataframe(item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None))
+                st.dataframe(item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
                 y_suf = "%"
                 y_fmt = ",.1f"
             elif "출고량" in selected_metric:
-                st.dataframe(item_pivot.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None))
+                st.dataframe(item_pivot.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
                 y_suf = " kg"
                 y_fmt = ",.0f"
             else:
-                st.dataframe(item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None))
+                st.dataframe(item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
                 y_suf = " 만원"
                 y_fmt = ",.0f"
                 
         with i_col_right:
+            st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 {selected_target_item} 연도별 월별 {selected_metric.split(' ')[0]}</div>", unsafe_allow_html=True)
             st.plotly_chart(
                 create_stacked_bar_chart(
                     item_pivot, 
-                    f"{selected_target_item} 연도별 월별 {selected_metric.split(' ')[0]}", 
+                    title_text="", 
                     y_suffix=y_suf, 
                     y_format=y_fmt
                 ),
-                use_container_width=True
+                use_container_width=True, key="tab1_item_chart"
             )
 
     # ==========================================
@@ -913,15 +914,12 @@ if not full_df.empty:
     with tab2:
         st.markdown(f"<div class='sub-header'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
         
-        # 주소록 데이터 매칭
         client_addr = addr_dict.get(selected_client, "등록된 주소 정보가 없습니다.")
         st.info(f"📍 주소: {client_addr}")
         
-        # 버튼 영역을 나누어 나란히 배치
         btn_c1, btn_c2 = st.columns([1, 1])
         
         with btn_c1:
-            # macOS 메모 앱 연동
             if st.button("📝 macOS 메모 앱에서 거래처 노트 열기/생성", key="btn_notes"):
                 if open_macos_notes_folder(selected_client):
                     st.success(f"'{selected_client}' 메모가 활성화되었습니다.")
@@ -929,14 +927,12 @@ if not full_df.empty:
                     st.error("메모 앱을 열 수 없습니다. (macOS 환경인지 확인해주세요)")
                     
         with btn_c2:
-            # 카카오맵 주소 검색 연동
             if client_addr != "등록된 주소 정보가 없습니다.":
                 kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(client_addr)}"
                 st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url)
             else:
                 st.button("🗺️ 카카오맵에서 주소 보기", disabled=True, key="btn_kakao_disabled")
 
-        # 거래처 주요 지표
         m1, m2, m3, m4 = st.columns(4)
         tot_sales_c = df_client_filtered["매출액"].sum() * 1.1 / 10000 if not df_client_filtered.empty else 0.0
         cur_sales_c = cur_month_sales_client * 1.1 / 10000
@@ -950,17 +946,17 @@ if not full_df.empty:
             pivot_m_client = get_yearly_monthly_pivot(df_client_filtered)
             cl, cr = st.columns([1, 1])
             with cl:
-                st.markdown("##### 📋 거래처 월별 매출액 (만원)")
-                st.dataframe(pivot_m_client.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None))
+                st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 거래처 월별 매출액 (만원)</div>", unsafe_allow_html=True)
+                st.dataframe(pivot_m_client.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
             with cr:
+                st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 [{selected_client}] 연도별 월 매출</div>", unsafe_allow_html=True)
                 st.plotly_chart(
-                    create_stacked_bar_chart(pivot_m_client, f"[{selected_client}] 연도별 월 매출", "만원"),
-                    use_container_width=True
+                    create_stacked_bar_chart(pivot_m_client, title_text=""),
+                    use_container_width=True, key="tab2_client_total_chart"
                 )
                 
             st.markdown("---")
             
-            # 선택 거래처의 '모든' 품목 상세 분석 표 & 차트 (히트맵 배경 적용)
             st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
             
             client_available_items = sorted(df_client_filtered["품목명"].unique())
@@ -976,30 +972,31 @@ if not full_df.empty:
                 
                 i_col_left_c, i_col_right_c = st.columns([1, 1])
                 with i_col_left_c:
-                    st.markdown(f"##### 📋 {selected_target_item_c} {selected_metric_c.split(' ')[0]} 데이터")
+                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 {selected_target_item_c} {selected_metric_c.split(' ')[0]} 데이터</div>", unsafe_allow_html=True)
                     
                     if "비중" in selected_metric_c:
-                        st.dataframe(client_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None))
+                        st.dataframe(client_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
                         y_suf_c = "%"
                         y_fmt_c = ",.1f"
                     elif "출고량" in selected_metric_c:
-                        st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None))
+                        st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
                         y_suf_c = " kg"
                         y_fmt_c = ",.0f"
                     else:
-                        st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None))
+                        st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
                         y_suf_c = " 만원"
                         y_fmt_c = ",.0f"
                         
                 with i_col_right_c:
+                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 [{selected_client}] {selected_target_item_c} 연도별 월별 {selected_metric_c.split(' ')[0]}</div>", unsafe_allow_html=True)
                     st.plotly_chart(
                         create_stacked_bar_chart(
                             client_item_pivot, 
-                            f"[{selected_client}] {selected_target_item_c} 연도별 월별 {selected_metric_c.split(' ')[0]}", 
+                            title_text="", 
                             y_suffix=y_suf_c, 
                             y_format=y_fmt_c
                         ),
-                        use_container_width=True
+                        use_container_width=True, key="tab2_client_item_chart"
                     )
             else:
                 st.info("해당 거래처에 대한 품목별 상세 데이터가 존재하지 않습니다.")
@@ -1012,24 +1009,21 @@ if not full_df.empty:
     with tab3:
         st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
         
-        st.markdown("##### 1️⃣ 매출액 (VAT 포함, 만원)")
+        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
         if not sales_p.empty:
-            # ---------------------------------------------------------
-            # 요청사항 반영: 소수점 1자리({:,.1f})를 소수점 제거({:,.0f})로 변경
-            # ---------------------------------------------------------
-            st.dataframe((sales_p * 1.1 / 10000).style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None))
+            st.dataframe((sales_p * 1.1 / 10000).style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=400)
         else:
             st.info("데이터가 없습니다.")
             
-        st.markdown("##### 2️⃣ 출고량")
+        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
         if not qty_p.empty:
-            st.dataframe(qty_p.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None))
+            st.dataframe(qty_p.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=400)
         else:
             st.info("데이터가 없습니다.")
             
-        st.markdown("##### 3️⃣ 적용 단가 (중간값)")
+        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (중간값)</div>", unsafe_allow_html=True)
         if not unit_price_p.empty:
-            st.dataframe(unit_price_p.style.format("{:,.0f}").background_gradient(cmap="Oranges", axis=None))
+            st.dataframe(unit_price_p.style.format("{:,.0f}").background_gradient(cmap="Oranges", axis=None), use_container_width=True, height=400)
         else:
             st.info("데이터가 없습니다.")
 
@@ -1039,18 +1033,18 @@ if not full_df.empty:
     with tab4:
         st.markdown("<div class='sub-header'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
         if not staff_pivot.empty:
-            st.dataframe(staff_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None))
+            st.dataframe(staff_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=350)
         else:
             st.info("데이터가 없습니다.")
 
         st.markdown("<div class='sub-header'>📋 거래 상세 내역 (최신순)</div>", unsafe_allow_html=True)
         if not df_detail.empty:
-            # 상세 내역은 텍스트 컬럼이 섞여 있으므로 특정 수치형 컬럼에만 그라데이션 적용
             st.dataframe(
                 df_detail.sort_values(by="매출일_dt", ascending=False)
                 .style.format({"출고량": "{:,.0f}", "단가": "{:,.0f}", "매출액": "{:,.0f}"})
                 .background_gradient(subset=["매출액", "출고량"], cmap="Blues"),
-                use_container_width=True
+                use_container_width=True,
+                height=600
             )
         else:
             st.info("데이터가 없습니다.")
@@ -1065,22 +1059,16 @@ if not full_df.empty:
             if not filtered_debt_df.empty:
                 numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
                 
-                # --- 표 스타일링 및 그라디에이션/하이라이트 함수 ---
                 def apply_debt_style(df_to_style):
-                    # 1. 거래처별 구분을 확실히 하기 위해 회색 톤을 더 진하게(#E2E8F0) 변경
                     unique_clients = df_to_style['거래처'].unique()
                     color_map = {client: '#FFFFFF' if i % 2 == 0 else '#E2E8F0' for i, client in enumerate(unique_clients)}
                     
                     def row_style(row):
                         bg_color = color_map.get(row['거래처'], '#FFFFFF')
-                        # 기본 배경색 설정
                         style_list = [f'background-color: {bg_color}'] * len(row)
-                        
-                        # '구분' 값에 따른 추가 텍스트 스타일링
                         idx_gubun = df_to_style.columns.get_loc('구분')
                         
                         if row['구분'] == '잔액':
-                            # 잔액 행: 전체 굵게 + 파란색 폰트
                             style_list = [f'background-color: {bg_color}; font-weight: 700; color: #1E3A8A;' for _ in range(len(row))]
                         else:
                             if row['구분'] == '매출':
@@ -1090,15 +1078,12 @@ if not full_df.empty:
                                 
                         return style_list
 
-                    # 숫자 포맷팅 및 행별 스타일 적용
                     return (
                         df_to_style.style
                         .format(subset=numeric_cols, formatter="{:,.0f}")
                         .apply(row_style, axis=1)
                     )
 
-                # --- 데이터 출력 ---
-                # 선택된 거래처가 전체가 아닐경우 표 높이를 조절하여 보기 편하게 함
                 df_height = 500 if selected_client != "전체 거래처" else 700
                 st.dataframe(apply_debt_style(filtered_debt_df), use_container_width=True, height=df_height)
             else:
