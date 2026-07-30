@@ -12,6 +12,12 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 
+# OpenDartReader 임포트 (설치되지 않았을 경우를 대비한 예외 처리)
+try:
+    import OpenDartReader
+except ImportError:
+    OpenDartReader = None
+
 # 페이지 및 Styler 가동 한도 설정
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide")
@@ -24,7 +30,7 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 # ==========================================
-# 1. 아이패드/모바일 최적화 CSS Injection (터치 및 스크롤 개선)
+# 1. 아이패드/모바일 최적화 CSS Injection
 # ==========================================
 def inject_custom_css():
     st.markdown(
@@ -56,7 +62,6 @@ def inject_custom_css():
                 color: #334155 !important;
             }
 
-            /* 아이패드/모바일 터치 스크롤 영역 부드럽게 처리 */
             div[data-testid="stDataFrame"] {
                 -webkit-overflow-scrolling: touch;
             }
@@ -93,7 +98,6 @@ def inject_custom_css():
                 padding-left: 10px;
             }
             
-            /* Radio 버튼 그룹 최적화 */
             div[role="radiogroup"] {
                 padding: 10px;
                 background: white;
@@ -182,22 +186,16 @@ def normalize_items_vectorized(df):
     is_o2 = is_bulk & ~is_co2 & (p_upper.str.contains("O2", na=False) | p_str.str.contains("산소", na=False))
     is_n2 = is_bulk & (p_upper.str.contains("N2", na=False) | p_str.str.contains("질소", na=False))
 
-    # [중요 보완] 오직 N2 리터(L) 단위 품목만을 엄격하게 식별하는 마스크
     is_n2_liter = is_n2 & (p_upper.str.contains("L|LITER", na=False) | p_str.str.contains("리터", na=False))
 
-    # 1. N2 (liter, Bulk) 강제 보정 로직 (모든 질소 X, 리터 단위만 O)
     if is_n2_liter.any():
         if "출고량" in df.columns:
-            # 출고량은 0.808을 곱하여 kg으로 환산
             df.loc[is_n2_liter, "출고량"] = df.loc[is_n2_liter, "출고량"] * 0.808
         if "단가" in df.columns:
-            # 단가는 1.238을 강제로 곱하여 kg 단가로 적용
             df.loc[is_n2_liter, "단가"] = df.loc[is_n2_liter, "단가"] * 1.238
         if "매출액" in df.columns and "출고량" in df.columns and "단가" in df.columns:
-            # 단가와 출고량이 보정되었으므로 매출액도 오차 없이 완벽하게 재계산하여 동기화
             df.loc[is_n2_liter, "매출액"] = df.loc[is_n2_liter, "출고량"] * df.loc[is_n2_liter, "단가"]
 
-    # 2. 모든 4대 품목의 이름을 통일 (N2 리터 품목도 여기서 "N2 (kg, Bulk)"로 완전히 덮어씌워져 병합됨)
     df.loc[is_ar, "품목명"] = "AR (kg, Bulk)"
     df.loc[is_co2, "품목명"] = "CO2 (kg, Bulk)"
     df.loc[is_o2, "품목명"] = "O2 (kg, Bulk)"
@@ -227,9 +225,10 @@ def convert_dfs_to_excel(dfs_dict):
 
 
 # ==========================================
-# ★ 네이버 크롤링 유틸리티 ★
+# ★ 네이버 크롤링 + DART API 하이브리드 유틸리티 ★
 # ==========================================
-def get_naver_company_info(company_name):
+@st.cache_data(show_spinner=False, max_entries=100)
+def get_company_info_hybrid(company_name, dart_api_key=None):
     clean_name = re.sub(r'\(.*?\)|\[.*?\]|주식회사|㈜|\(주\)|주\)', '', company_name).strip()
     if not clean_name:
         clean_name = company_name 
@@ -239,44 +238,78 @@ def get_naver_company_info(company_name):
         "industry": "정보 없음",
         "revenue": "정보 없음",
         "profit": "정보 없음",
-        "clean_name": clean_name
+        "clean_name": clean_name,
+        "source": "정보 없음",
+        "dart_error": "" 
     }
-    
-    try:
-        search_query = urllib.parse.quote(clean_name + " 기업정보")
-        url = f"https://search.naver.com/search.naver?query={search_query}"
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        
-        response = requests.get(url, headers=headers, timeout=3)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            texts = list(soup.stripped_strings)
+
+    dart_success = False
+
+    if dart_api_key and OpenDartReader is not None:
+        try:
+            dart = OpenDartReader(dart_api_key)
+            corp_info = dart.company(clean_name)
             
-            for i, text in enumerate(texts):
-                if text in ["대표자", "대표자명"]:
-                    if info["ceo"] == "정보 없음" and i + 1 < len(texts):
-                        info["ceo"] = texts[i + 1]
-                elif text in ["업종", "산업(업종)"]:
-                    if info["industry"] == "정보 없음" and i + 1 < len(texts):
-                        info["industry"] = texts[i + 1]
-                elif text in ["매출액"]:
-                    if info["revenue"] == "정보 없음" and i + 1 < len(texts):
-                        info["revenue"] = texts[i + 1]
-                elif text in ["영업이익"]:
-                    if info["profit"] == "정보 없음" and i + 1 < len(texts):
-                        info["profit"] = texts[i + 1]
-    except Exception as e:
-        pass
-        
+            if corp_info and 'ceo_nm' in corp_info:
+                info['ceo'] = corp_info['ceo_nm']
+                info['industry'] = corp_info.get('induty_nm', '정보 없음')
+                
+            fin_state = dart.finstate(clean_name, 2023)
+            if fin_state is not None and not fin_state.empty:
+                sales_row = fin_state[fin_state['account_nm'].str.contains('매출', na=False)]
+                profit_row = fin_state[fin_state['account_nm'].str.contains('영업이익', na=False)]
+                
+                if not sales_row.empty:
+                    s_val = str(sales_row['thstrm_amount'].values[0]).replace(',', '')
+                    info['revenue'] = f"{int(s_val):,} 원"
+                
+                if not profit_row.empty:
+                    p_val = str(profit_row['thstrm_amount'].values[0]).replace(',', '')
+                    info['profit'] = f"{int(p_val):,} 원"
+                    
+                info["source"] = "금융감독원 DART (2023)"
+                dart_success = True
+        except Exception as e:
+            info["dart_error"] = str(e)
+
+    if not dart_success or info['revenue'] == "정보 없음":
+        try:
+            search_query = urllib.parse.quote(clean_name + " 기업정보")
+            url = f"https://search.naver.com/search.naver?query={search_query}"
+            
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            
+            response = requests.get(url, headers=headers, timeout=3)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                texts = list(soup.stripped_strings)
+                
+                for i, text in enumerate(texts):
+                    if text in ["대표자", "대표자명"]:
+                        if info["ceo"] == "정보 없음" and i + 1 < len(texts):
+                            info["ceo"] = texts[i + 1]
+                    elif text in ["업종", "산업(업종)"]:
+                        if info["industry"] == "정보 없음" and i + 1 < len(texts):
+                            info["industry"] = texts[i + 1]
+                    elif text in ["매출액"]:
+                        if info["revenue"] == "정보 없음" and i + 1 < len(texts):
+                            info["revenue"] = texts[i + 1]
+                    elif text in ["영업이익"]:
+                        if info["profit"] == "정보 없음" and i + 1 < len(texts):
+                            info["profit"] = texts[i + 1]
+                
+                info["source"] = "네이버 기업정보 요약"
+        except Exception:
+            pass
+            
     return info
 
 
 # ==========================================
-# ★ 카카오 지오코딩 API (4단계 하이브리드 검색 적용) ★
+# ★ 카카오 지오코딩 API ★
 # ==========================================
 @st.cache_data(show_spinner=False, max_entries=5000)
 def get_lat_lon_kakao(company_name, address, rest_api_key):
@@ -329,16 +362,16 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
 # ==========================================
 # ★ 메모 생성 AppleScript ★
 # ==========================================
-def open_macos_notes_folder(client_name):
+def open_macos_notes_folder(client_name, dart_api_key):
     safe_client_name = client_name.replace('"', '\\"')
 
-    info = get_naver_company_info(client_name)
+    info = get_company_info_hybrid(client_name, dart_api_key)
     encoded_name = urllib.parse.quote(info['clean_name'])
     
     note_content = f"""
     <h1>{safe_client_name}</h1>
     <br>
-    <h3>📌 요약 기업 정보</h3>
+    <h3>📌 요약 기업 정보 (데이터 출처: {info['source']})</h3>
     <ul>
         <li><b>대표자:</b> {info['ceo']}</li>
         <li><b>업종:</b> {info['industry']}</li>
@@ -399,9 +432,7 @@ def open_macos_notes_folder(client_name):
             
             set parentFolder to folder targetFolderName of targetAcc
             
-            tell parentFolder
-                set newNote to make new note with properties {{body:"{safe_note_content}"}}
-            end tell
+            set newNote to make new note at parentFolder with properties {{body:"{safe_note_content}"}}
             
             show newNote
         end if
@@ -648,7 +679,6 @@ def load_uploaded_files_from_bytes(file_tuples):
             df["거래처"] = df["거래처"].fillna("미지정").astype(str).str.strip()
             df["담당자"] = df["담당자"].fillna("미지정").astype(str).str.strip()
 
-            # 품목명 정규화 (N2 liter -> N2 kg 자동 변환 및 1.238 보정 포함)
             df = normalize_items_vectorized(df)
 
             df = df.dropna(subset=["매출일_dt"])
@@ -799,15 +829,10 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
     return sales_p, qty_p, unit_price_p
 
 
-# ==========================================
-# ★ 초고속 빈 껍데기 필터링 로직 ★
-# ==========================================
 def prepare_active_df_fast(df, target_col):
     if df is None or df.empty:
         return None, [], None
     
-    # [최적화 핵심] 데이터 누락 절대 없음! 
-    # 단, '전 기간 동안 실적이 0인 행'과 '전 품목 실적이 0인 열(달)'만 화면에서 숨김 처리하여 렌더링 부하 90% 이상 차단
     df_active = df.loc[(df != 0).any(axis=1), (df != 0).any(axis=0)].copy()
     
     if df_active.empty:
@@ -891,6 +916,27 @@ address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["c
 industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)", type=["csv"])
 debt_file_up = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
 uploaded_files_up = st.sidebar.file_uploader("매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔑 Open DART API 설정")
+
+# [수정] DART API 키 영구 저장 로직
+API_KEY_FILE = os.path.join(CACHE_DIR, "dart_api_key.txt")
+saved_api_key = ""
+if os.path.exists(API_KEY_FILE):
+    with open(API_KEY_FILE, "r", encoding="utf-8") as f:
+        saved_api_key = f.read().strip()
+
+dart_api_key = st.sidebar.text_input(
+    "DART API 키 (재무정보 연동용)", 
+    value=saved_api_key, 
+    type="password", 
+    help="금융감독원 Open DART API 키를 입력하세요. 한 번 입력하면 자동 저장됩니다."
+)
+
+if dart_api_key != saved_api_key:
+    with open(API_KEY_FILE, "w", encoding="utf-8") as f:
+        f.write(dart_api_key)
 
 addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
 industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
@@ -1281,12 +1327,42 @@ if not full_df.empty:
         st.markdown(f"<div class='sub-header'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
         st.info(f"📍 주소: {client_addr}")
         
-        btn_c1, btn_c2 = st.columns([1, 1])
+        btn_c1, btn_c2, btn_c3 = st.columns([1.5, 1, 1])
+        
         with btn_c1:
             if st.button("📝 macOS 메모 앱에서 거래처 노트 열기/생성", key="btn_notes"):
-                open_macos_notes_folder(selected_client)
-                    
+                open_macos_notes_folder(selected_client, dart_api_key)
+                
         with btn_c2:
+            if "show_corp_info" not in st.session_state:
+                st.session_state.show_corp_info = False
+                
+            btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
+            
+            if st.button(btn_label, key="btn_dart_info"):
+                st.session_state.show_corp_info = not st.session_state.show_corp_info
+                st.rerun()
+                
+            if st.session_state.show_corp_info:
+                with st.spinner("DART 및 네이버 기업 정보를 불러오는 중..."):
+                    c_info = get_company_info_hybrid(selected_client, dart_api_key)
+                    st.success("정보 로딩 완료!")
+                    
+                    if c_info["source"] != "금융감독원 DART (2023)" and dart_api_key:
+                        if c_info.get("dart_error"):
+                            st.warning(f"⚠️ DART 연동 실패로 네이버 정보를 가져왔습니다. (원인: {c_info['dart_error']})")
+                        else:
+                            st.warning("⚠️ 해당 기업은 DART에 등록되지 않았거나 재무정보가 없어 네이버 정보를 가져왔습니다.")
+                            
+                    st.markdown(f"""
+                    - **출처:** {c_info['source']}
+                    - **대표자:** {c_info['ceo']}
+                    - **업종:** {c_info['industry']}
+                    - **매출액:** {c_info['revenue']}
+                    - **영업이익:** {c_info['profit']}
+                    """)
+                    
+        with btn_c3:
             if client_addr != "등록된 주소 정보가 없습니다.":
                 kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(client_addr)}"
                 st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url)
@@ -1368,7 +1444,7 @@ if not full_df.empty:
         else:
             st.warning("선택한 조건에 해당하는 거래처 데이터가 없습니다.")
 
-    # Tab 3: 📦 품목 및 단가 분석 (초고속 빈 열/행 필터링 무손실 렌더링)
+    # Tab 3: 📦 품목 및 단가 분석
     with tab3:
         st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
         
@@ -1376,7 +1452,6 @@ if not full_df.empty:
         target_month_col = latest_dt_overall.strftime("%y년 %m월") if pd.notnull(latest_dt_overall) else None
         
         def render_native_dataframe(df, cmap, fmt, target_col):
-            # 캐시를 사용하지 않는 초고속 빈 껍데기 필터링 함수 적용
             df_active, numeric_cols, highlight_col_name = prepare_active_df_fast(df, target_col)
             
             if df_active is None or df_active.empty:
