@@ -752,18 +752,20 @@ def cached_staff_pivot(df_base, desired_order):
     staff_raw = (df_base.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) / 10000)
     staff_cols = [c for c in desired_order if c in staff_raw.columns]
     
-    # 순서에 맞게 컬럼 정리
     df_p = staff_raw.reindex(columns=staff_cols, fill_value=0)
     
-    # 💡 담당자별 전체 매출 비중 (%) 계산 및 첫 번째 열 삽입
-    total_all = df_p.sum().sum()
+    row_totals = df_p.sum(axis=1)
+    total_all = row_totals.sum()
+    
     if total_all > 0:
-        prop = df_p.sum(axis=1) / total_all * 100
+        prop = row_totals / total_all * 100
     else:
         prop = 0.0
         
+    df_p.insert(0, "총 매출 합계 (만원)", row_totals)
     df_p.insert(0, "매출 비중 (%)", prop)
     
+    df_p = df_p.sort_values(by="총 매출 합계 (만원)", ascending=False)
     return df_p
 
 @st.cache_data
@@ -1167,28 +1169,38 @@ if not full_df.empty:
             st.warning("선택한 조건에 해당하는 거래처 데이터가 없습니다.")
 
     # ==========================================
-    # Tab 3: 📦 품목 및 단가 분석
+    # Tab 3: 📦 품목 및 단가 분석 (초고속 네이티브 렌더링 최적화)
     # ==========================================
     with tab3:
         st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
         
+        # 💡 렉 유발 해결 핵심 로직: 0으로만 채워진 빈 열과 행을 모두 삭제하여 데이터프레임 초경량화
+        def render_optimized_dataframe(df, cmap, fmt):
+            if df is None or df.empty:
+                st.info("데이터가 없습니다.")
+                return
+            
+            # 값이 존재하는(0이 아닌) 행과 열만 추출
+            df_active = df.loc[(df != 0).any(axis=1), (df != 0).any(axis=0)]
+            
+            if df_active.empty:
+                st.info("실적 데이터가 없습니다.")
+                return
+                
+            st.dataframe(
+                df_active.style.format(fmt).background_gradient(cmap=cmap, axis=None),
+                use_container_width=True, 
+                height=400
+            )
+
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
-        if not sales_p.empty:
-            st.dataframe((sales_p * 1.1 / 10000).style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=400)
-        else:
-            st.info("데이터가 없습니다.")
+        render_optimized_dataframe((sales_p * 1.1 / 10000), "Blues", "{:,.0f}")
             
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
-        if not qty_p.empty:
-            st.dataframe(qty_p.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=400)
-        else:
-            st.info("데이터가 없습니다.")
+        render_optimized_dataframe(qty_p, "Greens", "{:,.0f}")
             
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (중간값)</div>", unsafe_allow_html=True)
-        if not unit_price_p.empty:
-            st.dataframe(unit_price_p.style.format("{:,.0f}").background_gradient(cmap="Oranges", axis=None), use_container_width=True, height=400)
-        else:
-            st.info("데이터가 없습니다.")
+        render_optimized_dataframe(unit_price_p, "Oranges", "{:,.0f}")
 
     # ==========================================
     # Tab 4: 👤 담당자 & 상세내역
@@ -1196,18 +1208,77 @@ if not full_df.empty:
     with tab4:
         st.markdown("<div class='sub-header'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
         if not staff_pivot.empty:
-            # 💡 매출 비중(%) 컬럼과 일반 매출액(만원) 컬럼의 포맷 분리 적용
             format_dict = {col: "{:,.0f}" for col in staff_pivot.columns if col != "매출 비중 (%)"}
             format_dict["매출 비중 (%)"] = "{:,.1f}%"
             
+            monthly_cols = [c for c in staff_pivot.columns if c not in ["매출 비중 (%)", "총 매출 합계 (만원)"]]
+            
             styled_staff = (
                 staff_pivot.style.format(format_dict)
-                .background_gradient(cmap="Blues", subset=[c for c in staff_pivot.columns if c != "매출 비중 (%)"])
                 .background_gradient(cmap="Purples", subset=["매출 비중 (%)"])
+                .background_gradient(cmap="Oranges", subset=["총 매출 합계 (만원)"])
+                .background_gradient(cmap="Blues", subset=monthly_cols)
             )
             st.dataframe(styled_staff, use_container_width=True, height=350)
         else:
             st.info("데이터가 없습니다.")
+
+        # ===== [새로운 기능 추가] 담당자별 당해년도 거래처 매출 순위 =====
+        st.markdown("<div class='sub-header'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
+        if not df_base.empty:
+            current_year = str(df_base["연도"].max())
+            all_staffs = sorted(df_base["담당자"].unique())
+            
+            sel_staff = st.selectbox("👤 순위를 조회할 담당자 선택", all_staffs, key="ranking_staff_select")
+            
+            df_ranking = df_base[(df_base["담당자"] == sel_staff) & (df_base["연도"] == current_year)]
+            
+            if not df_ranking.empty:
+                ranking_pivot = (df_ranking.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000)
+                ranking_pivot = ranking_pivot.reindex(columns=all_months, fill_value=0)
+                ranking_pivot["당해 누적 (만원)"] = ranking_pivot.sum(axis=1)
+                ranking_pivot = ranking_pivot.sort_values(by="당해 누적 (만원)", ascending=False)
+                
+                r_col1, r_col2 = st.columns([1.2, 1])
+                
+                with r_col1:
+                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 [{sel_staff}] {current_year}년 거래처 월별 매출 순위</div>", unsafe_allow_html=True)
+                    st.dataframe(
+                        ranking_pivot.style.format("{:,.0f}")
+                        .background_gradient(cmap="Blues", subset=all_months)
+                        .background_gradient(cmap="Oranges", subset=["당해 누적 (만원)"]),
+                        use_container_width=True, height=380
+                    )
+                    
+                with r_col2:
+                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 상위 10개 거래처 누적 매출액 비교</div>", unsafe_allow_html=True)
+                    top_clients = ranking_pivot.head(10).sort_values(by="당해 누적 (만원)", ascending=True)
+                    
+                    fig_ranking = px.bar(
+                        top_clients.reset_index(),
+                        x="당해 누적 (만원)",
+                        y="거래처",
+                        orientation='h',
+                        text="당해 누적 (만원)",
+                        color="당해 누적 (만원)",
+                        color_continuous_scale="Blues"
+                    )
+                    fig_ranking.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+                    fig_ranking.update_layout(
+                        xaxis_title=None,
+                        yaxis_title=None,
+                        margin=dict(l=10, r=40, t=10, b=10),
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        coloraxis_showscale=False,
+                        height=380
+                    )
+                    st.plotly_chart(fig_ranking, use_container_width=True, key=f"ranking_chart_{sel_staff}")
+            else:
+                st.info(f"{current_year}년에 해당 담당자의 거래 내역이 없습니다.")
+        else:
+            st.info("데이터가 없습니다.")
+        # =========================================================
 
         st.markdown("<div class='sub-header'>📋 거래 상세 내역 (최신순)</div>", unsafe_allow_html=True)
         if not df_detail.empty:
