@@ -502,6 +502,30 @@ def load_address_file(address_bytes):
         pass
     return {}
 
+# 💡 새롭게 추가된 [업종 분류 데이터] 로더 함수
+@st.cache_data(show_spinner="업종 분류 데이터를 읽어오는 중입니다...")
+def load_industry_file(industry_bytes):
+    if not industry_bytes:
+        return {}
+    try:
+        for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
+            try:
+                temp_ind = pd.read_csv(io.BytesIO(industry_bytes), encoding=enc)
+                temp_ind.columns = temp_ind.columns.astype(str).str.strip()
+                
+                # 유연한 컬럼명 찾기
+                c_client = next((c for c in temp_ind.columns if "거래처" in c or "상호" in c), None)
+                c_ind = next((c for c in temp_ind.columns if "분류" in c or "업종" in c), None)
+                
+                if c_client and c_ind:
+                    temp_ind = temp_ind.dropna(subset=[c_client, c_ind])
+                    return temp_ind.astype(str).set_index(c_client)[c_ind].to_dict()
+                break
+            except UnicodeDecodeError:
+                continue
+    except Exception:
+        pass
+    return {}
 
 @st.cache_data(show_spinner="채권 데이터를 읽어오는 중입니다...")
 def load_debt_file(debt_bytes):
@@ -687,6 +711,30 @@ def cached_get_item_pivot(data_df, item_name, metric, all_months, years):
     pvt = pvt.reindex(columns=all_yrs, fill_value=0)
     return pvt
 
+# 💡 새롭게 추가된 [업종별] 피벗 계산 함수
+@st.cache_data
+def cached_get_industry_pivot(data_df, industry_name, metric, all_months, years):
+    if data_df.empty:
+        return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
+        
+    df_ind = data_df[data_df["업종"] == industry_name]
+    if df_ind.empty:
+        return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
+        
+    if metric == "매출액 (만원)":
+        pvt = df_ind.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+    elif "출고량" in metric:
+        pvt = df_ind.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
+    elif metric == "총매출 대비 비중 (%)":
+        pvt_ind = df_ind.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
+        pvt_total = data_df.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
+        pvt = (pvt_ind / pvt_total.replace(0, np.nan) * 100).fillna(0)
+        
+    pvt = pvt.reindex(index=all_months, fill_value=0)
+    all_yrs = [str(y) for y in years]
+    pvt = pvt.reindex(columns=all_yrs, fill_value=0)
+    return pvt
+
 @st.cache_data
 def cached_tab3_pivots(target_tab3_df, years, all_months):
     sales_p = pd.DataFrame()
@@ -794,11 +842,14 @@ st.sidebar.header("📁 데이터 업로드 및 유지")
 
 # 1. 파일 업로더
 address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
+# 💡 새롭게 추가된 [업종 분류 데이터] 업로더
+industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)", type=["csv"])
 debt_file_up = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
 uploaded_files_up = st.sidebar.file_uploader("매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True)
 
 # 2. 로컬 캐시 경로 설정
 addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
+industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
 debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
 sales_cache_dir = os.path.join(CACHE_DIR, "sales")
 os.makedirs(sales_cache_dir, exist_ok=True)
@@ -813,6 +864,17 @@ elif os.path.exists(addr_cache_path):
         addr_bytes = f.read()
 else:
     addr_bytes = None
+
+# --- 업종 분류 처리 ---
+if industry_file_up is not None:
+    ind_bytes = industry_file_up.getvalue()
+    with open(industry_cache_path, "wb") as f:
+        f.write(ind_bytes)
+elif os.path.exists(industry_cache_path):
+    with open(industry_cache_path, "rb") as f:
+        ind_bytes = f.read()
+else:
+    ind_bytes = None
 
 # --- 채권 파일 처리 ---
 if debt_file_up is not None:
@@ -848,7 +910,7 @@ else:
 
 # 캐시 초기화 버튼
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
-    for p in [addr_cache_path, debt_cache_path]:
+    for p in [addr_cache_path, industry_cache_path, debt_cache_path]:
         if os.path.exists(p): os.remove(p)
     for f_name in os.listdir(sales_cache_dir):
         os.remove(os.path.join(sales_cache_dir, f_name))
@@ -856,12 +918,15 @@ if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
 
 # 데이터 로딩 실행
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
+industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
 debt_df = load_debt_file(debt_bytes) if debt_bytes else pd.DataFrame()
 full_df = load_uploaded_files_from_bytes(sales_file_tuples) if sales_file_tuples else pd.DataFrame()
 
 if not full_df.empty:
     is_deposit_row = full_df["품목명"].astype(str).str.contains("입금", na=False)
     full_df = full_df[~is_deposit_row].copy()
+    # 💡 로딩된 매출 데이터에 업종(분류) 컬럼을 매핑하여 추가
+    full_df["업종"] = full_df["거래처"].map(industry_dict).fillna("미분류")
 
 # 주요 품목 4가지 선언
 target_items = [
@@ -1076,6 +1141,55 @@ if not full_df.empty:
                 ),
                 use_container_width=True, key="tab1_item_chart"
             )
+
+        # ===== [새로운 기능 추가] 업종별(분류별) 상세 분석 =====
+        st.markdown("---")
+        st.markdown("<div class='sub-header'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
+        
+        if "업종" in df_base.columns:
+            available_industries = sorted([ind for ind in df_base["업종"].unique() if ind != "미분류"])
+            if available_industries:
+                ind_col1, ind_col2 = st.columns([1, 1])
+                with ind_col1:
+                    selected_industry = st.selectbox("🔍 분석할 업종(분류) 선택", available_industries, key="industry_selectbox")
+                with ind_col2:
+                    selected_ind_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량 (천 kg)", "총매출 대비 비중 (%)"], horizontal=True, key="industry_metric_radio")
+                
+                ind_pivot = cached_get_industry_pivot(df_base, selected_industry, selected_ind_metric, all_months, years)
+                
+                i_col_left2, i_col_right2 = st.columns([1, 1])
+                with i_col_left2:
+                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 {selected_industry} {selected_ind_metric.split(' ')[0]} 데이터</div>", unsafe_allow_html=True)
+                    
+                    if "비중" in selected_ind_metric:
+                        st.dataframe(ind_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
+                        y_suf_i = "%"
+                        y_fmt_i = ",.1f"
+                    elif "출고량" in selected_ind_metric:
+                        st.dataframe(ind_pivot.style.format("{:,.1f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
+                        y_suf_i = " 천kg"
+                        y_fmt_i = ",.1f"
+                    else:
+                        st.dataframe(ind_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
+                        y_suf_i = " 만원"
+                        y_fmt_i = ",.0f"
+                
+                with i_col_right2:
+                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 [{selected_industry}] 연도별 월별 {selected_ind_metric.split(' ')[0]}</div>", unsafe_allow_html=True)
+                    st.plotly_chart(
+                        create_stacked_bar_chart(
+                            ind_pivot, 
+                            title_text="", 
+                            y_suffix=y_suf_i, 
+                            y_format=y_fmt_i
+                        ),
+                        use_container_width=True, key="tab1_industry_chart"
+                    )
+            else:
+                st.info("💡 사이드바에 [🏢 거래처 업종 분류 (CSV)] 파일을 업로드하시면 업종별 실적 분석이 활성화됩니다.")
+        else:
+            st.info("💡 사이드바에 [🏢 거래처 업종 분류 (CSV)] 파일을 업로드하시면 업종별 실적 분석이 활성화됩니다.")
+        # =========================================================
 
     # ==========================================
     # Tab 2: 🏢 거래처 분석
@@ -1325,7 +1439,6 @@ if not full_df.empty:
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
-                # 💡 초고속 Numpy 배열 기반 CSS 생성기 (Pandas 루프 제거)
                 def apply_debt_style_fast(df):
                     styles = np.full(df.shape, '', dtype=object)
                     
@@ -1338,14 +1451,12 @@ if not full_df.empty:
                     u_clients_fast = df['거래처'].unique()
                     color_map_fast = {client: '#FFFFFF' if i % 2 == 0 else '#E2E8F0' for i, client in enumerate(u_clients_fast)}
                     
-                    # 1. 지브라 패턴(업체별 교차 배경색) 일괄 적용
                     for r in range(df.shape[0]):
                         client = df.iat[r, idx_client]
                         bg_color = color_map_fast.get(client, '#FFFFFF')
                         for c in range(df.shape[1]):
                             styles[r, c] = f'background-color: {bg_color};'
                             
-                    # 2. 거래처별 A/R Aging 역추적 로직 수행
                     client_rows = df.groupby('거래처').indices 
                     
                     for client, rows in client_rows.items():
