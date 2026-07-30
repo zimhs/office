@@ -1174,13 +1174,11 @@ if not full_df.empty:
     with tab3:
         st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
         
-        # 💡 렉 유발 해결 핵심 로직: 0으로만 채워진 빈 열과 행을 모두 삭제하여 데이터프레임 초경량화
         def render_optimized_dataframe(df, cmap, fmt):
             if df is None or df.empty:
                 st.info("데이터가 없습니다.")
                 return
             
-            # 값이 존재하는(0이 아닌) 행과 열만 추출
             df_active = df.loc[(df != 0).any(axis=1), (df != 0).any(axis=0)]
             
             if df_active.empty:
@@ -1223,7 +1221,6 @@ if not full_df.empty:
         else:
             st.info("데이터가 없습니다.")
 
-        # ===== [새로운 기능 추가] 담당자별 당해년도 거래처 매출 순위 =====
         st.markdown("<div class='sub-header'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
         if not df_base.empty:
             current_year = str(df_base["연도"].max())
@@ -1278,7 +1275,6 @@ if not full_df.empty:
                 st.info(f"{current_year}년에 해당 담당자의 거래 내역이 없습니다.")
         else:
             st.info("데이터가 없습니다.")
-        # =========================================================
 
         st.markdown("<div class='sub-header'>📋 거래 상세 내역 (최신순)</div>", unsafe_allow_html=True)
         if not df_detail.empty:
@@ -1297,42 +1293,121 @@ if not full_df.empty:
             st.info("데이터가 없습니다.")
 
     # ==========================================
-    # Tab 5: 📌 채권 관리
+    # Tab 5: 📌 채권 관리 (초고속 Numpy 스마일 배열 렌더링 적용)
     # ==========================================
     with tab5:
-        st.markdown("<div class='sub-header'>💰 채권(외상대금) 관리 현황</div>", unsafe_allow_html=True)
+        st.markdown("<div class='sub-header'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
+        
+        st.info("💡 **스마트 채권 분석 알림:** 마지막 잔액이 당월 매출보다 클 경우, **어느 달부터 미수금이 밀려 있는지 역추적**하여 매출 칸에 🔴빨간색으로 경고합니다. 정상적으로 수금된 잔액(당월 매출 이하)은 🔵파란색으로 표시됩니다.")
         
         if not debt_df.empty:
             if not filtered_debt_df.empty:
                 numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
+                latest_month = numeric_cols[-1] if numeric_cols else None
                 
-                def apply_debt_style(df_to_style):
-                    unique_clients = df_to_style['거래처'].unique()
-                    color_map = {client: '#FFFFFF' if i % 2 == 0 else '#E2E8F0' for i, client in enumerate(unique_clients)}
-                    
-                    def row_style(row):
-                        bg_color = color_map.get(row['거래처'], '#FFFFFF')
-                        style_list = [f'background-color: {bg_color}'] * len(row)
-                        idx_gubun = df_to_style.columns.get_loc('구분')
+                total_outstanding = 0
+                warning_count = 0
+                
+                if latest_month:
+                    u_clients = filtered_debt_df['거래처'].unique()
+                    for uc in u_clients:
+                        c_mask = filtered_debt_df['거래처'] == uc
+                        b_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '잔액'), latest_month].sum()
+                        s_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '매출'), latest_month].sum()
                         
-                        if row['구분'] == '잔액':
-                            style_list = [f'background-color: {bg_color}; font-weight: 700; color: #1E3A8A;' for _ in range(len(row))]
-                        else:
-                            if row['구분'] == '매출':
-                                style_list[idx_gubun] += '; color: #E11D48; font-weight: 600;'
-                            elif row['구분'] == '수금':
-                                style_list[idx_gubun] += '; color: #059669; font-weight: 600;'
+                        total_outstanding += max(0, b_val)
+                        if b_val > 0 and b_val > s_val:
+                            warning_count += 1
+                            
+                m1, m2 = st.columns(2)
+                m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div><div class='metric-value'>{total_outstanding:,.0f} 원</div></div>", unsafe_allow_html=True)
+                m2.markdown(f"<div class='metric-box'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div><div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>", unsafe_allow_html=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # 💡 초고속 Numpy 배열 기반 CSS 생성기 (Pandas 루프 제거)
+                def apply_debt_style_fast(df):
+                    styles = np.full(df.shape, '', dtype=object)
+                    
+                    cols = list(df.columns)
+                    idx_gubun = cols.index('구분')
+                    idx_client = cols.index('거래처')
+                    
+                    month_col_indices = [cols.index(c) for c in numeric_cols]
+                    
+                    u_clients_fast = df['거래처'].unique()
+                    color_map_fast = {client: '#FFFFFF' if i % 2 == 0 else '#E2E8F0' for i, client in enumerate(u_clients_fast)}
+                    
+                    # 1. 지브라 패턴(업체별 교차 배경색) 일괄 적용
+                    for r in range(df.shape[0]):
+                        client = df.iat[r, idx_client]
+                        bg_color = color_map_fast.get(client, '#FFFFFF')
+                        for c in range(df.shape[1]):
+                            styles[r, c] = f'background-color: {bg_color};'
+                            
+                    # 2. 거래처별 A/R Aging 역추적 로직 수행
+                    client_rows = df.groupby('거래처').indices 
+                    
+                    for client, rows in client_rows.items():
+                        i_sal = -1
+                        i_bal = -1
+                        i_sugum = -1
+                        
+                        for r in rows:
+                            gubun = df.iat[r, idx_gubun]
+                            if gubun == '매출': i_sal = r
+                            elif gubun == '잔액': i_bal = r
+                            elif gubun == '수금': i_sugum = r
+                            
+                        if i_sal != -1:
+                            styles[i_sal, idx_gubun] += ' color: #E11D48; font-weight: 600;'
+                        if i_sugum != -1:
+                            styles[i_sugum, idx_gubun] += ' color: #059669; font-weight: 600;'
+                        if i_bal != -1:
+                            for c in range(df.shape[1]):
+                                styles[i_bal, c] += ' font-weight: 700; color: #334155;'
                                 
-                        return style_list
-
-                    return (
-                        df_to_style.style
-                        .format(subset=numeric_cols, formatter="{:,.0f}")
-                        .apply(row_style, axis=1)
-                    )
+                        if i_sal != -1 and i_bal != -1 and month_col_indices:
+                            l_month_idx = -1
+                            for c in reversed(month_col_indices):
+                                val = df.iat[i_bal, c]
+                                if pd.notna(val) and val > 0:
+                                    l_month_idx = c
+                                    break
+                                    
+                            if l_month_idx != -1:
+                                final_bal = df.iat[i_bal, l_month_idx]
+                                sal_latest = df.iat[i_sal, l_month_idx]
+                                
+                                final_bal = float(final_bal) if pd.notna(final_bal) else 0.0
+                                sal_latest = float(sal_latest) if pd.notna(sal_latest) else 0.0
+                                
+                                if final_bal > 0:
+                                    if final_bal > sal_latest:
+                                        styles[i_bal, l_month_idx] += ' background-color: #FEE2E2; color: #B91C1C; font-weight: 800;'
+                                        accumulated = 0.0
+                                        for c in reversed(month_col_indices):
+                                            if c > l_month_idx: continue
+                                            val = df.iat[i_sal, c]
+                                            val = float(val) if pd.notna(val) else 0.0
+                                            
+                                            if accumulated < final_bal:
+                                                styles[i_sal, c] += ' background-color: #FEE2E2; color: #B91C1C; font-weight: 800;'
+                                                accumulated += val
+                                            else:
+                                                break
+                                    else:
+                                        styles[i_bal, l_month_idx] += ' background-color: #EFF6FF; color: #1D4ED8; font-weight: 800;'
+                                        
+                    return pd.DataFrame(styles, index=df.index, columns=df.columns)
 
                 df_height = 500 if selected_client != "전체 거래처" else 700
-                st.dataframe(apply_debt_style(filtered_debt_df), use_container_width=True, height=df_height)
+                st.dataframe(
+                    filtered_debt_df.style
+                    .format(subset=numeric_cols, formatter="{:,.0f}")
+                    .apply(apply_debt_style_fast, axis=None),
+                    use_container_width=True, height=df_height
+                )
             else:
                 st.warning("선택한 담당자나 거래처에 해당하는 채권 데이터가 없습니다.")
         else:
