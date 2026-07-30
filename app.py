@@ -681,6 +681,7 @@ def load_uploaded_files_from_bytes(file_tuples):
             df["거래처"] = df["거래처"].fillna("미지정").astype(str).str.strip()
             df["담당자"] = df["담당자"].fillna("미지정").astype(str).str.strip()
 
+            # 품목명 정규화 (N2 liter -> N2 kg 자동 변환 및 보정)
             df = normalize_items_vectorized(df)
 
             df = df.dropna(subset=["매출일_dt"])
@@ -838,8 +839,7 @@ def prepare_active_df_fast(df, target_col):
     if df is None or df.empty:
         return None, [], None
     
-    # [최적화 핵심] 데이터 누락 절대 없음! 
-    # 단, '전 기간 동안 실적이 0인 행'과 '전 품목 실적이 0인 열(달)'만 화면에서 숨김 처리하여 렌더링 부하 90% 이상 차단
+    # [최적화 핵심] 데이터 누락 에러(NaN)를 없애고 안전하게 빈 칸만 삭제
     df_active = df.loc[(df != 0).any(axis=1), (df != 0).any(axis=0)].copy()
     
     if df_active.empty:
@@ -850,11 +850,8 @@ def prepare_active_df_fast(df, target_col):
     df_active.columns.name = None 
 
     numeric_cols = [c for c in df_active.columns if c != "품목명"]
-    
-    # 빈칸에 CSS를 그리지 않게 만들어 탭 렌더링을 0.1초 컷으로 만들어주는 마법의 1줄
-    df_active[numeric_cols] = df_active[numeric_cols].replace(0, np.nan)
-
     highlight_col_name = None
+
     if target_col and target_col in df_active.columns:
         highlight_col_name = target_col
         
@@ -1474,7 +1471,7 @@ if not full_df.empty:
                 st.info("실적 데이터가 없습니다.")
                 return
 
-            styled = df_active.style.format(fmt, subset=numeric_cols, na_rep="0").background_gradient(cmap=cmap, subset=numeric_cols, axis=None, vmin=0)
+            styled = df_active.style.format(fmt, subset=numeric_cols).background_gradient(cmap=cmap, subset=numeric_cols, axis=None)
 
             if highlight_col_name:
                 styled = styled.apply(lambda s: ['color: #B91C1C; font-weight: bold;'] * len(s), subset=[highlight_col_name], axis=0)
