@@ -18,7 +18,7 @@ try:
 except ImportError:
     OpenDartReader = None
 
-# 페이지 및 Styler 가동 한도 설정
+# 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide")
 
@@ -926,13 +926,29 @@ industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)"
 debt_file_up = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
 uploaded_files_up = st.sidebar.file_uploader("매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True)
 
-# ==========================================
-# ★ 설비(탱크/기화기) 재고 관리 파일 업로드 추가 ★
-# ==========================================
+# ★ 설비(탱크/기화기) 재고 관리 탭 7번용 파일
 st.sidebar.markdown("---")
 st.sidebar.subheader("🏭 설비 재고 관리 (선택)")
 tank_file_up = st.sidebar.file_uploader("탱크 재고현황 (CSV/Excel)", type=["csv", "xlsx"])
 vaporizer_file_up = st.sidebar.file_uploader("기화기 재고현황 (CSV/Excel)", type=["csv", "xlsx"])
+
+# ★ 통합 탱크 재고 탭 8번용 파일 자동 로드
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛢️ 통합 탱크 재고")
+local_int_path = "통합탱크재고.csv"
+int_bytes = None
+int_name = ""
+
+if os.path.exists(local_int_path):
+    st.sidebar.success(f"✅ '{local_int_path}' 자동 로드됨")
+    with open(local_int_path, "rb") as f:
+        int_bytes = f.read()
+    int_name = local_int_path
+else:
+    integrated_file_up = st.sidebar.file_uploader("통합 탱크 재고현황 (CSV)", type=["csv"])
+    if integrated_file_up is not None:
+        int_bytes = integrated_file_up.getvalue()
+        int_name = integrated_file_up.name
 
 # CSV 큰따옴표 이중묶임 에러 및 열 개수 불일치 방지용 함수 (on_bad_lines 적용)
 @st.cache_data(show_spinner="설비 데이터를 읽어오는 중입니다...")
@@ -992,6 +1008,7 @@ industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
 debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
 tank_cache_path = os.path.join(CACHE_DIR, "tank_cache.dat")
 vaporizer_cache_path = os.path.join(CACHE_DIR, "vaporizer_cache.dat")
+integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
 sales_cache_dir = os.path.join(CACHE_DIR, "sales")
 os.makedirs(sales_cache_dir, exist_ok=True)
 
@@ -1028,7 +1045,7 @@ elif os.path.exists(debt_cache_path):
 else:
     debt_bytes = None
 
-# 탱크 데이터 캐싱
+# 탱크 데이터 캐싱 (탭 7)
 if tank_file_up is not None:
     tank_bytes = tank_file_up.getvalue()
     tank_name = tank_file_up.name
@@ -1045,7 +1062,7 @@ else:
     tank_bytes = None
     tank_name = ""
 
-# 기화기 데이터 캐싱
+# 기화기 데이터 캐싱 (탭 7)
 if vaporizer_file_up is not None:
     vaporizer_bytes = vaporizer_file_up.getvalue()
     vaporizer_name = vaporizer_file_up.name
@@ -1061,6 +1078,21 @@ elif os.path.exists(vaporizer_cache_path) and os.path.exists(vaporizer_cache_pat
 else:
     vaporizer_bytes = None
     vaporizer_name = ""
+
+# 통합 탱크 데이터 캐싱 (탭 8)
+if int_bytes is not None:
+    with open(integrated_cache_path, "wb") as f:
+        f.write(int_bytes)
+    with open(integrated_cache_path + "_name.txt", "w", encoding="utf-8") as f:
+        f.write(int_name)
+elif os.path.exists(integrated_cache_path) and os.path.exists(integrated_cache_path + "_name.txt"):
+    with open(integrated_cache_path, "rb") as f:
+        int_bytes = f.read()
+    with open(integrated_cache_path + "_name.txt", "r", encoding="utf-8") as f:
+        int_name = f.read().strip()
+else:
+    int_bytes = None
+    int_name = ""
 
 # 매출 데이터 로딩 (다중 파일)
 if uploaded_files_up and len(uploaded_files_up) > 0:
@@ -1083,11 +1115,12 @@ else:
                 with open(f_path, "rb") as sf:
                     sales_file_tuples.append((f_name, sf.read()))
 
-# 캐시 초기화 시 탱크, 기화기 파일도 함께 제거되도록 수정
+# 캐시 초기화 시 모든 파일 제거되도록 수정
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
               tank_cache_path, tank_cache_path + "_name.txt", 
-              vaporizer_cache_path, vaporizer_cache_path + "_name.txt"]:
+              vaporizer_cache_path, vaporizer_cache_path + "_name.txt",
+              integrated_cache_path, integrated_cache_path + "_name.txt"]:
         if os.path.exists(p): os.remove(p)
     if os.path.exists(API_KEY_FILE):
         os.remove(API_KEY_FILE)
@@ -1101,6 +1134,7 @@ industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
 debt_df = load_debt_file(debt_bytes) if debt_bytes else pd.DataFrame()
 df_tank = load_equipment_file(tank_bytes, tank_name) if tank_bytes else pd.DataFrame()
 df_vaporizer = load_equipment_file(vaporizer_bytes, vaporizer_name) if vaporizer_bytes else pd.DataFrame()
+df_integrated = load_equipment_file(int_bytes, int_name) if int_bytes else pd.DataFrame()
 full_df = load_uploaded_files_from_bytes(sales_file_tuples) if sales_file_tuples else pd.DataFrame()
 
 if not full_df.empty:
@@ -1230,9 +1264,9 @@ if not full_df.empty:
     )
 
     # ==========================================
-    # ★ 7번 탭 설비 재고 현황 추가 반영 ★
+    # ★ 7번/8번 탭 구성 ★
     # ==========================================
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         [
             "📌 영업 종합 요약",
             "🏢 거래처 분석",
@@ -1240,7 +1274,8 @@ if not full_df.empty:
             "👤 담당자 & 상세내역",
             "📌 채권 관리",
             "📍 카카오맵",
-            "🏭 설비 재고 현황"
+            "🏭 설비 재고 현황",
+            "🛢️ 통합 탱크 재고"
         ]
     )
 
@@ -1261,11 +1296,9 @@ if not full_df.empty:
         col_left, col_right = st.columns([1, 1])
         
         with col_left:
-            st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 연도별 월별 매출액 (만원) 데이터 (VAT 포함)</div>", unsafe_allow_html=True)
             st.dataframe(pivot_m_total.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
 
         with col_right:
-            st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 전체 영업 연도별 월 매출</div>", unsafe_allow_html=True)
             st.plotly_chart(
                 create_stacked_bar_chart(pivot_m_total, title_text=""),
                 use_container_width=True, key="tab1_total_chart"
@@ -1284,8 +1317,6 @@ if not full_df.empty:
         
         i_col_left, i_col_right = st.columns([1, 1])
         with i_col_left:
-            st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 {selected_target_item} {selected_metric.split(' ')[0]} 데이터</div>", unsafe_allow_html=True)
-            
             if "비중" in selected_metric:
                 st.dataframe(item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
                 y_suf = "%"
@@ -1300,7 +1331,6 @@ if not full_df.empty:
                 y_fmt = ",.0f"
                 
         with i_col_right:
-            st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 {selected_target_item} 연도별 월별 {selected_metric.split(' ')[0]}</div>", unsafe_allow_html=True)
             st.plotly_chart(
                 create_stacked_bar_chart(
                     item_pivot, 
@@ -1327,8 +1357,6 @@ if not full_df.empty:
                 
                 i_col_left2, i_col_right2 = st.columns([1, 1])
                 with i_col_left2:
-                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 {selected_industry} {selected_ind_metric.split(' ')[0]} 데이터</div>", unsafe_allow_html=True)
-                    
                     if "비중" in selected_ind_metric:
                         st.dataframe(ind_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
                         y_suf_i = "%"
@@ -1343,7 +1371,6 @@ if not full_df.empty:
                         y_fmt_i = ",.0f"
                 
                 with i_col_right2:
-                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 [{selected_industry}] 연도별 월별 {selected_ind_metric.split(' ')[0]}</div>", unsafe_allow_html=True)
                     st.plotly_chart(
                         create_stacked_bar_chart(
                             ind_pivot, 
@@ -1359,8 +1386,6 @@ if not full_df.empty:
                     df_ind_detail = df_base[df_base["업종"] == selected_industry]
                     
                     if not df_ind_detail.empty:
-                        st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #1E3A8A; margin-bottom: 10px;'>🏆 [{selected_industry}] 소속 전체 거래처 연도별 매출 요약 (단위: 만원)</div>", unsafe_allow_html=True)
-                        
                         ind_client_pivot = df_ind_detail.pivot_table(index="거래처", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
                         
                         avail_years_ind = sorted([y for y in ind_client_pivot.columns if str(y).isdigit()])
@@ -1371,8 +1396,6 @@ if not full_df.empty:
                         st.dataframe(ind_client_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=250)
                         
                         st.markdown("<hr style='margin: 15px 0px; border-top: 1px dashed #E2E8F0;'>", unsafe_allow_html=True)
-                        
-                        st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #1E3A8A; margin-bottom: 10px;'>🔍 개별 거래처 / 품목별 월 상세 분석</div>", unsafe_allow_html=True)
                         
                         ind_clients = sorted(df_ind_detail["거래처"].unique())
                         
@@ -1416,17 +1439,10 @@ if not full_df.empty:
                                     create_stacked_bar_chart(sub_item_pivot, title_text="", y_suffix=y_suf_sub, y_format=y_fmt_sub),
                                     use_container_width=True, key="ind_client_sub_chart"
                                 )
-                        else:
-                            st.info("해당 업종에 소속된 거래처 데이터가 없습니다.")
-            else:
-                st.info("💡 사이드바에 [🏢 거래처 업종 분류 (CSV)] 파일을 업로드하시면 업종별 실적 분석이 활성화됩니다.")
-        else:
-            st.info("💡 사이드바에 [🏢 거래처 업종 분류 (CSV)] 파일을 업로드하시면 업종별 실적 분석이 활성화됩니다.")
 
     # Tab 2: 🏢 거래처 분석
     with tab2:
         st.markdown(f"<div class='sub-header'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
-        st.info(f"📍 주소: {client_addr}")
         
         btn_c1, btn_c2, btn_c3 = st.columns([1.5, 1, 1])
         
@@ -1447,13 +1463,6 @@ if not full_df.empty:
             if st.session_state.show_corp_info:
                 with st.spinner("DART 및 네이버 기업 정보를 불러오는 중..."):
                     c_info = get_company_info_hybrid(selected_client, dart_api_key)
-                    st.success("정보 로딩 완료!")
-                    
-                    if c_info["source"] != "금융감독원 DART (2023)" and dart_api_key:
-                        if c_info.get("dart_error"):
-                            st.warning(f"⚠️ DART 연동 실패로 네이버 정보를 가져왔습니다. (원인: {c_info['dart_error']})")
-                        else:
-                            st.warning("⚠️ 해당 기업은 DART에 등록되지 않았거나 재무정보가 없어 네이버 정보를 가져왔습니다.")
                             
                     st.markdown(f"""
                     - **출처:** {c_info['source']}
@@ -1483,15 +1492,13 @@ if not full_df.empty:
             pivot_m_client = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
             cl, cr = st.columns([1, 1])
             with cl:
-                st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 거래처 월별 매출액 (만원)</div>", unsafe_allow_html=True)
                 st.dataframe(pivot_m_client.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
             with cr:
-                st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 [{selected_client}] 연도별 월 매출</div>", unsafe_allow_html=True)
                 st.plotly_chart(
                     create_stacked_bar_chart(pivot_m_client, title_text=""),
                     use_container_width=True, key="tab2_client_total_chart"
                 )
-                
+
             st.markdown("---")
             st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
             
@@ -1507,8 +1514,6 @@ if not full_df.empty:
                 
                 i_col_left_c, i_col_right_c = st.columns([1, 1])
                 with i_col_left_c:
-                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 {selected_target_item_c} {selected_metric_c.split(' ')[0]} 데이터</div>", unsafe_allow_html=True)
-                    
                     if "비중" in selected_metric_c:
                         st.dataframe(client_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
                         y_suf_c = "%"
@@ -1530,7 +1535,6 @@ if not full_df.empty:
                         y_fmt_c = ",.0f"
                         
                 with i_col_right_c:
-                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 [{selected_client}] {selected_target_item_c} 연도별 월별 {selected_metric_c.split(' ')[0]}</div>", unsafe_allow_html=True)
                     st.plotly_chart(
                         create_stacked_bar_chart(
                             client_item_pivot, 
@@ -1540,10 +1544,6 @@ if not full_df.empty:
                         ),
                         use_container_width=True, key="tab2_client_item_chart"
                     )
-            else:
-                st.info("해당 거래처에 대한 품목별 상세 데이터가 존재하지 않습니다.")
-        else:
-            st.warning("선택한 조건에 해당하는 거래처 데이터가 없습니다.")
 
     # Tab 3: 📦 품목 및 단가 분석 (초고속 빈 열/행 필터링 무손실 렌더링)
     with tab3:
@@ -1552,14 +1552,16 @@ if not full_df.empty:
         latest_dt_overall = df_base["매출일_dt"].max() if not df_base.empty else None
         target_month_col = latest_dt_overall.strftime("%y년 %m월") if pd.notnull(latest_dt_overall) else None
         
-        def render_native_dataframe(df, cmap, fmt, target_col):
+        def render_native_dataframe(df, cmap, fmt, target_col, apply_gradient=True):
             df_active, numeric_cols, highlight_col_name = prepare_active_df_fast(df, target_col)
             
             if df_active is None or df_active.empty:
-                st.info("실적 데이터가 없습니다.")
                 return
 
-            styled = df_active.style.format(fmt, subset=numeric_cols).background_gradient(cmap=cmap, subset=numeric_cols, axis=None)
+            styled = df_active.style.format(fmt, subset=numeric_cols)
+            
+            if apply_gradient and cmap:
+                styled = styled.background_gradient(cmap=cmap, subset=numeric_cols, axis=None)
 
             if highlight_col_name:
                 styled = styled.apply(lambda s: ['color: #B91C1C; font-weight: bold;'] * len(s), subset=[highlight_col_name], axis=0)
@@ -1575,13 +1577,14 @@ if not full_df.empty:
             )
 
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
-        render_native_dataframe((sales_p * 1.1 / 10000), "Blues", "{:,.0f}", target_month_col)
+        render_native_dataframe((sales_p * 1.1 / 10000), "Blues", "{:,.0f}", target_month_col, apply_gradient=True)
             
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
-        render_native_dataframe(qty_p, "Greens", "{:,.0f}", target_month_col)
+        render_native_dataframe(qty_p, "Greens", "{:,.0f}", target_month_col, apply_gradient=True)
             
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (중간값)</div>", unsafe_allow_html=True)
-        render_native_dataframe(unit_price_p, "Oranges", "{:,.0f}", target_month_col)
+        # 단가는 apply_gradient=False 로 설정하여 렌더링 부하를 대폭 줄임
+        render_native_dataframe(unit_price_p, "Oranges", "{:,.0f}", target_month_col, apply_gradient=False)
 
     # Tab 4: 👤 담당자 & 상세내역
     with tab4:
@@ -1599,8 +1602,6 @@ if not full_df.empty:
                 .background_gradient(cmap="Blues", subset=monthly_cols)
             )
             st.dataframe(styled_staff, use_container_width=True, height=350)
-        else:
-            st.info("데이터가 없습니다.")
 
         st.markdown("<div class='sub-header'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
         if not df_base.empty:
@@ -1614,7 +1615,6 @@ if not full_df.empty:
                 r_col1, r_col2 = st.columns([1.2, 1])
                 
                 with r_col1:
-                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📋 [{sel_staff}] {current_year}년 거래처 월별 매출 순위</div>", unsafe_allow_html=True)
                     st.dataframe(
                         ranking_pivot.style.format("{:,.0f}")
                         .background_gradient(cmap="Blues", subset=all_months)
@@ -1623,7 +1623,6 @@ if not full_df.empty:
                     )
                     
                 with r_col2:
-                    st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>📈 상위 10개 거래처 누적 매출액 비교</div>", unsafe_allow_html=True)
                     top_clients = ranking_pivot.head(10).sort_values(by="당해 누적 (만원)", ascending=True)
                     
                     fig_ranking = px.bar(
@@ -1646,10 +1645,6 @@ if not full_df.empty:
                         height=380
                     )
                     st.plotly_chart(fig_ranking, use_container_width=True, key=f"ranking_chart_{sel_staff}")
-            else:
-                st.info(f"{current_year}년에 해당 담당자의 거래 내역이 없습니다.")
-        else:
-            st.info("데이터가 없습니다.")
 
         st.markdown("<div class='sub-header'>📋 거래 상세 내역 (최신순 800건)</div>", unsafe_allow_html=True)
         if not df_detail.empty:
@@ -1666,13 +1661,10 @@ if not full_df.empty:
                 .background_gradient(subset=["매출액"], cmap="Blues")
             )
             st.dataframe(styled_detail, use_container_width=True, height=600, hide_index=True)
-        else:
-            st.info("데이터가 없습니다.")
 
     # Tab 5: 📌 채권 관리
     with tab5:
         st.markdown("<div class='sub-header'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
-        st.info("💡 **스마트 채권 분석 알림:** 마지막 잔액이 당월 매출보다 클 경우, **어느 달부터 미수금이 밀려 있는지 역추적**하여 매출 칸에 🔴빨간색으로 경고합니다. 정상적으로 수금된 잔액(당월 매출 이하)은 🔵파란색으로 표시됩니다.")
         
         if not debt_df.empty:
             if not filtered_debt_df.empty:
@@ -1779,10 +1771,6 @@ if not full_df.empty:
                     .apply(apply_debt_style_fast, axis=None),
                     use_container_width=True, height=df_height
                 )
-            else:
-                st.warning("선택한 담당자나 거래처에 해당하는 채권 데이터가 없습니다.")
-        else:
-            st.warning("업로드된 채권 데이터가 없습니다. 사이드바에서 파일을 등록해주세요.")
 
     # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
     with tab6:
@@ -1904,19 +1892,10 @@ if not full_df.empty:
                     
                     dynamic_key = f"map_chart_{hash(str(map_selected_staff))}"
                     st.plotly_chart(fig_map, use_container_width=True, key=dynamic_key)
-                    
-                    if invalid_clients:
-                        with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
-                            st.write(", ".join(invalid_clients))
-                else:
-                    st.warning("선택한 조건에 해당하는 거래처 중 유효한 주소가 등록된 곳이 없어 지도를 그릴 수 없습니다.")
-            else:
-                st.warning("선택한 담당자의 거래처 데이터가 없습니다.")
-                
+
     # Tab 7: 🏭 설비 재고 현황
     with tab7:
         st.markdown("<div class='sub-header'>🏭 고압가스 탱크 및 기화기 재고 현황</div>", unsafe_allow_html=True)
-        st.info("💡 **Tip:** CSV나 엑셀 형태로 자산 데이터를 업로드하면 지사별/상태별 유휴 장비를 즉각적으로 조회할 수 있습니다.")
 
         if not df_tank.empty or not df_vaporizer.empty:
             # --- 4분할 상단 필터 레이아웃 ---
@@ -1954,10 +1933,19 @@ if not full_df.empty:
 
             st.markdown("---")
 
-            def style_status(val):
-                color = '#059669' if '유휴' in str(val) else '#334155'
-                weight = 'bold' if '유휴' in str(val) else 'normal'
-                return f'color: {color}; font-weight: {weight}'
+            # --- 색상 속도 최적화 (Styler 제거) ---
+            if not df_tank.empty:
+                if '사용구분' in df_tank.columns:
+                    # '유휴'라는 글자가 있으면 🟢 이모지 추가, 없으면 🏢 추가
+                    mask_idle = df_tank['사용구분'].astype(str).str.contains('유휴')
+                    df_tank.loc[mask_idle, '사용구분'] = '🟢 ' + df_tank.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+                    df_tank.loc[~mask_idle, '사용구분'] = '🏢 ' + df_tank.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+
+            if not df_vaporizer.empty:
+                if '사용구분' in df_vaporizer.columns:
+                    mask_idle_v = df_vaporizer['사용구분'].astype(str).str.contains('유휴')
+                    df_vaporizer.loc[mask_idle_v, '사용구분'] = '🟢 ' + df_vaporizer.loc[mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+                    df_vaporizer.loc[~mask_idle_v, '사용구분'] = '🏢 ' + df_vaporizer.loc[~mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
 
             # --- 탱크 재고 렌더링 (전체보기 또는 탱크선택 시) ---
             if selected_equip_type in ["전체 보기", "탱크 재고"]:
@@ -1971,10 +1959,7 @@ if not full_df.empty:
                     if selected_eq_item != "전체 품목/형식" and '품목' in filtered_tank.columns:
                         filtered_tank = filtered_tank[filtered_tank['품목'].astype(str).str.strip() == selected_eq_item]
                     
-                    styled_tank = filtered_tank.style.map(style_status, subset=['사용구분'] if '사용구분' in filtered_tank.columns else [])
-                    st.dataframe(styled_tank, use_container_width=True, height=350, hide_index=True)
-                else:
-                    st.warning("업로드된 탱크 재고 데이터가 없습니다.")
+                    st.dataframe(filtered_tank, use_container_width=True, height=350, hide_index=True)
 
             # --- 기화기 재고 렌더링 (전체보기 또는 기화기선택 시) ---
             if selected_equip_type in ["전체 보기", "기화기 재고"]:
@@ -1991,19 +1976,47 @@ if not full_df.empty:
                     if selected_eq_item != "전체 품목/형식" and '기화형식' in filtered_vap.columns:
                         filtered_vap = filtered_vap[filtered_vap['기화형식'].astype(str).str.strip() == selected_eq_item]
                     
-                    styled_vap = filtered_vap.style.map(style_status, subset=['사용구분'] if '사용구분' in filtered_vap.columns else [])
-                    st.dataframe(styled_vap, use_container_width=True, height=350, hide_index=True)
-                else:
-                    st.warning("업로드된 기화기 재고 데이터가 없습니다.")
+                    st.dataframe(filtered_vap, use_container_width=True, height=350, hide_index=True)
 
+    # Tab 8: 🛢️ 통합 탱크 재고
+    with tab8:
+        st.markdown("<div class='sub-header'>🛢️ 통합 고압가스 탱크 재고 현황</div>", unsafe_allow_html=True)
+        if not df_integrated.empty:
+            int_col1, int_col2, int_col3 = st.columns(3)
+            with int_col1:
+                items = ["전체 품목"] + sorted([str(x) for x in df_integrated['품목'].dropna().unique() if str(x).strip()])
+                sel_item = st.selectbox("📦 품목 선택", items, key="int_item")
+            with int_col2:
+                statuses = ["전체 상태"] + sorted([str(x) for x in df_integrated['사용구분'].dropna().unique() if str(x).strip()])
+                sel_status = st.selectbox("📌 사용구분", statuses, key="int_status")
+            with int_col3:
+                st.date_input("📅 업데이트 기준일", key="int_date")
+
+            st.markdown("---")
+
+            df_int_filtered = df_integrated.copy()
+            if sel_item != "전체 품목":
+                df_int_filtered = df_int_filtered[df_int_filtered['품목'].astype(str) == sel_item]
+            if sel_status != "전체 상태":
+                df_int_filtered = df_int_filtered[df_int_filtered['사용구분'].astype(str) == sel_status]
+
+            total_tanks = len(df_int_filtered)
+            idle_tanks = len(df_int_filtered[df_int_filtered['사용구분'].astype(str).str.contains('유휴', na=False)])
+            inuse_tanks = total_tanks - idle_tanks
+            
+            k1, k2, k3 = st.columns(3)
+            k1.markdown(f"<div class='metric-box'><div class='metric-label'>총 탱크 수량</div><div class='metric-value'>{total_tanks:,} 기</div></div>", unsafe_allow_html=True)
+            k2.markdown(f"<div class='metric-box'><div class='metric-label'>🟢 유휴 장비 (대기중)</div><div class='metric-value' style='color:#059669;'>{idle_tanks:,} 기</div></div>", unsafe_allow_html=True)
+            k3.markdown(f"<div class='metric-box'><div class='metric-label'>🏢 사용/충전중</div><div class='metric-value' style='color:#2563EB;'>{inuse_tanks:,} 기</div></div>", unsafe_allow_html=True)
+
+            st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px; margin-top: 20px;'>📋 상세 재고 데이터</div>", unsafe_allow_html=True)
+            
+            df_display = df_int_filtered.copy()
+            if '사용구분' in df_display.columns:
+                mask_idle = df_display['사용구분'].astype(str).str.contains('유휴')
+                df_display.loc[mask_idle, '사용구분'] = '🟢 ' + df_display.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+                df_display.loc[~mask_idle, '사용구분'] = '🏢 ' + df_display.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+
+            st.dataframe(df_display, use_container_width=True, height=600, hide_index=True)
         else:
-            st.info("좌측 사이드바에서 데이터 파일을 업로드해주세요. 임시로 이미지를 확인하시려면 아래 버튼을 눌러주세요.")
-            if st.button("📷 첨부한 이미지로 임시 확인하기"):
-                img_col1, img_col2 = st.columns(2)
-                with img_col1:
-                    st.image("스크린샷 2026-07-31 오전 8.25.11.png", caption="탱크 현황 (표 변환 권장)", use_column_width=True)
-                with img_col2:
-                    st.image("스크린샷 2026-07-31 오전 8.25.20.png", caption="기화기 현황 (표 변환 권장)", use_column_width=True)
-
-else:
-    st.info("👈 왼쪽 사이드바에서 매출 데이터를 업로드하면 분석 대시보드가 활성화됩니다.")
+            st.warning("통합 탱크 재고 데이터가 없습니다. 폴더에 '통합탱크재고.csv'를 넣거나 왼쪽 사이드바에서 업로드해주세요.")
