@@ -505,7 +505,7 @@ def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0
 
 
 # ==========================================
-# 3. 데이터 로딩 & 메모리 캐싱 (최적화)
+# 3. 데이터 로딩 & 메모리 캐싱 (최적화) - Error 무시(on_bad_lines) 적용
 # ==========================================
 @st.cache_data(show_spinner="주소록을 읽어오는 중입니다...")
 def load_address_file(address_bytes):
@@ -514,7 +514,7 @@ def load_address_file(address_bytes):
     try:
         for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
             try:
-                temp_addr = pd.read_csv(io.BytesIO(address_bytes), encoding=enc)
+                temp_addr = pd.read_csv(io.BytesIO(address_bytes), encoding=enc, on_bad_lines='skip', engine='python')
                 if len(temp_addr.columns) >= 2:
                     k_col = temp_addr.columns[0]
                     v_col = temp_addr.columns[1]
@@ -531,6 +531,7 @@ def load_address_file(address_bytes):
         pass
     return {}
 
+
 @st.cache_data(show_spinner="업종 분류 데이터를 읽어오는 중입니다...")
 def load_industry_file(industry_bytes):
     if not industry_bytes:
@@ -538,7 +539,7 @@ def load_industry_file(industry_bytes):
     try:
         for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
             try:
-                temp_ind = pd.read_csv(io.BytesIO(industry_bytes), encoding=enc)
+                temp_ind = pd.read_csv(io.BytesIO(industry_bytes), encoding=enc, on_bad_lines='skip', engine='python')
                 temp_ind.columns = temp_ind.columns.astype(str).str.strip()
                 
                 c_client = next((c for c in temp_ind.columns if "거래처" in c or "상호" in c), None)
@@ -554,6 +555,7 @@ def load_industry_file(industry_bytes):
         pass
     return {}
 
+
 @st.cache_data(show_spinner="채권 데이터를 읽어오는 중입니다...")
 def load_debt_file(debt_bytes):
     if not debt_bytes:
@@ -561,7 +563,7 @@ def load_debt_file(debt_bytes):
     try:
         for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
             try:
-                df_direct = pd.read_csv(io.BytesIO(debt_bytes), encoding=enc)
+                df_direct = pd.read_csv(io.BytesIO(debt_bytes), encoding=enc, on_bad_lines='skip', engine='python')
                 df_direct.columns = df_direct.columns.astype(str).str.strip()
                 
                 if "거래처" in df_direct.columns and "구분" in df_direct.columns:
@@ -622,7 +624,7 @@ def load_uploaded_files_from_bytes(file_tuples):
                     header_idx = i
                     break
 
-            df = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
+            df = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])), on_bad_lines='skip', engine='python')
             df.columns = df.columns.astype(str).str.strip()
             cols = list(df.columns)
 
@@ -924,19 +926,53 @@ industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)"
 debt_file_up = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
 uploaded_files_up = st.sidebar.file_uploader("매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True)
 
+# ==========================================
+# ★ 설비(탱크/기화기) 재고 관리 파일 업로드 추가 ★
+# ==========================================
+st.sidebar.markdown("---")
+st.sidebar.subheader("🏭 설비 재고 관리 (선택)")
+tank_file_up = st.sidebar.file_uploader("탱크 재고현황 (CSV/Excel)", type=["csv", "xlsx"])
+vaporizer_file_up = st.sidebar.file_uploader("기화기 재고현황 (CSV/Excel)", type=["csv", "xlsx"])
+
+# CSV 큰따옴표 이중묶임 에러 및 열 개수 불일치 방지용 함수 (on_bad_lines 적용)
+@st.cache_data(show_spinner="설비 데이터를 읽어오는 중입니다...")
+def load_equipment_file(file_bytes, file_name):
+    if not file_bytes:
+        return pd.DataFrame()
+    try:
+        if file_name.endswith('.csv'):
+            decoded = None
+            for enc in ['utf-8-sig', 'utf-8', 'cp949', 'euc-kr']:
+                try:
+                    decoded = file_bytes.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            
+            if decoded is None:
+                decoded = file_bytes.decode('utf-8', errors='replace')
+            
+            lines = [line.strip().strip('"') for line in decoded.splitlines() if line.strip()]
+            
+            df = pd.read_csv(io.StringIO("\n".join(lines)), on_bad_lines='skip', engine='python')
+            return df
+        else:
+            return pd.read_excel(io.BytesIO(file_bytes))
+    except Exception as e:
+        st.sidebar.error(f"파일 읽기 오류 ({file_name}): {e}")
+        return pd.DataFrame()
+
+
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔑 Open DART API 설정")
 
-# [수정] DART API 키 영구 저장 및 불러오기 로직
 API_KEY_FILE = os.path.join(CACHE_DIR, "dart_api_key.txt")
 saved_api_key = ""
 
-# 기존에 저장된 키가 있으면 읽어옵니다.
 if os.path.exists(API_KEY_FILE):
     with open(API_KEY_FILE, "r", encoding="utf-8") as f:
         saved_api_key = f.read().strip()
 
-# 읽어온 키를 기본값(value)으로 세팅하여 텍스트 입력창을 만듭니다.
 dart_api_key = st.sidebar.text_input(
     "DART API 키 (재무정보 연동용)", 
     value=saved_api_key, 
@@ -944,17 +980,22 @@ dart_api_key = st.sidebar.text_input(
     help="금융감독원 Open DART API 키를 입력하세요. 한 번 입력하면 자동 저장되어 새로고침해도 유지됩니다."
 )
 
-# 입력된 키가 기존에 저장된 키와 다르다면(새로 입력했다면) 파일에 새로 덮어씁니다.
 if dart_api_key and dart_api_key != saved_api_key:
     with open(API_KEY_FILE, "w", encoding="utf-8") as f:
         f.write(dart_api_key)
 
+# ----------------------------------------------------
+# 캐시 파일 경로 설정 및 유지 기능 (탱크 및 기화기 추가)
+# ----------------------------------------------------
 addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
 industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
 debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
+tank_cache_path = os.path.join(CACHE_DIR, "tank_cache.dat")
+vaporizer_cache_path = os.path.join(CACHE_DIR, "vaporizer_cache.dat")
 sales_cache_dir = os.path.join(CACHE_DIR, "sales")
 os.makedirs(sales_cache_dir, exist_ok=True)
 
+# 주소록 로딩
 if address_file_up is not None:
     addr_bytes = address_file_up.getvalue()
     with open(addr_cache_path, "wb") as f:
@@ -965,6 +1006,7 @@ elif os.path.exists(addr_cache_path):
 else:
     addr_bytes = None
 
+# 업종 데이터 로딩
 if industry_file_up is not None:
     ind_bytes = industry_file_up.getvalue()
     with open(industry_cache_path, "wb") as f:
@@ -975,6 +1017,7 @@ elif os.path.exists(industry_cache_path):
 else:
     ind_bytes = None
 
+# 채권 데이터 로딩
 if debt_file_up is not None:
     debt_bytes = debt_file_up.getvalue()
     with open(debt_cache_path, "wb") as f:
@@ -985,6 +1028,41 @@ elif os.path.exists(debt_cache_path):
 else:
     debt_bytes = None
 
+# 탱크 데이터 캐싱
+if tank_file_up is not None:
+    tank_bytes = tank_file_up.getvalue()
+    tank_name = tank_file_up.name
+    with open(tank_cache_path, "wb") as f:
+        f.write(tank_bytes)
+    with open(tank_cache_path + "_name.txt", "w", encoding="utf-8") as f:
+        f.write(tank_name)
+elif os.path.exists(tank_cache_path) and os.path.exists(tank_cache_path + "_name.txt"):
+    with open(tank_cache_path, "rb") as f:
+        tank_bytes = f.read()
+    with open(tank_cache_path + "_name.txt", "r", encoding="utf-8") as f:
+        tank_name = f.read().strip()
+else:
+    tank_bytes = None
+    tank_name = ""
+
+# 기화기 데이터 캐싱
+if vaporizer_file_up is not None:
+    vaporizer_bytes = vaporizer_file_up.getvalue()
+    vaporizer_name = vaporizer_file_up.name
+    with open(vaporizer_cache_path, "wb") as f:
+        f.write(vaporizer_bytes)
+    with open(vaporizer_cache_path + "_name.txt", "w", encoding="utf-8") as f:
+        f.write(vaporizer_name)
+elif os.path.exists(vaporizer_cache_path) and os.path.exists(vaporizer_cache_path + "_name.txt"):
+    with open(vaporizer_cache_path, "rb") as f:
+        vaporizer_bytes = f.read()
+    with open(vaporizer_cache_path + "_name.txt", "r", encoding="utf-8") as f:
+        vaporizer_name = f.read().strip()
+else:
+    vaporizer_bytes = None
+    vaporizer_name = ""
+
+# 매출 데이터 로딩 (다중 파일)
 if uploaded_files_up and len(uploaded_files_up) > 0:
     for f_name in os.listdir(sales_cache_dir):
         os.remove(os.path.join(sales_cache_dir, f_name))
@@ -1005,18 +1083,24 @@ else:
                 with open(f_path, "rb") as sf:
                     sales_file_tuples.append((f_name, sf.read()))
 
+# 캐시 초기화 시 탱크, 기화기 파일도 함께 제거되도록 수정
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
-    for p in [addr_cache_path, industry_cache_path, debt_cache_path]:
+    for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
+              tank_cache_path, tank_cache_path + "_name.txt", 
+              vaporizer_cache_path, vaporizer_cache_path + "_name.txt"]:
         if os.path.exists(p): os.remove(p)
     if os.path.exists(API_KEY_FILE):
-        os.remove(API_KEY_FILE) # 초기화 시 API 키도 삭제
+        os.remove(API_KEY_FILE)
     for f_name in os.listdir(sales_cache_dir):
         os.remove(os.path.join(sales_cache_dir, f_name))
     st.rerun()
 
+# 실제 데이터프레임 파싱 적용
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
 debt_df = load_debt_file(debt_bytes) if debt_bytes else pd.DataFrame()
+df_tank = load_equipment_file(tank_bytes, tank_name) if tank_bytes else pd.DataFrame()
+df_vaporizer = load_equipment_file(vaporizer_bytes, vaporizer_name) if vaporizer_bytes else pd.DataFrame()
 full_df = load_uploaded_files_from_bytes(sales_file_tuples) if sales_file_tuples else pd.DataFrame()
 
 if not full_df.empty:
@@ -1145,14 +1229,18 @@ if not full_df.empty:
         use_container_width=True,
     )
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    # ==========================================
+    # ★ 7번 탭 설비 재고 현황 추가 반영 ★
+    # ==========================================
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
         [
             "📌 영업 종합 요약",
             "🏢 거래처 분석",
             "📦 품목 및 단가 분석",
             "👤 담당자 & 상세내역",
             "📌 채권 관리",
-            "📍 카카오맵"
+            "📍 카카오맵",
+            "🏭 설비 재고 현황"
         ]
     )
 
@@ -1824,6 +1912,98 @@ if not full_df.empty:
                     st.warning("선택한 조건에 해당하는 거래처 중 유효한 주소가 등록된 곳이 없어 지도를 그릴 수 없습니다.")
             else:
                 st.warning("선택한 담당자의 거래처 데이터가 없습니다.")
+                
+    # Tab 7: 🏭 설비 재고 현황
+    with tab7:
+        st.markdown("<div class='sub-header'>🏭 고압가스 탱크 및 기화기 재고 현황</div>", unsafe_allow_html=True)
+        st.info("💡 **Tip:** CSV나 엑셀 형태로 자산 데이터를 업로드하면 지사별/상태별 유휴 장비를 즉각적으로 조회할 수 있습니다.")
+
+        if not df_tank.empty or not df_vaporizer.empty:
+            # --- 4분할 상단 필터 레이아웃 ---
+            eq_col1, eq_col2, eq_col3, eq_col4 = st.columns(4)
+            
+            with eq_col1:
+                available_branches = []
+                if not df_tank.empty and '지사' in df_tank.columns:
+                    available_branches.extend(df_tank['지사'].dropna().unique())
+                if not df_vaporizer.empty and '지사' in df_vaporizer.columns:
+                    available_branches.extend(df_vaporizer['지사'].dropna().unique())
+                selected_branch = st.selectbox("📍 지사 선택 (전체 조회)", ["전체 지사"] + sorted(list(set(available_branches))))
+            
+            with eq_col2:
+                selected_equip_type = st.selectbox("🛢️ 설비 종류 선택", ["전체 보기", "탱크 재고", "기화기 재고"])
+
+            with eq_col3:
+                selected_status = st.selectbox("📌 사용구분 필터", ["전체 상태", "유휴 장비", "거래처 사용중"])
+
+            with eq_col4:
+                # 동적으로 탱크는 '품목', 기화기는 '기화형식' 추출
+                eq_items = []
+                if not df_tank.empty and '품목' in df_tank.columns:
+                    eq_items.extend(df_tank['품목'].dropna().astype(str).tolist())
+                if not df_vaporizer.empty and '기화형식' in df_vaporizer.columns:
+                    eq_items.extend(df_vaporizer['기화형식'].dropna().astype(str).tolist())
+                unique_eq_items = sorted(list(set([i.strip() for i in eq_items if i.strip() != ''])))
+                selected_eq_item = st.selectbox("📦 품목/형식 선택", ["전체 품목/형식"] + unique_eq_items)
+
+            # --- 데이터 업데이트 기준일 (원하시는 위치) ---
+            st.markdown("<br>", unsafe_allow_html=True)
+            date_col1, date_col2 = st.columns([1.5, 4.5])
+            with date_col1:
+                st.date_input("📅 데이터 업데이트 기준일")
+
+            st.markdown("---")
+
+            def style_status(val):
+                color = '#059669' if '유휴' in str(val) else '#334155'
+                weight = 'bold' if '유휴' in str(val) else 'normal'
+                return f'color: {color}; font-weight: {weight}'
+
+            # --- 탱크 재고 렌더링 (전체보기 또는 탱크선택 시) ---
+            if selected_equip_type in ["전체 보기", "탱크 재고"]:
+                st.markdown("<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>🛢️ 초저온 탱크 재고 현황</div>", unsafe_allow_html=True)
+                if not df_tank.empty:
+                    filtered_tank = df_tank.copy()
+                    if selected_branch != "전체 지사" and '지사' in filtered_tank.columns:
+                        filtered_tank = filtered_tank[filtered_tank['지사'].astype(str).str.contains(selected_branch)]
+                    if selected_status != "전체 상태" and '사용구분' in filtered_tank.columns:
+                        filtered_tank = filtered_tank[filtered_tank['사용구분'].astype(str).str.contains(selected_status)]
+                    if selected_eq_item != "전체 품목/형식" and '품목' in filtered_tank.columns:
+                        filtered_tank = filtered_tank[filtered_tank['품목'].astype(str).str.strip() == selected_eq_item]
+                    
+                    styled_tank = filtered_tank.style.map(style_status, subset=['사용구분'] if '사용구분' in filtered_tank.columns else [])
+                    st.dataframe(styled_tank, use_container_width=True, height=350, hide_index=True)
+                else:
+                    st.warning("업로드된 탱크 재고 데이터가 없습니다.")
+
+            # --- 기화기 재고 렌더링 (전체보기 또는 기화기선택 시) ---
+            if selected_equip_type in ["전체 보기", "기화기 재고"]:
+                if selected_equip_type == "전체 보기":
+                    st.markdown("<br>", unsafe_allow_html=True)
+                
+                st.markdown(f"<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>♨️ 기화기 재고 현황</div>", unsafe_allow_html=True)
+                if not df_vaporizer.empty:
+                    filtered_vap = df_vaporizer.copy()
+                    if selected_branch != "전체 지사" and '지사' in filtered_vap.columns:
+                        filtered_vap = filtered_vap[filtered_vap['지사'].astype(str).str.contains(selected_branch)]
+                    if selected_status != "전체 상태" and '사용구분' in filtered_vap.columns:
+                        filtered_vap = filtered_vap[filtered_vap['사용구분'].astype(str).str.contains(selected_status)]
+                    if selected_eq_item != "전체 품목/형식" and '기화형식' in filtered_vap.columns:
+                        filtered_vap = filtered_vap[filtered_vap['기화형식'].astype(str).str.strip() == selected_eq_item]
+                    
+                    styled_vap = filtered_vap.style.map(style_status, subset=['사용구분'] if '사용구분' in filtered_vap.columns else [])
+                    st.dataframe(styled_vap, use_container_width=True, height=350, hide_index=True)
+                else:
+                    st.warning("업로드된 기화기 재고 데이터가 없습니다.")
+
+        else:
+            st.info("좌측 사이드바에서 데이터 파일을 업로드해주세요. 임시로 이미지를 확인하시려면 아래 버튼을 눌러주세요.")
+            if st.button("📷 첨부한 이미지로 임시 확인하기"):
+                img_col1, img_col2 = st.columns(2)
+                with img_col1:
+                    st.image("스크린샷 2026-07-31 오전 8.25.11.png", caption="탱크 현황 (표 변환 권장)", use_column_width=True)
+                with img_col2:
+                    st.image("스크린샷 2026-07-31 오전 8.25.20.png", caption="기화기 현황 (표 변환 권장)", use_column_width=True)
 
 else:
     st.info("👈 왼쪽 사이드바에서 매출 데이터를 업로드하면 분석 대시보드가 활성화됩니다.")
