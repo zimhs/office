@@ -362,14 +362,34 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
 
 
 # ==========================================
-# ★ 메모 생성 AppleScript ★
+# ★ 메모 생성 AppleScript ★ 
 # ==========================================
-def open_macos_notes_folder(client_name, dart_api_key):
+def open_macos_notes_folder(client_name, dart_api_key, df_integrated=None):
     safe_client_name = client_name.replace('"', '\\"')
 
     info = get_company_info_hybrid(client_name, dart_api_key)
     encoded_name = urllib.parse.quote(info['clean_name'])
     
+    # 통합 탱크 재고 연동 HTML 생성
+    inventory_html = ""
+    if df_integrated is not None and not df_integrated.empty and '거래처(사용처)/보관장소' in df_integrated.columns:
+        client_inv = df_integrated[df_integrated['거래처(사용처)/보관장소'].astype(str).str.contains(client_name, regex=False, na=False)]
+        if not client_inv.empty:
+            inventory_html = "<h3>🛢️ 설치/보관 장비 현황 (통합 탱크 재고)</h3><ul>"
+            for _, row in client_inv.iterrows():
+                item = row.get('품목', '미상')
+                status = row.get('사용구분', '')
+                serial = row.get('일련(제조)번호', 'S/N 없음')
+                vol = row.get('저장부피(L)', '')
+                weight = row.get('저장무게(kg)', '')
+                
+                vol_str = f"{vol}L" if pd.notna(vol) and str(vol).strip() != "" else ""
+                weight_str = f"{weight}kg" if pd.notna(weight) and str(weight).strip() != "" else ""
+                cap_str = f" / 용량: {vol_str} {weight_str}".strip() if vol_str or weight_str else ""
+                
+                inventory_html += f"<li><b>[{item}]</b> {status} (S/N: {serial}{cap_str})</li>"
+            inventory_html += "</ul><br>"
+
     note_content = f"""
     <h1>{safe_client_name}</h1>
     <br>
@@ -381,6 +401,7 @@ def open_macos_notes_folder(client_name, dart_api_key):
         <li><b>영업이익:</b> {info['profit']}</li>
     </ul>
     <br>
+    {inventory_html}
     <h3>🔗 상세 정보 원클릭 검색</h3>
     <ul>
         <li><a href="https://search.naver.com/search.naver?query={encoded_name} 기업정보">네이버에서 '{info['clean_name']}' 재무정보 보기</a></li>
@@ -1169,8 +1190,10 @@ if not full_df.empty:
         df_staff_filtered = df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base.copy()
 
         all_clients = sorted(df_staff_filtered["거래처"].unique()) if not df_staff_filtered.empty else []
-        selected_client_list = fc4.multiselect("🏢 거래처", options=all_clients, max_selections=1, placeholder="거래처 검색...")
-        selected_client = selected_client_list[0] if selected_client_list else "전체 거래처"
+        
+        # 거래처 선택을 selectbox로 변경하여 타이핑 검색이 용이하도록 개선
+        client_options = ["전체 거래처"] + all_clients
+        selected_client = fc4.selectbox("🏢 거래처 (직접 입력 검색)", options=client_options, index=0)
 
         df_client_filtered = df_staff_filtered[df_staff_filtered["거래처"] == selected_client] if selected_client != "전체 거래처" else df_staff_filtered.copy()
 
@@ -1448,7 +1471,7 @@ if not full_df.empty:
         
         with btn_c1:
             if st.button("📝 macOS 메모 앱에서 거래처 노트 열기/생성", key="btn_notes"):
-                open_macos_notes_folder(selected_client, dart_api_key)
+                open_macos_notes_folder(selected_client, dart_api_key, df_integrated)
                 
         with btn_c2:
             if "show_corp_info" not in st.session_state:
@@ -1499,6 +1522,98 @@ if not full_df.empty:
                     use_container_width=True, key="tab2_client_total_chart"
                 )
 
+            # --- 월별 품목 비중(Mix) 분석 위로 배치 ---
+            st.markdown("---")
+            st.markdown(f"<div class='sub-header'>📊 [{selected_client}] 월별 품목 비중 분석 (Mix)</div>", unsafe_allow_html=True)
+            
+            prop_col1, prop_col2 = st.columns([1, 1])
+            with prop_col1:
+                sorted_desc_years = sorted(raw_years, reverse=True)
+                prop_year_sel = st.selectbox("📅 조회 연도 선택", ["전체 기간"] + sorted_desc_years, key="prop_year_sel")
+            with prop_col2:
+                prop_metric = st.radio("📊 분석 지표 선택", ["매출액 기준", "출고량 기준"], horizontal=True, key="prop_metric_radio")
+                
+            df_prop = df_client_filtered.copy()
+            if prop_year_sel != "전체 기간":
+                df_prop = df_prop[df_prop["연도"] == prop_year_sel]
+                
+            if not df_prop.empty:
+                val_col = "매출액" if prop_metric == "매출액 기준" else "출고량"
+                
+                if prop_year_sel == "전체 기간":
+                    pivot_prop = df_prop.pivot_table(index="품목명", columns="연도월_정렬", values=val_col, aggfunc="sum").fillna(0)
+                    chrono_order_desc = [f"{str(y)[2:]}년 {m}" for y in sorted_desc_years for m in reversed(all_months)]
+                    valid_cols_desc = [x for x in chrono_order_desc if x in pivot_prop.columns]
+                    pivot_prop = pivot_prop.reindex(columns=valid_cols_desc).fillna(0)
+                else:
+                    pivot_prop = df_prop.pivot_table(index="품목명", columns="월", values=val_col, aggfunc="sum").fillna(0)
+                    pivot_prop = pivot_prop.reindex(columns=list(reversed(all_months))).fillna(0)
+                    
+                col_sums = pivot_prop.sum(axis=0)
+                pivot_prop_pct = pivot_prop.div(col_sums.replace(0, np.nan), axis=1) * 100
+                pivot_prop_pct = pivot_prop_pct.fillna(0)
+                
+                if prop_year_sel == "전체 기간":
+                    pivot_prop_pct = pivot_prop_pct.loc[:, col_sums > 0]
+                pivot_prop_pct = pivot_prop_pct.loc[(pivot_prop_pct > 0).any(axis=1)]
+                
+                p_c1, p_c2 = st.columns([1, 1])
+                with p_c1:
+                    display_df = pivot_prop_pct.copy()
+                    if prop_year_sel == "전체 기간":
+                        new_cols = pd.MultiIndex.from_tuples([(c.split(' ')[0], c.split(' ')[1]) for c in display_df.columns], names=["연도", "월"])
+                        display_df.columns = new_cols
+                    
+                    # 렉 유발하는 그라데이션 제거, 순수 텍스트 포맷팅(무손실)만 적용
+                    st.dataframe(
+                        display_df.style.format("{:.1f} %"),
+                        use_container_width=True, 
+                        height=420
+                    )
+                    
+                with p_c2:
+                    chart_df = pivot_prop_pct[pivot_prop_pct.columns[::-1]]
+                    fig_prop = go.Figure()
+                    color_palette = px.colors.qualitative.Pastel + px.colors.qualitative.Set3 + px.colors.qualitative.Safe
+                    
+                    for i, item in enumerate(chart_df.index):
+                        color = color_palette[i % len(color_palette)]
+                        
+                        if prop_year_sel == "전체 기간":
+                            fig_prop.add_trace(go.Scatter(
+                                x=chart_df.columns,
+                                y=chart_df.loc[item],
+                                name=item,
+                                mode='lines',
+                                line=dict(width=0.5, color='rgba(255,255,255,0.7)'), 
+                                stackgroup='one',
+                                line_shape='spline', 
+                                fillcolor=color,
+                                hovertemplate=f"<b>{item}</b><br>%{{x}}: %{{y:.1f}}%<extra></extra>"
+                            ))
+                        else:
+                            fig_prop.add_trace(go.Bar(
+                                x=chart_df.columns,
+                                y=chart_df.loc[item],
+                                name=item,
+                                marker_color=color,
+                                marker_line_width=0, 
+                                hovertemplate=f"<b>{item}</b><br>%{{x}}: %{{y:.1f}}%<extra></extra>"
+                            ))
+                            
+                    fig_prop.update_layout(
+                        barmode="stack" if prop_year_sel != "전체 기간" else None,
+                        xaxis=dict(title=None, type='category', showgrid=False, tickangle=-45),
+                        yaxis=dict(title="비중 (%)", range=[0, 100], showgrid=True, gridcolor='#E2E8F0'),
+                        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02, font=dict(size=11)),
+                        margin=dict(l=10, r=10, t=20, b=40),
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        height=420
+                    )
+                    st.plotly_chart(fig_prop, use_container_width=True, key="tab2_prop_chart")
+
+            # --- 품목별 상세 분석 아래로 배치 ---
             st.markdown("---")
             st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
             
@@ -1778,7 +1893,7 @@ if not full_df.empty:
         
         rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
         
-        map_col1, map_col2 = st.columns([1, 1])
+        map_col1, map_col2, map_col3 = st.columns([1, 1, 1])
         with map_col1:
             map_style_choice = st.radio(
                 "🗺️ 지도 배경 스타일 선택",
@@ -1794,18 +1909,28 @@ if not full_df.empty:
                 default=all_staff_list,
                 key="map_staff_multiselect"
             )
+        with map_col3:
+            all_map_clients = sorted(df_base["거래처"].unique()) if not df_base.empty else []
+            map_selected_client = st.multiselect(
+                "🏢 특정 거래처 위치 검색", 
+                options=all_map_clients,
+                placeholder="검색할 거래처명을 입력하세요...",
+                key="map_client_multiselect"
+            )
         
         if "show_map" not in st.session_state:
             st.session_state.show_map = False
             
-        if st.button("🗺️ 담당자별 거래처 지도 생성하기", type="primary"):
+        if st.button("🗺️ 지도 생성 및 위치 확인하기", type="primary"):
             st.session_state.show_map = True
                 
         if st.session_state.show_map:
-            if map_selected_staff:
-                target_map_df = df_base[df_base["담당자"].isin(map_selected_staff)]
-            else:
-                target_map_df = df_base.copy()
+            target_map_df = df_base.copy()
+            
+            if map_selected_client:
+                target_map_df = target_map_df[target_map_df["거래처"].isin(map_selected_client)]
+            elif map_selected_staff:
+                target_map_df = target_map_df[target_map_df["담당자"].isin(map_selected_staff)]
             
             if not target_map_df.empty:
                 unique_clients_df = target_map_df[['거래처', '담당자']].drop_duplicates(subset=['거래처'])
@@ -1848,6 +1973,7 @@ if not full_df.empty:
                     map_df = pd.DataFrame(map_data)
                     center_lat = map_df['lat'].mean()
                     center_lon = map_df['lon'].mean()
+                    zoom_level = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
                     
                     fig_map = px.scatter_mapbox(
                         map_df,
@@ -1856,7 +1982,7 @@ if not full_df.empty:
                         color="담당자",
                         hover_name="거래처",
                         hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
-                        zoom=8,
+                        zoom=zoom_level,
                         center={"lat": center_lat, "lon": center_lon},
                         height=650
                     )
@@ -1890,8 +2016,14 @@ if not full_df.empty:
                         )
                     )
                     
-                    dynamic_key = f"map_chart_{hash(str(map_selected_staff))}"
+                    dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
                     st.plotly_chart(fig_map, use_container_width=True, key=dynamic_key)
+                    
+                    if invalid_clients:
+                        with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
+                            st.write(", ".join(invalid_clients))
+            else:
+                st.info("조건에 맞는 거래처 데이터가 없습니다.")
 
     # Tab 7: 🏭 설비 재고 현황
     with tab7:
