@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
+import datetime
 
 # OpenDartReader 임포트 (설치되지 않았을 경우를 대비한 예외 처리)
 try:
@@ -933,6 +934,32 @@ def cached_client_item_qty_pivot(df_client_filtered, years, all_months):
     return pd.DataFrame(ci_expanded_data, index=raw_ci_qty.index)
 
 
+# ----------------------------------------------------
+# 탭 전체 적용 업데이트 뱃지 렌더링 유틸
+# ----------------------------------------------------
+def render_update_badge(date_str):
+    return f"<div style='text-align: right; margin-top: 20px;'><span style='background-color: #FFFFFF; color: #475569; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 1px solid #CBD5E1; box-shadow: 0 1px 2px rgba(0,0,0,0.05);'>⏱️ 데이터 업데이트: {date_str}</span></div>"
+
+# ----------------------------------------------------
+# 날짜 유지용 로컬 캐시 함수 (7, 8번 탭 전용)
+# ----------------------------------------------------
+TAB7_DATE_FILE = os.path.join(CACHE_DIR, "tab7_date.txt")
+TAB8_DATE_FILE = os.path.join(CACHE_DIR, "tab8_date.txt")
+
+def get_saved_date(file_path):
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return datetime.datetime.strptime(f.read().strip(), "%Y-%m-%d").date()
+        except:
+            pass
+    return datetime.date.today()
+
+def set_saved_date(file_path, date_val):
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(date_val.strftime("%Y-%m-%d"))
+
+
 # ==========================================
 # 5. 메인 실행 흐름 및 영구 캐싱 관리
 # ==========================================
@@ -1139,7 +1166,8 @@ if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
               tank_cache_path, tank_cache_path + "_name.txt", 
               vaporizer_cache_path, vaporizer_cache_path + "_name.txt",
-              integrated_cache_path, integrated_cache_path + "_name.txt"]:
+              integrated_cache_path, integrated_cache_path + "_name.txt",
+              TAB7_DATE_FILE, TAB8_DATE_FILE]:
         if os.path.exists(p): os.remove(p)
     if os.path.exists(API_KEY_FILE):
         os.remove(API_KEY_FILE)
@@ -1167,6 +1195,15 @@ target_items = [
     "O2 (kg, Bulk)",
     "AR (kg, Bulk)",
 ]
+
+# ----------------------------------------------------
+# 글로벌 데이터 업데이트 기준일 계산 (1~6번 탭용)
+# ----------------------------------------------------
+latest_update_str = "데이터 없음"
+if not full_df.empty:
+    latest_dt_overall = full_df["매출일_dt"].max()
+    if pd.notnull(latest_dt_overall):
+        latest_update_str = latest_dt_overall.strftime("%Y-%m-%d")
 
 if not full_df.empty:
     filter_container = st.container()
@@ -1302,7 +1339,10 @@ if not full_df.empty:
 
     # Tab 1: 📌 영업 종합 요약
     with tab1:
-        st.markdown("<div class='sub-header'>📊 전체 영업 주요 실적 지표</div>", unsafe_allow_html=True)
+        t1_c1, t1_c2 = st.columns([4, 1])
+        t1_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>📊 전체 영업 주요 실적 지표</div>", unsafe_allow_html=True)
+        t1_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+        
         m1, m2, m3, m4 = st.columns(4)
         
         tot_sales_val = df_base["매출액"].sum() * 1.1 / 10000 if not df_base.empty else 0.0
@@ -1504,7 +1544,9 @@ if not full_df.empty:
 
     # Tab 2: 🏢 거래처 분석
     with tab2:
-        st.markdown(f"<div class='sub-header'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
+        t2_c1, t2_c2 = st.columns([4, 1])
+        t2_c1.markdown(f"<div class='sub-header' style='margin-top: 20px;'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
+        t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
         
         btn_c1, btn_c2, btn_c3 = st.columns([1.5, 1, 1])
         
@@ -1610,7 +1652,9 @@ if not full_df.empty:
 
     # Tab 3: 📦 품목 및 단가 분석 (초고속 빈 열/행 필터링 무손실 렌더링)
     with tab3:
-        st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
+        t3_c1, t3_c2 = st.columns([4, 1])
+        t3_c1.markdown(f"<div class='sub-header' style='margin-top: 20px;'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
+        t3_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
         
         latest_dt_overall = df_base["매출일_dt"].max() if not df_base.empty else None
         target_month_col = latest_dt_overall.strftime("%y년 %m월") if pd.notnull(latest_dt_overall) else None
@@ -1678,7 +1722,10 @@ if not full_df.empty:
 
     # Tab 4: 👤 담당자 & 상세내역
     with tab4:
-        st.markdown("<div class='sub-header'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
+        t4_c1, t4_c2 = st.columns([4, 1])
+        t4_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
+        t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+        
         if not staff_pivot.empty:
             format_dict = {col: "{:,.0f}" for col in staff_pivot.columns if col != "매출 비중 (%)"}
             format_dict["매출 비중 (%)"] = "{:,.1f}%"
@@ -1754,12 +1801,21 @@ if not full_df.empty:
 
     # Tab 5: 📌 채권 관리
     with tab5:
-        st.markdown("<div class='sub-header'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
+        latest_month = None
+        if not filtered_debt_df.empty:
+            numeric_cols_debt = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
+            if numeric_cols_debt:
+                latest_month = numeric_cols_debt[-1]
+                
+        debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
+        
+        t5_c1, t5_c2 = st.columns([4, 1])
+        t5_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
+        t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
         
         if not debt_df.empty:
             if not filtered_debt_df.empty:
                 numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
-                latest_month = numeric_cols[-1] if numeric_cols else None
                 
                 total_outstanding = 0
                 warning_count = 0
@@ -1864,7 +1920,9 @@ if not full_df.empty:
 
     # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
     with tab6:
-        st.markdown("<div class='sub-header'>📍 담당자별 거래처 지도 분포 (대한민국 V-World 지도)</div>", unsafe_allow_html=True)
+        t6_c1, t6_c2 = st.columns([4, 1])
+        t6_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>📍 담당자별 거래처 지도 분포 (대한민국 V-World 지도)</div>", unsafe_allow_html=True)
+        t6_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
         
         rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
         
@@ -2002,10 +2060,16 @@ if not full_df.empty:
 
     # Tab 7: 🏭 설비 재고 현황
     with tab7:
-        st.markdown("<div class='sub-header'>🏭 고압가스 탱크 및 기화기 재고 현황</div>", unsafe_allow_html=True)
+        t7_c1, t7_c2 = st.columns([4, 1])
+        t7_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>🏭 고압가스 탱크 및 기화기 재고 현황</div>", unsafe_allow_html=True)
+        with t7_c2:
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            tab7_default = get_saved_date(TAB7_DATE_FILE)
+            tab7_date = st.date_input("기준일", value=tab7_default, key="tab7_date", label_visibility="collapsed")
+            if tab7_date != tab7_default:
+                set_saved_date(TAB7_DATE_FILE, tab7_date)
 
         if not df_tank.empty or not df_vaporizer.empty:
-            # --- 4분할 상단 필터 레이아웃 ---
             eq_col1, eq_col2, eq_col3, eq_col4 = st.columns(4)
             
             with eq_col1:
@@ -2023,7 +2087,6 @@ if not full_df.empty:
                 selected_status = st.selectbox("📌 사용구분 필터", ["전체 상태", "유휴 장비", "거래처 사용중"])
 
             with eq_col4:
-                # 동적으로 탱크는 '품목', 기화기는 '기화형식' 추출
                 eq_items = []
                 if not df_tank.empty and '품목' in df_tank.columns:
                     eq_items.extend(df_tank['품목'].dropna().astype(str).tolist())
@@ -2032,18 +2095,10 @@ if not full_df.empty:
                 unique_eq_items = sorted(list(set([i.strip() for i in eq_items if i.strip() != ''])))
                 selected_eq_item = st.selectbox("📦 품목/형식 선택", ["전체 품목/형식"] + unique_eq_items)
 
-            # --- 데이터 업데이트 기준일 (원하시는 위치) ---
-            st.markdown("<br>", unsafe_allow_html=True)
-            date_col1, date_col2 = st.columns([1.5, 4.5])
-            with date_col1:
-                st.date_input("📅 데이터 업데이트 기준일")
-
             st.markdown("---")
 
-            # --- 색상 속도 최적화 (Styler 제거) ---
             if not df_tank.empty:
                 if '사용구분' in df_tank.columns:
-                    # '유휴'라는 글자가 있으면 🟢 이모지 추가, 없으면 🏢 추가
                     mask_idle = df_tank['사용구분'].astype(str).str.contains('유휴')
                     df_tank.loc[mask_idle, '사용구분'] = '🟢 ' + df_tank.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
                     df_tank.loc[~mask_idle, '사용구분'] = '🏢 ' + df_tank.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
@@ -2054,7 +2109,6 @@ if not full_df.empty:
                     df_vaporizer.loc[mask_idle_v, '사용구분'] = '🟢 ' + df_vaporizer.loc[mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
                     df_vaporizer.loc[~mask_idle_v, '사용구분'] = '🏢 ' + df_vaporizer.loc[~mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
 
-            # --- 탱크 재고 렌더링 (전체보기 또는 탱크선택 시) ---
             if selected_equip_type in ["전체 보기", "탱크 재고"]:
                 st.markdown("<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>🛢️ 초저온 탱크 재고 현황</div>", unsafe_allow_html=True)
                 if not df_tank.empty:
@@ -2068,7 +2122,6 @@ if not full_df.empty:
                     
                     st.dataframe(filtered_tank, use_container_width=True, height=350, hide_index=True)
 
-            # --- 기화기 재고 렌더링 (전체보기 또는 기화기선택 시) ---
             if selected_equip_type in ["전체 보기", "기화기 재고"]:
                 if selected_equip_type == "전체 보기":
                     st.markdown("<br>", unsafe_allow_html=True)
@@ -2087,17 +2140,23 @@ if not full_df.empty:
 
     # Tab 8: 🛢️ 통합 탱크 재고
     with tab8:
-        st.markdown("<div class='sub-header'>🛢️ 통합 고압가스 탱크 재고 현황</div>", unsafe_allow_html=True)
+        t8_c1, t8_c2 = st.columns([4, 1])
+        t8_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>🛢️ 통합 고압가스 탱크 재고 현황</div>", unsafe_allow_html=True)
+        with t8_c2:
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            tab8_default = get_saved_date(TAB8_DATE_FILE)
+            tab8_date = st.date_input("기준일", value=tab8_default, key="int_date", label_visibility="collapsed")
+            if tab8_date != tab8_default:
+                set_saved_date(TAB8_DATE_FILE, tab8_date)
+            
         if not df_integrated.empty:
-            int_col1, int_col2, int_col3 = st.columns(3)
+            int_col1, int_col2 = st.columns(2)
             with int_col1:
                 items = ["전체 품목"] + sorted([str(x) for x in df_integrated['품목'].dropna().unique() if str(x).strip()])
                 sel_item = st.selectbox("📦 품목 선택", items, key="int_item")
             with int_col2:
                 statuses = ["전체 상태"] + sorted([str(x) for x in df_integrated['사용구분'].dropna().unique() if str(x).strip()])
                 sel_status = st.selectbox("📌 사용구분", statuses, key="int_status")
-            with int_col3:
-                st.date_input("📅 업데이트 기준일", key="int_date")
 
             st.markdown("---")
 
