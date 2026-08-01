@@ -860,7 +860,7 @@ def prepare_active_df_fast(df, target_col):
     if df is None or df.empty:
         return None, [], None
     
-    # [최적화 핵심] 데이터 누락 에러(NaN)를 없애고 안전하게 빈 칸만 삭제
+    # [최적화 핵심] 데이터 누락 에러(NaN) 파괴 및 안전하게 빈 칸만 삭제
     df_active = df.loc[(df != 0).any(axis=1), (df != 0).any(axis=0)].copy()
     
     if df_active.empty:
@@ -1561,6 +1561,53 @@ if not full_df.empty:
                     use_container_width=True, key="tab2_client_total_chart"
                 )
 
+            # --- 품목별 상세 분석 복원 ---
+            st.markdown("---")
+            st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
+            
+            client_available_items = sorted(df_client_filtered["품목명"].unique())
+            if client_available_items:
+                sel_col1_c, sel_col2_c = st.columns([1, 1])
+                with sel_col1_c:
+                    selected_target_item_c = st.selectbox("🔍 분석할 품목 선택 (전체 거래 품목)", client_available_items, key="client_item_selectbox")
+                with sel_col2_c:
+                    selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
+                    
+                client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
+                
+                i_col_left_c, i_col_right_c = st.columns([1, 1])
+                with i_col_left_c:
+                    if "비중" in selected_metric_c:
+                        st.dataframe(client_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
+                        y_suf_c = "%"
+                        y_fmt_c = ",.1f"
+                    elif "출고량" in selected_metric_c:
+                        if selected_target_item_c in target_items:
+                            y_suf_c = " 천kg"
+                            y_fmt_c = ",.1f"
+                        elif "LPG" in str(selected_target_item_c).upper():
+                            y_suf_c = " kg"
+                            y_fmt_c = ",.0f"
+                        else:
+                            y_suf_c = " 개(병)"
+                            y_fmt_c = ",.0f"
+                        st.dataframe(client_item_pivot.style.format(f"{{:{y_fmt_c}}}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
+                    else:
+                        st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
+                        y_suf_c = " 만원"
+                        y_fmt_c = ",.0f"
+                        
+                with i_col_right_c:
+                    st.plotly_chart(
+                        create_stacked_bar_chart(
+                            client_item_pivot, 
+                            title_text="", 
+                            y_suffix=y_suf_c, 
+                            y_format=y_fmt_c
+                        ),
+                        use_container_width=True, key="tab2_client_item_chart"
+                    )
+
     # Tab 3: 📦 품목 및 단가 분석 (초고속 빈 열/행 필터링 무손실 렌더링)
     with tab3:
         st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
@@ -1714,12 +1761,8 @@ if not full_df.empty:
                 numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
                 latest_month = numeric_cols[-1] if numeric_cols else None
                 
-                # -----------------------------------------------------------
-                # ★ 기능 2: 채권 건전성 도넛 차트 및 악성 미수금 연산 추가 영역
-                # -----------------------------------------------------------
                 total_outstanding = 0
                 warning_count = 0
-                risk_debt_total = 0 
                 
                 if latest_month:
                     u_clients = filtered_debt_df['거래처'].unique()
@@ -1731,36 +1774,10 @@ if not full_df.empty:
                         total_outstanding += max(0, b_val)
                         if b_val > 0 and b_val > s_val:
                             warning_count += 1
-                            risk_debt_total += max(0, b_val) 
                             
                 m1, m2 = st.columns(2)
                 m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div><div class='metric-value'>{total_outstanding:,.0f} 원</div></div>", unsafe_allow_html=True)
                 m2.markdown(f"<div class='metric-box'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div><div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>", unsafe_allow_html=True)
-                
-                if latest_month and total_outstanding > 0:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    healthy_debt_total = total_outstanding - risk_debt_total
-                    
-                    fig_debt_donut = go.Figure(data=[go.Pie(
-                        labels=['건전/정상 회수 미수금', '지연/위험 채권 잔액'],
-                        values=[healthy_debt_total, risk_debt_total],
-                        hole=0.6,
-                        marker_colors=['#34D399', '#EF4444'],
-                        rotation=270,
-                        direction='clockwise',
-                        textinfo='percent+label'
-                    )])
-                    
-                    fig_debt_donut.update_layout(
-                        title=dict(text=f"채권 건전성 요약 ({latest_month} 기준)", font=dict(size=15)),
-                        showlegend=False,
-                        margin=dict(t=40, b=10, l=10, r=10),
-                        height=300
-                    )
-                    
-                    d_col1, d_col2, d_col3 = st.columns([1, 2, 1])
-                    with d_col2:
-                        st.plotly_chart(fig_debt_donut, use_container_width=True, key="debt_donut_chart")
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
