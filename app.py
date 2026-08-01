@@ -845,13 +845,11 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
     if not raw_up.empty:
         unit_price_p = raw_up.fillna(0)
         
-        desired_price_cols = [f"{yr[2:]}년 {m}" for yr in years for m in all_months]
+        # 최신 월이 먼저 나오도록 역순 적용
+        desired_price_cols = [f"{yr[2:]}년 {m}" for yr in years for m in reversed(all_months)]
         existing_cols = [c for c in desired_price_cols if c in unit_price_p.columns]
         unit_price_p = unit_price_p[existing_cols]
         
-        if latest_col in unit_price_p.columns:
-            unit_price_p = unit_price_p.sort_values(by=latest_col, ascending=False)
-            
     return sales_p, qty_p, unit_price_p
 
 
@@ -1463,6 +1461,47 @@ if not full_df.empty:
                                     use_container_width=True, key="ind_client_sub_chart"
                                 )
 
+        # -----------------------------------------------------------
+        # ★ 기능 1: 당해년도 상위 거래처 기여도 파레토 분석 
+        # -----------------------------------------------------------
+        st.markdown("---")
+        st.markdown("<div class='sub-header'>🏆 당해년도 상위 거래처 매출 기여도 (파레토 분석)</div>", unsafe_allow_html=True)
+        
+        if not df_base.empty:
+            current_year_str = str(df_base["연도"].max())
+            df_pareto = df_base[df_base["연도"] == current_year_str]
+            
+            client_sales = df_pareto.groupby('거래처')['매출액'].sum().sort_values(ascending=False).reset_index()
+            total_sales_for_pareto = client_sales['매출액'].sum()
+            
+            if total_sales_for_pareto > 0:
+                client_sales['누적비율(%)'] = client_sales['매출액'].cumsum() / total_sales_for_pareto * 100
+                top_20_clients = client_sales.head(20)
+                
+                fig_pareto = go.Figure()
+                fig_pareto.add_trace(go.Bar(
+                    x=top_20_clients['거래처'], y=top_20_clients['매출액'] * 1.1 / 10000,
+                    name='매출액 (만원)', marker_color='#3B82F6'
+                ))
+                fig_pareto.add_trace(go.Scatter(
+                    x=top_20_clients['거래처'], y=top_20_clients['누적비율(%)'],
+                    name='누적 비율(%)', yaxis='y2', mode='lines+markers', 
+                    line=dict(color='#EF4444', width=3), marker=dict(size=8)
+                ))
+                
+                fig_pareto.update_layout(
+                    yaxis=dict(title='매출액 (만원)', gridcolor='#E2E8F0'),
+                    yaxis2=dict(title='누적 비율 (%)', overlaying='y', side='right', range=[0, 110], showgrid=False),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
+                    margin=dict(l=10, r=10, t=30, b=40),
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
+                )
+                st.plotly_chart(fig_pareto, use_container_width=True, key="pareto_chart")
+            else:
+                st.info(f"{current_year_str}년도에 해당하는 매출 데이터가 없습니다.")
+
+
     # Tab 2: 🏢 거래처 분석
     with tab2:
         st.markdown(f"<div class='sub-header'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
@@ -1522,144 +1561,6 @@ if not full_df.empty:
                     use_container_width=True, key="tab2_client_total_chart"
                 )
 
-            # --- 월별 품목 비중(Mix) 분석 위로 배치 ---
-            st.markdown("---")
-            st.markdown(f"<div class='sub-header'>📊 [{selected_client}] 월별 품목 비중 분석 (Mix)</div>", unsafe_allow_html=True)
-            
-            prop_col1, prop_col2 = st.columns([1, 1])
-            with prop_col1:
-                sorted_desc_years = sorted(raw_years, reverse=True)
-                prop_year_sel = st.selectbox("📅 조회 연도 선택", ["전체 기간"] + sorted_desc_years, key="prop_year_sel")
-            with prop_col2:
-                prop_metric = st.radio("📊 분석 지표 선택", ["매출액 기준", "출고량 기준"], horizontal=True, key="prop_metric_radio")
-                
-            df_prop = df_client_filtered.copy()
-            if prop_year_sel != "전체 기간":
-                df_prop = df_prop[df_prop["연도"] == prop_year_sel]
-                
-            if not df_prop.empty:
-                val_col = "매출액" if prop_metric == "매출액 기준" else "출고량"
-                
-                if prop_year_sel == "전체 기간":
-                    pivot_prop = df_prop.pivot_table(index="품목명", columns="연도월_정렬", values=val_col, aggfunc="sum").fillna(0)
-                    chrono_order_desc = [f"{str(y)[2:]}년 {m}" for y in sorted_desc_years for m in reversed(all_months)]
-                    valid_cols_desc = [x for x in chrono_order_desc if x in pivot_prop.columns]
-                    pivot_prop = pivot_prop.reindex(columns=valid_cols_desc).fillna(0)
-                else:
-                    pivot_prop = df_prop.pivot_table(index="품목명", columns="월", values=val_col, aggfunc="sum").fillna(0)
-                    pivot_prop = pivot_prop.reindex(columns=list(reversed(all_months))).fillna(0)
-                    
-                col_sums = pivot_prop.sum(axis=0)
-                pivot_prop_pct = pivot_prop.div(col_sums.replace(0, np.nan), axis=1) * 100
-                pivot_prop_pct = pivot_prop_pct.fillna(0)
-                
-                if prop_year_sel == "전체 기간":
-                    pivot_prop_pct = pivot_prop_pct.loc[:, col_sums > 0]
-                pivot_prop_pct = pivot_prop_pct.loc[(pivot_prop_pct > 0).any(axis=1)]
-                
-                p_c1, p_c2 = st.columns([1, 1])
-                with p_c1:
-                    display_df = pivot_prop_pct.copy()
-                    if prop_year_sel == "전체 기간":
-                        new_cols = pd.MultiIndex.from_tuples([(c.split(' ')[0], c.split(' ')[1]) for c in display_df.columns], names=["연도", "월"])
-                        display_df.columns = new_cols
-                    
-                    # 렉 유발하는 그라데이션 제거, 순수 텍스트 포맷팅(무손실)만 적용
-                    st.dataframe(
-                        display_df.style.format("{:.1f} %"),
-                        use_container_width=True, 
-                        height=420
-                    )
-                    
-                with p_c2:
-                    chart_df = pivot_prop_pct[pivot_prop_pct.columns[::-1]]
-                    fig_prop = go.Figure()
-                    color_palette = px.colors.qualitative.Pastel + px.colors.qualitative.Set3 + px.colors.qualitative.Safe
-                    
-                    for i, item in enumerate(chart_df.index):
-                        color = color_palette[i % len(color_palette)]
-                        
-                        if prop_year_sel == "전체 기간":
-                            fig_prop.add_trace(go.Scatter(
-                                x=chart_df.columns,
-                                y=chart_df.loc[item],
-                                name=item,
-                                mode='lines',
-                                line=dict(width=0.5, color='rgba(255,255,255,0.7)'), 
-                                stackgroup='one',
-                                line_shape='spline', 
-                                fillcolor=color,
-                                hovertemplate=f"<b>{item}</b><br>%{{x}}: %{{y:.1f}}%<extra></extra>"
-                            ))
-                        else:
-                            fig_prop.add_trace(go.Bar(
-                                x=chart_df.columns,
-                                y=chart_df.loc[item],
-                                name=item,
-                                marker_color=color,
-                                marker_line_width=0, 
-                                hovertemplate=f"<b>{item}</b><br>%{{x}}: %{{y:.1f}}%<extra></extra>"
-                            ))
-                            
-                    fig_prop.update_layout(
-                        barmode="stack" if prop_year_sel != "전체 기간" else None,
-                        xaxis=dict(title=None, type='category', showgrid=False, tickangle=-45),
-                        yaxis=dict(title="비중 (%)", range=[0, 100], showgrid=True, gridcolor='#E2E8F0'),
-                        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02, font=dict(size=11)),
-                        margin=dict(l=10, r=10, t=20, b=40),
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        height=420
-                    )
-                    st.plotly_chart(fig_prop, use_container_width=True, key="tab2_prop_chart")
-
-            # --- 품목별 상세 분석 아래로 배치 ---
-            st.markdown("---")
-            st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
-            
-            client_available_items = sorted(df_client_filtered["품목명"].unique())
-            if client_available_items:
-                sel_col1_c, sel_col2_c = st.columns([1, 1])
-                with sel_col1_c:
-                    selected_target_item_c = st.selectbox("🔍 분석할 품목 선택 (전체 거래 품목)", client_available_items, key="client_item_selectbox")
-                with sel_col2_c:
-                    selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
-                    
-                client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
-                
-                i_col_left_c, i_col_right_c = st.columns([1, 1])
-                with i_col_left_c:
-                    if "비중" in selected_metric_c:
-                        st.dataframe(client_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
-                        y_suf_c = "%"
-                        y_fmt_c = ",.1f"
-                    elif "출고량" in selected_metric_c:
-                        if selected_target_item_c in target_items:
-                            y_suf_c = " 천kg"
-                            y_fmt_c = ",.1f"
-                        elif "LPG" in str(selected_target_item_c).upper():
-                            y_suf_c = " kg"
-                            y_fmt_c = ",.0f"
-                        else:
-                            y_suf_c = " 개(병)"
-                            y_fmt_c = ",.0f"
-                        st.dataframe(client_item_pivot.style.format(f"{{:{y_fmt_c}}}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
-                    else:
-                        st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
-                        y_suf_c = " 만원"
-                        y_fmt_c = ",.0f"
-                        
-                with i_col_right_c:
-                    st.plotly_chart(
-                        create_stacked_bar_chart(
-                            client_item_pivot, 
-                            title_text="", 
-                            y_suffix=y_suf_c, 
-                            y_format=y_fmt_c
-                        ),
-                        use_container_width=True, key="tab2_client_item_chart"
-                    )
-
     # Tab 3: 📦 품목 및 단가 분석 (초고속 빈 열/행 필터링 무손실 렌더링)
     with tab3:
         st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
@@ -1678,7 +1579,7 @@ if not full_df.empty:
             if apply_gradient and cmap:
                 styled = styled.background_gradient(cmap=cmap, subset=numeric_cols, axis=None)
 
-            if highlight_col_name:
+            if highlight_col_name and highlight_col_name in numeric_cols:
                 styled = styled.apply(lambda s: ['color: #B91C1C; font-weight: bold;'] * len(s), subset=[highlight_col_name], axis=0)
 
             st.dataframe(
@@ -1691,15 +1592,42 @@ if not full_df.empty:
                 }
             )
 
+        avail_years_short = [y[2:] for y in years]
+        current_year_short = str(df_base["연도"].max())[2:] if not df_base.empty else (avail_years_short[0] if avail_years_short else "26")
+        
+        st.markdown("<div style='background-color: #EFF6FF; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #3B82F6; margin-bottom: 15px;'>💡 <b>연도별 상세 조회:</b> 기본적으로 당해년도만 펼쳐져 있으며, 과거 연도는 '연간총합'만 표시됩니다. 아래에서 과거 연도를 선택(클릭)하면 해당 연도의 월별 상세 내역이 펼쳐집니다.</div>", unsafe_allow_html=True)
+        
+        selected_detail_years = st.multiselect(
+            "📅 월별 상세 내역을 펼쳐볼 연도 선택 (단가표 제외)",
+            options=avail_years_short,
+            default=[current_year_short] if current_year_short in avail_years_short else avail_years_short[:1],
+            format_func=lambda x: f"20{x}년"
+        )
+        
+        def filter_year_columns(df):
+            if df.empty: return df
+            cols = []
+            for y in avail_years_short:
+                if y in selected_detail_years:
+                    for m in reversed(all_months):
+                        c = f"{y}년 {m}"
+                        if c in df.columns: cols.append(c)
+                tot = f"{y}년 연간총합"
+                if tot in df.columns: cols.append(tot)
+            return df[[c for c in cols if c in df.columns]]
+            
+        sales_p_filtered = filter_year_columns(sales_p * 1.1 / 10000)
+        qty_p_filtered = filter_year_columns(qty_p)
+
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
-        render_native_dataframe((sales_p * 1.1 / 10000), "Blues", "{:,.0f}", target_month_col, apply_gradient=True)
+        render_native_dataframe(sales_p_filtered, "Blues", "{:,.0f}", target_month_col, apply_gradient=True)
             
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
-        render_native_dataframe(qty_p, "Greens", "{:,.0f}", target_month_col, apply_gradient=True)
+        render_native_dataframe(qty_p_filtered, "Greens", "{:,.0f}", target_month_col, apply_gradient=True)
             
-        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (중간값)</div>", unsafe_allow_html=True)
-        # 단가는 apply_gradient=False 로 설정하여 렌더링 부하를 대폭 줄임
+        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (중간값) - 전체 기간 월별 고정 표시</div>", unsafe_allow_html=True)
         render_native_dataframe(unit_price_p, "Oranges", "{:,.0f}", target_month_col, apply_gradient=False)
+        
 
     # Tab 4: 👤 담당자 & 상세내역
     with tab4:
@@ -1786,8 +1714,12 @@ if not full_df.empty:
                 numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
                 latest_month = numeric_cols[-1] if numeric_cols else None
                 
+                # -----------------------------------------------------------
+                # ★ 기능 2: 채권 건전성 도넛 차트 및 악성 미수금 연산 추가 영역
+                # -----------------------------------------------------------
                 total_outstanding = 0
                 warning_count = 0
+                risk_debt_total = 0 
                 
                 if latest_month:
                     u_clients = filtered_debt_df['거래처'].unique()
@@ -1799,10 +1731,36 @@ if not full_df.empty:
                         total_outstanding += max(0, b_val)
                         if b_val > 0 and b_val > s_val:
                             warning_count += 1
+                            risk_debt_total += max(0, b_val) 
                             
                 m1, m2 = st.columns(2)
                 m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div><div class='metric-value'>{total_outstanding:,.0f} 원</div></div>", unsafe_allow_html=True)
                 m2.markdown(f"<div class='metric-box'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div><div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>", unsafe_allow_html=True)
+                
+                if latest_month and total_outstanding > 0:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    healthy_debt_total = total_outstanding - risk_debt_total
+                    
+                    fig_debt_donut = go.Figure(data=[go.Pie(
+                        labels=['건전/정상 회수 미수금', '지연/위험 채권 잔액'],
+                        values=[healthy_debt_total, risk_debt_total],
+                        hole=0.6,
+                        marker_colors=['#34D399', '#EF4444'],
+                        rotation=270,
+                        direction='clockwise',
+                        textinfo='percent+label'
+                    )])
+                    
+                    fig_debt_donut.update_layout(
+                        title=dict(text=f"채권 건전성 요약 ({latest_month} 기준)", font=dict(size=15)),
+                        showlegend=False,
+                        margin=dict(t=40, b=10, l=10, r=10),
+                        height=300
+                    )
+                    
+                    d_col1, d_col2, d_col3 = st.columns([1, 2, 1])
+                    with d_col2:
+                        st.plotly_chart(fig_debt_donut, use_container_width=True, key="debt_donut_chart")
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
