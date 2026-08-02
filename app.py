@@ -1444,7 +1444,13 @@ with tab1:
     st.markdown("<div class='sub-header'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
     
     if "업종" in df_base.columns:
-        available_industries = sorted([ind for ind in df_base["업종"].unique() if ind != "미분류"])
+        # [수정됨] 미분류만 있을 때 UI가 통째로 증발하지 않도록 미분류를 포함하여 리스트업
+        available_industries = sorted(list(df_base["업종"].unique()))
+        
+        # 전체 데이터가 미분류밖에 없을 경우 친절한 안내 메시지 추가
+        if len(available_industries) == 1 and available_industries[0] == "미분류":
+            st.info("💡 현재 모든 거래처가 '미분류' 상태입니다. 왼쪽 사이드바에서 '🏢 거래처 업종 분류 (CSV)' 파일을 업로드하시면 정확한 업종별 상세 분석이 가능합니다.")
+            
         if available_industries:
             ind_col1, ind_col2 = st.columns([1, 1])
             with ind_col1:
