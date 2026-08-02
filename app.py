@@ -589,8 +589,6 @@ def load_debt_file(debt_bytes):
                 if "거래처" in df_direct.columns and "구분" in df_direct.columns:
                     df_direct["거래처"] = df_direct["거래처"].replace("", np.nan).ffill()
                     
-                    # [핵심 수정 - 정규식 강화 및 빈칸 Fallback 적용]
-                    # 스크린샷과 같이 1행이 통째로 날아가는 이유는 ERP 엑셀 포맷상 매출 칸이 빈칸(NaN)이거나 특수문자만 있기 때문입니다.
                     def map_gubun(val):
                         # 한글, 영문, 숫자 외 모든 특수문자 제거 (보이지 않는 공백 완벽 차단)
                         val_clean = re.sub(r'[^가-힣a-zA-Z0-9]', '', str(val))
@@ -1542,44 +1540,80 @@ with tab1:
                             )
 
     # -----------------------------------------------------------
-    # ★ 기능 1: 당해년도 상위 거래처 기여도 파레토 분석 
+    # ★ 기능 1: 당해년도 최신월 기준 상위 30위 거래처 (1~12월 전체) & 업종 비중
     # -----------------------------------------------------------
     st.markdown("---")
-    st.markdown("<div class='sub-header'>🏆 당해년도 상위 거래처 매출 기여도 (파레토 분석)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-header'>🏆 당해년도 최신월 기준 상위 30위 거래처 실적 (1월~12월) 및 업종 비중</div>", unsafe_allow_html=True)
     
     if not df_base.empty:
         current_year_str = str(df_base["연도"].max())
-        df_pareto = df_base[df_base["연도"] == current_year_str]
-        
-        client_sales = df_pareto.groupby('거래처')['매출액'].sum().sort_values(ascending=False).reset_index()
-        total_sales_for_pareto = client_sales['매출액'].sum()
-        
-        if total_sales_for_pareto > 0:
-            client_sales['누적비율(%)'] = client_sales['매출액'].cumsum() / total_sales_for_pareto * 100
-            top_20_clients = client_sales.head(20)
-            
-            fig_pareto = go.Figure()
-            fig_pareto.add_trace(go.Bar(
-                x=top_20_clients['거래처'], y=top_20_clients['매출액'] * 1.1 / 10000,
-                name='매출액 (만원)', marker_color='#3B82F6'
-            ))
-            fig_pareto.add_trace(go.Scatter(
-                x=top_20_clients['거래처'], y=top_20_clients['누적비율(%)'],
-                name='누적 비율(%)', yaxis='y2', mode='lines+markers', 
-                line=dict(color='#EF4444', width=3), marker=dict(size=8)
-            ))
-            
-            fig_pareto.update_layout(
-                yaxis=dict(title='매출액 (만원)', gridcolor='#E2E8F0'),
-                yaxis2=dict(title='누적 비율 (%)', overlaying='y', side='right', range=[0, 110], showgrid=False),
-                legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
-                margin=dict(l=10, r=10, t=30, b=40),
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)'
-            )
-            st.plotly_chart(fig_pareto, use_container_width=True, key="pareto_chart")
+        df_curr_year = df_base[df_base["연도"] == current_year_str]
+
+        if not df_curr_year.empty:
+            latest_dt = df_curr_year["매출일_dt"].max()
+            latest_m = latest_dt.strftime("%m월")
+            latest_month_label = f"{current_year_str}년 {latest_m}"
+
+            p_col1, p_col2 = st.columns([1.2, 0.8])
+
+            with p_col1:
+                st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>🥇 [{latest_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)</div>", unsafe_allow_html=True)
+                
+                # 거래처 x 월 피벗 생성 (VAT 포함, 만원 단위)
+                pvt_curr = df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+                pvt_curr = pvt_curr.reindex(columns=all_months, fill_value=0)
+                
+                # 최신월 기준 내림차순 정렬 및 상위 30개 추출
+                if latest_m in pvt_curr.columns:
+                    pvt_curr = pvt_curr.sort_values(by=latest_m, ascending=False)
+                top30_pvt = pvt_curr.head(30).reset_index()
+                
+                # 순위 인덱스 설정 (1 ~ 30위)
+                top30_pvt.index = range(1, len(top30_pvt) + 1)
+                
+                # 스타일 포맷팅 (전체 월 숫자에 천단위 콤마, 배경 색상 지도 및 최신월 열 강조)
+                fmt_dict = {m: "{:,.0f}" for m in all_months}
+                styled_top30 = top30_pvt.style.format(fmt_dict).background_gradient(cmap="Blues", subset=all_months)
+                
+                if latest_m in all_months:
+                    styled_top30 = styled_top30.apply(
+                        lambda s: ['color: #B91C1C; font-weight: bold;'] * len(s),
+                        subset=[latest_m],
+                        axis=0
+                    )
+                
+                # 약 12개 행이 보이고 나머지는 스크롤되도록 height=450 적용
+                st.dataframe(
+                    styled_top30, 
+                    use_container_width=True, 
+                    height=450
+                )
+
+            with p_col2:
+                st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>🍩 [{latest_month_label}] 업종별 매출 비중</div>", unsafe_allow_html=True)
+                
+                # 최신월 데이터 기준 업종별 매출 집계
+                df_latest_month = df_curr_year[df_curr_year["월"] == latest_m]
+                ind_sales = df_latest_month.groupby("업종")["매출액"].sum().reset_index()
+                ind_sales = ind_sales[ind_sales["매출액"] > 0]
+                
+                fig_donut = px.pie(
+                    ind_sales, 
+                    values='매출액', 
+                    names='업종', 
+                    hole=0.4,
+                    color_discrete_sequence=px.colors.qualitative.Pastel
+                )
+                fig_donut.update_traces(textposition='inside', textinfo='percent+label')
+                fig_donut.update_layout(
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    height=450
+                )
+                st.plotly_chart(fig_donut, use_container_width=True, key="latest_month_donut_chart")
         else:
-            st.info(f"{current_year_str}년도에 해당하는 매출 데이터가 없습니다.")
+            st.info("당해년도 매출 데이터가 없습니다.")
 
 
 # Tab 2: 🏢 거래처 분석
