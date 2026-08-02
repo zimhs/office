@@ -189,15 +189,17 @@ def normalize_items_vectorized(df):
     is_o2 = is_bulk & ~is_co2 & (p_upper.str.contains("O2", na=False) | p_str.str.contains("산소", na=False))
     is_n2 = is_bulk & (p_upper.str.contains("N2", na=False) | p_str.str.contains("질소", na=False))
 
-    is_n2_liter = is_n2 & (p_upper.str.contains("L|LITER", na=False) | p_str.str.contains("리터", na=False))
+    # [수정됨] 단어 경계(\b)를 사용하여 BULK의 L을 리터(L)로 오인하는 정규식 오류 해결
+    is_n2_liter = is_n2 & (p_upper.str.contains(r"\bL\b|LITER", regex=True, na=False) | p_str.str.contains("리터", na=False))
 
-    if is_n2_liter.any():
-        if "출고량" in df.columns:
-            df.loc[is_n2_liter, "출고량"] = df.loc[is_n2_liter, "출고량"] * 0.808
-        if "단가" in df.columns:
-            df.loc[is_n2_liter, "단가"] = df.loc[is_n2_liter, "단가"] * 1.238
-        if "매출액" in df.columns and "출고량" in df.columns and "단가" in df.columns:
-            df.loc[is_n2_liter, "매출액"] = df.loc[is_n2_liter, "출고량"] * df.loc[is_n2_liter, "단가"]
+    # [원본 유지] 원본 데이터 값 유지를 위해 단가 및 수량 임의 변환 비활성화
+    # if is_n2_liter.any():
+    #     if "출고량" in df.columns:
+    #         df.loc[is_n2_liter, "출고량"] = df.loc[is_n2_liter, "출고량"] * 0.808
+    #     if "단가" in df.columns:
+    #         df.loc[is_n2_liter, "단가"] = df.loc[is_n2_liter, "단가"] * 1.238
+    #     if "매출액" in df.columns and "출고량" in df.columns and "단가" in df.columns:
+    #         df.loc[is_n2_liter, "매출액"] = df.loc[is_n2_liter, "출고량"] * df.loc[is_n2_liter, "단가"]
 
     df.loc[is_ar, "품목명"] = "AR (kg, Bulk)"
     df.loc[is_co2, "품목명"] = "CO2 (kg, Bulk)"
@@ -205,6 +207,15 @@ def normalize_items_vectorized(df):
     df.loc[is_n2, "품목명"] = "N2 (kg, Bulk)"
 
     return df
+
+# [핵심] 평균/중간값 계산을 배제하고, 원본 데이터에 있는 실제 단가를 훼손 없이 1개만 쏙 뽑아오는 커스텀 함수
+def get_exact_original_price(series):
+    # 단가가 0인 무상/서비스 내역을 제외
+    s = series[series > 0]
+    if s.empty:
+        return 0
+    # 평균을 내지 않고, 원본 데이터 중 가장 많이 기재된 실제 단가(최빈값) 자체를 반환
+    return s.mode().iloc[0]
 
 
 @st.cache_data
@@ -724,7 +735,7 @@ def load_uploaded_files_from_bytes(file_tuples):
 
 
 # ==========================================
-# 4. 피벗 및 지표 계산 연산 캐싱 (속도 극대화 🚀)
+# 4. 피벗 및 지표 계산 연산 캐싱 (최적화)
 # ==========================================
 @st.cache_data
 def cached_get_yearly_monthly_pivot(data_df, all_months, years):
@@ -842,7 +853,18 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
         qty_p = qty_p.sort_values(by=latest_col, ascending=False)
         sales_p = sales_p.reindex(qty_p.index)
 
-    raw_up = target_tab3_df[target_tab3_df["단가"] > 0].pivot_table(index="품목명", columns="연도월_정렬", values="단가", aggfunc="median")
+    # [수정됨] 3번 탭 단가 분석을 위한 독립 데이터프레임 복사
+    # 요청하신 7개 거래처에 한하여 N2 (kg, Bulk) 품목의 단가만 1.238배 곱하여 적용합니다.
+    df_for_price = target_tab3_df.copy()
+    target_clients = ["두산판금", "드림맥", "모베이스전전", "지엔티테크", "태광기업", "경민산업", "동주산업"]
+    mask_n2_special = (df_for_price["거래처"].isin(target_clients)) & (df_for_price["품목명"] == "N2 (kg, Bulk)")
+    
+    # 해당 조건에 맞는 데이터만 단가를 변경 (매출액/출고량 등 타 데이터는 불변)
+    df_for_price.loc[mask_n2_special, "단가"] = df_for_price.loc[mask_n2_special, "단가"] * 1.238
+
+    # 커스텀 함수(get_exact_original_price)를 사용하여 실제 원본 단가를 불러옵니다.
+    raw_up = df_for_price.pivot_table(index="품목명", columns="연도월_정렬", values="단가", aggfunc=get_exact_original_price)
+    
     if not raw_up.empty:
         unit_price_p = raw_up.fillna(0)
         
@@ -1047,7 +1069,7 @@ if dart_api_key and dart_api_key != saved_api_key:
         f.write(dart_api_key)
 
 # ----------------------------------------------------
-# 캐시 파일 경로 설정 및 유지 기능 (탱크 및 기화기 추가)
+# 캐시 파일 경로 설정 및 유지 기능
 # ----------------------------------------------------
 addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
 industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
@@ -1058,52 +1080,57 @@ integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
 sales_cache_dir = os.path.join(CACHE_DIR, "sales")
 os.makedirs(sales_cache_dir, exist_ok=True)
 
+# ==========================================
+# ★ GitHub 루트 폴더 자동 업로드(오토로드) 로직 추가 ★
+# ==========================================
+
 # 주소록 로딩
 if address_file_up is not None:
     addr_bytes = address_file_up.getvalue()
-    with open(addr_cache_path, "wb") as f:
-        f.write(addr_bytes)
+    with open(addr_cache_path, "wb") as f: f.write(addr_bytes)
 elif os.path.exists(addr_cache_path):
-    with open(addr_cache_path, "rb") as f:
-        addr_bytes = f.read()
+    with open(addr_cache_path, "rb") as f: addr_bytes = f.read()
+elif os.path.exists("주소.csv"):
+    with open("주소.csv", "rb") as f: addr_bytes = f.read()
 else:
     addr_bytes = None
 
 # 업종 데이터 로딩
 if industry_file_up is not None:
     ind_bytes = industry_file_up.getvalue()
-    with open(industry_cache_path, "wb") as f:
-        f.write(ind_bytes)
+    with open(industry_cache_path, "wb") as f: f.write(ind_bytes)
 elif os.path.exists(industry_cache_path):
-    with open(industry_cache_path, "rb") as f:
-        ind_bytes = f.read()
+    with open(industry_cache_path, "rb") as f: ind_bytes = f.read()
+elif os.path.exists("업체대분류.csv"):
+    with open("업체대분류.csv", "rb") as f: ind_bytes = f.read()
 else:
     ind_bytes = None
 
 # 채권 데이터 로딩
 if debt_file_up is not None:
     debt_bytes = debt_file_up.getvalue()
-    with open(debt_cache_path, "wb") as f:
-        f.write(debt_bytes)
+    with open(debt_cache_path, "wb") as f: f.write(debt_bytes)
 elif os.path.exists(debt_cache_path):
-    with open(debt_cache_path, "rb") as f:
-        debt_bytes = f.read()
+    with open(debt_cache_path, "rb") as f: debt_bytes = f.read()
 else:
     debt_bytes = None
+    for f_name in os.listdir("."):
+        if f_name.startswith("채권") and f_name.endswith(".csv"):
+            with open(f_name, "rb") as f: debt_bytes = f.read()
+            break
 
 # 탱크 데이터 캐싱 (탭 7)
 if tank_file_up is not None:
     tank_bytes = tank_file_up.getvalue()
     tank_name = tank_file_up.name
-    with open(tank_cache_path, "wb") as f:
-        f.write(tank_bytes)
-    with open(tank_cache_path + "_name.txt", "w", encoding="utf-8") as f:
-        f.write(tank_name)
+    with open(tank_cache_path, "wb") as f: f.write(tank_bytes)
+    with open(tank_cache_path + "_name.txt", "w", encoding="utf-8") as f: f.write(tank_name)
 elif os.path.exists(tank_cache_path) and os.path.exists(tank_cache_path + "_name.txt"):
-    with open(tank_cache_path, "rb") as f:
-        tank_bytes = f.read()
-    with open(tank_cache_path + "_name.txt", "r", encoding="utf-8") as f:
-        tank_name = f.read().strip()
+    with open(tank_cache_path, "rb") as f: tank_bytes = f.read()
+    with open(tank_cache_path + "_name.txt", "r", encoding="utf-8") as f: tank_name = f.read().strip()
+elif os.path.exists("탱크.csv"):
+    with open("탱크.csv", "rb") as f: tank_bytes = f.read()
+    tank_name = "탱크.csv"
 else:
     tank_bytes = None
     tank_name = ""
@@ -1112,53 +1139,50 @@ else:
 if vaporizer_file_up is not None:
     vaporizer_bytes = vaporizer_file_up.getvalue()
     vaporizer_name = vaporizer_file_up.name
-    with open(vaporizer_cache_path, "wb") as f:
-        f.write(vaporizer_bytes)
-    with open(vaporizer_cache_path + "_name.txt", "w", encoding="utf-8") as f:
-        f.write(vaporizer_name)
+    with open(vaporizer_cache_path, "wb") as f: f.write(vaporizer_bytes)
+    with open(vaporizer_cache_path + "_name.txt", "w", encoding="utf-8") as f: f.write(vaporizer_name)
 elif os.path.exists(vaporizer_cache_path) and os.path.exists(vaporizer_cache_path + "_name.txt"):
-    with open(vaporizer_cache_path, "rb") as f:
-        vaporizer_bytes = f.read()
-    with open(vaporizer_cache_path + "_name.txt", "r", encoding="utf-8") as f:
-        vaporizer_name = f.read().strip()
+    with open(vaporizer_cache_path, "rb") as f: vaporizer_bytes = f.read()
+    with open(vaporizer_cache_path + "_name.txt", "r", encoding="utf-8") as f: vaporizer_name = f.read().strip()
+elif os.path.exists("기화기.csv"):
+    with open("기화기.csv", "rb") as f: vaporizer_bytes = f.read()
+    vaporizer_name = "기화기.csv"
 else:
     vaporizer_bytes = None
     vaporizer_name = ""
 
 # 통합 탱크 데이터 캐싱 (탭 8)
 if int_bytes is not None:
-    with open(integrated_cache_path, "wb") as f:
-        f.write(int_bytes)
-    with open(integrated_cache_path + "_name.txt", "w", encoding="utf-8") as f:
-        f.write(int_name)
+    with open(integrated_cache_path, "wb") as f: f.write(int_bytes)
+    with open(integrated_cache_path + "_name.txt", "w", encoding="utf-8") as f: f.write(int_name)
 elif os.path.exists(integrated_cache_path) and os.path.exists(integrated_cache_path + "_name.txt"):
-    with open(integrated_cache_path, "rb") as f:
-        int_bytes = f.read()
-    with open(integrated_cache_path + "_name.txt", "r", encoding="utf-8") as f:
-        int_name = f.read().strip()
+    with open(integrated_cache_path, "rb") as f: int_bytes = f.read()
+    with open(integrated_cache_path + "_name.txt", "r", encoding="utf-8") as f: int_name = f.read().strip()
 else:
     int_bytes = None
     int_name = ""
 
-# 매출 데이터 로딩 (다중 파일)
+# 매출 데이터 로딩 (다중 파일 및 자동 업로드)
+sales_file_tuples = []
 if uploaded_files_up and len(uploaded_files_up) > 0:
     for f_name in os.listdir(sales_cache_dir):
         os.remove(os.path.join(sales_cache_dir, f_name))
-    
-    sales_file_tuples = []
     for f in uploaded_files_up:
         f_bytes = f.getvalue()
         f_path = os.path.join(sales_cache_dir, f.name)
-        with open(f_path, "wb") as sf:
-            sf.write(f_bytes)
+        with open(f_path, "wb") as sf: sf.write(f_bytes)
         sales_file_tuples.append((f.name, f_bytes))
 else:
-    sales_file_tuples = []
     if os.path.exists(sales_cache_dir):
         for f_name in os.listdir(sales_cache_dir):
             if f_name.endswith(".csv"):
                 f_path = os.path.join(sales_cache_dir, f_name)
-                with open(f_path, "rb") as sf:
+                with open(f_path, "rb") as sf: sales_file_tuples.append((f_name, sf.read()))
+                
+    if not sales_file_tuples:
+        for f_name in os.listdir("."):
+            if re.match(r"^20\d{2}\.csv$", f_name):
+                with open(f_name, "rb") as sf:
                     sales_file_tuples.append((f_name, sf.read()))
 
 # 캐시 초기화 시 모든 파일 제거되도록 수정
@@ -1197,15 +1221,28 @@ target_items = [
 ]
 
 # ----------------------------------------------------
-# 글로벌 데이터 업데이트 기준일 계산 (1~6번 탭용)
+# 글로벌 데이터 업데이트 기준일 계산 및 NameError 방지 변수 초기화
 # ----------------------------------------------------
 latest_update_str = "데이터 없음"
+selected_staff = []
+selected_client = "전체 거래처"
+df_base = pd.DataFrame()
+df_client_filtered = pd.DataFrame()
+pivot_m_total = pd.DataFrame()
+client_item_qty_pivot = pd.DataFrame()
+sales_p = pd.DataFrame()
+qty_p = pd.DataFrame()
+unit_price_p = pd.DataFrame()
+staff_pivot = pd.DataFrame()
+df_detail = pd.DataFrame()
+all_months = [f"{i:02d}월" for i in range(1, 13)]
+years = ["2026"]
+
 if not full_df.empty:
     latest_dt_overall = full_df["매출일_dt"].max()
     if pd.notnull(latest_dt_overall):
         latest_update_str = latest_dt_overall.strftime("%Y-%m-%d")
 
-if not full_df.empty:
     filter_container = st.container()
     with filter_container:
         fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
@@ -1226,7 +1263,6 @@ if not full_df.empty:
 
         all_clients = sorted(df_staff_filtered["거래처"].unique()) if not df_staff_filtered.empty else []
         
-        # 거래처 선택을 selectbox로 변경하여 타이핑 검색이 용이하도록 개선
         client_options = ["전체 거래처"] + all_clients
         selected_client = fc4.selectbox("🏢 거래처 (직접 입력 검색)", options=client_options, index=0)
 
@@ -1237,7 +1273,6 @@ if not full_df.empty:
 
         df_f = df_client_filtered[df_client_filtered["품목명"].isin(selected_item)] if selected_item else df_client_filtered.copy()
 
-    all_months = [f"{i:02d}월" for i in range(1, 13)]
     raw_years = sorted(full_df["연도"].unique()) if "연도" in full_df.columns else ["2026"]
     years = sorted(raw_years, reverse=True)
     desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
@@ -1250,8 +1285,8 @@ if not full_df.empty:
     detail_cols = ["매출일_dt", "담당자", "거래처", "품목명", "출고량", "단가", "매출액"]
     df_detail = df_f[detail_cols].copy() if not df_f.empty else pd.DataFrame(columns=detail_cols)
 
-    if not df_base.empty:
-        df_total_monthly = df_base.groupby(df_base["매출일_dt"].dt.to_period("M"))["매출액"].sum()
+    df_total_monthly = df_base.groupby(df_base["매출일_dt"].dt.to_period("M"))["매출액"].sum()
+    if not df_total_monthly.empty:
         latest_period_total = df_total_monthly.index.max()
         cur_month_sales_total = df_total_monthly.loc[latest_period_total]
         prev_period_total = latest_period_total - 1
@@ -1279,910 +1314,916 @@ if not full_df.empty:
     else:
         cur_month_sales_client = prev_month_sales_client = mom_rate_client = avg_monthly_sales_client = avg_rate_client = 0.0
         latest_month_str_client = "-"
+else:
+    # 데이터가 비어있을 때 에러가 나지 않도록 빈 변수 설정 유지
+    cur_month_sales_total = prev_month_sales_total = mom_rate_total = avg_monthly_sales_total = avg_rate_total = 0.0
+    latest_month_str_total = "-"
+    cur_month_sales_client = prev_month_sales_client = mom_rate_client = avg_monthly_sales_client = avg_rate_client = 0.0
+    latest_month_str_client = "-"
 
-    filtered_debt_df = pd.DataFrame()
-    if not debt_df.empty:
-        if selected_staff:
-            valid_staff_clients = full_df[full_df["담당자"].isin(selected_staff)]["거래처"].unique()
-            filtered_debt_df = debt_df[debt_df["거래처"].isin(valid_staff_clients)].copy()
-        else:
-            filtered_debt_df = debt_df.copy()
-            
-        if selected_client != "전체 거래처":
-            filtered_debt_df = filtered_debt_df[filtered_debt_df["거래처"] == selected_client].copy()
-
-    client_addr_raw = addr_dict.get(selected_client, "등록된 주소 정보가 없습니다.")
-    if pd.isna(client_addr_raw) or str(client_addr_raw).strip().lower() == 'nan' or not str(client_addr_raw).strip():
-        client_addr = "등록된 주소 정보가 없습니다."
+filtered_debt_df = pd.DataFrame()
+if not debt_df.empty:
+    if selected_staff:
+        valid_staff_clients = full_df[full_df["담당자"].isin(selected_staff)]["거래처"].unique()
+        filtered_debt_df = debt_df[debt_df["거래처"].isin(valid_staff_clients)].copy()
     else:
-        client_addr = str(client_addr_raw)
+        filtered_debt_df = debt_df.copy()
+        
+    if selected_client != "전체 거래처":
+        filtered_debt_df = filtered_debt_df[filtered_debt_df["거래처"] == selected_client].copy()
 
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📥 엑셀 내보내기")
-    sheets_dict = {
-        "연도별_월매출(만원)": (pivot_m_total, True),
-        "거래처별_품목별사용량": (client_item_qty_pivot, True),
-        "선택거래처_품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
-        "선택거래처_품목별_출고량": (qty_p, True),
-        "선택거래처_품목별_적용단가": (unit_price_p, True),
-        "담당자별_매출(만원)": (staff_pivot, True),
-        "상세거래내역": (df_detail, False),
-    }
+client_addr_raw = addr_dict.get(selected_client, "등록된 주소 정보가 없습니다.")
+if pd.isna(client_addr_raw) or str(client_addr_raw).strip().lower() == 'nan' or not str(client_addr_raw).strip():
+    client_addr = "등록된 주소 정보가 없습니다."
+else:
+    client_addr = str(client_addr_raw)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📥 엑셀 내보내기")
+sheets_dict = {
+    "연도별_월매출(만원)": (pivot_m_total, True),
+    "거래처별_품목별사용량": (client_item_qty_pivot, True),
+    "선택거래처_품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
+    "선택거래처_품목별_출고량": (qty_p, True),
+    "선택거래처_품목별_적용단가": (unit_price_p, True),
+    "담당자별_매출(만원)": (staff_pivot, True),
+    "상세거래내역": (df_detail, False),
+}
+
+if not filtered_debt_df.empty:
+    sheets_dict["채권관리_현황"] = (filtered_debt_df, False)
+
+excel_data = convert_dfs_to_excel(sheets_dict)
+st.sidebar.download_button(
+    label="📊 전체 분석 시트별 엑셀 다운로드",
+    data=excel_data,
+    file_name="통합영업분석_시트별보고서.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    use_container_width=True,
+)
+
+# ==========================================
+# ★ 7번/8번 탭 구성 ★
+# ==========================================
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+    [
+        "📌 영업 종합 요약",
+        "🏢 거래처 분석",
+        "📦 품목 및 단가 분석",
+        "👤 담당자 & 상세내역",
+        "📌 채권 관리",
+        "📍 카카오맵",
+        "🏭 설비 재고 현황",
+        "🛢️ 통합 탱크 재고"
+    ]
+)
+
+# Tab 1: 📌 영업 종합 요약
+with tab1:
+    t1_c1, t1_c2 = st.columns([4, 1])
+    t1_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>📊 전체 영업 주요 실적 지표</div>", unsafe_allow_html=True)
+    t1_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
     
-    if not filtered_debt_df.empty:
-        sheets_dict["채권관리_현황"] = (filtered_debt_df, False)
+    m1, m2, m3, m4 = st.columns(4)
+    
+    tot_sales_val = df_base["매출액"].sum() * 1.1 / 10000 if not df_base.empty else 0.0
+    cur_sales_val = cur_month_sales_total * 1.1 / 10000
 
-    excel_data = convert_dfs_to_excel(sheets_dict)
-    st.sidebar.download_button(
-        label="📊 전체 분석 시트별 엑셀 다운로드",
-        data=excel_data,
-        file_name="통합영업분석_시트별보고서.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
+    m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
+    m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_total})</div><div class='metric-value'>{cur_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
+    m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_total < 0 else '#2563EB'};'>{mom_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
+    m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_total < 0 else '#2563EB'};'>{avg_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
 
-    # ==========================================
-    # ★ 7번/8번 탭 구성 ★
-    # ==========================================
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
-        [
-            "📌 영업 종합 요약",
-            "🏢 거래처 분석",
-            "📦 품목 및 단가 분석",
-            "👤 담당자 & 상세내역",
-            "📌 채권 관리",
-            "📍 카카오맵",
-            "🏭 설비 재고 현황",
-            "🛢️ 통합 탱크 재고"
-        ]
-    )
+    st.markdown("<div class='sub-header'>📊 전체 영업 연도별 월 매출 추이</div>", unsafe_allow_html=True)
+    col_left, col_right = st.columns([1, 1])
+    
+    with col_left:
+        st.dataframe(pivot_m_total.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
 
-    # Tab 1: 📌 영업 종합 요약
-    with tab1:
-        t1_c1, t1_c2 = st.columns([4, 1])
-        t1_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>📊 전체 영업 주요 실적 지표</div>", unsafe_allow_html=True)
-        t1_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-        
-        m1, m2, m3, m4 = st.columns(4)
-        
-        tot_sales_val = df_base["매출액"].sum() * 1.1 / 10000 if not df_base.empty else 0.0
-        cur_sales_val = cur_month_sales_total * 1.1 / 10000
-
-        m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
-        m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_total})</div><div class='metric-value'>{cur_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
-        m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_total < 0 else '#2563EB'};'>{mom_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
-        m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_total < 0 else '#2563EB'};'>{avg_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
-
-        st.markdown("<div class='sub-header'>📊 전체 영업 연도별 월 매출 추이</div>", unsafe_allow_html=True)
-        col_left, col_right = st.columns([1, 1])
-        
-        with col_left:
-            st.dataframe(pivot_m_total.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
-
-        with col_right:
-            st.plotly_chart(
-                create_stacked_bar_chart(pivot_m_total, title_text=""),
-                use_container_width=True, key="tab1_total_chart"
-            )
-            
-        st.markdown("---")
-        st.markdown("<div class='sub-header'>📦 주요 4대 품목 상세 분석</div>", unsafe_allow_html=True)
-        
-        sel_col1, sel_col2 = st.columns([1, 1])
-        with sel_col1:
-            selected_target_item = st.radio("🔍 분석할 품목 선택", target_items, horizontal=True, key="overall_item_radio")
-        with sel_col2:
-            selected_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="overall_metric_radio")
-            
-        item_pivot = cached_get_item_pivot(df_base, selected_target_item, selected_metric, all_months, years)
-        
-        i_col_left, i_col_right = st.columns([1, 1])
-        with i_col_left:
-            if "비중" in selected_metric:
-                st.dataframe(item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
-                y_suf = "%"
-                y_fmt = ",.1f"
-            elif "출고량" in selected_metric:
-                st.dataframe(item_pivot.style.format("{:,.1f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
-                y_suf = " 천kg"
-                y_fmt = ",.1f"
-            else:
-                st.dataframe(item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
-                y_suf = " 만원"
-                y_fmt = ",.0f"
-                
-        with i_col_right:
-            st.plotly_chart(
-                create_stacked_bar_chart(
-                    item_pivot, 
-                    title_text="", 
-                    y_suffix=y_suf, 
-                    y_format=y_fmt
-                ),
-                use_container_width=True, key="tab1_item_chart"
-            )
-
-        st.markdown("---")
-        st.markdown("<div class='sub-header'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
-        
-        if "업종" in df_base.columns:
-            available_industries = sorted([ind for ind in df_base["업종"].unique() if ind != "미분류"])
-            if available_industries:
-                ind_col1, ind_col2 = st.columns([1, 1])
-                with ind_col1:
-                    selected_industry = st.selectbox("🔍 분석할 업종(분류) 선택", available_industries, key="industry_selectbox")
-                with ind_col2:
-                    selected_ind_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="industry_metric_radio")
-                
-                ind_pivot = cached_get_industry_pivot(df_base, selected_industry, selected_ind_metric, all_months, years)
-                
-                i_col_left2, i_col_right2 = st.columns([1, 1])
-                with i_col_left2:
-                    if "비중" in selected_ind_metric:
-                        st.dataframe(ind_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
-                        y_suf_i = "%"
-                        y_fmt_i = ",.1f"
-                    elif "출고량" in selected_ind_metric:
-                        st.dataframe(ind_pivot.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
-                        y_suf_i = ""
-                        y_fmt_i = ",.0f"
-                    else:
-                        st.dataframe(ind_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
-                        y_suf_i = " 만원"
-                        y_fmt_i = ",.0f"
-                
-                with i_col_right2:
-                    st.plotly_chart(
-                        create_stacked_bar_chart(
-                            ind_pivot, 
-                            title_text="", 
-                            y_suffix=y_suf_i, 
-                            y_format=y_fmt_i
-                        ),
-                        use_container_width=True, key="tab1_industry_chart"
-                    )
-
-                st.markdown("<br>", unsafe_allow_html=True)
-                with st.expander(f"📂 [{selected_industry}] 소속 거래처 상세 데이터 파보기 (클릭하여 펼치기)", expanded=False):
-                    df_ind_detail = df_base[df_base["업종"] == selected_industry]
-                    
-                    if not df_ind_detail.empty:
-                        ind_client_pivot = df_ind_detail.pivot_table(index="거래처", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
-                        
-                        avail_years_ind = sorted([y for y in ind_client_pivot.columns if str(y).isdigit()])
-                        ind_client_pivot = ind_client_pivot.reindex(columns=avail_years_ind, fill_value=0)
-                        ind_client_pivot["총 누적매출"] = ind_client_pivot.sum(axis=1)
-                        ind_client_pivot = ind_client_pivot.sort_values(by="총 누적매출", ascending=False)
-                        
-                        st.dataframe(ind_client_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=250)
-                        
-                        st.markdown("<hr style='margin: 15px 0px; border-top: 1px dashed #E2E8F0;'>", unsafe_allow_html=True)
-                        
-                        ind_clients = sorted(df_ind_detail["거래처"].unique())
-                        
-                        c1, c2, c3 = st.columns([1, 1, 1])
-                        with c1:
-                            sel_ind_client = st.selectbox(f"🏢 [{selected_industry}] 거래처 선택", ind_clients, key="ind_client_sel")
-                        with c2:
-                            client_items = sorted(df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]["품목명"].unique())
-                            sel_ind_item = st.selectbox("📦 품목 선택", client_items if client_items else ["없음"], key="ind_item_sel")
-                        with c3:
-                            sel_ind_sub_metric = st.radio("📊 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="ind_sub_metric")
-                        
-                        if client_items:
-                            df_target_client = df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]
-                            sub_item_pivot = cached_get_item_pivot(df_target_client, sel_ind_item, sel_ind_sub_metric, all_months, years)
-                            
-                            sc1, sc2 = st.columns([1, 1])
-                            with sc1:
-                                if "비중" in sel_ind_sub_metric:
-                                    st.dataframe(sub_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=380)
-                                    y_suf_sub = "%"
-                                    y_fmt_sub = ",.1f"
-                                elif "출고량" in sel_ind_sub_metric:
-                                    if sel_ind_item in target_items:
-                                        y_suf_sub = " 천kg"
-                                        y_fmt_sub = ",.1f"
-                                    elif "LPG" in str(sel_ind_item).upper():
-                                        y_suf_sub = " kg"
-                                        y_fmt_sub = ",.0f"
-                                    else:
-                                        y_suf_sub = " 개(병)"
-                                        y_fmt_sub = ",.0f"
-                                    st.dataframe(sub_item_pivot.style.format(f"{{:{y_fmt_sub}}}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=380)
-                                else:
-                                    st.dataframe(sub_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=380)
-                                    y_suf_sub = " 만원"
-                                    y_fmt_sub = ",.0f"
-                                    
-                            with sc2:
-                                st.plotly_chart(
-                                    create_stacked_bar_chart(sub_item_pivot, title_text="", y_suffix=y_suf_sub, y_format=y_fmt_sub),
-                                    use_container_width=True, key="ind_client_sub_chart"
-                                )
-
-        # -----------------------------------------------------------
-        # ★ 기능 1: 당해년도 상위 거래처 기여도 파레토 분석 
-        # -----------------------------------------------------------
-        st.markdown("---")
-        st.markdown("<div class='sub-header'>🏆 당해년도 상위 거래처 매출 기여도 (파레토 분석)</div>", unsafe_allow_html=True)
-        
-        if not df_base.empty:
-            current_year_str = str(df_base["연도"].max())
-            df_pareto = df_base[df_base["연도"] == current_year_str]
-            
-            client_sales = df_pareto.groupby('거래처')['매출액'].sum().sort_values(ascending=False).reset_index()
-            total_sales_for_pareto = client_sales['매출액'].sum()
-            
-            if total_sales_for_pareto > 0:
-                client_sales['누적비율(%)'] = client_sales['매출액'].cumsum() / total_sales_for_pareto * 100
-                top_20_clients = client_sales.head(20)
-                
-                fig_pareto = go.Figure()
-                fig_pareto.add_trace(go.Bar(
-                    x=top_20_clients['거래처'], y=top_20_clients['매출액'] * 1.1 / 10000,
-                    name='매출액 (만원)', marker_color='#3B82F6'
-                ))
-                fig_pareto.add_trace(go.Scatter(
-                    x=top_20_clients['거래처'], y=top_20_clients['누적비율(%)'],
-                    name='누적 비율(%)', yaxis='y2', mode='lines+markers', 
-                    line=dict(color='#EF4444', width=3), marker=dict(size=8)
-                ))
-                
-                fig_pareto.update_layout(
-                    yaxis=dict(title='매출액 (만원)', gridcolor='#E2E8F0'),
-                    yaxis2=dict(title='누적 비율 (%)', overlaying='y', side='right', range=[0, 110], showgrid=False),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
-                    margin=dict(l=10, r=10, t=30, b=40),
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)'
-                )
-                st.plotly_chart(fig_pareto, use_container_width=True, key="pareto_chart")
-            else:
-                st.info(f"{current_year_str}년도에 해당하는 매출 데이터가 없습니다.")
-
-
-    # Tab 2: 🏢 거래처 분석
-    with tab2:
-        t2_c1, t2_c2 = st.columns([4, 1])
-        t2_c1.markdown(f"<div class='sub-header' style='margin-top: 20px;'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
-        t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-        
-        btn_c1, btn_c2, btn_c3 = st.columns([1.5, 1, 1])
-        
-        with btn_c1:
-            if st.button("📝 macOS 메모 앱에서 거래처 노트 열기/생성", key="btn_notes"):
-                open_macos_notes_folder(selected_client, dart_api_key, df_integrated)
-                
-        with btn_c2:
-            if "show_corp_info" not in st.session_state:
-                st.session_state.show_corp_info = False
-                
-            btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
-            
-            if st.button(btn_label, key="btn_dart_info"):
-                st.session_state.show_corp_info = not st.session_state.show_corp_info
-                st.rerun()
-                
-            if st.session_state.show_corp_info:
-                with st.spinner("DART 및 네이버 기업 정보를 불러오는 중..."):
-                    c_info = get_company_info_hybrid(selected_client, dart_api_key)
-                            
-                    st.markdown(f"""
-                    - **출처:** {c_info['source']}
-                    - **대표자:** {c_info['ceo']}
-                    - **업종:** {c_info['industry']}
-                    - **매출액:** {c_info['revenue']}
-                    - **영업이익:** {c_info['profit']}
-                    """)
-                    
-        with btn_c3:
-            if client_addr != "등록된 주소 정보가 없습니다.":
-                kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(client_addr)}"
-                st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url)
-            else:
-                st.button("🗺️ 카카오맵에서 주소 보기", disabled=True, key="btn_kakao_disabled")
-
-        m1, m2, m3, m4 = st.columns(4)
-        tot_sales_c = df_client_filtered["매출액"].sum() * 1.1 / 10000 if not df_client_filtered.empty else 0.0
-        cur_sales_c = cur_month_sales_client * 1.1 / 10000
-
-        m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
-        m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_client})</div><div class='metric-value'>{cur_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
-        m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_client < 0 else '#2563EB'};'>{mom_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
-        m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
-
-        if not df_client_filtered.empty:
-            pivot_m_client = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
-            cl, cr = st.columns([1, 1])
-            with cl:
-                st.dataframe(pivot_m_client.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
-            with cr:
-                st.plotly_chart(
-                    create_stacked_bar_chart(pivot_m_client, title_text=""),
-                    use_container_width=True, key="tab2_client_total_chart"
-                )
-
-            # --- 품목별 상세 분석 복원 ---
-            st.markdown("---")
-            st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
-            
-            client_available_items = sorted(df_client_filtered["품목명"].unique())
-            if client_available_items:
-                sel_col1_c, sel_col2_c = st.columns([1, 1])
-                with sel_col1_c:
-                    selected_target_item_c = st.selectbox("🔍 분석할 품목 선택 (전체 거래 품목)", client_available_items, key="client_item_selectbox")
-                with sel_col2_c:
-                    selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
-                    
-                client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
-                
-                i_col_left_c, i_col_right_c = st.columns([1, 1])
-                with i_col_left_c:
-                    if "비중" in selected_metric_c:
-                        st.dataframe(client_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
-                        y_suf_c = "%"
-                        y_fmt_c = ",.1f"
-                    elif "출고량" in selected_metric_c:
-                        if selected_target_item_c in target_items:
-                            y_suf_c = " 천kg"
-                            y_fmt_c = ",.1f"
-                        elif "LPG" in str(selected_target_item_c).upper():
-                            y_suf_c = " kg"
-                            y_fmt_c = ",.0f"
-                        else:
-                            y_suf_c = " 개(병)"
-                            y_fmt_c = ",.0f"
-                        st.dataframe(client_item_pivot.style.format(f"{{:{y_fmt_c}}}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
-                    else:
-                        st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
-                        y_suf_c = " 만원"
-                        y_fmt_c = ",.0f"
-                        
-                with i_col_right_c:
-                    st.plotly_chart(
-                        create_stacked_bar_chart(
-                            client_item_pivot, 
-                            title_text="", 
-                            y_suffix=y_suf_c, 
-                            y_format=y_fmt_c
-                        ),
-                        use_container_width=True, key="tab2_client_item_chart"
-                    )
-
-    # Tab 3: 📦 품목 및 단가 분석 (초고속 빈 열/행 필터링 무손실 렌더링)
-    with tab3:
-        t3_c1, t3_c2 = st.columns([4, 1])
-        t3_c1.markdown(f"<div class='sub-header' style='margin-top: 20px;'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
-        t3_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-        
-        latest_dt_overall = df_base["매출일_dt"].max() if not df_base.empty else None
-        target_month_col = latest_dt_overall.strftime("%y년 %m월") if pd.notnull(latest_dt_overall) else None
-        
-        def render_native_dataframe(df, cmap, fmt, target_col, apply_gradient=True):
-            df_active, numeric_cols, highlight_col_name = prepare_active_df_fast(df, target_col)
-            
-            if df_active is None or df_active.empty:
-                return
-
-            styled = df_active.style.format(fmt, subset=numeric_cols)
-            
-            if apply_gradient and cmap:
-                styled = styled.background_gradient(cmap=cmap, subset=numeric_cols, axis=None)
-
-            if highlight_col_name and highlight_col_name in numeric_cols:
-                styled = styled.apply(lambda s: ['color: #B91C1C; font-weight: bold;'] * len(s), subset=[highlight_col_name], axis=0)
-
-            st.dataframe(
-                styled, 
-                use_container_width=True, 
-                height=400,
-                hide_index=True,  
-                column_config={
-                    "품목명": st.column_config.TextColumn("품목명", width="medium")
-                }
-            )
-
-        avail_years_short = [y[2:] for y in years]
-        current_year_short = str(df_base["연도"].max())[2:] if not df_base.empty else (avail_years_short[0] if avail_years_short else "26")
-        
-        st.markdown("<div style='background-color: #EFF6FF; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #3B82F6; margin-bottom: 15px;'>💡 <b>연도별 상세 조회:</b> 기본적으로 당해년도만 펼쳐져 있으며, 과거 연도는 '연간총합'만 표시됩니다. 아래에서 과거 연도를 선택(클릭)하면 해당 연도의 월별 상세 내역이 펼쳐집니다.</div>", unsafe_allow_html=True)
-        
-        selected_detail_years = st.multiselect(
-            "📅 월별 상세 내역을 펼쳐볼 연도 선택 (단가표 제외)",
-            options=avail_years_short,
-            default=[current_year_short] if current_year_short in avail_years_short else avail_years_short[:1],
-            format_func=lambda x: f"20{x}년"
+    with col_right:
+        st.plotly_chart(
+            create_stacked_bar_chart(pivot_m_total, title_text=""),
+            use_container_width=True, key="tab1_total_chart"
         )
         
-        def filter_year_columns(df):
-            if df.empty: return df
-            cols = []
-            for y in avail_years_short:
-                if y in selected_detail_years:
-                    for m in reversed(all_months):
-                        c = f"{y}년 {m}"
-                        if c in df.columns: cols.append(c)
-                tot = f"{y}년 연간총합"
-                if tot in df.columns: cols.append(tot)
-            return df[[c for c in cols if c in df.columns]]
-            
-        sales_p_filtered = filter_year_columns(sales_p * 1.1 / 10000)
-        qty_p_filtered = filter_year_columns(qty_p)
-
-        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
-        render_native_dataframe(sales_p_filtered, "Blues", "{:,.0f}", target_month_col, apply_gradient=True)
-            
-        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
-        render_native_dataframe(qty_p_filtered, "Greens", "{:,.0f}", target_month_col, apply_gradient=True)
-            
-        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (중간값) - 전체 기간 월별 고정 표시</div>", unsafe_allow_html=True)
-        render_native_dataframe(unit_price_p, "Oranges", "{:,.0f}", target_month_col, apply_gradient=False)
+    st.markdown("---")
+    st.markdown("<div class='sub-header'>📦 주요 4대 품목 상세 분석</div>", unsafe_allow_html=True)
+    
+    sel_col1, sel_col2 = st.columns([1, 1])
+    with sel_col1:
+        selected_target_item = st.radio("🔍 분석할 품목 선택", target_items, horizontal=True, key="overall_item_radio")
+    with sel_col2:
+        selected_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="overall_metric_radio")
         
-
-    # Tab 4: 👤 담당자 & 상세내역
-    with tab4:
-        t4_c1, t4_c2 = st.columns([4, 1])
-        t4_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
-        t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-        
-        if not staff_pivot.empty:
-            format_dict = {col: "{:,.0f}" for col in staff_pivot.columns if col != "매출 비중 (%)"}
-            format_dict["매출 비중 (%)"] = "{:,.1f}%"
+    item_pivot = cached_get_item_pivot(df_base, selected_target_item, selected_metric, all_months, years)
+    
+    i_col_left, i_col_right = st.columns([1, 1])
+    with i_col_left:
+        if "비중" in selected_metric:
+            st.dataframe(item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
+            y_suf = "%"
+            y_fmt = ",.1f"
+        elif "출고량" in selected_metric:
+            st.dataframe(item_pivot.style.format("{:,.1f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
+            y_suf = " 천kg"
+            y_fmt = ",.1f"
+        else:
+            st.dataframe(item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
+            y_suf = " 만원"
+            y_fmt = ",.0f"
             
-            monthly_cols = [c for c in staff_pivot.columns if c not in ["매출 비중 (%)", "총 매출 합계 (만원)"]]
-            
-            styled_staff = (
-                staff_pivot.style.format(format_dict)
-                .background_gradient(cmap="Purples", subset=["매출 비중 (%)"])
-                .background_gradient(cmap="Oranges", subset=["총 매출 합계 (만원)"])
-                .background_gradient(cmap="Blues", subset=monthly_cols)
-            )
-            st.dataframe(styled_staff, use_container_width=True, height=350)
+    with i_col_right:
+        st.plotly_chart(
+            create_stacked_bar_chart(
+                item_pivot, 
+                title_text="", 
+                y_suffix=y_suf, 
+                y_format=y_fmt
+            ),
+            use_container_width=True, key="tab1_item_chart"
+        )
 
-        st.markdown("<div class='sub-header'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
-        if not df_base.empty:
-            current_year = str(df_base["연도"].max())
-            all_staffs = sorted(df_base["담당자"].unique())
+    st.markdown("---")
+    st.markdown("<div class='sub-header'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
+    
+    if "업종" in df_base.columns:
+        available_industries = sorted([ind for ind in df_base["업종"].unique() if ind != "미분류"])
+        if available_industries:
+            ind_col1, ind_col2 = st.columns([1, 1])
+            with ind_col1:
+                selected_industry = st.selectbox("🔍 분석할 업종(분류) 선택", available_industries, key="industry_selectbox")
+            with ind_col2:
+                selected_ind_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="industry_metric_radio")
             
-            sel_staff = st.selectbox("👤 순위를 조회할 담당자 선택", all_staffs, key="ranking_staff_select")
-            ranking_pivot = cached_ranking_pivot(df_base, current_year, sel_staff, all_months)
+            ind_pivot = cached_get_industry_pivot(df_base, selected_industry, selected_ind_metric, all_months, years)
             
-            if not ranking_pivot.empty:
-                r_col1, r_col2 = st.columns([1.2, 1])
-                
-                with r_col1:
-                    st.dataframe(
-                        ranking_pivot.style.format("{:,.0f}")
-                        .background_gradient(cmap="Blues", subset=all_months)
-                        .background_gradient(cmap="Oranges", subset=["당해 누적 (만원)"]),
-                        use_container_width=True, height=380
-                    )
-                    
-                with r_col2:
-                    top_clients = ranking_pivot.head(10).sort_values(by="당해 누적 (만원)", ascending=True)
-                    
-                    fig_ranking = px.bar(
-                        top_clients.reset_index(),
-                        x="당해 누적 (만원)",
-                        y="거래처",
-                        orientation='h',
-                        text="당해 누적 (만원)",
-                        color="당해 누적 (만원)",
-                        color_continuous_scale="Blues"
-                    )
-                    fig_ranking.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-                    fig_ranking.update_layout(
-                        xaxis_title=None,
-                        yaxis_title=None,
-                        margin=dict(l=10, r=40, t=10, b=10),
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        coloraxis_showscale=False,
-                        height=380
-                    )
-                    st.plotly_chart(fig_ranking, use_container_width=True, key=f"ranking_chart_{sel_staff}")
-
-        st.markdown("<div class='sub-header'>📋 거래 상세 내역 (최신순 800건)</div>", unsafe_allow_html=True)
-        if not df_detail.empty:
-            view_detail_df = df_detail.sort_values(by="매출일_dt", ascending=False).head(800)
+            i_col_left2, i_col_right2 = st.columns([1, 1])
+            with i_col_left2:
+                if "비중" in selected_ind_metric:
+                    st.dataframe(ind_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
+                    y_suf_i = "%"
+                    y_fmt_i = ",.1f"
+                elif "출고량" in selected_ind_metric:
+                    st.dataframe(ind_pivot.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
+                    y_suf_i = ""
+                    y_fmt_i = ",.0f"
+                else:
+                    st.dataframe(ind_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
+                    y_suf_i = " 만원"
+                    y_fmt_i = ",.0f"
             
-            styled_detail = (
-                view_detail_df
-                .style.format({
-                    "출고량": "{:,.0f}",
-                    "단가": "{:,.0f}",
-                    "매출액": "{:,.0f}",
-                    "매출일_dt": lambda t: t.strftime("%Y-%m-%d") if pd.notnull(t) else ""
-                })
-                .background_gradient(subset=["매출액"], cmap="Blues")
-            )
-            st.dataframe(styled_detail, use_container_width=True, height=600, hide_index=True)
-
-    # Tab 5: 📌 채권 관리
-    with tab5:
-        latest_month = None
-        if not filtered_debt_df.empty:
-            numeric_cols_debt = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
-            if numeric_cols_debt:
-                latest_month = numeric_cols_debt[-1]
-                
-        debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
-        
-        t5_c1, t5_c2 = st.columns([4, 1])
-        t5_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
-        t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
-        
-        if not debt_df.empty:
-            if not filtered_debt_df.empty:
-                numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
-                
-                total_outstanding = 0
-                warning_count = 0
-                
-                if latest_month:
-                    u_clients = filtered_debt_df['거래처'].unique()
-                    for uc in u_clients:
-                        c_mask = filtered_debt_df['거래처'] == uc
-                        b_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '잔액'), latest_month].sum()
-                        s_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '매출'), latest_month].sum()
-                        
-                        total_outstanding += max(0, b_val)
-                        if b_val > 0 and b_val > s_val:
-                            warning_count += 1
-                            
-                m1, m2 = st.columns(2)
-                m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div><div class='metric-value'>{total_outstanding:,.0f} 원</div></div>", unsafe_allow_html=True)
-                m2.markdown(f"<div class='metric-box'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div><div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>", unsafe_allow_html=True)
-                
-                st.markdown("<br>", unsafe_allow_html=True)
-                
-                def apply_debt_style_fast(df):
-                    styles = np.full(df.shape, '', dtype=object)
-                    
-                    cols = list(df.columns)
-                    idx_gubun = cols.index('구분')
-                    idx_client = cols.index('거래처')
-                    
-                    month_col_indices = [cols.index(c) for c in numeric_cols]
-                    
-                    u_clients_fast = df['거래처'].unique()
-                    color_map_fast = {client: '#FFFFFF' if i % 2 == 0 else '#E2E8F0' for i, client in enumerate(u_clients_fast)}
-                    
-                    for r in range(df.shape[0]):
-                        client = df.iat[r, idx_client]
-                        bg_color = color_map_fast.get(client, '#FFFFFF')
-                        for c in range(df.shape[1]):
-                            styles[r, c] = f'background-color: {bg_color};'
-                            
-                    client_rows = df.groupby('거래처').indices 
-                    
-                    for client, rows in client_rows.items():
-                        i_sal = -1
-                        i_bal = -1
-                        i_sugum = -1
-                        
-                        for r in rows:
-                            gubun = df.iat[r, idx_gubun]
-                            if gubun == '매출': i_sal = r
-                            elif gubun == '잔액': i_bal = r
-                            elif gubun == '수금': i_sugum = r
-                            
-                        if i_sal != -1:
-                            styles[i_sal, idx_gubun] += ' color: #E11D48; font-weight: 600;'
-                        if i_sugum != -1:
-                            styles[i_sugum, idx_gubun] += ' color: #059669; font-weight: 600;'
-                        if i_bal != -1:
-                            for c in range(df.shape[1]):
-                                styles[i_bal, c] += ' font-weight: 700; color: #334155;'
-                                
-                        if i_sal != -1 and i_bal != -1 and month_col_indices:
-                            l_month_idx = -1
-                            for c in reversed(month_col_indices):
-                                val = df.iat[i_bal, c]
-                                if pd.notna(val) and val > 0:
-                                    l_month_idx = c
-                                    break
-                                    
-                            if l_month_idx != -1:
-                                final_bal = df.iat[i_bal, l_month_idx]
-                                sal_latest = df.iat[i_sal, l_month_idx]
-                                
-                                final_bal = float(final_bal) if pd.notna(final_bal) else 0.0
-                                sal_latest = float(sal_latest) if pd.notna(sal_latest) else 0.0
-                                
-                                if final_bal > 0:
-                                    if final_bal > sal_latest:
-                                        styles[i_bal, l_month_idx] += ' background-color: #FEE2E2; color: #B91C1C; font-weight: 800;'
-                                        accumulated = 0.0
-                                        for c in reversed(month_col_indices):
-                                            if c > l_month_idx: continue
-                                            val = df.iat[i_sal, c]
-                                            val = float(val) if pd.notna(val) else 0.0
-                                            
-                                            if accumulated < final_bal:
-                                                styles[i_sal, c] += ' background-color: #FEE2E2; color: #B91C1C; font-weight: 800;'
-                                                accumulated += val
-                                            else:
-                                                break
-                                    else:
-                                        styles[i_bal, l_month_idx] += ' background-color: #EFF6FF; color: #1D4ED8; font-weight: 800;'
-                                        
-                    return pd.DataFrame(styles, index=df.index, columns=df.columns)
-
-                df_height = 500 if selected_client != "전체 거래처" else 700
-                st.dataframe(
-                    filtered_debt_df.style
-                    .format(subset=numeric_cols, formatter="{:,.0f}")
-                    .apply(apply_debt_style_fast, axis=None),
-                    use_container_width=True, height=df_height
+            with i_col_right2:
+                st.plotly_chart(
+                    create_stacked_bar_chart(
+                        ind_pivot, 
+                        title_text="", 
+                        y_suffix=y_suf_i, 
+                        y_format=y_fmt_i
+                    ),
+                    use_container_width=True, key="tab1_industry_chart"
                 )
 
-    # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
-    with tab6:
-        t6_c1, t6_c2 = st.columns([4, 1])
-        t6_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>📍 담당자별 거래처 지도 분포 (대한민국 V-World 지도)</div>", unsafe_allow_html=True)
-        t6_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-        
-        rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
-        
-        map_col1, map_col2, map_col3 = st.columns([1, 1, 1])
-        with map_col1:
-            map_style_choice = st.radio(
-                "🗺️ 지도 배경 스타일 선택",
-                ["일반 지도 (V-World 한글 기본도)", "위성 지도 (V-World 고해상도 위성)"],
-                horizontal=True,
-                key="map_style_radio"
-            )
-        with map_col2:
-            all_staff_list = sorted(df_base["담당자"].unique()) if not df_base.empty else []
-            map_selected_staff = st.multiselect(
-                "👤 지도 전용 담당자 선택", 
-                options=all_staff_list, 
-                default=all_staff_list,
-                key="map_staff_multiselect"
-            )
-        with map_col3:
-            all_map_clients = sorted(df_base["거래처"].unique()) if not df_base.empty else []
-            map_selected_client = st.multiselect(
-                "🏢 특정 거래처 위치 검색", 
-                options=all_map_clients,
-                placeholder="검색할 거래처명을 입력하세요...",
-                key="map_client_multiselect"
-            )
-        
-        if "show_map" not in st.session_state:
-            st.session_state.show_map = False
-            
-        if st.button("🗺️ 지도 생성 및 위치 확인하기", type="primary"):
-            st.session_state.show_map = True
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.expander(f"📂 [{selected_industry}] 소속 거래처 상세 데이터 파보기 (클릭하여 펼치기)", expanded=False):
+                df_ind_detail = df_base[df_base["업종"] == selected_industry]
                 
-        if st.session_state.show_map:
-            target_map_df = df_base.copy()
-            
-            if map_selected_client:
-                target_map_df = target_map_df[target_map_df["거래처"].isin(map_selected_client)]
-            elif map_selected_staff:
-                target_map_df = target_map_df[target_map_df["담당자"].isin(map_selected_staff)]
-            
-            if not target_map_df.empty:
-                unique_clients_df = target_map_df[['거래처', '담당자']].drop_duplicates(subset=['거래처'])
-                
-                map_data = []
-                total_cnt = len(unique_clients_df)
-                progress_text = "최초 1회 주소 좌표 변환 중입니다 (이후부터는 빠르게 로딩됩니다) 🚀"
-                my_bar = st.progress(0, text=progress_text)
-                
-                invalid_clients = [] 
-                
-                for i, (_, row) in enumerate(unique_clients_df.iterrows()):
-                    c_name = row['거래처']
-                    c_staff = row['담당자']
+                if not df_ind_detail.empty:
+                    ind_client_pivot = df_ind_detail.pivot_table(index="거래처", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
                     
-                    c_addr_raw = addr_dict.get(c_name, "")
-                    if pd.isna(c_addr_raw) or str(c_addr_raw).strip().lower() == 'nan' or not str(c_addr_raw).strip():
-                        c_addr = "등록된 주소 정보가 없습니다."
-                    else:
-                        c_addr = str(c_addr_raw)
+                    avail_years_ind = sorted([y for y in ind_client_pivot.columns if str(y).isdigit()])
+                    ind_client_pivot = ind_client_pivot.reindex(columns=avail_years_ind, fill_value=0)
+                    ind_client_pivot["총 누적매출"] = ind_client_pivot.sum(axis=1)
+                    ind_client_pivot = ind_client_pivot.sort_values(by="총 누적매출", ascending=False)
                     
-                    lat, lon = get_lat_lon_kakao(c_name, c_addr, rest_api_key)
+                    st.dataframe(ind_client_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=250)
                     
-                    if lat is not None and lon is not None:
-                        map_data.append({
-                            "거래처": c_name,
-                            "담당자": c_staff,
-                            "주소": c_addr,
-                            "lat": lat,
-                            "lon": lon
-                        })
-                    else:
-                        invalid_clients.append(c_name)
+                    st.markdown("<hr style='margin: 15px 0px; border-top: 1px dashed #E2E8F0;'>", unsafe_allow_html=True)
+                    
+                    ind_clients = sorted(df_ind_detail["거래처"].unique())
+                    
+                    c1, c2, c3 = st.columns([1, 1, 1])
+                    with c1:
+                        sel_ind_client = st.selectbox(f"🏢 [{selected_industry}] 거래처 선택", ind_clients, key="ind_client_sel")
+                    with c2:
+                        client_items = sorted(df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]["품목명"].unique())
+                        sel_ind_item = st.selectbox("📦 품목 선택", client_items if client_items else ["없음"], key="ind_item_sel")
+                    with c3:
+                        sel_ind_sub_metric = st.radio("📊 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="ind_sub_metric")
+                    
+                    if client_items:
+                        df_target_client = df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]
+                        sub_item_pivot = cached_get_item_pivot(df_target_client, sel_ind_item, sel_ind_sub_metric, all_months, years)
                         
-                    my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i+1}/{total_cnt})")
-                
-                my_bar.empty()
-                
-                if map_data:
-                    map_df = pd.DataFrame(map_data)
-                    center_lat = map_df['lat'].mean()
-                    center_lon = map_df['lon'].mean()
-                    zoom_level = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
-                    
-                    fig_map = px.scatter_mapbox(
-                        map_df,
-                        lat="lat",
-                        lon="lon",
-                        color="담당자",
-                        hover_name="거래처",
-                        hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
-                        zoom=zoom_level,
-                        center={"lat": center_lat, "lon": center_lon},
-                        height=650
-                    )
+                        sc1, sc2 = st.columns([1, 1])
+                        with sc1:
+                            if "비중" in sel_ind_sub_metric:
+                                st.dataframe(sub_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=380)
+                                y_suf_sub = "%"
+                                y_fmt_sub = ",.1f"
+                            elif "출고량" in sel_ind_sub_metric:
+                                if sel_ind_item in target_items:
+                                    y_suf_sub = " 천kg"
+                                    y_fmt_sub = ",.1f"
+                                elif "LPG" in str(sel_ind_item).upper():
+                                    y_suf_sub = " kg"
+                                    y_fmt_sub = ",.0f"
+                                else:
+                                    y_suf_sub = " 개(병)"
+                                    y_fmt_sub = ",.0f"
+                                st.dataframe(sub_item_pivot.style.format(f"{{:{y_fmt_sub}}}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=380)
+                            else:
+                                st.dataframe(sub_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=380)
+                                y_suf_sub = " 만원"
+                                y_fmt_sub = ",.0f"
+                                
+                        with sc2:
+                            st.plotly_chart(
+                                create_stacked_bar_chart(sub_item_pivot, title_text="", y_suffix=y_suf_sub, y_format=y_fmt_sub),
+                                use_container_width=True, key="ind_client_sub_chart"
+                            )
 
-                    fig_map.update_traces(marker=dict(size=14, opacity=0.9))
-                    
-                    vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
-                    vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
-                    vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
-                    
-                    if "일반" in map_style_choice:
-                        mapbox_layers = [
-                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
-                        ]
-                    else:
-                        mapbox_layers = [
-                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
-                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
-                        ]
-                    
-                    fig_map.update_layout(
-                        mapbox_style="white-bg",
-                        mapbox_layers=mapbox_layers,
-                        margin={"r": 0, "t": 10, "l": 0, "b": 0},
-                        legend=dict(
-                            orientation="h",
-                            yanchor="bottom",
-                            y=-0.15,
-                            xanchor="center",
-                            x=0.5
-                        )
-                    )
-                    
-                    dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
-                    st.plotly_chart(fig_map, use_container_width=True, key=dynamic_key)
-                    
-                    if invalid_clients:
-                        with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
-                            st.write(", ".join(invalid_clients))
-            else:
-                st.info("조건에 맞는 거래처 데이터가 없습니다.")
-
-    # Tab 7: 🏭 설비 재고 현황
-    with tab7:
-        t7_c1, t7_c2 = st.columns([4, 1])
-        t7_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>🏭 고압가스 탱크 및 기화기 재고 현황</div>", unsafe_allow_html=True)
-        with t7_c2:
-            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-            tab7_default = get_saved_date(TAB7_DATE_FILE)
-            tab7_date = st.date_input("기준일", value=tab7_default, key="tab7_date", label_visibility="collapsed")
-            if tab7_date != tab7_default:
-                set_saved_date(TAB7_DATE_FILE, tab7_date)
-
-        if not df_tank.empty or not df_vaporizer.empty:
-            eq_col1, eq_col2, eq_col3, eq_col4 = st.columns(4)
+    # -----------------------------------------------------------
+    # ★ 기능 1: 당해년도 상위 거래처 기여도 파레토 분석 
+    # -----------------------------------------------------------
+    st.markdown("---")
+    st.markdown("<div class='sub-header'>🏆 당해년도 상위 거래처 매출 기여도 (파레토 분석)</div>", unsafe_allow_html=True)
+    
+    if not df_base.empty:
+        current_year_str = str(df_base["연도"].max())
+        df_pareto = df_base[df_base["연도"] == current_year_str]
+        
+        client_sales = df_pareto.groupby('거래처')['매출액'].sum().sort_values(ascending=False).reset_index()
+        total_sales_for_pareto = client_sales['매출액'].sum()
+        
+        if total_sales_for_pareto > 0:
+            client_sales['누적비율(%)'] = client_sales['매출액'].cumsum() / total_sales_for_pareto * 100
+            top_20_clients = client_sales.head(20)
             
-            with eq_col1:
-                available_branches = []
-                if not df_tank.empty and '지사' in df_tank.columns:
-                    available_branches.extend(df_tank['지사'].dropna().unique())
-                if not df_vaporizer.empty and '지사' in df_vaporizer.columns:
-                    available_branches.extend(df_vaporizer['지사'].dropna().unique())
-                selected_branch = st.selectbox("📍 지사 선택 (전체 조회)", ["전체 지사"] + sorted(list(set(available_branches))))
+            fig_pareto = go.Figure()
+            fig_pareto.add_trace(go.Bar(
+                x=top_20_clients['거래처'], y=top_20_clients['매출액'] * 1.1 / 10000,
+                name='매출액 (만원)', marker_color='#3B82F6'
+            ))
+            fig_pareto.add_trace(go.Scatter(
+                x=top_20_clients['거래처'], y=top_20_clients['누적비율(%)'],
+                name='누적 비율(%)', yaxis='y2', mode='lines+markers', 
+                line=dict(color='#EF4444', width=3), marker=dict(size=8)
+            ))
             
-            with eq_col2:
-                selected_equip_type = st.selectbox("🛢️ 설비 종류 선택", ["전체 보기", "탱크 재고", "기화기 재고"])
-
-            with eq_col3:
-                selected_status = st.selectbox("📌 사용구분 필터", ["전체 상태", "유휴 장비", "거래처 사용중"])
-
-            with eq_col4:
-                eq_items = []
-                if not df_tank.empty and '품목' in df_tank.columns:
-                    eq_items.extend(df_tank['품목'].dropna().astype(str).tolist())
-                if not df_vaporizer.empty and '기화형식' in df_vaporizer.columns:
-                    eq_items.extend(df_vaporizer['기화형식'].dropna().astype(str).tolist())
-                unique_eq_items = sorted(list(set([i.strip() for i in eq_items if i.strip() != ''])))
-                selected_eq_item = st.selectbox("📦 품목/형식 선택", ["전체 품목/형식"] + unique_eq_items)
-
-            st.markdown("---")
-
-            if not df_tank.empty:
-                if '사용구분' in df_tank.columns:
-                    mask_idle = df_tank['사용구분'].astype(str).str.contains('유휴')
-                    df_tank.loc[mask_idle, '사용구분'] = '🟢 ' + df_tank.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-                    df_tank.loc[~mask_idle, '사용구분'] = '🏢 ' + df_tank.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-
-            if not df_vaporizer.empty:
-                if '사용구분' in df_vaporizer.columns:
-                    mask_idle_v = df_vaporizer['사용구분'].astype(str).str.contains('유휴')
-                    df_vaporizer.loc[mask_idle_v, '사용구분'] = '🟢 ' + df_vaporizer.loc[mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-                    df_vaporizer.loc[~mask_idle_v, '사용구분'] = '🏢 ' + df_vaporizer.loc[~mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-
-            if selected_equip_type in ["전체 보기", "탱크 재고"]:
-                st.markdown("<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>🛢️ 초저온 탱크 재고 현황</div>", unsafe_allow_html=True)
-                if not df_tank.empty:
-                    filtered_tank = df_tank.copy()
-                    if selected_branch != "전체 지사" and '지사' in filtered_tank.columns:
-                        filtered_tank = filtered_tank[filtered_tank['지사'].astype(str).str.contains(selected_branch)]
-                    if selected_status != "전체 상태" and '사용구분' in filtered_tank.columns:
-                        filtered_tank = filtered_tank[filtered_tank['사용구분'].astype(str).str.contains(selected_status)]
-                    if selected_eq_item != "전체 품목/형식" and '품목' in filtered_tank.columns:
-                        filtered_tank = filtered_tank[filtered_tank['품목'].astype(str).str.strip() == selected_eq_item]
-                    
-                    st.dataframe(filtered_tank, use_container_width=True, height=350, hide_index=True)
-
-            if selected_equip_type in ["전체 보기", "기화기 재고"]:
-                if selected_equip_type == "전체 보기":
-                    st.markdown("<br>", unsafe_allow_html=True)
-                
-                st.markdown(f"<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>♨️ 기화기 재고 현황</div>", unsafe_allow_html=True)
-                if not df_vaporizer.empty:
-                    filtered_vap = df_vaporizer.copy()
-                    if selected_branch != "전체 지사" and '지사' in filtered_vap.columns:
-                        filtered_vap = filtered_vap[filtered_vap['지사'].astype(str).str.contains(selected_branch)]
-                    if selected_status != "전체 상태" and '사용구분' in filtered_vap.columns:
-                        filtered_vap = filtered_vap[filtered_vap['사용구분'].astype(str).str.contains(selected_status)]
-                    if selected_eq_item != "전체 품목/형식" and '기화형식' in filtered_vap.columns:
-                        filtered_vap = filtered_vap[filtered_vap['기화형식'].astype(str).str.strip() == selected_eq_item]
-                    
-                    st.dataframe(filtered_vap, use_container_width=True, height=350, hide_index=True)
-
-    # Tab 8: 🛢️ 통합 탱크 재고
-    with tab8:
-        t8_c1, t8_c2 = st.columns([4, 1])
-        t8_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>🛢️ 통합 고압가스 탱크 재고 현황</div>", unsafe_allow_html=True)
-        with t8_c2:
-            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-            tab8_default = get_saved_date(TAB8_DATE_FILE)
-            tab8_date = st.date_input("기준일", value=tab8_default, key="int_date", label_visibility="collapsed")
-            if tab8_date != tab8_default:
-                set_saved_date(TAB8_DATE_FILE, tab8_date)
-            
-        if not df_integrated.empty:
-            int_col1, int_col2 = st.columns(2)
-            with int_col1:
-                items = ["전체 품목"] + sorted([str(x) for x in df_integrated['품목'].dropna().unique() if str(x).strip()])
-                sel_item = st.selectbox("📦 품목 선택", items, key="int_item")
-            with int_col2:
-                statuses = ["전체 상태"] + sorted([str(x) for x in df_integrated['사용구분'].dropna().unique() if str(x).strip()])
-                sel_status = st.selectbox("📌 사용구분", statuses, key="int_status")
-
-            st.markdown("---")
-
-            df_int_filtered = df_integrated.copy()
-            if sel_item != "전체 품목":
-                df_int_filtered = df_int_filtered[df_int_filtered['품목'].astype(str) == sel_item]
-            if sel_status != "전체 상태":
-                df_int_filtered = df_int_filtered[df_int_filtered['사용구분'].astype(str) == sel_status]
-
-            total_tanks = len(df_int_filtered)
-            idle_tanks = len(df_int_filtered[df_int_filtered['사용구분'].astype(str).str.contains('유휴', na=False)])
-            inuse_tanks = total_tanks - idle_tanks
-            
-            k1, k2, k3 = st.columns(3)
-            k1.markdown(f"<div class='metric-box'><div class='metric-label'>총 탱크 수량</div><div class='metric-value'>{total_tanks:,} 기</div></div>", unsafe_allow_html=True)
-            k2.markdown(f"<div class='metric-box'><div class='metric-label'>🟢 유휴 장비 (대기중)</div><div class='metric-value' style='color:#059669;'>{idle_tanks:,} 기</div></div>", unsafe_allow_html=True)
-            k3.markdown(f"<div class='metric-box'><div class='metric-label'>🏢 사용/충전중</div><div class='metric-value' style='color:#2563EB;'>{inuse_tanks:,} 기</div></div>", unsafe_allow_html=True)
-
-            st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px; margin-top: 20px;'>📋 상세 재고 데이터</div>", unsafe_allow_html=True)
-            
-            df_display = df_int_filtered.copy()
-            if '사용구분' in df_display.columns:
-                mask_idle = df_display['사용구분'].astype(str).str.contains('유휴')
-                df_display.loc[mask_idle, '사용구분'] = '🟢 ' + df_display.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-                df_display.loc[~mask_idle, '사용구분'] = '🏢 ' + df_display.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-
-            st.dataframe(df_display, use_container_width=True, height=600, hide_index=True)
+            fig_pareto.update_layout(
+                yaxis=dict(title='매출액 (만원)', gridcolor='#E2E8F0'),
+                yaxis2=dict(title='누적 비율 (%)', overlaying='y', side='right', range=[0, 110], showgrid=False),
+                legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
+                margin=dict(l=10, r=10, t=30, b=40),
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)'
+            )
+            st.plotly_chart(fig_pareto, use_container_width=True, key="pareto_chart")
         else:
-            st.warning("통합 탱크 재고 데이터가 없습니다. 폴더에 '통합탱크재고.csv'를 넣거나 왼쪽 사이드바에서 업로드해주세요.")
+            st.info(f"{current_year_str}년도에 해당하는 매출 데이터가 없습니다.")
+
+
+# Tab 2: 🏢 거래처 분석
+with tab2:
+    t2_c1, t2_c2 = st.columns([4, 1])
+    t2_c1.markdown(f"<div class='sub-header' style='margin-top: 20px;'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
+    t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+    
+    btn_c1, btn_c2, btn_c3 = st.columns([1.5, 1, 1])
+    
+    with btn_c1:
+        if st.button("📝 macOS 메모 앱에서 거래처 노트 열기/생성", key="btn_notes"):
+            open_macos_notes_folder(selected_client, dart_api_key, df_integrated)
+            
+    with btn_c2:
+        if "show_corp_info" not in st.session_state:
+            st.session_state.show_corp_info = False
+            
+        btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
+        
+        if st.button(btn_label, key="btn_dart_info"):
+            st.session_state.show_corp_info = not st.session_state.show_corp_info
+            st.rerun()
+            
+        if st.session_state.show_corp_info:
+            with st.spinner("DART 및 네이버 기업 정보를 불러오는 중..."):
+                c_info = get_company_info_hybrid(selected_client, dart_api_key)
+                        
+                st.markdown(f"""
+                - **출처:** {c_info['source']}
+                - **대표자:** {c_info['ceo']}
+                - **업종:** {c_info['industry']}
+                - **매출액:** {c_info['revenue']}
+                - **영업이익:** {c_info['profit']}
+                """)
+                
+    with btn_c3:
+        if client_addr != "등록된 주소 정보가 없습니다.":
+            kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(client_addr)}"
+            st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url)
+        else:
+            st.button("🗺️ 카카오맵에서 주소 보기", disabled=True, key="btn_kakao_disabled")
+
+    m1, m2, m3, m4 = st.columns(4)
+    tot_sales_c = df_client_filtered["매출액"].sum() * 1.1 / 10000 if not df_client_filtered.empty else 0.0
+    cur_sales_c = cur_month_sales_client * 1.1 / 10000
+
+    m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
+    m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_client})</div><div class='metric-value'>{cur_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
+    m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_client < 0 else '#2563EB'};'>{mom_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
+    m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
+
+    if not df_client_filtered.empty:
+        pivot_m_client = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
+        cl, cr = st.columns([1, 1])
+        with cl:
+            st.dataframe(pivot_m_client.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
+        with cr:
+            st.plotly_chart(
+                create_stacked_bar_chart(pivot_m_client, title_text=""),
+                use_container_width=True, key="tab2_client_total_chart"
+            )
+
+        # --- 품목별 상세 분석 복원 ---
+        st.markdown("---")
+        st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
+        
+        client_available_items = sorted(df_client_filtered["품목명"].unique())
+        if client_available_items:
+            sel_col1_c, sel_col2_c = st.columns([1, 1])
+            with sel_col1_c:
+                selected_target_item_c = st.selectbox("🔍 분석할 품목 선택 (전체 거래 품목)", client_available_items, key="client_item_selectbox")
+            with sel_col2_c:
+                selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
+                
+            client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
+            
+            i_col_left_c, i_col_right_c = st.columns([1, 1])
+            with i_col_left_c:
+                if "비중" in selected_metric_c:
+                    st.dataframe(client_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
+                    y_suf_c = "%"
+                    y_fmt_c = ",.1f"
+                elif "출고량" in selected_metric_c:
+                    if selected_target_item_c in target_items:
+                        y_suf_c = " 천kg"
+                        y_fmt_c = ",.1f"
+                    elif "LPG" in str(selected_target_item_c).upper():
+                        y_suf_c = " kg"
+                        y_fmt_c = ",.0f"
+                    else:
+                        y_suf_c = " 개(병)"
+                        y_fmt_c = ",.0f"
+                    st.dataframe(client_item_pivot.style.format(f"{{:{y_fmt_c}}}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
+                else:
+                    st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
+                    y_suf_c = " 만원"
+                    y_fmt_c = ",.0f"
+                    
+            with i_col_right_c:
+                st.plotly_chart(
+                    create_stacked_bar_chart(
+                        client_item_pivot, 
+                        title_text="", 
+                        y_suffix=y_suf_c, 
+                        y_format=y_fmt_c
+                    ),
+                    use_container_width=True, key="tab2_client_item_chart"
+                )
+
+# Tab 3: 📦 품목 및 단가 분석 (초고속 빈 열/행 필터링 무손실 렌더링)
+with tab3:
+    t3_c1, t3_c2 = st.columns([4, 1])
+    t3_c1.markdown(f"<div class='sub-header' style='margin-top: 20px;'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
+    t3_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+    
+    latest_dt_overall = df_base["매출일_dt"].max() if not df_base.empty else None
+    target_month_col = latest_dt_overall.strftime("%y년 %m월") if pd.notnull(latest_dt_overall) else None
+    
+    def render_native_dataframe(df, cmap, fmt, target_col, apply_gradient=True):
+        df_active, numeric_cols, highlight_col_name = prepare_active_df_fast(df, target_col)
+        
+        if df_active is None or df_active.empty:
+            return
+
+        styled = df_active.style.format(fmt, subset=numeric_cols)
+        
+        if apply_gradient and cmap:
+            styled = styled.background_gradient(cmap=cmap, subset=numeric_cols, axis=None)
+
+        if highlight_col_name and highlight_col_name in numeric_cols:
+            styled = styled.apply(lambda s: ['color: #B91C1C; font-weight: bold;'] * len(s), subset=[highlight_col_name], axis=0)
+
+        st.dataframe(
+            styled, 
+            use_container_width=True, 
+            height=400,
+            hide_index=True,  
+            column_config={
+                "품목명": st.column_config.TextColumn("품목명", width="medium")
+            }
+        )
+
+    avail_years_short = [y[2:] for y in years]
+    current_year_short = str(df_base["연도"].max())[2:] if not df_base.empty else (avail_years_short[0] if avail_years_short else "26")
+    
+    st.markdown("<div style='background-color: #EFF6FF; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #3B82F6; margin-bottom: 15px;'>💡 <b>연도별 상세 조회:</b> 기본적으로 당해년도만 펼쳐져 있으며, 과거 연도는 '연간총합'만 표시됩니다. 아래에서 과거 연도를 선택(클릭)하면 해당 연도의 월별 상세 내역이 펼쳐집니다.</div>", unsafe_allow_html=True)
+    
+    selected_detail_years = st.multiselect(
+        "📅 월별 상세 내역을 펼쳐볼 연도 선택 (단가표 제외)",
+        options=avail_years_short,
+        default=[current_year_short] if current_year_short in avail_years_short else avail_years_short[:1],
+        format_func=lambda x: f"20{x}년"
+    )
+    
+    def filter_year_columns(df):
+        if df.empty: return df
+        cols = []
+        for y in avail_years_short:
+            if y in selected_detail_years:
+                for m in reversed(all_months):
+                    c = f"{y}년 {m}"
+                    if c in df.columns: cols.append(c)
+            tot = f"{y}년 연간총합"
+            if tot in df.columns: cols.append(tot)
+        return df[[c for c in cols if c in df.columns]]
+        
+    sales_p_filtered = filter_year_columns(sales_p * 1.1 / 10000)
+    qty_p_filtered = filter_year_columns(qty_p)
+
+    st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
+    render_native_dataframe(sales_p_filtered, "Blues", "{:,.0f}", target_month_col, apply_gradient=True)
+        
+    st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
+    render_native_dataframe(qty_p_filtered, "Greens", "{:,.0f}", target_month_col, apply_gradient=True)
+        
+    st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (실제 원본 단가) - 전체 기간 월별 고정 표시</div>", unsafe_allow_html=True)
+    render_native_dataframe(unit_price_p, "Oranges", "{:,.0f}", target_month_col, apply_gradient=False)
+    
+
+# Tab 4: 👤 담당자 & 상세내역
+with tab4:
+    t4_c1, t4_c2 = st.columns([4, 1])
+    t4_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
+    t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+    
+    if not staff_pivot.empty:
+        format_dict = {col: "{:,.0f}" for col in staff_pivot.columns if col != "매출 비중 (%)"}
+        format_dict["매출 비중 (%)"] = "{:,.1f}%"
+        
+        monthly_cols = [c for c in staff_pivot.columns if c not in ["매출 비중 (%)", "총 매출 합계 (만원)"]]
+        
+        styled_staff = (
+            staff_pivot.style.format(format_dict)
+            .background_gradient(cmap="Purples", subset=["매출 비중 (%)"])
+            .background_gradient(cmap="Oranges", subset=["총 매출 합계 (만원)"])
+            .background_gradient(cmap="Blues", subset=monthly_cols)
+        )
+        st.dataframe(styled_staff, use_container_width=True, height=350)
+
+    st.markdown("<div class='sub-header'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
+    if not df_base.empty:
+        current_year = str(df_base["연도"].max())
+        all_staffs = sorted(df_base["담당자"].unique())
+        
+        sel_staff = st.selectbox("👤 순위를 조회할 담당자 선택", all_staffs, key="ranking_staff_select")
+        ranking_pivot = cached_ranking_pivot(df_base, current_year, sel_staff, all_months)
+        
+        if not ranking_pivot.empty:
+            r_col1, r_col2 = st.columns([1.2, 1])
+            
+            with r_col1:
+                st.dataframe(
+                    ranking_pivot.style.format("{:,.0f}")
+                    .background_gradient(cmap="Blues", subset=all_months)
+                    .background_gradient(cmap="Oranges", subset=["당해 누적 (만원)"]),
+                    use_container_width=True, height=380
+                )
+                
+            with r_col2:
+                top_clients = ranking_pivot.head(10).sort_values(by="당해 누적 (만원)", ascending=True)
+                
+                fig_ranking = px.bar(
+                    top_clients.reset_index(),
+                    x="당해 누적 (만원)",
+                    y="거래처",
+                    orientation='h',
+                    text="당해 누적 (만원)",
+                    color="당해 누적 (만원)",
+                    color_continuous_scale="Blues"
+                )
+                fig_ranking.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+                fig_ranking.update_layout(
+                    xaxis_title=None,
+                    yaxis_title=None,
+                    margin=dict(l=10, r=40, t=10, b=10),
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    coloraxis_showscale=False,
+                    height=380
+                )
+                st.plotly_chart(fig_ranking, use_container_width=True, key=f"ranking_chart_{sel_staff}")
+
+    st.markdown("<div class='sub-header'>📋 거래 상세 내역 (최신순 800건)</div>", unsafe_allow_html=True)
+    if not df_detail.empty:
+        view_detail_df = df_detail.sort_values(by="매출일_dt", ascending=False).head(800)
+        
+        styled_detail = (
+            view_detail_df
+            .style.format({
+                "출고량": "{:,.0f}",
+                "단가": "{:,.0f}",
+                "매출액": "{:,.0f}",
+                "매출일_dt": lambda t: t.strftime("%Y-%m-%d") if pd.notnull(t) else ""
+            })
+            .background_gradient(subset=["매출액"], cmap="Blues")
+        )
+        st.dataframe(styled_detail, use_container_width=True, height=600, hide_index=True)
+
+# Tab 5: 📌 채권 관리
+with tab5:
+    latest_month = None
+    if not filtered_debt_df.empty:
+        numeric_cols_debt = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
+        if numeric_cols_debt:
+            latest_month = numeric_cols_debt[-1]
+            
+    debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
+    
+    t5_c1, t5_c2 = st.columns([4, 1])
+    t5_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
+    t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
+    
+    if not debt_df.empty:
+        if not filtered_debt_df.empty:
+            numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
+            
+            total_outstanding = 0
+            warning_count = 0
+            
+            if latest_month:
+                u_clients = filtered_debt_df['거래처'].unique()
+                for uc in u_clients:
+                    c_mask = filtered_debt_df['거래처'] == uc
+                    b_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '잔액'), latest_month].sum()
+                    s_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '매출'), latest_month].sum()
+                    
+                    total_outstanding += max(0, b_val)
+                    if b_val > 0 and b_val > s_val:
+                        warning_count += 1
+                        
+            m1, m2 = st.columns(2)
+            m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div><div class='metric-value'>{total_outstanding:,.0f} 원</div></div>", unsafe_allow_html=True)
+            m2.markdown(f"<div class='metric-box'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div><div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>", unsafe_allow_html=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            def apply_debt_style_fast(df):
+                styles = np.full(df.shape, '', dtype=object)
+                
+                cols = list(df.columns)
+                idx_gubun = cols.index('구분')
+                idx_client = cols.index('거래처')
+                
+                month_col_indices = [cols.index(c) for c in numeric_cols]
+                
+                u_clients_fast = df['거래처'].unique()
+                color_map_fast = {client: '#FFFFFF' if i % 2 == 0 else '#E2E8F0' for i, client in enumerate(u_clients_fast)}
+                
+                for r in range(df.shape[0]):
+                    client = df.iat[r, idx_client]
+                    bg_color = color_map_fast.get(client, '#FFFFFF')
+                    for c in range(df.shape[1]):
+                        styles[r, c] = f'background-color: {bg_color};'
+                        
+                client_rows = df.groupby('거래처').indices 
+                
+                for client, rows in client_rows.items():
+                    i_sal = -1
+                    i_bal = -1
+                    i_sugum = -1
+                    
+                    for r in rows:
+                        gubun = df.iat[r, idx_gubun]
+                        if gubun == '매출': i_sal = r
+                        elif gubun == '잔액': i_bal = r
+                        elif gubun == '수금': i_sugum = r
+                        
+                    if i_sal != -1:
+                        styles[i_sal, idx_gubun] += ' color: #E11D48; font-weight: 600;'
+                    if i_sugum != -1:
+                        styles[i_sugum, idx_gubun] += ' color: #059669; font-weight: 600;'
+                    if i_bal != -1:
+                        for c in range(df.shape[1]):
+                            styles[i_bal, c] += ' font-weight: 700; color: #334155;'
+                            
+                    if i_sal != -1 and i_bal != -1 and month_col_indices:
+                        l_month_idx = -1
+                        for c in reversed(month_col_indices):
+                            val = df.iat[i_bal, c]
+                            if pd.notna(val) and val > 0:
+                                l_month_idx = c
+                                break
+                                
+                        if l_month_idx != -1:
+                            final_bal = df.iat[i_bal, l_month_idx]
+                            sal_latest = df.iat[i_sal, l_month_idx]
+                            
+                            final_bal = float(final_bal) if pd.notna(final_bal) else 0.0
+                            sal_latest = float(sal_latest) if pd.notna(sal_latest) else 0.0
+                            
+                            if final_bal > 0:
+                                if final_bal > sal_latest:
+                                    styles[i_bal, l_month_idx] += ' background-color: #FEE2E2; color: #B91C1C; font-weight: 800;'
+                                    accumulated = 0.0
+                                    for c in reversed(month_col_indices):
+                                        if c > l_month_idx: continue
+                                        val = df.iat[i_sal, c]
+                                        val = float(val) if pd.notna(val) else 0.0
+                                        
+                                        if accumulated < final_bal:
+                                            styles[i_sal, c] += ' background-color: #FEE2E2; color: #B91C1C; font-weight: 800;'
+                                            accumulated += val
+                                        else:
+                                            break
+                                else:
+                                    styles[i_bal, l_month_idx] += ' background-color: #EFF6FF; color: #1D4ED8; font-weight: 800;'
+                                    
+                return pd.DataFrame(styles, index=df.index, columns=df.columns)
+
+            df_height = 500 if selected_client != "전체 거래처" else 700
+            st.dataframe(
+                filtered_debt_df.style
+                .format(subset=numeric_cols, formatter="{:,.0f}")
+                .apply(apply_debt_style_fast, axis=None),
+                use_container_width=True, height=df_height
+            )
+
+# Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
+with tab6:
+    t6_c1, t6_c2 = st.columns([4, 1])
+    t6_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>📍 담당자별 거래처 지도 분포 (대한민국 V-World 지도)</div>", unsafe_allow_html=True)
+    t6_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+    
+    rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
+    
+    map_col1, map_col2, map_col3 = st.columns([1, 1, 1])
+    with map_col1:
+        map_style_choice = st.radio(
+            "🗺️ 지도 배경 스타일 선택",
+            ["일반 지도 (V-World 한글 기본도)", "위성 지도 (V-World 고해상도 위성)"],
+            horizontal=True,
+            key="map_style_radio"
+        )
+    with map_col2:
+        all_staff_list = sorted(df_base["담당자"].unique()) if not df_base.empty else []
+        map_selected_staff = st.multiselect(
+            "👤 지도 전용 담당자 선택", 
+            options=all_staff_list, 
+            default=all_staff_list,
+            key="map_staff_multiselect"
+        )
+    with map_col3:
+        all_map_clients = sorted(df_base["거래처"].unique()) if not df_base.empty else []
+        map_selected_client = st.multiselect(
+            "🏢 특정 거래처 위치 검색", 
+            options=all_map_clients,
+            placeholder="검색할 거래처명을 입력하세요...",
+            key="map_client_multiselect"
+        )
+    
+    if "show_map" not in st.session_state:
+        st.session_state.show_map = False
+        
+    if st.button("🗺️ 지도 생성 및 위치 확인하기", type="primary"):
+        st.session_state.show_map = True
+            
+    if st.session_state.show_map:
+        target_map_df = df_base.copy()
+        
+        if map_selected_client:
+            target_map_df = target_map_df[target_map_df["거래처"].isin(map_selected_client)]
+        elif map_selected_staff:
+            target_map_df = target_map_df[target_map_df["담당자"].isin(map_selected_staff)]
+        
+        if not target_map_df.empty:
+            unique_clients_df = target_map_df[['거래처', '담당자']].drop_duplicates(subset=['거래처'])
+            
+            map_data = []
+            total_cnt = len(unique_clients_df)
+            progress_text = "최초 1회 주소 좌표 변환 중입니다 (이후부터는 빠르게 로딩됩니다) 🚀"
+            my_bar = st.progress(0, text=progress_text)
+            
+            invalid_clients = [] 
+            
+            for i, (_, row) in enumerate(unique_clients_df.iterrows()):
+                c_name = row['거래처']
+                c_staff = row['담당자']
+                
+                c_addr_raw = addr_dict.get(c_name, "")
+                if pd.isna(c_addr_raw) or str(c_addr_raw).strip().lower() == 'nan' or not str(c_addr_raw).strip():
+                    c_addr = "등록된 주소 정보가 없습니다."
+                else:
+                    c_addr = str(c_addr_raw)
+                
+                lat, lon = get_lat_lon_kakao(c_name, c_addr, rest_api_key)
+                
+                if lat is not None and lon is not None:
+                    map_data.append({
+                        "거래처": c_name,
+                        "담당자": c_staff,
+                        "주소": c_addr,
+                        "lat": lat,
+                        "lon": lon
+                    })
+                else:
+                    invalid_clients.append(c_name)
+                    
+                my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i+1}/{total_cnt})")
+            
+            my_bar.empty()
+            
+            if map_data:
+                map_df = pd.DataFrame(map_data)
+                center_lat = map_df['lat'].mean()
+                center_lon = map_df['lon'].mean()
+                zoom_level = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
+                
+                fig_map = px.scatter_mapbox(
+                    map_df,
+                    lat="lat",
+                    lon="lon",
+                    color="담당자",
+                    hover_name="거래처",
+                    hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
+                    zoom=zoom_level,
+                    center={"lat": center_lat, "lon": center_lon},
+                    height=650
+                )
+
+                fig_map.update_traces(marker=dict(size=14, opacity=0.9))
+                
+                vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
+                vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
+                vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
+                
+                if "일반" in map_style_choice:
+                    mapbox_layers = [
+                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
+                    ]
+                else:
+                    mapbox_layers = [
+                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
+                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
+                    ]
+                
+                fig_map.update_layout(
+                    mapbox_style="white-bg",
+                    mapbox_layers=mapbox_layers,
+                    margin={"r": 0, "t": 10, "l": 0, "b": 0},
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.15,
+                        xanchor="center",
+                        x=0.5
+                    )
+                )
+                
+                dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
+                st.plotly_chart(fig_map, use_container_width=True, key=dynamic_key)
+                
+                if invalid_clients:
+                    with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
+                        st.write(", ".join(invalid_clients))
+        else:
+            st.info("조건에 맞는 거래처 데이터가 없습니다.")
+
+# Tab 7: 🏭 설비 재고 현황
+with tab7:
+    t7_c1, t7_c2 = st.columns([4, 1])
+    t7_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>🏭 고압가스 탱크 및 기화기 재고 현황</div>", unsafe_allow_html=True)
+    with t7_c2:
+        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+        tab7_default = get_saved_date(TAB7_DATE_FILE)
+        tab7_date = st.date_input("기준일", value=tab7_default, key="tab7_date", label_visibility="collapsed")
+        if tab7_date != tab7_default:
+            set_saved_date(TAB7_DATE_FILE, tab7_date)
+
+    if not df_tank.empty or not df_vaporizer.empty:
+        eq_col1, eq_col2, eq_col3, eq_col4 = st.columns(4)
+        
+        with eq_col1:
+            available_branches = []
+            if not df_tank.empty and '지사' in df_tank.columns:
+                available_branches.extend(df_tank['지사'].dropna().unique())
+            if not df_vaporizer.empty and '지사' in df_vaporizer.columns:
+                available_branches.extend(df_vaporizer['지사'].dropna().unique())
+            selected_branch = st.selectbox("📍 지사 선택 (전체 조회)", ["전체 지사"] + sorted(list(set(available_branches))))
+        
+        with eq_col2:
+            selected_equip_type = st.selectbox("🛢️ 설비 종류 선택", ["전체 보기", "탱크 재고", "기화기 재고"])
+
+        with eq_col3:
+            selected_status = st.selectbox("📌 사용구분 필터", ["전체 상태", "유휴 장비", "거래처 사용중"])
+
+        with eq_col4:
+            eq_items = []
+            if not df_tank.empty and '품목' in df_tank.columns:
+                eq_items.extend(df_tank['품목'].dropna().astype(str).tolist())
+            if not df_vaporizer.empty and '기화형식' in df_vaporizer.columns:
+                eq_items.extend(df_vaporizer['기화형식'].dropna().astype(str).tolist())
+            unique_eq_items = sorted(list(set([i.strip() for i in eq_items if i.strip() != ''])))
+            selected_eq_item = st.selectbox("📦 품목/형식 선택", ["전체 품목/형식"] + unique_eq_items)
+
+        st.markdown("---")
+
+        if not df_tank.empty:
+            if '사용구분' in df_tank.columns:
+                mask_idle = df_tank['사용구분'].astype(str).str.contains('유휴')
+                df_tank.loc[mask_idle, '사용구분'] = '🟢 ' + df_tank.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+                df_tank.loc[~mask_idle, '사용구분'] = '🏢 ' + df_tank.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+
+        if not df_vaporizer.empty:
+            if '사용구분' in df_vaporizer.columns:
+                mask_idle_v = df_vaporizer['사용구분'].astype(str).str.contains('유휴')
+                df_vaporizer.loc[mask_idle_v, '사용구분'] = '🟢 ' + df_vaporizer.loc[mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+                df_vaporizer.loc[~mask_idle_v, '사용구분'] = '🏢 ' + df_vaporizer.loc[~mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+
+        if selected_equip_type in ["전체 보기", "탱크 재고"]:
+            st.markdown("<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>🛢️ 초저온 탱크 재고 현황</div>", unsafe_allow_html=True)
+            if not df_tank.empty:
+                filtered_tank = df_tank.copy()
+                if selected_branch != "전체 지사" and '지사' in filtered_tank.columns:
+                    filtered_tank = filtered_tank[filtered_tank['지사'].astype(str).str.contains(selected_branch)]
+                if selected_status != "전체 상태" and '사용구분' in filtered_tank.columns:
+                    filtered_tank = filtered_tank[filtered_tank['사용구분'].astype(str).str.contains(selected_status)]
+                if selected_eq_item != "전체 품목/형식" and '품목' in filtered_tank.columns:
+                    filtered_tank = filtered_tank[filtered_tank['품목'].astype(str).str.strip() == selected_eq_item]
+                
+                st.dataframe(filtered_tank, use_container_width=True, height=350, hide_index=True)
+
+        if selected_equip_type in ["전체 보기", "기화기 재고"]:
+            if selected_equip_type == "전체 보기":
+                st.markdown("<br>", unsafe_allow_html=True)
+            
+            st.markdown(f"<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>♨️ 기화기 재고 현황</div>", unsafe_allow_html=True)
+            if not df_vaporizer.empty:
+                filtered_vap = df_vaporizer.copy()
+                if selected_branch != "전체 지사" and '지사' in filtered_vap.columns:
+                    filtered_vap = filtered_vap[filtered_vap['지사'].astype(str).str.contains(selected_branch)]
+                if selected_status != "전체 상태" and '사용구분' in filtered_vap.columns:
+                    filtered_vap = filtered_vap[filtered_vap['사용구분'].astype(str).str.contains(selected_status)]
+                if selected_eq_item != "전체 품목/형식" and '기화형식' in filtered_vap.columns:
+                    filtered_vap = filtered_vap[filtered_vap['기화형식'].astype(str).str.strip() == selected_eq_item]
+                
+                st.dataframe(filtered_vap, use_container_width=True, height=350, hide_index=True)
+
+# Tab 8: 🛢️ 통합 탱크 재고
+with tab8:
+    t8_c1, t8_c2 = st.columns([4, 1])
+    t8_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>🛢️ 통합 고압가스 탱크 재고 현황</div>", unsafe_allow_html=True)
+    with t8_c2:
+        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+        tab8_default = get_saved_date(TAB8_DATE_FILE)
+        tab8_date = st.date_input("기준일", value=tab8_default, key="int_date", label_visibility="collapsed")
+        if tab8_date != tab8_default:
+            set_saved_date(TAB8_DATE_FILE, tab8_date)
+        
+    if not df_integrated.empty:
+        int_col1, int_col2 = st.columns(2)
+        with int_col1:
+            items = ["전체 품목"] + sorted([str(x) for x in df_integrated['품목'].dropna().unique() if str(x).strip()])
+            sel_item = st.selectbox("📦 품목 선택", items, key="int_item")
+        with int_col2:
+            statuses = ["전체 상태"] + sorted([str(x) for x in df_integrated['사용구분'].dropna().unique() if str(x).strip()])
+            sel_status = st.selectbox("📌 사용구분", statuses, key="int_status")
+
+        st.markdown("---")
+
+        df_int_filtered = df_integrated.copy()
+        if sel_item != "전체 품목":
+            df_int_filtered = df_int_filtered[df_int_filtered['품목'].astype(str) == sel_item]
+        if sel_status != "전체 상태":
+            df_int_filtered = df_int_filtered[df_int_filtered['사용구분'].astype(str) == sel_status]
+
+        total_tanks = len(df_int_filtered)
+        idle_tanks = len(df_int_filtered[df_int_filtered['사용구분'].astype(str).str.contains('유휴', na=False)])
+        inuse_tanks = total_tanks - idle_tanks
+        
+        k1, k2, k3 = st.columns(3)
+        k1.markdown(f"<div class='metric-box'><div class='metric-label'>총 탱크 수량</div><div class='metric-value'>{total_tanks:,} 기</div></div>", unsafe_allow_html=True)
+        k2.markdown(f"<div class='metric-box'><div class='metric-label'>🟢 유휴 장비 (대기중)</div><div class='metric-value' style='color:#059669;'>{idle_tanks:,} 기</div></div>", unsafe_allow_html=True)
+        k3.markdown(f"<div class='metric-box'><div class='metric-label'>🏢 사용/충전중</div><div class='metric-value' style='color:#2563EB;'>{inuse_tanks:,} 기</div></div>", unsafe_allow_html=True)
+
+        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px; margin-top: 20px;'>📋 상세 재고 데이터</div>", unsafe_allow_html=True)
+        
+        df_display = df_int_filtered.copy()
+        if '사용구분' in df_display.columns:
+            mask_idle = df_display['사용구분'].astype(str).str.contains('유휴')
+            df_display.loc[mask_idle, '사용구분'] = '🟢 ' + df_display.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+            df_display.loc[~mask_idle, '사용구분'] = '🏢 ' + df_display.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+
+        st.dataframe(df_display, use_container_width=True, height=600, hide_index=True)
+    else:
+        st.warning("통합 탱크 재고 데이터가 없습니다. 폴더에 '통합탱크재고.csv'를 넣거나 왼쪽 사이드바에서 업로드해주세요.")
