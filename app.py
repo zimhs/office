@@ -588,8 +588,28 @@ def load_debt_file(debt_bytes):
                 
                 if "거래처" in df_direct.columns and "구분" in df_direct.columns:
                     df_direct["거래처"] = df_direct["거래처"].replace("", np.nan).ffill()
-                    df_direct["구분"] = df_direct["구분"].astype(str).str.strip()
                     
+                    # [핵심 수정 - 정규식 강화 및 빈칸 Fallback 적용]
+                    # 스크린샷과 같이 1행이 통째로 날아가는 이유는 ERP 엑셀 포맷상 매출 칸이 빈칸(NaN)이거나 특수문자만 있기 때문입니다.
+                    def map_gubun(val):
+                        # 한글, 영문, 숫자 외 모든 특수문자 제거 (보이지 않는 공백 완벽 차단)
+                        val_clean = re.sub(r'[^가-힣a-zA-Z0-9]', '', str(val))
+                        
+                        # 1. 값이 아예 없거나 NaN이라면 (ERP 병합셀 특성상 매출행이 비어있는 경우) 무조건 매출로 맵핑
+                        if not val_clean or val_clean == 'nan': 
+                            return "매출"
+                            
+                        # 2. 명확한 키워드 우선 매핑
+                        if any(k in val_clean for k in ["이월", "전월", "기초"]): return "이월"
+                        if any(k in val_clean for k in ["익월", "다음", "차월"]): return "익월"
+                        if any(k in val_clean for k in ["잔액", "미수", "현재", "기말", "잔금"]): return "잔액"
+                        if any(k in val_clean for k in ["수금", "입금", "결제", "회수", "대변", "감소"]): return "수금"
+                        
+                        # 3. 위 조건에 안 걸리는 나머지 모든 행은 채권 4행 구조 유지를 위해 무조건 '매출'로 편입
+                        return "매출"
+
+                    df_direct["구분"] = df_direct["구분"].apply(map_gubun)
+
                     valid_types = ["익월", "이월", "매출", "수금", "잔액"]
                     df_filtered = df_direct[df_direct["구분"].isin(valid_types)].copy()
                     
