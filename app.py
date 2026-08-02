@@ -189,17 +189,7 @@ def normalize_items_vectorized(df):
     is_o2 = is_bulk & ~is_co2 & (p_upper.str.contains("O2", na=False) | p_str.str.contains("산소", na=False))
     is_n2 = is_bulk & (p_upper.str.contains("N2", na=False) | p_str.str.contains("질소", na=False))
 
-    # [수정됨] 단어 경계(\b)를 사용하여 BULK의 L을 리터(L)로 오인하는 정규식 오류 해결
     is_n2_liter = is_n2 & (p_upper.str.contains(r"\bL\b|LITER", regex=True, na=False) | p_str.str.contains("리터", na=False))
-
-    # [원본 유지] 원본 데이터 값 유지를 위해 단가 및 수량 임의 변환 비활성화
-    # if is_n2_liter.any():
-    #     if "출고량" in df.columns:
-    #         df.loc[is_n2_liter, "출고량"] = df.loc[is_n2_liter, "출고량"] * 0.808
-    #     if "단가" in df.columns:
-    #         df.loc[is_n2_liter, "단가"] = df.loc[is_n2_liter, "단가"] * 1.238
-    #     if "매출액" in df.columns and "출고량" in df.columns and "단가" in df.columns:
-    #         df.loc[is_n2_liter, "매출액"] = df.loc[is_n2_liter, "출고량"] * df.loc[is_n2_liter, "단가"]
 
     df.loc[is_ar, "품목명"] = "AR (kg, Bulk)"
     df.loc[is_co2, "품목명"] = "CO2 (kg, Bulk)"
@@ -208,13 +198,10 @@ def normalize_items_vectorized(df):
 
     return df
 
-# [핵심] 평균/중간값 계산을 배제하고, 원본 데이터에 있는 실제 단가를 훼손 없이 1개만 쏙 뽑아오는 커스텀 함수
 def get_exact_original_price(series):
-    # 단가가 0인 무상/서비스 내역을 제외
     s = series[series > 0]
     if s.empty:
         return 0
-    # 평균을 내지 않고, 원본 데이터 중 가장 많이 기재된 실제 단가(최빈값) 자체를 반환
     return s.mode().iloc[0]
 
 
@@ -716,7 +703,6 @@ def load_uploaded_files_from_bytes(file_tuples):
             df["거래처"] = df["거래처"].fillna("미지정").astype(str).str.strip()
             df["담당자"] = df["담당자"].fillna("미지정").astype(str).str.strip()
 
-            # 품목명 정규화 (N2 liter -> N2 kg 자동 변환 및 보정)
             df = normalize_items_vectorized(df)
 
             df = df.dropna(subset=["매출일_dt"])
@@ -853,22 +839,17 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
         qty_p = qty_p.sort_values(by=latest_col, ascending=False)
         sales_p = sales_p.reindex(qty_p.index)
 
-    # [수정됨] 3번 탭 단가 분석을 위한 독립 데이터프레임 복사
-    # 요청하신 7개 거래처에 한하여 N2 (kg, Bulk) 품목의 단가만 1.238배 곱하여 적용합니다.
     df_for_price = target_tab3_df.copy()
     target_clients = ["두산판금", "드림맥", "모베이스전전", "지엔티테크", "태광기업", "경민산업", "동주산업"]
     mask_n2_special = (df_for_price["거래처"].isin(target_clients)) & (df_for_price["품목명"] == "N2 (kg, Bulk)")
     
-    # 해당 조건에 맞는 데이터만 단가를 변경 (매출액/출고량 등 타 데이터는 불변)
     df_for_price.loc[mask_n2_special, "단가"] = df_for_price.loc[mask_n2_special, "단가"] * 1.238
 
-    # 커스텀 함수(get_exact_original_price)를 사용하여 실제 원본 단가를 불러옵니다.
     raw_up = df_for_price.pivot_table(index="품목명", columns="연도월_정렬", values="단가", aggfunc=get_exact_original_price)
     
     if not raw_up.empty:
         unit_price_p = raw_up.fillna(0)
         
-        # 최신 월이 먼저 나오도록 역순 적용
         desired_price_cols = [f"{yr[2:]}년 {m}" for yr in years for m in reversed(all_months)]
         existing_cols = [c for c in desired_price_cols if c in unit_price_p.columns]
         unit_price_p = unit_price_p[existing_cols]
@@ -883,7 +864,6 @@ def prepare_active_df_fast(df, target_col):
     if df is None or df.empty:
         return None, [], None
     
-    # [최적화 핵심] 데이터 누락 에러(NaN) 파괴 및 안전하게 빈 칸만 삭제
     df_active = df.loc[(df != 0).any(axis=1), (df != 0).any(axis=0)].copy()
     
     if df_active.empty:
@@ -1315,7 +1295,6 @@ if not full_df.empty:
         cur_month_sales_client = prev_month_sales_client = mom_rate_client = avg_monthly_sales_client = avg_rate_client = 0.0
         latest_month_str_client = "-"
 else:
-    # 데이터가 비어있을 때 에러가 나지 않도록 빈 변수 설정 유지
     cur_month_sales_total = prev_month_sales_total = mom_rate_total = avg_monthly_sales_total = avg_rate_total = 0.0
     latest_month_str_total = "-"
     cur_month_sales_client = prev_month_sales_client = mom_rate_client = avg_monthly_sales_client = avg_rate_client = 0.0
@@ -1650,9 +1629,34 @@ with tab2:
         
         client_available_items = sorted(df_client_filtered["품목명"].unique())
         if client_available_items:
+            # [추가된 로직] 당월(해당 거래처의 가장 최근 거래 월) 품목별 매출 비중 계산
+            item_ratios = {}
+            if not df_client_filtered.empty:
+                latest_dt_c = df_client_filtered["매출일_dt"].max()
+                if pd.notnull(latest_dt_c):
+                    latest_ym = latest_dt_c.strftime("%Y-%m")
+                    # 가장 최근 월에 해당하는 데이터만 필터링
+                    df_cm = df_client_filtered[df_client_filtered["매출일_dt"].dt.strftime("%Y-%m") == latest_ym]
+                    tot_sales = df_cm["매출액"].sum()
+                    if tot_sales > 0:
+                        # 품목별 매출액을 구하고 총 매출액으로 나누어 퍼센테이지 산출
+                        grp = df_cm.groupby("품목명")["매출액"].sum()
+                        for item, val in grp.items():
+                            item_ratios[item] = (val / tot_sales) * 100
+
+            # 셀렉트박스 표시 형식을 지정하는 함수
+            def format_item_with_ratio(item_name):
+                pct = item_ratios.get(item_name, 0.0)
+                return f"{item_name} (당월 {pct:.1f}%)"
+
             sel_col1_c, sel_col2_c = st.columns([1, 1])
             with sel_col1_c:
-                selected_target_item_c = st.selectbox("🔍 분석할 품목 선택 (전체 거래 품목)", client_available_items, key="client_item_selectbox")
+                selected_target_item_c = st.selectbox(
+                    "🔍 분석할 품목 선택 (전체 거래 품목)", 
+                    options=client_available_items, 
+                    format_func=format_item_with_ratio,
+                    key="client_item_selectbox"
+                )
             with sel_col2_c:
                 selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
                 
