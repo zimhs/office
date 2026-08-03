@@ -745,21 +745,21 @@ def load_uploaded_files_from_bytes(file_tuples):
 
     result_df = pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
     
-    # ★ 사용자 요청하신 최신 담당자 자동 추론 및 매핑 로직 적용 ★
+    # ★ '미지정' 및 '담당자없음' 데이터 통합 및 최신 담당자 자동 추론 로직 적용
     if not result_df.empty and "거래처" in result_df.columns and "담당자" in result_df.columns:
-        # 빈칸이나 nan을 '미지정'으로 통일
-        result_df["담당자"] = result_df["담당자"].replace(["", "nan", "None"], "미지정")
+        result_df["담당자"] = result_df["담당자"].fillna("미지정").astype(str).str.strip()
         
-        # 1. 날짜순 정렬을 통해 최신 데이터 기준점 마련
+        # '담당자없음'을 포함하여 누락된 표현들을 모두 '미지정'으로 통일
+        invalid_staff_markers = ["", "nan", "None", "NAT", "NaN", "담당자없음", "지정안함", "없음"]
+        result_df["담당자"] = result_df["담당자"].replace(invalid_staff_markers, "미지정")
+        
         temp_df = result_df.dropna(subset=["매출일_dt"]).sort_values("매출일_dt")
+        valid_staff_map = temp_df[~temp_df["담당자"].isin(["미지정"])].groupby("거래처")["담당자"].last().to_dict()
         
-        # 2. '미지정'이 아닌 유효한 담당자만 필터링하여, 거래처별 가장 '최근' 담당자를 추출해 딕셔너리 생성
-        valid_staff_map = temp_df[temp_df["담당자"] != "미지정"].groupby("거래처")["담당자"].last().to_dict()
-        
-        # 3. 전체 데이터프레임의 담당자 항목을 최신 담당자로 일괄 적용 (매핑되지 않는 곳은 기존 값 유지)
         result_df["담당자"] = result_df["거래처"].map(valid_staff_map).fillna(result_df["담당자"])
+        result_df.loc[result_df["담당자"].isin(invalid_staff_markers), "담당자"] = "미지정"
 
-    # 4. 대시보드(Tab 4)에서 사용자가 수동으로 직접 지정한 내역이 있다면 최우선으로 덮어씌움 (무손실 보존)
+    # 수동 지정 매핑 적용 (무손실 보존)
     manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
     if os.path.exists(manual_map_path) and not result_df.empty:
         try:
