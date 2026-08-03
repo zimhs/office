@@ -205,23 +205,34 @@ def get_exact_original_price(series):
     return s.mode().iloc[0]
 
 
+# ==========================================
+# ★ 엑셀 다운로드 (아이패드 IndexError 방지 수정 완료) ★
+# ==========================================
 @st.cache_data
 def convert_dfs_to_excel(dfs_dict):
     output = io.BytesIO()
+    
+    # 1. 시트로 만들 데이터가 하나라도 있는지 확인
+    has_data = any(not df.empty for df, _ in dfs_dict.values())
+    
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for sheet_name, (df, use_index) in dfs_dict.items():
-            if not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df_to_save = df.copy()
-                    df_to_save.columns = [
-                        "_".join([str(c) for c in col if c])
-                        for col in df_to_save.columns
-                    ]
-                    df_to_save.to_excel(
-                        writer, sheet_name=sheet_name, index=use_index
-                    )
-                else:
-                    df.to_excel(writer, sheet_name=sheet_name, index=use_index)
+        if not has_data:
+            # 2. 데이터가 완전히 비어있을 경우, 에러 방지를 위해 빈 시트 1개 강제 생성
+            pd.DataFrame(["아직 업로드된 데이터가 없습니다."]).to_excel(writer, sheet_name="데이터없음", index=False, header=False)
+        else:
+            for sheet_name, (df, use_index) in dfs_dict.items():
+                if not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df_to_save = df.copy()
+                        df_to_save.columns = [
+                            "_".join([str(c) for c in col if c])
+                            for col in df_to_save.columns
+                        ]
+                        df_to_save.to_excel(
+                            writer, sheet_name=sheet_name, index=use_index
+                        )
+                    else:
+                        df.to_excel(writer, sheet_name=sheet_name, index=use_index)
     return output.getvalue()
 
 
@@ -762,6 +773,7 @@ def load_uploaded_files_from_bytes(file_tuples):
             mapped_staff = result_df.loc[missing_mask, "거래처"].map(client_to_staff_map)
             result_df.loc[missing_mask, "담당자"] = mapped_staff.fillna("미지정")
 
+        # ★ 수정 완료: 빈 문자열을 NaN으로 강제 변환하지 않도록 keep_default_na=False, dtype=str 추가
         manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
         if os.path.exists(manual_map_path):
             try:
@@ -943,7 +955,7 @@ def cached_staff_pivot(df_base, desired_order):
     if df_base.empty:
         return pd.DataFrame()
     
-    # ★ '미지정' 및 빈칸 데이터를 담당자별 표에서 원천 제외하는 필터 추가
+    # ★ 수정 완료: '미지정' 및 빈칸 데이터를 담당자별 표에서 원천 제외하는 필터 추가
     df_filtered = df_base[~df_base["담당자"].isin(["미지정", "", "nan", "None", np.nan])]
     
     staff_raw = (df_filtered.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000)
@@ -2530,7 +2542,7 @@ with tab8:
         df_display = df_int_filtered.copy()
         if '사용구분' in df_display.columns:
             mask_idle = df_display['사용구분'].astype(str).str.contains('유휴')
-            df_display.loc[mask_idle, '사용구분'] = '🟢 ' + df_display.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+            df_display.loc[mask_idle, '사용구분'] = '🟢 ' + df_display.loc[mask_idle, '사용`구분`'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '') if '사용`구분`' in df_display.columns else '🟢 ' + df_display.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
             df_display.loc[~mask_idle, '사용구분'] = '🏢 ' + df_display.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
 
         st.dataframe(df_display, use_container_width=True, height=600, hide_index=True)
