@@ -1655,7 +1655,7 @@ with tab1:
             st.info("당해년도 매출 데이터가 없습니다.")
 
     # ========================================================
-    # 🚀 [이동됨] 전월 대비 실적 상승/하락 및 신규/이탈 거래처 분석 (제일 하단)
+    # 🚀 전월 대비 실적 상승/하락 및 신규/이탈 거래처 분석 (제일 하단 배치 완료)
     # ========================================================
     st.markdown("---")
     if not df_base.empty and '매출일_dt' in df_base.columns:
@@ -2166,12 +2166,31 @@ with tab6:
             key="map_client_multiselect"
         )
     
-    if "show_map" not in st.session_state:
-        st.session_state.show_map = False
-        
-    if st.button("🗺️ 지도 생성 및 위치 확인하기", type="primary"):
+    # 💡 [추가] 선택한 거래처의 주소를 검색창 바로 아래에 작고 깔끔하게 표시
+    if map_selected_client:
+        addr_display_html = "<div style='background-color: #F1F5F9; padding: 8px 12px; border-radius: 6px; border: 1px solid #CBD5E1; margin-top: 5px; margin-bottom: 15px; font-size: 13px; color: #334155;'>"
+        for sc in map_selected_client:
+            raw_a = addr_dict.get(sc, "등록된 주소 정보가 없습니다.")
+            clean_a = str(raw_a) if pd.notna(raw_a) and str(raw_a).strip().lower() != 'nan' and str(raw_a).strip() else "등록된 주소 정보가 없습니다."
+            addr_display_html += f"<div>📍 <b>{sc}:</b> {clean_a}</div>"
+        addr_display_html += "</div>"
+        st.markdown(addr_display_html, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4, ctrl_space = st.columns([1.2, 1.2, 1.2, 1.2, 5])
+    
+    with ctrl_c1:
+        btn_load_map = st.button("🗺️ 지도 새로고침/조회", type="primary", use_container_width=True)
+    with ctrl_c2:
+        btn_zoom_in = st.button("➕ 확대 (+)", use_container_width=True)
+    with ctrl_c3:
+        btn_zoom_out = st.button("➖ 축소 (-)", use_container_width=True)
+    with ctrl_c4:
+        btn_reset_map = st.button("🏠 기본 위치", use_container_width=True)
+
+    if btn_load_map or btn_zoom_in or btn_zoom_out or btn_reset_map or "show_map" not in st.session_state:
         st.session_state.show_map = True
-            
+        
     if st.session_state.show_map:
         target_map_df = df_base.copy()
         
@@ -2221,7 +2240,10 @@ with tab6:
                 map_df = pd.DataFrame(map_data)
                 center_lat = map_df['lat'].mean()
                 center_lon = map_df['lon'].mean()
-                zoom_level = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
+                
+                base_zoom = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
+                if btn_zoom_in: base_zoom += 2
+                elif btn_zoom_out: base_zoom -= 2
                 
                 fig_map = px.scatter_mapbox(
                     map_df,
@@ -2230,9 +2252,9 @@ with tab6:
                     color="담당자",
                     hover_name="거래처",
                     hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
-                    zoom=zoom_level,
+                    zoom=base_zoom,
                     center={"lat": center_lat, "lon": center_lon},
-                    height=650
+                    height=600
                 )
 
                 fig_map.update_traces(marker=dict(size=14, opacity=0.9))
@@ -2266,7 +2288,7 @@ with tab6:
                 
                 dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
                 st.plotly_chart(fig_map, use_container_width=True, key=dynamic_key)
-                
+
                 if invalid_clients:
                     with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
                         st.write(", ".join(invalid_clients))
