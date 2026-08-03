@@ -648,37 +648,43 @@ def load_uploaded_files_from_bytes(file_tuples):
                 continue
 
             # ==========================================
-            # ★ 수정된 헤더 탐색 로직 (키워드 3개 이상 일치 시 헤더로 인식)
+            # ★ 수정된 헤더 탐색 로직 (타이틀 행 오인 방지)
             # ==========================================
             header_idx = 0
+            max_matches = 0
             for i, line in enumerate(lines[:30]):
-                kw_matches = sum(1 for k in ["거래처", "품목", "매출액", "단가", "수량", "출고", "매출일"] if k in line)
-                if kw_matches >= 3:
+                cells = re.split(r',|\t', line)
+                matches = sum(1 for cell in cells if any(kw in cell for kw in ["거래처", "품목", "매출", "단가", "수량", "담당", "일자"]))
+                
+                if matches > max_matches:
+                    max_matches = matches
                     header_idx = i
+                
+                if max_matches >= 3:
                     break
 
             df = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])), on_bad_lines='skip', engine='python')
             df.columns = df.columns.astype(str).str.strip()
             cols = list(df.columns)
 
-            # ==========================================
-            # ★ 수정된 컬럼 매칭 로직 (정확히 일치하는 단어 우선 검색)
-            # ==========================================
             def find_col(priority_keywords, exclude_keywords=[]):
-                # 1차 검색: 완전히 똑같이 일치하는 컬럼명 찾기
+                clean_cols = [c.replace(" ", "") for c in cols]
+                
                 for kw in priority_keywords:
-                    for c in cols:
-                        if any(ex in c for ex in exclude_keywords):
+                    kw_clean = kw.replace(" ", "")
+                    for orig_c, clean_c in zip(cols, clean_cols):
+                        if any(ex in clean_c for ex in exclude_keywords):
                             continue
-                        if kw == c.strip():
-                            return c
-                # 2차 검색: 단어를 포함하는 컬럼명 찾기
+                        if kw_clean == clean_c:
+                            return orig_c
+                            
                 for kw in priority_keywords:
-                    for c in cols:
-                        if any(ex in c for ex in exclude_keywords):
+                    kw_clean = kw.replace(" ", "")
+                    for orig_c, clean_c in zip(cols, clean_cols):
+                        if any(ex in clean_c for ex in exclude_keywords):
                             continue
-                        if kw in c:
-                            return c
+                        if kw_clean in clean_c:
+                            return orig_c
                 return None
 
             c_staff = find_col(["담당자", "담당자명", "영업담당", "영업사원", "담당"], ["코드", "ID", "번호"])
@@ -741,6 +747,32 @@ def load_uploaded_files_from_bytes(file_tuples):
             st.sidebar.error(f"파일 읽기 오류 ({file_name}): {e}")
 
     result_df = pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
+    
+    if not result_df.empty and "거래처" in result_df.columns and "담당자" in result_df.columns:
+        result_df["담당자"] = result_df["담당자"].replace(["", "nan", "None"], "미지정")
+        
+        valid_staff_mask = result_df["담당자"] != "미지정"
+        valid_staff_df = result_df[valid_staff_mask].copy()
+        
+        if not valid_staff_df.empty:
+            valid_staff_df = valid_staff_df.sort_values(by="매출일_dt", ascending=False)
+            client_to_staff_map = valid_staff_df.drop_duplicates(subset=["거래처"]).set_index("거래처")["담당자"].to_dict()
+            
+            missing_mask = result_df["담당자"] == "미지정"
+            mapped_staff = result_df.loc[missing_mask, "거래처"].map(client_to_staff_map)
+            result_df.loc[missing_mask, "담당자"] = mapped_staff.fillna("미지정")
+
+        manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
+        if os.path.exists(manual_map_path):
+            try:
+                manual_df = pd.read_csv(manual_map_path, keep_default_na=False, dtype=str)
+                manual_dict = manual_df.set_index("거래처")["담당자"].to_dict()
+                
+                mask_manual = result_df["거래처"].isin(manual_dict.keys())
+                result_df.loc[mask_manual, "담당자"] = result_df.loc[mask_manual, "거래처"].map(manual_dict)
+            except Exception:
+                pass
+
     return result_df
 
 
@@ -910,7 +942,11 @@ def prepare_active_df_fast(df, target_col):
 def cached_staff_pivot(df_base, desired_order):
     if df_base.empty:
         return pd.DataFrame()
-    staff_raw = (df_base.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000)
+    
+    # ★ '미지정' 및 빈칸 데이터를 담당자별 표에서 원천 제외하는 필터 추가
+    df_filtered = df_base[~df_base["담당자"].isin(["미지정", "", "nan", "None", np.nan])]
+    
+    staff_raw = (df_filtered.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000)
     staff_cols = [c for c in desired_order if c in staff_raw.columns]
     
     df_p = staff_raw.reindex(columns=staff_cols, fill_value=0)
@@ -1006,14 +1042,12 @@ def style_with_sum(disp_df, fmt_str, cmap, subset_cols=None, axis=None):
     if subset_cols is None:
         subset_cols = disp_df.select_dtypes(include=[np.number]).columns
     
-    # 합계행을 제외하고 그라디언트 적용 (무손실 보존)
     grad_subset = pd.IndexSlice[disp_df.index[:-1], subset_cols]
     styled = disp_df.style.format(fmt_str)
     
     if cmap:
         styled = styled.background_gradient(cmap=cmap, axis=axis, subset=grad_subset)
         
-    # 합계행 스타일링 (눈에 잘 띄게)
     styled = styled.apply(
         lambda s: ['font-weight: 800; background-color: #E2E8F0; color: #0F172A;'] * len(s), 
         subset=pd.IndexSlice[disp_df.index[-1], :], 
@@ -1034,13 +1068,11 @@ industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)"
 debt_file_up = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
 uploaded_files_up = st.sidebar.file_uploader("매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True)
 
-# ★ 설비(탱크/기화기) 재고 관리 탭 7번용 파일
 st.sidebar.markdown("---")
 st.sidebar.subheader("🏭 설비 재고 관리 (선택)")
 tank_file_up = st.sidebar.file_uploader("탱크 재고현황 (CSV/Excel)", type=["csv", "xlsx"])
 vaporizer_file_up = st.sidebar.file_uploader("기화기 재고현황 (CSV/Excel)", type=["csv", "xlsx"])
 
-# ★ 통합 탱크 재고 탭 8번용 파일 자동 로드
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛢️ 통합 탱크 재고")
 local_int_path = "통합탱크재고.csv"
@@ -1058,7 +1090,6 @@ else:
         int_bytes = integrated_file_up.getvalue()
         int_name = integrated_file_up.name
 
-# CSV 큰따옴표 이중묶임 에러 및 열 개수 불일치 방지용 함수 (on_bad_lines 적용)
 @st.cache_data(show_spinner="설비 데이터를 읽어오는 중입니다...")
 def load_equipment_file(file_bytes, file_name):
     if not file_bytes:
@@ -1108,9 +1139,6 @@ if dart_api_key and dart_api_key != saved_api_key:
     with open(API_KEY_FILE, "w", encoding="utf-8") as f:
         f.write(dart_api_key)
 
-# ----------------------------------------------------
-# 캐시 파일 경로 설정 및 유지 기능
-# ----------------------------------------------------
 addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
 industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
 debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
@@ -1120,11 +1148,6 @@ integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
 sales_cache_dir = os.path.join(CACHE_DIR, "sales")
 os.makedirs(sales_cache_dir, exist_ok=True)
 
-# ==========================================
-# ★ GitHub 루트 폴더 자동 업로드(오토로드) 로직 추가 ★
-# ==========================================
-
-# 주소록 로딩
 if address_file_up is not None:
     addr_bytes = address_file_up.getvalue()
     with open(addr_cache_path, "wb") as f: f.write(addr_bytes)
@@ -1135,7 +1158,6 @@ elif os.path.exists("주소.csv"):
 else:
     addr_bytes = None
 
-# 업종 데이터 로딩
 if industry_file_up is not None:
     ind_bytes = industry_file_up.getvalue()
     with open(industry_cache_path, "wb") as f: f.write(ind_bytes)
@@ -1146,7 +1168,6 @@ elif os.path.exists("업체대분류.csv"):
 else:
     ind_bytes = None
 
-# 채권 데이터 로딩
 if debt_file_up is not None:
     debt_bytes = debt_file_up.getvalue()
     with open(debt_cache_path, "wb") as f: f.write(debt_bytes)
@@ -1159,7 +1180,6 @@ else:
             with open(f_name, "rb") as f: debt_bytes = f.read()
             break
 
-# 탱크 데이터 캐싱 (탭 7)
 if tank_file_up is not None:
     tank_bytes = tank_file_up.getvalue()
     tank_name = tank_file_up.name
@@ -1175,7 +1195,6 @@ else:
     tank_bytes = None
     tank_name = ""
 
-# 기화기 데이터 캐싱 (탭 7)
 if vaporizer_file_up is not None:
     vaporizer_bytes = vaporizer_file_up.getvalue()
     vaporizer_name = vaporizer_file_up.name
@@ -1191,7 +1210,6 @@ else:
     vaporizer_bytes = None
     vaporizer_name = ""
 
-# 통합 탱크 데이터 캐싱 (탭 8)
 if int_bytes is not None:
     with open(integrated_cache_path, "wb") as f: f.write(int_bytes)
     with open(integrated_cache_path + "_name.txt", "w", encoding="utf-8") as f: f.write(int_name)
@@ -1202,9 +1220,6 @@ else:
     int_bytes = None
     int_name = ""
 
-# ==========================================
-# ★ 수정된 매출 파일 정규식 적용
-# ==========================================
 sales_file_tuples = []
 if uploaded_files_up and len(uploaded_files_up) > 0:
     for f_name in os.listdir(sales_cache_dir):
@@ -1223,12 +1238,10 @@ else:
                 
     if not sales_file_tuples:
         for f_name in os.listdir("."):
-            # 기존 2026.csv 뿐만 아니라 2026(2).csv 등도 읽어오도록 개선
             if re.match(r"^20\d{2}.*\.csv$", f_name):
                 with open(f_name, "rb") as sf:
                     sales_file_tuples.append((f_name, sf.read()))
 
-# 캐시 초기화 시 모든 파일 제거되도록 수정
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
               tank_cache_path, tank_cache_path + "_name.txt", 
@@ -1242,7 +1255,6 @@ if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
         os.remove(os.path.join(sales_cache_dir, f_name))
     st.rerun()
 
-# 실제 데이터프레임 파싱 적용
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
 debt_df = load_debt_file(debt_bytes) if debt_bytes else pd.DataFrame()
@@ -1263,9 +1275,6 @@ target_items = [
     "AR (kg, Bulk)",
 ]
 
-# ----------------------------------------------------
-# 글로벌 데이터 업데이트 기준일 계산 및 NameError 방지 변수 초기화
-# ----------------------------------------------------
 latest_update_str = "데이터 없음"
 selected_staff = []
 selected_client = "전체 거래처"
@@ -1404,9 +1413,6 @@ st.sidebar.download_button(
     use_container_width=True,
 )
 
-# ==========================================
-# ★ 7번/8번 탭 구성 ★
-# ==========================================
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
     [
         "📌 영업 종합 요약",
@@ -1582,9 +1588,6 @@ with tab1:
                                 use_container_width=True, key="ind_client_sub_chart"
                             )
 
-    # -----------------------------------------------------------
-    # ★ 기능 1: 당해년도 최신월 기준 상위 30위 거래처 (1~12월 전체) & 업종 비중
-    # -----------------------------------------------------------
     st.markdown("---")
     st.markdown("<div class='sub-header'>🏆 당해년도 최신월 기준 상위 30위 거래처 실적 (1월~12월) 및 업종 비중</div>", unsafe_allow_html=True)
     
@@ -1654,9 +1657,6 @@ with tab1:
         else:
             st.info("당해년도 매출 데이터가 없습니다.")
 
-    # ========================================================
-    # 🚀 전월 대비 실적 상승/하락 및 신규/이탈 거래처 분석 (제일 하단 배치 완료)
-    # ========================================================
     st.markdown("---")
     if not df_base.empty and '매출일_dt' in df_base.columns:
         latest_period = df_base["매출일_dt"].dt.to_period("M").max()
@@ -1673,7 +1673,6 @@ with tab1:
         df_diff = pd.merge(df_prev, df_curr, on="거래처", how="outer").fillna(0)
         df_diff["매출 증감액"] = df_diff[f"{curr_m_label} 매출"] - df_diff[f"{prev_m_label} 매출"]
         
-        # VAT포함 및 만원 단위 변환
         df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] = (df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] * 1.1) / 10000
 
         top_gains = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff["매출 증감액"] > 0)].sort_values(by="매출 증감액", ascending=False).head(10)
@@ -1971,6 +1970,121 @@ with tab4:
                     height=380
                 )
                 st.plotly_chart(fig_ranking, use_container_width=True, key=f"ranking_chart_{sel_staff}")
+        else:
+            st.info(f"💡 {current_year}년에 선택한 담당자({sel_staff})의 거래처 매출 실적 데이터가 없습니다.")
+
+    st.markdown("<div class='sub-header'>⚠️ 담당자 미지정 신규/누락 거래처 (직접 지정)</div>", unsafe_allow_html=True)
+    if not df_base.empty:
+        unassigned_df = df_base[df_base["담당자"] == "미지정"]
+        
+        if not unassigned_df.empty:
+            unassigned_summary = unassigned_df.groupby("거래처").agg(
+                최근매출일=("매출일_dt", "max"),
+                총매출액_만원=("매출액", lambda x: sum(x) * 1.1 / 10000)
+            ).reset_index()
+            
+            unassigned_summary = unassigned_summary.sort_values(by="총매출액_만원", ascending=False)
+            unassigned_summary["최근매출일"] = unassigned_summary["최근매출일"].dt.strftime("%Y-%m-%d")
+            unassigned_summary["담당자지정"] = "미지정"
+            
+            all_staff_options = ["미지정"] + sorted([s for s in full_df["담당자"].unique() if s != "미지정"])
+            
+            st.warning(f"💡 자동 추론으로도 담당자를 찾을 수 없는 거래처가 총 **{len(unassigned_summary)}곳** 있습니다. 표의 **'담당자지정'** 열을 클릭하여 담당자를 선택하고 아래 저장 버튼을 누르세요.")
+            
+            edited_unassigned = st.data_editor(
+                unassigned_summary,
+                column_config={
+                    "거래처": st.column_config.TextColumn("거래처", disabled=True),
+                    "최근매출일": st.column_config.TextColumn("최근매출일", disabled=True),
+                    "총매출액_만원": st.column_config.NumberColumn("총매출액(만원)", disabled=True, format="%d"),
+                    "담당자지정": st.column_config.SelectboxColumn(
+                        "👤 담당자 지정 (클릭하여 변경)",
+                        help="이 거래처의 담당자를 선택하세요.",
+                        options=all_staff_options,
+                        required=True
+                    )
+                },
+                use_container_width=True,
+                hide_index=True,
+                key="unassigned_editor"
+            )
+            
+            if st.button("💾 변경된 담당자 저장 및 전체 대시보드 적용", type="primary"):
+                changed_rows = edited_unassigned[edited_unassigned["담당자지정"] != "미지정"]
+                if not changed_rows.empty:
+                    manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
+                    if os.path.exists(manual_map_path):
+                        try:
+                            existing_map = pd.read_csv(manual_map_path, keep_default_na=False, dtype=str).set_index("거래처")["담당자"].to_dict()
+                        except:
+                            existing_map = {}
+                    else:
+                        existing_map = {}
+                        
+                    for _, row in changed_rows.iterrows():
+                        existing_map[row["거래처"]] = row["담당자지정"]
+                        
+                    save_df = pd.DataFrame(list(existing_map.items()), columns=["거래처", "담당자"])
+                    save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
+                    
+                    st.success("✅ 담당자 지정이 완료되었습니다! 대시보드를 새로고침합니다.")
+                    load_uploaded_files_from_bytes.clear() 
+                    st.rerun()
+        else:
+            st.success("🎉 모든 거래처에 담당자가 완벽하게 지정되어 있습니다!")
+            
+        with st.expander("🔄 이미 지정된 기존 거래처 담당자 수정/강제 변경하기"):
+            assigned_df = df_base[df_base["담당자"] != "미지정"]
+            if not assigned_df.empty:
+                assigned_summary = assigned_df.groupby("거래처").agg(
+                    현재담당자=("담당자", "first"),
+                    최근매출일=("매출일_dt", "max")
+                ).reset_index()
+                
+                assigned_summary["새담당자변경"] = assigned_summary["현재담당자"]
+                assigned_summary["최근매출일"] = assigned_summary["최근매출일"].dt.strftime("%Y-%m-%d")
+                
+                all_staffs_for_edit_assign = sorted([s for s in full_df["담당자"].unique() if s != "미지정"]) + ["미지정"]
+                
+                st.info("💡 잘못 지정된 거래처나 인수인계된 거래처의 담당자를 새롭게 변경할 수 있습니다.")
+                edited_assigned = st.data_editor(
+                    assigned_summary,
+                    column_config={
+                        "거래처": st.column_config.TextColumn("거래처", disabled=True),
+                        "현재담당자": st.column_config.TextColumn("현재 담당자", disabled=True),
+                        "최근매출일": st.column_config.TextColumn("최근매출일", disabled=True),
+                        "새담당자변경": st.column_config.SelectboxColumn(
+                            "👤 새 담당자로 변경 (클릭)",
+                            options=all_staffs_for_edit_assign,
+                            required=True
+                        )
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                    key="assigned_editor"
+                )
+                
+                if st.button("💾 변경된 기존 거래처 담당자 저장", type="primary", key="save_assigned_btn"):
+                    changed_assigned = edited_assigned[edited_assigned["새담당자변경"] != edited_assigned["현재담당자"]]
+                    if not changed_assigned.empty:
+                        manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
+                        if os.path.exists(manual_map_path):
+                            try:
+                                existing_map = pd.read_csv(manual_map_path, keep_default_na=False, dtype=str).set_index("거래처")["담당자"].to_dict()
+                            except:
+                                existing_map = {}
+                        else:
+                            existing_map = {}
+                            
+                        for _, row in changed_assigned.iterrows():
+                            existing_map[row["거래처"]] = row["새담당자변경"]
+                            
+                        save_df = pd.DataFrame(list(existing_map.items()), columns=["거래처", "담당자"])
+                        save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
+                        
+                        st.success("✅ 담당자 변경이 완료되었습니다! 대시보드를 새로고침합니다.")
+                        load_uploaded_files_from_bytes.clear() 
+                        st.rerun()
 
     st.markdown("<div class='sub-header'>📋 거래 상세 내역 (최신순 800건)</div>", unsafe_allow_html=True)
     if not df_detail.empty:
@@ -2041,21 +2155,19 @@ with tab5:
             else:
                 disp_debt = filtered_debt_df.copy()
             
+            disp_debt = disp_debt.set_index(["거래처", "구분"])
+            
             def apply_debt_style_fast(df):
                 styles = np.full(df.shape, '', dtype=object)
                 
-                cols = list(df.columns)
-                idx_gubun = cols.index('구분')
-                idx_client = cols.index('거래처')
+                clients = df.index.get_level_values('거래처')
+                gubuns = df.index.get_level_values('구분')
                 
-                month_col_indices = [cols.index(c) for c in numeric_cols]
-                
-                u_clients_fast = df['거래처'].unique()
+                u_clients_fast = clients.unique()
                 color_map_fast = {client: '#FFFFFF' if i % 2 == 0 else '#F8FAFC' for i, client in enumerate(u_clients_fast)}
                 
                 for r in range(df.shape[0]):
-                    client = df.iat[r, idx_client]
-                    
+                    client = clients[r]
                     if client == "📌 [전체 합계]":
                         bg_color = '#E2E8F0'
                         for c in range(df.shape[1]):
@@ -2064,54 +2176,43 @@ with tab5:
                         bg_color = color_map_fast.get(client, '#FFFFFF')
                         for c in range(df.shape[1]):
                             styles[r, c] = f'background-color: {bg_color};'
-                        
-                client_rows = df.groupby('거래처').indices 
-                
-                for client, rows in client_rows.items():
+                            
+                for client in u_clients_fast:
                     if client == "📌 [전체 합계]":
                         continue
                         
+                    client_rows = np.where(clients == client)[0]
                     i_sal = -1
                     i_bal = -1
-                    i_sugum = -1
                     
-                    for r in rows:
-                        gubun = df.iat[r, idx_gubun]
+                    for r in client_rows:
+                        gubun = gubuns[r]
                         if gubun == '매출': i_sal = r
                         elif gubun == '잔액': i_bal = r
-                        elif gubun == '수금': i_sugum = r
                         
-                    if i_sal != -1:
-                        styles[i_sal, idx_gubun] += ' color: #E11D48; font-weight: 600;'
-                    if i_sugum != -1:
-                        styles[i_sugum, idx_gubun] += ' color: #059669; font-weight: 600;'
                     if i_bal != -1:
                         for c in range(df.shape[1]):
                             styles[i_bal, c] += ' font-weight: 700; color: #334155;'
                             
-                    if i_sal != -1 and i_bal != -1 and month_col_indices:
+                    if i_sal != -1 and i_bal != -1 and df.shape[1] > 0:
                         l_month_idx = -1
-                        for c in reversed(month_col_indices):
+                        for c in range(df.shape[1]-1, -1, -1):
                             val = df.iat[i_bal, c]
                             if pd.notna(val) and val > 0:
                                 l_month_idx = c
                                 break
                                 
                         if l_month_idx != -1:
-                            final_bal = df.iat[i_bal, l_month_idx]
-                            sal_latest = df.iat[i_sal, l_month_idx]
-                            
-                            final_bal = float(final_bal) if pd.notna(final_bal) else 0.0
-                            sal_latest = float(sal_latest) if pd.notna(sal_latest) else 0.0
+                            final_bal = float(df.iat[i_bal, l_month_idx]) if pd.notna(df.iat[i_bal, l_month_idx]) else 0.0
+                            sal_latest = float(df.iat[i_sal, l_month_idx]) if pd.notna(df.iat[i_sal, l_month_idx]) else 0.0
                             
                             if final_bal > 0:
                                 if final_bal > sal_latest:
                                     styles[i_bal, l_month_idx] += ' background-color: #FEE2E2; color: #B91C1C; font-weight: 800;'
                                     accumulated = 0.0
-                                    for c in reversed(month_col_indices):
+                                    for c in range(df.shape[1]-1, -1, -1):
                                         if c > l_month_idx: continue
-                                        val = df.iat[i_sal, c]
-                                        val = float(val) if pd.notna(val) else 0.0
+                                        val = float(df.iat[i_sal, c]) if pd.notna(df.iat[i_sal, c]) else 0.0
                                         
                                         if accumulated < final_bal:
                                             styles[i_sal, c] += ' background-color: #FEE2E2; color: #B91C1C; font-weight: 800;'
@@ -2125,12 +2226,17 @@ with tab5:
 
             df_height = 500 if selected_client != "전체 거래처" else 700
             
+            col_cfg = {col: st.column_config.NumberColumn(width="medium") for col in numeric_cols}
+            col_cfg["거래처"] = st.column_config.TextColumn(width=150) 
+            col_cfg["구분"] = st.column_config.TextColumn(width=60)     
+            
             st.dataframe(
                 disp_debt.style
-                .format(subset=numeric_cols, formatter="{:,.0f}")
+                .format(formatter="{:,.0f}")
                 .apply(apply_debt_style_fast, axis=None),
-                use_container_width=True, 
-                height=df_height
+                use_container_width=False,  
+                height=df_height,
+                column_config=col_cfg        
             )
 
 # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
@@ -2166,7 +2272,6 @@ with tab6:
             key="map_client_multiselect"
         )
     
-    # 💡 [추가] 선택한 거래처의 주소를 검색창 바로 아래에 작고 깔끔하게 표시
     if map_selected_client:
         addr_display_html = "<div style='background-color: #F1F5F9; padding: 8px 12px; border-radius: 6px; border: 1px solid #CBD5E1; margin-top: 5px; margin-bottom: 15px; font-size: 13px; color: #334155;'>"
         for sc in map_selected_client:
@@ -2177,8 +2282,10 @@ with tab6:
         st.markdown(addr_display_html, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4, ctrl_space = st.columns([1.2, 1.2, 1.2, 1.2, 5])
+    ctrl_space, ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4 = st.columns([5, 1.2, 1.2, 1.2, 1.2])
     
+    with ctrl_space:
+        st.empty() 
     with ctrl_c1:
         btn_load_map = st.button("🗺️ 지도 새로고침/조회", type="primary", use_container_width=True)
     with ctrl_c2:
@@ -2241,9 +2348,15 @@ with tab6:
                 center_lat = map_df['lat'].mean()
                 center_lon = map_df['lon'].mean()
                 
-                base_zoom = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
-                if btn_zoom_in: base_zoom += 2
-                elif btn_zoom_out: base_zoom -= 2
+                default_zoom = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
+                
+                if "map_zoom" not in st.session_state or btn_reset_map or btn_load_map:
+                    st.session_state.map_zoom = default_zoom
+                
+                if btn_zoom_in: 
+                    st.session_state.map_zoom = min(st.session_state.map_zoom + 2, 20) 
+                elif btn_zoom_out: 
+                    st.session_state.map_zoom = max(st.session_state.map_zoom - 2, 2)  
                 
                 fig_map = px.scatter_mapbox(
                     map_df,
@@ -2252,7 +2365,7 @@ with tab6:
                     color="담당자",
                     hover_name="거래처",
                     hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
-                    zoom=base_zoom,
+                    zoom=st.session_state.map_zoom, 
                     center={"lat": center_lat, "lon": center_lon},
                     height=600
                 )
@@ -2292,8 +2405,8 @@ with tab6:
                 if invalid_clients:
                     with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
                         st.write(", ".join(invalid_clients))
-        else:
-            st.info("조건에 맞는 거래처 데이터가 없습니다.")
+            else:
+                st.info("조건에 맞는 거래처 데이터가 없습니다.")
 
 # Tab 7: 🏭 설비 재고 현황
 with tab7:
@@ -2410,7 +2523,7 @@ with tab8:
         k1, k2, k3 = st.columns(3)
         k1.markdown(f"<div class='metric-box'><div class='metric-label'>총 탱크 수량</div><div class='metric-value'>{total_tanks:,} 기</div></div>", unsafe_allow_html=True)
         k2.markdown(f"<div class='metric-box'><div class='metric-label'>🟢 유휴 장비 (대기중)</div><div class='metric-value' style='color:#059669;'>{idle_tanks:,} 기</div></div>", unsafe_allow_html=True)
-        k3.markdown(f"<div class='metric-box'><div class='metric-label'>🏢 사용/충전중</div><div class='metric-value' style='color:#2563EB;'>{inuse_tanks:,} 기</div></div>", unsafe_allow_html=True)
+        k3.markdown(f"<div class='metric-box'><div class='metric-label'>사용/충전중</div><div class='metric-value' style='color:#2563EB;'>{inuse_tanks:,} 기</div></div>", unsafe_allow_html=True)
 
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px; margin-top: 20px;'>📋 상세 재고 데이터</div>", unsafe_allow_html=True)
         
