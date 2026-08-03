@@ -590,20 +590,16 @@ def load_debt_file(debt_bytes):
                     df_direct["거래처"] = df_direct["거래처"].replace("", np.nan).ffill()
                     
                     def map_gubun(val):
-                        # 한글, 영문, 숫자 외 모든 특수문자 제거 (보이지 않는 공백 완벽 차단)
                         val_clean = re.sub(r'[^가-힣a-zA-Z0-9]', '', str(val))
                         
-                        # 1. 값이 아예 없거나 NaN이라면 (ERP 병합셀 특성상 매출행이 비어있는 경우) 무조건 매출로 맵핑
                         if not val_clean or val_clean == 'nan': 
                             return "매출"
                             
-                        # 2. 명확한 키워드 우선 매핑
                         if any(k in val_clean for k in ["이월", "전월", "기초"]): return "이월"
                         if any(k in val_clean for k in ["익월", "다음", "차월"]): return "익월"
                         if any(k in val_clean for k in ["잔액", "미수", "현재", "기말", "잔금"]): return "잔액"
                         if any(k in val_clean for k in ["수금", "입금", "결제", "회수", "대변", "감소"]): return "수금"
                         
-                        # 3. 위 조건에 안 걸리는 나머지 모든 행은 채권 4행 구조 유지를 위해 무조건 '매출'로 편입
                         return "매출"
 
                     df_direct["구분"] = df_direct["구분"].apply(map_gubun)
@@ -638,7 +634,7 @@ def load_uploaded_files_from_bytes(file_tuples):
     for file_name, content in file_tuples:
         try:
             decoded_text = None
-            for enc in ["cp949", "euc-kr", "utf-8-sig", "utf-8"]:
+            for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
                 try:
                     decoded_text = content.decode(enc)
                     break
@@ -651,14 +647,13 @@ def load_uploaded_files_from_bytes(file_tuples):
             if not lines:
                 continue
 
+            # ==========================================
+            # ★ 수정된 헤더 탐색 로직 (키워드 3개 이상 일치 시 헤더로 인식)
+            # ==========================================
             header_idx = 0
             for i, line in enumerate(lines[:30]):
-                if any(
-                    k in line
-                    for k in [
-                        "거래처", "상호", "품목", "제품", "매출액", "담당", "일자", "금액", "단가"
-                    ]
-                ):
+                kw_matches = sum(1 for k in ["거래처", "품목", "매출액", "단가", "수량", "출고", "매출일"] if k in line)
+                if kw_matches >= 3:
                     header_idx = i
                     break
 
@@ -666,17 +661,28 @@ def load_uploaded_files_from_bytes(file_tuples):
             df.columns = df.columns.astype(str).str.strip()
             cols = list(df.columns)
 
+            # ==========================================
+            # ★ 수정된 컬럼 매칭 로직 (정확히 일치하는 단어 우선 검색)
+            # ==========================================
             def find_col(priority_keywords, exclude_keywords=[]):
+                # 1차 검색: 완전히 똑같이 일치하는 컬럼명 찾기
                 for kw in priority_keywords:
                     for c in cols:
                         if any(ex in c for ex in exclude_keywords):
                             continue
-                        if kw == c or kw in c:
+                        if kw == c.strip():
+                            return c
+                # 2차 검색: 단어를 포함하는 컬럼명 찾기
+                for kw in priority_keywords:
+                    for c in cols:
+                        if any(ex in c for ex in exclude_keywords):
+                            continue
+                        if kw in c:
                             return c
                 return None
 
-            c_staff = find_col(["담당자명", "영업담당", "담당자", "영업사원", "담당"], ["코드", "ID", "번호"])
-            c_client = find_col(["거래처명", "상호명", "고객명", "회사명", "거래처", "상호", "고객"], ["코드", "ID", "번호", "담당", "영업"])
+            c_staff = find_col(["담당자", "담당자명", "영업담당", "영업사원", "담당"], ["코드", "ID", "번호"])
+            c_client = find_col(["거래처", "거래처명", "상호명", "고객명", "회사명", "상호", "고객"], ["코드", "ID", "번호", "담당", "영업"])
             c_item = find_col(["품목명", "제품명", "상품명", "품목", "제품"], ["코드", "ID", "번호", "규격"])
             c_sales = find_col(["매출액", "금액", "매출"], ["일", "자", "수량", "량", "단가"])
             c_qty = find_col(["출고량", "수량", "출고"], ["액", "금액", "단가"])
@@ -904,7 +910,7 @@ def prepare_active_df_fast(df, target_col):
 def cached_staff_pivot(df_base, desired_order):
     if df_base.empty:
         return pd.DataFrame()
-    staff_raw = (df_base.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) / 10000)
+    staff_raw = (df_base.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000)
     staff_cols = [c for c in desired_order if c in staff_raw.columns]
     
     df_p = staff_raw.reindex(columns=staff_cols, fill_value=0)
@@ -978,6 +984,42 @@ def get_saved_date(file_path):
 def set_saved_date(file_path, date_val):
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(date_val.strftime("%Y-%m-%d"))
+
+
+# ==========================================
+# ★ 탭 전체 적용 표 합계행 렌더링 유틸리티 (무손실 보존) ★
+# ==========================================
+def get_display_df_with_sum(df, sum_label="연간 합계", text_cols=None):
+    if df is None or df.empty: return df
+    disp = df.copy()
+    numeric_cols = disp.select_dtypes(include=[np.number]).columns
+    sum_series = disp[numeric_cols].sum()
+    disp.loc[sum_label] = sum_series
+    if text_cols:
+        for col in text_cols:
+            if col in disp.columns:
+                disp.at[sum_label, col] = "총 합계"
+    return disp
+
+def style_with_sum(disp_df, fmt_str, cmap, subset_cols=None, axis=None):
+    if disp_df.empty: return disp_df.style
+    if subset_cols is None:
+        subset_cols = disp_df.select_dtypes(include=[np.number]).columns
+    
+    # 합계행을 제외하고 그라디언트 적용 (무손실 보존)
+    grad_subset = pd.IndexSlice[disp_df.index[:-1], subset_cols]
+    styled = disp_df.style.format(fmt_str)
+    
+    if cmap:
+        styled = styled.background_gradient(cmap=cmap, axis=axis, subset=grad_subset)
+        
+    # 합계행 스타일링 (눈에 잘 띄게)
+    styled = styled.apply(
+        lambda s: ['font-weight: 800; background-color: #E2E8F0; color: #0F172A;'] * len(s), 
+        subset=pd.IndexSlice[disp_df.index[-1], :], 
+        axis=1
+    )
+    return styled
 
 
 # ==========================================
@@ -1160,7 +1202,9 @@ else:
     int_bytes = None
     int_name = ""
 
-# 매출 데이터 로딩 (다중 파일 및 자동 업로드)
+# ==========================================
+# ★ 수정된 매출 파일 정규식 적용
+# ==========================================
 sales_file_tuples = []
 if uploaded_files_up and len(uploaded_files_up) > 0:
     for f_name in os.listdir(sales_cache_dir):
@@ -1179,7 +1223,8 @@ else:
                 
     if not sales_file_tuples:
         for f_name in os.listdir("."):
-            if re.match(r"^20\d{2}\.csv$", f_name):
+            # 기존 2026.csv 뿐만 아니라 2026(2).csv 등도 읽어오도록 개선
+            if re.match(r"^20\d{2}.*\.csv$", f_name):
                 with open(f_name, "rb") as sf:
                     sales_file_tuples.append((f_name, sf.read()))
 
@@ -1286,12 +1331,12 @@ if not full_df.empty:
     df_total_monthly = df_base.groupby(df_base["매출일_dt"].dt.to_period("M"))["매출액"].sum()
     if not df_total_monthly.empty:
         latest_period_total = df_total_monthly.index.max()
-        cur_month_sales_total = df_total_monthly.loc[latest_period_total]
+        cur_month_sales_total = df_total_monthly.loc[latest_period_total] * 1.1
         prev_period_total = latest_period_total - 1
-        prev_month_sales_total = df_total_monthly.get(prev_period_total, 0.0)
+        prev_month_sales_total = df_total_monthly.get(prev_period_total, 0.0) * 1.1
 
         mom_rate_total = ((cur_month_sales_total - prev_month_sales_total) / prev_month_sales_total * 100) if prev_month_sales_total > 0 else 0.0
-        avg_monthly_sales_total = df_total_monthly.mean()
+        avg_monthly_sales_total = (df_total_monthly.mean() * 1.1)
         avg_rate_total = ((cur_month_sales_total - avg_monthly_sales_total) / avg_monthly_sales_total * 100) if avg_monthly_sales_total > 0 else 0.0
         latest_month_str_total = latest_period_total.strftime("%Y년 %m월")
     else:
@@ -1299,7 +1344,7 @@ if not full_df.empty:
         latest_month_str_total = "-"
 
     if not df_client_filtered.empty:
-        df_client_monthly = df_client_filtered.groupby(df_client_filtered["매출일_dt"].dt.to_period("M"))["매출액"].sum()
+        df_client_monthly = df_client_filtered.groupby(df_client_filtered["매출일_dt"].dt.to_period("M"))["매출액"].sum() * 1.1
         latest_period_client = df_client_monthly.index.max()
         cur_month_sales_client = df_client_monthly.loc[latest_period_client]
         prev_period_client = latest_period_client - 1
@@ -1384,7 +1429,7 @@ with tab1:
     m1, m2, m3, m4 = st.columns(4)
     
     tot_sales_val = df_base["매출액"].sum() * 1.1 / 10000 if not df_base.empty else 0.0
-    cur_sales_val = cur_month_sales_total * 1.1 / 10000
+    cur_sales_val = cur_month_sales_total / 10000
 
     m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
     m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_total})</div><div class='metric-value'>{cur_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
@@ -1395,7 +1440,8 @@ with tab1:
     col_left, col_right = st.columns([1, 1])
     
     with col_left:
-        st.dataframe(pivot_m_total.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
+        pivot_m_total_disp = get_display_df_with_sum(pivot_m_total, "연간 합계")
+        st.dataframe(style_with_sum(pivot_m_total_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
 
     with col_right:
         st.plotly_chart(
@@ -1416,18 +1462,16 @@ with tab1:
     
     i_col_left, i_col_right = st.columns([1, 1])
     with i_col_left:
+        item_pivot_disp = get_display_df_with_sum(item_pivot, "연간 합계")
         if "비중" in selected_metric:
-            st.dataframe(item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
-            y_suf = "%"
-            y_fmt = ",.1f"
+            st.dataframe(style_with_sum(item_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=460)
+            y_suf, y_fmt = "%", ",.1f"
         elif "출고량" in selected_metric:
-            st.dataframe(item_pivot.style.format("{:,.1f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
-            y_suf = " 천kg"
-            y_fmt = ",.1f"
+            st.dataframe(style_with_sum(item_pivot_disp, "{:,.1f}", "Greens", axis=None), use_container_width=True, height=460)
+            y_suf, y_fmt = " 천kg", ",.1f"
         else:
-            st.dataframe(item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
-            y_suf = " 만원"
-            y_fmt = ",.0f"
+            st.dataframe(style_with_sum(item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
+            y_suf, y_fmt = " 만원", ",.0f"
             
     with i_col_right:
         st.plotly_chart(
@@ -1444,10 +1488,8 @@ with tab1:
     st.markdown("<div class='sub-header'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
     
     if "업종" in df_base.columns:
-        # [수정됨] 미분류만 있을 때 UI가 통째로 증발하지 않도록 미분류를 포함하여 리스트업
         available_industries = sorted(list(df_base["업종"].unique()))
         
-        # 전체 데이터가 미분류밖에 없을 경우 친절한 안내 메시지 추가
         if len(available_industries) == 1 and available_industries[0] == "미분류":
             st.info("💡 현재 모든 거래처가 '미분류' 상태입니다. 왼쪽 사이드바에서 '🏢 거래처 업종 분류 (CSV)' 파일을 업로드하시면 정확한 업종별 상세 분석이 가능합니다.")
             
@@ -1462,18 +1504,16 @@ with tab1:
             
             i_col_left2, i_col_right2 = st.columns([1, 1])
             with i_col_left2:
+                ind_pivot_disp = get_display_df_with_sum(ind_pivot, "연간 합계")
                 if "비중" in selected_ind_metric:
-                    st.dataframe(ind_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
-                    y_suf_i = "%"
-                    y_fmt_i = ",.1f"
+                    st.dataframe(style_with_sum(ind_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=460)
+                    y_suf_i, y_fmt_i = "%", ",.1f"
                 elif "출고량" in selected_ind_metric:
-                    st.dataframe(ind_pivot.style.format("{:,.0f}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
-                    y_suf_i = ""
-                    y_fmt_i = ",.0f"
+                    st.dataframe(style_with_sum(ind_pivot_disp, "{:,.0f}", "Greens", axis=None), use_container_width=True, height=460)
+                    y_suf_i, y_fmt_i = "", ",.0f"
                 else:
-                    st.dataframe(ind_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
-                    y_suf_i = " 만원"
-                    y_fmt_i = ",.0f"
+                    st.dataframe(style_with_sum(ind_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
+                    y_suf_i, y_fmt_i = " 만원", ",.0f"
             
             with i_col_right2:
                 st.plotly_chart(
@@ -1498,7 +1538,8 @@ with tab1:
                     ind_client_pivot["총 누적매출"] = ind_client_pivot.sum(axis=1)
                     ind_client_pivot = ind_client_pivot.sort_values(by="총 누적매출", ascending=False)
                     
-                    st.dataframe(ind_client_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=250)
+                    ind_client_pivot_disp = get_display_df_with_sum(ind_client_pivot, "합계")
+                    st.dataframe(style_with_sum(ind_client_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=280)
                     
                     st.markdown("<hr style='margin: 15px 0px; border-top: 1px dashed #E2E8F0;'>", unsafe_allow_html=True)
                     
@@ -1519,25 +1560,21 @@ with tab1:
                         
                         sc1, sc2 = st.columns([1, 1])
                         with sc1:
+                            sub_item_pivot_disp = get_display_df_with_sum(sub_item_pivot, "연간 합계")
                             if "비중" in sel_ind_sub_metric:
-                                st.dataframe(sub_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=380)
-                                y_suf_sub = "%"
-                                y_fmt_sub = ",.1f"
+                                st.dataframe(style_with_sum(sub_item_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=410)
+                                y_suf_sub, y_fmt_sub = "%", ",.1f"
                             elif "출고량" in sel_ind_sub_metric:
                                 if sel_ind_item in target_items:
-                                    y_suf_sub = " 천kg"
-                                    y_fmt_sub = ",.1f"
+                                    y_suf_sub, y_fmt_sub = " 천kg", ",.1f"
                                 elif "LPG" in str(sel_ind_item).upper():
-                                    y_suf_sub = " kg"
-                                    y_fmt_sub = ",.0f"
+                                    y_suf_sub, y_fmt_sub = " kg", ",.0f"
                                 else:
-                                    y_suf_sub = " 개(병)"
-                                    y_fmt_sub = ",.0f"
-                                st.dataframe(sub_item_pivot.style.format(f"{{:{y_fmt_sub}}}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=380)
+                                    y_suf_sub, y_fmt_sub = " 개(병)", ",.0f"
+                                st.dataframe(style_with_sum(sub_item_pivot_disp, f"{{:{y_fmt_sub}}}", "Greens", axis=None), use_container_width=True, height=410)
                             else:
-                                st.dataframe(sub_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=380)
-                                y_suf_sub = " 만원"
-                                y_fmt_sub = ",.0f"
+                                st.dataframe(style_with_sum(sub_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=410)
+                                y_suf_sub, y_fmt_sub = " 만원", ",.0f"
                                 
                         with sc2:
                             st.plotly_chart(
@@ -1565,21 +1602,19 @@ with tab1:
             with p_col1:
                 st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>🥇 [{latest_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)</div>", unsafe_allow_html=True)
                 
-                # 거래처 x 월 피벗 생성 (VAT 포함, 만원 단위)
                 pvt_curr = df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
                 pvt_curr = pvt_curr.reindex(columns=all_months, fill_value=0)
                 
-                # 최신월 기준 내림차순 정렬 및 상위 30개 추출
                 if latest_m in pvt_curr.columns:
                     pvt_curr = pvt_curr.sort_values(by=latest_m, ascending=False)
                 top30_pvt = pvt_curr.head(30).reset_index()
                 
-                # 순위 인덱스 설정 (1 ~ 30위)
                 top30_pvt.index = range(1, len(top30_pvt) + 1)
                 
-                # 스타일 포맷팅 (전체 월 숫자에 천단위 콤마, 배경 색상 지도 및 최신월 열 강조)
+                top30_pvt_disp = get_display_df_with_sum(top30_pvt, sum_label="합계", text_cols=["거래처"])
+                
                 fmt_dict = {m: "{:,.0f}" for m in all_months}
-                styled_top30 = top30_pvt.style.format(fmt_dict).background_gradient(cmap="Blues", subset=all_months)
+                styled_top30 = style_with_sum(top30_pvt_disp, fmt_dict, "Blues", subset_cols=all_months, axis=0)
                 
                 if latest_m in all_months:
                     styled_top30 = styled_top30.apply(
@@ -1588,7 +1623,6 @@ with tab1:
                         axis=0
                     )
                 
-                # 약 12개 행이 보이고 나머지는 스크롤되도록 height=450 적용
                 st.dataframe(
                     styled_top30, 
                     use_container_width=True, 
@@ -1598,7 +1632,6 @@ with tab1:
             with p_col2:
                 st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>🍩 [{latest_month_label}] 업종별 매출 비중</div>", unsafe_allow_html=True)
                 
-                # 최신월 데이터 기준 업종별 매출 집계
                 df_latest_month = df_curr_year[df_curr_year["월"] == latest_m]
                 ind_sales = df_latest_month.groupby("업종")["매출액"].sum().reset_index()
                 ind_sales = ind_sales[ind_sales["매출액"] > 0]
@@ -1620,6 +1653,65 @@ with tab1:
                 st.plotly_chart(fig_donut, use_container_width=True, key="latest_month_donut_chart")
         else:
             st.info("당해년도 매출 데이터가 없습니다.")
+
+    # ========================================================
+    # 🚀 [이동됨] 전월 대비 실적 상승/하락 및 신규/이탈 거래처 분석 (제일 하단)
+    # ========================================================
+    st.markdown("---")
+    if not df_base.empty and '매출일_dt' in df_base.columns:
+        latest_period = df_base["매출일_dt"].dt.to_period("M").max()
+        prev_period = latest_period - 1
+        
+        curr_m_label = latest_period.strftime("%m월")
+        prev_m_label = prev_period.strftime("%m월")
+        
+        st.markdown(f"<div class='sub-header'>📊 전월 대비 실적 증감 및 신규/이탈 분석 ({prev_m_label} vs {curr_m_label})</div>", unsafe_allow_html=True)
+        
+        df_prev = df_base[df_base["매출일_dt"].dt.to_period("M") == prev_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{prev_m_label} 매출"})
+        df_curr = df_base[df_base["매출일_dt"].dt.to_period("M") == latest_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{curr_m_label} 매출"})
+
+        df_diff = pd.merge(df_prev, df_curr, on="거래처", how="outer").fillna(0)
+        df_diff["매출 증감액"] = df_diff[f"{curr_m_label} 매출"] - df_diff[f"{prev_m_label} 매출"]
+        
+        # VAT포함 및 만원 단위 변환
+        df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] = (df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] * 1.1) / 10000
+
+        top_gains = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff["매출 증감액"] > 0)].sort_values(by="매출 증감액", ascending=False).head(10)
+        top_drops = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] > 0) & (df_diff["매출 증감액"] < 0)].sort_values(by="매출 증감액", ascending=True).head(10)
+        new_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] == 0) & (df_diff[f"{curr_m_label} 매출"] > 0)].sort_values(by=f"{curr_m_label} 매출", ascending=False)
+        lost_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] == 0)].sort_values(by=f"{prev_m_label} 매출", ascending=False)
+
+        tab_up, tab_down, tab_new, tab_lost = st.tabs(["🚀 상승 Top 10", "📉 하락 Top 10", "🎉 신규/재개 거래처", "⚠️ 미거래/이탈 의심"])
+        
+        with tab_up:
+            st.markdown(f"**🔥 기존 거래처 중 매출이 가장 많이 [상승]한 10곳 (단위: 만원, VAT 포함)**")
+            st.dataframe(
+                top_gains.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
+                .apply(lambda s: ['color: #2563EB; font-weight: bold;' if v > 0 else '' for v in s], subset=['매출 증감액']),
+                use_container_width=True, hide_index=True
+            )
+            
+        with tab_down:
+            st.markdown(f"**📉 기존 거래처 중 매출이 가장 많이 [하락]한 10곳 (단위: 만원, VAT 포함)**")
+            st.dataframe(
+                top_drops.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
+                .apply(lambda s: ['color: #B91C1C; font-weight: bold;' if v < 0 else '' for v in s], subset=['매출 증감액']),
+                use_container_width=True, hide_index=True
+            )
+
+        with tab_new:
+            st.markdown(f"**🎉 {prev_m_label}엔 거래가 없었으나 {curr_m_label}에 새롭게 매출이 발생한 곳 (총 {len(new_clients)}곳, 단위: 만원, VAT 포함)**")
+            st.dataframe(
+                new_clients[["거래처", f"{curr_m_label} 매출"]].style.format({f"{curr_m_label} 매출": "{:,.0f}"}),
+                use_container_width=True, hide_index=True
+            )
+            
+        with tab_lost:
+            st.markdown(f"**⚠️ {prev_m_label}엔 매출이 있었으나 {curr_m_label}엔 거래가 없는 곳 (총 {len(lost_clients)}곳, 단위: 만원, VAT 포함)**")
+            st.dataframe(
+                lost_clients[["거래처", f"{prev_m_label} 매출"]].style.format({f"{prev_m_label} 매출": "{:,.0f}"}),
+                use_container_width=True, hide_index=True
+            )
 
 
 # Tab 2: 🏢 거래처 분석
@@ -1676,35 +1768,31 @@ with tab2:
         pivot_m_client = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
         cl, cr = st.columns([1, 1])
         with cl:
-            st.dataframe(pivot_m_client.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
+            pivot_m_client_disp = get_display_df_with_sum(pivot_m_client, "연간 합계")
+            st.dataframe(style_with_sum(pivot_m_client_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
         with cr:
             st.plotly_chart(
                 create_stacked_bar_chart(pivot_m_client, title_text=""),
                 use_container_width=True, key="tab2_client_total_chart"
             )
 
-        # --- 품목별 상세 분석 복원 ---
         st.markdown("---")
         st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
         
         client_available_items = sorted(df_client_filtered["품목명"].unique())
         if client_available_items:
-            # [추가된 로직] 당월(해당 거래처의 가장 최근 거래 월) 품목별 매출 비중 계산
             item_ratios = {}
             if not df_client_filtered.empty:
                 latest_dt_c = df_client_filtered["매출일_dt"].max()
                 if pd.notnull(latest_dt_c):
                     latest_ym = latest_dt_c.strftime("%Y-%m")
-                    # 가장 최근 월에 해당하는 데이터만 필터링
                     df_cm = df_client_filtered[df_client_filtered["매출일_dt"].dt.strftime("%Y-%m") == latest_ym]
                     tot_sales = df_cm["매출액"].sum()
                     if tot_sales > 0:
-                        # 품목별 매출액을 구하고 총 매출액으로 나누어 퍼센테이지 산출
                         grp = df_cm.groupby("품목명")["매출액"].sum()
                         for item, val in grp.items():
                             item_ratios[item] = (val / tot_sales) * 100
 
-            # 셀렉트박스 표시 형식을 지정하는 함수
             def format_item_with_ratio(item_name):
                 pct = item_ratios.get(item_name, 0.0)
                 return f"{item_name} (당월 {pct:.1f}%)"
@@ -1724,25 +1812,21 @@ with tab2:
             
             i_col_left_c, i_col_right_c = st.columns([1, 1])
             with i_col_left_c:
+                client_item_pivot_disp = get_display_df_with_sum(client_item_pivot, "연간 합계")
                 if "비중" in selected_metric_c:
-                    st.dataframe(client_item_pivot.style.format("{:,.1f}%").background_gradient(cmap="Purples", axis=None), use_container_width=True, height=420)
-                    y_suf_c = "%"
-                    y_fmt_c = ",.1f"
+                    st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=460)
+                    y_suf_c, y_fmt_c = "%", ",.1f"
                 elif "출고량" in selected_metric_c:
                     if selected_target_item_c in target_items:
-                        y_suf_c = " 천kg"
-                        y_fmt_c = ",.1f"
+                        y_suf_c, y_fmt_c = " 천kg", ",.1f"
                     elif "LPG" in str(selected_target_item_c).upper():
-                        y_suf_c = " kg"
-                        y_fmt_c = ",.0f"
+                        y_suf_c, y_fmt_c = " kg", ",.0f"
                     else:
-                        y_suf_c = " 개(병)"
-                        y_fmt_c = ",.0f"
-                    st.dataframe(client_item_pivot.style.format(f"{{:{y_fmt_c}}}").background_gradient(cmap="Greens", axis=None), use_container_width=True, height=420)
+                        y_suf_c, y_fmt_c = " 개(병)", ",.0f"
+                    st.dataframe(style_with_sum(client_item_pivot_disp, f"{{:{y_fmt_c}}}", "Greens", axis=None), use_container_width=True, height=460)
                 else:
-                    st.dataframe(client_item_pivot.style.format("{:,.0f}").background_gradient(cmap="Blues", axis=None), use_container_width=True, height=420)
-                    y_suf_c = " 만원"
-                    y_fmt_c = ",.0f"
+                    st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
+                    y_suf_c, y_fmt_c = " 만원", ",.0f"
                     
             with i_col_right_c:
                 st.plotly_chart(
@@ -1755,7 +1839,7 @@ with tab2:
                     use_container_width=True, key="tab2_client_item_chart"
                 )
 
-# Tab 3: 📦 품목 및 단가 분석 (초고속 빈 열/행 필터링 무손실 렌더링)
+# Tab 3: 📦 품목 및 단가 분석
 with tab3:
     t3_c1, t3_c2 = st.columns([4, 1])
     t3_c1.markdown(f"<div class='sub-header' style='margin-top: 20px;'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
@@ -1941,6 +2025,21 @@ with tab5:
             m2.markdown(f"<div class='metric-box'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div><div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>", unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
+
+            summary_rows = []
+            for gubun in ["이월", "익월", "매출", "수금", "잔액", "합계"]: 
+                if gubun in filtered_debt_df["구분"].values:
+                    sum_vals = filtered_debt_df[filtered_debt_df["구분"] == gubun][numeric_cols].sum()
+                    row_data = {"거래처": "📌 [전체 합계]", "구분": gubun}
+                    for col in numeric_cols:
+                        row_data[col] = sum_vals[col]
+                    summary_rows.append(row_data)
+            
+            if summary_rows:
+                summary_df = pd.DataFrame(summary_rows)
+                disp_debt = pd.concat([filtered_debt_df, summary_df], ignore_index=True)
+            else:
+                disp_debt = filtered_debt_df.copy()
             
             def apply_debt_style_fast(df):
                 styles = np.full(df.shape, '', dtype=object)
@@ -1952,17 +2051,26 @@ with tab5:
                 month_col_indices = [cols.index(c) for c in numeric_cols]
                 
                 u_clients_fast = df['거래처'].unique()
-                color_map_fast = {client: '#FFFFFF' if i % 2 == 0 else '#E2E8F0' for i, client in enumerate(u_clients_fast)}
+                color_map_fast = {client: '#FFFFFF' if i % 2 == 0 else '#F8FAFC' for i, client in enumerate(u_clients_fast)}
                 
                 for r in range(df.shape[0]):
                     client = df.iat[r, idx_client]
-                    bg_color = color_map_fast.get(client, '#FFFFFF')
-                    for c in range(df.shape[1]):
-                        styles[r, c] = f'background-color: {bg_color};'
+                    
+                    if client == "📌 [전체 합계]":
+                        bg_color = '#E2E8F0'
+                        for c in range(df.shape[1]):
+                            styles[r, c] = f'background-color: {bg_color}; border-top: 2px solid #CBD5E1;'
+                    else:
+                        bg_color = color_map_fast.get(client, '#FFFFFF')
+                        for c in range(df.shape[1]):
+                            styles[r, c] = f'background-color: {bg_color};'
                         
                 client_rows = df.groupby('거래처').indices 
                 
                 for client, rows in client_rows.items():
+                    if client == "📌 [전체 합계]":
+                        continue
+                        
                     i_sal = -1
                     i_bal = -1
                     i_sugum = -1
@@ -2016,11 +2124,13 @@ with tab5:
                 return pd.DataFrame(styles, index=df.index, columns=df.columns)
 
             df_height = 500 if selected_client != "전체 거래처" else 700
+            
             st.dataframe(
-                filtered_debt_df.style
+                disp_debt.style
                 .format(subset=numeric_cols, formatter="{:,.0f}")
                 .apply(apply_debt_style_fast, axis=None),
-                use_container_width=True, height=df_height
+                use_container_width=True, 
+                height=df_height
             )
 
 # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
