@@ -773,7 +773,6 @@ def load_uploaded_files_from_bytes(file_tuples):
             mapped_staff = result_df.loc[missing_mask, "거래처"].map(client_to_staff_map)
             result_df.loc[missing_mask, "담당자"] = mapped_staff.fillna("미지정")
 
-        # ★ 수정 완료: 빈 문자열을 NaN으로 강제 변환하지 않도록 keep_default_na=False, dtype=str 추가
         manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
         if os.path.exists(manual_map_path):
             try:
@@ -955,7 +954,7 @@ def cached_staff_pivot(df_base, desired_order):
     if df_base.empty:
         return pd.DataFrame()
     
-    # ★ 수정 완료: '미지정' 및 빈칸 데이터를 담당자별 표에서 원천 제외하는 필터 추가
+    # ★ '미지정' 및 빈칸 데이터를 담당자별 표에서 원천 제외하는 필터 추가
     df_filtered = df_base[~df_base["담당자"].isin(["미지정", "", "nan", "None", np.nan])]
     
     staff_raw = (df_filtered.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000)
@@ -1254,12 +1253,14 @@ else:
                 with open(f_name, "rb") as sf:
                     sales_file_tuples.append((f_name, sf.read()))
 
+# ★ 캐시 초기화 버튼 (수동 맵핑 파일까지 싹 다 지우도록 업그레이드됨!)
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
+    manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
     for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
               tank_cache_path, tank_cache_path + "_name.txt", 
               vaporizer_cache_path, vaporizer_cache_path + "_name.txt",
               integrated_cache_path, integrated_cache_path + "_name.txt",
-              TAB7_DATE_FILE, TAB8_DATE_FILE]:
+              TAB7_DATE_FILE, TAB8_DATE_FILE, manual_map_path]:
         if os.path.exists(p): os.remove(p)
     if os.path.exists(API_KEY_FILE):
         os.remove(API_KEY_FILE)
