@@ -21,7 +21,7 @@ except ImportError:
 
 # 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
 pd.set_option("styler.render.max_elements", 2000000)
-st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide")
+st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
 # 0. 로컬 파일 자동 저장을 위한 디렉토리 설정
@@ -31,7 +31,7 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 # ==========================================
-# 1. 아이패드/모바일 최적화 CSS Injection (터치 및 스크롤 개선)
+# 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
 # ==========================================
 def inject_custom_css():
     st.markdown(
@@ -43,6 +43,7 @@ def inject_custom_css():
         <meta name="google" content="notranslate" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <style>
+            /* 기본 불필요 UI 숨김 */
             div[data-baseweb="select"] + div:has(span) { display: none !important; }
             div[data-testid="stMultiSelect"] [data-testid="stWidgetInstructions"] { display: none !important; }
             small[data-testid="stCaptionContainer"] { display: none !important; }
@@ -53,31 +54,33 @@ def inject_custom_css():
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                 -webkit-tap-highlight-color: transparent;
             }
+            
+            /* ★★★ 상단 여백 최소화 (컴팩트 레이아웃) ★★★ */
+            .block-container { 
+                padding-top: 1rem !important; 
+                padding-bottom: 1rem !important;
+                padding-left: 1.5rem !important;
+                padding-right: 1.5rem !important;
+                max-width: 99% !important; 
+            }
+            
+            /* 사이드바 스타일 및 정상 노출 보장 */
             [data-testid="stSidebar"] {
                 background-color: #F1F5F9 !important;
                 border-right: 1px solid #E2E8F0;
             }
-            [data-testid="stSidebar"] .block-container { padding-top: 1.5rem; }
+            [data-testid="stSidebar"] .block-container { 
+                padding-top: 1.5rem !important; 
+            }
             [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, 
             [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown {
                 color: #334155 !important;
             }
 
-            /* 아이패드/모바일 터치 스크롤 영역 부드럽게 처리 */
             div[data-testid="stDataFrame"] {
                 -webkit-overflow-scrolling: touch;
             }
-
             div[data-testid="column"] { align-self: flex-start; }
-            div[data-testid="stTextInput"], div[data-testid="stMultiSelect"] { min-height: 80px; }
-            div[data-testid="stTextInput"] label, div[data-testid="stMultiSelect"] label {
-                font-size: 13px !important;
-                font-weight: 600 !important;
-                white-space: nowrap !important;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                margin-bottom: 4px !important;
-            }
 
             .metric-box {
                 background: #FFFFFF;
@@ -100,7 +103,6 @@ def inject_custom_css():
                 padding-left: 10px;
             }
             
-            /* Radio 버튼 그룹 최적화 */
             div[role="radiogroup"] {
                 padding: 10px;
                 background: white;
@@ -108,7 +110,7 @@ def inject_custom_css():
                 border: 1px solid #E2E8F0;
             }
         </style>
-    """,
+        """,
         unsafe_allow_html=True,
     )
 
@@ -586,8 +588,12 @@ def load_debt_file(debt_bytes):
                 df_direct = pd.read_csv(io.BytesIO(debt_bytes), encoding=enc, on_bad_lines='skip', engine='python')
                 df_direct.columns = df_direct.columns.astype(str).str.strip()
                 
+                # ★ 채권 CSV 파일에 잘못 생성된 빈 껍데기 열(Unnamed) 무조건 제거
+                df_direct = df_direct.loc[:, ~df_direct.columns.str.contains('^Unnamed')]
+                
                 if "거래처" in df_direct.columns and "구분" in df_direct.columns:
-                    df_direct["거래처"] = df_direct["거래처"].replace("", np.nan).ffill()
+                    # 💡 거래처 이름 공백 제거로 누락 데이터 완벽 방지
+                    df_direct["거래처"] = df_direct["거래처"].replace("", np.nan).ffill().astype(str).str.strip()
                     
                     def map_gubun(val):
                         val_clean = re.sub(r'[^가-힣a-zA-Z0-9]', '', str(val))
@@ -745,11 +751,11 @@ def load_uploaded_files_from_bytes(file_tuples):
 
     result_df = pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
     
-    # ★ '미지정' 및 '담당자없음' 데이터 통합 및 최신 담당자 자동 추론 로직 적용
+    # ★ '미지정' 및 '담당자없음' 데이터 통합 및 최신 담당자 자동 추론 로직
     if not result_df.empty and "거래처" in result_df.columns and "담당자" in result_df.columns:
         result_df["담당자"] = result_df["담당자"].fillna("미지정").astype(str).str.strip()
         
-        # '담당자없음'을 포함하여 누락된 표현들을 모두 '미지정'으로 통일
+        # '담당자없음'을 포함하여 비어있거나 누락된 표현들을 모두 '미지정'으로 통일
         invalid_staff_markers = ["", "nan", "None", "NAT", "NaN", "담당자없음", "지정안함", "없음"]
         result_df["담당자"] = result_df["담당자"].replace(invalid_staff_markers, "미지정")
         
@@ -911,6 +917,26 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
 
 
 # ==========================================
+# ★ 누락되었던 필수 캐시 함수 복구 완료 ★
+# ==========================================
+@st.cache_data
+def cached_client_item_qty_pivot(df_client_filtered, years, all_months):
+    if df_client_filtered.empty:
+        return pd.DataFrame()
+    raw_ci_qty = df_client_filtered.pivot_table(
+        index="품목명", columns="연도월_정렬", values="출고량", aggfunc="sum"
+    ).fillna(0)
+    ci_expanded_data = {}
+    for yr in years:
+        yr_short = yr[2:]
+        for m in all_months:
+            col_key = f"{yr_short}년 {m}"
+            q_val = raw_ci_qty[col_key] if col_key in raw_ci_qty.columns else 0
+            ci_expanded_data[col_key] = q_val
+    return pd.DataFrame(ci_expanded_data, index=raw_ci_qty.index)
+
+
+# ==========================================
 # ★ 초고속 빈 껍데기 필터링 로직 ★
 # ==========================================
 def prepare_active_df_fast(df, target_col):
@@ -970,23 +996,6 @@ def cached_ranking_pivot(df_base, current_year, sel_staff, all_months):
     ranking_pivot["당해 누적 (만원)"] = ranking_pivot.sum(axis=1)
     ranking_pivot = ranking_pivot.sort_values(by="당해 누적 (만원)", ascending=False)
     return ranking_pivot
-
-
-@st.cache_data
-def cached_client_item_qty_pivot(df_client_filtered, years, all_months):
-    if df_client_filtered.empty:
-        return pd.DataFrame()
-    raw_ci_qty = df_client_filtered.pivot_table(
-        index="품목명", columns="연도월_정렬", values="출고량", aggfunc="sum"
-    ).fillna(0)
-    ci_expanded_data = {}
-    for yr in years:
-        yr_short = yr[2:]
-        for m in all_months:
-            col_key = f"{yr_short}년 {m}"
-            q_val = raw_ci_qty[col_key] if col_key in raw_ci_qty.columns else 0
-            ci_expanded_data[col_key] = q_val
-    return pd.DataFrame(ci_expanded_data, index=raw_ci_qty.index)
 
 
 # ----------------------------------------------------
@@ -1288,8 +1297,14 @@ if not full_df.empty:
     if pd.notnull(latest_dt_overall):
         latest_update_str = latest_dt_overall.strftime("%Y-%m-%d")
 
-    filter_container = st.container()
+    # ★ 필터 컨테이너 생성
+    try:
+        filter_container = st.container(border=True)
+    except TypeError:
+        filter_container = st.container()
+        
     with filter_container:
+        st.markdown("<div class='filter-marker'></div>", unsafe_allow_html=True)
         fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
 
         start_date = fc1.text_input("📅 조회 시작", "200101")
@@ -1749,7 +1764,8 @@ with tab2:
 
     m1, m2, m3, m4 = st.columns(4)
     tot_sales_c = df_client_filtered["매출액"].sum() * 1.1 / 10000 if not df_client_filtered.empty else 0.0
-    cur_sales_c = cur_month_sales_client * 1.1 / 10000
+    
+    cur_sales_c = cur_month_sales_client / 10000
 
     m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
     m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_client})</div><div class='metric-value'>{cur_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
@@ -1852,7 +1868,7 @@ with tab3:
             styled = styled.background_gradient(cmap=cmap, subset=numeric_cols, axis=None)
 
         if highlight_col_name and highlight_col_name in numeric_cols:
-            styled = styled.apply(lambda s: ['color: #B91C1C; font-weight: bold;'] * len(s), subset=[highlight_col_name], axis=0)
+            styled = styled.apply(lambda s: ['color: #B91C1C; font-weight: bold; background-color: #FEE2E2;'] * len(s), subset=[highlight_col_name], axis=0)
 
         st.dataframe(
             styled, 
@@ -1866,8 +1882,6 @@ with tab3:
 
     avail_years_short = [y[2:] for y in years]
     current_year_short = str(df_base["연도"].max())[2:] if not df_base.empty else (avail_years_short[0] if avail_years_short else "26")
-    
-    st.markdown("<div style='background-color: #EFF6FF; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #3B82F6; margin-bottom: 15px;'>💡 <b>연도별 상세 조회:</b> 기본적으로 당해년도만 펼쳐져 있으며, 과거 연도는 '연간총합'만 표시됩니다. 아래에서 과거 연도를 선택(클릭)하면 해당 연도의 월별 상세 내역이 펼쳐집니다.</div>", unsafe_allow_html=True)
     
     selected_detail_years = st.multiselect(
         "📅 월별 상세 내역을 펼쳐볼 연도 선택 (단가표 제외)",
@@ -1966,71 +1980,71 @@ with tab4:
         else:
             st.info(f"💡 {current_year}년에 선택한 담당자({sel_staff})의 거래처 매출 실적 데이터가 없습니다.")
 
-    st.markdown("<div class='sub-header'>⚠️ 담당자 미지정 신규/누락 거래처 (직접 지정)</div>", unsafe_allow_html=True)
     if not df_base.empty:
-        unassigned_df = df_base[df_base["담당자"] == "미지정"]
-        
-        custom_staffs = ["가스코아산"]
-        existing_staffs = [s for s in full_df["담당자"].unique() if s != "미지정"]
-        combined_staffs = sorted(list(set(existing_staffs + custom_staffs)))
-        
-        all_staff_options = ["미지정"] + combined_staffs
-        
-        if not unassigned_df.empty:
-            unassigned_summary = unassigned_df.groupby("거래처").agg(
-                최근매출일=("매출일_dt", "max"),
-                총매출액_만원=("매출액", lambda x: sum(x) * 1.1 / 10000)
-            ).reset_index()
+        with st.expander("⚠️ 담당자 미지정 신규/누락 거래처 (직접 지정) 열기/닫기", expanded=True):
+            unassigned_df = df_base[df_base["담당자"] == "미지정"]
             
-            unassigned_summary = unassigned_summary.sort_values(by="총매출액_만원", ascending=False)
-            unassigned_summary["최근매출일"] = unassigned_summary["최근매출일"].dt.strftime("%Y-%m-%d")
-            unassigned_summary["담당자지정"] = "미지정"
+            custom_staffs = ["가스코아산"]
+            existing_staffs = [s for s in full_df["담당자"].unique() if s != "미지정"]
+            combined_staffs = sorted(list(set(existing_staffs + custom_staffs)))
             
-            st.warning(f"💡 자동 추론으로도 담당자를 찾을 수 없는 거래처가 총 **{len(unassigned_summary)}곳** 있습니다. 표의 **'담당자지정'** 열을 클릭하여 담당자를 선택하고 아래 저장 버튼을 누르세요.")
+            all_staff_options = ["미지정"] + combined_staffs
             
-            edited_unassigned = st.data_editor(
-                unassigned_summary,
-                column_config={
-                    "거래처": st.column_config.TextColumn("거래처", disabled=True),
-                    "최근매출일": st.column_config.TextColumn("최근매출일", disabled=True),
-                    "총매출액_만원": st.column_config.NumberColumn("총매출액(만원)", disabled=True, format="%d"),
-                    "담당자지정": st.column_config.SelectboxColumn(
-                        "👤 담당자 지정 (클릭하여 변경)",
-                        help="이 거래처의 담당자를 선택하세요.",
-                        options=all_staff_options,
-                        required=True
-                    )
-                },
-                use_container_width=True,
-                hide_index=True,
-                key="unassigned_editor"
-            )
-            
-            if st.button("💾 변경된 담당자 저장 및 전체 대시보드 적용", type="primary"):
-                changed_rows = edited_unassigned[edited_unassigned["담당자지정"] != "미지정"]
-                if not changed_rows.empty:
-                    manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
-                    if os.path.exists(manual_map_path):
-                        try:
-                            existing_map = pd.read_csv(manual_map_path).set_index("거래처")["담당자"].to_dict()
-                        except:
+            if not unassigned_df.empty:
+                unassigned_summary = unassigned_df.groupby("거래처").agg(
+                    최근매출일=("매출일_dt", "max"),
+                    총매출액_만원=("매출액", lambda x: sum(x) * 1.1 / 10000)
+                ).reset_index()
+                
+                unassigned_summary = unassigned_summary.sort_values(by="총매출액_만원", ascending=False)
+                unassigned_summary["최근매출일"] = unassigned_summary["최근매출일"].dt.strftime("%Y-%m-%d")
+                unassigned_summary["담당자지정"] = "미지정"
+                
+                st.warning(f"💡 자동 추론으로도 담당자를 찾을 수 없는 거래처가 총 **{len(unassigned_summary)}곳** 있습니다. 표의 **'담당자지정'** 열을 클릭하여 담당자를 선택하고 아래 저장 버튼을 누르세요.")
+                
+                edited_unassigned = st.data_editor(
+                    unassigned_summary,
+                    column_config={
+                        "거래처": st.column_config.TextColumn("거래처", disabled=True),
+                        "최근매출일": st.column_config.TextColumn("최근매출일", disabled=True),
+                        "총매출액_만원": st.column_config.NumberColumn("총매출액(만원)", disabled=True, format="%d"),
+                        "담당자지정": st.column_config.SelectboxColumn(
+                            "👤 담당자 지정 (클릭하여 변경)",
+                            help="이 거래처의 담당자를 선택하세요.",
+                            options=all_staff_options,
+                            required=True
+                        )
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                    key="unassigned_editor"
+                )
+                
+                if st.button("💾 변경된 담당자 저장 및 전체 대시보드 적용", type="primary"):
+                    changed_rows = edited_unassigned[edited_unassigned["담당자지정"] != "미지정"]
+                    if not changed_rows.empty:
+                        manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
+                        if os.path.exists(manual_map_path):
+                            try:
+                                existing_map = pd.read_csv(manual_map_path).set_index("거래처")["담당자"].to_dict()
+                            except:
+                                existing_map = {}
+                        else:
                             existing_map = {}
-                    else:
-                        existing_map = {}
+                            
+                        for _, row in changed_rows.iterrows():
+                            existing_map[row["거래처"]] = row["담당자지정"]
+                            
+                        save_df = pd.DataFrame(list(existing_map.items()), columns=["거래처", "담당자"])
+                        save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
                         
-                    for _, row in changed_rows.iterrows():
-                        existing_map[row["거래처"]] = row["담당자지정"]
-                        
-                    save_df = pd.DataFrame(list(existing_map.items()), columns=["거래처", "담당자"])
-                    save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
-                    
-                    st.success("✅ 담당자 지정이 완료되었습니다! 대시보드를 새로고침합니다.")
-                    load_uploaded_files_from_bytes.clear() 
-                    st.rerun()
-        else:
-            st.success("🎉 모든 거래처에 담당자가 완벽하게 지정되어 있습니다!")
-            
-        with st.expander("🔄 이미 지정된 기존 거래처 담당자 수정/강제 변경하기"):
+                        st.success("✅ 담당자 지정이 완료되었습니다! 대시보드를 새로고침합니다.")
+                        load_uploaded_files_from_bytes.clear() 
+                        st.rerun()
+            else:
+                st.success("🎉 모든 거래처에 담당자가 완벽하게 지정되어 있습니다!")
+                
+        with st.expander("🔄 이미 지정된 기존 거래처 담당자 수정/강제 변경하기 열기/닫기"):
             assigned_df = df_base[df_base["담당자"] != "미지정"]
             if not assigned_df.empty:
                 assigned_summary = assigned_df.groupby("거래처").agg(
@@ -2103,7 +2117,13 @@ with tab4:
 with tab5:
     latest_month = None
     if not filtered_debt_df.empty:
-        numeric_cols_debt = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
+        # 데이터가 0(없는) 달 제거 로직 추가
+        numeric_cols_temp = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
+        valid_numeric_cols = [c for c in numeric_cols_temp if filtered_debt_df[c].abs().sum() > 0]
+        
+        filtered_debt_df = filtered_debt_df[["거래처", "구분"] + valid_numeric_cols]
+        numeric_cols_debt = valid_numeric_cols
+        
         if numeric_cols_debt:
             latest_month = numeric_cols_debt[-1]
             
@@ -2152,6 +2172,13 @@ with tab5:
             else:
                 disp_debt = filtered_debt_df.copy()
             
+            gubun_order = {"이월": 1, "매출": 2, "수금": 3, "잔액": 4, "합계": 5}
+            disp_debt["구분순위"] = disp_debt["구분"].map(gubun_order).fillna(99)
+            client_order = {c: i for i, c in enumerate(disp_debt["거래처"].unique())}
+            disp_debt["거래처순위"] = disp_debt["거래처"].map(client_order)
+            
+            disp_debt = disp_debt.sort_values(by=["거래처순위", "구분순위"]).drop(columns=["거래처순위", "구분순위"])
+            
             disp_debt = disp_debt.set_index(["거래처", "구분"])
             
             def apply_debt_style_fast(df):
@@ -2161,19 +2188,41 @@ with tab5:
                 gubuns = df.index.get_level_values('구분')
                 
                 u_clients_fast = clients.unique()
-                color_map_fast = {client: '#FFFFFF' if i % 2 == 0 else '#F8FAFC' for i, client in enumerate(u_clients_fast)}
+                color_map_fast = {client: '#FFFFFF' if i % 2 == 0 else '#F1F5F9' for i, client in enumerate(u_clients_fast)}
                 
                 for r in range(df.shape[0]):
                     client = clients[r]
+                    gubun = gubuns[r]
+                    
+                    is_first_of_client = (r == 0) or (clients[r] != clients[r-1])
+                    is_last_of_client = (r == df.shape[0] - 1) or (clients[r] != clients[r+1])
+                    
                     if client == "📌 [전체 합계]":
                         bg_color = '#E2E8F0'
                         for c in range(df.shape[1]):
-                            styles[r, c] = f'background-color: {bg_color}; border-top: 2px solid #CBD5E1;'
+                            styles[r, c] = f'background-color: {bg_color}; border-top: 2px solid #64748B; border-bottom: 2px solid #64748B; font-weight: 800; color: #0F172A;'
                     else:
-                        bg_color = color_map_fast.get(client, '#FFFFFF')
-                        for c in range(df.shape[1]):
-                            styles[r, c] = f'background-color: {bg_color};'
+                        base_bg = color_map_fast.get(client, '#FFFFFF')
+                        
+                        if gubun == '잔액':
+                            bg_color = '#E6F0FD' if base_bg == '#FFFFFF' else '#DCE8F6'
+                            font_weight = 'font-weight: 700; color: #1E293B;'
+                        else:
+                            bg_color = base_bg
+                            font_weight = 'font-weight: 400; color: #334155;'
                             
+                        border_top = 'border-top: 2px solid #94A3B8;' if is_first_of_client else 'border-top: 1px solid #E2E8F0;'
+                        border_bottom = 'border-bottom: 2px solid #94A3B8;' if is_last_of_client else ''
+                        
+                        for c in range(df.shape[1]):
+                            styles[r, c] = f'background-color: {bg_color}; {border_top} {border_bottom} {font_weight}'
+                            
+                def override_style(old_style, new_bg, new_color):
+                    s = re.sub(r'background-color:\s*#[0-9a-fA-F]+;', '', old_style)
+                    s = re.sub(r'color:\s*#[0-9a-fA-F]+;', '', s)
+                    s = re.sub(r'font-weight:\s*\d+;', '', s)
+                    return s + f' background-color: {new_bg}; color: {new_color}; font-weight: 900;'
+
                 for client in u_clients_fast:
                     if client == "📌 [전체 합계]":
                         continue
@@ -2187,10 +2236,6 @@ with tab5:
                         if gubun == '매출': i_sal = r
                         elif gubun == '잔액': i_bal = r
                         
-                    if i_bal != -1:
-                        for c in range(df.shape[1]):
-                            styles[i_bal, c] += ' font-weight: 700; color: #334155;'
-                            
                     if i_sal != -1 and i_bal != -1 and df.shape[1] > 0:
                         l_month_idx = -1
                         for c in range(df.shape[1]-1, -1, -1):
@@ -2205,19 +2250,19 @@ with tab5:
                             
                             if final_bal > 0:
                                 if final_bal > sal_latest:
-                                    styles[i_bal, l_month_idx] += ' background-color: #FEE2E2; color: #B91C1C; font-weight: 800;'
+                                    styles[i_bal, l_month_idx] = override_style(styles[i_bal, l_month_idx], '#FEE2E2', '#B91C1C')
                                     accumulated = 0.0
                                     for c in range(df.shape[1]-1, -1, -1):
                                         if c > l_month_idx: continue
                                         val = float(df.iat[i_sal, c]) if pd.notna(df.iat[i_sal, c]) else 0.0
                                         
                                         if accumulated < final_bal:
-                                            styles[i_sal, c] += ' background-color: #FEE2E2; color: #B91C1C; font-weight: 800;'
+                                            styles[i_sal, c] = override_style(styles[i_sal, c], '#FEE2E2', '#B91C1C')
                                             accumulated += val
                                         else:
                                             break
                                 else:
-                                    styles[i_bal, l_month_idx] += ' background-color: #EFF6FF; color: #1D4ED8; font-weight: 800;'
+                                    styles[i_bal, l_month_idx] = override_style(styles[i_bal, l_month_idx], '#EFF6FF', '#1D4ED8')
                                     
                 return pd.DataFrame(styles, index=df.index, columns=df.columns)
 
