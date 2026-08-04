@@ -1,3 +1,5 @@
+0804-2
+
 import io
 import os
 import re
@@ -9,6 +11,7 @@ from bs4 import BeautifulSoup
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import plotly.graph_objects as go
 import plotly.express as px
 import datetime
@@ -77,9 +80,6 @@ def inject_custom_css():
                 color: #334155 !important;
             }
 
-            div[data-testid="stDataFrame"] {
-                -webkit-overflow-scrolling: touch;
-            }
             div[data-testid="column"] { align-self: flex-start; }
 
             .metric-box {
@@ -1134,7 +1134,7 @@ dart_api_key = st.sidebar.text_input(
     "DART API 키 (재무정보 연동용)", 
     value=saved_api_key, 
     type="password", 
-    help="금융감독원 Open DART API 키를 입력하세요. 한 번 입력하면 자동 저장되어 새로고침해도 유지됩니다."
+    help="금융감독원 Open DART API 키를 입력하세요. 한 일 입력하면 자동 저장되어 새로고침해도 유지됩니다."
 )
 
 if dart_api_key and dart_api_key != saved_api_key:
@@ -1297,14 +1297,81 @@ if not full_df.empty:
     if pd.notnull(latest_dt_overall):
         latest_update_str = latest_dt_overall.strftime("%Y-%m-%d")
 
-    # ★ 필터 컨테이너 생성
+    # ==============================================================
+    # 🚀 [진짜 찐 최종] 마크다운 우회 공식 컴포넌트(iframe) 핵 적용
+    # ==============================================================
     try:
         filter_container = st.container(border=True)
     except TypeError:
         filter_container = st.container()
         
     with filter_container:
-        st.markdown("<div class='filter-marker'></div>", unsafe_allow_html=True)
+        # 이 투명 마커는 스크립트가 타겟을 찾기 위한 등대 역할을 합니다. (텍스트 노출 안됨)
+        st.markdown("<div id='sticky-marker' style='display:none;'></div>", unsafe_allow_html=True)
+        
+        # Streamlit 공식 components 모듈을 사용해 스크립트를 독립된 공간(iframe)에서 실행
+        # 이렇게 하면 마크다운 파서가 절대 개입하지 못해 코드가 화면에 노출되지 않습니다.
+        components.html(
+            """
+            <script>
+            // 브라우저 렌더링 속도 차이로 인해 0.1초 뒤에 스크립트 실행
+            setTimeout(function() {
+                try {
+                    // iframe 내부에서 상위(Streamlit 메인 창)의 document에 접근
+                    var parentDoc = window.parent.document;
+                    var marker = parentDoc.getElementById('sticky-marker');
+                    
+                    if (marker) {
+                        // 마커가 속한 필터 테두리 박스를 정확히 타겟팅
+                        var target = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]');
+                        if (!target) {
+                            target = marker.closest('div[data-testid="stVerticalBlock"]');
+                        }
+                        
+                        if (target && target.dataset.fixed !== 'true') {
+                            target.dataset.fixed = 'true'; // 중복 실행 방지
+                            
+                            // 1. 강제 고정 속성 주입 (스크롤 제약 무시)
+                            target.style.setProperty('position', 'fixed', 'important');
+                            target.style.setProperty('top', '2.875rem', 'important');
+                            target.style.setProperty('z-index', '999999', 'important');
+                            
+                            // 2. 뒤쪽 컨텐츠 비침 방지용 디자인
+                            target.style.setProperty('background-color', '#F8FAFC', 'important');
+                            target.style.setProperty('box-shadow', '0 10px 15px -3px rgba(0,0,0,0.1)', 'important');
+                            target.style.setProperty('border', '2px solid #2563EB', 'important'); // 고정 확인용
+                            target.style.setProperty('border-radius', '8px', 'important');
+                            target.style.setProperty('padding', '10px', 'important');
+                            
+                            // 3. 필터가 공중으로 떠서 생기는 빈자리를 채워줄 스페이서 생성 (화면 덜컹거림 방지)
+                            var spacer = parentDoc.createElement('div');
+                            spacer.style.height = target.offsetHeight + 'px';
+                            spacer.style.width = '100%';
+                            spacer.style.marginBottom = '20px';
+                            target.parentNode.insertBefore(spacer, target);
+                            
+                            // 4. 사이드바 열림/닫힘에 맞춰 필터 가로 길이 실시간 60FPS 동기화
+                            function syncPos() {
+                                if (parentDoc.body.contains(target)) {
+                                    var rect = spacer.getBoundingClientRect();
+                                    target.style.setProperty('width', rect.width + 'px', 'important');
+                                    target.style.setProperty('left', rect.left + 'px', 'important');
+                                    requestAnimationFrame(syncPos);
+                                }
+                            }
+                            syncPos();
+                        }
+                    }
+                } catch (e) {
+                    // 크로스도메인 에러 무시
+                }
+            }, 100);
+            </script>
+            """,
+            height=0,
+            width=0
+        )
+
         fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
 
         start_date = fc1.text_input("📅 조회 시작", "200101")
