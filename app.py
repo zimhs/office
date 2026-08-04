@@ -1,5 +1,3 @@
-
-
 import io
 import os
 import re
@@ -1298,7 +1296,7 @@ if not full_df.empty:
         latest_update_str = latest_dt_overall.strftime("%Y-%m-%d")
 
     # ==============================================================
-    # 🚀 [진짜 찐 최종] 마크다운 우회 공식 컴포넌트(iframe) 핵 적용
+    # 🚀 [진짜 찐 최종] 마크다운 우회 공식 컴포넌트(iframe) DOM 해킹 적용
     # ==============================================================
     try:
         filter_container = st.container(border=True)
@@ -1306,66 +1304,66 @@ if not full_df.empty:
         filter_container = st.container()
         
     with filter_container:
-        # 이 투명 마커는 스크립트가 타겟을 찾기 위한 등대 역할을 합니다. (텍스트 노출 안됨)
         st.markdown("<div id='sticky-marker' style='display:none;'></div>", unsafe_allow_html=True)
         
-        # Streamlit 공식 components 모듈을 사용해 스크립트를 독립된 공간(iframe)에서 실행
-        # 이렇게 하면 마크다운 파서가 절대 개입하지 못해 코드가 화면에 노출되지 않습니다.
         components.html(
             """
             <script>
-            // 브라우저 렌더링 속도 차이로 인해 0.1초 뒤에 스크립트 실행
             setTimeout(function() {
                 try {
-                    // iframe 내부에서 상위(Streamlit 메인 창)의 document에 접근
                     var parentDoc = window.parent.document;
                     var marker = parentDoc.getElementById('sticky-marker');
                     
                     if (marker) {
-                        // 마커가 속한 필터 테두리 박스를 정확히 타겟팅
-                        var target = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]');
-                        if (!target) {
-                            target = marker.closest('div[data-testid="stVerticalBlock"]');
-                        }
+                        var targetBox = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]');
+                        if (!targetBox) targetBox = marker.closest('div[data-testid="stVerticalBlock"]');
                         
-                        if (target && target.dataset.fixed !== 'true') {
-                            target.dataset.fixed = 'true'; // 중복 실행 방지
+                        var stTabs = parentDoc.querySelector('div[data-testid="stTabs"]');
+                        var tabHeader = stTabs ? stTabs.querySelector('div:first-child') : null;
+                        
+                        if (targetBox && tabHeader && targetBox.dataset.hacked !== 'true') {
+                            targetBox.dataset.hacked = 'true';
                             
-                            // 1. 강제 고정 속성 주입 (스크롤 제약 무시)
-                            target.style.setProperty('position', 'fixed', 'important');
-                            target.style.setProperty('top', '2.875rem', 'important');
-                            target.style.setProperty('z-index', '999999', 'important');
+                            // 🔥 [강력한 해킹] DOM 트리를 조작해서 탭 헤더를 필터 박스 안으로 물리적 이동! 🔥
+                            targetBox.appendChild(tabHeader);
                             
-                            // 2. 뒤쪽 컨텐츠 비침 방지용 디자인
-                            target.style.setProperty('background-color', '#F8FAFC', 'important');
-                            target.style.setProperty('box-shadow', '0 10px 15px -3px rgba(0,0,0,0.1)', 'important');
-                            target.style.setProperty('border', '2px solid #2563EB', 'important'); // 고정 확인용
-                            target.style.setProperty('border-radius', '8px', 'important');
-                            target.style.setProperty('padding', '10px', 'important');
+                            // 1. 박스 스타일 (틀고정, 테두리 유지)
+                            targetBox.style.setProperty('position', 'fixed', 'important');
+                            targetBox.style.setProperty('top', '2.875rem', 'important');
+                            targetBox.style.setProperty('z-index', '999999', 'important');
+                            targetBox.style.setProperty('background-color', '#FFFFFF', 'important'); // 탭과 자연스럽게 연결되도록 흰색으로
+                            targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
+                            targetBox.style.setProperty('border-radius', '8px', 'important');
+                            targetBox.style.setProperty('padding', '10px 10px 0px 10px', 'important'); // 하단 패딩을 없애 탭이 밑에 딱 붙게 함
+                            targetBox.style.setProperty('box-shadow', '0 10px 15px -3px rgba(0,0,0,0.1)', 'important');
                             
-                            // 3. 필터가 공중으로 떠서 생기는 빈자리를 채워줄 스페이서 생성 (화면 덜컹거림 방지)
+                            // 2. 탭 헤더 스타일 (박스 내부에 이쁘게 안착하도록 마진/패딩 조정)
+                            tabHeader.style.setProperty('padding', '0 10px 0px 10px', 'important');
+                            tabHeader.style.setProperty('margin-top', '5px', 'important');
+                            tabHeader.style.setProperty('border-bottom', 'none', 'important');
+                            tabHeader.style.setProperty('background-color', 'transparent', 'important');
+                            
+                            // 3. 스페이서 생성 (위로 붕 뜨면서 밑에 컨텐츠가 딸려 올라오는 것 방지)
                             var spacer = parentDoc.createElement('div');
-                            spacer.style.height = target.offsetHeight + 'px';
+                            spacer.style.height = targetBox.offsetHeight + 'px';
                             spacer.style.width = '100%';
                             spacer.style.marginBottom = '20px';
-                            target.parentNode.insertBefore(spacer, target);
+                            targetBox.parentNode.insertBefore(spacer, targetBox);
                             
-                            // 4. 사이드바 열림/닫힘에 맞춰 필터 가로 길이 실시간 60FPS 동기화
-                            function syncPos() {
-                                if (parentDoc.body.contains(target)) {
+                            // 4. 가로 크기 동기화만 유지 (Fixed 특성상 가로폭 유지를 위해)
+                            function syncWidth() {
+                                if (parentDoc.body.contains(targetBox)) {
                                     var rect = spacer.getBoundingClientRect();
-                                    target.style.setProperty('width', rect.width + 'px', 'important');
-                                    target.style.setProperty('left', rect.left + 'px', 'important');
-                                    requestAnimationFrame(syncPos);
+                                    targetBox.style.setProperty('width', rect.width + 'px', 'important');
+                                    targetBox.style.setProperty('left', rect.left + 'px', 'important');
+                                    requestAnimationFrame(syncWidth);
                                 }
                             }
-                            syncPos();
+                            syncWidth();
                         }
                     }
-                } catch (e) {
-                    // 크로스도메인 에러 무시
-                }
-            }, 100);
+                } catch (e) {}
+            }, 200); // DOM이 완전히 렌더링되도록 0.2초 대기
             </script>
             """,
             height=0,
