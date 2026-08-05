@@ -2206,14 +2206,21 @@ with tab5:
             warning_count = 0
             
             if latest_month:
+                # 최신월과 이전월 컬럼명 찾기 (익월말 조건 적용용)
+                latest_idx = list(numeric_cols_debt).index(latest_month)
+                prev_month = numeric_cols_debt[latest_idx - 1] if latest_idx > 0 else None
+                
                 u_clients = filtered_debt_df['거래처'].unique()
                 for uc in u_clients:
                     c_mask = filtered_debt_df['거래처'] == uc
                     b_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '잔액'), latest_month].sum()
                     s_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '매출'), latest_month].sum()
+                    s_val_prev = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '매출'), prev_month].sum() if prev_month else 0.0
                     
                     total_outstanding += max(0, b_val)
-                    if b_val > 0 and b_val > s_val:
+                    
+                    # ★ 익월말 결제 조건: 당월 매출(s_val) + 전월 매출(s_val_prev) 보다 잔액이 크면 지연 채권으로 카운트
+                    if b_val > 0 and b_val > (s_val + s_val_prev + 1): # 부동소수점 오차 감안 (+1)
                         warning_count += 1
                         
             m1, m2 = st.columns(2)
@@ -2311,22 +2318,32 @@ with tab5:
                                 
                         if l_month_idx != -1:
                             final_bal = float(df.iat[i_bal, l_month_idx]) if pd.notna(df.iat[i_bal, l_month_idx]) else 0.0
-                            sal_latest = float(df.iat[i_sal, l_month_idx]) if pd.notna(df.iat[i_sal, l_month_idx]) else 0.0
                             
                             if final_bal > 0:
-                                if final_bal > sal_latest:
+                                # ★ 당월 및 전월 매출 가져오기
+                                sal_latest = float(df.iat[i_sal, l_month_idx]) if pd.notna(df.iat[i_sal, l_month_idx]) else 0.0
+                                sal_prev = float(df.iat[i_sal, l_month_idx - 1]) if (l_month_idx - 1) >= 0 and pd.notna(df.iat[i_sal, l_month_idx - 1]) else 0.0
+                                
+                                normal_allowed_bal = sal_latest + sal_prev # 정상 채권 허용 잔액 (익월말 조건)
+                                
+                                if final_bal > normal_allowed_bal + 1: # 부동소수점 오차 감안 (+1)
+                                    # 총 잔액 셀은 위험(빨간색)으로 표시
                                     styles[i_bal, l_month_idx] = override_style(styles[i_bal, l_month_idx], '#FEE2E2', '#B91C1C')
+                                    
                                     accumulated = 0.0
                                     for c in range(df.shape[1]-1, -1, -1):
                                         if c > l_month_idx: continue
                                         val = float(df.iat[i_sal, c]) if pd.notna(df.iat[i_sal, c]) else 0.0
                                         
                                         if accumulated < final_bal:
-                                            styles[i_sal, c] = override_style(styles[i_sal, c], '#FEE2E2', '#B91C1C')
+                                            # ★ 역추적 시, 최신 2개월(당월, 전월)은 제외하고 그 이전 달(전전월 등)의 매출만 분홍색 적용
+                                            if c < l_month_idx - 1:
+                                                styles[i_sal, c] = override_style(styles[i_sal, c], '#FEE2E2', '#B91C1C')
                                             accumulated += val
                                         else:
                                             break
                                 else:
+                                    # 잔액이 당월+전월 매출 합계 이하라면 완전 정상 채권으로 파란색 마킹
                                     styles[i_bal, l_month_idx] = override_style(styles[i_bal, l_month_idx], '#EFF6FF', '#1D4ED8')
                                     
                 return pd.DataFrame(styles, index=df.index, columns=df.columns)
