@@ -209,8 +209,11 @@ def get_exact_original_price(series):
 def convert_dfs_to_excel(dfs_dict):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        sheets_written = False # 시트 생성 여부 확인용 플래그
+        
         for sheet_name, (df, use_index) in dfs_dict.items():
             if not df.empty:
+                sheets_written = True # 하나라도 시트가 쓰여지면 True로 변경
                 if isinstance(df.columns, pd.MultiIndex):
                     df_to_save = df.copy()
                     df_to_save.columns = [
@@ -222,6 +225,12 @@ def convert_dfs_to_excel(dfs_dict):
                     )
                 else:
                     df.to_excel(writer, sheet_name=sheet_name, index=use_index)
+        
+        # ★ 빈 워크북 저장 시 발생하는 IndexError 원천 차단 로직
+        if not sheets_written:
+            empty_df = pd.DataFrame(["조회된 데이터가 없습니다."])
+            empty_df.to_excel(writer, sheet_name="데이터없음", index=False, header=False)
+            
     return output.getvalue()
 
 
@@ -2282,11 +2291,11 @@ with tab5:
                         for c in range(df.shape[1]):
                             styles[r, c] = f'background-color: {bg_color}; {border_top} {border_bottom} {font_weight}'
                             
-                def override_style(old_style, new_bg, new_color):
-                    s = re.sub(r'background-color:\s*#[0-9a-fA-F]+;', '', old_style)
-                    s = re.sub(r'color:\s*#[0-9a-fA-F]+;', '', s)
-                    s = re.sub(r'font-weight:\s*\d+;', '', s)
-                    return s + f' background-color: {new_bg}; color: {new_color}; font-weight: 900;'
+            def override_style(old_style, new_bg, new_color):
+                s = re.sub(r'background-color:\s*#[0-9a-fA-F]+;', '', old_style)
+                s = re.sub(r'color:\s*#[0-9a-fA-F]+;', '', s)
+                s = re.sub(r'font-weight:\s*\d+;', '', s)
+                return s + f' background-color: {new_bg}; color: {new_color}; font-weight: 900;'
 
                 for client in u_clients_fast:
                     if client == "📌 [전체 합계]":
