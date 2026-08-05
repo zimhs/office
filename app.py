@@ -209,6 +209,8 @@ def get_exact_original_price(series):
 def convert_dfs_to_excel(dfs_dict):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        sheets_written = False  # 시트가 하나라도 쓰였는지 추적
+        
         for sheet_name, (df, use_index) in dfs_dict.items():
             if not df.empty:
                 if isinstance(df.columns, pd.MultiIndex):
@@ -222,6 +224,13 @@ def convert_dfs_to_excel(dfs_dict):
                     )
                 else:
                     df.to_excel(writer, sheet_name=sheet_name, index=use_index)
+                
+                sheets_written = True
+                
+        # 예외 처리: 데이터가 비어있어 시트가 하나도 생성되지 않았을 경우
+        if not sheets_written:
+            pd.DataFrame([["업로드된 데이터가 없습니다."]]).to_excel(writer, sheet_name="데이터없음", index=False, header=False)
+            
     return output.getvalue()
 
 
@@ -364,6 +373,9 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
 # ★ 메모 생성 AppleScript ★ 
 # ==========================================
 def open_macos_notes_folder(client_name, dart_api_key, df_integrated=None):
+    if sys.platform != "darwin":
+        return False
+        
     safe_client_name = client_name.replace('"', '\\"')
 
     info = get_company_info_hybrid(client_name, dart_api_key)
@@ -1132,7 +1144,7 @@ dart_api_key = st.sidebar.text_input(
     "DART API 키 (재무정보 연동용)", 
     value=saved_api_key, 
     type="password", 
-    help="금융감독원 Open DART API 키를 입력하세요. 한 일 입력하면 자동 저장되어 새로고침해도 유지됩니다."
+    help="금융감독원 Open DART API 키를 입력하세요. 한 번 입력하면 자동 저장되어 새로고침해도 유지됩니다."
 )
 
 if dart_api_key and dart_api_key != saved_api_key:
