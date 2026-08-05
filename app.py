@@ -1,3 +1,5 @@
+0804-최종
+
 import io
 import os
 import re
@@ -209,8 +211,6 @@ def get_exact_original_price(series):
 def convert_dfs_to_excel(dfs_dict):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        sheets_written = False  # 시트가 하나라도 쓰였는지 추적
-        
         for sheet_name, (df, use_index) in dfs_dict.items():
             if not df.empty:
                 if isinstance(df.columns, pd.MultiIndex):
@@ -224,13 +224,6 @@ def convert_dfs_to_excel(dfs_dict):
                     )
                 else:
                     df.to_excel(writer, sheet_name=sheet_name, index=use_index)
-                
-                sheets_written = True
-                
-        # 예외 처리: 데이터가 비어있어 시트가 하나도 생성되지 않았을 경우
-        if not sheets_written:
-            pd.DataFrame([["업로드된 데이터가 없습니다."]]).to_excel(writer, sheet_name="데이터없음", index=False, header=False)
-            
     return output.getvalue()
 
 
@@ -373,9 +366,6 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
 # ★ 메모 생성 AppleScript ★ 
 # ==========================================
 def open_macos_notes_folder(client_name, dart_api_key, df_integrated=None):
-    if sys.platform != "darwin":
-        return False
-        
     safe_client_name = client_name.replace('"', '\\"')
 
     info = get_company_info_hybrid(client_name, dart_api_key)
@@ -1144,7 +1134,7 @@ dart_api_key = st.sidebar.text_input(
     "DART API 키 (재무정보 연동용)", 
     value=saved_api_key, 
     type="password", 
-    help="금융감독원 Open DART API 키를 입력하세요. 한 번 입력하면 자동 저장되어 새로고침해도 유지됩니다."
+    help="금융감독원 Open DART API 키를 입력하세요. 한 일 입력하면 자동 저장되어 새로고침해도 유지됩니다."
 )
 
 if dart_api_key and dart_api_key != saved_api_key:
@@ -2218,21 +2208,14 @@ with tab5:
             warning_count = 0
             
             if latest_month:
-                # 최신월과 이전월 컬럼명 찾기 (익월말 조건 적용용)
-                latest_idx = list(numeric_cols_debt).index(latest_month)
-                prev_month = numeric_cols_debt[latest_idx - 1] if latest_idx > 0 else None
-                
                 u_clients = filtered_debt_df['거래처'].unique()
                 for uc in u_clients:
                     c_mask = filtered_debt_df['거래처'] == uc
                     b_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '잔액'), latest_month].sum()
                     s_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '매출'), latest_month].sum()
-                    s_val_prev = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '매출'), prev_month].sum() if prev_month else 0.0
                     
                     total_outstanding += max(0, b_val)
-                    
-                    # ★ 익월말 결제 조건: 당월 매출(s_val) + 전월 매출(s_val_prev) 보다 잔액이 크면 지연 채권으로 카운트
-                    if b_val > 0 and b_val > (s_val + s_val_prev + 1): # 부동소수점 오차 감안 (+1)
+                    if b_val > 0 and b_val > s_val:
                         warning_count += 1
                         
             m1, m2 = st.columns(2)
@@ -2330,32 +2313,22 @@ with tab5:
                                 
                         if l_month_idx != -1:
                             final_bal = float(df.iat[i_bal, l_month_idx]) if pd.notna(df.iat[i_bal, l_month_idx]) else 0.0
+                            sal_latest = float(df.iat[i_sal, l_month_idx]) if pd.notna(df.iat[i_sal, l_month_idx]) else 0.0
                             
                             if final_bal > 0:
-                                # ★ 당월 및 전월 매출 가져오기
-                                sal_latest = float(df.iat[i_sal, l_month_idx]) if pd.notna(df.iat[i_sal, l_month_idx]) else 0.0
-                                sal_prev = float(df.iat[i_sal, l_month_idx - 1]) if (l_month_idx - 1) >= 0 and pd.notna(df.iat[i_sal, l_month_idx - 1]) else 0.0
-                                
-                                normal_allowed_bal = sal_latest + sal_prev # 정상 채권 허용 잔액 (익월말 조건)
-                                
-                                if final_bal > normal_allowed_bal + 1: # 부동소수점 오차 감안 (+1)
-                                    # 총 잔액 셀은 위험(빨간색)으로 표시
+                                if final_bal > sal_latest:
                                     styles[i_bal, l_month_idx] = override_style(styles[i_bal, l_month_idx], '#FEE2E2', '#B91C1C')
-                                    
                                     accumulated = 0.0
                                     for c in range(df.shape[1]-1, -1, -1):
                                         if c > l_month_idx: continue
                                         val = float(df.iat[i_sal, c]) if pd.notna(df.iat[i_sal, c]) else 0.0
                                         
                                         if accumulated < final_bal:
-                                            # ★ 역추적 시, 최신 2개월(당월, 전월)은 제외하고 그 이전 달(전전월 등)의 매출만 분홍색 적용
-                                            if c < l_month_idx - 1:
-                                                styles[i_sal, c] = override_style(styles[i_sal, c], '#FEE2E2', '#B91C1C')
+                                            styles[i_sal, c] = override_style(styles[i_sal, c], '#FEE2E2', '#B91C1C')
                                             accumulated += val
                                         else:
                                             break
                                 else:
-                                    # 잔액이 당월+전월 매출 합계 이하라면 완전 정상 채권으로 파란색 마킹
                                     styles[i_bal, l_month_idx] = override_style(styles[i_bal, l_month_idx], '#EFF6FF', '#1D4ED8')
                                     
                 return pd.DataFrame(styles, index=df.index, columns=df.columns)
