@@ -2463,7 +2463,40 @@ def style_with_sum(disp_df, fmt_str, cmap=None, subset_cols=None, axis=None):
     return styled
 
 
-def render_frozen_styler_html(styled, height=450, freeze_left_n=2, freeze_widths=None):
+def inject_top30_month_bridge():
+    """iframe(월 헤더 클릭) → 부모 URL query 갱신. sticky/기타 로직과 분리."""
+    components.html(
+        """
+        <script>
+        (function () {
+            var parentWin = window.parent;
+            if (!parentWin || parentWin.__dashboardTop30MonthBridge) return;
+            parentWin.__dashboardTop30MonthBridge = true;
+            parentWin.addEventListener("message", function (e) {
+                try {
+                    var d = e.data;
+                    if (!d || d.type !== "dashboard-top30-month" || !d.month) return;
+                    var url = new URL(parentWin.location.href);
+                    url.searchParams.set("top30_month", d.month);
+                    parentWin.location.href = url.toString();
+                } catch (err) {}
+            });
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def render_frozen_styler_html(
+    styled,
+    height=450,
+    freeze_left_n=2,
+    freeze_widths=None,
+    clickable_cols=None,
+    query_param=None,
+    active_col=None,
+):
     """Styler HTML 렌더 + 헤더/좌측열 틀고정 (데이터·스타일 무손실)."""
     widths = freeze_widths or ([44, 160] if freeze_left_n >= 2 else [160])
     left_css = []
@@ -2500,6 +2533,42 @@ def render_frozen_styler_html(styled, height=450, freeze_left_n=2, freeze_widths
         )
         left += w
 
+    table_html = styled.to_html()
+    click_js = ""
+    if clickable_cols and query_param:
+        def _link_thead(match):
+            block = match.group(0)
+            for col in clickable_cols:
+                active = "color:#B91C1C;font-weight:700;" if active_col == col else "color:inherit;font-weight:600;"
+                block = re.sub(
+                    rf"(<th[^>]*>)\s*{re.escape(str(col))}\s*(</th>)",
+                    rf'\1<a href="#" role="button" data-top30-month="{col}" '
+                    rf'style="text-decoration:none;cursor:pointer;display:block;{active}" '
+                    rf'title="클릭: {col} 매출 순위·그래프 적용">{col}</a>\2',
+                    block,
+                )
+            return block
+
+        table_html = re.sub(r"<thead>.*?</thead>", _link_thead, table_html, count=1, flags=re.DOTALL)
+        click_js = """
+        <script>
+        (function () {
+            function notify(month) {
+                try {
+                    window.parent.postMessage({ type: "dashboard-top30-month", month: month }, "*");
+                } catch (err) {}
+            }
+            document.querySelectorAll("a[data-top30-month]").forEach(function (a) {
+                a.addEventListener("click", function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    notify(a.getAttribute("data-top30-month"));
+                });
+            });
+        })();
+        </script>
+        """
+
     page_html = f"""
     <!DOCTYPE html>
     <html><head><meta charset="utf-8">
@@ -2531,9 +2600,10 @@ def render_frozen_styler_html(styled, height=450, freeze_left_n=2, freeze_widths
             font-weight: 600; text-align: right;
         }}
         thead th:nth-child(1), thead th:nth-child(2) {{ text-align: left; }}
+        thead th a:hover {{ text-decoration: underline !important; }}
         {''.join(left_css)}
     </style></head>
-    <body><div class="wrap">{styled.to_html()}</div></body></html>
+    <body><div class="wrap">{table_html}</div>{click_js}</body></html>
     """
     components.html(page_html, height=height, scrolling=True)
 
@@ -3143,7 +3213,7 @@ with tab1:
                             )
 
     st.markdown("---")
-    st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 당해년도 최신월 기준 상위 30위 거래처 실적 (1월~12월) 및 업종 비중</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 당해년도 상위 30위 거래처 실적 (1월~12월) 및 업종 비중 · 월 헤더 클릭</div>", unsafe_allow_html=True)
     
     if not df_base.empty:
         current_year_str = str(df_base["연도"].max())
@@ -3152,18 +3222,66 @@ with tab1:
         if not df_curr_year.empty:
             latest_dt = df_curr_year["매출일_dt"].max()
             latest_m = latest_dt.strftime("%m월")
-            latest_month_label = f"{current_year_str}년 {latest_m}"
+
+            # 월 선택 → 해당 월 순위·도넛만 변경 (집계 로직 무손실)
+            inject_top30_month_bridge()
+            if "top30_month" not in st.session_state:
+                st.session_state["top30_month"] = latest_m
+            try:
+                qp_m = st.query_params.get("top30_month", None)
+                if isinstance(qp_m, list):
+                    qp_m = qp_m[0] if qp_m else None
+                if qp_m is not None:
+                    qp_m = urllib.parse.unquote(str(qp_m))
+                    if qp_m in all_months:
+                        st.session_state["top30_month"] = qp_m
+            except Exception:
+                pass
+            if st.session_state.get("top30_month") not in all_months:
+                st.session_state["top30_month"] = latest_m
+
+            rank_m = st.session_state["top30_month"]
+            rank_month_label = f"{current_year_str}년 {rank_m}"
 
             p_col1, p_col2 = st.columns([1.2, 0.8])
 
             with p_col1:
-                st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>🥇 [{latest_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>"
+                    f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
+                    f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
+                    f"← 월 버튼 또는 표 헤더 클릭</span></div>",
+                    unsafe_allow_html=True,
+                )
+
+                # iframe 샌드박스 때문에 헤더 링크가 막힐 수 있어 Streamlit 버튼으로도 동일 동작 보장
+                m_cols = st.columns(12, gap="small")
+                _clicked_m = None
+                for _i, _m in enumerate(all_months):
+                    with m_cols[_i]:
+                        if st.button(
+                            _m,
+                            key=f"top30_month_btn_{_m}",
+                            type="primary" if _m == rank_m else "secondary",
+                            use_container_width=True,
+                        ):
+                            _clicked_m = _m
+                if _clicked_m:
+                    st.session_state["top30_month"] = _clicked_m
+                    try:
+                        st.query_params["top30_month"] = _clicked_m
+                    except Exception:
+                        pass
+                    st.rerun()
+
+                rank_m = st.session_state["top30_month"]
+                rank_month_label = f"{current_year_str}년 {rank_m}"
                 
                 pvt_curr = df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
                 pvt_curr = pvt_curr.reindex(columns=all_months, fill_value=0)
                 
-                if latest_m in pvt_curr.columns:
-                    pvt_curr = pvt_curr.sort_values(by=latest_m, ascending=False)
+                if rank_m in pvt_curr.columns:
+                    pvt_curr = pvt_curr.sort_values(by=rank_m, ascending=False)
                 top30_pvt = pvt_curr.head(30).reset_index()
                 
                 top30_pvt.index = range(1, len(top30_pvt) + 1)
@@ -3173,10 +3291,10 @@ with tab1:
                 fmt_dict = {m: "{:,.0f}" for m in all_months}
                 styled_top30 = style_with_sum(top30_pvt_disp, fmt_dict, "Blues", subset_cols=all_months, axis=0)
                 
-                if latest_m in all_months:
+                if rank_m in all_months:
                     styled_top30 = styled_top30.apply(
-                        lambda s: ['color: #B91C1C; font-weight: bold;'] * len(s),
-                        subset=[latest_m],
+                        lambda s: ['color: #B91C1C; font-weight: bold; background-color: #DBEAFE;'] * len(s),
+                        subset=[rank_m],
                         axis=0
                     )
                 
@@ -3185,13 +3303,20 @@ with tab1:
                     height=450,
                     freeze_left_n=2,
                     freeze_widths=[44, 160],
+                    clickable_cols=all_months,
+                    query_param="top30_month",
+                    active_col=rank_m,
                 )
 
             with p_col2:
-                st.markdown(f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>🍩 [{latest_month_label}] 업종별 매출 비중</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>"
+                    f"🍩 [{rank_month_label}] 업종별 매출 비중</div>",
+                    unsafe_allow_html=True,
+                )
                 
-                df_latest_month = df_curr_year[df_curr_year["월"] == latest_m]
-                ind_sales = df_latest_month.groupby("업종")["매출액"].sum().reset_index()
+                df_rank_month = df_curr_year[df_curr_year["월"] == rank_m]
+                ind_sales = df_rank_month.groupby("업종")["매출액"].sum().reset_index()
                 ind_sales = ind_sales[ind_sales["매출액"] > 0]
                 
                 fig_donut = px.pie(
@@ -3208,7 +3333,7 @@ with tab1:
                     margin=dict(l=10, r=10, t=10, b=10),
                     height=450
                 )
-                st.plotly_chart(fig_donut, use_container_width=True, key="latest_month_donut_chart")
+                st.plotly_chart(fig_donut, use_container_width=True, key=f"top30_donut_{rank_m}")
         else:
             st.info("당해년도 매출 데이터가 없습니다.")
 
