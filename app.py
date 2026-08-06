@@ -2353,6 +2353,19 @@ def inject_sticky_tabs_script():
             if (touchMode) {
                 parentDoc.documentElement.classList.add('dashboard-touch-mode');
 
+                /* iPad UI 분기 플래그 — 맥 분기에는 진입하지 않음 */
+                try {
+                    if (!parentWin.__dashboardTouchUiSynced) {
+                        parentWin.__dashboardTouchUiSynced = true;
+                        var tu = new URL(parentWin.location.href);
+                        if (tu.searchParams.get('touch_ui') !== '1') {
+                            tu.searchParams.set('touch_ui', '1');
+                            parentWin.location.replace(tu.toString());
+                            return;
+                        }
+                    }
+                } catch (eTu) {}
+
                 var boot = 0;
                 parentWin.__dashboardStickyBootInterval = setInterval(function() {
                     applyIpad0804Hack();
@@ -2510,15 +2523,44 @@ def inject_top30_month_bridge():
             if (!parentWin) return;
             var parentDoc = parentWin.document;
 
+            function isTouchPad() {
+                try {
+                    var ua = parentWin.navigator.userAgent || "";
+                    var ios = /iPad|iPhone|iPod/.test(ua);
+                    var ipadOs = parentWin.navigator.platform === "MacIntel" && parentWin.navigator.maxTouchPoints > 1;
+                    return ios || ipadOs || parentDoc.documentElement.classList.contains("dashboard-touch-mode");
+                } catch (e) { return false; }
+            }
+
+            /* iPad ↔ 맥 UI 분기용 query (한 번만). 맥에는 touch_ui 안 붙음 */
+            try {
+                if (!parentWin.__dashboardTouchUiSynced) {
+                    parentWin.__dashboardTouchUiSynced = true;
+                    var url = new URL(parentWin.location.href);
+                    var cur = url.searchParams.get("touch_ui");
+                    var touch = isTouchPad();
+                    if (touch && cur !== "1") {
+                        url.searchParams.set("touch_ui", "1");
+                        parentWin.location.replace(url.toString());
+                        return;
+                    }
+                    if (!touch && cur === "1") {
+                        url.searchParams.delete("touch_ui");
+                        parentWin.location.replace(url.toString());
+                        return;
+                    }
+                }
+            } catch (eSync) {}
+
             if (!parentWin.__dashboardTop30MonthBridge) {
                 parentWin.__dashboardTop30MonthBridge = true;
                 parentWin.addEventListener("message", function (e) {
                     try {
                         var d = e.data;
                         if (!d || d.type !== "dashboard-top30-month" || !d.month) return;
-                        var url = new URL(parentWin.location.href);
-                        url.searchParams.set("top30_month", d.month);
-                        parentWin.location.href = url.toString();
+                        var url2 = new URL(parentWin.location.href);
+                        url2.searchParams.set("top30_month", d.month);
+                        parentWin.location.href = url2.toString();
                     } catch (err) {}
                 });
             }
@@ -2586,7 +2628,7 @@ def inject_top30_month_bridge():
             }
             function stackTop30DonutRow() {
                 try {
-                    if (!parentDoc.documentElement.classList.contains("dashboard-touch-mode")) return;
+                    if (!isTouchPad()) return;
                     var flag = parentDoc.querySelector(".top30-section-flag");
                     if (!flag) return;
                     var scope = flag.closest('[data-testid="stVerticalBlock"]') || flag.parentElement;
@@ -2600,7 +2642,7 @@ def inject_top30_month_bridge():
                         if (!cols.length) {
                             cols = row.querySelectorAll('[data-testid="column"], [data-testid="stColumn"]');
                         }
-                        /* 표|도넛(플롯 포함) 행만 풀폭 — 제목/월 select 2칸 행은 제외 */
+                        /* 표|도넛(플롯 포함) 행만 풀폭 — 월 버튼 12칸 행은 제외 */
                         if (cols.length === 12) continue;
                         var hasPlot = !!row.querySelector('[data-testid="stPlotlyChart"]');
                         if (hasPlot) {
@@ -2618,6 +2660,17 @@ def inject_top30_month_bridge():
         """,
         height=0,
     )
+
+
+def is_touch_ui():
+    """iPad UI 분기 (touch_ui=1). 맥은 False → 이전 월버튼 UI."""
+    try:
+        v = st.query_params.get("touch_ui", "")
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        return str(v) == "1"
+    except Exception:
+        return False
 
 
 def render_frozen_styler_html(
@@ -3381,17 +3434,18 @@ with tab1:
                 p_col1, p_col2 = st.columns([1.2, 0.8])
 
                 with p_col1:
-                    _m_idx = all_months.index(rank_m) if rank_m in all_months else 0
-                    title_c, month_c = st.columns([3.2, 0.8])
-                    with title_c:
-                        st.markdown(
-                            f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 4px;'>"
-                            f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
-                            f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
-                            f"← 월 선택 또는 표 헤더 클릭</span></div>",
-                            unsafe_allow_html=True,
-                        )
-                    with month_c:
+                    st.markdown(
+                        f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>"
+                        f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
+                        f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
+                        f"{'← 월 선택 또는 표 헤더 클릭' if is_touch_ui() else '← 월 버튼 또는 표 헤더 클릭'}"
+                        f"</span></div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    # 맥: 이전 가로 월버튼 / iPad(touch_ui=1): 현재 selectbox
+                    if is_touch_ui():
+                        _m_idx = all_months.index(rank_m) if rank_m in all_months else 0
                         picked_m = st.selectbox(
                             "기준 월",
                             all_months,
@@ -3399,13 +3453,32 @@ with tab1:
                             key="top30_month_select",
                             label_visibility="collapsed",
                         )
-                    if picked_m != st.session_state.get("top30_month"):
-                        st.session_state["top30_month"] = picked_m
-                        try:
-                            st.query_params["top30_month"] = picked_m
-                        except Exception:
-                            pass
-                        st.rerun()
+                        if picked_m != st.session_state.get("top30_month"):
+                            st.session_state["top30_month"] = picked_m
+                            try:
+                                st.query_params["top30_month"] = picked_m
+                            except Exception:
+                                pass
+                            st.rerun()
+                    else:
+                        m_cols = st.columns(12, gap="small")
+                        _clicked_m = None
+                        for _i, _m in enumerate(all_months):
+                            with m_cols[_i]:
+                                if st.button(
+                                    _m,
+                                    key=f"top30_month_btn_{_m}",
+                                    type="primary" if _m == rank_m else "secondary",
+                                    use_container_width=True,
+                                ):
+                                    _clicked_m = _m
+                        if _clicked_m:
+                            st.session_state["top30_month"] = _clicked_m
+                            try:
+                                st.query_params["top30_month"] = _clicked_m
+                            except Exception:
+                                pass
+                            st.rerun()
 
                     rank_m = st.session_state["top30_month"]
                     rank_month_label = f"{current_year_str}년 {rank_m}"
