@@ -356,6 +356,25 @@ def inject_custom_css():
                     padding-right: max(10px, env(safe-area-inset-right)) !important;
                 }
             }
+
+            /* iPad only: Top30 표|도넛 옆배치 잘림 → 세로 스택 (맥은 touch-mode 없음 = 무손실) */
+            html.dashboard-touch-mode .top30-touch-row {
+                flex-direction: column !important;
+                flex-wrap: nowrap !important;
+                gap: 0.75rem !important;
+            }
+            html.dashboard-touch-mode .top30-touch-row > [data-testid="column"],
+            html.dashboard-touch-mode .top30-touch-row > div[data-testid="column"] {
+                width: 100% !important;
+                flex: 1 1 auto !important;
+                min-width: 100% !important;
+                max-width: 100% !important;
+            }
+            html.dashboard-touch-mode .top30-touch-row [data-testid="stPlotlyChart"],
+            html.dashboard-touch-mode .top30-touch-row [data-testid="stPlotlyChart"] iframe {
+                width: 100% !important;
+                min-height: 420px !important;
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -2464,23 +2483,52 @@ def style_with_sum(disp_df, fmt_str, cmap=None, subset_cols=None, axis=None):
 
 
 def inject_top30_month_bridge():
-    """iframe(월 헤더 클릭) → 부모 URL query 갱신. sticky/기타 로직과 분리."""
+    """iframe(월 헤더 클릭) → 부모 URL query 갱신 + iPad Top30 도넛 스택. sticky/맥 로직 분리."""
     components.html(
         """
         <script>
         (function () {
             var parentWin = window.parent;
-            if (!parentWin || parentWin.__dashboardTop30MonthBridge) return;
-            parentWin.__dashboardTop30MonthBridge = true;
-            parentWin.addEventListener("message", function (e) {
+            if (!parentWin) return;
+            var parentDoc = parentWin.document;
+
+            if (!parentWin.__dashboardTop30MonthBridge) {
+                parentWin.__dashboardTop30MonthBridge = true;
+                parentWin.addEventListener("message", function (e) {
+                    try {
+                        var d = e.data;
+                        if (!d || d.type !== "dashboard-top30-month" || !d.month) return;
+                        var url = new URL(parentWin.location.href);
+                        url.searchParams.set("top30_month", d.month);
+                        parentWin.location.href = url.toString();
+                    } catch (err) {}
+                });
+            }
+
+            /* iPad(touch-mode)만: 표+도넛 가로행을 세로로 — 맥 분기 없음 */
+            function stackTop30DonutRow() {
                 try {
-                    var d = e.data;
-                    if (!d || d.type !== "dashboard-top30-month" || !d.month) return;
-                    var url = new URL(parentWin.location.href);
-                    url.searchParams.set("top30_month", d.month);
-                    parentWin.location.href = url.toString();
+                    if (!parentDoc.documentElement.classList.contains("dashboard-touch-mode")) return;
+                    var flag = parentDoc.querySelector(".top30-section-flag");
+                    if (!flag) return;
+                    var scope = flag.closest('[data-testid="stVerticalBlock"]') || flag.parentElement;
+                    if (!scope) return;
+                    var rows = scope.querySelectorAll('[data-testid="stHorizontalBlock"]');
+                    for (var i = 0; i < rows.length; i++) {
+                        var row = rows[i];
+                        if (row.querySelector('[data-testid="stPlotlyChart"]')) {
+                            row.classList.add("top30-touch-row");
+                            try {
+                                parentWin.dispatchEvent(new Event("resize"));
+                            } catch (e2) {}
+                        }
+                    }
                 } catch (err) {}
-            });
+            }
+            stackTop30DonutRow();
+            if (!parentWin.__dashboardTop30StackTimer) {
+                parentWin.__dashboardTop30StackTimer = parentWin.setInterval(stackTop30DonutRow, 800);
+            }
         })();
         </script>
         """,
@@ -3243,97 +3291,108 @@ with tab1:
             rank_m = st.session_state["top30_month"]
             rank_month_label = f"{current_year_str}년 {rank_m}"
 
-            p_col1, p_col2 = st.columns([1.2, 0.8])
+            # top30-section-flag: iPad CSS 스택용 마커 (맥 레이아웃/데이터 무손실)
+            with st.container():
+                st.markdown("<div class='top30-section-flag' style='display:none'></div>", unsafe_allow_html=True)
+                p_col1, p_col2 = st.columns([1.2, 0.8])
 
-            with p_col1:
-                st.markdown(
-                    f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>"
-                    f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
-                    f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
-                    f"← 월 버튼 또는 표 헤더 클릭</span></div>",
-                    unsafe_allow_html=True,
-                )
-
-                # iframe 샌드박스 때문에 헤더 링크가 막힐 수 있어 Streamlit 버튼으로도 동일 동작 보장
-                m_cols = st.columns(12, gap="small")
-                _clicked_m = None
-                for _i, _m in enumerate(all_months):
-                    with m_cols[_i]:
-                        if st.button(
-                            _m,
-                            key=f"top30_month_btn_{_m}",
-                            type="primary" if _m == rank_m else "secondary",
-                            use_container_width=True,
-                        ):
-                            _clicked_m = _m
-                if _clicked_m:
-                    st.session_state["top30_month"] = _clicked_m
-                    try:
-                        st.query_params["top30_month"] = _clicked_m
-                    except Exception:
-                        pass
-                    st.rerun()
-
-                rank_m = st.session_state["top30_month"]
-                rank_month_label = f"{current_year_str}년 {rank_m}"
-                
-                pvt_curr = df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
-                pvt_curr = pvt_curr.reindex(columns=all_months, fill_value=0)
-                
-                if rank_m in pvt_curr.columns:
-                    pvt_curr = pvt_curr.sort_values(by=rank_m, ascending=False)
-                top30_pvt = pvt_curr.head(30).reset_index()
-                
-                top30_pvt.index = range(1, len(top30_pvt) + 1)
-                
-                top30_pvt_disp = get_display_df_with_sum(top30_pvt, sum_label="합계", text_cols=["거래처"])
-                
-                fmt_dict = {m: "{:,.0f}" for m in all_months}
-                styled_top30 = style_with_sum(top30_pvt_disp, fmt_dict, "Blues", subset_cols=all_months, axis=0)
-                
-                if rank_m in all_months:
-                    styled_top30 = styled_top30.apply(
-                        lambda s: ['color: #B91C1C; font-weight: bold; background-color: #DBEAFE;'] * len(s),
-                        subset=[rank_m],
-                        axis=0
+                with p_col1:
+                    st.markdown(
+                        f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>"
+                        f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
+                        f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
+                        f"← 월 버튼 또는 표 헤더 클릭</span></div>",
+                        unsafe_allow_html=True,
                     )
-                
-                render_frozen_styler_html(
-                    styled_top30,
-                    height=450,
-                    freeze_left_n=2,
-                    freeze_widths=[44, 160],
-                    clickable_cols=all_months,
-                    query_param="top30_month",
-                    active_col=rank_m,
-                )
 
-            with p_col2:
-                st.markdown(
-                    f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>"
-                    f"🍩 [{rank_month_label}] 업종별 매출 비중</div>",
-                    unsafe_allow_html=True,
-                )
-                
-                df_rank_month = df_curr_year[df_curr_year["월"] == rank_m]
-                ind_sales = df_rank_month.groupby("업종")["매출액"].sum().reset_index()
-                ind_sales = ind_sales[ind_sales["매출액"] > 0]
-                
-                fig_donut = px.pie(
-                    ind_sales, 
-                    values='매출액', 
-                    names='업종', 
-                    hole=0.4,
-                    color_discrete_sequence=px.colors.qualitative.Pastel
-                )
-                fig_donut.update_traces(textposition='inside', textinfo='percent+label')
-                fig_donut.update_layout(
-                    showlegend=True,
-                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
-                    margin=dict(l=10, r=10, t=10, b=10),
-                    height=450
-                )
-                st.plotly_chart(fig_donut, use_container_width=True, key=f"top30_donut_{rank_m}")
+                    # iframe 샌드박스 때문에 헤더 링크가 막힐 수 있어 Streamlit 버튼으로도 동일 동작 보장
+                    m_cols = st.columns(12, gap="small")
+                    _clicked_m = None
+                    for _i, _m in enumerate(all_months):
+                        with m_cols[_i]:
+                            if st.button(
+                                _m,
+                                key=f"top30_month_btn_{_m}",
+                                type="primary" if _m == rank_m else "secondary",
+                                use_container_width=True,
+                            ):
+                                _clicked_m = _m
+                    if _clicked_m:
+                        st.session_state["top30_month"] = _clicked_m
+                        try:
+                            st.query_params["top30_month"] = _clicked_m
+                        except Exception:
+                            pass
+                        st.rerun()
+
+                    rank_m = st.session_state["top30_month"]
+                    rank_month_label = f"{current_year_str}년 {rank_m}"
+                    
+                    pvt_curr = df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+                    pvt_curr = pvt_curr.reindex(columns=all_months, fill_value=0)
+                    
+                    if rank_m in pvt_curr.columns:
+                        pvt_curr = pvt_curr.sort_values(by=rank_m, ascending=False)
+                    top30_pvt = pvt_curr.head(30).reset_index()
+                    
+                    top30_pvt.index = range(1, len(top30_pvt) + 1)
+                    
+                    top30_pvt_disp = get_display_df_with_sum(top30_pvt, sum_label="합계", text_cols=["거래처"])
+                    
+                    fmt_dict = {m: "{:,.0f}" for m in all_months}
+                    styled_top30 = style_with_sum(top30_pvt_disp, fmt_dict, "Blues", subset_cols=all_months, axis=0)
+                    
+                    if rank_m in all_months:
+                        styled_top30 = styled_top30.apply(
+                            lambda s: ['color: #B91C1C; font-weight: bold; background-color: #DBEAFE;'] * len(s),
+                            subset=[rank_m],
+                            axis=0
+                        )
+                    
+                    render_frozen_styler_html(
+                        styled_top30,
+                        height=450,
+                        freeze_left_n=2,
+                        freeze_widths=[44, 160],
+                        clickable_cols=all_months,
+                        query_param="top30_month",
+                        active_col=rank_m,
+                    )
+
+                with p_col2:
+                    st.markdown(
+                        f"<div class='top30-donut-title' style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>"
+                        f"🍩 [{rank_month_label}] 업종별 매출 비중</div>",
+                        unsafe_allow_html=True,
+                    )
+                    
+                    df_rank_month = df_curr_year[df_curr_year["월"] == rank_m]
+                    ind_sales = df_rank_month.groupby("업종")["매출액"].sum().reset_index()
+                    ind_sales = ind_sales[ind_sales["매출액"] > 0]
+                    
+                    if ind_sales.empty:
+                        st.info(f"{rank_month_label} 업종별 매출 데이터가 없습니다.")
+                    else:
+                        fig_donut = px.pie(
+                            ind_sales, 
+                            values='매출액', 
+                            names='업종', 
+                            hole=0.4,
+                            color_discrete_sequence=px.colors.qualitative.Pastel
+                        )
+                        fig_donut.update_traces(textposition='inside', textinfo='percent+label')
+                        fig_donut.update_layout(
+                            showlegend=True,
+                            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
+                            margin=dict(l=10, r=10, t=10, b=10),
+                            height=450,
+                            autosize=True,
+                        )
+                        st.plotly_chart(
+                            fig_donut,
+                            use_container_width=True,
+                            key=f"top30_donut_{rank_m}",
+                        )
         else:
             st.info("당해년도 매출 데이터가 없습니다.")
 
