@@ -2,6 +2,7 @@ import io
 import os
 import re
 import sys
+import html
 import subprocess
 import urllib.parse
 import requests
@@ -56,16 +57,22 @@ def inject_custom_css():
                 -webkit-tap-highlight-color: transparent;
             }
             
-            /* ★★★ 상단 여백 최소화 (컴팩트 레이아웃) ★★★ */
-            .block-container { 
-                padding-top: 1rem !important; 
-                padding-bottom: 1rem !important;
-                padding-left: 1.5rem !important;
-                padding-right: 1.5rem !important;
+            /* ★★★ 상단 여백 최소화 (Streamlit 헤더는 그대로) ★★★ */
+            section.main .block-container { 
+                padding-top: 0.25rem !important; 
+                padding-bottom: 0.75rem !important;
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
                 max-width: 99% !important; 
             }
-            
-            /* 사이드바 스타일 및 정상 노출 보장 */
+
+            section.main [data-testid="stVerticalBlock"]:first-child,
+            section.main [data-testid="stVerticalBlockBorderWrapper"]:first-child {
+                margin-top: 0 !important;
+                padding-top: 0 !important;
+            }
+
+            /* 사이드바 — Streamlit 기본 동작 유지, 색상만 보조 */
             [data-testid="stSidebar"] {
                 background-color: #F1F5F9 !important;
                 border-right: 1px solid #E2E8F0;
@@ -95,10 +102,19 @@ def inject_custom_css():
                 color: #1E3A8A;
                 font-size: 17px;
                 font-weight: 700;
-                margin-top: 20px;
+                margin-top: 0 !important;
                 margin-bottom: 12px;
                 border-left: 4px solid #1E3A8A;
                 padding-left: 10px;
+            }
+
+            .dashboard-tabs-host-compact [role="tabpanel"] {
+                padding-top: 8px !important;
+            }
+
+            .dashboard-tab-title-row {
+                min-height: 44px !important;
+                align-items: flex-start !important;
             }
             
             div[role="radiogroup"] {
@@ -108,30 +124,156 @@ def inject_custom_css():
                 border: 1px solid #E2E8F0;
             }
 
-            /* ===== iPad / iOS 상단 고정 탭 (sticky) ===== */
-            section.main,
-            section.main > div,
-            section.main .block-container,
-            [data-testid="stAppViewContainer"],
-            [data-testid="stAppViewContainer"] > section.main {
+            /* ===== 상단 통합 고정바 (필터 + 탭) ===== */
+            #dashboard-sticky-spacer {
+                width: 100% !important;
+                height: var(--dashboard-fixed-bar-height, 108px) !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                pointer-events: none !important;
+                flex-shrink: 0 !important;
+            }
+
+            #dashboard-top-shield {
+                pointer-events: none !important;
+            }
+
+            section.main {
+                overflow: visible !important;
+            }
+
+            .dashboard-tabs-host-compact {
+                margin-top: 0 !important;
+                padding-top: 0 !important;
+                height: auto !important;
+                max-height: none !important;
+                overflow: visible !important;
+            }
+
+            /* tablist만 숨김 — tabpanel 직접 자식은 반드시 유지 */
+            .dashboard-tabs-host-compact > div:has(> [role="tablist"]),
+            .dashboard-tabs-host-compact > div.dashboard-tabs-list-shell:empty {
+                display: none !important;
+                height: 0 !important;
+                min-height: 0 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+            }
+
+            .dashboard-tabs-host-compact > div[role="tabpanel"],
+            .dashboard-tabs-host-compact [role="tabpanel"] {
+                display: block !important;
+                height: auto !important;
+                max-height: none !important;
+                min-height: 0 !important;
                 overflow: visible !important;
             }
 
             .dashboard-filter-sticky {
-                position: -webkit-sticky !important;
-                position: sticky !important;
-                z-index: 999999 !important;
+                position: fixed !important;
+                top: var(--dashboard-bar-top, 2.75rem) !important;
+                left: var(--dashboard-bar-left, 0px) !important;
+                width: var(--dashboard-bar-width, 100%) !important;
+                max-width: var(--dashboard-bar-width, 100%) !important;
+                z-index: 990 !important;
                 background-color: #FFFFFF !important;
+                border: 1px solid #BFDBFE !important;
+                border-radius: 0 0 6px 6px !important;
+                padding: 1px 6px 0 6px !important;
+                box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.06) !important;
+                box-sizing: border-box !important;
+                overflow-x: hidden !important;
+                overflow-y: visible !important;
+                margin: 0 !important;
+            }
+
+            .dashboard-filter-sticky-touch {
+                z-index: 999999 !important;
                 border: 2px solid #2563EB !important;
                 border-radius: 8px !important;
-                padding: 10px 10px 6px 10px !important;
+                padding: 10px 10px 0 10px !important;
                 box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1) !important;
-                -webkit-transform: translateZ(0);
-                transform: translateZ(0);
-                width: 100% !important;
-                max-width: 100% !important;
-                box-sizing: border-box !important;
-                overflow: hidden !important;
+            }
+
+            html.dashboard-touch-mode [data-testid="stHeader"],
+            html.dashboard-touch-mode [data-testid="stToolbar"],
+            html.dashboard-touch-mode [data-testid="stDecoration"] {
+                z-index: 1000001 !important;
+                position: relative !important;
+            }
+
+            html.dashboard-touch-mode [data-testid="stSidebar"],
+            html.dashboard-touch-mode [data-testid="stSidebarBackdrop"],
+            html.dashboard-touch-mode section[data-testid="stSidebar"] {
+                z-index: 1000005 !important;
+            }
+
+            html.dashboard-touch-mode [data-testid="stAppViewContainer"],
+            html.dashboard-touch-mode section.main,
+            html.dashboard-touch-mode section.main .block-container {
+                overflow: visible !important;
+            }
+
+            /* 고정바 내부 공백 최소화 */
+            .dashboard-filter-sticky [data-testid="stVerticalBlock"],
+            .dashboard-filter-sticky [data-testid="stHorizontalBlock"] {
+                gap: 0.1rem !important;
+            }
+            .dashboard-filter-sticky [data-testid="column"] {
+                padding-top: 0 !important;
+                padding-bottom: 0 !important;
+            }
+            .dashboard-filter-sticky [data-testid="stWidgetLabel"],
+            .dashboard-filter-sticky label {
+                margin-bottom: 0 !important;
+                padding-bottom: 0 !important;
+                font-size: 11px !important;
+                line-height: 1.15 !important;
+                min-height: auto !important;
+            }
+            .dashboard-filter-sticky [data-testid="stTextInput"],
+            .dashboard-filter-sticky [data-testid="stSelectbox"],
+            .dashboard-filter-sticky [data-testid="stMultiSelect"] {
+                margin-bottom: 0 !important;
+                padding-bottom: 0 !important;
+            }
+            .dashboard-filter-sticky [data-testid="stTextInput"] > div > div,
+            .dashboard-filter-sticky [data-baseweb="select"] > div {
+                min-height: 1.85rem !important;
+            }
+            .dashboard-filter-sticky [data-testid="stMarkdownContainer"] {
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+
+            div[data-testid="stVerticalBlockBorderWrapper"].dashboard-filter-sticky {
+                padding-top: 2px !important;
+                padding-bottom: 0 !important;
+            }
+
+            /* 고정바 하단 구분선 — 가늘고 연하게 */
+            .dashboard-filter-sticky::after {
+                content: '' !important;
+                display: block !important;
+                height: 1px !important;
+                margin: 2px -6px 0 -6px !important;
+                background: #CBD5E1 !important;
+                box-shadow: none !important;
+                border-radius: 0 !important;
+            }
+
+            /* 탭 패널 높이 — 대시보드 메인 탭만 */
+            .dashboard-tabs-host-compact,
+            .dashboard-tabs-host-compact > div,
+            .dashboard-tabs-host-compact [role="tabpanel"] {
+                overflow: visible !important;
+                max-height: none !important;
+                height: auto !important;
+            }
+
+            div[data-testid="stDataFrame"] > div {
+                -webkit-overflow-scrolling: touch;
             }
 
             /* 탭: 필터 고정바 내부 하단, 세로모드 가로 스크롤 */
@@ -140,12 +282,13 @@ def inject_custom_css():
                 display: flex !important;
                 flex-wrap: nowrap !important;
                 overflow-x: auto !important;
-                overflow-y: hidden !important;
+                overflow-y: visible !important;
                 -webkit-overflow-scrolling: touch !important;
                 width: 100% !important;
                 max-width: 100% !important;
-                margin-top: 8px !important;
-                padding: 4px 2px 0 2px !important;
+                margin-top: 1px !important;
+                margin-bottom: 0 !important;
+                padding: 0 0 2px 0 !important;
                 border-top: 1px solid #E2E8F0 !important;
                 background-color: #FFFFFF !important;
                 box-sizing: border-box !important;
@@ -153,16 +296,38 @@ def inject_custom_css():
                 touch-action: pan-x !important;
             }
 
-            .dashboard-filter-sticky [role="tablist"]::-webkit-scrollbar,
-            .dashboard-tabs-in-filter::-webkit-scrollbar {
-                display: none;
-            }
-
             .dashboard-filter-sticky [role="tab"] {
                 flex: 0 0 auto !important;
                 white-space: nowrap !important;
                 min-width: -webkit-max-content !important;
                 min-width: max-content !important;
+                padding: 2px 8px 3px 8px !important;
+                font-size: 12px !important;
+            }
+
+            .dashboard-filter-sticky [role="tablist"]::-webkit-scrollbar,
+            .dashboard-tabs-in-filter::-webkit-scrollbar {
+                display: none;
+            }
+
+            .dashboard-tabs-host-compact [role="tabpanel"] {
+                padding-top: 4px !important;
+            }
+
+            .dashboard-tab-panel-head {
+                padding-top: 2px !important;
+                margin-bottom: 6px !important;
+            }
+
+            .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]) {
+                padding-bottom: 48px !important;
+            }
+
+            /* Streamlit 기본 스크롤 복구 */
+            [data-testid="stAppViewContainer"] {
+                overflow-y: auto !important;
+                overflow-x: hidden !important;
+                -webkit-overflow-scrolling: touch !important;
             }
 
             .dashboard-filter-sticky [role="tab"] p,
@@ -173,12 +338,12 @@ def inject_custom_css():
 
             @media (max-width: 1024px) {
                 .dashboard-filter-sticky {
-                    padding: 8px 8px 4px 8px !important;
+                    padding: 2px 6px 0 6px !important;
                 }
 
                 .dashboard-filter-sticky [role="tab"] {
-                    font-size: 11px !important;
-                    padding: 6px 10px !important;
+                    font-size: 10px !important;
+                    padding: 2px 6px 3px 6px !important;
                 }
             }
 
@@ -287,6 +452,35 @@ def get_exact_original_price(series):
     return s.mode().iloc[0]
 
 
+def apply_forward_unit_price(unit_price_df, qty_df, years, all_months):
+    """당월 출고 없음(0)이어도 직전 최종 변경 단가를 이월 표시."""
+    if unit_price_df.empty:
+        return unit_price_df
+
+    filled = unit_price_df.copy()
+    chron_cols = [
+        f"{yr[2:]}년 {m}"
+        for yr in sorted(years)
+        for m in all_months
+        if f"{yr[2:]}년 {m}" in filled.columns
+    ]
+
+    for idx in filled.index:
+        last_price = 0.0
+        for col in chron_cols:
+            price = float(filled.at[idx, col]) if pd.notna(filled.at[idx, col]) else 0.0
+            qty = 0.0
+            if idx in qty_df.index and col in qty_df.columns:
+                qty = float(qty_df.at[idx, col]) if pd.notna(qty_df.at[idx, col]) else 0.0
+
+            if qty > 0 and price > 0:
+                last_price = price
+            elif last_price > 0 and (qty == 0 or price == 0):
+                filled.at[idx, col] = last_price
+
+    return filled
+
+
 @st.cache_data
 def convert_dfs_to_excel(dfs_dict):
     output = io.BytesIO()
@@ -312,6 +506,241 @@ def convert_dfs_to_excel(dfs_dict):
             pd.DataFrame({"알림": ["저장할 데이터가 없습니다."]}).to_excel(writer, sheet_name="No Data", index=False)
             
     return output.getvalue()
+
+
+def _ppt_format_value(val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    if isinstance(val, (pd.Timestamp, datetime.datetime, datetime.date)):
+        return val.strftime("%Y-%m-%d")
+    if isinstance(val, (int, np.integer)):
+        return f"{val:,}"
+    if isinstance(val, (float, np.floating)):
+        if abs(val) >= 100:
+            return f"{val:,.0f}"
+        return f"{val:,.2f}"
+    text = str(val).replace("\n", " ")
+    return text[:40] + ("…" if len(text) > 40 else "")
+
+
+def _ppt_add_title_bar(slide, title, subtitle=""):
+    from pptx.util import Inches, Pt
+
+    box = slide.shapes.add_textbox(Inches(0.4), Inches(0.25), Inches(9.2), Inches(0.7))
+    tf = box.text_frame
+    tf.text = title
+    p = tf.paragraphs[0]
+    p.font.size = Pt(24)
+    p.font.bold = True
+    if subtitle:
+        sub = slide.shapes.add_textbox(Inches(0.4), Inches(0.85), Inches(9.2), Inches(0.45))
+        stf = sub.text_frame
+        stf.text = subtitle
+        stf.paragraphs[0].font.size = Pt(11)
+
+
+def _ppt_add_bullets(slide, lines, top=1.35):
+    from pptx.util import Inches, Pt
+
+    box = slide.shapes.add_textbox(Inches(0.55), Inches(top), Inches(9.0), Inches(5.5))
+    tf = box.text_frame
+    tf.word_wrap = True
+    for i, line in enumerate(lines):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.text = line
+        p.font.size = Pt(14)
+        p.level = 0
+
+
+def _ppt_add_dataframe(slide, df, max_rows=14, max_cols=8, top=1.25):
+    from pptx.util import Inches
+
+    if df is None or df.empty:
+        _ppt_add_bullets(slide, ["표시할 데이터가 없습니다."], top=top)
+        return
+
+    view = df.copy()
+    if isinstance(view.columns, pd.MultiIndex):
+        view.columns = ["_".join(str(c) for c in col if c) for col in view.columns]
+    view = view.iloc[:max_rows, :max_cols]
+
+    rows = len(view) + 1
+    cols = len(view.columns) + (1 if view.index.name or not isinstance(view.index, pd.RangeIndex) else 0)
+    has_index = not isinstance(view.index, pd.RangeIndex) or view.index.name
+    if not has_index:
+        cols = len(view.columns)
+
+    if cols == 0:
+        _ppt_add_bullets(slide, ["표시할 데이터가 없습니다."], top=top)
+        return
+
+    left, width, height = Inches(0.35), Inches(9.3), Inches(0.28)
+    table_shape = slide.shapes.add_table(rows, cols, left, Inches(top), width, height * rows)
+    table = table_shape.table
+
+    col_offset = 0
+    if has_index:
+        table.cell(0, 0).text = str(view.index.name or "")
+        col_offset = 1
+
+    for c, col_name in enumerate(view.columns):
+        table.cell(0, c + col_offset).text = _ppt_format_value(col_name)
+
+    for r in range(len(view)):
+        row = view.iloc[r]
+        if has_index:
+            table.cell(r + 1, 0).text = _ppt_format_value(view.index[r])
+        for c, col_name in enumerate(view.columns):
+            table.cell(r + 1, c + col_offset).text = _ppt_format_value(row[col_name])
+
+
+def _ppt_try_add_chart(slide, fig, top=1.2):
+    from pptx.util import Inches
+
+    if fig is None:
+        return False
+    try:
+        img_bytes = fig.to_image(format="png", width=960, height=540, scale=1)
+        slide.shapes.add_picture(io.BytesIO(img_bytes), Inches(0.45), Inches(top), width=Inches(9.1))
+        return True
+    except Exception:
+        return False
+
+
+def _ppt_new_content_slide(prs):
+    return prs.slides.add_slide(prs.slide_layouts[6])
+
+
+def _ppt_tab_slide(prs, tab_title, section_title, df, chart_fig=None, bullets=None):
+    slide = _ppt_new_content_slide(prs)
+    _ppt_add_title_bar(slide, tab_title, section_title)
+    row_top = 1.25
+    if bullets:
+        _ppt_add_bullets(slide, bullets, top=row_top)
+        row_top = 2.15
+    if chart_fig is not None and _ppt_try_add_chart(slide, chart_fig, top=row_top):
+        return
+    _ppt_add_dataframe(slide, df, top=row_top)
+
+
+def _ppt_cover_subtitle(latest_update_str, selected_client, selected_staff_tuple):
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    staff_label = ", ".join(selected_staff_tuple) if selected_staff_tuple else "전체"
+    return (
+        f"생성일: {today_str}\n"
+        f"데이터 기준: {latest_update_str}\n"
+        f"조회 거래처: {selected_client}\n"
+        f"담당자: {staff_label}"
+    )
+
+
+def _ppt_save_presentation(prs):
+    out = io.BytesIO()
+    prs.save(out)
+    return out.getvalue()
+
+
+@st.cache_data(show_spinner="PPT 파일 생성 중...")
+def convert_dashboard_to_ppt(
+    latest_update_str,
+    selected_client,
+    selected_staff_tuple,
+    latest_month_str_total,
+    tot_sales_val,
+    cur_sales_val,
+    mom_rate_total,
+    avg_rate_total,
+    pivot_m_total,
+    pivot_m_client,
+    client_item_qty_pivot,
+    sales_p,
+    qty_p,
+    staff_pivot,
+    df_detail,
+    filtered_debt_df,
+    df_base,
+    df_tank,
+    df_vaporizer,
+    df_integrated,
+    all_months_tuple,
+    years_tuple,
+    target_items_tuple,
+):
+    try:
+        from pptx import Presentation
+    except ImportError as exc:
+        raise ImportError("python-pptx 패키지가 필요합니다. pip install python-pptx") from exc
+
+    all_months = list(all_months_tuple)
+    years = list(years_tuple)
+    target_items = list(target_items_tuple)
+
+    prs = Presentation()
+    cover = prs.slides.add_slide(prs.slide_layouts[0])
+    cover.shapes.title.text = "통합 영업 분석 대시보드"
+    cover.placeholders[1].text = _ppt_cover_subtitle(latest_update_str, selected_client, selected_staff_tuple)
+
+    # Tab1
+    _ppt_tab_slide(
+        prs, "📌 Tab1 · 영업 종합 요약", "주요 실적 지표", pivot_m_total,
+        bullets=[
+            f"총 누적 매출(VAT포함): {tot_sales_val:,.0f} 만원",
+            f"최근 월 매출 ({latest_month_str_total}): {cur_sales_val:,.0f} 만원",
+            f"전월 대비(MoM): {mom_rate_total:+.0f}%",
+            f"월평균 대비 증감: {avg_rate_total:+.0f}%",
+        ],
+    )
+    _ppt_tab_slide(
+        prs, "📌 Tab1 · 영업 종합 요약", "연도별 월 매출 추이 (차트)", pivot_m_total,
+        chart_fig=create_stacked_bar_chart(pivot_m_total, title_text=""),
+    )
+    _ppt_tab_slide(prs, "📌 Tab1 · 영업 종합 요약", "연도별 월 매출 (표)", pivot_m_total)
+    if not df_base.empty and target_items:
+        item_pivot = cached_get_item_pivot(
+            df_base, target_items[0], "매출액 (만원)", all_months, years
+        )
+        _ppt_tab_slide(prs, "📌 Tab1 · 영업 종합 요약", f"주요 품목 분석 — {target_items[0]}", item_pivot)
+
+    # Tab2
+    tab2_title = f"🏢 Tab2 · 거래처 분석 [{selected_client}]"
+    _ppt_tab_slide(
+        prs, tab2_title, "연도별 월 매출 추이 (차트)", pivot_m_client,
+        chart_fig=create_stacked_bar_chart(pivot_m_client, title_text="") if not pivot_m_client.empty else None,
+    )
+    _ppt_tab_slide(prs, tab2_title, "연도별 월 매출 (표)", pivot_m_client)
+    _ppt_tab_slide(prs, tab2_title, "거래처별 품목 사용량", client_item_qty_pivot)
+
+    # Tab3
+    sales_view = sales_p * 1.1 / 10000 if not sales_p.empty else sales_p
+    _ppt_tab_slide(prs, "📦 Tab3 · 품목 및 단가 분석", "품목별 매출액 (만원, VAT포함)", sales_view)
+    _ppt_tab_slide(prs, "📦 Tab3 · 품목 및 단가 분석", "품목별 출고량", qty_p)
+
+    # Tab4
+    _ppt_tab_slide(prs, "👤 Tab4 · 담당자 & 상세내역", "담당자별 월 매출 (만원)", staff_pivot)
+    detail_view = df_detail.sort_values(by="매출일_dt", ascending=False).head(20) if not df_detail.empty else df_detail
+    _ppt_tab_slide(prs, "👤 Tab4 · 담당자 & 상세내역", "거래 상세 내역 (최신 20건)", detail_view)
+
+    # Tab5
+    _ppt_tab_slide(prs, "📌 Tab5 · 채권 관리", "채권 현황", filtered_debt_df)
+
+    # Tab6
+    if not df_base.empty:
+        map_summary = (
+            df_base.groupby("담당자")["거래처"].nunique().reset_index(name="거래처 수").sort_values("거래처 수", ascending=False)
+        )
+        addr_count = df_base["거래처"].nunique()
+        _ppt_tab_slide(prs, "📍 Tab6 · 지도 분포", f"담당자별 거래처 수 (전체 {addr_count}곳)", map_summary)
+    else:
+        _ppt_tab_slide(prs, "📍 Tab6 · 지도 분포", "거래처 분포", pd.DataFrame())
+
+    # Tab7
+    _ppt_tab_slide(prs, "🏭 Tab7 · 설비 재고", "탱크 재고 현황", df_tank)
+    _ppt_tab_slide(prs, "🏭 Tab7 · 설비 재고", "기화기 재고 현황", df_vaporizer)
+
+    # Tab8
+    _ppt_tab_slide(prs, "🛢️ Tab8 · 통합 탱크 재고", "통합 탱크 재고 현황", df_integrated)
+
+    return _ppt_save_presentation(prs)
 
 
 # ==========================================
@@ -1039,8 +1468,31 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
         desired_price_cols = [f"{yr[2:]}년 {m}" for yr in years for m in reversed(all_months)]
         existing_cols = [c for c in desired_price_cols if c in unit_price_p.columns]
         unit_price_p = unit_price_p[existing_cols]
+        unit_price_p = apply_forward_unit_price(unit_price_p, qty_p, years, all_months)
         
     return sales_p, qty_p, unit_price_p
+
+
+@st.cache_data
+def cached_filter_tab3_year_columns(sales_p, qty_p, selected_detail_years, avail_years_short, all_months):
+    """Tab3 연도별 컬럼 필터 (캐시로 탭 전환·재렌더 가속)."""
+    def _filter_year_columns(df):
+        if df.empty:
+            return df
+        cols = []
+        for y in avail_years_short:
+            if y in selected_detail_years:
+                for m in reversed(all_months):
+                    c = f"{y}년 {m}"
+                    if c in df.columns:
+                        cols.append(c)
+            tot = f"{y}년 연간총합"
+            if tot in df.columns:
+                cols.append(tot)
+        return df[[c for c in cols if c in df.columns]]
+
+    sales_vat = sales_p * 1.1 / 10000
+    return _filter_year_columns(sales_vat), _filter_year_columns(qty_p)
 
 
 # ==========================================
@@ -1089,6 +1541,366 @@ def prepare_active_df_fast(df, target_col):
 
 
 @st.cache_data
+def cached_prepare_active_df(df, target_col):
+    """Tab3 표 렌더용 활성 행·열 필터 (캐시)."""
+    return prepare_active_df_fast(df, target_col)
+
+
+DEBT_PINK_SOFT = "#FFE4E6"
+DEBT_CLIENT_STRIPE_A = "#FFFFFF"
+DEBT_CLIENT_STRIPE_B = "#E2E8F0"
+
+
+def apply_debt_style_fast(df, highlight_debt=True):
+    styles = np.full(df.shape, '', dtype=object)
+
+    clients = df.index.get_level_values('거래처')
+    gubuns = df.index.get_level_values('구분')
+
+    u_clients_fast = clients.unique()
+    color_map_fast = {
+        client: DEBT_CLIENT_STRIPE_A if i % 2 == 0 else DEBT_CLIENT_STRIPE_B
+        for i, client in enumerate(u_clients_fast)
+    }
+
+    for r in range(df.shape[0]):
+        client = clients[r]
+        gubun = gubuns[r]
+
+        if client == "📌 [전체 합계]":
+            row_style = 'background-color: #E2E8F0; font-weight: 700;'
+        else:
+            row_style = f'background-color: {color_map_fast.get(client, DEBT_CLIENT_STRIPE_A)};'
+
+        styles[r, :] = row_style
+
+    def apply_pink_cell(old_style, pink_bg=DEBT_PINK_SOFT):
+        s = re.sub(r'background-color:\s*#[0-9a-fA-F]+;', '', old_style)
+        s = re.sub(r'color:\s*#[0-9a-fA-F]+;', '', s)
+        s = re.sub(r'font-weight:\s*\d+;', '', s)
+        return s + f' background-color: {pink_bg};'
+
+    current_month_idx = df.shape[1] - 1
+
+    for client in u_clients_fast:
+        if client == "📌 [전체 합계]":
+            continue
+
+        client_rows = np.where(clients == client)[0]
+        i_sal = -1
+        i_bal = -1
+
+        for r in client_rows:
+            gubun = gubuns[r]
+            if gubun == '매출':
+                i_sal = r
+            elif gubun == '잔액':
+                i_bal = r
+
+        if i_sal == -1 or i_bal == -1 or df.shape[1] == 0:
+            continue
+
+        # 당월(마지막 열 = 8월) 잔액 — 항상 옅은 분홍
+        styles[i_bal, current_month_idx] = apply_pink_cell(
+            styles[i_bal, current_month_idx], DEBT_PINK_SOFT
+        )
+
+        ref_bal_idx = -1
+        ref_bal = 0.0
+        for c in range(current_month_idx, -1, -1):
+            val = df.iat[i_bal, c]
+            if pd.notna(val) and float(val) > 0:
+                ref_bal_idx = c
+                ref_bal = float(val)
+                break
+
+        if ref_bal_idx < 0:
+            continue
+
+        # 당월(8월) 매출 — 항상 옅은 분홍
+        styles[i_sal, current_month_idx] = apply_pink_cell(
+            styles[i_sal, current_month_idx], DEBT_PINK_SOFT
+        )
+
+        ref_sal = float(df.iat[i_sal, ref_bal_idx]) if pd.notna(df.iat[i_sal, ref_bal_idx]) else 0.0
+        if ref_bal > ref_sal:
+            accumulated = 0.0
+            for c in range(ref_bal_idx, -1, -1):
+                sal_val = float(df.iat[i_sal, c]) if pd.notna(df.iat[i_sal, c]) else 0.0
+                if accumulated < ref_bal:
+                    styles[i_sal, c] = apply_pink_cell(styles[i_sal, c], DEBT_PINK_SOFT)
+                    accumulated += sal_val
+                else:
+                    break
+
+    return pd.DataFrame(styles, index=df.index, columns=df.columns)
+
+
+def _debt_label_cell_style(client, gubun, color_map):
+    base = (
+        "padding:6px 10px;border-bottom:1px solid #E2E8F0;white-space:nowrap;"
+        "font-size:13px;font-weight:400;line-height:1.4;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+    )
+    if client == "📌 [전체 합계]":
+        return base + "background-color:#E2E8F0;font-weight:700;text-align:left;"
+    bg = color_map.get(client, "#FFFFFF")
+    align = "center" if gubun else "left"
+    return base + f"background-color:{bg};text-align:{align};"
+
+
+def render_interactive_html_table(headers, body_html, height=420, show_sum_popup=False, toolbar_hint=None):
+    hint = toolbar_hint or "셀 클릭 · ⌘/Ctrl+클릭 또는 ⊕다중선택"
+    sum_controls = ""
+    if show_sum_popup:
+        sum_controls = """
+            <div class="dash-sum-inline" id="dashSumInline">
+                <span class="dash-sum-label">선택 합계</span>
+                <span id="dashSumValue">0</span>
+                <span class="dash-sum-meta" id="dashSumCount">0개</span>
+            </div>
+        """
+
+    page_html = f"""
+    <!DOCTYPE html>
+    <html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        html, body {{
+            margin: 0;
+            height: 100%;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-size: 13px;
+            font-weight: 400;
+            color: #31333F;
+        }}
+        .dash-shell {{
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            min-height: 100%;
+        }}
+        .dash-table-toolbar {{
+            padding: 6px 10px;
+            font-size: 12px;
+            color: #64748B;
+            background: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-bottom: none;
+            border-radius: 4px 4px 0 0;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            flex-shrink: 0;
+        }}
+        .dash-action-btn, .dash-multi-btn {{
+            padding: 4px 10px;
+            font-size: 12px;
+            border: 1px solid #CBD5E1;
+            border-radius: 4px;
+            background: #fff;
+            cursor: pointer;
+            color: #334155;
+        }}
+        .dash-multi-btn.active {{ background: #DBEAFE; border-color: #2563EB; color: #1D4ED8; }}
+        .dash-sum-inline {{
+            display: none;
+            margin-left: auto;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            background: #1E293B;
+            color: #fff;
+            font-size: 13px;
+            white-space: nowrap;
+        }}
+        .dash-sum-inline.show {{ display: inline-flex; }}
+        .dash-sum-label {{ opacity: 0.85; font-size: 12px; }}
+        #dashSumValue {{ font-size: 15px; font-weight: 700; }}
+        .dash-sum-meta {{ opacity: 0.75; font-size: 11px; }}
+        .wrap {{
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+            touch-action: pan-x pan-y;
+            border: 1px solid #E2E8F0;
+            border-radius: 0 0 4px 4px;
+            background: #fff;
+        }}
+        table {{ width: max-content; min-width: 100%; border-collapse: collapse; }}
+        th, td {{ font-weight: 400; }}
+        .dash-cell-selectable {{ cursor: cell; user-select: none; -webkit-user-select: none; }}
+        .dash-cell-selectable.selected {{
+            outline: 2px solid #2563EB;
+            outline-offset: -2px;
+            background-color: #DBEAFE !important;
+        }}
+    </style></head><body>
+    <div class="dash-shell">
+    <div class="dash-table-toolbar">
+        <span>{html.escape(hint)}</span>
+        <button type="button" class="dash-multi-btn" id="dashMultiBtn">⊕ 다중선택</button>
+        {sum_controls}
+    </div>
+    <div class="wrap">
+        <table id="dashTable">
+            <thead><tr>{''.join(f'<th style="padding:6px 10px;border-bottom:1px solid #E2E8F0;background:#F0F2F6;text-align:right;font-size:13px;font-weight:400;">{html.escape(str(h))}</th>' for h in headers)}</tr></thead>
+            <tbody>{body_html}</tbody>
+        </table>
+    </div>
+    </div>
+    <script>
+    (function() {{
+        const showSum = {'true' if show_sum_popup else 'false'};
+        const selected = new Set();
+        let multiMode = false;
+        const popup = document.getElementById('dashSumInline');
+        const sumValue = document.getElementById('dashSumValue');
+        const sumCount = document.getElementById('dashSumCount');
+
+        function fmt(n) {{
+            return Math.round(n).toLocaleString('ko-KR');
+        }}
+
+        function updateSumUI() {{
+            if (!showSum) return;
+            let total = 0, count = 0;
+            selected.forEach(td => {{
+                const raw = td.dataset.raw;
+                if (raw === undefined || raw === '') return;
+                const v = parseFloat(raw);
+                if (!isNaN(v)) {{ total += v; count += 1; }}
+            }});
+            if (count > 0) {{
+                if (sumValue) sumValue.textContent = fmt(total);
+                if (sumCount) sumCount.textContent = count + '개 숫자 셀';
+                if (popup) popup.classList.add('show');
+            }} else {{
+                if (popup) popup.classList.remove('show');
+            }}
+        }}
+
+        document.querySelectorAll('.dash-cell-selectable').forEach(td => {{
+            td.addEventListener('click', function(e) {{
+                const additive = multiMode || e.ctrlKey || e.metaKey;
+                if (!additive) {{
+                    selected.forEach(el => el.classList.remove('selected'));
+                    selected.clear();
+                }}
+                if (td.classList.contains('selected')) {{
+                    td.classList.remove('selected');
+                    selected.delete(td);
+                }} else {{
+                    td.classList.add('selected');
+                    selected.add(td);
+                }}
+                updateSumUI();
+            }});
+        }});
+
+        document.getElementById('dashMultiBtn').addEventListener('click', function() {{
+            multiMode = !multiMode;
+            this.classList.toggle('active', multiMode);
+        }});
+    }})();
+    </script>
+    </body></html>
+    """
+    components.html(page_html, height=height, scrolling=True)
+
+
+def render_tab3_dataframe_table(df, fmt, target_col):
+    """Tab3 표 — 다른 탭과 동일한 st.dataframe 렌더."""
+    df_active, numeric_cols, highlight_col_name = cached_prepare_active_df(df, target_col)
+    if df_active is None or df_active.empty:
+        return
+
+    styled = df_active.style.format(fmt, subset=numeric_cols)
+
+    if highlight_col_name and highlight_col_name in numeric_cols:
+        styled = styled.apply(
+            lambda s: ['color: #B91C1C; background-color: #FEE2E2;'] * len(s),
+            subset=[highlight_col_name],
+            axis=0,
+        )
+
+    styled = styled.apply(
+        lambda col: (
+            ['border-right: 2px solid #CBD5E1; background-color: #FAFAFA;'] * len(col)
+            if col.name == "품목명"
+            else [''] * len(col)
+        ),
+        axis=0,
+    )
+
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        height=400,
+        hide_index=True,
+        column_config={
+            "품목명": st.column_config.TextColumn("품목명", width="medium"),
+        },
+    )
+
+
+def render_debt_interactive_table(disp_debt, highlight_debt, height=700):
+    """채권관리 표 — 셀 선택 + 선택 합계 팝업."""
+    style_df = apply_debt_style_fast(disp_debt, highlight_debt=highlight_debt)
+    df_show = disp_debt.reset_index()
+    numeric_cols = list(disp_debt.columns)
+
+    clients = disp_debt.index.get_level_values("거래처")
+    gubuns = disp_debt.index.get_level_values("구분")
+    u_clients = clients.unique()
+    color_map = {
+        client: DEBT_CLIENT_STRIPE_A if i % 2 == 0 else DEBT_CLIENT_STRIPE_B
+        for i, client in enumerate(u_clients)
+    }
+
+    headers = ["거래처", "구분"] + numeric_cols
+    body_rows = []
+
+    for r, (idx, row) in enumerate(disp_debt.iterrows()):
+        client, gubun = idx[0], idx[1]
+        cells = [
+            f'<td class="dash-cell-selectable" style="{_debt_label_cell_style(client, gubun, color_map)}">{html.escape(str(client))}</td>',
+            f'<td class="dash-cell-selectable" style="{_debt_label_cell_style(client, gubun, color_map)}">{html.escape(str(gubun))}</td>',
+        ]
+        for col in numeric_cols:
+            val = row[col]
+            try:
+                num = float(val) if pd.notna(val) else 0.0
+            except (TypeError, ValueError):
+                num = 0.0
+            display = f"{num:,.0f}"
+            extra_style = str(style_df.at[idx, col]) if col in style_df.columns else ""
+            base_style = (
+                "padding:6px 10px;border-bottom:1px solid #E2E8F0;text-align:right;"
+                "white-space:nowrap;font-size:13px;font-weight:400;line-height:1.4;"
+                "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+            )
+            cells.append(
+                f'<td class="dash-cell-selectable" style="{base_style}{extra_style}" '
+                f'data-raw="{num}">{display}</td>'
+            )
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    render_interactive_html_table(
+        headers,
+        "".join(body_rows),
+        height=height + 40,
+        show_sum_popup=True,
+        toolbar_hint="셀 클릭 선택 · ⊕다중선택 · 상단에 선택 합계 표시",
+    )
+
+
+@st.cache_data
 def cached_staff_pivot(df_base, desired_order):
     if df_base.empty:
         return pd.DataFrame()
@@ -1129,25 +1941,67 @@ def cached_ranking_pivot(df_base, current_year, sel_staff, all_months):
 # 탭 전체 적용 업데이트 뱃지 렌더링 유틸
 # ----------------------------------------------------
 def render_update_badge(date_str):
-    return f"<div style='text-align: right; margin-top: 20px;'><span style='background-color: #FFFFFF; color: #475569; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 1px solid #CBD5E1; box-shadow: 0 1px 2px rgba(0,0,0,0.05);'>⏱️ 데이터 업데이트: {date_str}</span></div>"
+    return f"<div style='text-align: right; margin-top: 0;'><span style='background-color: #FFFFFF; color: #475569; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 1px solid #CBD5E1; box-shadow: 0 1px 2px rgba(0,0,0,0.05);'>⏱️ 데이터 업데이트: {date_str}</span></div>"
 
 
 def inject_sticky_tabs_script():
-    """필터+탭 통합 상단 고정 (iPad 세로모드: 탭을 고정바 내부 가로스크롤)."""
+    """필터+탭 상단 fixed.
+    - 맥: 현재 안정 코드 무손실 유지
+    - iPad: 0804-최종 DOM 해킹 방식 (fixed + 2.875rem + spacer + RAF)
+    """
     components.html(
         """
         <script>
         (function() {
             var parentDoc = window.parent.document;
             var parentWin = window.parent;
-            var debounceTimer = null;
 
-            function getHeaderOffset() {
+            var SPACER_ID = 'dashboard-sticky-spacer';
+            var SHIELD_ID = 'dashboard-top-shield';
+            var syncTimer = null;
+            var lastH = 0;
+
+            if (parentWin.__dashboardStickyObserver) {
+                parentWin.__dashboardStickyObserver.disconnect();
+            }
+            if (parentWin.__dashboardStickyBootInterval) {
+                clearInterval(parentWin.__dashboardStickyBootInterval);
+            }
+            if (parentWin.__dashboardStickyTouchInterval) {
+                clearInterval(parentWin.__dashboardStickyTouchInterval);
+            }
+            parentWin.__dashboardStickyRafLoop = false;
+            if (parentWin.__dashboardIpadRaf) {
+                parentWin.cancelAnimationFrame(parentWin.__dashboardIpadRaf);
+                parentWin.__dashboardIpadRaf = null;
+            }
+
+            function isTouchPad() {
+                var ua = navigator.userAgent || '';
+                var ios = /iPad|iPhone|iPod/.test(ua);
+                var ipadOs = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+                return ios || ipadOs;
+            }
+
+            var touchMode = isTouchPad();
+
+            /* ===== Mac 전용 (무손실) ===== */
+            function getTopOffsetMac() {
                 var header = parentDoc.querySelector('[data-testid="stHeader"]');
-                if (header && header.offsetHeight > 0) {
+                if (!header) return 46;
+                var rect = header.getBoundingClientRect();
+                if (rect.bottom > 0) {
+                    return Math.round(rect.bottom);
+                }
+                if (header.offsetHeight > 0) {
                     return header.offsetHeight;
                 }
                 return 46;
+            }
+
+            function getMainRect() {
+                var block = parentDoc.querySelector('section.main .block-container');
+                return block ? block.getBoundingClientRect() : null;
             }
 
             function findMainTabList() {
@@ -1167,70 +2021,320 @@ def inject_sticky_tabs_script():
                        marker.closest('div[data-testid="stVerticalBlock"]');
             }
 
-            function applyStickyLayout() {
-                try {
-                    var headerOffset = getHeaderOffset();
-                    var filterBox = findFilterBox();
-                    var tabList = findMainTabList();
+            function findMainTabsHost() {
+                var hosts = parentDoc.querySelectorAll('div[data-testid="stTabs"]');
+                for (var i = 0; i < hosts.length; i++) {
+                    if (hosts[i].querySelector('[role="tabpanel"]')) return hosts[i];
+                }
+                return null;
+            }
 
-                    if (!filterBox || !tabList) return;
+            function containsTabPanel(el) {
+                if (!el || el.nodeType !== 1) return false;
+                if (el.getAttribute && el.getAttribute('role') === 'tabpanel') return true;
+                return !!(el.querySelector && el.querySelector('[role="tabpanel"]'));
+            }
 
-                    /* 탭을 필터 고정바 안으로 이동 (React 재렌더 시에도 재부착) */
-                    if (!filterBox.contains(tabList)) {
-                        filterBox.appendChild(tabList);
+            function ensureSpacer(filterBox) {
+                var spacer = parentDoc.getElementById(SPACER_ID);
+                if (!spacer) {
+                    spacer = parentDoc.createElement('div');
+                    spacer.id = SPACER_ID;
+                    filterBox.parentNode.insertBefore(spacer, filterBox);
+                } else if (spacer.nextElementSibling !== filterBox) {
+                    filterBox.parentNode.insertBefore(spacer, filterBox);
+                }
+                return spacer;
+            }
+
+            function syncTopShield(top, rect) {
+                var shield = parentDoc.getElementById(SHIELD_ID);
+                if (!shield) {
+                    shield = parentDoc.createElement('div');
+                    shield.id = SHIELD_ID;
+                    parentDoc.body.appendChild(shield);
+                }
+                shield.style.setProperty('display', 'block', 'important');
+                shield.style.setProperty('position', 'fixed', 'important');
+                shield.style.setProperty('top', '0', 'important');
+                shield.style.setProperty('left', rect.left + 'px', 'important');
+                shield.style.setProperty('width', rect.width + 'px', 'important');
+                shield.style.setProperty('height', top + 'px', 'important');
+                shield.style.setProperty('background', '#F8FAFC', 'important');
+                shield.style.setProperty('z-index', '989', 'important');
+                shield.style.setProperty('pointer-events', 'none', 'important');
+            }
+
+            function mountTabs(filterBox, tabList) {
+                if (!filterBox || !tabList) return false;
+
+                filterBox.classList.add('dashboard-filter-sticky');
+                if (touchMode) {
+                    filterBox.classList.add('dashboard-filter-sticky-touch');
+                } else {
+                    filterBox.classList.remove('dashboard-filter-sticky-touch');
+                }
+
+                if (!filterBox.contains(tabList)) {
+                    filterBox.appendChild(tabList);
+                }
+                tabList.classList.add('dashboard-tabs-in-filter');
+
+                var tabsHost = findMainTabsHost();
+                if (tabsHost) {
+                    tabsHost.classList.add('dashboard-tabs-host-compact');
+                    Array.from(tabsHost.children).forEach(function(child) {
+                        if (!containsTabPanel(child)) {
+                            child.classList.add('dashboard-tabs-list-shell');
+                            child.style.setProperty('display', 'none', 'important');
+                            child.style.setProperty('height', '0', 'important');
+                        }
+                    });
+                }
+                return true;
+            }
+
+            /* ===== iPad: 0804-최종 해킹 ===== */
+            function isSidebarOpen() {
+                var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
+                if (!sidebar) return false;
+                if (sidebar.getAttribute('aria-expanded') === 'true') return true;
+                return sidebar.getBoundingClientRect().width > 100;
+            }
+
+            function cleanupIpadPortal() {
+                var portal = parentDoc.getElementById('dashboard-ipad-portal');
+                if (!portal) return;
+                var filterBox = findFilterBox();
+                if (filterBox && portal.contains(filterBox)) {
+                    var spacer = parentDoc.getElementById(SPACER_ID);
+                    if (spacer && spacer.parentNode) {
+                        spacer.parentNode.insertBefore(filterBox, spacer.nextSibling);
+                    } else {
+                        parentDoc.body.appendChild(filterBox);
                     }
+                }
+                portal.remove();
+            }
 
-                    filterBox.classList.add('dashboard-filter-sticky');
-                    filterBox.style.setProperty('top', headerOffset + 'px', 'important');
+            function applyIpad0804Hack() {
+                cleanupIpadPortal();
 
-                    tabList.classList.add('dashboard-tabs-in-filter');
-                    tabList.style.setProperty('margin-top', '8px', 'important');
-                    tabList.style.setProperty('padding', '4px 2px 0 2px', 'important');
-                    tabList.style.setProperty('border-top', '1px solid #E2E8F0', 'important');
-                    tabList.style.setProperty('background-color', '#FFFFFF', 'important');
+                var marker = parentDoc.getElementById('sticky-marker');
+                if (!marker) return;
 
-                    /* 탭 호스트의 별도 sticky 제거 (이중 고정 방지) */
-                    var tabsHost = tabList.closest('[data-testid="stTabs"]');
-                    if (tabsHost) {
-                        tabsHost.classList.remove('dashboard-tabs-sticky');
-                        tabsHost.style.removeProperty('position');
-                        tabsHost.style.removeProperty('top');
-                        tabsHost.style.removeProperty('z-index');
+                var targetBox = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') ||
+                                marker.closest('div[data-testid="stVerticalBlock"]');
+                if (!targetBox) return;
+
+                var tabList = findMainTabList();
+                var stTabs = findMainTabsHost();
+                var tabHeader = tabList || (stTabs ? stTabs.querySelector('div:first-child') : null);
+                if (!tabHeader) return;
+
+                if (!targetBox.contains(tabHeader)) {
+                    targetBox.appendChild(tabHeader);
+                }
+
+                targetBox.classList.add('dashboard-filter-sticky');
+                targetBox.classList.add('dashboard-filter-sticky-touch');
+                tabHeader.classList.add('dashboard-tabs-in-filter');
+
+                if (stTabs) {
+                    stTabs.classList.add('dashboard-tabs-host-compact');
+                    Array.from(stTabs.children).forEach(function(child) {
+                        if (!containsTabPanel(child)) {
+                            child.classList.add('dashboard-tabs-list-shell');
+                            child.style.setProperty('display', 'none', 'important');
+                            child.style.setProperty('height', '0', 'important');
+                        }
+                    });
+                }
+
+                /* 0804: Streamlit 헤더와 한몸 — top 2.875rem */
+                var open = isSidebarOpen();
+                targetBox.style.setProperty('position', 'fixed', 'important');
+                targetBox.style.setProperty('top', '2.875rem', 'important');
+                targetBox.style.setProperty('z-index', open ? '1' : '999999', 'important');
+                targetBox.style.setProperty('background-color', '#FFFFFF', 'important');
+                targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
+                targetBox.style.setProperty('border-radius', '8px', 'important');
+                targetBox.style.setProperty('padding', '10px 10px 0px 10px', 'important');
+                targetBox.style.setProperty('box-shadow', '0 10px 15px -3px rgba(0,0,0,0.1)', 'important');
+                targetBox.style.setProperty('-webkit-transform', 'none', 'important');
+                targetBox.style.setProperty('transform', 'none', 'important');
+
+                tabHeader.style.setProperty('padding', '0 10px 0px 10px', 'important');
+                tabHeader.style.setProperty('margin-top', '5px', 'important');
+                tabHeader.style.setProperty('border-bottom', 'none', 'important');
+                tabHeader.style.setProperty('background-color', 'transparent', 'important');
+
+                var spacer = parentDoc.getElementById(SPACER_ID);
+                if (!spacer) {
+                    spacer = parentDoc.createElement('div');
+                    spacer.id = SPACER_ID;
+                }
+                if (spacer.parentNode !== targetBox.parentNode || spacer.nextElementSibling !== targetBox) {
+                    targetBox.parentNode.insertBefore(spacer, targetBox);
+                }
+                spacer.style.height = targetBox.offsetHeight + 'px';
+                spacer.style.width = '100%';
+                spacer.style.marginBottom = '12px';
+                spacer.style.display = 'block';
+
+                parentWin.__dashboardIpadTarget = targetBox;
+                parentWin.__dashboardIpadSpacer = spacer;
+            }
+
+            function syncIpadWidthLoop() {
+                var targetBox = parentWin.__dashboardIpadTarget;
+                var spacer = parentWin.__dashboardIpadSpacer || parentDoc.getElementById(SPACER_ID);
+                if (!targetBox || !parentDoc.body.contains(targetBox)) {
+                    applyIpad0804Hack();
+                    targetBox = parentWin.__dashboardIpadTarget;
+                    spacer = parentWin.__dashboardIpadSpacer;
+                }
+                if (targetBox && spacer && parentDoc.body.contains(spacer)) {
+                    var rect = spacer.getBoundingClientRect();
+                    targetBox.style.setProperty('position', 'fixed', 'important');
+                    targetBox.style.setProperty('top', '2.875rem', 'important');
+                    targetBox.style.setProperty('width', rect.width + 'px', 'important');
+                    targetBox.style.setProperty('left', rect.left + 'px', 'important');
+                    targetBox.style.setProperty('z-index', isSidebarOpen() ? '1' : '999999', 'important');
+                    spacer.style.height = targetBox.offsetHeight + 'px';
+                }
+                parentWin.__dashboardIpadRaf = parentWin.requestAnimationFrame(syncIpadWidthLoop);
+            }
+
+            function syncFixedBar() {
+                if (touchMode) {
+                    applyIpad0804Hack();
+                    return;
+                }
+
+                /* ===== Mac 무손실 분기 (변경 금지) ===== */
+                var filterBox = findFilterBox();
+                var tabList = findMainTabList();
+                if (!filterBox || !tabList) return;
+
+                mountTabs(filterBox, tabList);
+
+                var rectMac = getMainRect();
+                if (!rectMac) return;
+                var topMac = getTopOffsetMac();
+                filterBox.style.setProperty('position', 'fixed', 'important');
+                filterBox.style.setProperty('top', topMac + 'px', 'important');
+                filterBox.style.setProperty('left', rectMac.left + 'px', 'important');
+                filterBox.style.setProperty('width', rectMac.width + 'px', 'important');
+                filterBox.style.setProperty('max-width', rectMac.width + 'px', 'important');
+                filterBox.style.setProperty('z-index', '990', 'important');
+                parentDoc.documentElement.style.setProperty('--dashboard-bar-top', topMac + 'px');
+                parentDoc.documentElement.style.setProperty('--dashboard-bar-left', rectMac.left + 'px');
+                parentDoc.documentElement.style.setProperty('--dashboard-bar-width', rectMac.width + 'px');
+                syncTopShield(topMac, rectMac);
+                var barHMac = filterBox.offsetHeight + 4;
+                if (Math.abs(barHMac - lastH) > 1) {
+                    var spacerMac = ensureSpacer(filterBox);
+                    spacerMac.style.height = barHMac + 'px';
+                    spacerMac.style.display = 'block';
+                    parentDoc.documentElement.style.setProperty('--dashboard-fixed-bar-height', barHMac + 'px');
+                    lastH = barHMac;
+                }
+            }
+
+            function scheduleSync(ms) {
+                if (syncTimer) clearTimeout(syncTimer);
+                syncTimer = setTimeout(syncFixedBar, ms || 40);
+            }
+
+            if (touchMode) {
+                parentDoc.documentElement.classList.add('dashboard-touch-mode');
+
+                var boot = 0;
+                parentWin.__dashboardStickyBootInterval = setInterval(function() {
+                    applyIpad0804Hack();
+                    boot++;
+                    if (boot > 40) {
+                        clearInterval(parentWin.__dashboardStickyBootInterval);
+                        parentWin.__dashboardStickyBootInterval = null;
                     }
-                } catch (e) {}
+                }, 200);
+
+                parentWin.__dashboardStickyTouchInterval = setInterval(function() {
+                    applyIpad0804Hack();
+                }, 800);
+
+                var observer = new MutationObserver(function() { scheduleSync(80); });
+                observer.observe(parentDoc.body, { childList: true, subtree: true });
+                parentWin.__dashboardStickyObserver = observer;
+
+                parentDoc.addEventListener('click', function(e) {
+                    if (e.target.closest('[data-testid="collapsedControl"]') ||
+                        e.target.closest('[data-testid="stSidebar"]') ||
+                        e.target.closest('[role="tab"]')) {
+                        scheduleSync(30);
+                        scheduleSync(300);
+                    }
+                }, true);
+
+                parentWin.addEventListener('resize', function() { scheduleSync(80); }, { passive: true });
+                parentWin.addEventListener('orientationchange', function() {
+                    scheduleSync(120);
+                    scheduleSync(450);
+                }, { passive: true });
+
+                applyIpad0804Hack();
+                syncIpadWidthLoop();
+            } else {
+                var pollCount = 0;
+                parentWin.__dashboardStickyBootInterval = setInterval(function() {
+                    syncFixedBar();
+                    pollCount++;
+                    if (pollCount > 100) {
+                        clearInterval(parentWin.__dashboardStickyBootInterval);
+                        parentWin.__dashboardStickyBootInterval = null;
+                    }
+                }, 150);
+
+                var observer = new MutationObserver(function() { scheduleSync(60); });
+                observer.observe(parentDoc.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true
+                });
+                parentWin.__dashboardStickyObserver = observer;
+
+                var scrollRoot = parentDoc.querySelector('[data-testid="stAppViewContainer"]') || parentDoc;
+                scrollRoot.addEventListener('scroll', function() { scheduleSync(30); }, { passive: true, capture: true });
+                parentDoc.addEventListener('scroll', function() { scheduleSync(30); }, { passive: true, capture: true });
+                parentWin.addEventListener('scroll', function() { scheduleSync(30); }, { passive: true });
+                parentWin.addEventListener('resize', function() { scheduleSync(80); }, { passive: true });
+                parentWin.addEventListener('pageshow', function() { scheduleSync(80); }, { passive: true });
+
+                if (parentWin.visualViewport) {
+                    parentWin.visualViewport.addEventListener('resize', function() { scheduleSync(40); }, { passive: true });
+                    parentWin.visualViewport.addEventListener('scroll', function() { scheduleSync(40); }, { passive: true });
+                }
+
+                parentDoc.addEventListener('click', function(e) {
+                    if (e.target.closest('[data-testid="collapsedControl"]') ||
+                        e.target.closest('[role="tab"]')) {
+                        scheduleSync(50);
+                        scheduleSync(300);
+                    }
+                }, true);
+
+                var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
+                if (sidebar) {
+                    sidebar.addEventListener('transitionend', function() { scheduleSync(40); });
+                }
+
+                parentWin.__dashboardStickyTouchInterval = setInterval(function() {
+                    syncFixedBar();
+                }, 3000);
+
+                syncFixedBar();
             }
-
-            function scheduleApply() {
-                if (debounceTimer) clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(applyStickyLayout, 30);
-            }
-
-            var pollCount = 0;
-            var initInterval = setInterval(function() {
-                applyStickyLayout();
-                pollCount++;
-                if (pollCount > 80) clearInterval(initInterval);
-            }, 150);
-
-            var observer = new MutationObserver(scheduleApply);
-            observer.observe(parentDoc.body, { childList: true, subtree: true });
-
-            parentDoc.addEventListener('scroll', scheduleApply, true);
-            parentWin.addEventListener('scroll', scheduleApply, true);
-            parentWin.addEventListener('resize', scheduleApply);
-            parentWin.addEventListener('orientationchange', function() {
-                setTimeout(scheduleApply, 100);
-                setTimeout(scheduleApply, 400);
-            });
-            parentDoc.addEventListener('touchstart', scheduleApply, { passive: true, capture: true });
-            parentDoc.addEventListener('touchend', scheduleApply, { passive: true, capture: true });
-
-            if (parentWin.visualViewport) {
-                parentWin.visualViewport.addEventListener('resize', scheduleApply);
-                parentWin.visualViewport.addEventListener('scroll', scheduleApply);
-            }
-
-            scheduleApply();
         })();
         </script>
         """,
@@ -1273,21 +2377,22 @@ def get_display_df_with_sum(df, sum_label="연간 합계", text_cols=None):
                 disp.at[sum_label, col] = "총 합계"
     return disp
 
-def style_with_sum(disp_df, fmt_str, cmap, subset_cols=None, axis=None):
-    if disp_df.empty: return disp_df.style
+def style_with_sum(disp_df, fmt_str, cmap=None, subset_cols=None, axis=None):
+    if disp_df.empty:
+        return disp_df.style
     if subset_cols is None:
         subset_cols = disp_df.select_dtypes(include=[np.number]).columns
-    
+
     grad_subset = pd.IndexSlice[disp_df.index[:-1], subset_cols]
     styled = disp_df.style.format(fmt_str)
-    
+
     if cmap:
         styled = styled.background_gradient(cmap=cmap, axis=axis, subset=grad_subset)
-        
+
     styled = styled.apply(
-        lambda s: ['font-weight: 800; background-color: #E2E8F0; color: #0F172A;'] * len(s), 
-        subset=pd.IndexSlice[disp_df.index[-1], :], 
-        axis=1
+        lambda s: ['font-weight: 800; background-color: #E2E8F0; color: #0F172A;'] * len(s),
+        subset=pd.IndexSlice[disp_df.index[-1], :],
+        axis=1,
     )
     return styled
 
@@ -1534,6 +2639,7 @@ if not full_df.empty:
     # ==============================================================
     # 필터 영역 (상단 고정은 inject_sticky_tabs_script에서 처리)
     # ==============================================================
+    st.markdown("<div id='dashboard-sticky-spacer'></div>", unsafe_allow_html=True)
     try:
         filter_container = st.container(border=True)
     except TypeError:
@@ -1559,7 +2665,7 @@ if not full_df.empty:
         df_staff_filtered = df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base.copy()
 
         all_clients = sorted(df_staff_filtered["거래처"].unique()) if not df_staff_filtered.empty else []
-        
+
         client_options = ["전체 거래처"] + all_clients
         selected_client = fc4.selectbox("🏢 거래처 (직접 입력 검색)", options=client_options, index=0)
 
@@ -1658,6 +2764,66 @@ st.sidebar.download_button(
     use_container_width=True,
 )
 
+st.sidebar.subheader("📽️ PPT 내보내기")
+
+_ppt_sig = (
+    selected_client,
+    tuple(sorted(selected_staff)),
+    latest_update_str,
+    latest_month_str_total,
+)
+if st.session_state.get("ppt_gen_sig") != _ppt_sig:
+    st.session_state["ppt_ready_bytes"] = None
+
+try:
+    if st.sidebar.button("📽️ PPT 생성", key="gen_dashboard_ppt", use_container_width=True):
+        with st.spinner("PPT 파일 생성 중..."):
+            tot_sales_val_export = df_base["매출액"].sum() * 1.1 / 10000 if not df_base.empty else 0.0
+            cur_sales_val_export = cur_month_sales_total / 10000
+            pivot_m_client_export = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
+            st.session_state["ppt_ready_bytes"] = convert_dashboard_to_ppt(
+                latest_update_str,
+                selected_client,
+                tuple(selected_staff),
+                latest_month_str_total,
+                tot_sales_val_export,
+                cur_sales_val_export,
+                mom_rate_total,
+                avg_rate_total,
+                pivot_m_total,
+                pivot_m_client_export,
+                client_item_qty_pivot,
+                sales_p,
+                qty_p,
+                staff_pivot,
+                df_detail,
+                filtered_debt_df,
+                df_base,
+                df_tank,
+                df_vaporizer,
+                df_integrated,
+                tuple(all_months),
+                tuple(years),
+                tuple(target_items),
+            )
+            st.session_state["ppt_gen_sig"] = _ppt_sig
+
+    if st.session_state.get("ppt_ready_bytes") and st.session_state.get("ppt_gen_sig") == _ppt_sig:
+        st.sidebar.download_button(
+            label="⬇️ PPT 다운로드",
+            data=st.session_state["ppt_ready_bytes"],
+            file_name=f"통합영업분석_전체탭_{datetime.date.today().strftime('%Y%m%d')}.pptx",
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            use_container_width=True,
+            key="dl_dashboard_ppt",
+        )
+    elif st.session_state.get("ppt_gen_sig") and st.session_state.get("ppt_gen_sig") != _ppt_sig:
+        st.sidebar.caption("검색 조건이 변경되었습니다. PPT를 다시 생성해 주세요.")
+except ImportError:
+    st.sidebar.warning("PPT 내보내기: `pip install python-pptx kaleido` 설치 후 이용하세요.")
+except Exception as exc:
+    st.sidebar.error(f"PPT 생성 오류: {exc}")
+
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
     [
         "📌 영업 종합 요약",
@@ -1676,7 +2842,7 @@ inject_sticky_tabs_script()
 # Tab 1: 📌 영업 종합 요약
 with tab1:
     t1_c1, t1_c2 = st.columns([4, 1])
-    t1_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>📊 전체 영업 주요 실적 지표</div>", unsafe_allow_html=True)
+    t1_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 주요 실적 지표</div>", unsafe_allow_html=True)
     t1_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
     
     m1, m2, m3, m4 = st.columns(4)
@@ -1689,7 +2855,7 @@ with tab1:
     m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_total < 0 else '#2563EB'};'>{mom_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
     m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_total < 0 else '#2563EB'};'>{avg_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
 
-    st.markdown("<div class='sub-header'>📊 전체 영업 연도별 월 매출 추이</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 연도별 월 매출 추이</div>", unsafe_allow_html=True)
     col_left, col_right = st.columns([1, 1])
     
     with col_left:
@@ -1703,7 +2869,7 @@ with tab1:
         )
         
     st.markdown("---")
-    st.markdown("<div class='sub-header'>📦 주요 4대 품목 상세 분석</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-header dashboard-tab-panel-head'>📦 주요 4대 품목 상세 분석</div>", unsafe_allow_html=True)
     
     sel_col1, sel_col2 = st.columns([1, 1])
     with sel_col1:
@@ -1738,7 +2904,7 @@ with tab1:
         )
 
     st.markdown("---")
-    st.markdown("<div class='sub-header'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
     
     if "업종" in df_base.columns:
         available_industries = sorted(list(df_base["업종"].unique()))
@@ -1836,7 +3002,7 @@ with tab1:
                             )
 
     st.markdown("---")
-    st.markdown("<div class='sub-header'>🏆 당해년도 최신월 기준 상위 30위 거래처 실적 (1월~12월) 및 업종 비중</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 당해년도 최신월 기준 상위 30위 거래처 실적 (1월~12월) 및 업종 비중</div>", unsafe_allow_html=True)
     
     if not df_base.empty:
         current_year_str = str(df_base["연도"].max())
@@ -1912,7 +3078,7 @@ with tab1:
         curr_m_label = latest_period.strftime("%m월")
         prev_m_label = prev_period.strftime("%m월")
         
-        st.markdown(f"<div class='sub-header'>📊 전월 대비 실적 증감 및 신규/이탈 분석 ({prev_m_label} vs {curr_m_label})</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📊 전월 대비 실적 증감 및 신규/이탈 분석 ({prev_m_label} vs {curr_m_label})</div>", unsafe_allow_html=True)
         
         df_prev = df_base[df_base["매출일_dt"].dt.to_period("M") == prev_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{prev_m_label} 매출"})
         df_curr = df_base[df_base["매출일_dt"].dt.to_period("M") == latest_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{curr_m_label} 매출"})
@@ -1927,43 +3093,61 @@ with tab1:
         new_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] == 0) & (df_diff[f"{curr_m_label} 매출"] > 0)].sort_values(by=f"{curr_m_label} 매출", ascending=False)
         lost_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] == 0)].sort_values(by=f"{prev_m_label} 매출", ascending=False)
 
-        tab_up, tab_down, tab_new, tab_lost = st.tabs(["🚀 상승 Top 10", "📉 하락 Top 10", "🎉 신규/재개 거래처", "⚠️ 미거래/이탈 의심"])
-        
-        with tab_up:
-            st.markdown(f"**🔥 기존 거래처 중 매출이 가장 많이 [상승]한 10곳 (단위: 만원, VAT 포함)**")
-            st.dataframe(
-                top_gains.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
-                .apply(lambda s: ['color: #2563EB; font-weight: bold;' if v > 0 else '' for v in s], subset=['매출 증감액']),
-                use_container_width=True, hide_index=True
-            )
-            
-        with tab_down:
-            st.markdown(f"**📉 기존 거래처 중 매출이 가장 많이 [하락]한 10곳 (단위: 만원, VAT 포함)**")
-            st.dataframe(
-                top_drops.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
-                .apply(lambda s: ['color: #B91C1C; font-weight: bold;' if v < 0 else '' for v in s], subset=['매출 증감액']),
-                use_container_width=True, hide_index=True
-            )
+        mom_view = st.radio(
+            "전월 대비 분석 보기",
+            ["🚀 상승 Top 10", "📉 하락 Top 10", "🎉 신규/재개 거래처", "⚠️ 미거래/이탈 의심"],
+            horizontal=True,
+            key="tab1_mom_view",
+            label_visibility="collapsed",
+        )
 
-        with tab_new:
+        if mom_view == "🚀 상승 Top 10":
+            st.markdown(f"**🔥 기존 거래처 중 매출이 가장 많이 [상승]한 10곳 (단위: 만원, VAT 포함)**")
+            if top_gains.empty:
+                st.info("해당 조건에 맞는 상승 거래처가 없습니다.")
+            else:
+                st.dataframe(
+                    top_gains.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
+                    .apply(lambda s: ['color: #2563EB; font-weight: bold;' if v > 0 else '' for v in s], subset=['매출 증감액']),
+                    use_container_width=True, hide_index=True, height=min(420, 38 + len(top_gains) * 35)
+                )
+
+        elif mom_view == "📉 하락 Top 10":
+            st.markdown(f"**📉 기존 거래처 중 매출이 가장 많이 [하락]한 10곳 (단위: 만원, VAT 포함)**")
+            if top_drops.empty:
+                st.info("해당 조건에 맞는 하락 거래처가 없습니다.")
+            else:
+                st.dataframe(
+                    top_drops.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
+                    .apply(lambda s: ['color: #B91C1C; font-weight: bold;' if v < 0 else '' for v in s], subset=['매출 증감액']),
+                    use_container_width=True, hide_index=True, height=min(420, 38 + len(top_drops) * 35)
+                )
+
+        elif mom_view == "🎉 신규/재개 거래처":
             st.markdown(f"**🎉 {prev_m_label}엔 거래가 없었으나 {curr_m_label}에 새롭게 매출이 발생한 곳 (총 {len(new_clients)}곳, 단위: 만원, VAT 포함)**")
-            st.dataframe(
-                new_clients[["거래처", f"{curr_m_label} 매출"]].style.format({f"{curr_m_label} 매출": "{:,.0f}"}),
-                use_container_width=True, hide_index=True
-            )
-            
-        with tab_lost:
+            if new_clients.empty:
+                st.info("신규/재개 거래처가 없습니다.")
+            else:
+                st.dataframe(
+                    new_clients[["거래처", f"{curr_m_label} 매출"]].style.format({f"{curr_m_label} 매출": "{:,.0f}"}),
+                    use_container_width=True, hide_index=True, height=min(480, 38 + len(new_clients) * 35)
+                )
+
+        else:
             st.markdown(f"**⚠️ {prev_m_label}엔 매출이 있었으나 {curr_m_label}엔 거래가 없는 곳 (총 {len(lost_clients)}곳, 단위: 만원, VAT 포함)**")
-            st.dataframe(
-                lost_clients[["거래처", f"{prev_m_label} 매출"]].style.format({f"{prev_m_label} 매출": "{:,.0f}"}),
-                use_container_width=True, hide_index=True
-            )
+            if lost_clients.empty:
+                st.info("미거래/이탈 의심 거래처가 없습니다.")
+            else:
+                st.dataframe(
+                    lost_clients[["거래처", f"{prev_m_label} 매출"]].style.format({f"{prev_m_label} 매출": "{:,.0f}"}),
+                    use_container_width=True, hide_index=True, height=min(480, 38 + len(lost_clients) * 35)
+                )
 
 
 # Tab 2: 🏢 거래처 분석
 with tab2:
     t2_c1, t2_c2 = st.columns([4, 1])
-    t2_c1.markdown(f"<div class='sub-header' style='margin-top: 20px;'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
+    t2_c1.markdown(f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
     t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
     
     btn_c1, btn_c2, btn_c3 = st.columns([1.5, 1, 1])
@@ -2024,7 +3208,7 @@ with tab2:
             )
 
         st.markdown("---")
-        st.markdown(f"<div class='sub-header'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
         
         client_available_items = sorted(df_client_filtered["품목명"].unique())
         if client_available_items:
@@ -2089,35 +3273,11 @@ with tab2:
 # Tab 3: 📦 품목 및 단가 분석
 with tab3:
     t3_c1, t3_c2 = st.columns([4, 1])
-    t3_c1.markdown(f"<div class='sub-header' style='margin-top: 20px;'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
+    t3_c1.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
     t3_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
     
     latest_dt_overall = df_base["매출일_dt"].max() if not df_base.empty else None
     target_month_col = latest_dt_overall.strftime("%y년 %m월") if pd.notnull(latest_dt_overall) else None
-    
-    def render_native_dataframe(df, cmap, fmt, target_col, apply_gradient=True):
-        df_active, numeric_cols, highlight_col_name = prepare_active_df_fast(df, target_col)
-        
-        if df_active is None or df_active.empty:
-            return
-
-        styled = df_active.style.format(fmt, subset=numeric_cols)
-        
-        if apply_gradient and cmap:
-            styled = styled.background_gradient(cmap=cmap, subset=numeric_cols, axis=None)
-
-        if highlight_col_name and highlight_col_name in numeric_cols:
-            styled = styled.apply(lambda s: ['color: #B91C1C; font-weight: bold; background-color: #FEE2E2;'] * len(s), subset=[highlight_col_name], axis=0)
-
-        st.dataframe(
-            styled, 
-            use_container_width=True, 
-            height=400,
-            hide_index=True,  
-            column_config={
-                "품목명": st.column_config.TextColumn("품목명", width="medium")
-            }
-        )
 
     avail_years_short = [y[2:] for y in years]
     current_year_short = str(df_base["연도"].max())[2:] if not df_base.empty else (avail_years_short[0] if avail_years_short else "26")
@@ -2126,38 +3286,32 @@ with tab3:
         "📅 월별 상세 내역을 펼쳐볼 연도 선택 (단가표 제외)",
         options=avail_years_short,
         default=[current_year_short] if current_year_short in avail_years_short else avail_years_short[:1],
-        format_func=lambda x: f"20{x}년"
+        format_func=lambda x: f"20{x}년",
+        key="tab3_detail_years",
     )
-    
-    def filter_year_columns(df):
-        if df.empty: return df
-        cols = []
-        for y in avail_years_short:
-            if y in selected_detail_years:
-                for m in reversed(all_months):
-                    c = f"{y}년 {m}"
-                    if c in df.columns: cols.append(c)
-            tot = f"{y}년 연간총합"
-            if tot in df.columns: cols.append(tot)
-        return df[[c for c in cols if c in df.columns]]
         
-    sales_p_filtered = filter_year_columns(sales_p * 1.1 / 10000)
-    qty_p_filtered = filter_year_columns(qty_p)
+    sales_p_filtered, qty_p_filtered = cached_filter_tab3_year_columns(
+        sales_p,
+        qty_p,
+        tuple(sorted(selected_detail_years)),
+        tuple(avail_years_short),
+        tuple(all_months),
+    )
 
     st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
-    render_native_dataframe(sales_p_filtered, "Blues", "{:,.0f}", target_month_col, apply_gradient=True)
+    render_tab3_dataframe_table(sales_p_filtered, "{:,.0f}", target_month_col)
         
     st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
-    render_native_dataframe(qty_p_filtered, "Greens", "{:,.0f}", target_month_col, apply_gradient=True)
+    render_tab3_dataframe_table(qty_p_filtered, "{:,.0f}", target_month_col)
         
     st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (실제 원본 단가) - 전체 기간 월별 고정 표시</div>", unsafe_allow_html=True)
-    render_native_dataframe(unit_price_p, "Oranges", "{:,.0f}", target_month_col, apply_gradient=False)
+    render_tab3_dataframe_table(unit_price_p, "{:,.0f}", target_month_col)
     
 
 # Tab 4: 👤 담당자 & 상세내역
 with tab4:
     t4_c1, t4_c2 = st.columns([4, 1])
-    t4_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
+    t4_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
     t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
     
     if not staff_pivot.empty:
@@ -2174,7 +3328,7 @@ with tab4:
         )
         st.dataframe(styled_staff, use_container_width=True, height=350)
 
-    st.markdown("<div class='sub-header'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
     if not df_base.empty:
         current_year = str(df_base["연도"].max())
         all_staffs = sorted(df_base["담당자"].unique())
@@ -2336,7 +3490,7 @@ with tab4:
                         load_uploaded_files_from_bytes.clear() 
                         st.rerun()
 
-    st.markdown("<div class='sub-header'>📋 거래 상세 내역 (최신순 800건)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sub-header dashboard-tab-panel-head'>📋 거래 상세 내역 (최신순 800건)</div>", unsafe_allow_html=True)
     if not df_detail.empty:
         view_detail_df = df_detail.sort_values(by="매출일_dt", ascending=False).head(800)
         
@@ -2369,7 +3523,7 @@ with tab5:
     debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
     
     t5_c1, t5_c2 = st.columns([4, 1])
-    t5_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
+    t5_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
     t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
     
     if not debt_df.empty:
@@ -2419,111 +3573,16 @@ with tab5:
             disp_debt = disp_debt.sort_values(by=["거래처순위", "구분순위"]).drop(columns=["거래처순위", "구분순위"])
             
             disp_debt = disp_debt.set_index(["거래처", "구분"])
-            
-            def apply_debt_style_fast(df):
-                styles = np.full(df.shape, '', dtype=object)
-                
-                clients = df.index.get_level_values('거래처')
-                gubuns = df.index.get_level_values('구분')
-                
-                u_clients_fast = clients.unique()
-                color_map_fast = {client: '#FFFFFF' if i % 2 == 0 else '#F1F5F9' for i, client in enumerate(u_clients_fast)}
-                
-                for r in range(df.shape[0]):
-                    client = clients[r]
-                    gubun = gubuns[r]
-                    
-                    is_first_of_client = (r == 0) or (clients[r] != clients[r-1])
-                    is_last_of_client = (r == df.shape[0] - 1) or (clients[r] != clients[r+1])
-                    
-                    if client == "📌 [전체 합계]":
-                        bg_color = '#E2E8F0'
-                        for c in range(df.shape[1]):
-                            styles[r, c] = f'background-color: {bg_color}; border-top: 2px solid #64748B; border-bottom: 2px solid #64748B; font-weight: 800; color: #0F172A;'
-                    else:
-                        base_bg = color_map_fast.get(client, '#FFFFFF')
-                        
-                        if gubun == '잔액':
-                            bg_color = '#E6F0FD' if base_bg == '#FFFFFF' else '#DCE8F6'
-                            font_weight = 'font-weight: 700; color: #1E293B;'
-                        else:
-                            bg_color = base_bg
-                            font_weight = 'font-weight: 400; color: #334155;'
-                            
-                        border_top = 'border-top: 2px solid #94A3B8;' if is_first_of_client else 'border-top: 1px solid #E2E8F0;'
-                        border_bottom = 'border-bottom: 2px solid #94A3B8;' if is_last_of_client else ''
-                        
-                        for c in range(df.shape[1]):
-                            styles[r, c] = f'background-color: {bg_color}; {border_top} {border_bottom} {font_weight}'
-                            
-                def override_style(old_style, new_bg, new_color):
-                    s = re.sub(r'background-color:\s*#[0-9a-fA-F]+;', '', old_style)
-                    s = re.sub(r'color:\s*#[0-9a-fA-F]+;', '', s)
-                    s = re.sub(r'font-weight:\s*\d+;', '', s)
-                    return s + f' background-color: {new_bg}; color: {new_color}; font-weight: 900;'
 
-                for client in u_clients_fast:
-                    if client == "📌 [전체 합계]":
-                        continue
-                        
-                    client_rows = np.where(clients == client)[0]
-                    i_sal = -1
-                    i_bal = -1
-                    
-                    for r in client_rows:
-                        gubun = gubuns[r]
-                        if gubun == '매출': i_sal = r
-                        elif gubun == '잔액': i_bal = r
-                        
-                    if i_sal != -1 and i_bal != -1 and df.shape[1] > 0:
-                        l_month_idx = -1
-                        for c in range(df.shape[1]-1, -1, -1):
-                            val = df.iat[i_bal, c]
-                            if pd.notna(val) and val > 0:
-                                l_month_idx = c
-                                break
-                                
-                        if l_month_idx != -1:
-                            final_bal = float(df.iat[i_bal, l_month_idx]) if pd.notna(df.iat[i_bal, l_month_idx]) else 0.0
-                            sal_latest = float(df.iat[i_sal, l_month_idx]) if pd.notna(df.iat[i_sal, l_month_idx]) else 0.0
-                            
-                            if final_bal > 0:
-                                if final_bal > sal_latest:
-                                    styles[i_bal, l_month_idx] = override_style(styles[i_bal, l_month_idx], '#FEE2E2', '#B91C1C')
-                                    accumulated = 0.0
-                                    for c in range(df.shape[1]-1, -1, -1):
-                                        if c > l_month_idx: continue
-                                        val = float(df.iat[i_sal, c]) if pd.notna(df.iat[i_sal, c]) else 0.0
-                                        
-                                        if accumulated < final_bal:
-                                            styles[i_sal, c] = override_style(styles[i_sal, c], '#FEE2E2', '#B91C1C')
-                                            accumulated += val
-                                        else:
-                                            break
-                                else:
-                                    styles[i_bal, l_month_idx] = override_style(styles[i_bal, l_month_idx], '#EFF6FF', '#1D4ED8')
-                                    
-                return pd.DataFrame(styles, index=df.index, columns=df.columns)
-
+            debt_highlight = selected_client != "전체 거래처"
             df_height = 500 if selected_client != "전체 거래처" else 700
-            
-            col_cfg = {col: st.column_config.NumberColumn(width="medium") for col in numeric_cols}
-            col_cfg["거래처"] = st.column_config.TextColumn(width=150)
-            col_cfg["구분"] = st.column_config.TextColumn(width=60)
-            
-            st.dataframe(
-                disp_debt.style
-                .format(formatter="{:,.0f}")
-                .apply(apply_debt_style_fast, axis=None),
-                use_container_width=False, 
-                height=df_height,
-                column_config=col_cfg        
-            )
+
+            render_debt_interactive_table(disp_debt, debt_highlight, height=df_height)
 
 # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
 with tab6:
     t6_c1, t6_c2 = st.columns([4, 1])
-    t6_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>📍 담당자별 거래처 지도 분포 (대한민국 V-World 지도)</div>", unsafe_allow_html=True)
+    t6_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>📍 담당자별 거래처 지도 분포 (대한민국 V-World 지도)</div>", unsafe_allow_html=True)
     t6_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
     
     rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
@@ -2692,7 +3751,7 @@ with tab6:
 # Tab 7: 🏭 설비 재고 현황
 with tab7:
     t7_c1, t7_c2 = st.columns([4, 1])
-    t7_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>🏭 고압가스 탱크 및 기화기 재고 현황</div>", unsafe_allow_html=True)
+    t7_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 고압가스 탱크 및 기화기 재고 현황</div>", unsafe_allow_html=True)
     with t7_c2:
         st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
         tab7_default = get_saved_date(TAB7_DATE_FILE)
@@ -2772,7 +3831,7 @@ with tab7:
 # Tab 8: 🛢️ 통합 탱크 재고
 with tab8:
     t8_c1, t8_c2 = st.columns([4, 1])
-    t8_c1.markdown("<div class='sub-header' style='margin-top: 20px;'>🛢️ 통합 고압가스 탱크 재고 현황</div>", unsafe_allow_html=True)
+    t8_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>🛢️ 통합 고압가스 탱크 재고 현황</div>", unsafe_allow_html=True)
     with t8_c2:
         st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
         tab8_default = get_saved_date(TAB8_DATE_FILE)
