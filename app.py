@@ -2673,6 +2673,134 @@ def is_touch_ui():
         return False
 
 
+def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=False, **kwargs):
+    """맥: 기존 plotly 그대로. iPad: 클릭 변동 고정 + 모드바는 탭 후 표시."""
+    if is_touch_ui():
+        try:
+            updates = {"clickmode": "none"}
+            if not allow_drag:
+                updates["dragmode"] = False
+            fig.update_layout(**updates)
+        except Exception:
+            pass
+        config = {
+            "displayModeBar": True,
+            "displaylogo": False,
+            "responsive": True,
+            "scrollZoom": False,
+            "doubleClick": "reset",
+            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+        }
+        st.plotly_chart(
+            fig,
+            use_container_width=use_container_width,
+            key=key,
+            config=config,
+            **kwargs,
+        )
+    else:
+        st.plotly_chart(fig, use_container_width=use_container_width, key=key, **kwargs)
+
+
+def inject_ipad_plotly_controls():
+    """iPad only: 모드바 기본 숨김 → 그래프 탭 시 우측 상단 고정 표시. 맥 무손실."""
+    components.html(
+        """
+        <script>
+        (function () {
+            var parentWin = window.parent;
+            if (!parentWin) return;
+            var parentDoc = parentWin.document;
+
+            function isTouchPad() {
+                try {
+                    var ua = parentWin.navigator.userAgent || "";
+                    var ios = /iPad|iPhone|iPod/.test(ua);
+                    var ipadOs = parentWin.navigator.platform === "MacIntel" && parentWin.navigator.maxTouchPoints > 1;
+                    return ios || ipadOs || parentDoc.documentElement.classList.contains("dashboard-touch-mode");
+                } catch (e) { return false; }
+            }
+            if (!isTouchPad()) return;
+
+            var STYLE_ID = "dashboard-ipad-plotly-modebar-style";
+            var STYLE_CSS = [
+                ".modebar-container{",
+                "  position:fixed !important;",
+                "  top:8px !important;",
+                "  right:8px !important;",
+                "  left:auto !important;",
+                "  z-index:2147483646 !important;",
+                "  display:block !important;",
+                "}",
+                ".modebar{",
+                "  position:relative !important;",
+                "  top:0 !important;",
+                "  right:0 !important;",
+                "  opacity:0 !important;",
+                "  pointer-events:none !important;",
+                "  transition:opacity .15s ease;",
+                "  background:rgba(51,51,51,.92) !important;",
+                "  border-radius:6px !important;",
+                "  padding:2px 4px !important;",
+                "}",
+                "body.plotly-mb-show .modebar,",
+                ".js-plotly-plot.plotly-mb-active .modebar{",
+                "  opacity:1 !important;",
+                "  pointer-events:auto !important;",
+                "}",
+                ".modebar-btn{",
+                "  min-width:28px !important;",
+                "  min-height:28px !important;",
+                "}"
+            ].join("");
+
+            function hookIframe(ifr) {
+                try {
+                    var doc = ifr.contentDocument || (ifr.contentWindow && ifr.contentWindow.document);
+                    if (!doc || !doc.head || doc.getElementById(STYLE_ID)) return;
+                    var st = doc.createElement("style");
+                    st.id = STYLE_ID;
+                    st.textContent = STYLE_CSS;
+                    doc.head.appendChild(st);
+
+                    function activate(plot) {
+                        try {
+                            doc.body.classList.add("plotly-mb-show");
+                            if (plot) plot.classList.add("plotly-mb-active");
+                            doc.querySelectorAll(".js-plotly-plot").forEach(function (p) {
+                                if (p !== plot) p.classList.remove("plotly-mb-active");
+                            });
+                        } catch (e1) {}
+                    }
+
+                    function onPlotTap(e) {
+                        if (e.target && e.target.closest && e.target.closest(".modebar")) return;
+                        var plot = (e.target && e.target.closest) ? e.target.closest(".js-plotly-plot") : null;
+                        if (!plot) plot = doc.querySelector(".js-plotly-plot");
+                        activate(plot);
+                    }
+
+                    doc.addEventListener("click", onPlotTap, true);
+                    doc.addEventListener("touchend", onPlotTap, true);
+                } catch (err) {}
+            }
+
+            function scan() {
+                try {
+                    parentDoc.querySelectorAll('[data-testid="stPlotlyChart"] iframe').forEach(hookIframe);
+                } catch (e2) {}
+            }
+            scan();
+            if (!parentWin.__dashboardIpadPlotlyTimer) {
+                parentWin.__dashboardIpadPlotlyTimer = parentWin.setInterval(scan, 700);
+            }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def render_frozen_styler_html(
     styled,
     height=450,
@@ -3234,6 +3362,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
 )
 
 inject_sticky_tabs_script()
+inject_ipad_plotly_controls()
 
 # Tab 1: 📌 영업 종합 요약
 with tab1:
@@ -3259,7 +3388,7 @@ with tab1:
         st.dataframe(style_with_sum(pivot_m_total_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
 
     with col_right:
-        st.plotly_chart(
+        render_plotly_chart(
             create_stacked_bar_chart(pivot_m_total, title_text=""),
             use_container_width=True, key="tab1_total_chart"
         )
@@ -3289,7 +3418,7 @@ with tab1:
             y_suf, y_fmt = " 만원", ",.0f"
             
     with i_col_right:
-        st.plotly_chart(
+        render_plotly_chart(
             create_stacked_bar_chart(
                 item_pivot, 
                 title_text="", 
@@ -3331,7 +3460,7 @@ with tab1:
                     y_suf_i, y_fmt_i = " 만원", ",.0f"
             
             with i_col_right2:
-                st.plotly_chart(
+                render_plotly_chart(
                     create_stacked_bar_chart(
                         ind_pivot, 
                         title_text="", 
@@ -3392,7 +3521,7 @@ with tab1:
                                 y_suf_sub, y_fmt_sub = " 만원", ",.0f"
                                 
                         with sc2:
-                            st.plotly_chart(
+                            render_plotly_chart(
                                 create_stacked_bar_chart(sub_item_pivot, title_text="", y_suffix=y_suf_sub, y_format=y_fmt_sub),
                                 use_container_width=True, key="ind_client_sub_chart"
                             )
@@ -3543,7 +3672,7 @@ with tab1:
                             height=450,
                             autosize=True,
                         )
-                        st.plotly_chart(
+                        render_plotly_chart(
                             fig_donut,
                             use_container_width=True,
                             key=f"top30_donut_{rank_m}",
@@ -3683,7 +3812,7 @@ with tab2:
             pivot_m_client_disp = get_display_df_with_sum(pivot_m_client, "연간 합계")
             st.dataframe(style_with_sum(pivot_m_client_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
         with cr:
-            st.plotly_chart(
+            render_plotly_chart(
                 create_stacked_bar_chart(pivot_m_client, title_text=""),
                 use_container_width=True, key="tab2_client_total_chart"
             )
@@ -3741,7 +3870,7 @@ with tab2:
                     y_suf_c, y_fmt_c = " 만원", ",.0f"
                     
             with i_col_right_c:
-                st.plotly_chart(
+                render_plotly_chart(
                     create_stacked_bar_chart(
                         client_item_pivot, 
                         title_text="", 
@@ -3850,7 +3979,7 @@ with tab4:
                     coloraxis_showscale=False,
                     height=380
                 )
-                st.plotly_chart(fig_ranking, use_container_width=True, key=f"ranking_chart_{sel_staff}")
+                render_plotly_chart(fig_ranking, use_container_width=True, key=f"ranking_chart_{sel_staff}")
         else:
             st.info(f"💡 {current_year}년에 선택한 담당자({sel_staff})의 거래처 매출 실적 데이터가 없습니다.")
 
@@ -4221,7 +4350,7 @@ with tab6:
                 )
                 
                 dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
-                st.plotly_chart(fig_map, use_container_width=True, key=dynamic_key)
+                render_plotly_chart(fig_map, use_container_width=True, key=dynamic_key, allow_drag=True)
 
                 if invalid_clients:
                     with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
