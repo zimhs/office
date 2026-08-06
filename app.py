@@ -357,23 +357,41 @@ def inject_custom_css():
                 }
             }
 
-            /* iPad only: Top30 표|도넛 옆배치 잘림 → 세로 스택 (맥은 touch-mode 없음 = 무손실) */
+            /* iPad only: Top30 표·도넛 가로 100% (맥은 touch-mode 없음 = 무손실) */
+            html.dashboard-touch-mode .top30-touch-scope,
+            html.dashboard-touch-mode .top30-touch-scope > div,
             html.dashboard-touch-mode .top30-touch-row {
+                width: 100% !important;
+                max-width: 100% !important;
+                box-sizing: border-box !important;
+            }
+            html.dashboard-touch-mode .top30-touch-row {
+                display: flex !important;
                 flex-direction: column !important;
                 flex-wrap: nowrap !important;
+                align-items: stretch !important;
                 gap: 0.75rem !important;
             }
-            html.dashboard-touch-mode .top30-touch-row > [data-testid="column"],
-            html.dashboard-touch-mode .top30-touch-row > div[data-testid="column"] {
+            html.dashboard-touch-mode .top30-touch-row > div,
+            html.dashboard-touch-mode .top30-touch-row [data-testid="column"],
+            html.dashboard-touch-mode .top30-touch-row [data-testid="stColumn"] {
                 width: 100% !important;
-                flex: 1 1 auto !important;
                 min-width: 100% !important;
                 max-width: 100% !important;
+                flex: 1 1 100% !important;
+                box-sizing: border-box !important;
+            }
+            html.dashboard-touch-mode .top30-touch-row iframe,
+            html.dashboard-touch-mode .top30-touch-row [data-testid="stPlotlyChart"],
+            html.dashboard-touch-mode .top30-touch-row [data-testid="stPlotlyChart"] > div {
+                width: 100% !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
             }
             html.dashboard-touch-mode .top30-touch-row [data-testid="stPlotlyChart"],
             html.dashboard-touch-mode .top30-touch-row [data-testid="stPlotlyChart"] iframe {
-                width: 100% !important;
                 min-height: 420px !important;
+                height: 420px !important;
             }
         </style>
         """,
@@ -2505,7 +2523,54 @@ def inject_top30_month_bridge():
                 });
             }
 
-            /* iPad(touch-mode)만: 표+도넛 가로행을 세로로 — 맥 분기 없음 */
+            /* iPad(touch-mode)만: Top30 표+도넛 행을 세로 100% 폭 — 맥은 즉시 return */
+            function forceFullWidth(el) {
+                if (!el || !el.style) return;
+                el.style.setProperty("width", "100%", "important");
+                el.style.setProperty("min-width", "100%", "important");
+                el.style.setProperty("max-width", "100%", "important");
+                el.style.setProperty("flex", "1 1 100%", "important");
+                el.style.setProperty("box-sizing", "border-box", "important");
+            }
+            function applyTop30FullWidthRow(row) {
+                row.classList.add("top30-touch-row");
+                row.style.setProperty("display", "flex", "important");
+                row.style.setProperty("flex-direction", "column", "important");
+                row.style.setProperty("flex-wrap", "nowrap", "important");
+                row.style.setProperty("align-items", "stretch", "important");
+                row.style.setProperty("width", "100%", "important");
+                row.style.setProperty("max-width", "100%", "important");
+                Array.prototype.forEach.call(row.children, forceFullWidth);
+                row.querySelectorAll('[data-testid="column"], [data-testid="stColumn"]').forEach(forceFullWidth);
+                row.querySelectorAll("iframe").forEach(function (f) {
+                    f.style.setProperty("width", "100%", "important");
+                    f.style.setProperty("max-width", "100%", "important");
+                    try { f.setAttribute("width", "100%"); } catch (e0) {}
+                });
+                var plots = row.querySelectorAll('[data-testid="stPlotlyChart"]');
+                plots.forEach(function (p) {
+                    p.style.setProperty("width", "100%", "important");
+                    p.style.setProperty("min-height", "420px", "important");
+                    p.style.setProperty("height", "420px", "important");
+                });
+                try { parentWin.dispatchEvent(new Event("resize")); } catch (e1) {}
+                setTimeout(function () {
+                    try { parentWin.dispatchEvent(new Event("resize")); } catch (e2) {}
+                    plots.forEach(function (p) {
+                        var ifr = p.querySelector("iframe");
+                        if (!ifr) return;
+                        try {
+                            var pw = ifr.contentWindow;
+                            if (pw && pw.Plotly) {
+                                var gds = ifr.contentDocument.querySelectorAll(".js-plotly-plot");
+                                for (var g = 0; g < gds.length; g++) {
+                                    try { pw.Plotly.Plots.resize(gds[g]); } catch (e3) {}
+                                }
+                            }
+                        } catch (e4) {}
+                    });
+                }, 250);
+            }
             function stackTop30DonutRow() {
                 try {
                     if (!parentDoc.documentElement.classList.contains("dashboard-touch-mode")) return;
@@ -2513,21 +2578,29 @@ def inject_top30_month_bridge():
                     if (!flag) return;
                     var scope = flag.closest('[data-testid="stVerticalBlock"]') || flag.parentElement;
                     if (!scope) return;
+                    scope.classList.add("top30-touch-scope");
+                    forceFullWidth(scope);
                     var rows = scope.querySelectorAll('[data-testid="stHorizontalBlock"]');
                     for (var i = 0; i < rows.length; i++) {
                         var row = rows[i];
-                        if (row.querySelector('[data-testid="stPlotlyChart"]')) {
-                            row.classList.add("top30-touch-row");
-                            try {
-                                parentWin.dispatchEvent(new Event("resize"));
-                            } catch (e2) {}
+                        var cols = row.querySelectorAll(':scope > [data-testid="column"], :scope > [data-testid="stColumn"], :scope > div > [data-testid="column"], :scope > div > [data-testid="stColumn"]');
+                        if (!cols.length) {
+                            cols = row.querySelectorAll('[data-testid="column"], [data-testid="stColumn"]');
+                        }
+                        /* 월 버튼 12칸 행은 제외, 표|도넛 2칸 행만 풀폭 */
+                        if (cols.length === 12) continue;
+                        var isPair = cols.length === 2;
+                        var hasPlot = !!row.querySelector('[data-testid="stPlotlyChart"]');
+                        var hasTableFrame = !!row.querySelector("iframe");
+                        if (isPair || (hasPlot && hasTableFrame) || (hasPlot && cols.length <= 3)) {
+                            applyTop30FullWidthRow(row);
                         }
                     }
                 } catch (err) {}
             }
             stackTop30DonutRow();
             if (!parentWin.__dashboardTop30StackTimer) {
-                parentWin.__dashboardTop30StackTimer = parentWin.setInterval(stackTop30DonutRow, 800);
+                parentWin.__dashboardTop30StackTimer = parentWin.setInterval(stackTop30DonutRow, 600);
             }
         })();
         </script>
