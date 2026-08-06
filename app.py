@@ -2672,7 +2672,7 @@ if not full_df.empty:
         all_clients = sorted(df_staff_filtered["거래처"].unique()) if not df_staff_filtered.empty else []
 
         client_options = ["전체 거래처"] + all_clients
-        selected_client = fc4.selectbox("🏢 거래처 (직접 입력 검색)", options=client_options, index=0)
+        selected_client = fc4.selectbox("🏢 거래처", options=client_options, index=0)
 
         df_client_filtered = df_staff_filtered[df_staff_filtered["거래처"] == selected_client] if selected_client != "전체 거래처" else df_staff_filtered.copy()
 
