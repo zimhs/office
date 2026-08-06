@@ -393,6 +393,17 @@ def inject_custom_css():
                 min-height: 420px !important;
                 height: 420px !important;
             }
+
+            /* iPad: Streamlit hover-전용 모드바 숨김 해제 (맥은 touch-mode 없음) */
+            html.dashboard-touch-mode [data-testid="stPlotlyChart"] .modebar,
+            html.dashboard-touch-mode [data-testid="stPlotlyChart"] .modebar-container,
+            html.dashboard-touch-mode .stPlotlyChart .modebar,
+            html.dashboard-touch-mode .stPlotlyChart .modebar-container {
+                opacity: 1 !important;
+                visibility: visible !important;
+                display: flex !important;
+                pointer-events: auto !important;
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -2663,14 +2674,26 @@ def inject_top30_month_bridge():
 
 
 def is_touch_ui():
-    """iPad UI 분기 (touch_ui=1). 맥은 False → 이전 월버튼 UI."""
+    """iPad UI 분기. query touch_ui / cookie / session. 맥은 False."""
     try:
+        if st.session_state.get("force_touch_ui") is True:
+            return True
         v = st.query_params.get("touch_ui", "")
         if isinstance(v, list):
             v = v[0] if v else ""
-        return str(v) == "1"
+        if str(v) == "1":
+            st.session_state["force_touch_ui"] = True
+            return True
     except Exception:
-        return False
+        pass
+    try:
+        cookies = getattr(st.context, "cookies", None)
+        if cookies is not None and str(cookies.get("dashboard_touch", "")) == "1":
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    return bool(st.session_state.get("force_touch_ui"))
 
 
 def sync_plotly_reset_nonce():
@@ -2700,40 +2723,117 @@ def bump_plotly_reset():
     st.rerun()
 
 
-def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=False, **kwargs):
-    """맥: 기존 plotly 그대로. iPad: 클릭 변동 고정 + 모드바 표시 + 원복 nonce."""
-    chart_key = key
-    if is_touch_ui() and key:
-        chart_key = f"{key}__r{st.session_state.get('plotly_reset_nonce', 0)}"
-    if is_touch_ui():
-        try:
-            updates = {"clickmode": "none"}
-            if not allow_drag:
-                updates["dragmode"] = False
-            fig.update_layout(**updates)
-        except Exception:
-            pass
-        config = {
-            "displayModeBar": True,
-            "displaylogo": False,
-            "responsive": True,
-            "scrollZoom": False,
-            "doubleClick": "reset",
-            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
-        }
-        st.plotly_chart(
-            fig,
-            use_container_width=use_container_width,
-            key=chart_key,
-            config=config,
-            **kwargs,
-        )
-    else:
+def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=False, height=None, **kwargs):
+    """맥: st.plotly_chart 무손실.
+    iPad: components.html 직접 렌더 → 컨트롤바 항상 표시 + 같은 프레임 원복 버튼.
+    """
+    if not is_touch_ui():
         st.plotly_chart(fig, use_container_width=use_container_width, key=key, **kwargs)
+        return
+
+    try:
+        layout_h = fig.layout.height
+    except Exception:
+        layout_h = None
+    try:
+        h = int(height or layout_h or 450)
+    except Exception:
+        h = 450
+
+    try:
+        updates = {
+            "clickmode": "none",
+            "margin": dict(t=56, r=12, b=12, l=12),
+            "modebar": dict(
+                orientation="h",
+                bgcolor="rgba(15, 23, 42, 0.92)",
+                color="#E2E8F0",
+                activecolor="#38BDF8",
+            ),
+        }
+        if not allow_drag:
+            updates["dragmode"] = False
+        fig.update_layout(**updates)
+    except Exception:
+        pass
+
+    config = {
+        "displayModeBar": True,
+        "displaylogo": False,
+        "responsive": True,
+        "scrollZoom": False,
+        "doubleClick": "reset",
+        "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+    }
+    try:
+        inner = fig.to_html(include_plotlyjs="cdn", full_html=False, config=config)
+    except Exception:
+        chart_key = f"{key}__r{st.session_state.get('plotly_reset_nonce', 0)}" if key else None
+        st.plotly_chart(fig, use_container_width=use_container_width, key=chart_key, config=config, **kwargs)
+        if st.button("🔄 그래프 원복", key=f"prbtn_fb_{key or 'x'}", use_container_width=True):
+            bump_plotly_reset()
+        return
+
+    uid = re.sub(r"[^a-zA-Z0-9]", "", str(key or "plot"))[:36] or "plot"
+    page_html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  html, body {{ margin:0; padding:0; background:#fff; overflow:hidden; }}
+  .wrap {{ position:relative; width:100%; }}
+  #rst_{uid} {{
+    position:absolute; top:8px; left:8px; z-index:10000;
+    padding:10px 14px; border:2px solid #fff; border-radius:999px;
+    background:#DC2626; color:#fff; font-weight:800; font-size:13px;
+    box-shadow:0 4px 12px rgba(220,38,38,.4);
+    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+  }}
+  .modebar-container, .modebar {{
+    opacity:1 !important; visibility:visible !important;
+    display:flex !important; pointer-events:auto !important;
+    z-index:9999 !important;
+  }}
+  .modebar-container {{
+    top:8px !important; right:8px !important; left:auto !important;
+  }}
+  .modebar {{
+    background:rgba(15,23,42,.94) !important;
+    border-radius:8px !important; padding:4px !important;
+  }}
+  .modebar-btn {{ min-width:32px !important; min-height:32px !important; }}
+</style></head>
+<body>
+<div class="wrap">
+  <button type="button" id="rst_{uid}">그래프 원복</button>
+  {inner}
+</div>
+<script>
+(function() {{
+  var btn = document.getElementById("rst_{uid}");
+  function resetPlot() {{
+    try {{
+      var gd = document.querySelector(".js-plotly-plot");
+      if (!gd || !window.Plotly) return;
+      window.Plotly.relayout(gd, {{
+        "xaxis.autorange": true,
+        "yaxis.autorange": true,
+        "xaxis2.autorange": true,
+        "yaxis2.autorange": true
+      }});
+    }} catch (e) {{}}
+  }}
+  if (btn) {{
+    btn.addEventListener("click", function(e) {{ e.preventDefault(); resetPlot(); }});
+    btn.addEventListener("touchend", function(e) {{ e.preventDefault(); resetPlot(); }}, {{passive:false}});
+  }}
+}})();
+</script>
+</body></html>"""
+    components.html(page_html, height=h + 8, scrolling=False)
 
 
 def inject_ipad_plotly_controls():
-    """iPad only: 모드바 하단 고정 + '그래프 원복'은 URL pr 증가로 확실히 리마운트. 맥 무손실."""
+    """iPad: touch cookie/query 동기화. 차트 컨트롤은 render_plotly_chart HTML. 맥 무손실."""
     components.html(
         """
         <script>
@@ -2741,7 +2841,6 @@ def inject_ipad_plotly_controls():
             var parentWin = window.parent;
             if (!parentWin) return;
             var parentDoc = parentWin.document;
-
             function isTouchPad() {
                 try {
                     var ua = parentWin.navigator.userAgent || "";
@@ -2750,110 +2849,31 @@ def inject_ipad_plotly_controls():
                     return ios || ipadOs || parentDoc.documentElement.classList.contains("dashboard-touch-mode");
                 } catch (e) { return false; }
             }
-            if (!isTouchPad()) return;
-
-            var STYLE_ID = "dashboard-ipad-plotly-modebar-style";
-            var STYLE_CSS = [
-                ".modebar-container{",
-                "  position:fixed !important;",
-                "  top:auto !important;",
-                "  bottom:10px !important;",
-                "  right:10px !important;",
-                "  left:auto !important;",
-                "  z-index:2147483646 !important;",
-                "  display:block !important;",
-                "  opacity:1 !important;",
-                "  pointer-events:auto !important;",
-                "}",
-                ".modebar{",
-                "  opacity:1 !important;",
-                "  pointer-events:auto !important;",
-                "  background:rgba(30,41,59,.94) !important;",
-                "  border-radius:8px !important;",
-                "  padding:4px 6px !important;",
-                "}",
-                ".modebar-btn{min-width:32px !important;min-height:32px !important;}"
-            ].join("");
-
-            function forceRemountReset() {
+            if (!isTouchPad()) {
                 try {
+                    var b = parentDoc.getElementById("dashboard-ipad-plotly-reset");
+                    if (b) b.remove();
+                } catch (e0) {}
+                return;
+            }
+            try {
+                parentDoc.cookie = "dashboard_touch=1; path=/; max-age=31536000; SameSite=Lax";
+            } catch (e1) {}
+            try {
+                if (!parentWin.__dashboardTouchUiSynced) {
+                    parentWin.__dashboardTouchUiSynced = true;
                     var url = new URL(parentWin.location.href);
-                    var cur = parseInt(url.searchParams.get("pr") || "0", 10);
-                    if (isNaN(cur)) cur = 0;
-                    url.searchParams.set("pr", String(cur + 1));
-                    if (!url.searchParams.get("touch_ui")) url.searchParams.set("touch_ui", "1");
-                    parentWin.location.href = url.toString();
-                } catch (e) {}
-            }
-
-            function ensureResetButton() {
-                var id = "dashboard-ipad-plotly-reset";
-                var btn = parentDoc.getElementById(id);
-                if (!btn) {
-                    btn = parentDoc.createElement("button");
-                    btn.id = id;
-                    btn.type = "button";
-                    btn.textContent = "그래프 원복";
-                    btn.setAttribute("aria-label", "그래프 확대 원복");
-                    parentDoc.body.appendChild(btn);
-                }
-                btn.style.cssText = [
-                    "position:fixed",
-                    "right:16px",
-                    "bottom:88px",
-                    "z-index:2147483647",
-                    "padding:12px 16px",
-                    "border:2px solid #fff",
-                    "border-radius:999px",
-                    "background:#DC2626",
-                    "color:#fff",
-                    "font-size:14px",
-                    "font-weight:800",
-                    "box-shadow:0 6px 18px rgba(220,38,38,.45)",
-                    "cursor:pointer",
-                    "pointer-events:auto",
-                    "touch-action:manipulation",
-                    "-webkit-tap-highlight-color:transparent"
-                ].join(";");
-                if (!btn.__dashboardResetBound) {
-                    btn.__dashboardResetBound = true;
-                    var fire = function (e) {
-                        try {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            e.stopImmediatePropagation();
-                        } catch (e0) {}
-                        forceRemountReset();
-                    };
-                    btn.addEventListener("click", fire, true);
-                    btn.addEventListener("touchend", fire, true);
-                }
-            }
-
-            function hookIframe(ifr) {
-                try {
-                    var doc = ifr.contentDocument || (ifr.contentWindow && ifr.contentWindow.document);
-                    if (!doc || !doc.head) return;
-                    var st = doc.getElementById(STYLE_ID);
-                    if (!st) {
-                        st = doc.createElement("style");
-                        st.id = STYLE_ID;
-                        doc.head.appendChild(st);
+                    if (url.searchParams.get("touch_ui") !== "1") {
+                        url.searchParams.set("touch_ui", "1");
+                        parentWin.location.replace(url.toString());
+                        return;
                     }
-                    st.textContent = STYLE_CSS;
-                } catch (err) {}
-            }
-
-            function scan() {
-                try {
-                    ensureResetButton();
-                    parentDoc.querySelectorAll('[data-testid="stPlotlyChart"] iframe').forEach(hookIframe);
-                } catch (e2) {}
-            }
-            scan();
-            if (!parentWin.__dashboardIpadPlotlyTimer) {
-                parentWin.__dashboardIpadPlotlyTimer = parentWin.setInterval(scan, 600);
-            }
+                }
+            } catch (e2) {}
+            try {
+                var old = parentDoc.getElementById("dashboard-ipad-plotly-reset");
+                if (old) old.remove();
+            } catch (e3) {}
         })();
         </script>
         """,
@@ -3424,13 +3444,6 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
 inject_sticky_tabs_script()
 inject_ipad_plotly_controls()
 sync_plotly_reset_nonce()
-
-# iPad: Streamlit 네이티브 원복(항상 동작). 맥에는 미표시.
-if is_touch_ui():
-    _rr1, _rr2 = st.columns([4, 1])
-    with _rr2:
-        if st.button("🔄 그래프 원복", key="ipad_graph_reset_btn", use_container_width=True):
-            bump_plotly_reset()
 
 # Tab 1: 📌 영업 종합 요약
 with tab1:
