@@ -191,9 +191,11 @@ def inject_custom_css():
             .dashboard-filter-sticky-touch {
                 z-index: 999999 !important;
                 border: 2px solid #2563EB !important;
-                border-radius: 8px !important;
-                padding: 10px 10px 0 10px !important;
-                box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1) !important;
+                border-top: 3px solid #2563EB !important;
+                border-radius: 0 0 8px 8px !important;
+                padding: 8px 10px 0 10px !important;
+                box-shadow: 0 8px 14px -4px rgba(37, 99, 235, 0.18) !important;
+                margin-top: 0 !important;
             }
 
             html.dashboard-touch-mode [data-testid="stHeader"],
@@ -2151,16 +2153,18 @@ def inject_sticky_tabs_script():
                     });
                 }
 
-                /* 0804: Streamlit 헤더와 한몸 — top 2.875rem */
+                /* 0804: Streamlit 헤더와 한몸 — top 2.875rem + 상단 파란 구분선 */
                 var open = isSidebarOpen();
                 targetBox.style.setProperty('position', 'fixed', 'important');
                 targetBox.style.setProperty('top', '2.875rem', 'important');
                 targetBox.style.setProperty('z-index', open ? '1' : '999999', 'important');
                 targetBox.style.setProperty('background-color', '#FFFFFF', 'important');
                 targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
-                targetBox.style.setProperty('border-radius', '8px', 'important');
-                targetBox.style.setProperty('padding', '10px 10px 0px 10px', 'important');
-                targetBox.style.setProperty('box-shadow', '0 10px 15px -3px rgba(0,0,0,0.1)', 'important');
+                targetBox.style.setProperty('border-top', '3px solid #2563EB', 'important');
+                targetBox.style.setProperty('border-radius', '0 0 8px 8px', 'important');
+                targetBox.style.setProperty('padding', '8px 10px 0px 10px', 'important');
+                targetBox.style.setProperty('margin-top', '0', 'important');
+                targetBox.style.setProperty('box-shadow', '0 8px 14px -4px rgba(37, 99, 235, 0.18)', 'important');
                 targetBox.style.setProperty('-webkit-transform', 'none', 'important');
                 targetBox.style.setProperty('transform', 'none', 'important');
 
