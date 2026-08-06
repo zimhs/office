@@ -198,6 +198,7 @@ def normalize_items_vectorized(df):
 
     return df
 
+
 def get_exact_original_price(series):
     s = series[series > 0]
     if s.empty:
@@ -209,6 +210,7 @@ def get_exact_original_price(series):
 def convert_dfs_to_excel(dfs_dict):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        sheets_written = False
         for sheet_name, (df, use_index) in dfs_dict.items():
             if not df.empty:
                 if isinstance(df.columns, pd.MultiIndex):
@@ -222,6 +224,12 @@ def convert_dfs_to_excel(dfs_dict):
                     )
                 else:
                     df.to_excel(writer, sheet_name=sheet_name, index=use_index)
+                sheets_written = True
+        
+        # [핵심] 저장할 데이터가 전혀 없어 시트가 0개일 때 발생하는 크래시 방지
+        if not sheets_written:
+            pd.DataFrame({"알림": ["저장할 데이터가 없습니다."]}).to_excel(writer, sheet_name="No Data", index=False)
+            
     return output.getvalue()
 
 
@@ -1132,7 +1140,7 @@ dart_api_key = st.sidebar.text_input(
     "DART API 키 (재무정보 연동용)", 
     value=saved_api_key, 
     type="password", 
-    help="금융감독원 Open DART API 키를 입력하세요. 한 일 입력하면 자동 저장되어 새로고침해도 유지됩니다."
+    help="금융감독원 Open DART API 키를 입력하세요. 한번 입력하면 자동 저장되어 새로고침해도 유지됩니다."
 )
 
 if dart_api_key and dart_api_key != saved_api_key:
@@ -1309,61 +1317,106 @@ if not full_df.empty:
         components.html(
             """
             <script>
-            setTimeout(function() {
-                try {
-                    var parentDoc = window.parent.document;
-                    var marker = parentDoc.getElementById('sticky-marker');
-                    
-                    if (marker) {
-                        var targetBox = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]');
-                        if (!targetBox) targetBox = marker.closest('div[data-testid="stVerticalBlock"]');
+            (function() {
+                var parentDoc = window.parent.document;
+                
+                // 상단 고정 해킹을 수행하는 메인 함수
+                function applyStickyHack() {
+                    try {
+                        var marker = parentDoc.getElementById('sticky-marker');
+                        if (!marker) return;
+
+                        // Streamlit 버전 업데이트에 대비한 범용/다중 선택자
+                        var targetBox = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') || 
+                                        marker.closest('div[data-testid="stVerticalBlock"]');
                         
-                        var stTabs = parentDoc.querySelector('div[data-testid="stTabs"]');
-                        var tabHeader = stTabs ? stTabs.querySelector('div:first-child') : null;
+                        // [수정된 부분] 📌 영업 종합 요약 텍스트가 포함된 진짜 메인 탭만 정확히 타겟팅
+                        var tabLists = parentDoc.querySelectorAll('div[role="tablist"]');
+                        var mainTabHeader = null;
+                        for (var i = 0; i < tabLists.length; i++) {
+                            if (tabLists[i].textContent.includes('📌 영업 종합 요약')) {
+                                mainTabHeader = tabLists[i];
+                                break;
+                            }
+                        }
                         
-                        if (targetBox && tabHeader && targetBox.dataset.hacked !== 'true') {
-                            targetBox.dataset.hacked = 'true';
-                            
-                            // 🔥 [강력한 해킹] DOM 트리를 조작해서 탭 헤더를 필터 박스 안으로 물리적 이동! 🔥
-                            targetBox.appendChild(tabHeader);
-                            
-                            // 1. 박스 스타일 (틀고정, 테두리 유지)
-                            targetBox.style.setProperty('position', 'fixed', 'important');
-                            targetBox.style.setProperty('top', '2.875rem', 'important');
-                            targetBox.style.setProperty('z-index', '999999', 'important');
-                            targetBox.style.setProperty('background-color', '#FFFFFF', 'important'); // 탭과 자연스럽게 연결되도록 흰색으로
-                            targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
-                            targetBox.style.setProperty('border-radius', '8px', 'important');
-                            targetBox.style.setProperty('padding', '10px 10px 0px 10px', 'important'); // 하단 패딩을 없애 탭이 밑에 딱 붙게 함
-                            targetBox.style.setProperty('box-shadow', '0 10px 15px -3px rgba(0,0,0,0.1)', 'important');
-                            
-                            // 2. 탭 헤더 스타일 (박스 내부에 이쁘게 안착하도록 마진/패딩 조정)
-                            tabHeader.style.setProperty('padding', '0 10px 0px 10px', 'important');
-                            tabHeader.style.setProperty('margin-top', '5px', 'important');
-                            tabHeader.style.setProperty('border-bottom', 'none', 'important');
-                            tabHeader.style.setProperty('background-color', 'transparent', 'important');
-                            
-                            // 3. 스페이서 생성 (위로 붕 뜨면서 밑에 컨텐츠가 딸려 올라오는 것 방지)
-                            var spacer = parentDoc.createElement('div');
-                            spacer.style.height = targetBox.offsetHeight + 'px';
-                            spacer.style.width = '100%';
-                            spacer.style.marginBottom = '20px';
-                            targetBox.parentNode.insertBefore(spacer, targetBox);
-                            
-                            // 4. 가로 크기 동기화만 유지 (Fixed 특성상 가로폭 유지를 위해)
-                            function syncWidth() {
-                                if (parentDoc.body.contains(targetBox)) {
-                                    var rect = spacer.getBoundingClientRect();
-                                    targetBox.style.setProperty('width', rect.width + 'px', 'important');
-                                    targetBox.style.setProperty('left', rect.left + 'px', 'important');
-                                    requestAnimationFrame(syncWidth);
+                        if (targetBox && mainTabHeader) {
+                            // React 리렌더링으로 탭이 원래 위치로 튕겨져 나갔거나 초기 상태일 때만 개입
+                            if (targetBox.dataset.hacked !== 'true' || !targetBox.contains(mainTabHeader)) {
+                                targetBox.dataset.hacked = 'true';
+                                
+                                // 물리적 이동 (무손실 원칙 유지)
+                                targetBox.appendChild(mainTabHeader);
+                                
+                                // CSS 강제 주입
+                                targetBox.style.setProperty('position', 'fixed', 'important');
+                                targetBox.style.setProperty('top', '2.875rem', 'important');
+                                targetBox.style.setProperty('z-index', '999999', 'important');
+                                targetBox.style.setProperty('background-color', '#FFFFFF', 'important');
+                                targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
+                                targetBox.style.setProperty('border-radius', '8px', 'important');
+                                targetBox.style.setProperty('padding', '10px 10px 0px 10px', 'important');
+                                targetBox.style.setProperty('box-shadow', '0 10px 15px -3px rgba(0,0,0,0.1)', 'important');
+                                
+                                mainTabHeader.style.setProperty('padding', '0 10px 0px 10px', 'important');
+                                mainTabHeader.style.setProperty('margin-top', '5px', 'important');
+                                mainTabHeader.style.setProperty('border-bottom', 'none', 'important');
+                                mainTabHeader.style.setProperty('background-color', 'transparent', 'important');
+                                
+                                // 원본 레이아웃 붕괴를 막기 위한 투명 지지대(Spacer) 무손실 유지
+                                var spacerId = 'sticky-spacer-' + (targetBox.getAttribute('data-testid') || 'box');
+                                var existingSpacer = parentDoc.getElementById(spacerId);
+                                if (!existingSpacer) {
+                                    var spacer = parentDoc.createElement('div');
+                                    spacer.id = spacerId;
+                                    spacer.style.height = targetBox.offsetHeight + 'px';
+                                    spacer.style.width = '100%';
+                                    spacer.style.marginBottom = '20px';
+                                    targetBox.parentNode.insertBefore(spacer, targetBox);
                                 }
                             }
-                            syncWidth();
                         }
-                    }
-                } catch (e) {}
-            }, 200); // DOM이 완전히 렌더링되도록 0.2초 대기
+                    } catch (e) {} // 에러 발생 시 앱 크래시 방지
+                }
+
+                // 1. 초기 렌더링 폴링 (아이패드 등 모바일 렌더링 지연 완벽 대응)
+                var pollCount = 0;
+                var initInterval = setInterval(function() {
+                    applyStickyHack();
+                    pollCount++;
+                    if(pollCount > 30) clearInterval(initInterval); // 4.5초 후 종료
+                }, 150);
+
+                // 2. [가장 중요] React DOM 변경 실시간 감지 (새로고침/탭 전환 시 풀림 영구 방지)
+                var observer = new MutationObserver(function(mutations) {
+                    applyStickyHack();
+                });
+                
+                observer.observe(parentDoc.body, { 
+                    childList: true, 
+                    subtree: true 
+                });
+
+                // 3. 브라우저 리사이징 가로폭 동기화
+                function syncWidth() {
+                    try {
+                        var marker = parentDoc.getElementById('sticky-marker');
+                        if (marker) {
+                            var targetBox = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') || marker.closest('div[data-testid="stVerticalBlock"]');
+                            var spacerId = 'sticky-spacer-' + (targetBox ? targetBox.getAttribute('data-testid') : 'box');
+                            var spacer = parentDoc.getElementById(spacerId);
+                            
+                            if (targetBox && spacer && parentDoc.body.contains(targetBox)) {
+                                var rect = spacer.getBoundingClientRect();
+                                targetBox.style.setProperty('width', rect.width + 'px', 'important');
+                                targetBox.style.setProperty('left', rect.left + 'px', 'important');
+                            }
+                        }
+                    } catch(e) {}
+                    requestAnimationFrame(syncWidth);
+                }
+                syncWidth();
+            })();
             </script>
             """,
             height=0,
