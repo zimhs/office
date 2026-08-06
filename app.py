@@ -393,17 +393,6 @@ def inject_custom_css():
                 min-height: 420px !important;
                 height: 420px !important;
             }
-
-            /* iPad: Streamlit hover-전용 모드바 숨김 해제 (맥은 touch-mode 없음) */
-            html.dashboard-touch-mode [data-testid="stPlotlyChart"] .modebar,
-            html.dashboard-touch-mode [data-testid="stPlotlyChart"] .modebar-container,
-            html.dashboard-touch-mode .stPlotlyChart .modebar,
-            html.dashboard-touch-mode .stPlotlyChart .modebar-container {
-                opacity: 1 !important;
-                visibility: visible !important;
-                display: flex !important;
-                pointer-events: auto !important;
-            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -2698,7 +2687,7 @@ def is_touch_ui():
 
 def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=False, height=None, **kwargs):
     """맥: st.plotly_chart 무손실.
-    iPad: components.html 직접 렌더 → Plotly 컨트롤바 항상 표시.
+    iPad: components.html 직접 렌더 → 컨트롤바는 그래프 탭 시에만 표시.
     """
     if not is_touch_ui():
         st.plotly_chart(fig, use_container_width=use_container_width, key=key, **kwargs)
@@ -2751,9 +2740,18 @@ def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=F
   html, body {{ margin:0; padding:0; background:#fff; overflow:hidden; }}
   .wrap {{ position:relative; width:100%; }}
   .modebar-container, .modebar {{
-    opacity:1 !important; visibility:visible !important;
-    display:flex !important; pointer-events:auto !important;
+    opacity:0 !important;
+    visibility:hidden !important;
+    pointer-events:none !important;
+    transition: opacity .15s ease;
     z-index:9999 !important;
+  }}
+  body.mb-show .modebar-container,
+  body.mb-show .modebar {{
+    opacity:1 !important;
+    visibility:visible !important;
+    display:flex !important;
+    pointer-events:auto !important;
   }}
   .modebar-container {{
     top:8px !important; right:8px !important; left:auto !important;
@@ -2765,9 +2763,21 @@ def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=F
   .modebar-btn {{ min-width:32px !important; min-height:32px !important; }}
 </style></head>
 <body>
-<div class="wrap">
+<div class="wrap" id="plot-wrap">
   {inner}
 </div>
+<script>
+(function() {{
+  var body = document.body;
+  function showBar() {{ body.classList.add("mb-show"); }}
+  function onTap(e) {{
+    if (e.target && e.target.closest && e.target.closest(".modebar")) return;
+    showBar();
+  }}
+  document.addEventListener("click", onTap, true);
+  document.addEventListener("touchend", onTap, true);
+}})();
+</script>
 </body></html>"""
     components.html(page_html, height=h + 8, scrolling=False)
 
