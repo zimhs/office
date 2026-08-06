@@ -107,6 +107,87 @@ def inject_custom_css():
                 border-radius: 8px;
                 border: 1px solid #E2E8F0;
             }
+
+            /* ===== iPad / iOS 상단 고정 탭 (sticky) ===== */
+            section.main,
+            section.main > div,
+            section.main .block-container,
+            [data-testid="stAppViewContainer"],
+            [data-testid="stAppViewContainer"] > section.main {
+                overflow: visible !important;
+            }
+
+            .dashboard-filter-sticky {
+                position: -webkit-sticky !important;
+                position: sticky !important;
+                z-index: 999999 !important;
+                background-color: #FFFFFF !important;
+                border: 2px solid #2563EB !important;
+                border-radius: 8px !important;
+                padding: 10px 10px 6px 10px !important;
+                box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1) !important;
+                -webkit-transform: translateZ(0);
+                transform: translateZ(0);
+                width: 100% !important;
+                max-width: 100% !important;
+                box-sizing: border-box !important;
+                overflow: hidden !important;
+            }
+
+            /* 탭: 필터 고정바 내부 하단, 세로모드 가로 스크롤 */
+            .dashboard-filter-sticky [role="tablist"],
+            .dashboard-tabs-in-filter {
+                display: flex !important;
+                flex-wrap: nowrap !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+                -webkit-overflow-scrolling: touch !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                margin-top: 8px !important;
+                padding: 4px 2px 0 2px !important;
+                border-top: 1px solid #E2E8F0 !important;
+                background-color: #FFFFFF !important;
+                box-sizing: border-box !important;
+                scrollbar-width: none;
+                touch-action: pan-x !important;
+            }
+
+            .dashboard-filter-sticky [role="tablist"]::-webkit-scrollbar,
+            .dashboard-tabs-in-filter::-webkit-scrollbar {
+                display: none;
+            }
+
+            .dashboard-filter-sticky [role="tab"] {
+                flex: 0 0 auto !important;
+                white-space: nowrap !important;
+                min-width: -webkit-max-content !important;
+                min-width: max-content !important;
+            }
+
+            .dashboard-filter-sticky [role="tab"] p,
+            .dashboard-filter-sticky [role="tab"] span,
+            .dashboard-filter-sticky [role="tab"] label {
+                white-space: nowrap !important;
+            }
+
+            @media (max-width: 1024px) {
+                .dashboard-filter-sticky {
+                    padding: 8px 8px 4px 8px !important;
+                }
+
+                .dashboard-filter-sticky [role="tab"] {
+                    font-size: 11px !important;
+                    padding: 6px 10px !important;
+                }
+            }
+
+            @supports (top: env(safe-area-inset-top)) {
+                .dashboard-filter-sticky {
+                    padding-left: max(10px, env(safe-area-inset-left)) !important;
+                    padding-right: max(10px, env(safe-area-inset-right)) !important;
+                }
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -560,6 +641,38 @@ def load_address_file(address_bytes):
     return {}
 
 
+def _drop_debt_noise_rows(df):
+    """ERP 내보내기 푸터·합계 행을 제거 (거래처/채권 데이터 오염 방지)."""
+    if df.empty or "거래처" not in df.columns:
+        return df
+
+    client_raw = df["거래처"].astype(str).str.strip()
+    gubun_raw = (
+        df["구분"].astype(str).str.strip()
+        if "구분" in df.columns
+        else pd.Series("", index=df.index)
+    )
+    noise = (
+        client_raw.str.match(r"^\d{4}-\d{2}-\d{2}\s", na=False)
+        | gubun_raw.str.contains(r"총매출|총수금|합계|소계", case=False, na=False)
+        | client_raw.isin(["", "nan", "None", "NaN"])
+    )
+    return df.loc[~noise].copy()
+
+
+def _drop_sales_noise_rows(df):
+    """매출 CSV 하단 타임스탬프·이월미수 행 제거."""
+    if df.empty:
+        return df
+
+    noise = pd.Series(False, index=df.index)
+    if "거래처" in df.columns:
+        noise |= df["거래처"].astype(str).str.match(r"^\d{4}-\d{2}-\d{2}\s", na=False)
+    if "품목명" in df.columns:
+        noise |= df["품목명"].astype(str).str.contains(r"이월\s*미수|\[이월", na=False)
+    return df.loc[~noise].copy()
+
+
 @st.cache_data(show_spinner="업종 분류 데이터를 읽어오는 중입니다...")
 def load_industry_file(industry_bytes):
     if not industry_bytes:
@@ -598,6 +711,8 @@ def load_debt_file(debt_bytes):
                 df_direct = df_direct.loc[:, ~df_direct.columns.str.contains('^Unnamed')]
                 
                 if "거래처" in df_direct.columns and "구분" in df_direct.columns:
+                    df_direct = _drop_debt_noise_rows(df_direct)
+
                     # 💡 거래처 이름 공백 제거로 누락 데이터 완벽 방지
                     df_direct["거래처"] = df_direct["거래처"].replace("", np.nan).ffill().astype(str).str.strip()
                     
@@ -714,6 +829,7 @@ def load_uploaded_files_from_bytes(file_tuples):
             if c_date: rename_dict[c_date] = "매출일자_raw"
 
             df = df.rename(columns=rename_dict)
+            df = _drop_sales_noise_rows(df)
 
             for req in ["거래처", "품목명", "담당자"]:
                 if req not in df.columns:
@@ -768,7 +884,12 @@ def load_uploaded_files_from_bytes(file_tuples):
         temp_df = result_df.dropna(subset=["매출일_dt"]).sort_values("매출일_dt")
         valid_staff_map = temp_df[~temp_df["담당자"].isin(["미지정"])].groupby("거래처")["담당자"].last().to_dict()
         
-        result_df["담당자"] = result_df["거래처"].map(valid_staff_map).fillna(result_df["담당자"])
+        mask_unassigned = result_df["담당자"] == "미지정"
+        result_df.loc[mask_unassigned, "담당자"] = (
+            result_df.loc[mask_unassigned, "거래처"]
+            .map(valid_staff_map)
+            .fillna("미지정")
+        )
         result_df.loc[result_df["담당자"].isin(invalid_staff_markers), "담당자"] = "미지정"
 
     # 수동 지정 매핑 적용 (무손실 보존)
@@ -1009,6 +1130,113 @@ def cached_ranking_pivot(df_base, current_year, sel_staff, all_months):
 # ----------------------------------------------------
 def render_update_badge(date_str):
     return f"<div style='text-align: right; margin-top: 20px;'><span style='background-color: #FFFFFF; color: #475569; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 1px solid #CBD5E1; box-shadow: 0 1px 2px rgba(0,0,0,0.05);'>⏱️ 데이터 업데이트: {date_str}</span></div>"
+
+
+def inject_sticky_tabs_script():
+    """필터+탭 통합 상단 고정 (iPad 세로모드: 탭을 고정바 내부 가로스크롤)."""
+    components.html(
+        """
+        <script>
+        (function() {
+            var parentDoc = window.parent.document;
+            var parentWin = window.parent;
+            var debounceTimer = null;
+
+            function getHeaderOffset() {
+                var header = parentDoc.querySelector('[data-testid="stHeader"]');
+                if (header && header.offsetHeight > 0) {
+                    return header.offsetHeight;
+                }
+                return 46;
+            }
+
+            function findMainTabList() {
+                var lists = parentDoc.querySelectorAll('div[role="tablist"]');
+                for (var i = 0; i < lists.length; i++) {
+                    if (lists[i].textContent.indexOf('📌 영업 종합 요약') !== -1) {
+                        return lists[i];
+                    }
+                }
+                return null;
+            }
+
+            function findFilterBox() {
+                var marker = parentDoc.getElementById('sticky-marker');
+                if (!marker) return null;
+                return marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') ||
+                       marker.closest('div[data-testid="stVerticalBlock"]');
+            }
+
+            function applyStickyLayout() {
+                try {
+                    var headerOffset = getHeaderOffset();
+                    var filterBox = findFilterBox();
+                    var tabList = findMainTabList();
+
+                    if (!filterBox || !tabList) return;
+
+                    /* 탭을 필터 고정바 안으로 이동 (React 재렌더 시에도 재부착) */
+                    if (!filterBox.contains(tabList)) {
+                        filterBox.appendChild(tabList);
+                    }
+
+                    filterBox.classList.add('dashboard-filter-sticky');
+                    filterBox.style.setProperty('top', headerOffset + 'px', 'important');
+
+                    tabList.classList.add('dashboard-tabs-in-filter');
+                    tabList.style.setProperty('margin-top', '8px', 'important');
+                    tabList.style.setProperty('padding', '4px 2px 0 2px', 'important');
+                    tabList.style.setProperty('border-top', '1px solid #E2E8F0', 'important');
+                    tabList.style.setProperty('background-color', '#FFFFFF', 'important');
+
+                    /* 탭 호스트의 별도 sticky 제거 (이중 고정 방지) */
+                    var tabsHost = tabList.closest('[data-testid="stTabs"]');
+                    if (tabsHost) {
+                        tabsHost.classList.remove('dashboard-tabs-sticky');
+                        tabsHost.style.removeProperty('position');
+                        tabsHost.style.removeProperty('top');
+                        tabsHost.style.removeProperty('z-index');
+                    }
+                } catch (e) {}
+            }
+
+            function scheduleApply() {
+                if (debounceTimer) clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(applyStickyLayout, 30);
+            }
+
+            var pollCount = 0;
+            var initInterval = setInterval(function() {
+                applyStickyLayout();
+                pollCount++;
+                if (pollCount > 80) clearInterval(initInterval);
+            }, 150);
+
+            var observer = new MutationObserver(scheduleApply);
+            observer.observe(parentDoc.body, { childList: true, subtree: true });
+
+            parentDoc.addEventListener('scroll', scheduleApply, true);
+            parentWin.addEventListener('scroll', scheduleApply, true);
+            parentWin.addEventListener('resize', scheduleApply);
+            parentWin.addEventListener('orientationchange', function() {
+                setTimeout(scheduleApply, 100);
+                setTimeout(scheduleApply, 400);
+            });
+            parentDoc.addEventListener('touchstart', scheduleApply, { passive: true, capture: true });
+            parentDoc.addEventListener('touchend', scheduleApply, { passive: true, capture: true });
+
+            if (parentWin.visualViewport) {
+                parentWin.visualViewport.addEventListener('resize', scheduleApply);
+                parentWin.visualViewport.addEventListener('scroll', scheduleApply);
+            }
+
+            scheduleApply();
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 # ----------------------------------------------------
 # 날짜 유지용 로컬 캐시 함수 (7, 8번 탭 전용)
@@ -1304,7 +1532,7 @@ if not full_df.empty:
         latest_update_str = latest_dt_overall.strftime("%Y-%m-%d")
 
     # ==============================================================
-    # 🚀 [진짜 찐 최종] 마크다운 우회 공식 컴포넌트(iframe) DOM 해킹 적용
+    # 필터 영역 (상단 고정은 inject_sticky_tabs_script에서 처리)
     # ==============================================================
     try:
         filter_container = st.container(border=True)
@@ -1313,115 +1541,6 @@ if not full_df.empty:
         
     with filter_container:
         st.markdown("<div id='sticky-marker' style='display:none;'></div>", unsafe_allow_html=True)
-        
-        components.html(
-            """
-            <script>
-            (function() {
-                var parentDoc = window.parent.document;
-                
-                // 상단 고정 해킹을 수행하는 메인 함수
-                function applyStickyHack() {
-                    try {
-                        var marker = parentDoc.getElementById('sticky-marker');
-                        if (!marker) return;
-
-                        // Streamlit 버전 업데이트에 대비한 범용/다중 선택자
-                        var targetBox = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') || 
-                                        marker.closest('div[data-testid="stVerticalBlock"]');
-                        
-                        // [수정된 부분] 📌 영업 종합 요약 텍스트가 포함된 진짜 메인 탭만 정확히 타겟팅
-                        var tabLists = parentDoc.querySelectorAll('div[role="tablist"]');
-                        var mainTabHeader = null;
-                        for (var i = 0; i < tabLists.length; i++) {
-                            if (tabLists[i].textContent.includes('📌 영업 종합 요약')) {
-                                mainTabHeader = tabLists[i];
-                                break;
-                            }
-                        }
-                        
-                        if (targetBox && mainTabHeader) {
-                            // React 리렌더링으로 탭이 원래 위치로 튕겨져 나갔거나 초기 상태일 때만 개입
-                            if (targetBox.dataset.hacked !== 'true' || !targetBox.contains(mainTabHeader)) {
-                                targetBox.dataset.hacked = 'true';
-                                
-                                // 물리적 이동 (무손실 원칙 유지)
-                                targetBox.appendChild(mainTabHeader);
-                                
-                                // CSS 강제 주입
-                                targetBox.style.setProperty('position', 'fixed', 'important');
-                                targetBox.style.setProperty('top', '2.875rem', 'important');
-                                targetBox.style.setProperty('z-index', '999999', 'important');
-                                targetBox.style.setProperty('background-color', '#FFFFFF', 'important');
-                                targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
-                                targetBox.style.setProperty('border-radius', '8px', 'important');
-                                targetBox.style.setProperty('padding', '10px 10px 0px 10px', 'important');
-                                targetBox.style.setProperty('box-shadow', '0 10px 15px -3px rgba(0,0,0,0.1)', 'important');
-                                
-                                mainTabHeader.style.setProperty('padding', '0 10px 0px 10px', 'important');
-                                mainTabHeader.style.setProperty('margin-top', '5px', 'important');
-                                mainTabHeader.style.setProperty('border-bottom', 'none', 'important');
-                                mainTabHeader.style.setProperty('background-color', 'transparent', 'important');
-                                
-                                // 원본 레이아웃 붕괴를 막기 위한 투명 지지대(Spacer) 무손실 유지
-                                var spacerId = 'sticky-spacer-' + (targetBox.getAttribute('data-testid') || 'box');
-                                var existingSpacer = parentDoc.getElementById(spacerId);
-                                if (!existingSpacer) {
-                                    var spacer = parentDoc.createElement('div');
-                                    spacer.id = spacerId;
-                                    spacer.style.height = targetBox.offsetHeight + 'px';
-                                    spacer.style.width = '100%';
-                                    spacer.style.marginBottom = '20px';
-                                    targetBox.parentNode.insertBefore(spacer, targetBox);
-                                }
-                            }
-                        }
-                    } catch (e) {} // 에러 발생 시 앱 크래시 방지
-                }
-
-                // 1. 초기 렌더링 폴링 (아이패드 등 모바일 렌더링 지연 완벽 대응)
-                var pollCount = 0;
-                var initInterval = setInterval(function() {
-                    applyStickyHack();
-                    pollCount++;
-                    if(pollCount > 30) clearInterval(initInterval); // 4.5초 후 종료
-                }, 150);
-
-                // 2. [가장 중요] React DOM 변경 실시간 감지 (새로고침/탭 전환 시 풀림 영구 방지)
-                var observer = new MutationObserver(function(mutations) {
-                    applyStickyHack();
-                });
-                
-                observer.observe(parentDoc.body, { 
-                    childList: true, 
-                    subtree: true 
-                });
-
-                // 3. 브라우저 리사이징 가로폭 동기화
-                function syncWidth() {
-                    try {
-                        var marker = parentDoc.getElementById('sticky-marker');
-                        if (marker) {
-                            var targetBox = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') || marker.closest('div[data-testid="stVerticalBlock"]');
-                            var spacerId = 'sticky-spacer-' + (targetBox ? targetBox.getAttribute('data-testid') : 'box');
-                            var spacer = parentDoc.getElementById(spacerId);
-                            
-                            if (targetBox && spacer && parentDoc.body.contains(targetBox)) {
-                                var rect = spacer.getBoundingClientRect();
-                                targetBox.style.setProperty('width', rect.width + 'px', 'important');
-                                targetBox.style.setProperty('left', rect.left + 'px', 'important');
-                            }
-                        }
-                    } catch(e) {}
-                    requestAnimationFrame(syncWidth);
-                }
-                syncWidth();
-            })();
-            </script>
-            """,
-            height=0,
-            width=0
-        )
 
         fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
 
@@ -1551,6 +1670,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         "🛢️ 통합 탱크 재고"
     ]
 )
+
+inject_sticky_tabs_script()
 
 # Tab 1: 📌 영업 종합 요약
 with tab1:
