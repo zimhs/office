@@ -2673,8 +2673,38 @@ def is_touch_ui():
         return False
 
 
+def sync_plotly_reset_nonce():
+    """iPad 그래프 원복용 nonce (query pr ↔ session)."""
+    if "plotly_reset_nonce" not in st.session_state:
+        st.session_state["plotly_reset_nonce"] = 0
+    try:
+        pr = st.query_params.get("pr", None)
+        if isinstance(pr, list):
+            pr = pr[0] if pr else None
+        if pr is not None and str(pr).isdigit():
+            n = int(str(pr))
+            if n != st.session_state["plotly_reset_nonce"]:
+                st.session_state["plotly_reset_nonce"] = n
+    except Exception:
+        pass
+
+
+def bump_plotly_reset():
+    """차트 key를 바꿔 확대를 원복(리마운트)."""
+    n = int(st.session_state.get("plotly_reset_nonce", 0)) + 1
+    st.session_state["plotly_reset_nonce"] = n
+    try:
+        st.query_params["pr"] = str(n)
+    except Exception:
+        pass
+    st.rerun()
+
+
 def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=False, **kwargs):
-    """맥: 기존 plotly 그대로. iPad: 클릭 변동 고정 + 모드바 항상 표시(원복 가능)."""
+    """맥: 기존 plotly 그대로. iPad: 클릭 변동 고정 + 모드바 표시 + 원복 nonce."""
+    chart_key = key
+    if is_touch_ui() and key:
+        chart_key = f"{key}__r{st.session_state.get('plotly_reset_nonce', 0)}"
     if is_touch_ui():
         try:
             updates = {"clickmode": "none"}
@@ -2694,7 +2724,7 @@ def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=F
         st.plotly_chart(
             fig,
             use_container_width=use_container_width,
-            key=key,
+            key=chart_key,
             config=config,
             **kwargs,
         )
@@ -2703,7 +2733,7 @@ def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=F
 
 
 def inject_ipad_plotly_controls():
-    """iPad only: 모드바 항상 하단 고정 표시 + 화면 하단 '그래프 원복' 버튼. 맥 무손실."""
+    """iPad only: 모드바 하단 고정 + '그래프 원복'은 URL pr 증가로 확실히 리마운트. 맥 무손실."""
     components.html(
         """
         <script>
@@ -2736,87 +2766,68 @@ def inject_ipad_plotly_controls():
                 "  pointer-events:auto !important;",
                 "}",
                 ".modebar{",
-                "  position:relative !important;",
-                "  top:0 !important;",
-                "  right:0 !important;",
                 "  opacity:1 !important;",
                 "  pointer-events:auto !important;",
                 "  background:rgba(30,41,59,.94) !important;",
                 "  border-radius:8px !important;",
                 "  padding:4px 6px !important;",
-                "  box-shadow:0 2px 10px rgba(0,0,0,.25) !important;",
                 "}",
-                ".modebar-btn{",
-                "  min-width:32px !important;",
-                "  min-height:32px !important;",
-                "}"
+                ".modebar-btn{min-width:32px !important;min-height:32px !important;}"
             ].join("");
 
-            function resetPlotDoc(doc) {
+            function forceRemountReset() {
                 try {
-                    var win = doc.defaultView;
-                    if (!win || !win.Plotly) return false;
-                    var gds = doc.querySelectorAll(".js-plotly-plot");
-                    var ok = false;
-                    for (var i = 0; i < gds.length; i++) {
-                        try {
-                            win.Plotly.relayout(gds[i], {
-                                "xaxis.autorange": true,
-                                "yaxis.autorange": true,
-                                "xaxis2.autorange": true,
-                                "yaxis2.autorange": true
-                            });
-                            ok = true;
-                        } catch (e1) {
-                            try { win.Plotly.Plots.resize(gds[i]); ok = true; } catch (e2) {}
-                        }
-                    }
-                    return ok;
-                } catch (e3) { return false; }
-            }
-
-            function resetAllPlots() {
-                var n = 0;
-                parentDoc.querySelectorAll('[data-testid="stPlotlyChart"] iframe').forEach(function (ifr) {
-                    try {
-                        var doc = ifr.contentDocument || (ifr.contentWindow && ifr.contentWindow.document);
-                        if (doc && resetPlotDoc(doc)) n++;
-                    } catch (e4) {}
-                });
-                return n;
+                    var url = new URL(parentWin.location.href);
+                    var cur = parseInt(url.searchParams.get("pr") || "0", 10);
+                    if (isNaN(cur)) cur = 0;
+                    url.searchParams.set("pr", String(cur + 1));
+                    if (!url.searchParams.get("touch_ui")) url.searchParams.set("touch_ui", "1");
+                    parentWin.location.href = url.toString();
+                } catch (e) {}
             }
 
             function ensureResetButton() {
                 var id = "dashboard-ipad-plotly-reset";
                 var btn = parentDoc.getElementById(id);
-                if (btn) return;
-                btn = parentDoc.createElement("button");
-                btn.id = id;
-                btn.type = "button";
-                btn.textContent = "그래프 원복";
-                btn.setAttribute("aria-label", "그래프 확대 원복");
+                if (!btn) {
+                    btn = parentDoc.createElement("button");
+                    btn.id = id;
+                    btn.type = "button";
+                    btn.textContent = "그래프 원복";
+                    btn.setAttribute("aria-label", "그래프 확대 원복");
+                    parentDoc.body.appendChild(btn);
+                }
                 btn.style.cssText = [
                     "position:fixed",
-                    "right:14px",
-                    "bottom:72px",
-                    "z-index:2147483000",
-                    "padding:10px 14px",
-                    "border:none",
+                    "right:16px",
+                    "bottom:88px",
+                    "z-index:2147483647",
+                    "padding:12px 16px",
+                    "border:2px solid #fff",
                     "border-radius:999px",
-                    "background:#0F172A",
+                    "background:#DC2626",
                     "color:#fff",
-                    "font-size:13px",
-                    "font-weight:700",
-                    "box-shadow:0 4px 14px rgba(15,23,42,.35)",
+                    "font-size:14px",
+                    "font-weight:800",
+                    "box-shadow:0 6px 18px rgba(220,38,38,.45)",
                     "cursor:pointer",
+                    "pointer-events:auto",
+                    "touch-action:manipulation",
                     "-webkit-tap-highlight-color:transparent"
                 ].join(";");
-                btn.addEventListener("click", function (e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    resetAllPlots();
-                }, true);
-                parentDoc.body.appendChild(btn);
+                if (!btn.__dashboardResetBound) {
+                    btn.__dashboardResetBound = true;
+                    var fire = function (e) {
+                        try {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
+                        } catch (e0) {}
+                        forceRemountReset();
+                    };
+                    btn.addEventListener("click", fire, true);
+                    btn.addEventListener("touchend", fire, true);
+                }
             }
 
             function hookIframe(ifr) {
@@ -2827,11 +2838,9 @@ def inject_ipad_plotly_controls():
                     if (!st) {
                         st = doc.createElement("style");
                         st.id = STYLE_ID;
-                        st.textContent = STYLE_CSS;
                         doc.head.appendChild(st);
-                    } else {
-                        st.textContent = STYLE_CSS;
                     }
+                    st.textContent = STYLE_CSS;
                 } catch (err) {}
             }
 
@@ -2843,7 +2852,7 @@ def inject_ipad_plotly_controls():
             }
             scan();
             if (!parentWin.__dashboardIpadPlotlyTimer) {
-                parentWin.__dashboardIpadPlotlyTimer = parentWin.setInterval(scan, 700);
+                parentWin.__dashboardIpadPlotlyTimer = parentWin.setInterval(scan, 600);
             }
         })();
         </script>
@@ -3414,6 +3423,14 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
 
 inject_sticky_tabs_script()
 inject_ipad_plotly_controls()
+sync_plotly_reset_nonce()
+
+# iPad: Streamlit 네이티브 원복(항상 동작). 맥에는 미표시.
+if is_touch_ui():
+    _rr1, _rr2 = st.columns([4, 1])
+    with _rr2:
+        if st.button("🔄 그래프 원복", key="ipad_graph_reset_btn", use_container_width=True):
+            bump_plotly_reset()
 
 # Tab 1: 📌 영업 종합 요약
 with tab1:
