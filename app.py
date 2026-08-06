@@ -2696,36 +2696,9 @@ def is_touch_ui():
     return bool(st.session_state.get("force_touch_ui"))
 
 
-def sync_plotly_reset_nonce():
-    """iPad 그래프 원복용 nonce (query pr ↔ session)."""
-    if "plotly_reset_nonce" not in st.session_state:
-        st.session_state["plotly_reset_nonce"] = 0
-    try:
-        pr = st.query_params.get("pr", None)
-        if isinstance(pr, list):
-            pr = pr[0] if pr else None
-        if pr is not None and str(pr).isdigit():
-            n = int(str(pr))
-            if n != st.session_state["plotly_reset_nonce"]:
-                st.session_state["plotly_reset_nonce"] = n
-    except Exception:
-        pass
-
-
-def bump_plotly_reset():
-    """차트 key를 바꿔 확대를 원복(리마운트)."""
-    n = int(st.session_state.get("plotly_reset_nonce", 0)) + 1
-    st.session_state["plotly_reset_nonce"] = n
-    try:
-        st.query_params["pr"] = str(n)
-    except Exception:
-        pass
-    st.rerun()
-
-
 def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=False, height=None, **kwargs):
     """맥: st.plotly_chart 무손실.
-    iPad: components.html 직접 렌더 → 컨트롤바 항상 표시 + 같은 프레임 원복 버튼.
+    iPad: components.html 직접 렌더 → Plotly 컨트롤바 항상 표시.
     """
     if not is_touch_ui():
         st.plotly_chart(fig, use_container_width=use_container_width, key=key, **kwargs)
@@ -2768,26 +2741,15 @@ def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=F
     try:
         inner = fig.to_html(include_plotlyjs="cdn", full_html=False, config=config)
     except Exception:
-        chart_key = f"{key}__r{st.session_state.get('plotly_reset_nonce', 0)}" if key else None
-        st.plotly_chart(fig, use_container_width=use_container_width, key=chart_key, config=config, **kwargs)
-        if st.button("🔄 그래프 원복", key=f"prbtn_fb_{key or 'x'}", use_container_width=True):
-            bump_plotly_reset()
+        st.plotly_chart(fig, use_container_width=use_container_width, key=key, config=config, **kwargs)
         return
 
-    uid = re.sub(r"[^a-zA-Z0-9]", "", str(key or "plot"))[:36] or "plot"
     page_html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   html, body {{ margin:0; padding:0; background:#fff; overflow:hidden; }}
   .wrap {{ position:relative; width:100%; }}
-  #rst_{uid} {{
-    position:absolute; top:8px; left:8px; z-index:10000;
-    padding:10px 14px; border:2px solid #fff; border-radius:999px;
-    background:#DC2626; color:#fff; font-weight:800; font-size:13px;
-    box-shadow:0 4px 12px rgba(220,38,38,.4);
-    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
-  }}
   .modebar-container, .modebar {{
     opacity:1 !important; visibility:visible !important;
     display:flex !important; pointer-events:auto !important;
@@ -2804,36 +2766,14 @@ def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=F
 </style></head>
 <body>
 <div class="wrap">
-  <button type="button" id="rst_{uid}">그래프 원복</button>
   {inner}
 </div>
-<script>
-(function() {{
-  var btn = document.getElementById("rst_{uid}");
-  function resetPlot() {{
-    try {{
-      var gd = document.querySelector(".js-plotly-plot");
-      if (!gd || !window.Plotly) return;
-      window.Plotly.relayout(gd, {{
-        "xaxis.autorange": true,
-        "yaxis.autorange": true,
-        "xaxis2.autorange": true,
-        "yaxis2.autorange": true
-      }});
-    }} catch (e) {{}}
-  }}
-  if (btn) {{
-    btn.addEventListener("click", function(e) {{ e.preventDefault(); resetPlot(); }});
-    btn.addEventListener("touchend", function(e) {{ e.preventDefault(); resetPlot(); }}, {{passive:false}});
-  }}
-}})();
-</script>
 </body></html>"""
     components.html(page_html, height=h + 8, scrolling=False)
 
 
 def inject_ipad_plotly_controls():
-    """iPad: touch cookie/query 동기화. 차트 컨트롤은 render_plotly_chart HTML. 맥 무손실."""
+    """iPad: touch cookie/query 동기화 + 예전 원복 플로팅 버튼 제거. 맥 무손실."""
     components.html(
         """
         <script>
@@ -2849,13 +2789,11 @@ def inject_ipad_plotly_controls():
                     return ios || ipadOs || parentDoc.documentElement.classList.contains("dashboard-touch-mode");
                 } catch (e) { return false; }
             }
-            if (!isTouchPad()) {
-                try {
-                    var b = parentDoc.getElementById("dashboard-ipad-plotly-reset");
-                    if (b) b.remove();
-                } catch (e0) {}
-                return;
-            }
+            try {
+                var old = parentDoc.getElementById("dashboard-ipad-plotly-reset");
+                if (old) old.remove();
+            } catch (e0) {}
+            if (!isTouchPad()) return;
             try {
                 parentDoc.cookie = "dashboard_touch=1; path=/; max-age=31536000; SameSite=Lax";
             } catch (e1) {}
@@ -2870,10 +2808,6 @@ def inject_ipad_plotly_controls():
                     }
                 }
             } catch (e2) {}
-            try {
-                var old = parentDoc.getElementById("dashboard-ipad-plotly-reset");
-                if (old) old.remove();
-            } catch (e3) {}
         })();
         </script>
         """,
@@ -3443,7 +3377,6 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
 
 inject_sticky_tabs_script()
 inject_ipad_plotly_controls()
-sync_plotly_reset_nonce()
 
 # Tab 1: 📌 영업 종합 요약
 with tab1:
