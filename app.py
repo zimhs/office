@@ -2463,6 +2463,81 @@ def style_with_sum(disp_df, fmt_str, cmap=None, subset_cols=None, axis=None):
     return styled
 
 
+def render_frozen_styler_html(styled, height=450, freeze_left_n=2, freeze_widths=None):
+    """Styler HTML 렌더 + 헤더/좌측열 틀고정 (데이터·스타일 무손실)."""
+    widths = freeze_widths or ([44, 160] if freeze_left_n >= 2 else [160])
+    left_css = []
+    left = 0
+    for i in range(freeze_left_n):
+        w = widths[i] if i < len(widths) else 100
+        n = i + 1
+        left_css.append(
+            f"""
+            table thead tr th:nth-child({n}),
+            table tbody tr th:nth-child({n}),
+            table tbody tr td:nth-child({n}) {{
+                position: sticky;
+                left: {left}px;
+                z-index: 4;
+                min-width: {w}px;
+                max-width: {w}px;
+                box-shadow: 2px 0 0 #CBD5E1;
+            }}
+            table thead tr th:nth-child({n}) {{
+                z-index: 8;
+                background: #F0F2F6 !important;
+            }}
+            table tbody tr th:nth-child({n}),
+            table tbody tr td:nth-child({n}) {{
+                background-color: #FFFFFF;
+                z-index: 5;
+            }}
+            table tbody tr:last-child th:nth-child({n}),
+            table tbody tr:last-child td:nth-child({n}) {{
+                background-color: #E2E8F0 !important;
+            }}
+            """
+        )
+        left += w
+
+    page_html = f"""
+    <!DOCTYPE html>
+    <html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        html, body {{
+            margin: 0; height: 100%; overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-size: 13px; color: #31333F;
+        }}
+        .wrap {{
+            height: 100%; overflow: auto;
+            -webkit-overflow-scrolling: touch;
+            border: 1px solid #E2E8F0; border-radius: 4px; background: #fff;
+        }}
+        table {{
+            border-collapse: separate; border-spacing: 0;
+            width: max-content; min-width: 100%;
+        }}
+        th, td {{
+            padding: 6px 10px; white-space: nowrap;
+            border-bottom: 1px solid #E2E8F0;
+            font-weight: 400;
+        }}
+        thead th {{
+            position: sticky; top: 0; z-index: 6;
+            background: #F0F2F6 !important;
+            box-shadow: 0 1px 0 #CBD5E1;
+            font-weight: 600; text-align: right;
+        }}
+        thead th:nth-child(1), thead th:nth-child(2) {{ text-align: left; }}
+        {''.join(left_css)}
+    </style></head>
+    <body><div class="wrap">{styled.to_html()}</div></body></html>
+    """
+    components.html(page_html, height=height, scrolling=True)
+
+
 # ==========================================
 # 5. 메인 실행 흐름 및 영구 캐싱 관리
 # ==========================================
@@ -3105,10 +3180,11 @@ with tab1:
                         axis=0
                     )
                 
-                st.dataframe(
-                    styled_top30, 
-                    use_container_width=True, 
-                    height=450
+                render_frozen_styler_html(
+                    styled_top30,
+                    height=450,
+                    freeze_left_n=2,
+                    freeze_widths=[44, 160],
                 )
 
             with p_col2:
