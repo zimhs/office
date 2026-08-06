@@ -1652,7 +1652,15 @@ def _debt_label_cell_style(client, gubun, color_map):
     return base + f"background-color:{bg};text-align:{align};"
 
 
-def render_interactive_html_table(headers, body_html, height=420, show_sum_popup=False, toolbar_hint=None):
+def render_interactive_html_table(
+    headers,
+    body_html,
+    height=420,
+    show_sum_popup=False,
+    toolbar_hint=None,
+    freeze_left_cols=0,
+    freeze_left_widths=None,
+):
     hint = toolbar_hint or "셀 클릭 · ⌘/Ctrl+클릭 또는 ⊕다중선택"
     sum_controls = ""
     if show_sum_popup:
@@ -1663,6 +1671,56 @@ def render_interactive_html_table(headers, body_html, height=420, show_sum_popup
                 <span class="dash-sum-meta" id="dashSumCount">0개</span>
             </div>
         """
+
+    freeze_css = ""
+    if freeze_left_cols > 0:
+        widths = freeze_left_widths or ([150, 64] + [100] * max(0, freeze_left_cols - 2))
+        left = 0
+        parts = [
+            """
+        thead th {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+            background: #F0F2F6 !important;
+            box-shadow: 0 1px 0 #CBD5E1;
+        }
+            """
+        ]
+        for i in range(min(freeze_left_cols, len(widths))):
+            w = widths[i]
+            parts.append(
+                f"""
+        th.dash-freeze-{i}, td.dash-freeze-{i} {{
+            position: sticky;
+            left: {left}px;
+            min-width: {w}px;
+            max-width: {w}px;
+            width: {w}px;
+            box-shadow: 2px 0 0 #CBD5E1;
+        }}
+        th.dash-freeze-{i} {{
+            top: 0;
+            z-index: 8;
+            background: #F0F2F6 !important;
+        }}
+        td.dash-freeze-{i} {{
+            z-index: 4;
+        }}
+                """
+            )
+            left += w
+        freeze_css = "".join(parts)
+
+    header_cells = []
+    for i, h in enumerate(headers):
+        freeze_cls = f' class="dash-freeze-{i}"' if i < freeze_left_cols else ""
+        align = "left" if i < freeze_left_cols else "right"
+        header_cells.append(
+            f'<th{freeze_cls} style="padding:6px 10px;border-bottom:1px solid #E2E8F0;'
+            f'background:#F0F2F6;text-align:{align};font-size:13px;font-weight:600;'
+            f'white-space:nowrap;">{html.escape(str(h))}</th>'
+        )
 
     page_html = f"""
     <!DOCTYPE html>
@@ -1735,7 +1793,7 @@ def render_interactive_html_table(headers, body_html, height=420, show_sum_popup
             border-radius: 0 0 4px 4px;
             background: #fff;
         }}
-        table {{ width: max-content; min-width: 100%; border-collapse: collapse; }}
+        table {{ width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; }}
         th, td {{ font-weight: 400; }}
         .dash-cell-selectable {{ cursor: cell; user-select: none; -webkit-user-select: none; }}
         .dash-cell-selectable.selected {{
@@ -1743,6 +1801,7 @@ def render_interactive_html_table(headers, body_html, height=420, show_sum_popup
             outline-offset: -2px;
             background-color: #DBEAFE !important;
         }}
+        {freeze_css}
     </style></head><body>
     <div class="dash-shell">
     <div class="dash-table-toolbar">
@@ -1752,7 +1811,7 @@ def render_interactive_html_table(headers, body_html, height=420, show_sum_popup
     </div>
     <div class="wrap">
         <table id="dashTable">
-            <thead><tr>{''.join(f'<th style="padding:6px 10px;border-bottom:1px solid #E2E8F0;background:#F0F2F6;text-align:right;font-size:13px;font-weight:400;">{html.escape(str(h))}</th>' for h in headers)}</tr></thead>
+            <thead><tr>{''.join(header_cells)}</tr></thead>
             <tbody>{body_html}</tbody>
         </table>
     </div>
@@ -1872,8 +1931,8 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700):
     for r, (idx, row) in enumerate(disp_debt.iterrows()):
         client, gubun = idx[0], idx[1]
         cells = [
-            f'<td class="dash-cell-selectable" style="{_debt_label_cell_style(client, gubun, color_map)}">{html.escape(str(client))}</td>',
-            f'<td class="dash-cell-selectable" style="{_debt_label_cell_style(client, gubun, color_map)}">{html.escape(str(gubun))}</td>',
+            f'<td class="dash-cell-selectable dash-freeze-0" style="{_debt_label_cell_style(client, gubun, color_map)}">{html.escape(str(client))}</td>',
+            f'<td class="dash-cell-selectable dash-freeze-1" style="{_debt_label_cell_style(client, gubun, color_map)}">{html.escape(str(gubun))}</td>',
         ]
         for col in numeric_cols:
             val = row[col]
@@ -1899,7 +1958,9 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700):
         "".join(body_rows),
         height=height + 40,
         show_sum_popup=True,
-        toolbar_hint="셀 클릭 선택 · ⊕다중선택 · 상단에 선택 합계 표시",
+        toolbar_hint="셀 클릭 선택 · ⊕다중선택 · 상단에 선택 합계 표시 · 거래처/구분·월헤더 틀고정",
+        freeze_left_cols=2,
+        freeze_left_widths=[160, 68],
     )
 
 
