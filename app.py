@@ -357,9 +357,8 @@ def inject_custom_css():
                 }
             }
 
-            /* iPad only: Top30 표·도넛 가로 100% (맥은 touch-mode 없음 = 무손실) */
+            /* iPad only: Top30 표·도넛 가로 100% — 직계 칼럼만 (중첩 월버튼 칼럼 제외) */
             html.dashboard-touch-mode .top30-touch-scope,
-            html.dashboard-touch-mode .top30-touch-scope > div,
             html.dashboard-touch-mode .top30-touch-row {
                 width: 100% !important;
                 max-width: 100% !important;
@@ -372,9 +371,10 @@ def inject_custom_css():
                 align-items: stretch !important;
                 gap: 0.75rem !important;
             }
-            html.dashboard-touch-mode .top30-touch-row > div,
-            html.dashboard-touch-mode .top30-touch-row [data-testid="column"],
-            html.dashboard-touch-mode .top30-touch-row [data-testid="stColumn"] {
+            html.dashboard-touch-mode .top30-touch-row > [data-testid="column"],
+            html.dashboard-touch-mode .top30-touch-row > [data-testid="stColumn"],
+            html.dashboard-touch-mode .top30-touch-row > div > [data-testid="column"],
+            html.dashboard-touch-mode .top30-touch-row > div > [data-testid="stColumn"] {
                 width: 100% !important;
                 min-width: 100% !important;
                 max-width: 100% !important;
@@ -2541,7 +2541,20 @@ def inject_top30_month_bridge():
                 row.style.setProperty("width", "100%", "important");
                 row.style.setProperty("max-width", "100%", "important");
                 Array.prototype.forEach.call(row.children, forceFullWidth);
-                row.querySelectorAll('[data-testid="column"], [data-testid="stColumn"]').forEach(forceFullWidth);
+                /* 직계(표|도넛) 칼럼만 — 중첩 칼럼에 min-width:100% 금지 */
+                var topCols = row.querySelectorAll(':scope > [data-testid="column"], :scope > [data-testid="stColumn"], :scope > div > [data-testid="column"], :scope > div > [data-testid="stColumn"]');
+                if (!topCols.length) {
+                    topCols = [];
+                    Array.prototype.forEach.call(row.children, function (ch) {
+                        if (ch.matches && (ch.matches('[data-testid="column"]') || ch.matches('[data-testid="stColumn"]'))) {
+                            topCols.push(ch);
+                        } else if (ch.querySelector) {
+                            var inner = ch.querySelector(':scope > [data-testid="column"], :scope > [data-testid="stColumn"]');
+                            if (inner) topCols.push(inner);
+                        }
+                    });
+                }
+                Array.prototype.forEach.call(topCols, forceFullWidth);
                 row.querySelectorAll("iframe").forEach(function (f) {
                     f.style.setProperty("width", "100%", "important");
                     f.style.setProperty("max-width", "100%", "important");
@@ -2587,12 +2600,10 @@ def inject_top30_month_bridge():
                         if (!cols.length) {
                             cols = row.querySelectorAll('[data-testid="column"], [data-testid="stColumn"]');
                         }
-                        /* 월 버튼 12칸 행은 제외, 표|도넛 2칸 행만 풀폭 */
+                        /* 표|도넛(플롯 포함) 행만 풀폭 — 제목/월 select 2칸 행은 제외 */
                         if (cols.length === 12) continue;
-                        var isPair = cols.length === 2;
                         var hasPlot = !!row.querySelector('[data-testid="stPlotlyChart"]');
-                        var hasTableFrame = !!row.querySelector("iframe");
-                        if (isPair || (hasPlot && hasTableFrame) || (hasPlot && cols.length <= 3)) {
+                        if (hasPlot) {
                             applyTop30FullWidthRow(row);
                         }
                     }
@@ -3370,30 +3381,28 @@ with tab1:
                 p_col1, p_col2 = st.columns([1.2, 0.8])
 
                 with p_col1:
-                    st.markdown(
-                        f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>"
-                        f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
-                        f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
-                        f"← 월 버튼 또는 표 헤더 클릭</span></div>",
-                        unsafe_allow_html=True,
-                    )
-
-                    # iframe 샌드박스 때문에 헤더 링크가 막힐 수 있어 Streamlit 버튼으로도 동일 동작 보장
-                    m_cols = st.columns(12, gap="small")
-                    _clicked_m = None
-                    for _i, _m in enumerate(all_months):
-                        with m_cols[_i]:
-                            if st.button(
-                                _m,
-                                key=f"top30_month_btn_{_m}",
-                                type="primary" if _m == rank_m else "secondary",
-                                use_container_width=True,
-                            ):
-                                _clicked_m = _m
-                    if _clicked_m:
-                        st.session_state["top30_month"] = _clicked_m
+                    _m_idx = all_months.index(rank_m) if rank_m in all_months else 0
+                    title_c, month_c = st.columns([3.2, 0.8])
+                    with title_c:
+                        st.markdown(
+                            f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 4px;'>"
+                            f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
+                            f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
+                            f"← 월 선택 또는 표 헤더 클릭</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                    with month_c:
+                        picked_m = st.selectbox(
+                            "기준 월",
+                            all_months,
+                            index=_m_idx,
+                            key="top30_month_select",
+                            label_visibility="collapsed",
+                        )
+                    if picked_m != st.session_state.get("top30_month"):
+                        st.session_state["top30_month"] = picked_m
                         try:
-                            st.query_params["top30_month"] = _clicked_m
+                            st.query_params["top30_month"] = picked_m
                         except Exception:
                             pass
                         st.rerun()
