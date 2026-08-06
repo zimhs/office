@@ -2674,7 +2674,7 @@ def is_touch_ui():
 
 
 def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=False, **kwargs):
-    """맥: 기존 plotly 그대로. iPad: 클릭 변동 고정 + 모드바는 탭 후 표시."""
+    """맥: 기존 plotly 그대로. iPad: 클릭 변동 고정 + 모드바 항상 표시(원복 가능)."""
     if is_touch_ui():
         try:
             updates = {"clickmode": "none"}
@@ -2703,7 +2703,7 @@ def render_plotly_chart(fig, *, key=None, use_container_width=True, allow_drag=F
 
 
 def inject_ipad_plotly_controls():
-    """iPad only: 모드바 기본 숨김 → 그래프 탭 시 우측 상단 고정 표시. 맥 무손실."""
+    """iPad only: 모드바 항상 하단 고정 표시 + 화면 하단 '그래프 원복' 버튼. 맥 무손실."""
     components.html(
         """
         <script>
@@ -2726,67 +2726,118 @@ def inject_ipad_plotly_controls():
             var STYLE_CSS = [
                 ".modebar-container{",
                 "  position:fixed !important;",
-                "  top:8px !important;",
-                "  right:8px !important;",
+                "  top:auto !important;",
+                "  bottom:10px !important;",
+                "  right:10px !important;",
                 "  left:auto !important;",
                 "  z-index:2147483646 !important;",
                 "  display:block !important;",
+                "  opacity:1 !important;",
+                "  pointer-events:auto !important;",
                 "}",
                 ".modebar{",
                 "  position:relative !important;",
                 "  top:0 !important;",
                 "  right:0 !important;",
-                "  opacity:0 !important;",
-                "  pointer-events:none !important;",
-                "  transition:opacity .15s ease;",
-                "  background:rgba(51,51,51,.92) !important;",
-                "  border-radius:6px !important;",
-                "  padding:2px 4px !important;",
-                "}",
-                "body.plotly-mb-show .modebar,",
-                ".js-plotly-plot.plotly-mb-active .modebar{",
                 "  opacity:1 !important;",
                 "  pointer-events:auto !important;",
+                "  background:rgba(30,41,59,.94) !important;",
+                "  border-radius:8px !important;",
+                "  padding:4px 6px !important;",
+                "  box-shadow:0 2px 10px rgba(0,0,0,.25) !important;",
                 "}",
                 ".modebar-btn{",
-                "  min-width:28px !important;",
-                "  min-height:28px !important;",
+                "  min-width:32px !important;",
+                "  min-height:32px !important;",
                 "}"
             ].join("");
+
+            function resetPlotDoc(doc) {
+                try {
+                    var win = doc.defaultView;
+                    if (!win || !win.Plotly) return false;
+                    var gds = doc.querySelectorAll(".js-plotly-plot");
+                    var ok = false;
+                    for (var i = 0; i < gds.length; i++) {
+                        try {
+                            win.Plotly.relayout(gds[i], {
+                                "xaxis.autorange": true,
+                                "yaxis.autorange": true,
+                                "xaxis2.autorange": true,
+                                "yaxis2.autorange": true
+                            });
+                            ok = true;
+                        } catch (e1) {
+                            try { win.Plotly.Plots.resize(gds[i]); ok = true; } catch (e2) {}
+                        }
+                    }
+                    return ok;
+                } catch (e3) { return false; }
+            }
+
+            function resetAllPlots() {
+                var n = 0;
+                parentDoc.querySelectorAll('[data-testid="stPlotlyChart"] iframe').forEach(function (ifr) {
+                    try {
+                        var doc = ifr.contentDocument || (ifr.contentWindow && ifr.contentWindow.document);
+                        if (doc && resetPlotDoc(doc)) n++;
+                    } catch (e4) {}
+                });
+                return n;
+            }
+
+            function ensureResetButton() {
+                var id = "dashboard-ipad-plotly-reset";
+                var btn = parentDoc.getElementById(id);
+                if (btn) return;
+                btn = parentDoc.createElement("button");
+                btn.id = id;
+                btn.type = "button";
+                btn.textContent = "그래프 원복";
+                btn.setAttribute("aria-label", "그래프 확대 원복");
+                btn.style.cssText = [
+                    "position:fixed",
+                    "right:14px",
+                    "bottom:72px",
+                    "z-index:2147483000",
+                    "padding:10px 14px",
+                    "border:none",
+                    "border-radius:999px",
+                    "background:#0F172A",
+                    "color:#fff",
+                    "font-size:13px",
+                    "font-weight:700",
+                    "box-shadow:0 4px 14px rgba(15,23,42,.35)",
+                    "cursor:pointer",
+                    "-webkit-tap-highlight-color:transparent"
+                ].join(";");
+                btn.addEventListener("click", function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    resetAllPlots();
+                }, true);
+                parentDoc.body.appendChild(btn);
+            }
 
             function hookIframe(ifr) {
                 try {
                     var doc = ifr.contentDocument || (ifr.contentWindow && ifr.contentWindow.document);
-                    if (!doc || !doc.head || doc.getElementById(STYLE_ID)) return;
-                    var st = doc.createElement("style");
-                    st.id = STYLE_ID;
-                    st.textContent = STYLE_CSS;
-                    doc.head.appendChild(st);
-
-                    function activate(plot) {
-                        try {
-                            doc.body.classList.add("plotly-mb-show");
-                            if (plot) plot.classList.add("plotly-mb-active");
-                            doc.querySelectorAll(".js-plotly-plot").forEach(function (p) {
-                                if (p !== plot) p.classList.remove("plotly-mb-active");
-                            });
-                        } catch (e1) {}
+                    if (!doc || !doc.head) return;
+                    var st = doc.getElementById(STYLE_ID);
+                    if (!st) {
+                        st = doc.createElement("style");
+                        st.id = STYLE_ID;
+                        st.textContent = STYLE_CSS;
+                        doc.head.appendChild(st);
+                    } else {
+                        st.textContent = STYLE_CSS;
                     }
-
-                    function onPlotTap(e) {
-                        if (e.target && e.target.closest && e.target.closest(".modebar")) return;
-                        var plot = (e.target && e.target.closest) ? e.target.closest(".js-plotly-plot") : null;
-                        if (!plot) plot = doc.querySelector(".js-plotly-plot");
-                        activate(plot);
-                    }
-
-                    doc.addEventListener("click", onPlotTap, true);
-                    doc.addEventListener("touchend", onPlotTap, true);
                 } catch (err) {}
             }
 
             function scan() {
                 try {
+                    ensureResetButton();
                     parentDoc.querySelectorAll('[data-testid="stPlotlyChart"] iframe').forEach(hookIframe);
                 } catch (e2) {}
             }
