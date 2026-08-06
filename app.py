@@ -190,7 +190,7 @@ def inject_custom_css():
 
             .dashboard-filter-sticky-touch {
                 z-index: 999999 !important;
-                top: 4.1rem !important;
+                top: 3.65rem !important;
                 border: 2px solid #2563EB !important;
                 border-top: 3px solid #2563EB !important;
                 border-radius: 0 0 8px 8px !important;
@@ -1950,7 +1950,7 @@ def render_update_badge(date_str):
 def inject_sticky_tabs_script():
     """필터+탭 상단 fixed.
     - 맥: 현재 안정 코드 무손실 유지
-    - iPad: 0804-최종 DOM 해킹 (fixed + 4.1rem + spacer + RAF)
+    - iPad: 0804-최종 DOM 해킹 (fixed + 3.65rem + spacer + RAF)
     """
     components.html(
         """
@@ -2157,7 +2157,7 @@ def inject_sticky_tabs_script():
                 /* iPad: Share/메뉴·≫ 버튼 아래 + 상단 파란선이 보이도록 내림 */
                 var open = isSidebarOpen();
                 targetBox.style.setProperty('position', 'fixed', 'important');
-                targetBox.style.setProperty('top', '4.1rem', 'important');
+                targetBox.style.setProperty('top', '3.65rem', 'important');
                 targetBox.style.setProperty('z-index', open ? '1' : '999999', 'important');
                 targetBox.style.setProperty('background-color', '#FFFFFF', 'important');
                 targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
@@ -2202,7 +2202,7 @@ def inject_sticky_tabs_script():
                 if (targetBox && spacer && parentDoc.body.contains(spacer)) {
                     var rect = spacer.getBoundingClientRect();
                     targetBox.style.setProperty('position', 'fixed', 'important');
-                    targetBox.style.setProperty('top', '4.1rem', 'important');
+                    targetBox.style.setProperty('top', '3.65rem', 'important');
                     targetBox.style.setProperty('width', rect.width + 'px', 'important');
                     targetBox.style.setProperty('left', rect.left + 'px', 'important');
                     targetBox.style.setProperty('z-index', isSidebarOpen() ? '1' : '999999', 'important');
