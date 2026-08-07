@@ -1813,30 +1813,18 @@ def compute_debt_status_by_client(disp_debt, payment_terms_map=None):
 
 
 def _debt_label_cell_style(client, gubun, color_map, compact=False):
-    if compact:
-        base = (
-            "padding:4px 4px;border-bottom:1px solid #E2E8F0;"
-            "font-size:12px;font-weight:400;line-height:1.25;"
-            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-            "overflow:hidden;text-overflow:ellipsis;"
-        )
-        if client == "📌 [전체 합계]":
-            return base + "background-color:#E2E8F0;font-weight:700;text-align:left;white-space:nowrap;"
-        bg = color_map.get(client, "#FFFFFF")
-        if gubun in ("이월", "매출", "수금", "잔액", "합계", "익월"):
-            return base + f"background-color:{bg};text-align:center;white-space:nowrap;padding:4px 2px;"
-        return base + f"background-color:{bg};text-align:left;white-space:nowrap;"
-
+    """다른 탭과 동일: 13px / weight 400 · 세로·가로 중간정렬."""
+    pad = "4px 4px" if compact else "6px 8px"
     base = (
-        "padding:6px 10px;border-bottom:1px solid #E2E8F0;white-space:nowrap;"
-        "font-size:13px;font-weight:400;line-height:1.4;"
+        f"padding:{pad};border-bottom:1px solid #E2E8F0;white-space:nowrap;"
+        "font-size:13px;font-weight:400;line-height:1.4;vertical-align:middle;"
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+        "overflow:hidden;text-overflow:ellipsis;"
     )
     if client == "📌 [전체 합계]":
-        return base + "background-color:#E2E8F0;font-weight:700;text-align:left;"
+        return base + "background-color:#E2E8F0;font-weight:400;text-align:center;"
     bg = color_map.get(client, "#FFFFFF")
-    align = "center" if gubun else "left"
-    return base + f"background-color:{bg};text-align:{align};"
+    return base + f"background-color:{bg};text-align:center;"
 
 
 PAYMENT_TERMS_PATH = os.path.join(CACHE_DIR, "payment_terms.csv")
@@ -1965,11 +1953,6 @@ def render_interactive_html_table(
             width: {r0_w}px;
             box-shadow: -1px 0 0 #E2E8F0;
             background-clip: padding-box;
-            padding-left: 4px !important;
-            padding-right: 4px !important;
-            font-size: 11px !important;
-            white-space: normal !important;
-            line-height: 1.2 !important;
             word-break: keep-all;
         }}
         th.dash-freeze-r1, td.dash-freeze-r1 {{
@@ -1981,11 +1964,6 @@ def render_interactive_html_table(
             width: {r1_w}px;
             box-shadow: -1px 0 0 #E2E8F0;
             background-clip: padding-box;
-            padding-left: 4px !important;
-            padding-right: 4px !important;
-            font-size: 10px !important;
-            white-space: normal !important;
-            line-height: 1.2 !important;
             word-break: keep-all;
             overflow: hidden;
         }}
@@ -1995,7 +1973,6 @@ def render_interactive_html_table(
             background: #F0F2F6 !important;
             color: #31333F;
             font-weight: 600;
-            font-size: 11px !important;
         }}
         td.dash-freeze-r0, td.dash-freeze-r1 {{
             z-index: 5;
@@ -2016,19 +1993,11 @@ def render_interactive_html_table(
             elif i == n_h - 2:
                 classes.append("dash-freeze-r1")  # 결제조건
         freeze_cls = f' class="{" ".join(classes)}"' if classes else ""
-        is_right_meta = freeze_right_header and i >= n_h - 2
-        if i < freeze_left_cols:
-            align = "left"
-        elif is_right_meta and i == n_h - 2:
-            align = "left"
-        elif is_right_meta and i == n_h - 1:
-            align = "center"
-        else:
-            align = "right"
         header_cells.append(
-            f'<th{freeze_cls} style="padding:6px 10px;border-bottom:1px solid #E2E8F0;'
-            f'background:#F0F2F6;text-align:{align};font-size:13px;font-weight:600;'
-            f'white-space:nowrap;">{html.escape(str(h))}</th>'
+            f'<th{freeze_cls} style="padding:6px 8px;border-bottom:1px solid #E2E8F0;'
+            f'background:#F0F2F6;text-align:center;vertical-align:middle;'
+            f'font-size:13px;font-weight:600;white-space:nowrap;">'
+            f'{html.escape(str(h))}</th>'
         )
 
     page_html = f"""
@@ -2103,7 +2072,12 @@ def render_interactive_html_table(
             background: #fff;
         }}
         table {{ width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; }}
-        th, td {{ font-weight: 400; }}
+        th, td {{
+            font-weight: 400;
+            font-size: 13px;
+            vertical-align: middle;
+            text-align: center;
+        }}
         .dash-cell-selectable {{ cursor: cell; user-select: none; -webkit-user-select: none; }}
         .dash-cell-selectable.selected {{
             outline: 2px solid #2563EB;
@@ -2325,26 +2299,24 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
     }
     long_cnt = sum(1 for v in status_map.values() if v == "악성")
 
-    # iPad만 열폭 축소 · 맥은 기존 넓은 레이아웃 유지
+    # iPad만 열폭 축소 · 글자크기/굵기는 다른 탭과 동일(13px/400) · 중간정렬
     compact = is_touch_ui()
     if compact:
         headers = ["거래처", "구분"] + numeric_cols + ["결제", "연체"]
         left_w, right_w = [108, 40], [52, 64]
-        cell_font = (
-            "padding:4px 6px;border-bottom:1px solid #E2E8F0;"
-            "white-space:nowrap;font-size:12px;font-weight:400;line-height:1.25;"
-            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        )
         hint = "셀 클릭 · 분홍=연체 · 결제/연체 열 축소 · 연체: 정상/1~3M/악성(4M+)"
     else:
         headers = ["거래처", "구분"] + numeric_cols + ["결제조건", "연체개월수"]
         left_w, right_w = [160, 68], [110, 120]
-        cell_font = (
-            "padding:6px 10px;border-bottom:1px solid #E2E8F0;"
-            "white-space:nowrap;font-size:13px;font-weight:400;line-height:1.4;"
-            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        )
         hint = "셀 클릭 선택 · 분홍=연체 · 연체개월수: 정상 / 연체 1~3개월 / 악성(4개월+)"
+
+    cell_font = (
+        "padding:6px 8px;border-bottom:1px solid #E2E8F0;white-space:nowrap;"
+        "font-size:13px;font-weight:400;line-height:1.4;vertical-align:middle;text-align:center;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+    )
+    if compact:
+        cell_font = cell_font.replace("padding:6px 8px", "padding:4px 4px")
 
     body_rows = []
     for r, (idx, row) in enumerate(disp_debt.iterrows()):
@@ -2362,60 +2334,48 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
             display = f"{num:,.0f}"
             extra_style = str(style_df.at[idx, col]) if col in style_df.columns else ""
             cells.append(
-                f'<td class="dash-cell-selectable" style="{cell_font}text-align:right;{extra_style}" '
+                f'<td class="dash-cell-selectable" style="{cell_font}{extra_style}" '
                 f'data-raw="{num}">{display}</td>'
             )
+        # 결제조건·연체는 잔액 행에만 1회 · 글자크기/굵기 동일 · 중간정렬
         if client == "📌 [전체 합계]":
             term_bg = "#E2E8F0"
-            term_w = "700"
-            term = ""
-            if gubun == "잔액" and long_cnt:
-                status = f"악성 {long_cnt}곳" if not compact else f"악성{long_cnt}"
+            if gubun == "잔액":
+                term = ""
+                status = f"악성 {long_cnt}곳" if long_cnt else "—"
+                if compact and long_cnt:
+                    status = f"악성{long_cnt}"
             else:
-                status = "" if gubun != "잔액" else "—"
+                term, status = "", ""
         else:
             term_bg = color_map.get(client, DEBT_CLIENT_STRIPE_A)
-            term_w = "400"
-            term = resolve_payment_term(client, terms_map)
-            status = status_map.get(client, "정상") if gubun == "잔액" else ""
+            if gubun == "잔액":
+                term = resolve_payment_term(client, terms_map)
+                status = status_map.get(client, "정상")
+            else:
+                term, status = "", ""
 
         status_disp = status
         if compact and status.startswith("연체 ") and status.endswith("개월"):
             status_disp = status.replace("연체 ", "").replace("개월", "M")
 
-        if compact:
-            term_style = (
-                f"padding:3px 3px;border-bottom:1px solid #E2E8F0;text-align:left;"
-                f"color:#31333F;font-weight:{term_w};background-color:{term_bg};"
-                f"font-size:10px;line-height:1.15;white-space:normal;word-break:keep-all;"
-            )
-            status_style = (
-                f"padding:3px 2px;border-bottom:1px solid #E2E8F0;text-align:center;"
-                f"background-color:{term_bg};font-size:11px;line-height:1.15;white-space:normal;"
-            )
-        else:
-            term_style = (
-                f"{cell_font}text-align:left;color:#31333F;font-weight:{term_w};"
-                f"background-color:{term_bg};white-space:normal;"
-            )
-            status_style = (
-                f"{cell_font}text-align:center;background-color:{term_bg};"
-            )
-
+        meta_style = f"{cell_font}background-color:{term_bg};white-space:normal;"
+        term_show = term if gubun == "잔액" else ""
+        term_fallback = "—" if (client != "📌 [전체 합계]" and gubun == "잔액" and not term) else ""
         cells.append(
-            f'<td class="dash-freeze-r1" style="{term_style}" title="{html.escape(term)}">'
-            f'{html.escape(term) if term else ("—" if client != "📌 [전체 합계]" else "")}</td>'
+            f'<td class="dash-freeze-r1" style="{meta_style}" title="{html.escape(term)}">'
+            f"{html.escape(term_show or term_fallback)}</td>"
         )
         if status == "악성" or (isinstance(status, str) and status.startswith("악성")):
-            st_color, st_w = "#BE123C", "700"
+            st_color = "#BE123C"
         elif status == "정상":
-            st_color, st_w = "#047857", "600"
+            st_color = "#047857"
         elif "연체" in str(status) and "개월" in str(status):
-            st_color, st_w = "#C2410C", "600"
+            st_color = "#C2410C"
         else:
-            st_color, st_w = "#31333F", term_w
+            st_color = "#31333F"
         cells.append(
-            f'<td class="dash-freeze-r0" style="{status_style}color:{st_color};font-weight:{st_w};" '
+            f'<td class="dash-freeze-r0" style="{meta_style}color:{st_color};" '
             f'title="{html.escape(status)}">{html.escape(status_disp)}</td>'
         )
         body_rows.append(f"<tr>{''.join(cells)}</tr>")
@@ -2577,36 +2537,33 @@ def render_debt_month_rank_panel(
         if compact:
             headers = ["거래처"] + cols + ["결제", "연체"]
             left_w, right_w = [100], [48, 60]
-            cell = (
-                "padding:4px 5px;border-bottom:1px solid #E2E8F0;white-space:nowrap;"
-                "font-size:11px;line-height:1.25;"
-                "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-            )
         else:
             headers = ["거래처"] + cols + ["결제조건", "연체개월수"]
             left_w, right_w = [140], [110, 120]
-            cell = (
-                "padding:5px 8px;border-bottom:1px solid #E2E8F0;white-space:nowrap;"
-                "font-size:12px;line-height:1.35;"
-                "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-            )
+        cell = (
+            "padding:6px 8px;border-bottom:1px solid #E2E8F0;white-space:nowrap;"
+            "font-size:13px;font-weight:400;line-height:1.4;vertical-align:middle;text-align:center;"
+            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+        )
+        if compact:
+            cell = cell.replace("padding:6px 8px", "padding:4px 4px")
         body = []
         for i, (client, row) in enumerate(mat_sorted.iterrows()):
             bg = DEBT_CLIENT_STRIPE_A if i % 2 == 0 else DEBT_CLIENT_STRIPE_B
             tds = [
-                f'<td class="dash-freeze-0" style="{cell}text-align:left;font-weight:600;'
-                f'background:{bg};overflow:hidden;text-overflow:ellipsis;" '
+                f'<td class="dash-freeze-0" style="{cell}background:{bg};'
+                f'overflow:hidden;text-overflow:ellipsis;" '
                 f'title="{html.escape(str(client))}">{html.escape(str(client))}</td>'
             ]
             for c in cols:
                 v = float(row[c]) if pd.notna(row[c]) else 0.0
                 hi = (
-                    f"background:{DEBT_PINK_SOFT};font-weight:600;"
+                    f"background:{DEBT_PINK_SOFT};"
                     if c == sort_m and v > 0
                     else f"background:{bg};"
                 )
                 tds.append(
-                    f'<td class="dash-cell-selectable" style="{cell}text-align:right;{hi}" '
+                    f'<td class="dash-cell-selectable" style="{cell}{hi}" '
                     f'data-raw="{v}">{v:,.0f}</td>'
                 )
             term = resolve_payment_term(client, terms_map) or "—"
@@ -2615,34 +2572,19 @@ def render_debt_month_rank_panel(
             if compact and status.startswith("연체 ") and status.endswith("개월"):
                 status_disp = status.replace("연체 ", "").replace("개월", "M")
             if status == "악성":
-                sc, sw = "#BE123C", "700"
+                sc = "#BE123C"
             elif "연체" in str(status) and "개월" in str(status):
-                sc, sw = "#C2410C", "600"
+                sc = "#C2410C"
             else:
-                sc, sw = "#31333F", "500"
-            if compact:
-                tds.append(
-                    f'<td class="dash-freeze-r1" style="padding:3px;border-bottom:1px solid #E2E8F0;'
-                    f'text-align:left;background-color:{bg};font-size:10px;line-height:1.15;'
-                    f'white-space:normal;word-break:keep-all;" title="{html.escape(term)}">'
-                    f"{html.escape(term)}</td>"
-                )
-                tds.append(
-                    f'<td class="dash-freeze-r0" style="padding:3px 2px;border-bottom:1px solid #E2E8F0;'
-                    f'text-align:center;background-color:{bg};color:{sc};font-weight:{sw};'
-                    f'font-size:11px;" title="{html.escape(status)}">{html.escape(status_disp)}</td>'
-                )
-            else:
-                tds.append(
-                    f'<td class="dash-freeze-r1" style="{cell}text-align:left;'
-                    f'background-color:{bg};white-space:normal;" title="{html.escape(term)}">'
-                    f"{html.escape(term)}</td>"
-                )
-                tds.append(
-                    f'<td class="dash-freeze-r0" style="{cell}text-align:center;'
-                    f'background-color:{bg};color:{sc};font-weight:{sw};">'
-                    f"{html.escape(status_disp)}</td>"
-                )
+                sc = "#31333F"
+            tds.append(
+                f'<td class="dash-freeze-r1" style="{cell}background-color:{bg};white-space:normal;" '
+                f'title="{html.escape(term)}">{html.escape(term)}</td>'
+            )
+            tds.append(
+                f'<td class="dash-freeze-r0" style="{cell}background-color:{bg};color:{sc};" '
+                f'title="{html.escape(status)}">{html.escape(status_disp)}</td>'
+            )
             body.append(f"<tr>{''.join(tds)}</tr>")
 
         sel_txt = ", ".join(selected)
