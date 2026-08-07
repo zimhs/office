@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import html
+import shutil
 import subprocess
 import urllib.parse
 import requests
@@ -14,6 +15,21 @@ import streamlit.components.v1 as components
 import plotly.graph_objects as go
 import plotly.express as px
 import datetime
+from matplotlib.colors import LinearSegmentedColormap
+
+# Tab3 히트맵 — 파스텔만 사용 (진한 네이비/브라운 제외)
+_TAB3_CMAP_BLUE = LinearSegmentedColormap.from_list(
+    "tab3_blue", ["#F8FAFC", "#DBEAFE", "#93C5FD"]
+)
+_TAB3_CMAP_GREEN = LinearSegmentedColormap.from_list(
+    "tab3_green", ["#F8FAFC", "#DCFCE7", "#86EFAC"]
+)
+_TAB3_CMAP_ORANGE = LinearSegmentedColormap.from_list(
+    "tab3_orange", ["#FFF7ED", "#FFEDD5", "#FDBA74"]
+)
+_TAB3_CMAP_AMBER = LinearSegmentedColormap.from_list(
+    "tab3_amber", ["#FFFBEB", "#FEF3C7", "#FCD34D"]
+)
 
 # OpenDartReader 임포트 (설치되지 않았을 경우를 대비한 예외 처리)
 try:
@@ -86,6 +102,28 @@ def inject_custom_css():
             }
 
             div[data-testid="column"] { align-self: flex-start; }
+
+            /* 채권관리 월/연체 토글 — 아담한 버튼 */
+            div[data-testid="stVerticalBlock"]:has(.debt-compact-toggle-host)
+              div[data-testid="stHorizontalBlock"]
+              div[data-testid="stButton"] > button {
+                min-height: 26px !important;
+                height: 26px !important;
+                padding: 0 6px !important;
+                font-size: 11px !important;
+                font-weight: 600 !important;
+                line-height: 1.1 !important;
+                border-radius: 6px !important;
+                max-width: 88px !important;
+                margin: 0 auto !important;
+            }
+            div[data-testid="stVerticalBlock"]:has(.debt-compact-toggle-host)
+              div[data-testid="stHorizontalBlock"]
+              div[data-testid="column"] {
+                padding-left: 1px !important;
+                padding-right: 1px !important;
+              }
+            .debt-compact-toggle-host { display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important; }
 
             .metric-box {
                 background: #FFFFFF;
@@ -1490,9 +1528,14 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
     if not latest_col and len(qty_p.columns) > 0:
         latest_col = qty_p.columns[0]
 
-    if latest_col and latest_col in qty_p.columns:
-        qty_p = qty_p.sort_values(by=latest_col, ascending=False)
-        sales_p = sales_p.reindex(qty_p.index)
+    # 매출액 많은 순 정렬 → 출고량·단가표도 동일 품목 순서
+    latest_yr = str(years[0])[2:] if years else None
+    annual_key = f"{latest_yr}년 연간총합" if latest_yr else None
+    if annual_key and annual_key in sales_p.columns:
+        sales_p = sales_p.sort_values(by=annual_key, ascending=False)
+    elif latest_col and latest_col in sales_p.columns:
+        sales_p = sales_p.sort_values(by=latest_col, ascending=False)
+    qty_p = qty_p.reindex(sales_p.index)
 
     df_for_price = target_tab3_df.copy()
     target_clients = ["두산판금", "드림맥", "모베이스전전", "지엔티테크", "태광기업", "경민산업", "동주산업"]
@@ -1509,6 +1552,8 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
         existing_cols = [c for c in desired_price_cols if c in unit_price_p.columns]
         unit_price_p = unit_price_p[existing_cols]
         unit_price_p = apply_forward_unit_price(unit_price_p, qty_p, years, all_months)
+        # 매출액 내림차순과 동일 순서
+        unit_price_p = unit_price_p.reindex(sales_p.index)
         
     return sales_p, qty_p, unit_price_p
 
@@ -1591,8 +1636,89 @@ DEBT_CLIENT_STRIPE_A = "#FFFFFF"
 DEBT_CLIENT_STRIPE_B = "#E2E8F0"
 
 
-def apply_debt_style_fast(df, highlight_debt=True):
+def payment_term_credit_months(term):
+    """결제조건 → 정상채권으로 인정하는 최대 경과개월(age).
+    age0=당월. 익월말 → age<=1(당월·전월) 정상, age>=2 연체.
+    """
+    if not term or not str(term).strip():
+        return 1
+    t = str(term).replace(" ", "").replace("　", "")
+    if "선매출" in t:
+        return 99
+    if "당월" in t or "발행후" in t:
+        return 0
+    m = re.search(r"(\d+)일", t)
+    if m:
+        days = int(m.group(1))
+        # 40일 ≈ 다다음달 10일 결제 → 2개월 유예 / 60일+ → 2개월 유지
+        if days >= 40:
+            return 2
+        return 1
+    if "2개월" in t or "이개월" in t:
+        return 2
+    if "익월말60" in t:
+        return 2
+    if "bulk-2" in t.lower() or "bulk-2개월" in t or "/bulk" in t.lower():
+        return 2
+    if "익월" in t:
+        return 1
+    return 1
+
+
+def analyze_client_ar(sales_vals, bal_vals, credit_months, current_idx):
+    """당월 잔액 배분 → (정상액, 연체액, 연체 매출열 set, 연체개월수).
+    연체개월수 = 결제조건 초과 경과개월의 최대값. 잔액0 → 0.
+    """
+    try:
+        cur_bal = float(bal_vals[current_idx]) if pd.notna(bal_vals[current_idx]) else 0.0
+    except (TypeError, ValueError, IndexError):
+        cur_bal = 0.0
+    if cur_bal <= 0:
+        return 0.0, 0.0, set(), 0
+
+    remaining = cur_bal
+    normal = 0.0
+    overdue = 0.0
+    pink_cols = set()
+    overdue_months = 0
+    for c in range(current_idx, -1, -1):
+        if remaining <= 0:
+            break
+        try:
+            sal = float(sales_vals[c]) if pd.notna(sales_vals[c]) else 0.0
+        except (TypeError, ValueError):
+            sal = 0.0
+        sal = max(sal, 0.0)
+        portion = min(sal, remaining) if sal > 0 else 0.0
+        if portion > 0:
+            age = current_idx - c
+            if age <= credit_months:
+                normal += portion
+            else:
+                overdue += portion
+                pink_cols.add(c)
+                overdue_months = max(overdue_months, age - credit_months)
+            remaining -= portion
+
+    if remaining > 0:
+        overdue += remaining
+        overdue_months = max(overdue_months, max(1, current_idx - credit_months))
+    return normal, overdue, pink_cols, overdue_months
+
+
+def format_debt_status_label(overdue_amt, overdue_months):
+    """정상 / 연체 1~3개월 / 악성(연체 4개월+)."""
+    if overdue_amt <= 0 or overdue_months <= 0:
+        return "정상"
+    if overdue_months >= 4:
+        return "악성"
+    return f"연체 {int(overdue_months)}개월"
+
+
+def apply_debt_style_fast(df, highlight_debt=True, payment_terms_map=None):
+    """분홍 = 연체분만. 익월말이면 전월 매출은 정상(분홍 X). 잔액0이면 분홍 없음."""
     styles = np.full(df.shape, '', dtype=object)
+    terms_map = payment_terms_map or {}
 
     clients = df.index.get_level_values('거래처')
     gubuns = df.index.get_level_values('구분')
@@ -1605,13 +1731,10 @@ def apply_debt_style_fast(df, highlight_debt=True):
 
     for r in range(df.shape[0]):
         client = clients[r]
-        gubun = gubuns[r]
-
         if client == "📌 [전체 합계]":
             row_style = 'background-color: #E2E8F0; font-weight: 700;'
         else:
             row_style = f'background-color: {color_map_fast.get(client, DEBT_CLIENT_STRIPE_A)};'
-
         styles[r, :] = row_style
 
     def apply_pink_cell(old_style, pink_bg=DEBT_PINK_SOFT):
@@ -1619,6 +1742,9 @@ def apply_debt_style_fast(df, highlight_debt=True):
         s = re.sub(r'color:\s*#[0-9a-fA-F]+;', '', s)
         s = re.sub(r'font-weight:\s*\d+;', '', s)
         return s + f' background-color: {pink_bg};'
+
+    if df.shape[1] == 0:
+        return pd.DataFrame(styles, index=df.index, columns=df.columns)
 
     current_month_idx = df.shape[1] - 1
 
@@ -1629,51 +1755,61 @@ def apply_debt_style_fast(df, highlight_debt=True):
         client_rows = np.where(clients == client)[0]
         i_sal = -1
         i_bal = -1
-
         for r in client_rows:
-            gubun = gubuns[r]
-            if gubun == '매출':
+            if gubuns[r] == '매출':
                 i_sal = r
-            elif gubun == '잔액':
+            elif gubuns[r] == '잔액':
                 i_bal = r
-
-        if i_sal == -1 or i_bal == -1 or df.shape[1] == 0:
+        if i_sal == -1 or i_bal == -1:
             continue
 
-        # 당월(마지막 열 = 8월) 잔액 — 항상 옅은 분홍
-        styles[i_bal, current_month_idx] = apply_pink_cell(
-            styles[i_bal, current_month_idx], DEBT_PINK_SOFT
+        term = resolve_payment_term(client, terms_map)
+        credit = payment_term_credit_months(term)
+        sales_vals = [df.iat[i_sal, c] for c in range(df.shape[1])]
+        bal_vals = [df.iat[i_bal, c] for c in range(df.shape[1])]
+        _normal, overdue, pink_cols, _od_m = analyze_client_ar(
+            sales_vals, bal_vals, credit, current_month_idx
         )
 
-        ref_bal_idx = -1
-        ref_bal = 0.0
-        for c in range(current_month_idx, -1, -1):
-            val = df.iat[i_bal, c]
-            if pd.notna(val) and float(val) > 0:
-                ref_bal_idx = c
-                ref_bal = float(val)
-                break
-
-        if ref_bal_idx < 0:
-            continue
-
-        # 당월(8월) 매출 — 항상 옅은 분홍
-        styles[i_sal, current_month_idx] = apply_pink_cell(
-            styles[i_sal, current_month_idx], DEBT_PINK_SOFT
-        )
-
-        ref_sal = float(df.iat[i_sal, ref_bal_idx]) if pd.notna(df.iat[i_sal, ref_bal_idx]) else 0.0
-        if ref_bal > ref_sal:
-            accumulated = 0.0
-            for c in range(ref_bal_idx, -1, -1):
-                sal_val = float(df.iat[i_sal, c]) if pd.notna(df.iat[i_sal, c]) else 0.0
-                if accumulated < ref_bal:
-                    styles[i_sal, c] = apply_pink_cell(styles[i_sal, c], DEBT_PINK_SOFT)
-                    accumulated += sal_val
-                else:
-                    break
+        if overdue > 0:
+            styles[i_bal, current_month_idx] = apply_pink_cell(
+                styles[i_bal, current_month_idx], DEBT_PINK_SOFT
+            )
+            for c in pink_cols:
+                styles[i_sal, c] = apply_pink_cell(styles[i_sal, c], DEBT_PINK_SOFT)
 
     return pd.DataFrame(styles, index=df.index, columns=df.columns)
+
+
+def compute_debt_status_by_client(disp_debt, payment_terms_map=None):
+    """거래처 → 채권구분 라벨 (정상 / 연체 1~3개월 / 악성)."""
+    terms_map = payment_terms_map or {}
+    if disp_debt is None or disp_debt.empty:
+        return {}
+    clients = disp_debt.index.get_level_values("거래처")
+    gubuns = disp_debt.index.get_level_values("구분")
+    current_idx = disp_debt.shape[1] - 1
+    out = {}
+    for client in clients.unique():
+        if client == "📌 [전체 합계]":
+            continue
+        rows = np.where(clients == client)[0]
+        i_sal = i_bal = -1
+        for r in rows:
+            if gubuns[r] == "매출":
+                i_sal = r
+            elif gubuns[r] == "잔액":
+                i_bal = r
+        if i_sal < 0 or i_bal < 0 or current_idx < 0:
+            out[client] = "정상"
+            continue
+        term = resolve_payment_term(client, terms_map)
+        credit = payment_term_credit_months(term)
+        sales_vals = [disp_debt.iat[i_sal, c] for c in range(disp_debt.shape[1])]
+        bal_vals = [disp_debt.iat[i_bal, c] for c in range(disp_debt.shape[1])]
+        _n, overdue, _p, od_m = analyze_client_ar(sales_vals, bal_vals, credit, current_idx)
+        out[client] = format_debt_status_label(overdue, od_m)
+    return out
 
 
 def _debt_label_cell_style(client, gubun, color_map):
@@ -1689,6 +1825,54 @@ def _debt_label_cell_style(client, gubun, color_map):
     return base + f"background-color:{bg};text-align:{align};"
 
 
+PAYMENT_TERMS_PATH = os.path.join(CACHE_DIR, "payment_terms.csv")
+PAYMENT_TERMS_FALLBACK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "payment_terms.csv")
+
+
+@st.cache_data(show_spinner=False)
+def load_payment_terms_map():
+    """거래처별 결제조건 로드 (입금기준표 반영)."""
+    path = PAYMENT_TERMS_PATH if os.path.exists(PAYMENT_TERMS_PATH) else PAYMENT_TERMS_FALLBACK
+    if not os.path.exists(path):
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8-sig")
+    except Exception:
+        try:
+            df = pd.read_csv(path, encoding="cp949")
+        except Exception:
+            return {}
+    if "거래처" not in df.columns or "결제조건" not in df.columns:
+        return {}
+    out = {}
+    for _, row in df.iterrows():
+        name = str(row["거래처"]).strip()
+        term = "" if pd.isna(row["결제조건"]) else str(row["결제조건"]).strip()
+        if name:
+            out[name] = term
+    return out
+
+
+def resolve_payment_term(client_name, terms_map):
+    """정확 매칭 → strip 매칭 → 접두(가스코아산/세진가스텍) 규칙."""
+    if not client_name or client_name == "📌 [전체 합계]":
+        return ""
+    name = str(client_name)
+    if name in terms_map:
+        return terms_map[name]
+    stripped = name.strip()
+    if stripped in terms_map:
+        return terms_map[stripped]
+    for k, v in terms_map.items():
+        if k.strip() == stripped:
+            return v
+    if name.startswith("가스코아산") or name.startswith("Z가스코아산"):
+        return terms_map.get("가스코아산.", "익월말현금")
+    if name.startswith("세진가스텍"):
+        return "2개월"
+    return ""
+
+
 def render_interactive_html_table(
     headers,
     body_html,
@@ -1697,6 +1881,7 @@ def render_interactive_html_table(
     toolbar_hint=None,
     freeze_left_cols=0,
     freeze_left_widths=None,
+    freeze_right_header=False,
 ):
     hint = toolbar_hint or "셀 클릭 · ⌘/Ctrl+클릭 또는 ⊕다중선택"
     sum_controls = ""
@@ -1710,11 +1895,8 @@ def render_interactive_html_table(
         """
 
     freeze_css = ""
-    if freeze_left_cols > 0:
-        widths = freeze_left_widths or ([150, 64] + [100] * max(0, freeze_left_cols - 2))
-        left = 0
-        parts = [
-            """
+    parts = [
+        """
         thead th {
             position: sticky;
             top: 0;
@@ -1722,8 +1904,11 @@ def render_interactive_html_table(
             background: #F0F2F6 !important;
             box-shadow: 0 1px 0 #CBD5E1;
         }
-            """
-        ]
+        """
+    ]
+    if freeze_left_cols > 0:
+        widths = freeze_left_widths or ([150, 64] + [100] * max(0, freeze_left_cols - 2))
+        left = 0
         for i in range(min(freeze_left_cols, len(widths))):
             w = widths[i]
             parts.append(
@@ -1747,12 +1932,63 @@ def render_interactive_html_table(
                 """
             )
             left += w
-        freeze_css = "".join(parts)
+    if freeze_right_header:
+        # 우측 2열 고정: 연체개월수(right:0) + 결제조건
+        parts.append(
+            """
+        th.dash-freeze-r0, td.dash-freeze-r0 {
+            position: sticky;
+            right: 0;
+            z-index: 6;
+            min-width: 110px;
+            max-width: 130px;
+            box-shadow: -1px 0 0 #E2E8F0;
+            background-clip: padding-box;
+        }
+        th.dash-freeze-r1, td.dash-freeze-r1 {
+            position: sticky;
+            right: 110px;
+            z-index: 6;
+            min-width: 120px;
+            max-width: 160px;
+            box-shadow: -1px 0 0 #E2E8F0;
+            background-clip: padding-box;
+        }
+        th.dash-freeze-r0, th.dash-freeze-r1 {
+            top: 0;
+            z-index: 9;
+            background: #F0F2F6 !important;
+            color: #31333F;
+            font-weight: 600;
+        }
+        td.dash-freeze-r0, td.dash-freeze-r1 {
+            z-index: 5;
+        }
+            """
+        )
+    freeze_css = "".join(parts)
 
     header_cells = []
+    n_h = len(headers)
     for i, h in enumerate(headers):
-        freeze_cls = f' class="dash-freeze-{i}"' if i < freeze_left_cols else ""
-        align = "left" if i < freeze_left_cols else "right"
+        classes = []
+        if i < freeze_left_cols:
+            classes.append(f"dash-freeze-{i}")
+        if freeze_right_header and n_h >= 2:
+            if i == n_h - 1:
+                classes.append("dash-freeze-r0")  # 연체개월수
+            elif i == n_h - 2:
+                classes.append("dash-freeze-r1")  # 결제조건
+        freeze_cls = f' class="{" ".join(classes)}"' if classes else ""
+        is_right_meta = freeze_right_header and i >= n_h - 2
+        if i < freeze_left_cols:
+            align = "left"
+        elif is_right_meta and i == n_h - 2:
+            align = "left"
+        elif is_right_meta and i == n_h - 1:
+            align = "center"
+        else:
+            align = "right"
         header_cells.append(
             f'<th{freeze_cls} style="padding:6px 10px;border-bottom:1px solid #E2E8F0;'
             f'background:#F0F2F6;text-align:{align};font-size:13px;font-weight:600;'
@@ -1913,57 +2149,153 @@ def render_interactive_html_table(
     components.html(page_html, height=height, scrolling=True)
 
 
-def render_tab3_dataframe_table(df, fmt, target_col):
-    """Tab3 표 — 다른 탭과 동일한 st.dataframe 렌더."""
+def render_tab3_dataframe_table(
+    df, fmt, target_col, key_prefix="tab3", table_kind="sales", sort_order=None
+):
+    """Tab3 표 — 연간총합 그라데이션, 단가표 강조, 고실적 품목 내림차순.
+    sort_order: 단가표용 품목명 순서(매출액 내림차순 인덱스).
+    """
     df_active, numeric_cols, highlight_col_name = cached_prepare_active_df(df, target_col)
     if df_active is None or df_active.empty:
         return
 
+    annual_cols = [c for c in numeric_cols if "연간총합" in str(c)]
+    month_cols = [c for c in numeric_cols if "연간총합" not in str(c)]
+
+    # 정렬: 단가표는 매출액 순(sort_order), 그 외는 해당 표 고실적 순
+    if table_kind == "price" and sort_order is not None:
+        rank = {name: i for i, name in enumerate(sort_order)}
+        df_active = df_active.assign(
+            _rk=df_active["품목명"].map(lambda x: rank.get(x, 10**9))
+        ).sort_values(by="_rk").drop(columns=["_rk"])
+    else:
+        sort_col = None
+        if table_kind != "price":
+            if annual_cols:
+                sort_col = annual_cols[0]  # years 최신순 → 컬럼 앞쪽이 최근 연간총합
+            elif highlight_col_name in numeric_cols:
+                sort_col = highlight_col_name
+            elif month_cols:
+                sort_col = month_cols[0]
+
+        if sort_col and sort_col in df_active.columns:
+            df_active = df_active.sort_values(by=sort_col, ascending=False, na_position="last")
+        elif numeric_cols and table_kind != "price":
+            df_active = df_active.assign(_rk=df_active[numeric_cols].sum(axis=1)).sort_values(
+                by="_rk", ascending=False
+            ).drop(columns=["_rk"])
+
     styled = df_active.style.format(fmt, subset=numeric_cols)
 
-    if highlight_col_name and highlight_col_name in numeric_cols:
+    # 파스텔 히트맵만 사용 — 숫자 항상 진한 글씨로 가독성 유지
+    if table_kind == "price":
         styled = styled.apply(
-            lambda s: ['color: #B91C1C; background-color: #FEE2E2;'] * len(s),
-            subset=[highlight_col_name],
+            lambda col: (
+                [
+                    "font-weight:800;background-color:#FEF3C7;color:#78350F;"
+                    "border-right:3px solid #F59E0B;"
+                ]
+                * len(col)
+                if col.name == "품목명"
+                else [""] * len(col)
+            ),
+            axis=0,
+        )
+        other_price = [c for c in numeric_cols if c != highlight_col_name]
+        if other_price:
+            styled = styled.background_gradient(
+                cmap=_TAB3_CMAP_AMBER, subset=other_price, axis=0
+            )
+            styled = styled.set_properties(subset=other_price, **{"color": "#1E293B"})
+        if highlight_col_name and highlight_col_name in numeric_cols:
+            styled = styled.apply(
+                lambda s: [
+                    "background-color:#FDE68A;color:#78350F;font-weight:800;"
+                    "border-left:2px solid #D97706;border-right:2px solid #D97706;"
+                ]
+                * len(s),
+                subset=[highlight_col_name],
+                axis=0,
+            )
+    else:
+        cmap_month = _TAB3_CMAP_BLUE if table_kind == "sales" else _TAB3_CMAP_GREEN
+        if month_cols:
+            styled = styled.background_gradient(
+                cmap=cmap_month, subset=month_cols, axis=0
+            )
+            styled = styled.set_properties(subset=month_cols, **{"color": "#0F172A"})
+        if annual_cols:
+            styled = styled.background_gradient(
+                cmap=_TAB3_CMAP_ORANGE, subset=annual_cols, axis=0
+            )
+            styled = styled.set_properties(
+                subset=annual_cols,
+                **{
+                    "font-weight": "700",
+                    "border-left": "2px solid #FDBA74",
+                    "color": "#0F172A",
+                },
+            )
+        if highlight_col_name and highlight_col_name in numeric_cols:
+            styled = styled.apply(
+                lambda s: [
+                    "color:#9F1239;font-weight:700;background-color:#FFE4E6;"
+                    "border-left:2px solid #FB7185;border-right:2px solid #FB7185;"
+                ]
+                * len(s),
+                subset=[highlight_col_name],
+                axis=0,
+            )
+        styled = styled.apply(
+            lambda col: (
+                [
+                    "font-weight:700;background-color:#F8FAFC;color:#0F172A;"
+                    "border-right:2px solid #94A3B8;"
+                ]
+                * len(col)
+                if col.name == "품목명"
+                else [""] * len(col)
+            ),
             axis=0,
         )
 
-    styled = styled.apply(
-        lambda col: (
-            ['border-right: 2px solid #CBD5E1; background-color: #FAFAFA;'] * len(col)
-            if col.name == "품목명"
-            else [''] * len(col)
-        ),
-        axis=0,
-    )
 
     st.dataframe(
         styled,
         use_container_width=True,
-        height=400,
+        height=420,
         hide_index=True,
+        key=f"{key_prefix}_grid",
         column_config={
             "품목명": st.column_config.TextColumn("품목명", width="medium"),
         },
     )
 
 
-def render_debt_interactive_table(disp_debt, highlight_debt, height=700):
-    """채권관리 표 — 셀 선택 + 선택 합계 팝업."""
-    style_df = apply_debt_style_fast(disp_debt, highlight_debt=highlight_debt)
-    df_show = disp_debt.reset_index()
+def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment_terms_map=None):
+    """채권관리 표 — 우측: 결제조건 + 연체개월수(정상/연체1~3개월/악성)."""
+    terms_map = payment_terms_map or {}
+    style_df = apply_debt_style_fast(
+        disp_debt, highlight_debt=highlight_debt, payment_terms_map=terms_map
+    )
+    status_map = compute_debt_status_by_client(disp_debt, terms_map)
     numeric_cols = list(disp_debt.columns)
 
     clients = disp_debt.index.get_level_values("거래처")
-    gubuns = disp_debt.index.get_level_values("구분")
     u_clients = clients.unique()
     color_map = {
         client: DEBT_CLIENT_STRIPE_A if i % 2 == 0 else DEBT_CLIENT_STRIPE_B
         for i, client in enumerate(u_clients)
     }
+    long_cnt = sum(1 for v in status_map.values() if v == "악성")
 
-    headers = ["거래처", "구분"] + numeric_cols
+    headers = ["거래처", "구분"] + numeric_cols + ["결제조건", "연체개월수"]
     body_rows = []
+    cell_font = (
+        "padding:6px 10px;border-bottom:1px solid #E2E8F0;"
+        "white-space:nowrap;font-size:13px;font-weight:400;line-height:1.4;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+    )
 
     for r, (idx, row) in enumerate(disp_debt.iterrows()):
         client, gubun = idx[0], idx[1]
@@ -1979,15 +2311,42 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700):
                 num = 0.0
             display = f"{num:,.0f}"
             extra_style = str(style_df.at[idx, col]) if col in style_df.columns else ""
-            base_style = (
-                "padding:6px 10px;border-bottom:1px solid #E2E8F0;text-align:right;"
-                "white-space:nowrap;font-size:13px;font-weight:400;line-height:1.4;"
-                "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-            )
             cells.append(
-                f'<td class="dash-cell-selectable" style="{base_style}{extra_style}" '
+                f'<td class="dash-cell-selectable" style="{cell_font}text-align:right;{extra_style}" '
                 f'data-raw="{num}">{display}</td>'
             )
+        if client == "📌 [전체 합계]":
+            term_bg = "#E2E8F0"
+            term_w = "700"
+            term = ""
+            status = f"악성 {long_cnt}곳" if gubun == "잔액" and long_cnt else ("" if gubun != "잔액" else "—")
+        else:
+            term_bg = color_map.get(client, DEBT_CLIENT_STRIPE_A)
+            term_w = "400"
+            term = resolve_payment_term(client, terms_map)
+            status = status_map.get(client, "정상") if gubun == "잔액" else ""
+
+        term_style = (
+            f"{cell_font}text-align:left;color:#31333F;font-weight:{term_w};"
+            f"background-color:{term_bg};"
+        )
+        cells.append(
+            f'<td class="dash-freeze-r1" style="{term_style}">'
+            f'{html.escape(term) if term else ("—" if client != "📌 [전체 합계]" else "")}</td>'
+        )
+        if status == "악성":
+            st_color, st_w = "#BE123C", "700"
+        elif status == "정상":
+            st_color, st_w = "#047857", "600"
+        elif "연체" in str(status) and "개월" in str(status):
+            st_color, st_w = "#C2410C", "600"
+        else:
+            st_color, st_w = "#31333F", term_w
+        cells.append(
+            f'<td class="dash-freeze-r0" style="{cell_font}text-align:center;'
+            f'color:{st_color};font-weight:{st_w};background-color:{term_bg};">'
+            f"{html.escape(status)}</td>"
+        )
         body_rows.append(f"<tr>{''.join(cells)}</tr>")
 
     render_interactive_html_table(
@@ -1995,10 +2354,263 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700):
         "".join(body_rows),
         height=height + 40,
         show_sum_popup=True,
-        toolbar_hint="셀 클릭 선택 · ⊕다중선택 · 상단에 선택 합계 표시 · 거래처/구분·월헤더 틀고정",
+        toolbar_hint="셀 클릭 선택 · 분홍=연체 · 연체개월수: 정상 / 연체 1~3개월 / 악성(4개월+)",
         freeze_left_cols=2,
         freeze_left_widths=[160, 68],
+        freeze_right_header=True,
     )
+
+
+def build_debt_client_balance_matrix(debt_df, month_cols):
+    """거래처 × 월 잔액 피벗 (잔액>0 업체만)."""
+    if debt_df is None or debt_df.empty or not month_cols:
+        return pd.DataFrame()
+    bal = debt_df[debt_df["구분"] == "잔액"].copy()
+    if bal.empty:
+        return pd.DataFrame()
+    cols = [c for c in month_cols if c in bal.columns]
+    if not cols:
+        return pd.DataFrame()
+    mat = bal.groupby("거래처", as_index=True)[cols].sum()
+    mat = mat[(mat.fillna(0) > 0).any(axis=1)]
+    return mat
+
+
+def compute_debt_status_from_raw(debt_df, month_cols, payment_terms_map=None):
+    """원본 채권 df → 거래처별 연체 라벨 (정상 포함)."""
+    meta = compute_debt_od_meta_from_raw(debt_df, month_cols, payment_terms_map)
+    return {c: v["label"] for c, v in meta.items()}
+
+
+def compute_debt_od_meta_from_raw(debt_df, month_cols, payment_terms_map=None):
+    """거래처 → {label, months, overdue_amt}."""
+    terms_map = payment_terms_map or {}
+    if debt_df is None or debt_df.empty or not month_cols:
+        return {}
+    cols = [c for c in month_cols if c in debt_df.columns]
+    if not cols:
+        return {}
+    out = {}
+    for client, g in debt_df.groupby("거래처"):
+        sal = g[g["구분"] == "매출"]
+        bal = g[g["구분"] == "잔액"]
+        if sal.empty or bal.empty:
+            out[client] = {"label": "정상", "months": 0, "overdue_amt": 0.0}
+            continue
+        sales_vals = [float(sal[c].sum()) if c in sal.columns else 0.0 for c in cols]
+        bal_vals = [float(bal[c].sum()) if c in bal.columns else 0.0 for c in cols]
+        credit = payment_term_credit_months(resolve_payment_term(client, terms_map))
+        _n, overdue, _p, od_m = analyze_client_ar(sales_vals, bal_vals, credit, len(cols) - 1)
+        out[client] = {
+            "label": format_debt_status_label(overdue, od_m),
+            "months": int(od_m) if overdue > 0 else 0,
+            "overdue_amt": float(overdue),
+        }
+    return out
+
+
+def _debt_od_filter_categories(status_map):
+    """데이터에 존재하는 연체 필터 버튼 목록 (정상 제외)."""
+    labels = {v for v in status_map.values() if v and v != "정상"}
+    ordered = []
+    for n in range(1, 12):
+        lab = f"연체 {n}개월"
+        if lab in labels:
+            ordered.append(lab)
+    if "악성" in labels:
+        ordered.append("악성")
+    for lab in sorted(labels):
+        if lab not in ordered:
+            ordered.append(lab)
+    return ordered
+
+
+def render_debt_month_rank_panel(
+    debt_df, month_cols, payment_terms_map=None, height=480, status_month_cols=None
+):
+    """화면 절반: 연체업체만 · 연체개월수 다중필터 · 채권액 내림차순."""
+    terms_map = payment_terms_map or {}
+    mat = build_debt_client_balance_matrix(debt_df, month_cols)
+    if mat.empty:
+        st.info("표시할 잔액 채권 데이터가 없습니다.")
+        return
+
+    cols = list(mat.columns)
+    sort_m = cols[-1]
+    status_cols = status_month_cols or cols
+    od_meta = compute_debt_od_meta_from_raw(debt_df, status_cols, terms_map)
+    status_map = {c: v["label"] for c, v in od_meta.items()}
+
+    # 정상채권 제외
+    overdue_idx = [c for c in mat.index if status_map.get(c, "정상") != "정상"]
+    mat = mat.loc[overdue_idx] if overdue_idx else mat.iloc[0:0]
+    if mat.empty:
+        st.info("연체 거래처가 없습니다. (정상채권은 이 표에서 제외됩니다)")
+        return
+
+    filter_cats = _debt_od_filter_categories(
+        {c: status_map[c] for c in mat.index if c in status_map}
+    )
+    if not filter_cats:
+        st.info("연체개월수 필터 대상이 없습니다.")
+        return
+
+    if "debt_od_filters" not in st.session_state:
+        st.session_state["debt_od_filters"] = list(filter_cats)
+    else:
+        kept = [x for x in st.session_state["debt_od_filters"] if x in filter_cats]
+        st.session_state["debt_od_filters"] = kept if kept else list(filter_cats)
+
+    st.markdown(
+        "<div style='font-size:14px;font-weight:600;color:#334155;margin:18px 0 8px;'>"
+        "📊 연체개월수 기준 채권 현황 <span style='font-size:12px;font-weight:500;color:#64748B;'>"
+        "(거래처 선택 무시·전체 · 담당자 필터 적용 · 정상 제외 · 연체개월 다중선택 · 화면 절반)</span></div>",
+        unsafe_allow_html=True,
+    )
+
+    # 연체개월수 / 악성 다중 토글 (아담한 버튼)
+    st.markdown('<div class="debt-compact-toggle-host"></div>', unsafe_allow_html=True)
+    bm = st.columns(len(filter_cats), gap="small")
+    for i, cat in enumerate(filter_cats):
+        with bm[i]:
+            on = cat in st.session_state["debt_od_filters"]
+            if st.button(
+                cat,
+                key=f"debt_od_filt_{cat}",
+                type="primary" if on else "secondary",
+                use_container_width=True,
+            ):
+                cur = list(st.session_state["debt_od_filters"])
+                if on:
+                    if len(cur) > 1:
+                        cur = [x for x in cur if x != cat]
+                else:
+                    cur.append(cat)
+                    cur = [x for x in filter_cats if x in cur]
+                st.session_state["debt_od_filters"] = cur
+                st.rerun()
+
+    selected = st.session_state["debt_od_filters"]
+    mat_f = mat.loc[[c for c in mat.index if status_map.get(c) in selected]]
+    if mat_f.empty:
+        st.info("선택한 연체개월수에 해당하는 업체가 없습니다. 버튼을 하나 이상 켜 주세요.")
+        return
+
+    mat_sorted = mat_f.sort_values(by=sort_m, ascending=False, na_position="last")
+
+    left, right = st.columns([1, 1], gap="medium")
+
+    with left:
+        headers = ["거래처"] + cols + ["결제조건", "연체개월수"]
+        body = []
+        cell = (
+            "padding:5px 8px;border-bottom:1px solid #E2E8F0;white-space:nowrap;"
+            "font-size:12px;line-height:1.35;"
+            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+        )
+        for i, (client, row) in enumerate(mat_sorted.iterrows()):
+            bg = DEBT_CLIENT_STRIPE_A if i % 2 == 0 else DEBT_CLIENT_STRIPE_B
+            tds = [
+                f'<td class="dash-freeze-0" style="{cell}text-align:left;font-weight:600;'
+                f'background:{bg};">{html.escape(str(client))}</td>'
+            ]
+            for c in cols:
+                v = float(row[c]) if pd.notna(row[c]) else 0.0
+                hi = (
+                    f"background:{DEBT_PINK_SOFT};font-weight:600;"
+                    if c == sort_m and v > 0
+                    else f"background:{bg};"
+                )
+                tds.append(
+                    f'<td class="dash-cell-selectable" style="{cell}text-align:right;{hi}" '
+                    f'data-raw="{v}">{v:,.0f}</td>'
+                )
+            term = resolve_payment_term(client, terms_map) or "—"
+            status = status_map.get(client, "악성")
+            if status == "악성":
+                sc, sw = "#BE123C", "700"
+            elif "연체" in str(status) and "개월" in str(status):
+                sc, sw = "#C2410C", "600"
+            else:
+                sc, sw = "#31333F", "500"
+            # 헤더와 동일하게 우측 2열 고정 클래스 필수 (미적용 시 금액이 결제조건/연체열에 겹쳐 보임)
+            tds.append(
+                f'<td class="dash-freeze-r1" style="{cell}text-align:left;'
+                f'background-color:{bg};">{html.escape(term)}</td>'
+            )
+            tds.append(
+                f'<td class="dash-freeze-r0" style="{cell}text-align:center;'
+                f'background-color:{bg};color:{sc};font-weight:{sw};">'
+                f"{html.escape(status)}</td>"
+            )
+            body.append(f"<tr>{''.join(tds)}</tr>")
+
+        sel_txt = ", ".join(selected)
+        render_interactive_html_table(
+            headers,
+            "".join(body),
+            height=height,
+            show_sum_popup=True,
+            toolbar_hint=f"필터: {sel_txt} · {sort_m} 잔액↓ · 정상채권 제외",
+            freeze_left_cols=1,
+            freeze_left_widths=[140],
+            freeze_right_header=True,
+        )
+
+    with right:
+        top_n = mat_sorted[sort_m].fillna(0)
+        top_n = top_n[top_n > 0].head(15)
+        if top_n.empty:
+            st.info("선택한 연체 구간에 잔액이 있는 거래처가 없습니다.")
+        else:
+            fig = go.Figure(
+                go.Bar(
+                    x=top_n.values,
+                    y=[str(i) for i in top_n.index],
+                    orientation="h",
+                    marker_color="#FCA5A5",
+                    text=[f"{v:,.0f}" for v in top_n.values],
+                    textposition="outside",
+                )
+            )
+            fig.update_layout(
+                title=dict(
+                    text=f"연체 채권잔액 Top {len(top_n)} ({sort_m})",
+                    font=dict(size=14, color="#334155"),
+                ),
+                yaxis=dict(autorange="reversed", tickfont=dict(size=11)),
+                xaxis=dict(title="원", tickfont=dict(size=11)),
+                margin=dict(l=10, r=40, t=40, b=30),
+                height=height,
+                plot_bgcolor="#FFFFFF",
+                paper_bgcolor="#FFFFFF",
+                showlegend=False,
+            )
+            chart_key = "debt_od_" + "_".join(selected)[:40]
+            render_plotly_chart(fig, use_container_width=True, key=chart_key)
+
+        # 선택 구간별 업체 수·잔액
+        rows_sum = []
+        for cat in filter_cats:
+            clients_c = [c for c in mat.index if status_map.get(c) == cat]
+            if not clients_c:
+                continue
+            amt = float(mat.loc[clients_c, sort_m].fillna(0).sum())
+            on = "ON" if cat in selected else "OFF"
+            rows_sum.append({"구분": cat, "업체수": len(clients_c), f"{sort_m}잔액": amt, "선택": on})
+        if rows_sum:
+            st.markdown(
+                "<div style='font-size:12px;font-weight:600;color:#64748B;margin:8px 0 4px;'>"
+                "연체개월수별 요약</div>",
+                unsafe_allow_html=True,
+            )
+            sum_df = pd.DataFrame(rows_sum)
+            st.dataframe(
+                sum_df.style.format({f"{sort_m}잔액": "{:,.0f}"}),
+                use_container_width=True,
+                hide_index=True,
+                height=min(280, 48 + 32 * len(sum_df)),
+            )
 
 
 @st.cache_data
@@ -3271,14 +3883,17 @@ else:
     cur_month_sales_client = prev_month_sales_client = mom_rate_client = avg_monthly_sales_client = avg_rate_client = 0.0
     latest_month_str_client = "-"
 
+# 담당자만 반영한 채권(거래처 선택 무관) — 연체개월수 요약표용
+staff_debt_df = pd.DataFrame()
 filtered_debt_df = pd.DataFrame()
 if not debt_df.empty:
     if selected_staff:
         valid_staff_clients = full_df[full_df["담당자"].isin(selected_staff)]["거래처"].unique()
-        filtered_debt_df = debt_df[debt_df["거래처"].isin(valid_staff_clients)].copy()
+        staff_debt_df = debt_df[debt_df["거래처"].isin(valid_staff_clients)].copy()
     else:
-        filtered_debt_df = debt_df.copy()
-        
+        staff_debt_df = debt_df.copy()
+
+    filtered_debt_df = staff_debt_df.copy()
     if selected_client != "전체 거래처":
         filtered_debt_df = filtered_debt_df[filtered_debt_df["거래처"] == selected_client].copy()
 
@@ -3909,21 +4524,102 @@ with tab3:
     t3_c1, t3_c2 = st.columns([4, 1])
     t3_c1.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
     t3_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-    
+
+    # 상단 요약 지표 — 현재 필터(거래처·품목) 기준
+    if not df_f.empty:
+        tot_sales_t3 = df_f["매출액"].sum() * 1.1 / 10000
+        df_t3_monthly = df_f.groupby(df_f["매출일_dt"].dt.to_period("M"))["매출액"].sum() * 1.1
+        latest_period_t3 = df_t3_monthly.index.max()
+        cur_month_sales_t3 = df_t3_monthly.loc[latest_period_t3]
+        prev_month_sales_t3 = df_t3_monthly.get(latest_period_t3 - 1, 0.0)
+        mom_rate_t3 = (
+            ((cur_month_sales_t3 - prev_month_sales_t3) / prev_month_sales_t3 * 100)
+            if prev_month_sales_t3 > 0
+            else 0.0
+        )
+        avg_monthly_sales_t3 = df_t3_monthly.mean()
+        avg_rate_t3 = (
+            ((cur_month_sales_t3 - avg_monthly_sales_t3) / avg_monthly_sales_t3 * 100)
+            if avg_monthly_sales_t3 > 0
+            else 0.0
+        )
+        latest_month_str_t3 = latest_period_t3.strftime("%Y년 %m월")
+    else:
+        tot_sales_t3 = cur_month_sales_t3 = mom_rate_t3 = avg_rate_t3 = 0.0
+        latest_month_str_t3 = "-"
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(
+        f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div>"
+        f"<div class='metric-value'>{tot_sales_t3:,.0f} 만원</div></div>",
+        unsafe_allow_html=True,
+    )
+    m2.markdown(
+        f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_t3})</div>"
+        f"<div class='metric-value'>{cur_month_sales_t3 / 10000:,.0f} 만원</div></div>",
+        unsafe_allow_html=True,
+    )
+    m3.markdown(
+        f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div>"
+        f"<div class='metric-value' style='color:{'#E11D48' if mom_rate_t3 < 0 else '#2563EB'};'>"
+        f"{mom_rate_t3:+.0f}%</div></div>",
+        unsafe_allow_html=True,
+    )
+    m4.markdown(
+        f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div>"
+        f"<div class='metric-value' style='color:{'#E11D48' if avg_rate_t3 < 0 else '#2563EB'};'>"
+        f"{avg_rate_t3:+.0f}%</div></div>",
+        unsafe_allow_html=True,
+    )
+
     latest_dt_overall = df_base["매출일_dt"].max() if not df_base.empty else None
     target_month_col = latest_dt_overall.strftime("%y년 %m월") if pd.notnull(latest_dt_overall) else None
 
     avail_years_short = [y[2:] for y in years]
     current_year_short = str(df_base["연도"].max())[2:] if not df_base.empty else (avail_years_short[0] if avail_years_short else "26")
-    
-    selected_detail_years = st.multiselect(
-        "📅 월별 상세 내역을 펼쳐볼 연도 선택 (단가표 제외)",
-        options=avail_years_short,
-        default=[current_year_short] if current_year_short in avail_years_short else avail_years_short[:1],
-        format_func=lambda x: f"20{x}년",
-        key="tab3_detail_years",
+    _default_years = (
+        [current_year_short]
+        if current_year_short in avail_years_short
+        else list(avail_years_short[:1])
     )
-        
+
+    # 연도 토글 버튼 (채권관리 월 토글과 동일 — 다중 선택)
+    if "tab3_detail_years_sel" not in st.session_state:
+        st.session_state["tab3_detail_years_sel"] = _default_years
+    else:
+        kept = [y for y in st.session_state["tab3_detail_years_sel"] if y in avail_years_short]
+        st.session_state["tab3_detail_years_sel"] = kept if kept else _default_years
+
+    st.markdown(
+        "<div style='font-size:13px;font-weight:600;color:#334155;margin:4px 0 8px;'>"
+        "📅 월별 상세 내역을 펼쳐볼 연도 선택 (단가표 제외)"
+        "<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
+        "← 버튼 클릭으로 on/off</span></div>",
+        unsafe_allow_html=True,
+    )
+    if avail_years_short:
+        y_cols = st.columns(len(avail_years_short), gap="small")
+        for _i, _y in enumerate(avail_years_short):
+            with y_cols[_i]:
+                _on = _y in st.session_state["tab3_detail_years_sel"]
+                if st.button(
+                    f"20{_y}년",
+                    key=f"tab3_year_btn_{_y}",
+                    type="primary" if _on else "secondary",
+                    use_container_width=True,
+                ):
+                    cur = list(st.session_state["tab3_detail_years_sel"])
+                    if _on:
+                        if len(cur) > 1:
+                            cur = [c for c in cur if c != _y]
+                    else:
+                        cur.append(_y)
+                        cur = [c for c in avail_years_short if c in cur]
+                    st.session_state["tab3_detail_years_sel"] = cur
+                    st.rerun()
+
+    selected_detail_years = st.session_state["tab3_detail_years_sel"]
+
     sales_p_filtered, qty_p_filtered = cached_filter_tab3_year_columns(
         sales_p,
         qty_p,
@@ -3933,13 +4629,22 @@ with tab3:
     )
 
     st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
-    render_tab3_dataframe_table(sales_p_filtered, "{:,.0f}", target_month_col)
+    render_tab3_dataframe_table(sales_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_sales", table_kind="sales")
         
     st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
-    render_tab3_dataframe_table(qty_p_filtered, "{:,.0f}", target_month_col)
+    render_tab3_dataframe_table(qty_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_qty", table_kind="qty")
         
     st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (실제 원본 단가) - 전체 기간 월별 고정 표시</div>", unsafe_allow_html=True)
-    render_tab3_dataframe_table(unit_price_p, "{:,.0f}", target_month_col)
+    # 단가표 정렬 = 매출액 내림차순과 동일
+    _price_sort_order = list(sales_p.index) if not sales_p.empty else None
+    render_tab3_dataframe_table(
+        unit_price_p,
+        "{:,.0f}",
+        target_month_col,
+        key_prefix="tab3_price",
+        table_kind="price",
+        sort_order=_price_sort_order,
+    )
     
 
 # Tab 4: 👤 담당자 & 상세내역
@@ -4211,7 +4916,72 @@ with tab5:
             debt_highlight = selected_client != "전체 거래처"
             df_height = 500 if selected_client != "전체 거래처" else 700
 
-            render_debt_interactive_table(disp_debt, debt_highlight, height=df_height)
+            # 월 접기/펼치기: 버튼 토글 (거래처·구분 고정)
+            if "debt_visible_months" not in st.session_state:
+                st.session_state["debt_visible_months"] = list(numeric_cols)
+            else:
+                kept = [c for c in st.session_state["debt_visible_months"] if c in numeric_cols]
+                st.session_state["debt_visible_months"] = kept if kept else list(numeric_cols)
+
+            st.markdown('<div class="debt-compact-toggle-host"></div>', unsafe_allow_html=True)
+            m_cols = st.columns(len(numeric_cols), gap="small")
+            for _i, _m in enumerate(numeric_cols):
+                with m_cols[_i]:
+                    _on = _m in st.session_state["debt_visible_months"]
+                    if st.button(
+                        str(_m),
+                        key=f"debt_month_tog_{_m}",
+                        type="primary" if _on else "secondary",
+                        use_container_width=True,
+                    ):
+                        cur = list(st.session_state["debt_visible_months"])
+                        if _on:
+                            if len(cur) > 1:
+                                cur = [c for c in cur if c != _m]
+                        else:
+                            cur.append(_m)
+                            cur = [c for c in numeric_cols if c in cur]
+                        st.session_state["debt_visible_months"] = cur
+                        st.rerun()
+
+            show_cols = [c for c in numeric_cols if c in st.session_state["debt_visible_months"]]
+            if not show_cols:
+                st.info("표시할 월을 하나 이상 선택하세요. (거래처·구분은 항상 표시)")
+            else:
+                # 입금기준표 결제조건 → 표 맨 우측 고정 표시
+                if os.path.exists(PAYMENT_TERMS_FALLBACK) and not os.path.exists(PAYMENT_TERMS_PATH):
+                    try:
+                        shutil.copy2(PAYMENT_TERMS_FALLBACK, PAYMENT_TERMS_PATH)
+                    except Exception:
+                        pass
+                payment_terms_map = load_payment_terms_map()
+                render_debt_interactive_table(
+                    disp_debt[show_cols],
+                    debt_highlight,
+                    height=df_height,
+                    payment_terms_map=payment_terms_map,
+                )
+
+                # 상세표 아래: 연체개월수 요약 — 거래처(상위검색) 무시, 담당자 필터만 적용
+                if not staff_debt_df.empty:
+                    _staff_num = [c for c in staff_debt_df.columns if c not in ("거래처", "구분")]
+                    _staff_months = [c for c in _staff_num if staff_debt_df[c].abs().sum() > 0]
+                    _rank_months = [c for c in show_cols if c in _staff_months] or _staff_months
+                    render_debt_month_rank_panel(
+                        staff_debt_df,
+                        _rank_months,
+                        payment_terms_map=payment_terms_map,
+                        height=480,
+                        status_month_cols=_staff_months,
+                    )
+                else:
+                    render_debt_month_rank_panel(
+                        filtered_debt_df,
+                        show_cols,
+                        payment_terms_map=payment_terms_map,
+                        height=480,
+                        status_month_cols=numeric_cols,
+                    )
 
 # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
 with tab6:
