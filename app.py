@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import html
+import json
 import subprocess
 import shutil
 import urllib.parse
@@ -90,10 +91,8 @@ def inject_custom_css():
                 color: #334155 !important;
             }
             div[data-testid="column"] { align-self: flex-start; }
-            /* 채권관리 월/연체 토글 — 아담한 버튼 */
-            div[data-testid="stVerticalBlock"]:has(.debt-compact-toggle-host)
-              div[data-testid="stHorizontalBlock"]
-              div[data-testid="stButton"] > button {
+            /* 채권관리 월/연체 토글 — 해당 컨테이너에만 적용 (다른 탭 버튼에 영향 금지) */
+            [class*="st-key-debt_compact_btns"] div[data-testid="stButton"] > button {
                 min-height: 26px !important;
                 height: 26px !important;
                 padding: 0 6px !important;
@@ -104,13 +103,32 @@ def inject_custom_css():
                 max-width: 88px !important;
                 margin: 0 auto !important;
             }
-            div[data-testid="stVerticalBlock"]:has(.debt-compact-toggle-host)
-              div[data-testid="stHorizontalBlock"]
-              div[data-testid="column"] {
+            [class*="st-key-debt_compact_btns"] div[data-testid="column"] {
                 padding-left: 1px !important;
                 padding-right: 1px !important;
-              }
-            .debt-compact-toggle-host { display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important; }
+            }
+            /* Tab2 액션 버튼 — 가로 넓게, 글씨 한 줄로 박스 안에 */
+            .st-key-tab2_action_btns div[data-testid="stButton"],
+            .st-key-tab2_action_btns div[data-testid="stLinkButton"] {
+                width: 100% !important;
+            }
+            .st-key-tab2_action_btns div[data-testid="stButton"] > button,
+            .st-key-tab2_action_btns a[data-testid="stLinkButton"] {
+                width: 100% !important;
+                max-width: none !important;
+                min-height: 48px !important;
+                height: 48px !important;
+                padding: 0 16px !important;
+                font-size: 13px !important;
+                font-weight: 600 !important;
+                line-height: 1.2 !important;
+                border-radius: 8px !important;
+                text-align: center !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                box-sizing: border-box !important;
+            }
             .metric-box {
                 background: #FFFFFF;
                 padding: 16px 20px;
@@ -832,6 +850,345 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
                 return float(res.json()['documents'][0]['y']), float(res.json()['documents'][0]['x'])
         except: pass
     return None, None
+KAKAO_REST_API_KEY = "21a8c4d7312051598c2e05dba0b9c0c7"
+def geocode_address_kakao(address, rest_api_key=None):
+    """주소/키워드 → (lat, lon, 표기주소). 실패 시 (None, None, '')."""
+    key = rest_api_key or KAKAO_REST_API_KEY
+    q = str(address or "").strip()
+    if not q:
+        return None, None, ""
+    headers = {"Authorization": f"KakaoAK {key}"}
+    # 1) 주소 검색
+    try:
+        res = requests.get(
+            "https://dapi.kakao.com/v2/local/search/address.json",
+            headers=headers,
+            params={"query": q},
+            timeout=5,
+        )
+        if res.status_code == 200 and res.json().get("documents"):
+            doc = res.json()["documents"][0]
+            addr = doc.get("address_name") or q
+            if doc.get("road_address"):
+                addr = doc["road_address"].get("address_name") or addr
+            elif doc.get("address"):
+                addr = doc["address"].get("address_name") or addr
+            return float(doc["y"]), float(doc["x"]), addr
+    except Exception:
+        pass
+    # 2) 키워드 검색
+    try:
+        res = requests.get(
+            "https://dapi.kakao.com/v2/local/search/keyword.json",
+            headers=headers,
+            params={"query": q},
+            timeout=5,
+        )
+        if res.status_code == 200 and res.json().get("documents"):
+            doc = res.json()["documents"][0]
+            addr = doc.get("road_address_name") or doc.get("address_name") or q
+            return float(doc["y"]), float(doc["x"]), addr
+    except Exception:
+        pass
+    return None, None, ""
+def haversine_km(lat1, lon1, lat2, lon2):
+    """두 좌표 직선거리(km) — Haversine."""
+    r = 6371.0
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlmb = np.radians(lon2 - lon1)
+    a = np.sin(dphi / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlmb / 2) ** 2
+    return float(2 * r * np.arcsin(np.sqrt(a)))
+# 한국도로공사 차종: 20톤 벌크로리 ≈ 5종(특수). 길찾기 API 통행료는 보통 1종(승용).
+# 실무 근사 배수(1종 대비): 3종 1.5 / 4종 2.0 / 5종 2.5
+TOLL_CLASS_5_MULT = 2.5
+def _toll_for_bulk20t(toll_class1_won):
+    """1종 통행료 → 20톤 벌크(5종) 편도 통행료(원, 10원 단위)."""
+    raw = float(toll_class1_won or 0) * TOLL_CLASS_5_MULT
+    return float(int(round(raw / 10.0) * 10))
+@st.cache_data(show_spinner=False, max_entries=2000)
+def kakao_route_distance_km(origin_addr, dest_addr, rest_api_key=None, _route_v=2):
+    """출발·도착 주소 → 자동차 거리(km) + 통행료(원, 편도).
+    1순위: 카카오모빌리티 길찾기(거리·통행료)
+    2순위: 좌표 Haversine × 1.3 (도로거리 보정, 통행료 0)
+    통행료: API 1종가 × 2.5 → 20톤 벌크(5종) 환산
+    반환: {ok, km, toll, toll_class1, method, origin_label, dest_label, message}
+    """
+    _ = _route_v  # 캐시 버전(통행료 필드 추가)
+    key = rest_api_key or KAKAO_REST_API_KEY
+    o_lat, o_lon, o_label = geocode_address_kakao(origin_addr, key)
+    d_lat, d_lon, d_label = geocode_address_kakao(dest_addr, key)
+    if o_lat is None or d_lat is None:
+        return {
+            "ok": False,
+            "km": 0.0,
+            "toll": 0.0,
+            "toll_class1": 0.0,
+            "method": "",
+            "origin_label": o_label or str(origin_addr),
+            "dest_label": d_label or str(dest_addr),
+            "message": "주소를 좌표로 변환하지 못했습니다. 도로명/지번을 확인해 주세요.",
+        }
+    # 카카오모빌리티 directions (x=경도, y=위도)
+    try:
+        headers = {"Authorization": f"KakaoAK {key}", "Content-Type": "application/json"}
+        res = requests.get(
+            "https://apis-navi.kakaomobility.com/v1/directions",
+            headers=headers,
+            params={
+                "origin": f"{o_lon},{o_lat}",
+                "destination": f"{d_lon},{d_lat}",
+                "priority": "RECOMMEND",
+                "car_hipass": "true",
+            },
+            timeout=8,
+        )
+        if res.status_code == 200:
+            routes = res.json().get("routes") or []
+            if routes:
+                summary = routes[0].get("summary") or {}
+                dist_m = float(summary.get("distance") or 0)
+                fare = summary.get("fare") or {}
+                toll_c1 = float(fare.get("toll") or 0)
+                toll_5 = _toll_for_bulk20t(toll_c1)
+                if dist_m > 0:
+                    msg = (
+                        f"카카오 길찾기 {dist_m/1000.0:.1f}km  ·  "
+                        f"통행료 1종 {toll_c1:,.0f}원 → 20톤벌크(5종×{TOLL_CLASS_5_MULT:g}) {toll_5:,.0f}원/편도"
+                    )
+                    return {
+                        "ok": True,
+                        "km": dist_m / 1000.0,
+                        "toll": toll_5,
+                        "toll_class1": toll_c1,
+                        "method": "kakao_mobility",
+                        "origin_label": o_label,
+                        "dest_label": d_label,
+                        "message": msg,
+                    }
+    except Exception:
+        pass
+    # 폴백: 직선거리 × 도로계수 1.3 (물류 실무 근사) — 통행료는 산출 불가
+    straight = haversine_km(o_lat, o_lon, d_lat, d_lon)
+    road_km = straight * 1.3
+    return {
+        "ok": True,
+        "km": road_km,
+        "toll": 0.0,
+        "toll_class1": 0.0,
+        "method": "haversine_x1.3",
+        "origin_label": o_label,
+        "dest_label": d_label,
+        "message": (
+            f"길찾기 API 미사용/실패 → 직선 {straight:.1f}km × 1.3 = 도로근사 {road_km:.1f}km  ·  "
+            f"통행료는 수동 입력"
+        ),
+    }
+def _parse_ton_number(token):
+    """톤수 숫자 토큰 → float. '4.9'/'4,9' 지원."""
+    t = str(token or "").strip().replace(",", ".")
+    t = re.sub(r"[^0-9.]", "", t)
+    if not t or t == ".":
+        return 0.0
+    try:
+        return float(t)
+    except Exception:
+        return 0.0
+def parse_tank_capacity_kg(tank_value):
+    """TANK 용량 → kg.
+    - 숫자만 입력: kg로 그대로 사용 (예: 4900)
+    - 구형식(4.9t, 35T*2 등): 톤→kg 환산 (하위호환)
+    """
+    if isinstance(tank_value, (int, float)) and not isinstance(tank_value, bool):
+        return float(tank_value) if float(tank_value) > 0 else 0.0
+    s = str(tank_value or "").strip()
+    if not s:
+        return 0.0
+    for ch in ("，", "·", "．", "･", "。"):
+        s = s.replace(ch, ".")
+    s_norm = s.replace(",", ".")
+    # 숫자만 → kg
+    if re.fullmatch(r"\d+(?:\.\d+)?", s_norm):
+        return float(s_norm)
+    # 구형식: 톤 표기 → kg
+    unit = r"(?:TON|톤|T|t)"
+    pairs = re.findall(
+        rf"(?<![0-9.])(\d+(?:[.,]\d+)?)\s*{unit}\s*[*xX×]\s*(\d+(?:[.,]\d+)?)",
+        s,
+    )
+    if pairs:
+        tons = sum(_parse_ton_number(a) * _parse_ton_number(b) for a, b in pairs)
+        return float(tons * 1000.0)
+    singles = re.findall(rf"(?<![0-9.])(\d+(?:[.,]\d+)?)\s*{unit}\b", s)
+    if singles:
+        tons = sum(_parse_ton_number(a) for a in singles)
+        return float(tons * 1000.0)
+    return 0.0
+def compute_roundtrips_from_tank(monthly_usage_kg, tank_value, fill_ratio=0.8):
+    """왕복횟수 = ceil(월평균공급량 ÷ (탱크용량kg × 0.8)).
+    탱크(kg)의 80%가 소모되었을 때 1회 충전(왕복).
+    """
+    import math
+    tank_kg = parse_tank_capacity_kg(tank_value)
+    ratio = float(fill_ratio or 0) or 0.8
+    charge_kg = tank_kg * ratio
+    monthly = float(monthly_usage_kg or 0)
+    if charge_kg <= 0:
+        return {
+            "ok": False,
+            "roundtrips": 0.0,
+            "roundtrips_exact": 0.0,
+            "tank_tons": 0.0,
+            "tank_kg": tank_kg,
+            "usable_kg": 0.0,
+            "fill_ratio": ratio,
+            "message": "TANK 용량(kg)을 숫자로 입력하세요. 예: 4900",
+        }
+    exact = (monthly / charge_kg) if monthly > 0 else 0.0
+    trips = int(math.ceil(exact - 1e-12)) if exact > 0 else 0
+    return {
+        "ok": True,
+        "roundtrips": float(trips),
+        "roundtrips_exact": exact,
+        "tank_tons": tank_kg / 1000.0,
+        "tank_kg": tank_kg,
+        "usable_kg": charge_kg,
+        "fill_ratio": ratio,
+        "message": (
+            f"탱크 {tank_kg:,.0f}kg의 {ratio*100:.0f}% 소모 시 충전 "
+            f"= {charge_kg:,.0f}kg/회 → 월공급 {monthly:,.0f}kg ÷ 충전량 = {trips}회 "
+            f"(정확 {exact:.2f}, 올림)"
+        ),
+    }
+def profit_int_comma_input(label, *, key, value=0, help=None):
+    """정수 입력 + 천단위 콤마 표시 (소수점 없음). Tab9 투자비 전용."""
+    txt_key = f"{key}__comma"
+    try:
+        init_n = int(round(float(value or 0)))
+    except Exception:
+        init_n = 0
+    if key not in st.session_state:
+        st.session_state[key] = init_n
+    if txt_key not in st.session_state:
+        st.session_state[txt_key] = f"{int(st.session_state[key]):,}"
+
+    def _sync():
+        raw = str(st.session_state.get(txt_key, "") or "")
+        digits = re.sub(r"[^\d]", "", raw)
+        n = int(digits) if digits else 0
+        st.session_state[key] = n
+        st.session_state[txt_key] = f"{n:,}"
+
+    st.text_input(label, key=txt_key, on_change=_sync, help=help)
+    # 화면에 남아 있는 미커밋 값도 숫자로 해석
+    raw_now = str(st.session_state.get(txt_key, "") or "")
+    digits_now = re.sub(r"[^\d]", "", raw_now)
+    if digits_now:
+        st.session_state[key] = int(digits_now)
+    return float(st.session_state.get(key, 0) or 0)
+def compute_logistics_unit_cost(
+    distance_km,
+    fuel_price_per_l,
+    fuel_efficiency_km_per_l,
+    toll_fee=0.0,
+    round_trips=1.0,
+    load_kg=1.0,
+):
+    """표준 탱크로리 물류비(원/kg) 산식.
+    연료비(편도) = 거리(km) × 유류비(원/L) ÷ 연비(km/L)
+    편도비용 = 연료비 + 통행료
+    왕복총비용 = 편도비용 × 왕복횟수
+    물류비(원/kg) = 왕복총비용 ÷ 공급량(kg)
+    (엑셀 P18과 동일: (KM×유류비/연비+통행료)×왕복÷KG)
+    """
+    eff = float(fuel_efficiency_km_per_l or 0) or 1.0
+    kg = float(load_kg or 0) or 1.0
+    fuel_one_way = float(distance_km or 0) * float(fuel_price_per_l or 0) / eff
+    one_way = fuel_one_way + float(toll_fee or 0)
+    total = one_way * float(round_trips or 0)
+    per_kg = total / kg
+    return {
+        "fuel_one_way": fuel_one_way,
+        "one_way_cost": one_way,
+        "round_trip_cost": total,
+        "per_kg": per_kg,
+    }
+DIESEL_PRICE_FILE = os.path.join(CACHE_DIR, "diesel_market_price.json")
+def fetch_diesel_market_price():
+    """전국 주유소 경유 평균가(원/L).
+    소스: 네이버 금융 OIL_LO(경유) = 한국석유공사 Opinet 전국평균.
+    20톤 벌크로리(경유) 물류비 산정용 시장 정가 기준.
+    """
+    url = "https://finance.naver.com/marketindex/oilDetail.naver?marketindexCd=OIL_LO"
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        res.encoding = res.apparent_encoding or "euc-kr"
+        soup = BeautifulSoup(res.text, "html.parser")
+        nt = soup.select_one("p.no_today")
+        price = None
+        if nt:
+            for b in nt.select(".blind"):
+                b.decompose()
+            spaced = re.sub(r"\s+", "", nt.get_text(" ", strip=True))
+            num = re.search(r"([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)", spaced)
+            if num:
+                price = float(num.group(1).replace(",", ""))
+        if price is None or price < 500 or price > 5000:
+            return {"ok": False, "price": 0.0, "asof": "", "source": "", "message": "경유 시세를 파싱하지 못했습니다."}
+        asof = datetime.date.today().strftime("%Y-%m-%d")
+        dm = re.search(r"(20\d{2}\.\d{2}\.\d{2})", res.text)
+        if dm:
+            asof = dm.group(1).replace(".", "-")
+        return {
+            "ok": True,
+            "price": round(price, 2),
+            "asof": asof,
+            "source": "네이버금융·오피넷 전국 경유 평균",
+            "message": f"경유 {price:,.2f} 원/L ({asof})",
+        }
+    except Exception as e:
+        return {"ok": False, "price": 0.0, "asof": "", "source": "", "message": f"경유 시세 조회 실패: {e}"}
+def load_diesel_price_cache():
+    if os.path.exists(DIESEL_PRICE_FILE):
+        try:
+            with open(DIESEL_PRICE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+def save_diesel_price_cache(data):
+    try:
+        with open(DIESEL_PRICE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+def get_diesel_price_monthly(force_refresh=False):
+    """매월 시장가 자동 갱신(캐시). force_refresh면 즉시 재조회."""
+    month = datetime.date.today().strftime("%Y-%m")
+    cached = load_diesel_price_cache()
+    if (
+        not force_refresh
+        and cached.get("ok")
+        and cached.get("month") == month
+        and float(cached.get("price") or 0) > 0
+    ):
+        return cached
+    fetched = fetch_diesel_market_price()
+    if fetched.get("ok"):
+        fetched["month"] = month
+        fetched["vehicle"] = "20톤 벌크로리 · 경유"
+        save_diesel_price_cache(fetched)
+        return fetched
+    # 조회 실패 시 이전 캐시라도 사용
+    if cached.get("ok") and float(cached.get("price") or 0) > 0:
+        cached = dict(cached)
+        cached["message"] = f"최신 조회 실패 → 캐시 사용 ({cached.get('asof','')})"
+        return cached
+    fetched["month"] = month
+    return fetched
 # ==========================================
 # ★ 메모 생성 AppleScript ★ 
 # ==========================================
@@ -1380,6 +1737,97 @@ def cached_filter_tab3_year_columns(sales_p, qty_p, selected_detail_years, avail
         return df[[c for c in cols if c in df.columns]]
     sales_vat = sales_p * 1.1 / 10000
     return _filter_year_columns(sales_vat), _filter_year_columns(qty_p)
+@st.cache_data
+def cached_tab3_item_client_detail(
+    df, item_name, metric, years, all_months, selected_years_short
+):
+    """품목 1개 → 거래처×월 상세 피벗 (sales=만원 VAT포함 / qty=출고량)."""
+    if df is None or df.empty or not item_name:
+        return pd.DataFrame()
+    d = df[df["품목명"] == item_name]
+    if d.empty:
+        return pd.DataFrame()
+    if metric == "sales":
+        raw = (
+            d.pivot_table(index="거래처", columns="연도월_정렬", values="매출액", aggfunc="sum")
+            .fillna(0)
+            * 1.1
+            / 10000
+        )
+    else:
+        raw = d.pivot_table(
+            index="거래처", columns="연도월_정렬", values="출고량", aggfunc="sum"
+        ).fillna(0)
+        bulk = ["CO2 (kg, Bulk)", "N2 (kg, Bulk)", "O2 (kg, Bulk)", "AR (kg, Bulk)"]
+        if item_name in bulk:
+            raw = raw / 1000
+    if raw.empty:
+        return pd.DataFrame()
+    expanded = {}
+    for yr in years:
+        yr_short = yr[2:]
+        yr_sum = 0
+        for m in all_months:
+            col_key = f"{yr_short}년 {m}"
+            val = raw[col_key] if col_key in raw.columns else 0
+            expanded[col_key] = val
+            yr_sum = yr_sum + val
+        expanded[f"{yr_short}년 연간총합"] = yr_sum
+    pvt = pd.DataFrame(expanded, index=raw.index)
+    avail_years_short = [y[2:] for y in years]
+    cols = []
+    for y in avail_years_short:
+        if y in selected_years_short:
+            for m in reversed(all_months):
+                c = f"{y}년 {m}"
+                if c in pvt.columns:
+                    cols.append(c)
+        tot = f"{y}년 연간총합"
+        if tot in pvt.columns:
+            cols.append(tot)
+    pvt = pvt[[c for c in cols if c in pvt.columns]]
+    if pvt.empty:
+        return pvt
+    sort_col = None
+    for c in pvt.columns:
+        if "연간총합" in str(c):
+            sort_col = c
+            break
+    if sort_col is None and len(pvt.columns):
+        sort_col = pvt.columns[0]
+    if sort_col:
+        pvt = pvt.sort_values(by=sort_col, ascending=False)
+    return pvt
+def render_tab3_item_client_expanders(df_src, items, metric, years, all_months, selected_years_short):
+    """상단에서 선택한 품목의 거래처별 상세 — 클릭 펼침 (매출/출고 각각)."""
+    if not items:
+        return
+    label_metric = "매출" if metric == "sales" else "출고량"
+    cmap = "Blues" if metric == "sales" else "Greens"
+    bulk = ("CO2 (kg, Bulk)", "N2 (kg, Bulk)", "O2 (kg, Bulk)", "AR (kg, Bulk)")
+    for item in items:
+        with st.expander(
+            f"📂 [{item}] 거래처별 {label_metric} 상세 데이터 파보기 (클릭하여 펼치기)",
+            expanded=False,
+        ):
+            pvt = cached_tab3_item_client_detail(
+                df_src,
+                item,
+                metric,
+                tuple(years),
+                tuple(all_months),
+                tuple(sorted(selected_years_short)),
+            )
+            if pvt is None or pvt.empty:
+                st.info(f"선택한 조건에서 [{item}] 거래처 상세 데이터가 없습니다.")
+                continue
+            pvt_disp = get_display_df_with_sum(pvt, "합계")
+            fmt = "{:,.1f}" if metric == "qty" and item in bulk else "{:,.0f}"
+            st.dataframe(
+                style_with_sum(pvt_disp, fmt, cmap, axis=None),
+                use_container_width=True,
+                height=min(420, 80 + 28 * min(len(pvt_disp), 12)),
+            )
 # ==========================================
 # ★ 누락되었던 필수 캐시 함수 복구 완료 ★
 # ==========================================
@@ -1580,18 +2028,27 @@ def compute_debt_status_by_client(disp_debt, payment_terms_map=None):
         out[client] = format_debt_status_label(overdue, od_m)
     return out
 def _debt_label_cell_style(client, gubun, color_map, compact=False):
-    """다른 탭과 동일: 13px / weight 400 · 세로·가로 중간정렬."""
+    """거래처분석 탭과 동일 계열: 13px / weight 400 · 중간정렬."""
     pad = "4px 4px" if compact else "6px 8px"
     base = (
         f"padding:{pad};border-bottom:1px solid #E2E8F0;white-space:nowrap;"
         "font-size:13px;font-weight:400;line-height:1.4;vertical-align:middle;"
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        "overflow:hidden;text-overflow:ellipsis;"
+        "overflow:hidden;text-overflow:ellipsis;color:#31333F;"
     )
     if client == "📌 [전체 합계]":
-        return base + "background-color:#E2E8F0;font-weight:400;text-align:center;"
+        return base + "background-color:#E2E8F0;font-weight:600;text-align:center;"
     bg = color_map.get(client, "#FFFFFF")
     return base + f"background-color:{bg};text-align:center;"
+def _debt_num_cell_font(compact=False):
+    """거래처분석 탭 dataframe과 비슷한 숫자 글씨."""
+    pad = "4px 4px" if compact else "6px 8px"
+    return (
+        f"padding:{pad};border-bottom:1px solid #E2E8F0;white-space:nowrap;"
+        "font-size:13px;font-weight:400;line-height:1.4;vertical-align:middle;text-align:center;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+        "color:#31333F;"
+    )
 PAYMENT_TERMS_PATH = os.path.join(CACHE_DIR, "payment_terms.csv")
 PAYMENT_TERMS_FALLBACK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "payment_terms.csv")
 @st.cache_data(show_spinner=False)
@@ -1753,7 +2210,7 @@ def render_interactive_html_table(
         header_cells.append(
             f'<th{freeze_cls} style="padding:6px 8px;border-bottom:1px solid #E2E8F0;'
             f'background:#F0F2F6;text-align:center;vertical-align:middle;'
-            f'font-size:13px;font-weight:600;white-space:nowrap;">'
+            f'font-size:13px;font-weight:600;white-space:nowrap;color:#31333F;">'
             f'{html.escape(str(h))}</th>'
         )
     page_html = f"""
@@ -2146,7 +2603,7 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
         for i, client in enumerate(u_clients)
     }
     long_cnt = sum(1 for v in status_map.values() if v == "악성")
-    # iPad만 열폭 축소 · 글자크기/굵기는 다른 탭과 동일(13px/400) · 중간정렬
+    # 거래처분석 탭과 동일: 13px / 보통 굵기 · 중간정렬 (연체 분홍만 강조)
     compact = is_touch_ui()
     if compact:
         headers = ["거래처", "구분"] + numeric_cols + ["결제", "연체"]
@@ -2156,13 +2613,7 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
         headers = ["거래처", "구분"] + numeric_cols + ["결제조건", "연체개월수"]
         left_w, right_w = [160, 68], [110, 120]
         hint = "셀 클릭 선택 · 분홍=연체 · 연체개월수: 정상 / 연체 1~3개월 / 악성(4개월+)"
-    cell_font = (
-        "padding:6px 8px;border-bottom:1px solid #E2E8F0;white-space:nowrap;"
-        "font-size:13px;font-weight:400;line-height:1.4;vertical-align:middle;text-align:center;"
-        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-    )
-    if compact:
-        cell_font = cell_font.replace("padding:6px 8px", "padding:4px 4px")
+    cell_font = _debt_num_cell_font(compact=compact)
     body_rows = []
     for r, (idx, row) in enumerate(disp_debt.iterrows()):
         client, gubun = idx[0], idx[1]
@@ -2346,27 +2797,27 @@ def render_debt_month_rank_panel(
         "(거래처 선택 무시·전체 · 담당자 필터 적용 · 정상 제외 · 연체개월 다중선택 · 화면 절반)</span></div>",
         unsafe_allow_html=True,
     )
-    # 연체개월수 / 악성 다중 토글 (아담한 버튼)
-    st.markdown('<div class="debt-compact-toggle-host"></div>', unsafe_allow_html=True)
-    bm = st.columns(len(filter_cats), gap="small")
-    for i, cat in enumerate(filter_cats):
-        with bm[i]:
-            on = cat in st.session_state["debt_od_filters"]
-            if st.button(
-                cat,
-                key=f"debt_od_filt_{cat}",
-                type="primary" if on else "secondary",
-                use_container_width=True,
-            ):
-                cur = list(st.session_state["debt_od_filters"])
-                if on:
-                    if len(cur) > 1:
-                        cur = [x for x in cur if x != cat]
-                else:
-                    cur.append(cat)
-                    cur = [x for x in filter_cats if x in cur]
-                st.session_state["debt_od_filters"] = cur
-                st.rerun()
+    # 연체개월수 / 악성 다중 토글 (아담한 버튼 — 이 컨테이너에만 compact CSS)
+    with st.container(key="debt_compact_btns_od"):
+        bm = st.columns(len(filter_cats), gap="small")
+        for i, cat in enumerate(filter_cats):
+            with bm[i]:
+                on = cat in st.session_state["debt_od_filters"]
+                if st.button(
+                    cat,
+                    key=f"debt_od_filt_{cat}",
+                    type="primary" if on else "secondary",
+                    width="stretch",
+                ):
+                    cur = list(st.session_state["debt_od_filters"])
+                    if on:
+                        if len(cur) > 1:
+                            cur = [x for x in cur if x != cat]
+                    else:
+                        cur.append(cat)
+                        cur = [x for x in filter_cats if x in cur]
+                    st.session_state["debt_od_filters"] = cur
+                    st.rerun()
     selected = st.session_state["debt_od_filters"]
     mat_f = mat.loc[[c for c in mat.index if status_map.get(c) in selected]]
     if mat_f.empty:
@@ -2397,13 +2848,7 @@ def render_debt_month_rank_panel(
         else:
             headers = ["거래처"] + display_months + ["연체합계", bal_hdr, "결제조건", "연체개월수"]
             left_w, right_w = [140], [110, 120]
-        cell = (
-            "padding:6px 8px;border-bottom:1px solid #E2E8F0;white-space:nowrap;"
-            "font-size:13px;font-weight:400;line-height:1.4;vertical-align:middle;text-align:center;"
-            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        )
-        if compact:
-            cell = cell.replace("padding:6px 8px", "padding:4px 4px")
+        cell = _debt_num_cell_font(compact=compact)
         body = []
         for i, client in enumerate(clients_sorted):
             bg = DEBT_CLIENT_STRIPE_A if i % 2 == 0 else DEBT_CLIENT_STRIPE_B
@@ -2430,7 +2875,7 @@ def render_debt_month_rank_panel(
             od_total = float(meta.get("overdue_amt") or 0.0)
             cur_bal = float(meta.get("cur_bal") or 0.0)
             tds.append(
-                f'<td class="dash-cell-selectable" style="{cell}background:{bg};font-weight:700;" '
+                f'<td class="dash-cell-selectable" style="{cell}background:{bg};font-weight:600;" '
                 f'data-raw="{od_total}">{od_total:,.0f}</td>'
             )
             tds.append(
@@ -2933,6 +3378,378 @@ def inject_sticky_tabs_script():
 # ----------------------------------------------------
 TAB7_DATE_FILE = os.path.join(CACHE_DIR, "tab7_date.txt")
 TAB8_DATE_FILE = os.path.join(CACHE_DIR, "tab8_date.txt")
+PROFIT_CACHE_FILE = os.path.join(CACHE_DIR, "profitability.json")
+# 수익성분석.xlsx 기본값 (한국메티슨 시트 함수 그대로 이식)
+PROFIT_DEFAULTS = {
+    "project_name": "한국메티슨",
+    "tank_spec": 100000.0,  # kg (숫자만)
+    "tank_price": 350_000_000.0,
+    "monthly_usage_kg": 400_000.0,
+    "vaporizer_capacity": 1500.0,
+    "vaporizer_qty_note": "* 2ea",
+    "vaporizer_price": 31_500_000.0,
+    "construction_cost": 190_000_000.0,
+    "purchase_unit": 120.0,
+    "logistics_unit": 20.0,
+    "supply_unit": 210.0,
+    "interest_rate": 0.05,
+    "mgmt_rate": 0.145,
+    "depreciation_months": 120.0,
+    "equipment_rent": 0.0,
+    "rent_count": 0.0,
+    "logi_km": 70.0,
+    "logi_fuel_price": 1400.0,
+    "logi_efficiency": 2.5,
+    "logi_toll": 0.0,
+    "logi_roundtrips": 10.0,
+    "logi_supply_kg": 20_000.0,
+    "logi_origin": "경기도 화성시 마도면 쌍송리 신일가스",
+    "logi_dest": "",
+}
+def load_profit_inputs():
+    """수익성분석 입력값 로드 (없으면 엑셀 기본값)."""
+    data = dict(PROFIT_DEFAULTS)
+    if os.path.exists(PROFIT_CACHE_FILE):
+        try:
+            with open(PROFIT_CACHE_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                data.update({k: saved[k] for k in PROFIT_DEFAULTS if k in saved})
+        except Exception:
+            pass
+    return data
+def save_profit_inputs(data):
+    try:
+        with open(PROFIT_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+def compute_profitability(p):
+    """엑셀 수익성분석 함수 동일 적용.
+    C10=C11*12, C20=C9+C16+C18, C27=C26-(C24+C25),
+    C30=H36*0.145, C35=F35*H35, C36=F36/120, H36=C11*C26,
+    C37=F37*H37/12, C38=F38-H38-C30, C39=C38*3+(F39*H39),
+    P18=(J18*K18/L18+M18)*N18/O18
+    """
+    monthly_usage = float(p.get("monthly_usage_kg") or 0)
+    tank_price = float(p.get("tank_price") or 0)
+    vap_price = float(p.get("vaporizer_price") or 0)
+    const_cost = float(p.get("construction_cost") or 0)
+    purchase = float(p.get("purchase_unit") or 0)
+    logistics = float(p.get("logistics_unit") or 0)
+    supply = float(p.get("supply_unit") or 0)
+    rate = float(p.get("interest_rate") or 0)
+    mgmt_rate = float(p.get("mgmt_rate") or 0)
+    dep_m = float(p.get("depreciation_months") or 120) or 120.0
+    rent = float(p.get("equipment_rent") or 0)
+    rent_n = float(p.get("rent_count") or 0)
+    yearly_usage = monthly_usage * 12  # C10
+    total_invest = tank_price + vap_price + const_cost  # C20
+    margin_kg = supply - (purchase + logistics)  # C27
+    monthly_sales = monthly_usage * supply  # H36
+    monthly_gross = monthly_usage * margin_kg  # C35
+    depreciation = total_invest / dep_m  # C36
+    finance = total_invest * rate / 12  # C37
+    mgmt = monthly_sales * mgmt_rate  # C30
+    invest_cost = depreciation + finance  # H38
+    monthly_profit = monthly_gross - invest_cost - mgmt  # C38
+    three_month = monthly_profit * 3 + (rent * rent_n)  # C39
+    eff = float(p.get("logi_efficiency") or 0) or 1.0
+    supply_kg = float(p.get("logi_supply_kg") or 0) or 1.0
+    logi_per_kg = (
+        (float(p.get("logi_km") or 0) * float(p.get("logi_fuel_price") or 0) / eff
+         + float(p.get("logi_toll") or 0))
+        * float(p.get("logi_roundtrips") or 0)
+        / supply_kg
+    )  # P18
+    return {
+        "yearly_usage": yearly_usage,
+        "total_invest": total_invest,
+        "margin_kg": margin_kg,
+        "monthly_sales": monthly_sales,
+        "monthly_gross": monthly_gross,
+        "depreciation": depreciation,
+        "finance": finance,
+        "mgmt": mgmt,
+        "invest_cost": invest_cost,
+        "monthly_profit": monthly_profit,
+        "three_month": three_month,
+        "logi_per_kg": logi_per_kg,
+    }
+def build_profitability_report_excel(p, r, route_info=None, diesel_info=None):
+    """스크린샷형 수익성 분석 보고서 엑셀(bytes). Tab9 전용."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "수익성분석"
+    # 열 폭 (보고서 가독성)
+    for col, w in enumerate([3, 38, 28, 28, 28, 3], start=1):
+        ws.column_dimensions[get_column_letter(col)].width = w
+
+    thin = Border(
+        left=Side(style="thin", color="94A3B8"),
+        right=Side(style="thin", color="94A3B8"),
+        top=Side(style="thin", color="94A3B8"),
+        bottom=Side(style="thin", color="94A3B8"),
+    )
+    dash = Border(
+        left=Side(style="dashed", color="94A3B8"),
+        right=Side(style="dashed", color="94A3B8"),
+        top=Side(style="dashed", color="94A3B8"),
+        bottom=Side(style="dashed", color="94A3B8"),
+    )
+    title_fill = PatternFill("solid", fgColor="F1F5F9")
+    green_fill = PatternFill("solid", fgColor="DCFCE7")
+    note_font = Font(name="맑은 고딕", size=8, color="64748B")
+    body_font = Font(name="맑은 고딕", size=11, color="0F172A")
+    bold_font = Font(name="맑은 고딕", size=11, bold=True, color="0F172A")
+    head_font = Font(name="맑은 고딕", size=12, bold=True, color="0F172A")
+    title_font = Font(name="맑은 고딕", size=16, bold=True, color="0F172A")
+    green_font = Font(name="맑은 고딕", size=9, bold=True, color="166534")
+    left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    def _won(v):
+        try:
+            return f"{float(v):,.0f}"
+        except Exception:
+            return "0"
+
+    def _num(v, d=1):
+        try:
+            return f"{float(v):,.{d}f}"
+        except Exception:
+            return "0"
+
+    def put(row, col, text, font=None, align=None, fill=None, border=None, merge_to=None):
+        cell = ws.cell(row=row, column=col, value=text)
+        cell.font = font or body_font
+        cell.alignment = align or left_align
+        if fill:
+            cell.fill = fill
+        if border:
+            cell.border = border
+        if merge_to:
+            ws.merge_cells(start_row=row, start_column=col, end_row=row, end_column=merge_to)
+            for c in range(col, merge_to + 1):
+                ws.cell(row=row, column=c).border = border or Border()
+                ws.cell(row=row, column=c).fill = fill or PatternFill()
+                ws.cell(row=row, column=c).alignment = align or left_align
+        return cell
+
+    name = str(p.get("project_name") or "프로젝트")
+    dep_m = float(p.get("depreciation_months") or 120) or 120.0
+    dep_years = dep_m / 12.0
+    rate = float(p.get("interest_rate") or 0)
+    mgmt_rate = float(p.get("mgmt_rate") or 0)
+    route_info = route_info or {}
+    diesel_info = diesel_info or {}
+
+    # 1) 제목
+    put(2, 2, "수익성 분석", font=title_font, align=center, fill=title_fill, border=thin, merge_to=5)
+    ws.row_dimensions[2].height = 32
+
+    # 2) 보고 헤더
+    put(4, 2, f"◆ [{name}] 투자대비 수익성 분석 보고", font=head_font, merge_to=5)
+    put(
+        5, 2,
+        f"TANK: {parse_tank_capacity_kg(p.get('tank_spec')):,.0f} kg · 기화기 {float(p.get('vaporizer_capacity') or 0):,.0f} Nm3/hr "
+        f"{p.get('vaporizer_qty_note','')} · 년 사용량(자동) {_won(r['yearly_usage'])} kg",
+        font=note_font, merge_to=5,
+    )
+
+    # 3) 장비 투자비
+    row = 7
+    put(row, 2, "○ 장비 투자비", font=bold_font, merge_to=5)
+    row = 8
+    put(row, 2, f"1. TANK 구매 : {parse_tank_capacity_kg(p.get('tank_spec')):,.0f} kg", font=body_font, merge_to=5)
+    row = 9
+    put(row, 2, f"   구입가: {_won(p.get('tank_price'))} 원", font=body_font)
+    put(row, 3, f"년 사용량: {_won(r['yearly_usage'])} kg", font=body_font)
+    put(row, 4, f"월평균 공급량: {_won(p.get('monthly_usage_kg'))} kg", font=body_font)
+    row = 10
+    put(row, 2, f"2. 기화기 구매 : {float(p.get('vaporizer_capacity') or 0):,.0f} Nm3/hr {p.get('vaporizer_qty_note','')}", font=body_font, merge_to=5)
+    row = 11
+    put(row, 2, f"   구입가: {_won(p.get('vaporizer_price'))} 원", font=body_font, merge_to=5)
+    row = 12
+    put(row, 2, f"3. 공사비용: {_won(p.get('construction_cost'))} 원", font=body_font, merge_to=5)
+    row = 13
+    put(row, 2, f"총 투자금액: {_won(r['total_invest'])} 원", font=bold_font, merge_to=5)
+    row = 14
+    put(row, 2, "합계 = TANK + 기화기 + 공사비용", font=note_font, merge_to=5)
+
+    # 4) 단가
+    row = 16
+    put(row, 2, "○ 단가", font=bold_font, merge_to=5)
+    row = 17
+    put(row, 2, f"1. 매입단가: {_num(p.get('purchase_unit'), 1)} 원/kg", font=body_font, merge_to=3)
+    put(row, 4, f"2. 물류비: {_num(p.get('logistics_unit'), 2)} 원/kg", font=body_font, merge_to=5)
+    row = 18
+    put(row, 2, f"3. 공급단가: {_num(p.get('supply_unit'), 1)} 원/kg", font=body_font, merge_to=3)
+    put(row, 4, f"4. 매출이익: {_num(r['margin_kg'], 1)} 원/kg", font=body_font, merge_to=5)
+    row = 19
+    put(row, 2, "매출이익 = 공급단가 − (매입단가 + 물류비)", font=note_font, merge_to=5)
+
+    # 5) 일반관리비
+    row = 21
+    put(row, 2, "○ 일반관리비", font=bold_font)
+    put(row, 3, f"{_won(r['mgmt'])} 원/월", font=bold_font)
+    put(row, 4, f"(월 매출 {mgmt_rate*100:.1f}%)", font=note_font, merge_to=5)
+    row = 22
+    put(row, 2, "일반관리비 = 월매출 × 관리비율  ·  월매출 = 월평균공급량 × 공급단가", font=note_font, merge_to=5)
+
+    # 6) 사용량 대비 영업이익 표
+    row = 24
+    put(row, 2, "○ 사용량 대비 영업이익", font=bold_font, merge_to=5)
+    table = [
+        [
+            f"월평균 매출이익: {_won(r['monthly_gross'])} 원/월",
+            f"월 사용량(kg): {_won(p.get('monthly_usage_kg'))}",
+            f"매출마진: {_num(r['margin_kg'], 1)}",
+        ],
+        [
+            "월사용량 × 매출이익",
+            "프로젝트 월 평균 공급량",
+            "공급 − (매입 + 물류)",
+        ],
+        [
+            f"장비 감가상각비({dep_years:.0f}년): {_won(r['depreciation'])} 원/월",
+            f"투자총액: {_won(r['total_invest'])}",
+            f"월 매출: {_won(r['monthly_sales'])}",
+        ],
+        [
+            f"투자합계 ÷ {dep_m:.0f}개월",
+            "TANK+기화기+공사",
+            "월사용량 × 공급단가",
+        ],
+        [
+            f"금융비: {_won(r['finance'])} 원/월",
+            f"원금: {_won(r['total_invest'])}",
+            f"이자율: {rate*100:.1f}%",
+        ],
+        [
+            "원금 × 이자율 ÷ 12",
+            "총 투자금액",
+            "입력 이자율",
+        ],
+        [
+            f"월평균 이익금: {_won(r['monthly_profit'])} 원/월",
+            f"투자비용: {_won(r['invest_cost'])}",
+            f"일반관리비: {_won(r['mgmt'])}",
+        ],
+        [
+            "매출이익 − 투자비용 − 관리비",
+            "감가상각 + 금융비",
+            f"월매출 × {mgmt_rate*100:.1f}%",
+        ],
+        [
+            f"최근 3개월 매출 실이익: {_won(r['three_month'])} 원",
+            f"장비 임대료: {_won(p.get('equipment_rent'))}",
+            f"부가횟수: {_num(p.get('rent_count'), 0)}",
+        ],
+        [
+            "월이익×3 + 임대료×횟수",
+            "입력 임대료",
+            "입력 부가횟수",
+        ],
+    ]
+    t_row = 25
+    for i, cells in enumerate(table):
+        is_note = (i % 2 == 1)
+        for j, text in enumerate(cells):
+            c = put(
+                t_row, 2 + j, text,
+                font=note_font if is_note else body_font,
+                border=dash,
+                align=left_align,
+            )
+            if not is_note:
+                c.font = bold_font if j == 0 and ("이익금" in text or "실이익" in text or "매출이익" in text) else body_font
+        ws.row_dimensions[t_row].height = 18 if is_note else 22
+        t_row += 1
+
+    # 7) 물류비 계산 설명 (스크린샷 작은글씨 전부)
+    t_row += 1
+    put(t_row, 2, "○ 물류비 계산 상세 (20톤 벌크로리 · 경유)", font=bold_font, merge_to=5)
+    t_row += 1
+    put(
+        t_row, 2,
+        f"거리 { _num(p.get('logi_km'), 1) } km · 유류비 {_num(p.get('logi_fuel_price'), 2)} 원/L · "
+        f"연비 {_num(p.get('logi_efficiency'), 1)} km/L · 통행료(편도·5종) {_won(p.get('logi_toll'))} 원 · "
+        f"왕복 {_num(p.get('logi_roundtrips'), 0)} 회 · 월평균공급량 {_won(p.get('logi_supply_kg'))} kg",
+        font=note_font, merge_to=5,
+    )
+    t_row += 1
+    put(
+        t_row, 2,
+        f"물류비(원/kg) = ((거리 × 유류비 ÷ 연비) + 통행료) × 왕복 ÷ 월평균공급량  =  {_num(r['logi_per_kg'], 2)} 원/kg",
+        font=note_font, merge_to=5,
+    )
+    t_row += 1
+    _rt_xlsx = compute_roundtrips_from_tank(
+        p.get("monthly_usage_kg"), p.get("tank_spec"), fill_ratio=0.8
+    )
+    put(
+        t_row, 2,
+        _rt_xlsx.get("message")
+        or "왕복횟수 = ceil(월평균공급량 ÷ (탱크총용량kg × 80%))",
+        font=note_font, merge_to=5,
+    )
+    t_row += 1
+    route_msg = str(route_info.get("message") or "")
+    if route_msg:
+        put(t_row, 2, route_msg, font=green_font, fill=green_fill, border=thin, merge_to=5)
+        ws.row_dimensions[t_row].height = 22
+        t_row += 1
+    o_lab = route_info.get("origin_label") or p.get("logi_origin") or ""
+    d_lab = route_info.get("dest_label") or p.get("logi_dest") or ""
+    if o_lab or d_lab:
+        put(
+            t_row, 2,
+            f"출발: {o_lab}  →  도착: {d_lab}"
+            + (f"  ·  {route_msg}" if route_msg else ""),
+            font=note_font, merge_to=5,
+        )
+        t_row += 1
+    if diesel_info.get("ok"):
+        put(
+            t_row, 2,
+            f"경유 시장가 {_num(diesel_info.get('price'), 2)} 원/L  ·  "
+            f"{diesel_info.get('source','')}  ·  기준일 {diesel_info.get('asof','')}  ·  "
+            f"{diesel_info.get('month', datetime.date.today().strftime('%Y-%m'))} 자동반영",
+            font=note_font, merge_to=5,
+        )
+        t_row += 1
+    elif diesel_info.get("message"):
+        put(t_row, 2, str(diesel_info.get("message")), font=note_font, merge_to=5)
+        t_row += 1
+
+    t_row += 1
+    put(
+        t_row, 2,
+        "적용 함수: 년사용량=월×12 · 합계=탱크+기화기+공사 · 매출이익=공급−(매입+물류) · "
+        "관리비=월매출×비율 · 감가=투자÷개월 · 금융=원금×이자÷12 · "
+        "월이익=매출이익−(감가+금융)−관리비 · 3개월=월이익×3+(임대×횟수) · "
+        "통행료=카카오1종×2.5(20톤벌크 5종)",
+        font=note_font, merge_to=5,
+    )
+    t_row += 2
+    put(t_row, 2, "1/1페이지", font=note_font, align=center, fill=title_fill, border=thin, merge_to=5)
+
+    ws.print_title_rows = "1:2"
+    ws.page_setup.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 def get_saved_date(file_path):
     if os.path.exists(file_path):
         try:
@@ -3758,7 +4575,7 @@ except ImportError:
     st.sidebar.warning("PPT 내보내기: `pip install python-pptx kaleido` 설치 후 이용하세요.")
 except Exception as exc:
     st.sidebar.error(f"PPT 생성 오류: {exc}")
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
     [
         "📌 영업 종합 요약",
         "🏢 거래처 분석",
@@ -3767,7 +4584,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         "📌 채권 관리",
         "📍 카카오맵",
         "🏭 설비 재고 현황",
-        "🛢️ 통합 탱크 재고"
+        "🛢️ 통합 탱크 재고",
+        "📈 수익성 분석",
     ]
 )
 inject_sticky_tabs_script()
@@ -4144,40 +4962,44 @@ with tab2:
     t2_c1.markdown(f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
     t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
     
-    btn_c1, btn_c2, btn_c3 = st.columns([1.5, 1, 1])
-    
-    with btn_c1:
-        if st.button("📝 macOS 메모 앱에서 거래처 노트 열기/생성", key="btn_notes"):
-            open_macos_notes_folder(selected_client, dart_api_key, df_integrated)
-            
-    with btn_c2:
-        if "show_corp_info" not in st.session_state:
-            st.session_state.show_corp_info = False
-            
-        btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
-        
-        if st.button(btn_label, key="btn_dart_info"):
-            st.session_state.show_corp_info = not st.session_state.show_corp_info
-            st.rerun()
-            
-        if st.session_state.show_corp_info:
-            with st.spinner("DART 및 네이버 기업 정보를 불러오는 중..."):
-                c_info = get_company_info_hybrid(selected_client, dart_api_key)
-                    
-                st.markdown(f"""
-                - **출처:** {c_info['source']}
-                - **대표자:** {c_info['ceo']}
-                - **업종:** {c_info['industry']}
-                - **매출액:** {c_info['revenue']}
-                - **영업이익:** {c_info['profit']}
-                """)
-                
-    with btn_c3:
-        if client_addr != "등록된 주소 정보가 없습니다.":
-            kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(client_addr)}"
-            st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url)
-        else:
-            st.button("🗺️ 카카오맵에서 주소 보기", disabled=True, key="btn_kakao_disabled")
+    if "show_corp_info" not in st.session_state:
+        st.session_state.show_corp_info = False
+    # 가로 넓은 직사각형 버튼 — 글씨 한 줄로 박스 안에
+    with st.container(key="tab2_action_btns"):
+        btn_c1, btn_c2, btn_c3 = st.columns([2.4, 2.0, 1.8], gap="medium")
+        with btn_c1:
+            if st.button(
+                "📝 macOS 메모에서 노트 열기/생성",
+                key="btn_notes",
+                width="stretch",
+            ):
+                open_macos_notes_folder(selected_client, dart_api_key, df_integrated)
+        with btn_c2:
+            btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
+            if st.button(btn_label, key="btn_dart_info", width="stretch"):
+                st.session_state.show_corp_info = not st.session_state.show_corp_info
+                st.rerun()
+        with btn_c3:
+            if client_addr != "등록된 주소 정보가 없습니다.":
+                kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(client_addr)}"
+                st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url, width="stretch")
+            else:
+                st.button(
+                    "🗺️ 카카오맵에서 주소 보기",
+                    disabled=True,
+                    key="btn_kakao_disabled",
+                    width="stretch",
+                )
+    if st.session_state.show_corp_info:
+        with st.spinner("DART 및 네이버 기업 정보를 불러오는 중..."):
+            c_info = get_company_info_hybrid(selected_client, dart_api_key)
+            st.markdown(f"""
+            - **출처:** {c_info['source']}
+            - **대표자:** {c_info['ceo']}
+            - **업종:** {c_info['industry']}
+            - **매출액:** {c_info['revenue']}
+            - **영업이익:** {c_info['profit']}
+            """)
     m1, m2, m3, m4 = st.columns(4)
     tot_sales_c = df_client_filtered["매출액"].sum() * 1.1 / 10000 if not df_client_filtered.empty else 0.0
     
@@ -4287,11 +5109,32 @@ with tab3:
     render_tab3_dataframe_table(
         sales_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_sales", table_kind="sales"
     )
+    # 상단 담당자·품목 선택 시 → 품목별 거래처 매출 상세 (클릭 펼침)
+    if selected_staff and selected_item:
+        render_tab3_item_client_expanders(
+            df_f,
+            list(selected_item),
+            "sales",
+            years,
+            all_months,
+            selected_detail_years,
+        )
+    elif selected_item and not selected_staff:
+        st.caption("💡 거래처별 상세를 보려면 상단 고정바에서 담당자를 먼저 선택한 뒤 품목을 선택하세요.")
         
     st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
     render_tab3_dataframe_table(
         qty_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_qty", table_kind="qty"
     )
+    if selected_staff and selected_item:
+        render_tab3_item_client_expanders(
+            df_f,
+            list(selected_item),
+            "qty",
+            years,
+            all_months,
+            selected_detail_years,
+        )
         
     st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (실제 원본 단가) - 전체 기간 월별 고정 표시</div>", unsafe_allow_html=True)
     _price_sort_order = list(sales_p.index) if not sales_p.empty else None
@@ -4572,26 +5415,26 @@ with tab5:
             else:
                 kept = [c for c in st.session_state["debt_visible_months"] if c in numeric_cols]
                 st.session_state["debt_visible_months"] = kept if kept else list(numeric_cols)
-            st.markdown('<div class="debt-compact-toggle-host"></div>', unsafe_allow_html=True)
-            m_cols = st.columns(len(numeric_cols), gap="small")
-            for _i, _m in enumerate(numeric_cols):
-                with m_cols[_i]:
-                    _on = _m in st.session_state["debt_visible_months"]
-                    if st.button(
-                        str(_m),
-                        key=f"debt_month_tog_{_m}",
-                        type="primary" if _on else "secondary",
-                        use_container_width=True,
-                    ):
-                        cur = list(st.session_state["debt_visible_months"])
-                        if _on:
-                            if len(cur) > 1:
-                                cur = [c for c in cur if c != _m]
-                        else:
-                            cur.append(_m)
-                            cur = [c for c in numeric_cols if c in cur]
-                        st.session_state["debt_visible_months"] = cur
-                        st.rerun()
+            with st.container(key="debt_compact_btns_months"):
+                m_cols = st.columns(len(numeric_cols), gap="small")
+                for _i, _m in enumerate(numeric_cols):
+                    with m_cols[_i]:
+                        _on = _m in st.session_state["debt_visible_months"]
+                        if st.button(
+                            str(_m),
+                            key=f"debt_month_tog_{_m}",
+                            type="primary" if _on else "secondary",
+                            width="stretch",
+                        ):
+                            cur = list(st.session_state["debt_visible_months"])
+                            if _on:
+                                if len(cur) > 1:
+                                    cur = [c for c in cur if c != _m]
+                            else:
+                                cur.append(_m)
+                                cur = [c for c in numeric_cols if c in cur]
+                            st.session_state["debt_visible_months"] = cur
+                            st.rerun()
             show_cols = [c for c in numeric_cols if c in st.session_state["debt_visible_months"]]
             if not show_cols:
                 st.info("표시할 월을 하나 이상 선택하세요. (거래처·구분은 항상 표시)")
@@ -4907,3 +5750,381 @@ with tab8:
         st.dataframe(df_display, use_container_width=True, height=600, hide_index=True)
     else:
         st.warning("통합 탱크 재고 데이터가 없습니다. 폴더에 '통합탱크재고.csv'를 넣거나 왼쪽 사이드바에서 업로드해주세요.")
+# Tab 9: 📈 수익성 분석 (엑셀 함수 동일 적용)
+with tab9:
+    t9_c1, t9_c2 = st.columns([4, 1])
+    t9_c1.markdown(
+        "<div class='sub-header dashboard-tab-panel-head'>📈 투자대비 수익성 분석</div>",
+        unsafe_allow_html=True,
+    )
+    t9_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+    st.caption("엑셀「수익성분석.xlsx」함수를 그대로 적용합니다. 입력값을 바꾸면 결과가 즉시 재계산됩니다.")
+    if "profit_inputs" not in st.session_state:
+        st.session_state["profit_inputs"] = load_profit_inputs()
+    p0 = st.session_state["profit_inputs"]
+    _pf_keys = [
+        "pf_name", "pf_tank_kg", "pf_tank_kg__comma", "pf_tank_spec",
+        "pf_tank_price", "pf_tank_price__comma", "pf_usage", "pf_usage__comma",
+        "pf_const", "pf_const__comma", "pf_vap_cap", "pf_vap_cap__comma",
+        "pf_vap_note", "pf_vap_price", "pf_vap_price__comma",
+        "pf_buy", "pf_logi", "pf_supply",
+        "pf_rate", "pf_mgmt", "pf_dep", "pf_rent", "pf_rent_n",
+        "pf_origin", "pf_dest", "pf_lkm", "pf_lfuel", "pf_leff", "pf_ltoll", "pf_lrt", "pf_lkg",
+    ]
+    # —— 입력 (물류비 계산 → 단가 순, 글씨·위젯 스타일은 단가란과 동일) ——
+    st.markdown("##### ◆ 프로젝트 / 장비 투자비")
+    c_name, c_spec = st.columns([1, 1])
+    project_name = c_name.text_input("거래처/프로젝트명", value=str(p0.get("project_name", "")), key="pf_name")
+    _tank_kg_init = parse_tank_capacity_kg(p0.get("tank_spec", PROFIT_DEFAULTS["tank_spec"]))
+    with c_spec:
+        tank_kg = profit_int_comma_input(
+            "TANK 용량 (kg)",
+            key="pf_tank_kg",
+            value=_tank_kg_init if _tank_kg_init > 0 else 4900,
+            help="숫자만 입력 (kg). 왕복횟수 = 월공급 ÷ (탱크kg × 80%)",
+        )
+    tank_spec = float(tank_kg)  # 저장·계산용 (단위: kg)
+    i1, i2, i3 = st.columns(3)
+    with i1:
+        tank_price = profit_int_comma_input(
+            "1. TANK 구입가 (원)", key="pf_tank_price", value=p0["tank_price"]
+        )
+    with i2:
+        monthly_usage = profit_int_comma_input(
+            "월 평균 공급량 (kg)",
+            key="pf_usage",
+            value=p0["monthly_usage_kg"],
+            help="물류비 계산의 월평균 공급량에 그대로 반영됩니다.",
+        )
+    with i3:
+        construction = profit_int_comma_input(
+            "3. 공사비용 (원)", key="pf_const", value=p0["construction_cost"]
+        )
+    v1, v2, v3 = st.columns(3)
+    with v1:
+        vap_cap = profit_int_comma_input(
+            "2. 기화기 용량 (Nm3/hr)", key="pf_vap_cap", value=p0["vaporizer_capacity"]
+        )
+    vap_note = v2.text_input("기화기 수량 메모", value=str(p0.get("vaporizer_qty_note", "")), key="pf_vap_note")
+    with v3:
+        vap_price = profit_int_comma_input(
+            "기화기 구입가 (원)", key="pf_vap_price", value=p0["vaporizer_price"]
+        )
+    # —— 물류비 계산 (단가 바로 위) ——
+    st.markdown("##### ◎ 물류비 계산")
+    st.caption(
+        "20톤 벌크로리 · 경유 · 통행료 5종  ·  "
+        "왕복=탱크용량×80%충전 기준 자동  ·  "
+        "((거리km × 유류비/L ÷ 연비) + 통행료) × 왕복 ÷ 월평균공급량 → 「2. 물류비」반영"
+    )
+    # 경유 시장가(오피넷) — 매월 자동 반영
+    force_diesel = st.session_state.pop("pf_diesel_force", False)
+    diesel_info = get_diesel_price_monthly(force_refresh=force_diesel)
+    month_now = datetime.date.today().strftime("%Y-%m")
+    if diesel_info.get("ok"):
+        if st.session_state.get("pf_diesel_applied_month") != month_now or force_diesel:
+            st.session_state["pf_lfuel"] = float(diesel_info["price"])
+            st.session_state["pf_diesel_applied_month"] = month_now
+    a1, a2 = st.columns(2)
+    logi_origin = a1.text_input(
+        "출발지 주소",
+        value=str(p0.get("logi_origin", PROFIT_DEFAULTS["logi_origin"])),
+        key="pf_origin",
+        placeholder="예: 경기도 화성시 마도면 …",
+    )
+    logi_dest = a2.text_input(
+        "도착지 주소",
+        value=str(p0.get("logi_dest", "")),
+        key="pf_dest",
+        placeholder="거래처 도로명/지번 주소",
+    )
+    btn_r, btn_f = st.columns(2)
+    if btn_r.button("📍 거리·통행료 조회", key="pf_route_btn", type="secondary", width="stretch"):
+        with st.spinner("주소·거리·통행료 조회 중…"):
+            route = kakao_route_distance_km(logi_origin, logi_dest)
+        st.session_state["pf_route_info"] = route
+        if route.get("ok"):
+            st.session_state["pf_lkm"] = round(float(route["km"]), 1)
+            # 20톤 벌크(5종) 편도 통행료 자동 반영
+            st.session_state["pf_ltoll"] = float(route.get("toll") or 0)
+            st.success(route.get("message") or f"거리 {route['km']:.1f} km")
+        else:
+            st.error(route.get("message") or "거리 조회 실패")
+    if btn_f.button("⛽ 경유 시세 새로고침", key="pf_diesel_btn", width="stretch"):
+        st.session_state["pf_diesel_force"] = True
+        st.rerun()
+    route_info = st.session_state.get("pf_route_info") or {}
+    if route_info.get("ok"):
+        st.caption(
+            f"출발: {route_info.get('origin_label','')} → 도착: {route_info.get('dest_label','')}  ·  "
+            f"{route_info.get('message','')}"
+        )
+    if diesel_info.get("ok"):
+        st.caption(
+            f"경유 시장가 {float(diesel_info['price']):,.2f} 원/L  ·  "
+            f"{diesel_info.get('source','')}  ·  기준일 {diesel_info.get('asof','')}  ·  "
+            f"{month_now} 자동반영"
+        )
+    else:
+        st.caption(diesel_info.get("message") or "경유 시세 조회 실패 — 유류비를 수동 입력하세요.")
+    if "pf_lkm" not in st.session_state:
+        st.session_state["pf_lkm"] = float(p0.get("logi_km", 70.0))
+    if "pf_lfuel" not in st.session_state:
+        st.session_state["pf_lfuel"] = float(
+            diesel_info["price"] if diesel_info.get("ok") else p0.get("logi_fuel_price", 1400.0)
+        )
+    l1, l2, l3 = st.columns(3)
+    logi_km = l1.number_input("거리 (km)", min_value=0.0, step=0.1, key="pf_lkm")
+    logi_fuel = l2.number_input(
+        "유류비 (원/L, 경유)", min_value=0.0, step=1.0, key="pf_lfuel",
+    )
+    logi_eff = l3.number_input(
+        "연비 (km/L, 20톤벌크)", min_value=0.1, step=0.1,
+        value=float(p0.get("logi_efficiency", 2.5)), key="pf_leff",
+    )
+    l4, l5, l6 = st.columns(3)
+    if "pf_ltoll" not in st.session_state:
+        st.session_state["pf_ltoll"] = float(p0.get("logi_toll", 0.0))
+    logi_toll = l4.number_input(
+        "통행료 (원, 편도·20톤벌크)", min_value=0.0, step=100.0, key="pf_ltoll",
+    )
+    # 왕복횟수 = ceil(월평균공급량 ÷ (탱크총용량kg × 80%))
+    _rt_info = compute_roundtrips_from_tank(monthly_usage, tank_spec, fill_ratio=0.8)
+    logi_rt = float(_rt_info["roundtrips"]) if _rt_info.get("ok") else float(p0.get("logi_roundtrips", 0) or 0)
+    st.session_state["pf_lrt"] = logi_rt
+    l5.markdown(
+        f"<div style='padding-top:0.2rem;'>"
+        f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>왕복 횟수 (회/월)</div>"
+        f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{logi_rt:,.0f}</div>"
+        f"<div style='font-size:0.75rem;color:#64748B;'>탱크 80% 소모시 충전</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    # 물류비 공급량 = 프로젝트 「월 평균 공급량」 그대로 (별도 입력 없음)
+    logi_kg = float(monthly_usage) if float(monthly_usage or 0) > 0 else 1.0
+    st.session_state["pf_lkg"] = logi_kg
+    l6.markdown(
+        f"<div style='padding-top:0.2rem;'>"
+        f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>월평균 공급량 (kg)</div>"
+        f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{logi_kg:,.0f}</div>"
+        f"<div style='font-size:0.75rem;color:#64748B;'>프로젝트 월 평균 공급량 연동</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    logi_calc = compute_logistics_unit_cost(
+        logi_km, logi_fuel, logi_eff, logi_toll, logi_rt, logi_kg
+    )
+    logi_per = round(float(logi_calc["per_kg"]), 2)
+    # 계산값을 단가 「물류비」위젯에 즉시 반영 (단가 렌더 전에 세팅)
+    st.session_state["pf_logi"] = float(logi_per)
+    st.caption(_rt_info.get("message") or "")
+    st.caption(
+        f"계산 물류비 {logi_per:,.2f} 원/kg  ·  "
+        f"편도연료 {logi_calc['fuel_one_way']:,.0f}원  ·  "
+        f"왕복총비용 {logi_calc['round_trip_cost']:,.0f}원"
+    )
+    st.markdown("##### ◎ 단가")
+    u1, u2, u3 = st.columns(3)
+    purchase_unit = u1.number_input(
+        "1. 매입단가 (원/kg)", min_value=0.0, step=1.0,
+        value=float(p0["purchase_unit"]), key="pf_buy",
+    )
+    logistics_unit = u2.number_input(
+        "2. 물류비 (원/kg)", min_value=0.0, step=1.0, key="pf_logi",
+    )
+    supply_unit = u3.number_input(
+        "3. 공급단가 (원/kg)", min_value=0.0, step=1.0,
+        value=float(p0["supply_unit"]), key="pf_supply",
+    )
+    st.markdown("##### ◎ 금융 / 관리 / 임대")
+    f1, f2, f3, f4 = st.columns(4)
+    interest = f1.number_input(
+        "이자율 (예: 0.05=5%)", min_value=0.0, max_value=1.0, step=0.005, format="%.3f",
+        value=float(p0["interest_rate"]), key="pf_rate",
+    )
+    mgmt_rate = f2.number_input(
+        "일반관리비 비율 (월매출)", min_value=0.0, max_value=1.0, step=0.005, format="%.3f",
+        value=float(p0["mgmt_rate"]), key="pf_mgmt",
+    )
+    dep_months = f3.number_input(
+        "감가상각 개월 (10년=120)", min_value=1.0, step=12.0,
+        value=float(p0["depreciation_months"]), key="pf_dep",
+    )
+    rent = f4.number_input(
+        "장비 임대료 (원)", min_value=0.0, step=10000.0,
+        value=float(p0["equipment_rent"]), key="pf_rent",
+    )
+    rent_count = st.number_input(
+        "부가횟수", min_value=0.0, step=1.0,
+        value=float(p0["rent_count"]), key="pf_rent_n",
+    )
+    b_save, b_reset = st.columns(2)
+    submitted = b_save.button("💾 계산 / 저장", type="primary", width="stretch", key="pf_save_btn")
+    reset = b_reset.button("↺ 엑셀 기본값으로 초기화", width="stretch", key="pf_reset_btn")
+    if reset:
+        st.session_state["profit_inputs"] = dict(PROFIT_DEFAULTS)
+        save_profit_inputs(st.session_state["profit_inputs"])
+        for k in _pf_keys:
+            st.session_state.pop(k, None)
+        st.session_state.pop("pf_route_info", None)
+        st.session_state.pop("pf_diesel_applied_month", None)
+        st.session_state.pop("pf_diesel_force", None)
+        st.rerun()
+    if submitted:
+        new_p = {
+            "project_name": project_name,
+            "tank_spec": tank_spec,
+            "tank_price": tank_price,
+            "monthly_usage_kg": monthly_usage,
+            "vaporizer_capacity": vap_cap,
+            "vaporizer_qty_note": vap_note,
+            "vaporizer_price": vap_price,
+            "construction_cost": construction,
+            "purchase_unit": purchase_unit,
+            "logistics_unit": float(logistics_unit),
+            "supply_unit": supply_unit,
+            "interest_rate": interest,
+            "mgmt_rate": mgmt_rate,
+            "depreciation_months": dep_months,
+            "equipment_rent": rent,
+            "rent_count": rent_count,
+            "logi_km": float(logi_km),
+            "logi_fuel_price": float(logi_fuel),
+            "logi_efficiency": float(logi_eff),
+            "logi_toll": float(logi_toll),
+            "logi_roundtrips": float(logi_rt),
+            "logi_supply_kg": float(logi_kg),
+            "logi_origin": str(logi_origin),
+            "logi_dest": str(logi_dest),
+        }
+        st.session_state["profit_inputs"] = new_p
+        save_profit_inputs(new_p)
+        st.success("저장되었습니다. 아래 결과가 갱신됩니다.")
+    # 화면 결과도 현재 입력(자동 반영된 물류비 포함) 기준으로 표시
+    p = {
+        "project_name": project_name,
+        "tank_spec": tank_spec,
+        "tank_price": tank_price,
+        "monthly_usage_kg": monthly_usage,
+        "vaporizer_capacity": vap_cap,
+        "vaporizer_qty_note": vap_note,
+        "vaporizer_price": vap_price,
+        "construction_cost": construction,
+        "purchase_unit": purchase_unit,
+        "logistics_unit": float(logistics_unit),
+        "supply_unit": supply_unit,
+        "interest_rate": interest,
+        "mgmt_rate": mgmt_rate,
+        "depreciation_months": dep_months,
+        "equipment_rent": rent,
+        "rent_count": rent_count,
+        "logi_km": float(logi_km),
+        "logi_fuel_price": float(logi_fuel),
+        "logi_efficiency": float(logi_eff),
+        "logi_toll": float(logi_toll),
+        "logi_roundtrips": float(logi_rt),
+        "logi_supply_kg": float(logi_kg),
+        "logi_origin": str(logi_origin),
+        "logi_dest": str(logi_dest),
+    }
+    st.session_state["profit_inputs"] = p
+    r = compute_profitability(p)
+    st.markdown("---")
+    st.markdown(
+        f"<div class='sub-header dashboard-tab-panel-head'>◆ [{html.escape(str(p.get('project_name') or '프로젝트'))}] 투자대비 수익성 분석 보고</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"TANK: {parse_tank_capacity_kg(p.get('tank_spec')):,.0f} kg · 기화기 {p.get('vaporizer_capacity',0):,.0f} Nm3/hr {p.get('vaporizer_qty_note','')} · "
+        f"년 사용량(자동) {r['yearly_usage']:,.0f} kg"
+    )
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(
+        f"<div class='metric-box'><div class='metric-label'>합계 투자액 (C9+C16+C18)</div>"
+        f"<div class='metric-value'>{r['total_invest']:,.0f} 원</div></div>",
+        unsafe_allow_html=True,
+    )
+    m2.markdown(
+        f"<div class='metric-box'><div class='metric-label'>매출이익 (원/kg)</div>"
+        f"<div class='metric-value'>{r['margin_kg']:,.1f} 원/kg</div></div>",
+        unsafe_allow_html=True,
+    )
+    m3.markdown(
+        f"<div class='metric-box'><div class='metric-label'>월평균 이익금</div>"
+        f"<div class='metric-value' style='color:{'#059669' if r['monthly_profit']>=0 else '#E11D48'};'>"
+        f"{r['monthly_profit']:,.0f} 원/월</div></div>",
+        unsafe_allow_html=True,
+    )
+    m4.markdown(
+        f"<div class='metric-box'><div class='metric-label'>최근 3개월 매출 실이익</div>"
+        f"<div class='metric-value'>{r['three_month']:,.0f} 원</div></div>",
+        unsafe_allow_html=True,
+    )
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**◎ 단가 · 투자 요약**")
+        summary_df = pd.DataFrame(
+            [
+                {"항목": "TANK 구입가", "값": p["tank_price"], "단위": "원"},
+                {"항목": "기화기 구입가", "값": p["vaporizer_price"], "단위": "원"},
+                {"항목": "공사비용", "값": p["construction_cost"], "단위": "원"},
+                {"항목": "합계 금액", "값": r["total_invest"], "단위": "원"},
+                {"항목": "년 사용량", "값": r["yearly_usage"], "단위": "kg"},
+                {"항목": "월 평균 공급량", "값": p["monthly_usage_kg"], "단위": "kg"},
+                {"항목": "매입단가", "값": p["purchase_unit"], "단위": "원/kg"},
+                {"항목": "물류비", "값": p["logistics_unit"], "단위": "원/kg"},
+                {"항목": "공급단가", "값": p["supply_unit"], "단위": "원/kg"},
+                {"항목": "매출이익", "값": r["margin_kg"], "단위": "원/kg"},
+                {"항목": "물류비 계산(P18)", "값": r["logi_per_kg"], "단위": "원/kg"},
+            ]
+        )
+        st.dataframe(
+            summary_df.style.format({"값": "{:,.2f}"}),
+            hide_index=True,
+            width="stretch",
+            height=420,
+        )
+    with right:
+        st.markdown("**◎ 사용량 대비 영업이익 (월)**")
+        result_df = pd.DataFrame(
+            [
+                {"항목": "월평균 매출이익", "계산": "월사용량 × 매출이익", "값": r["monthly_gross"], "단위": "원/월"},
+                {"항목": "장비 감가상각", "계산": f"투자합계 ÷ {p['depreciation_months']:.0f}", "값": r["depreciation"], "단위": "원/월"},
+                {"항목": "금융비", "계산": "원금 × 이자율 ÷ 12", "값": r["finance"], "단위": "원/월"},
+                {"항목": "월 매출", "계산": "월사용량 × 공급단가", "값": r["monthly_sales"], "단위": "원/월"},
+                {"항목": "일반관리비", "계산": f"월매출 × {p['mgmt_rate']*100:.1f}%", "값": r["mgmt"], "단위": "원/월"},
+                {"항목": "투자비용(상각+금융)", "계산": "감가상각 + 금융비", "값": r["invest_cost"], "단위": "원/월"},
+                {"항목": "월평균 이익금", "계산": "매출이익 − 투자비용 − 관리비", "값": r["monthly_profit"], "단위": "원/월"},
+                {"항목": "최근 3개월 실이익", "계산": "월이익×3 + 임대료×횟수", "값": r["three_month"], "단위": "원"},
+            ]
+        )
+        st.dataframe(
+            result_df.style.format({"값": "{:,.0f}"}),
+            hide_index=True,
+            width="stretch",
+            height=420,
+        )
+    st.info(
+        "적용 함수: `년사용량=월×12` · `합계=탱크+기화기+공사` · `매출이익=공급−(매입+물류)` · "
+        "`관리비=월매출×14.5%` · `감가=투자÷120` · `금융=원금×이자÷12` · "
+        "`월이익=매출이익−(감가+금융)−관리비` · `3개월=월이익×3+(임대×횟수)` · "
+        "`물류원/kg=(KM×유류비/연비+통행료)×왕복÷KG`"
+    )
+    # Tab9 전용 — 스크린샷형 수익성 보고서 엑셀 (전체 대시보드 영향 없음)
+    _route_for_xlsx = st.session_state.get("pf_route_info") or {}
+    _diesel_for_xlsx = diesel_info if isinstance(diesel_info, dict) else {}
+    try:
+        _profit_xlsx = build_profitability_report_excel(
+            p, r, route_info=_route_for_xlsx, diesel_info=_diesel_for_xlsx
+        )
+        st.download_button(
+            "📥 수익성 분석 보고서 엑셀 내보내기",
+            data=_profit_xlsx,
+            file_name=f"수익성분석_{str(p.get('project_name') or '보고서')}_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+            key="pf_report_xlsx_btn",
+            help="스크린샷과 같은 보고서 형태. 거리·통행료·경유시세 설명은 작은 글씨로 포함됩니다.",
+        )
+    except Exception as _xlsx_err:
+        st.warning(f"보고서 엑셀 생성 실패: {_xlsx_err}")
