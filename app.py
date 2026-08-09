@@ -851,14 +851,57 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
         except: pass
     return None, None
 KAKAO_REST_API_KEY = "21a8c4d7312051598c2e05dba0b9c0c7"
-def geocode_address_kakao(address, rest_api_key=None):
-    """주소/키워드 → (lat, lon, 표기주소). 실패 시 (None, None, '')."""
+@st.cache_data(show_spinner=False, max_entries=2000)
+def kakao_place_search(query, rest_api_key=None, size=15):
+    """주소·상호·명칭 통합검색 → 후보 목록.
+    반환: [{lat, lon, label, place_name, address}, ...]
+    """
     key = rest_api_key or KAKAO_REST_API_KEY
-    q = str(address or "").strip()
+    q = str(query or "").strip()
     if not q:
-        return None, None, ""
+        return []
     headers = {"Authorization": f"KakaoAK {key}"}
-    # 1) 주소 검색
+    cands = []
+    seen = set()
+
+    def _add(lat, lon, label, place_name="", address=""):
+        try:
+            lat_f, lon_f = float(lat), float(lon)
+        except Exception:
+            return
+        sig = (round(lat_f, 5), round(lon_f, 5), str(label).strip())
+        if sig in seen:
+            return
+        seen.add(sig)
+        cands.append(
+            {
+                "lat": lat_f,
+                "lon": lon_f,
+                "label": str(label).strip() or q,
+                "place_name": str(place_name or "").strip(),
+                "address": str(address or "").strip(),
+            }
+        )
+
+    # 1) 키워드(장소명·상호·지점)
+    try:
+        res = requests.get(
+            "https://dapi.kakao.com/v2/local/search/keyword.json",
+            headers=headers,
+            params={"query": q, "size": min(int(size or 15), 15)},
+            timeout=5,
+        )
+        if res.status_code == 200:
+            for doc in res.json().get("documents") or []:
+                place = str(doc.get("place_name") or "").strip()
+                road = str(doc.get("road_address_name") or "").strip()
+                jibun = str(doc.get("address_name") or "").strip()
+                addr = road or jibun
+                label = f"{place} · {addr}" if place and addr else (place or addr or q)
+                _add(doc.get("y"), doc.get("x"), label, place, addr)
+    except Exception:
+        pass
+    # 2) 주소 검색 (키워드에 없을 때 보강)
     try:
         res = requests.get(
             "https://dapi.kakao.com/v2/local/search/address.json",
@@ -866,31 +909,24 @@ def geocode_address_kakao(address, rest_api_key=None):
             params={"query": q},
             timeout=5,
         )
-        if res.status_code == 200 and res.json().get("documents"):
-            doc = res.json()["documents"][0]
-            addr = doc.get("address_name") or q
-            if doc.get("road_address"):
-                addr = doc["road_address"].get("address_name") or addr
-            elif doc.get("address"):
-                addr = doc["address"].get("address_name") or addr
-            return float(doc["y"]), float(doc["x"]), addr
+        if res.status_code == 200:
+            for doc in res.json().get("documents") or []:
+                addr = doc.get("address_name") or q
+                if doc.get("road_address"):
+                    addr = doc["road_address"].get("address_name") or addr
+                elif doc.get("address"):
+                    addr = doc["address"].get("address_name") or addr
+                _add(doc.get("y"), doc.get("x"), addr, "", addr)
     except Exception:
         pass
-    # 2) 키워드 검색
-    try:
-        res = requests.get(
-            "https://dapi.kakao.com/v2/local/search/keyword.json",
-            headers=headers,
-            params={"query": q},
-            timeout=5,
-        )
-        if res.status_code == 200 and res.json().get("documents"):
-            doc = res.json()["documents"][0]
-            addr = doc.get("road_address_name") or doc.get("address_name") or q
-            return float(doc["y"]), float(doc["x"]), addr
-    except Exception:
-        pass
-    return None, None, ""
+    return cands
+def geocode_address_kakao(address, rest_api_key=None):
+    """주소·상호·명칭 통합검색 → (lat, lon, 표기주소). 후보 1순위 사용."""
+    cands = kakao_place_search(address, rest_api_key=rest_api_key, size=10)
+    if not cands:
+        return None, None, ""
+    c0 = cands[0]
+    return c0["lat"], c0["lon"], c0["label"]
 def haversine_km(lat1, lon1, lat2, lon2):
     """두 좌표 직선거리(km) — Haversine."""
     r = 6371.0
@@ -907,29 +943,21 @@ def _toll_for_bulk20t(toll_class1_won):
     raw = float(toll_class1_won or 0) * TOLL_CLASS_5_MULT
     return float(int(round(raw / 10.0) * 10))
 @st.cache_data(show_spinner=False, max_entries=2000)
-def kakao_route_distance_km(origin_addr, dest_addr, rest_api_key=None, _route_v=2):
-    """출발·도착 주소 → 자동차 거리(km) + 통행료(원, 편도).
-    1순위: 카카오모빌리티 길찾기(거리·통행료)
-    2순위: 좌표 Haversine × 1.3 (도로거리 보정, 통행료 0)
-    통행료: API 1종가 × 2.5 → 20톤 벌크(5종) 환산
-    반환: {ok, km, toll, toll_class1, method, origin_label, dest_label, message}
-    """
-    _ = _route_v  # 캐시 버전(통행료 필드 추가)
+def kakao_route_from_coords(o_lat, o_lon, d_lat, d_lon, o_label, d_label, rest_api_key=None, _route_v=4):
+    """좌표 기준 자동차 거리(km) + 통행료(원, 편도)."""
+    _ = _route_v
     key = rest_api_key or KAKAO_REST_API_KEY
-    o_lat, o_lon, o_label = geocode_address_kakao(origin_addr, key)
-    d_lat, d_lon, d_label = geocode_address_kakao(dest_addr, key)
-    if o_lat is None or d_lat is None:
+    o_label = str(o_label or "출발")
+    d_label = str(d_label or "도착")
+    try:
+        o_lat, o_lon = float(o_lat), float(o_lon)
+        d_lat, d_lon = float(d_lat), float(d_lon)
+    except Exception:
         return {
-            "ok": False,
-            "km": 0.0,
-            "toll": 0.0,
-            "toll_class1": 0.0,
-            "method": "",
-            "origin_label": o_label or str(origin_addr),
-            "dest_label": d_label or str(dest_addr),
-            "message": "주소를 좌표로 변환하지 못했습니다. 도로명/지번을 확인해 주세요.",
+            "ok": False, "km": 0.0, "toll": 0.0, "toll_class1": 0.0, "method": "",
+            "origin_label": o_label, "dest_label": d_label,
+            "message": "좌표가 올바르지 않습니다.",
         }
-    # 카카오모빌리티 directions (x=경도, y=위도)
     try:
         headers = {"Authorization": f"KakaoAK {key}", "Content-Type": "application/json"}
         res = requests.get(
@@ -968,7 +996,6 @@ def kakao_route_distance_km(origin_addr, dest_addr, rest_api_key=None, _route_v=
                     }
     except Exception:
         pass
-    # 폴백: 직선거리 × 도로계수 1.3 (물류 실무 근사) — 통행료는 산출 불가
     straight = haversine_km(o_lat, o_lon, d_lat, d_lon)
     road_km = straight * 1.3
     return {
@@ -984,6 +1011,27 @@ def kakao_route_distance_km(origin_addr, dest_addr, rest_api_key=None, _route_v=
             f"통행료는 수동 입력"
         ),
     }
+@st.cache_data(show_spinner=False, max_entries=2000)
+def kakao_route_distance_km(origin_addr, dest_addr, rest_api_key=None, _route_v=4):
+    """출발·도착(주소/상호/명칭) → 자동차 거리(km) + 통행료(원, 편도)."""
+    _ = _route_v
+    key = rest_api_key or KAKAO_REST_API_KEY
+    o_lat, o_lon, o_label = geocode_address_kakao(origin_addr, key)
+    d_lat, d_lon, d_label = geocode_address_kakao(dest_addr, key)
+    if o_lat is None or d_lat is None:
+        return {
+            "ok": False,
+            "km": 0.0,
+            "toll": 0.0,
+            "toll_class1": 0.0,
+            "method": "",
+            "origin_label": o_label or str(origin_addr),
+            "dest_label": d_label or str(dest_addr),
+            "message": "출발/도착을 찾지 못했습니다. 주소·상호·명칭을 확인해 주세요.",
+        }
+    return kakao_route_from_coords(
+        o_lat, o_lon, d_lat, d_lon, o_label, d_label, rest_api_key=key, _route_v=_route_v
+    )
 def _parse_ton_number(token):
     """톤수 숫자 토큰 → float. '4.9'/'4,9' 지원."""
     t = str(token or "").strip().replace(",", ".")
@@ -994,6 +1042,93 @@ def _parse_ton_number(token):
         return float(t)
     except Exception:
         return 0.0
+# 액화가스 내용적(L) → kg 환산 밀도 (대략값, 액화 기준 kg/L)
+GAS_DENSITY_KG_PER_L = {
+    "질소": 0.808,    # LN2
+    "알곤": 1.395,    # LAr
+    "산소": 1.141,    # LOX
+    "탄산": 1.101,    # LCO2
+    "수소": 0.0708,   # LH2
+    "헬륨": 0.125,    # LHe
+}
+# 액화 kg → 기체 Nm³ 환산 (0℃, 1atm 대략값)
+GAS_NM3_PER_KG = {
+    "질소": 0.7996,
+    "알곤": 0.5605,
+    "산소": 0.6998,
+    "탄산": 0.5090,
+    "수소": 11.126,
+    "헬륨": 5.596,
+}
+GAS_OPTIONS = list(GAS_DENSITY_KG_PER_L.keys())
+def liters_to_tank_kg(liters, gas_name):
+    """내용적(L) × 가스밀도 → 탱크 용량(kg)."""
+    dens = float(GAS_DENSITY_KG_PER_L.get(str(gas_name), 0.808) or 0.808)
+    return float(liters or 0) * dens
+def tank_kg_to_nm3(tank_kg, gas_name):
+    """탱크 용량(kg) → 기체 환산(Nm³)."""
+    factor = float(GAS_NM3_PER_KG.get(str(gas_name), 0.0) or 0.0)
+    return float(tank_kg or 0) * factor
+def tank_liters_to_nm3(liters, gas_name):
+    """내용적(L) → 기체 환산(Nm³) = L × 밀도 × Nm³/kg."""
+    return tank_kg_to_nm3(liters_to_tank_kg(liters, gas_name), gas_name)
+def gas_conversion_rows(liters, tank_kg, selected_gas):
+    """선택 가스·전 가스 기체환산 표용 rows."""
+    rows = []
+    for g in GAS_OPTIONS:
+        dens = GAS_DENSITY_KG_PER_L[g]
+        nm3_per_kg = GAS_NM3_PER_KG[g]
+        # 동일 내용적(L) 기준 비교 + 현재 탱크 kg 기준(선택 가스)도 표기
+        kg_from_l = float(liters or 0) * dens
+        nm3_from_l = kg_from_l * nm3_per_kg
+        nm3_from_kg = float(tank_kg or 0) * nm3_per_kg if g == selected_gas else None
+        rows.append(
+            {
+                "가스": g + (" ★" if g == selected_gas else ""),
+                "밀도(kg/L)": dens,
+                "Nm³/kg": nm3_per_kg,
+                "내용적 기준 kg": round(kg_from_l, 1),
+                "내용적 기준 Nm³": round(nm3_from_l, 1),
+                "현재탱크 Nm³": round(nm3_from_kg, 1) if nm3_from_kg is not None else "—",
+            }
+        )
+    return rows
+def compute_tank_usage_cycle(tank_kg, hourly_usage_kg, operating_hours, fill_ratio=0.8):
+    """시간당 사용량·가동시간 → 탱크 사용주기.
+    충전기준 = 탱크kg × 80% 소모 시 충전.
+    사용주기(일) = 충전기준 ÷ (시간당사용량 × 일가동시간)
+    """
+    tank = float(tank_kg or 0)
+    hourly = float(hourly_usage_kg or 0)
+    hours = float(operating_hours or 0)
+    ratio = float(fill_ratio or 0) or 0.8
+    charge_kg = tank * ratio
+    daily_kg = hourly * hours
+    if hourly <= 0 or charge_kg <= 0:
+        return {
+            "ok": False,
+            "charge_kg": charge_kg,
+            "daily_kg": daily_kg,
+            "cycle_days": 0.0,
+            "cycle_hours": 0.0,
+            "fills_per_month": 0.0,
+            "message": "시간당 사용량과 탱크 용량을 입력하세요.",
+        }
+    cycle_hours = charge_kg / hourly  # 가동시간 누적 기준
+    cycle_days = (charge_kg / daily_kg) if daily_kg > 0 else 0.0
+    fills_per_month = (30.0 / cycle_days) if cycle_days > 0 else 0.0
+    return {
+        "ok": True,
+        "charge_kg": charge_kg,
+        "daily_kg": daily_kg,
+        "cycle_days": cycle_days,
+        "cycle_hours": cycle_hours,
+        "fills_per_month": fills_per_month,
+        "message": (
+            f"충전기준 {charge_kg:,.0f}kg(탱크×{ratio*100:.0f}%) ÷ "
+            f"일사용 {daily_kg:,.1f}kg = 사용주기 {cycle_days:.2f}일"
+        ),
+    }
 def parse_tank_capacity_kg(tank_value):
     """TANK 용량 → kg.
     - 숫자만 입력: kg로 그대로 사용 (예: 4900)
@@ -3382,7 +3517,12 @@ PROFIT_CACHE_FILE = os.path.join(CACHE_DIR, "profitability.json")
 # 수익성분석.xlsx 기본값 (한국메티슨 시트 함수 그대로 이식)
 PROFIT_DEFAULTS = {
     "project_name": "한국메티슨",
-    "tank_spec": 100000.0,  # kg (숫자만)
+    "tank_gas": "질소",
+    "tank_capacity_mode": "liters",  # liters | kg
+    "tank_liters": 123763.0,  # 내용적 L (100000kg ÷ 0.808 ≈)
+    "tank_spec": 100000.0,  # kg (환산값 또는 직접입력)
+    "hourly_usage_kg": 50.0,  # 시간당 사용량 kg/h
+    "operating_hours": 8.0,   # 일 가동시간 h
     "tank_price": 350_000_000.0,
     "monthly_usage_kg": 400_000.0,
     "vaporizer_capacity": 1500.0,
@@ -3557,7 +3697,8 @@ def build_profitability_report_excel(p, r, route_info=None, diesel_info=None):
     put(4, 2, f"◆ [{name}] 투자대비 수익성 분석 보고", font=head_font, merge_to=5)
     put(
         5, 2,
-        f"TANK: {parse_tank_capacity_kg(p.get('tank_spec')):,.0f} kg · 기화기 {float(p.get('vaporizer_capacity') or 0):,.0f} Nm3/hr "
+        f"TANK: {p.get('tank_gas','')} {float(p.get('tank_liters') or 0):,.0f} L → "
+        f"{parse_tank_capacity_kg(p.get('tank_spec')):,.0f} kg · 기화기 {float(p.get('vaporizer_capacity') or 0):,.0f} Nm3/hr "
         f"{p.get('vaporizer_qty_note','')} · 년 사용량(자동) {_won(r['yearly_usage'])} kg",
         font=note_font, merge_to=5,
     )
@@ -3566,7 +3707,15 @@ def build_profitability_report_excel(p, r, route_info=None, diesel_info=None):
     row = 7
     put(row, 2, "○ 장비 투자비", font=bold_font, merge_to=5)
     row = 8
-    put(row, 2, f"1. TANK 구매 : {parse_tank_capacity_kg(p.get('tank_spec')):,.0f} kg", font=body_font, merge_to=5)
+    _xlsx_kg = parse_tank_capacity_kg(p.get("tank_spec"))
+    _xlsx_gas = str(p.get("tank_gas") or "질소")
+    _xlsx_nm3 = tank_kg_to_nm3(_xlsx_kg, _xlsx_gas)
+    put(
+        row, 2,
+        f"1. TANK 구매 : {_xlsx_gas} {float(p.get('tank_liters') or 0):,.0f} L "
+        f"→ {_xlsx_kg:,.0f} kg · 기체환산 {_xlsx_nm3:,.1f} Nm³",
+        font=body_font, merge_to=5,
+    )
     row = 9
     put(row, 2, f"   구입가: {_won(p.get('tank_price'))} 원", font=body_font)
     put(row, 3, f"년 사용량: {_won(r['yearly_usage'])} kg", font=body_font)
@@ -5763,27 +5912,157 @@ with tab9:
         st.session_state["profit_inputs"] = load_profit_inputs()
     p0 = st.session_state["profit_inputs"]
     _pf_keys = [
-        "pf_name", "pf_tank_kg", "pf_tank_kg__comma", "pf_tank_spec",
+        "pf_name", "pf_tank_gas", "pf_tank_cap_mode",
+        "pf_tank_liters", "pf_tank_liters__comma",
+        "pf_tank_kg", "pf_tank_kg__comma", "pf_tank_spec",
+        "pf_hourly_usage", "pf_operating_hours",
         "pf_tank_price", "pf_tank_price__comma", "pf_usage", "pf_usage__comma",
         "pf_const", "pf_const__comma", "pf_vap_cap", "pf_vap_cap__comma",
         "pf_vap_note", "pf_vap_price", "pf_vap_price__comma",
         "pf_buy", "pf_logi", "pf_supply",
         "pf_rate", "pf_mgmt", "pf_dep", "pf_rent", "pf_rent_n",
-        "pf_origin", "pf_dest", "pf_lkm", "pf_lfuel", "pf_leff", "pf_ltoll", "pf_lrt", "pf_lkg",
+        "pf_origin", "pf_dest", "pf_origin_cands", "pf_dest_cands",
+        "pf_origin_q", "pf_dest_q", "pf_origin_pick", "pf_dest_pick",
+        "pf_lkm", "pf_lfuel", "pf_leff", "pf_ltoll", "pf_lrt", "pf_lkg",
     ]
     # —— 입력 (물류비 계산 → 단가 순, 글씨·위젯 스타일은 단가란과 동일) ——
     st.markdown("##### ◆ 프로젝트 / 장비 투자비")
-    c_name, c_spec = st.columns([1, 1])
+    c_name, c_gas = st.columns([1, 1])
     project_name = c_name.text_input("거래처/프로젝트명", value=str(p0.get("project_name", "")), key="pf_name")
-    _tank_kg_init = parse_tank_capacity_kg(p0.get("tank_spec", PROFIT_DEFAULTS["tank_spec"]))
-    with c_spec:
-        tank_kg = profit_int_comma_input(
-            "TANK 용량 (kg)",
-            key="pf_tank_kg",
-            value=_tank_kg_init if _tank_kg_init > 0 else 4900,
-            help="숫자만 입력 (kg). 왕복횟수 = 월공급 ÷ (탱크kg × 80%)",
+    _gas0 = str(p0.get("tank_gas") or PROFIT_DEFAULTS["tank_gas"])
+    if _gas0 not in GAS_OPTIONS:
+        _gas0 = GAS_OPTIONS[0]
+    tank_gas = c_gas.selectbox(
+        "탱크 가스 종류",
+        GAS_OPTIONS,
+        index=GAS_OPTIONS.index(_gas0),
+        key="pf_tank_gas",
+        help="질소·알곤·산소·탄산·수소·헬륨. 내용적(L) 입력 시 kg 환산에 사용됩니다.",
+    )
+    _dens = float(GAS_DENSITY_KG_PER_L.get(tank_gas, 0.808))
+    _mode0 = str(p0.get("tank_capacity_mode") or "liters")
+    if _mode0 not in ("liters", "kg"):
+        _mode0 = "liters"
+    tank_capacity_mode = st.radio(
+        "탱크 용량 입력 방식",
+        options=["liters", "kg"],
+        index=0 if _mode0 == "liters" else 1,
+        format_func=lambda m: "내용적(L) → kg 환산" if m == "liters" else "용량(kg) 직접 입력",
+        horizontal=True,
+        key="pf_tank_cap_mode",
+        help="L로 넣거나, kg를 바로 넣을 수 있습니다.",
+    )
+    _kg0 = parse_tank_capacity_kg(p0.get("tank_spec", PROFIT_DEFAULTS["tank_spec"]))
+    _liters0 = p0.get("tank_liters")
+    if _liters0 is None or float(_liters0 or 0) <= 0:
+        _liters0 = (_kg0 / _dens) if _dens > 0 and _kg0 > 0 else float(PROFIT_DEFAULTS["tank_liters"])
+    t_l, t_k = st.columns([1, 1])
+    if tank_capacity_mode == "liters":
+        with t_l:
+            tank_liters = profit_int_comma_input(
+                "TANK 내용적 (L)",
+                key="pf_tank_liters",
+                value=_liters0,
+                help=f"{tank_gas} 밀도 {_dens:g} kg/L × 내용적(L) = 용량(kg)",
+            )
+        tank_kg = round(liters_to_tank_kg(tank_liters, tank_gas))
+        st.session_state["pf_tank_kg"] = int(tank_kg)
+        st.session_state["pf_tank_kg__comma"] = f"{int(tank_kg):,}"
+        t_k.markdown(
+            f"<div style='padding-top:0.2rem;'>"
+            f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>TANK 용량 (kg) 환산</div>"
+            f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{tank_kg:,.0f}</div>"
+            f"<div style='font-size:0.75rem;color:#64748B;'>"
+            f"{tank_gas} {_dens:g} kg/L × {float(tank_liters):,.0f} L</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        with t_k:
+            tank_kg = profit_int_comma_input(
+                "TANK 용량 (kg) 직접입력",
+                key="pf_tank_kg",
+                value=_kg0 if _kg0 > 0 else 4900,
+                help="용량을 kg로 바로 입력합니다. 왕복횟수 계산에 사용됩니다.",
+            )
+        tank_liters = round(float(tank_kg) / _dens) if _dens > 0 else 0.0
+        st.session_state["pf_tank_liters"] = int(tank_liters)
+        st.session_state["pf_tank_liters__comma"] = f"{int(tank_liters):,}"
+        t_l.markdown(
+            f"<div style='padding-top:0.2rem;'>"
+            f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>TANK 내용적 (L) 환산</div>"
+            f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{tank_liters:,.0f}</div>"
+            f"<div style='font-size:0.75rem;color:#64748B;'>"
+            f"{float(tank_kg):,.0f} kg ÷ {tank_gas} {_dens:g} kg/L</div>"
+            f"</div>",
+            unsafe_allow_html=True,
         )
     tank_spec = float(tank_kg)  # 저장·계산용 (단위: kg)
+    _nm3 = tank_kg_to_nm3(tank_kg, tank_gas)
+    _nm3_per_kg = float(GAS_NM3_PER_KG.get(tank_gas, 0))
+    st.caption(
+        f"기체환산({tank_gas}): {float(tank_kg):,.0f} kg × {_nm3_per_kg:g} Nm³/kg = "
+        f"**{_nm3:,.1f} Nm³**  ·  내용적 {float(tank_liters):,.0f} L 기준 "
+        f"{tank_liters_to_nm3(tank_liters, tank_gas):,.1f} Nm³"
+    )
+    with st.expander("각 가스별 밀도·기체환산 비교", expanded=False):
+        st.caption("동일 내용적(L)으로 가스별 kg·Nm³를 비교합니다. ★ = 현재 선택 가스. (0℃·1atm 대략값)")
+        _gas_df = pd.DataFrame(gas_conversion_rows(tank_liters, tank_kg, tank_gas))
+        _gas_df["밀도(kg/L)"] = _gas_df["밀도(kg/L)"].map(lambda x: f"{float(x):.4g}")
+        _gas_df["Nm³/kg"] = _gas_df["Nm³/kg"].map(lambda x: f"{float(x):.4g}")
+        _gas_df["내용적 기준 kg"] = _gas_df["내용적 기준 kg"].map(lambda x: f"{float(x):,.1f}")
+        _gas_df["내용적 기준 Nm³"] = _gas_df["내용적 기준 Nm³"].map(lambda x: f"{float(x):,.1f}")
+        _gas_df["현재탱크 Nm³"] = _gas_df["현재탱크 Nm³"].map(
+            lambda x: f"{float(x):,.1f}" if isinstance(x, (int, float)) else str(x)
+        )
+        st.dataframe(_gas_df, hide_index=True, width="stretch")
+    # 별도 작은 타일: 탱크 사용주기 (화면 복잡도 ↓ — 접힌 expander)
+    with st.expander("⏱ 탱크 사용주기 (시간당 사용량 · 가동시간)", expanded=False):
+        st.caption("충전기준 = 탱크용량 × 80%. 사용주기(일) = 충전기준 ÷ (시간당사용량 × 일가동시간)")
+        u_h, u_o = st.columns(2)
+        hourly_usage_kg = u_h.number_input(
+            "시간당 사용량 (kg/h)",
+            min_value=0.0,
+            step=1.0,
+            value=float(p0.get("hourly_usage_kg", PROFIT_DEFAULTS["hourly_usage_kg"])),
+            key="pf_hourly_usage",
+        )
+        operating_hours = u_o.number_input(
+            "일 가동시간 (h/일)",
+            min_value=0.0,
+            max_value=24.0,
+            step=0.5,
+            value=float(p0.get("operating_hours", PROFIT_DEFAULTS["operating_hours"])),
+            key="pf_operating_hours",
+        )
+        _cycle = compute_tank_usage_cycle(tank_kg, hourly_usage_kg, operating_hours, fill_ratio=0.8)
+        if _cycle.get("ok"):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.markdown(
+                f"<div class='metric-box'><div class='metric-label'>일 사용량</div>"
+                f"<div class='metric-value' style='font-size:18px;'>{_cycle['daily_kg']:,.1f} kg/일</div></div>",
+                unsafe_allow_html=True,
+            )
+            c2.markdown(
+                f"<div class='metric-box'><div class='metric-label'>사용주기</div>"
+                f"<div class='metric-value' style='font-size:18px;color:#2563EB;'>{_cycle['cycle_days']:.2f} 일</div></div>",
+                unsafe_allow_html=True,
+            )
+            c3.markdown(
+                f"<div class='metric-box'><div class='metric-label'>가동시간 기준</div>"
+                f"<div class='metric-value' style='font-size:18px;'>{_cycle['cycle_hours']:,.1f} h</div></div>",
+                unsafe_allow_html=True,
+            )
+            c4.markdown(
+                f"<div class='metric-box'><div class='metric-label'>월 충전횟수(대략)</div>"
+                f"<div class='metric-value' style='font-size:18px;'>{_cycle['fills_per_month']:.1f} 회</div></div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                f"탱크 {float(tank_kg):,.0f} kg · 충전기준 {_cycle['charge_kg']:,.0f} kg(80%) · {_cycle['message']}"
+            )
+        else:
+            st.caption(_cycle.get("message") or "입력값을 확인하세요.")
     i1, i2, i3 = st.columns(3)
     with i1:
         tank_price = profit_int_comma_input(
@@ -5827,29 +6106,111 @@ with tab9:
             st.session_state["pf_diesel_applied_month"] = month_now
     a1, a2 = st.columns(2)
     logi_origin = a1.text_input(
-        "출발지 주소",
+        "출발지 (주소·상호·명칭)",
         value=str(p0.get("logi_origin", PROFIT_DEFAULTS["logi_origin"])),
         key="pf_origin",
-        placeholder="예: 경기도 화성시 마도면 …",
+        placeholder="예: 신일가스 화성공장 / 경기도 화성시 …",
+        help="상호·지점명이 여러 개면 아래에서 선택할 수 있습니다.",
     )
     logi_dest = a2.text_input(
-        "도착지 주소",
+        "도착지 (주소·상호·명칭)",
         value=str(p0.get("logi_dest", "")),
         key="pf_dest",
-        placeholder="거래처 도로명/지번 주소",
+        placeholder="예: 제이아이금속 / 경북 구미시 …",
+        help="상호·지점명이 여러 개면 아래에서 선택할 수 있습니다.",
     )
+    _oq = str(logi_origin or "").strip()
+    _dq = str(logi_dest or "").strip()
+    _o_cands = st.session_state.get("pf_origin_cands") if st.session_state.get("pf_origin_q") == _oq else []
+    _d_cands = st.session_state.get("pf_dest_cands") if st.session_state.get("pf_dest_q") == _dq else []
+    _o_cands = _o_cands or []
+    _d_cands = _d_cands or []
+    # 지점이 여러 개면 선택 UI
+    if _o_cands or _d_cands:
+        p1, p2 = st.columns(2)
+        with p1:
+            if len(_o_cands) > 1:
+                st.selectbox(
+                    f"출발 지점 선택 ({len(_o_cands)}곳)",
+                    options=list(range(len(_o_cands))),
+                    format_func=lambda i: _o_cands[i]["label"],
+                    key="pf_origin_pick",
+                )
+            elif len(_o_cands) == 1:
+                st.caption(f"출발: {_o_cands[0]['label']}")
+        with p2:
+            if len(_d_cands) > 1:
+                st.selectbox(
+                    f"도착 지점 선택 ({len(_d_cands)}곳)",
+                    options=list(range(len(_d_cands))),
+                    format_func=lambda i: _d_cands[i]["label"],
+                    key="pf_dest_pick",
+                )
+            elif len(_d_cands) == 1:
+                st.caption(f"도착: {_d_cands[0]['label']}")
     btn_r, btn_f = st.columns(2)
     if btn_r.button("📍 거리·통행료 조회", key="pf_route_btn", type="secondary", width="stretch"):
-        with st.spinner("주소·거리·통행료 조회 중…"):
-            route = kakao_route_distance_km(logi_origin, logi_dest)
-        st.session_state["pf_route_info"] = route
-        if route.get("ok"):
-            st.session_state["pf_lkm"] = round(float(route["km"]), 1)
-            # 20톤 벌크(5종) 편도 통행료 자동 반영
-            st.session_state["pf_ltoll"] = float(route.get("toll") or 0)
-            st.success(route.get("message") or f"거리 {route['km']:.1f} km")
-        else:
-            st.error(route.get("message") or "거리 조회 실패")
+        with st.spinner("통합검색·거리·통행료 조회 중…"):
+            need_search = (
+                st.session_state.get("pf_origin_q") != _oq
+                or st.session_state.get("pf_dest_q") != _dq
+                or not st.session_state.get("pf_origin_cands")
+                or not st.session_state.get("pf_dest_cands")
+            )
+            if need_search:
+                o_cands = kakao_place_search(_oq)
+                d_cands = kakao_place_search(_dq)
+                st.session_state["pf_origin_cands"] = o_cands
+                st.session_state["pf_dest_cands"] = d_cands
+                st.session_state["pf_origin_q"] = _oq
+                st.session_state["pf_dest_q"] = _dq
+                st.session_state.pop("pf_origin_pick", None)
+                st.session_state.pop("pf_dest_pick", None)
+                if not o_cands or not d_cands:
+                    st.session_state["pf_route_info"] = {
+                        "ok": False,
+                        "message": "출발/도착을 찾지 못했습니다. 주소·상호·명칭을 확인해 주세요.",
+                    }
+                    st.error(st.session_state["pf_route_info"]["message"])
+                elif len(o_cands) > 1 or len(d_cands) > 1:
+                    st.warning("지점이 여러 개입니다. 아래에서 지점을 고른 뒤 다시 「거리·통행료 조회」를 눌러주세요.")
+                    st.rerun()
+                else:
+                    oi, di = 0, 0
+                    route = kakao_route_from_coords(
+                        o_cands[oi]["lat"], o_cands[oi]["lon"],
+                        d_cands[di]["lat"], d_cands[di]["lon"],
+                        o_cands[oi]["label"], d_cands[di]["label"],
+                    )
+                    st.session_state["pf_route_info"] = route
+                    if route.get("ok"):
+                        st.session_state["pf_lkm"] = round(float(route["km"]), 1)
+                        st.session_state["pf_ltoll"] = float(route.get("toll") or 0)
+                        st.success(route.get("message") or f"거리 {route['km']:.1f} km")
+                    else:
+                        st.error(route.get("message") or "거리 조회 실패")
+            else:
+                o_cands = st.session_state.get("pf_origin_cands") or []
+                d_cands = st.session_state.get("pf_dest_cands") or []
+                if not o_cands or not d_cands:
+                    st.error("출발/도착을 찾지 못했습니다. 주소·상호·명칭을 확인해 주세요.")
+                else:
+                    oi = int(st.session_state.get("pf_origin_pick", 0) or 0) if len(o_cands) > 1 else 0
+                    di = int(st.session_state.get("pf_dest_pick", 0) or 0) if len(d_cands) > 1 else 0
+                    oi = max(0, min(oi, len(o_cands) - 1))
+                    di = max(0, min(di, len(d_cands) - 1))
+                    route = kakao_route_from_coords(
+                        o_cands[oi]["lat"], o_cands[oi]["lon"],
+                        d_cands[di]["lat"], d_cands[di]["lon"],
+                        o_cands[oi]["label"], d_cands[di]["label"],
+                    )
+                    st.session_state["pf_route_info"] = route
+                    if route.get("ok"):
+                        st.session_state["pf_lkm"] = round(float(route["km"]), 1)
+                        st.session_state["pf_ltoll"] = float(route.get("toll") or 0)
+                        st.success(route.get("message") or f"거리 {route['km']:.1f} km")
+                    else:
+                        st.error(route.get("message") or "거리 조회 실패")
     if btn_f.button("⛽ 경유 시세 새로고침", key="pf_diesel_btn", width="stretch"):
         st.session_state["pf_diesel_force"] = True
         st.rerun()
@@ -5973,7 +6334,12 @@ with tab9:
     if submitted:
         new_p = {
             "project_name": project_name,
+            "tank_gas": tank_gas,
+            "tank_capacity_mode": tank_capacity_mode,
+            "tank_liters": float(tank_liters),
             "tank_spec": tank_spec,
+            "hourly_usage_kg": float(hourly_usage_kg),
+            "operating_hours": float(operating_hours),
             "tank_price": tank_price,
             "monthly_usage_kg": monthly_usage,
             "vaporizer_capacity": vap_cap,
@@ -6003,7 +6369,12 @@ with tab9:
     # 화면 결과도 현재 입력(자동 반영된 물류비 포함) 기준으로 표시
     p = {
         "project_name": project_name,
+        "tank_gas": tank_gas,
+        "tank_capacity_mode": tank_capacity_mode,
+        "tank_liters": float(tank_liters),
         "tank_spec": tank_spec,
+        "hourly_usage_kg": float(hourly_usage_kg),
+        "operating_hours": float(operating_hours),
         "tank_price": tank_price,
         "monthly_usage_kg": monthly_usage,
         "vaporizer_capacity": vap_cap,
@@ -6035,7 +6406,9 @@ with tab9:
         unsafe_allow_html=True,
     )
     st.caption(
-        f"TANK: {parse_tank_capacity_kg(p.get('tank_spec')):,.0f} kg · 기화기 {p.get('vaporizer_capacity',0):,.0f} Nm3/hr {p.get('vaporizer_qty_note','')} · "
+        f"TANK: {p.get('tank_gas','')} {float(p.get('tank_liters') or 0):,.0f} L → "
+        f"{parse_tank_capacity_kg(p.get('tank_spec')):,.0f} kg · "
+        f"기화기 {p.get('vaporizer_capacity',0):,.0f} Nm3/hr {p.get('vaporizer_qty_note','')} · "
         f"년 사용량(자동) {r['yearly_usage']:,.0f} kg"
     )
     m1, m2, m3, m4 = st.columns(4)
