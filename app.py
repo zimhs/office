@@ -1072,6 +1072,16 @@ def tank_kg_to_nm3(tank_kg, gas_name):
 def tank_liters_to_nm3(liters, gas_name):
     """내용적(L) → 기체 환산(Nm³) = L × 밀도 × Nm³/kg."""
     return tank_kg_to_nm3(liters_to_tank_kg(liters, gas_name), gas_name)
+def nm3_per_h_to_kg_per_h(nm3_h, gas_name):
+    """시간당 루베(Nm³/h) → kg/h."""
+    factor = float(GAS_NM3_PER_KG.get(str(gas_name), 0.0) or 0.0)
+    if factor <= 0:
+        return 0.0
+    return float(nm3_h or 0) / factor
+def kg_per_h_to_nm3_per_h(kg_h, gas_name):
+    """시간당 kg/h → 루베(Nm³/h)."""
+    factor = float(GAS_NM3_PER_KG.get(str(gas_name), 0.0) or 0.0)
+    return float(kg_h or 0) * factor
 def gas_conversion_rows(liters, tank_kg, selected_gas):
     """선택 가스·전 가스 기체환산 표용 rows."""
     rows = []
@@ -1093,22 +1103,29 @@ def gas_conversion_rows(liters, tank_kg, selected_gas):
             }
         )
     return rows
-def compute_tank_usage_cycle(tank_kg, hourly_usage_kg, operating_hours, fill_ratio=0.8):
+def compute_tank_usage_cycle(
+    tank_kg, hourly_usage_kg, operating_hours, fill_ratio=0.8, days_per_month=30.0
+):
     """시간당 사용량·가동시간 → 탱크 사용주기.
     충전기준 = 탱크kg × 80% 소모 시 충전.
     사용주기(일) = 충전기준 ÷ (시간당사용량 × 일가동시간)
+    월 사용량 = 일사용량 × 월가동일수
     """
     tank = float(tank_kg or 0)
     hourly = float(hourly_usage_kg or 0)
     hours = float(operating_hours or 0)
+    days_m = max(0.0, float(days_per_month or 0))
     ratio = float(fill_ratio or 0) or 0.8
     charge_kg = tank * ratio
     daily_kg = hourly * hours
+    monthly_kg = daily_kg * days_m
     if hourly <= 0 or charge_kg <= 0:
         return {
             "ok": False,
             "charge_kg": charge_kg,
             "daily_kg": daily_kg,
+            "monthly_kg": monthly_kg,
+            "days_per_month": days_m,
             "cycle_days": 0.0,
             "cycle_hours": 0.0,
             "fills_per_month": 0.0,
@@ -1116,11 +1133,13 @@ def compute_tank_usage_cycle(tank_kg, hourly_usage_kg, operating_hours, fill_rat
         }
     cycle_hours = charge_kg / hourly  # 가동시간 누적 기준
     cycle_days = (charge_kg / daily_kg) if daily_kg > 0 else 0.0
-    fills_per_month = (30.0 / cycle_days) if cycle_days > 0 else 0.0
+    fills_per_month = (days_m / cycle_days) if cycle_days > 0 else 0.0
     return {
         "ok": True,
         "charge_kg": charge_kg,
         "daily_kg": daily_kg,
+        "monthly_kg": monthly_kg,
+        "days_per_month": days_m,
         "cycle_days": cycle_days,
         "cycle_hours": cycle_hours,
         "fills_per_month": fills_per_month,
@@ -3521,8 +3540,12 @@ PROFIT_DEFAULTS = {
     "tank_capacity_mode": "liters",  # liters | kg
     "tank_liters": 123763.0,  # 내용적 L (100000kg ÷ 0.808 ≈)
     "tank_spec": 100000.0,  # kg (환산값 또는 직접입력)
+    "hourly_usage_mode": "kg",  # nm3 | kg
     "hourly_usage_kg": 50.0,  # 시간당 사용량 kg/h
+    "hourly_usage_nm3": 39.98,  # 시간당 루베 Nm³/h (질소 50kg×0.7996)
     "operating_hours": 8.0,   # 일 가동시간 h
+    "operating_days_per_month": 22.0,  # 월 가동일수 (일사용×가동일 = 월사용)
+    "auto_monthly_from_cycle": False,  # 사용주기→월평균 공급량 자동반영
     "tank_price": 350_000_000.0,
     "monthly_usage_kg": 400_000.0,
     "vaporizer_capacity": 1500.0,
@@ -5915,7 +5938,8 @@ with tab9:
         "pf_name", "pf_tank_gas", "pf_tank_cap_mode",
         "pf_tank_liters", "pf_tank_liters__comma",
         "pf_tank_kg", "pf_tank_kg__comma", "pf_tank_spec",
-        "pf_hourly_usage", "pf_operating_hours",
+        "pf_hourly_mode", "pf_hourly_usage", "pf_hourly_nm3", "pf_operating_hours",
+        "pf_operating_days", "pf_auto_monthly",
         "pf_tank_price", "pf_tank_price__comma", "pf_usage", "pf_usage__comma",
         "pf_const", "pf_const__comma", "pf_vap_cap", "pf_vap_cap__comma",
         "pf_vap_note", "pf_vap_price", "pf_vap_price__comma",
@@ -6017,16 +6041,67 @@ with tab9:
         )
         st.dataframe(_gas_df, hide_index=True, width="stretch")
     # 별도 작은 타일: 탱크 사용주기 (화면 복잡도 ↓ — 접힌 expander)
+    _nm3pkg = float(GAS_NM3_PER_KG.get(tank_gas, 0) or 0)
     with st.expander("⏱ 탱크 사용주기 (시간당 사용량 · 가동시간)", expanded=False):
-        st.caption("충전기준 = 탱크용량 × 80%. 사용주기(일) = 충전기준 ÷ (시간당사용량 × 일가동시간)")
-        u_h, u_o = st.columns(2)
-        hourly_usage_kg = u_h.number_input(
-            "시간당 사용량 (kg/h)",
-            min_value=0.0,
-            step=1.0,
-            value=float(p0.get("hourly_usage_kg", PROFIT_DEFAULTS["hourly_usage_kg"])),
-            key="pf_hourly_usage",
+        st.caption(
+            f"충전기준 = 탱크×80% · 사용주기 = 충전기준 ÷ (시간당kg × 일가동) · "
+            f"{tank_gas} 환산 {_nm3pkg:g} Nm³/kg"
         )
+        _hmode0 = str(p0.get("hourly_usage_mode") or "kg")
+        if _hmode0 not in ("nm3", "kg"):
+            _hmode0 = "kg"
+        hourly_usage_mode = st.radio(
+            "시간당 사용량 입력",
+            options=["nm3", "kg"],
+            index=0 if _hmode0 == "nm3" else 1,
+            format_func=lambda m: "루베(Nm³/h) → kg/h 환산" if m == "nm3" else "kg/h 직접 입력",
+            horizontal=True,
+            key="pf_hourly_mode",
+        )
+        _kg_h0 = float(p0.get("hourly_usage_kg", PROFIT_DEFAULTS["hourly_usage_kg"]) or 0)
+        _nm3_h0 = p0.get("hourly_usage_nm3")
+        if _nm3_h0 is None or float(_nm3_h0 or 0) <= 0:
+            _nm3_h0 = kg_per_h_to_nm3_per_h(_kg_h0, tank_gas)
+        u_a, u_b, u_o = st.columns(3)
+        if hourly_usage_mode == "nm3":
+            with u_a:
+                hourly_usage_nm3 = st.number_input(
+                    "시간당 사용량 (Nm³/h, 루베)",
+                    min_value=0.0,
+                    step=0.1,
+                    value=float(_nm3_h0),
+                    key="pf_hourly_nm3",
+                    help=f"{tank_gas}: kg/h = Nm³/h ÷ {_nm3pkg:g}",
+                )
+            hourly_usage_kg = nm3_per_h_to_kg_per_h(hourly_usage_nm3, tank_gas)
+            st.session_state["pf_hourly_usage"] = float(hourly_usage_kg)
+            u_b.markdown(
+                f"<div style='padding-top:0.2rem;'>"
+                f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>시간당 사용량 (kg/h) 환산</div>"
+                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{hourly_usage_kg:,.2f}</div>"
+                f"<div style='font-size:0.75rem;color:#64748B;'>{tank_gas} {float(hourly_usage_nm3):,.2f} Nm³/h ÷ {_nm3pkg:g}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            with u_b:
+                hourly_usage_kg = st.number_input(
+                    "시간당 사용량 (kg/h)",
+                    min_value=0.0,
+                    step=0.1,
+                    value=float(_kg_h0),
+                    key="pf_hourly_usage",
+                )
+            hourly_usage_nm3 = kg_per_h_to_nm3_per_h(hourly_usage_kg, tank_gas)
+            st.session_state["pf_hourly_nm3"] = float(hourly_usage_nm3)
+            u_a.markdown(
+                f"<div style='padding-top:0.2rem;'>"
+                f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>시간당 사용량 (Nm³/h) 환산</div>"
+                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{hourly_usage_nm3:,.2f}</div>"
+                f"<div style='font-size:0.75rem;color:#64748B;'>{tank_gas} {float(hourly_usage_kg):,.2f} kg/h × {_nm3pkg:g}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
         operating_hours = u_o.number_input(
             "일 가동시간 (h/일)",
             min_value=0.0,
@@ -6035,7 +6110,30 @@ with tab9:
             value=float(p0.get("operating_hours", PROFIT_DEFAULTS["operating_hours"])),
             key="pf_operating_hours",
         )
-        _cycle = compute_tank_usage_cycle(tank_kg, hourly_usage_kg, operating_hours, fill_ratio=0.8)
+        d_days, d_auto = st.columns([1, 2])
+        operating_days = d_days.number_input(
+            "월 가동일수 (일/월)",
+            min_value=1.0,
+            max_value=31.0,
+            step=1.0,
+            value=float(p0.get("operating_days_per_month", PROFIT_DEFAULTS["operating_days_per_month"])),
+            key="pf_operating_days",
+            help="월 사용량 = 일 사용량(시간당×일가동) × 월 가동일수. 예: 주5일≈22일, 연중무휴≈30일",
+        )
+        _cycle = compute_tank_usage_cycle(
+            tank_kg,
+            hourly_usage_kg,
+            operating_hours,
+            fill_ratio=0.8,
+            days_per_month=operating_days,
+        )
+        _monthly_est = float(_cycle.get("monthly_kg") or 0)
+        auto_monthly_from_cycle = d_auto.checkbox(
+            f"월 평균 공급량에 자동 반영 (일사용량 × {int(operating_days)}일)",
+            value=bool(p0.get("auto_monthly_from_cycle", False)),
+            key="pf_auto_monthly",
+            help="체크 시 아래 「월 평균 공급량」= 일사용량 × 월가동일수. 해제하면 직접 입력합니다.",
+        )
         if _cycle.get("ok"):
             c1, c2, c3, c4 = st.columns(4)
             c1.markdown(
@@ -6054,13 +6152,22 @@ with tab9:
                 unsafe_allow_html=True,
             )
             c4.markdown(
-                f"<div class='metric-box'><div class='metric-label'>월 충전횟수(대략)</div>"
-                f"<div class='metric-value' style='font-size:18px;'>{_cycle['fills_per_month']:.1f} 회</div></div>",
+                f"<div class='metric-box'><div class='metric-label'>월 사용량({int(operating_days)}일)</div>"
+                f"<div class='metric-value' style='font-size:18px;'>{_monthly_est:,.0f} kg</div></div>",
                 unsafe_allow_html=True,
             )
             st.caption(
-                f"탱크 {float(tank_kg):,.0f} kg · 충전기준 {_cycle['charge_kg']:,.0f} kg(80%) · {_cycle['message']}"
+                f"탱크 {float(tank_kg):,.0f} kg · 충전기준 {_cycle['charge_kg']:,.0f} kg(80%) · "
+                f"월가동 {int(operating_days)}일 · 월충전 약 {_cycle['fills_per_month']:.1f}회 · {_cycle['message']}"
             )
+            if auto_monthly_from_cycle:
+                _mu = int(round(_monthly_est))
+                st.session_state["pf_usage"] = _mu
+                st.session_state["pf_usage__comma"] = f"{_mu:,}"
+                st.caption(
+                    f"→ 월 평균 공급량 {_mu:,} kg "
+                    f"(일 {_cycle['daily_kg']:,.1f} × {int(operating_days)}일) 자동 반영 중"
+                )
         else:
             st.caption(_cycle.get("message") or "입력값을 확인하세요.")
     i1, i2, i3 = st.columns(3)
@@ -6069,12 +6176,23 @@ with tab9:
             "1. TANK 구입가 (원)", key="pf_tank_price", value=p0["tank_price"]
         )
     with i2:
-        monthly_usage = profit_int_comma_input(
-            "월 평균 공급량 (kg)",
-            key="pf_usage",
-            value=p0["monthly_usage_kg"],
-            help="물류비 계산의 월평균 공급량에 그대로 반영됩니다.",
-        )
+        if auto_monthly_from_cycle and _cycle.get("ok"):
+            monthly_usage = float(st.session_state.get("pf_usage", round(_monthly_est)))
+            st.markdown(
+                f"<div style='padding-top:0.2rem;'>"
+                f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>월 평균 공급량 (kg)</div>"
+                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{monthly_usage:,.0f}</div>"
+                f"<div style='font-size:0.75rem;color:#64748B;'>사용주기 자동반영 (직접입력은 위 체크 해제)</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            monthly_usage = profit_int_comma_input(
+                "월 평균 공급량 (kg)",
+                key="pf_usage",
+                value=p0["monthly_usage_kg"],
+                help="직접 입력. 사용주기에서 자동반영하려면 위 체크박스를 켜세요.",
+            )
     with i3:
         construction = profit_int_comma_input(
             "3. 공사비용 (원)", key="pf_const", value=p0["construction_cost"]
@@ -6338,8 +6456,12 @@ with tab9:
             "tank_capacity_mode": tank_capacity_mode,
             "tank_liters": float(tank_liters),
             "tank_spec": tank_spec,
+            "hourly_usage_mode": str(hourly_usage_mode),
             "hourly_usage_kg": float(hourly_usage_kg),
+            "hourly_usage_nm3": float(hourly_usage_nm3),
             "operating_hours": float(operating_hours),
+            "operating_days_per_month": float(operating_days),
+            "auto_monthly_from_cycle": bool(auto_monthly_from_cycle),
             "tank_price": tank_price,
             "monthly_usage_kg": monthly_usage,
             "vaporizer_capacity": vap_cap,
@@ -6373,8 +6495,12 @@ with tab9:
         "tank_capacity_mode": tank_capacity_mode,
         "tank_liters": float(tank_liters),
         "tank_spec": tank_spec,
+        "hourly_usage_mode": str(hourly_usage_mode),
         "hourly_usage_kg": float(hourly_usage_kg),
+        "hourly_usage_nm3": float(hourly_usage_nm3),
         "operating_hours": float(operating_hours),
+        "operating_days_per_month": float(operating_days),
+        "auto_monthly_from_cycle": bool(auto_monthly_from_cycle),
         "tank_price": tank_price,
         "monthly_usage_kg": monthly_usage,
         "vaporizer_capacity": vap_cap,
