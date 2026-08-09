@@ -1145,7 +1145,7 @@ def compute_tank_usage_cycle(
         "fills_per_month": fills_per_month,
         "message": (
             f"충전기준 {charge_kg:,.0f}kg(탱크×{ratio*100:.0f}%) ÷ "
-            f"일사용 {daily_kg:,.1f}kg = 사용주기 {cycle_days:.2f}일"
+            f"일사용 {daily_kg:,.0f}kg = 사용주기 {cycle_days:,.0f}일"
         ),
     }
 def parse_tank_capacity_kg(tank_value):
@@ -3640,6 +3640,15 @@ def compute_profitability(p):
         "three_month": three_month,
         "logi_per_kg": logi_per_kg,
     }
+@st.cache_data(show_spinner=False, max_entries=8)
+def _cached_profitability_report_excel(p_json, r_json, route_json, diesel_json):
+    """동일 입력 반복 시 엑셀 재생성 생략 (Tab9 입력 체감 속도)."""
+    return build_profitability_report_excel(
+        json.loads(p_json),
+        json.loads(r_json),
+        route_info=json.loads(route_json),
+        diesel_info=json.loads(diesel_json),
+    )
 def build_profitability_report_excel(p, r, route_info=None, diesel_info=None):
     """스크린샷형 수익성 분석 보고서 엑셀(bytes). Tab9 전용."""
     from openpyxl import Workbook
@@ -5923,7 +5932,9 @@ with tab8:
     else:
         st.warning("통합 탱크 재고 데이터가 없습니다. 폴더에 '통합탱크재고.csv'를 넣거나 왼쪽 사이드바에서 업로드해주세요.")
 # Tab 9: 📈 수익성 분석 (엑셀 함수 동일 적용)
-with tab9:
+# 입력 변경 시 Tab9만 부분 재실행 (다른 탭·상단 로딩 생략)
+@st.fragment
+def _render_profitability_analysis_tab(latest_update_str):
     t9_c1, t9_c2 = st.columns([4, 1])
     t9_c1.markdown(
         "<div class='sub-header dashboard-tab-panel-head'>📈 투자대비 수익성 분석</div>",
@@ -6047,6 +6058,13 @@ with tab9:
             f"충전기준 = 탱크×80% · 사용주기 = 충전기준 ÷ (시간당kg × 일가동) · "
             f"{tank_gas} 환산 {_nm3pkg:g} Nm³/kg"
         )
+        # 기존 float 세션값 → 정수 (format=%d 호환)
+        for _pk in ("pf_hourly_nm3", "pf_hourly_usage", "pf_operating_hours", "pf_operating_days"):
+            if _pk in st.session_state:
+                try:
+                    st.session_state[_pk] = int(round(float(st.session_state[_pk])))
+                except Exception:
+                    pass
         _hmode0 = str(p0.get("hourly_usage_mode") or "kg")
         if _hmode0 not in ("nm3", "kg"):
             _hmode0 = "kg"
@@ -6067,19 +6085,20 @@ with tab9:
             with u_a:
                 hourly_usage_nm3 = st.number_input(
                     "시간당 사용량 (Nm³/h, 루베)",
-                    min_value=0.0,
-                    step=0.1,
-                    value=float(_nm3_h0),
+                    min_value=0,
+                    step=1,
+                    value=int(round(float(_nm3_h0))),
+                    format="%d",
                     key="pf_hourly_nm3",
                     help=f"{tank_gas}: kg/h = Nm³/h ÷ {_nm3pkg:g}",
                 )
             hourly_usage_kg = nm3_per_h_to_kg_per_h(hourly_usage_nm3, tank_gas)
-            st.session_state["pf_hourly_usage"] = float(hourly_usage_kg)
+            st.session_state["pf_hourly_usage"] = int(round(hourly_usage_kg))
             u_b.markdown(
                 f"<div style='padding-top:0.2rem;'>"
                 f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>시간당 사용량 (kg/h) 환산</div>"
-                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{hourly_usage_kg:,.2f}</div>"
-                f"<div style='font-size:0.75rem;color:#64748B;'>{tank_gas} {float(hourly_usage_nm3):,.2f} Nm³/h ÷ {_nm3pkg:g}</div>"
+                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{hourly_usage_kg:,.0f}</div>"
+                f"<div style='font-size:0.75rem;color:#64748B;'>{tank_gas} {float(hourly_usage_nm3):,.0f} Nm³/h ÷ {_nm3pkg:g}</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -6087,36 +6106,39 @@ with tab9:
             with u_b:
                 hourly_usage_kg = st.number_input(
                     "시간당 사용량 (kg/h)",
-                    min_value=0.0,
-                    step=0.1,
-                    value=float(_kg_h0),
+                    min_value=0,
+                    step=1,
+                    value=int(round(float(_kg_h0))),
+                    format="%d",
                     key="pf_hourly_usage",
                 )
             hourly_usage_nm3 = kg_per_h_to_nm3_per_h(hourly_usage_kg, tank_gas)
-            st.session_state["pf_hourly_nm3"] = float(hourly_usage_nm3)
+            st.session_state["pf_hourly_nm3"] = int(round(hourly_usage_nm3))
             u_a.markdown(
                 f"<div style='padding-top:0.2rem;'>"
                 f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>시간당 사용량 (Nm³/h) 환산</div>"
-                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{hourly_usage_nm3:,.2f}</div>"
-                f"<div style='font-size:0.75rem;color:#64748B;'>{tank_gas} {float(hourly_usage_kg):,.2f} kg/h × {_nm3pkg:g}</div>"
+                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{hourly_usage_nm3:,.0f}</div>"
+                f"<div style='font-size:0.75rem;color:#64748B;'>{tank_gas} {float(hourly_usage_kg):,.0f} kg/h × {_nm3pkg:g}</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
         operating_hours = u_o.number_input(
             "일 가동시간 (h/일)",
-            min_value=0.0,
-            max_value=24.0,
-            step=0.5,
-            value=float(p0.get("operating_hours", PROFIT_DEFAULTS["operating_hours"])),
+            min_value=0,
+            max_value=24,
+            step=1,
+            value=int(round(float(p0.get("operating_hours", PROFIT_DEFAULTS["operating_hours"])))),
+            format="%d",
             key="pf_operating_hours",
         )
         d_days, d_auto = st.columns([1, 2])
         operating_days = d_days.number_input(
             "월 가동일수 (일/월)",
-            min_value=1.0,
-            max_value=31.0,
-            step=1.0,
-            value=float(p0.get("operating_days_per_month", PROFIT_DEFAULTS["operating_days_per_month"])),
+            min_value=1,
+            max_value=31,
+            step=1,
+            value=int(round(float(p0.get("operating_days_per_month", PROFIT_DEFAULTS["operating_days_per_month"])))),
+            format="%d",
             key="pf_operating_days",
             help="월 사용량 = 일 사용량(시간당×일가동) × 월 가동일수. 예: 주5일≈22일, 연중무휴≈30일",
         )
@@ -6138,17 +6160,17 @@ with tab9:
             c1, c2, c3, c4 = st.columns(4)
             c1.markdown(
                 f"<div class='metric-box'><div class='metric-label'>일 사용량</div>"
-                f"<div class='metric-value' style='font-size:18px;'>{_cycle['daily_kg']:,.1f} kg/일</div></div>",
+                f"<div class='metric-value' style='font-size:18px;'>{_cycle['daily_kg']:,.0f} kg/일</div></div>",
                 unsafe_allow_html=True,
             )
             c2.markdown(
                 f"<div class='metric-box'><div class='metric-label'>사용주기</div>"
-                f"<div class='metric-value' style='font-size:18px;color:#2563EB;'>{_cycle['cycle_days']:.2f} 일</div></div>",
+                f"<div class='metric-value' style='font-size:18px;color:#2563EB;'>{_cycle['cycle_days']:,.0f} 일</div></div>",
                 unsafe_allow_html=True,
             )
             c3.markdown(
                 f"<div class='metric-box'><div class='metric-label'>가동시간 기준</div>"
-                f"<div class='metric-value' style='font-size:18px;'>{_cycle['cycle_hours']:,.1f} h</div></div>",
+                f"<div class='metric-value' style='font-size:18px;'>{_cycle['cycle_hours']:,.0f} h</div></div>",
                 unsafe_allow_html=True,
             )
             c4.markdown(
@@ -6158,7 +6180,7 @@ with tab9:
             )
             st.caption(
                 f"탱크 {float(tank_kg):,.0f} kg · 충전기준 {_cycle['charge_kg']:,.0f} kg(80%) · "
-                f"월가동 {int(operating_days)}일 · 월충전 약 {_cycle['fills_per_month']:.1f}회 · {_cycle['message']}"
+                f"월가동 {int(operating_days)}일 · 월충전 약 {_cycle['fills_per_month']:,.0f}회 · {_cycle['message']}"
             )
             if auto_monthly_from_cycle:
                 _mu = int(round(_monthly_est))
@@ -6166,7 +6188,7 @@ with tab9:
                 st.session_state["pf_usage__comma"] = f"{_mu:,}"
                 st.caption(
                     f"→ 월 평균 공급량 {_mu:,} kg "
-                    f"(일 {_cycle['daily_kg']:,.1f} × {int(operating_days)}일) 자동 반영 중"
+                    f"(일 {_cycle['daily_kg']:,.0f} × {int(operating_days)}일) 자동 반영 중"
                 )
         else:
             st.caption(_cycle.get("message") or "입력값을 확인하세요.")
@@ -6393,28 +6415,54 @@ with tab9:
     logi_calc = compute_logistics_unit_cost(
         logi_km, logi_fuel, logi_eff, logi_toll, logi_rt, logi_kg
     )
-    logi_per = round(float(logi_calc["per_kg"]), 2)
+    logi_per = int(round(float(logi_calc["per_kg"])))
     # 계산값을 단가 「물류비」위젯에 즉시 반영 (단가 렌더 전에 세팅)
-    st.session_state["pf_logi"] = float(logi_per)
+    st.session_state["pf_logi"] = int(logi_per)
     st.caption(_rt_info.get("message") or "")
     st.caption(
-        f"계산 물류비 {logi_per:,.2f} 원/kg  ·  "
+        f"계산 물류비 {logi_per:,} 원/kg  ·  "
         f"편도연료 {logi_calc['fuel_one_way']:,.0f}원  ·  "
         f"왕복총비용 {logi_calc['round_trip_cost']:,.0f}원"
     )
     st.markdown("##### ◎ 단가")
+    for _uk in ("pf_buy", "pf_logi", "pf_supply", "pf_dep", "pf_rent", "pf_rent_n"):
+        if _uk in st.session_state:
+            try:
+                st.session_state[_uk] = int(round(float(st.session_state[_uk])))
+            except Exception:
+                pass
     u1, u2, u3 = st.columns(3)
-    purchase_unit = u1.number_input(
-        "1. 매입단가 (원/kg)", min_value=0.0, step=1.0,
-        value=float(p0["purchase_unit"]), key="pf_buy",
-    )
-    logistics_unit = u2.number_input(
-        "2. 물류비 (원/kg)", min_value=0.0, step=1.0, key="pf_logi",
-    )
-    supply_unit = u3.number_input(
-        "3. 공급단가 (원/kg)", min_value=0.0, step=1.0,
-        value=float(p0["supply_unit"]), key="pf_supply",
-    )
+    with u1:
+        purchase_unit = st.number_input(
+            "1. 매입단가 (원/kg)",
+            min_value=0,
+            step=1,
+            value=int(round(float(p0["purchase_unit"]))),
+            format="%d",
+            key="pf_buy",
+        )
+    with u2:
+        logistics_unit = st.number_input(
+            "2. 물류비 (원/kg)",
+            min_value=0,
+            step=1,
+            format="%d",
+            key="pf_logi",
+        )
+        st.caption(
+            f"적용: ((거리 {float(logi_km):,.0f}km × 유류 {float(logi_fuel):,.0f}원/L ÷ 연비 {float(logi_eff):g}) "
+            f"+ 통행료 {float(logi_toll):,.0f}원) × 왕복 {float(logi_rt):,.0f}회 "
+            f"÷ 월공급 {float(logi_kg):,.0f}kg = **{logi_per:,} 원/kg** → 위 칸에 자동반영"
+        )
+    with u3:
+        supply_unit = st.number_input(
+            "3. 공급단가 (원/kg)",
+            min_value=0,
+            step=1,
+            value=int(round(float(p0["supply_unit"]))),
+            format="%d",
+            key="pf_supply",
+        )
     st.markdown("##### ◎ 금융 / 관리 / 임대")
     f1, f2, f3, f4 = st.columns(4)
     interest = f1.number_input(
@@ -6426,16 +6474,28 @@ with tab9:
         value=float(p0["mgmt_rate"]), key="pf_mgmt",
     )
     dep_months = f3.number_input(
-        "감가상각 개월 (10년=120)", min_value=1.0, step=12.0,
-        value=float(p0["depreciation_months"]), key="pf_dep",
+        "감가상각 개월 (10년=120)",
+        min_value=1,
+        step=12,
+        value=int(round(float(p0["depreciation_months"]))),
+        format="%d",
+        key="pf_dep",
     )
     rent = f4.number_input(
-        "장비 임대료 (원)", min_value=0.0, step=10000.0,
-        value=float(p0["equipment_rent"]), key="pf_rent",
+        "장비 임대료 (원)",
+        min_value=0,
+        step=10000,
+        value=int(round(float(p0["equipment_rent"]))),
+        format="%d",
+        key="pf_rent",
     )
     rent_count = st.number_input(
-        "부가횟수", min_value=0.0, step=1.0,
-        value=float(p0["rent_count"]), key="pf_rent_n",
+        "부가횟수",
+        min_value=0,
+        step=1,
+        value=int(round(float(p0["rent_count"]))),
+        format="%d",
+        key="pf_rent_n",
     )
     b_save, b_reset = st.columns(2)
     submitted = b_save.button("💾 계산 / 저장", type="primary", width="stretch", key="pf_save_btn")
@@ -6560,61 +6620,59 @@ with tab9:
         unsafe_allow_html=True,
     )
     left, right = st.columns(2)
+    def _pf_i(v):
+        try:
+            return f"{int(round(float(v or 0))):,}"
+        except Exception:
+            return "0"
     with left:
         st.markdown("**◎ 단가 · 투자 요약**")
         summary_df = pd.DataFrame(
             [
-                {"항목": "TANK 구입가", "값": p["tank_price"], "단위": "원"},
-                {"항목": "기화기 구입가", "값": p["vaporizer_price"], "단위": "원"},
-                {"항목": "공사비용", "값": p["construction_cost"], "단위": "원"},
-                {"항목": "합계 금액", "값": r["total_invest"], "단위": "원"},
-                {"항목": "년 사용량", "값": r["yearly_usage"], "단위": "kg"},
-                {"항목": "월 평균 공급량", "값": p["monthly_usage_kg"], "단위": "kg"},
-                {"항목": "매입단가", "값": p["purchase_unit"], "단위": "원/kg"},
-                {"항목": "물류비", "값": p["logistics_unit"], "단위": "원/kg"},
-                {"항목": "공급단가", "값": p["supply_unit"], "단위": "원/kg"},
-                {"항목": "매출이익", "값": r["margin_kg"], "단위": "원/kg"},
-                {"항목": "물류비 계산(P18)", "값": r["logi_per_kg"], "단위": "원/kg"},
+                {"항목": "TANK 구입가", "값": _pf_i(p["tank_price"]), "단위": "원"},
+                {"항목": "기화기 구입가", "값": _pf_i(p["vaporizer_price"]), "단위": "원"},
+                {"항목": "공사비용", "값": _pf_i(p["construction_cost"]), "단위": "원"},
+                {"항목": "합계 금액", "값": _pf_i(r["total_invest"]), "단위": "원"},
+                {"항목": "년 사용량", "값": _pf_i(r["yearly_usage"]), "단위": "kg"},
+                {"항목": "월 평균 공급량", "값": _pf_i(p["monthly_usage_kg"]), "단위": "kg"},
+                {"항목": "매입단가", "값": _pf_i(p["purchase_unit"]), "단위": "원/kg"},
+                {"항목": "물류비", "값": _pf_i(p["logistics_unit"]), "단위": "원/kg"},
+                {"항목": "공급단가", "값": _pf_i(p["supply_unit"]), "단위": "원/kg"},
+                {"항목": "매출이익", "값": _pf_i(r["margin_kg"]), "단위": "원/kg"},
+                {"항목": "물류비 계산(P18)", "값": _pf_i(r["logi_per_kg"]), "단위": "원/kg"},
             ]
         )
-        st.dataframe(
-            summary_df.style.format({"값": "{:,.2f}"}),
-            hide_index=True,
-            width="stretch",
-            height=420,
-        )
+        st.dataframe(summary_df, hide_index=True, width="stretch", height=420)
     with right:
         st.markdown("**◎ 사용량 대비 영업이익 (월)**")
         result_df = pd.DataFrame(
             [
-                {"항목": "월평균 매출이익", "계산": "월사용량 × 매출이익", "값": r["monthly_gross"], "단위": "원/월"},
-                {"항목": "장비 감가상각", "계산": f"투자합계 ÷ {p['depreciation_months']:.0f}", "값": r["depreciation"], "단위": "원/월"},
-                {"항목": "금융비", "계산": "원금 × 이자율 ÷ 12", "값": r["finance"], "단위": "원/월"},
-                {"항목": "월 매출", "계산": "월사용량 × 공급단가", "값": r["monthly_sales"], "단위": "원/월"},
-                {"항목": "일반관리비", "계산": f"월매출 × {p['mgmt_rate']*100:.1f}%", "값": r["mgmt"], "단위": "원/월"},
-                {"항목": "투자비용(상각+금융)", "계산": "감가상각 + 금융비", "값": r["invest_cost"], "단위": "원/월"},
-                {"항목": "월평균 이익금", "계산": "매출이익 − 투자비용 − 관리비", "값": r["monthly_profit"], "단위": "원/월"},
-                {"항목": "최근 3개월 실이익", "계산": "월이익×3 + 임대료×횟수", "값": r["three_month"], "단위": "원"},
+                {"항목": "월평균 매출이익", "계산": "월사용량 × 매출이익", "값": _pf_i(r["monthly_gross"]), "단위": "원/월"},
+                {"항목": "장비 감가상각", "계산": f"투자합계 ÷ {p['depreciation_months']:.0f}", "값": _pf_i(r["depreciation"]), "단위": "원/월"},
+                {"항목": "금융비", "계산": "원금 × 이자율 ÷ 12", "값": _pf_i(r["finance"]), "단위": "원/월"},
+                {"항목": "월 매출", "계산": "월사용량 × 공급단가", "값": _pf_i(r["monthly_sales"]), "단위": "원/월"},
+                {"항목": "일반관리비", "계산": f"월매출 × {p['mgmt_rate']*100:.1f}%", "값": _pf_i(r["mgmt"]), "단위": "원/월"},
+                {"항목": "투자비용(상각+금융)", "계산": "감가상각 + 금융비", "값": _pf_i(r["invest_cost"]), "단위": "원/월"},
+                {"항목": "월평균 이익금", "계산": "매출이익 − 투자비용 − 관리비", "값": _pf_i(r["monthly_profit"]), "단위": "원/월"},
+                {"항목": "최근 3개월 실이익", "계산": "월이익×3 + 임대료×횟수", "값": _pf_i(r["three_month"]), "단위": "원"},
             ]
         )
-        st.dataframe(
-            result_df.style.format({"값": "{:,.0f}"}),
-            hide_index=True,
-            width="stretch",
-            height=420,
-        )
+        st.dataframe(result_df, hide_index=True, width="stretch", height=420)
     st.info(
         "적용 함수: `년사용량=월×12` · `합계=탱크+기화기+공사` · `매출이익=공급−(매입+물류)` · "
         "`관리비=월매출×14.5%` · `감가=투자÷120` · `금융=원금×이자÷12` · "
         "`월이익=매출이익−(감가+금융)−관리비` · `3개월=월이익×3+(임대×횟수)` · "
         "`물류원/kg=(KM×유류비/연비+통행료)×왕복÷KG`"
     )
-    # Tab9 전용 — 스크린샷형 수익성 보고서 엑셀 (전체 대시보드 영향 없음)
+    # Tab9 전용 — 스크린샷형 수익성 보고서 엑셀 (동일 입력이면 캐시 재사용)
     _route_for_xlsx = st.session_state.get("pf_route_info") or {}
     _diesel_for_xlsx = diesel_info if isinstance(diesel_info, dict) else {}
     try:
-        _profit_xlsx = build_profitability_report_excel(
-            p, r, route_info=_route_for_xlsx, diesel_info=_diesel_for_xlsx
+        _profit_xlsx = _cached_profitability_report_excel(
+            json.dumps(p, ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(r, ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(_route_for_xlsx, ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(_diesel_for_xlsx, ensure_ascii=False, sort_keys=True, default=str),
         )
         st.download_button(
             "📥 수익성 분석 보고서 엑셀 내보내기",
@@ -6627,3 +6685,6 @@ with tab9:
         )
     except Exception as _xlsx_err:
         st.warning(f"보고서 엑셀 생성 실패: {_xlsx_err}")
+
+with tab9:
+    _render_profitability_analysis_tab(latest_update_str)
