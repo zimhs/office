@@ -1498,6 +1498,89 @@ def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0
         
     fig.update_layout(**layout_args)
     return fig
+def create_grouped_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0f"):
+    """월별 × 연도 비교용 그룹 막대그래프 (스택 아님)."""
+    fig = go.Figure()
+    sorted_years = sorted(pivot_df.columns, key=lambda x: str(x))
+    color_map = {
+        "2020": "#0052CC",
+        "2021": "#4C9AFF",
+        "2022": "#FF2B2B",
+        "2023": "#FF9999",
+        "2024": "#00B894",
+        "2025": "#55E6A5",
+        "2026": "#FF9F1A",
+    }
+    for yr in sorted_years:
+        col_name = str(yr)
+        fig.add_trace(
+            go.Bar(
+                x=pivot_df.index,
+                y=pivot_df[yr],
+                name=col_name,
+                marker_color=color_map.get(col_name),
+                hovertemplate=f"%{{x}} ({col_name}): %{{y:{y_format}}}{y_suffix}<extra></extra>",
+            )
+        )
+    layout_args = dict(
+        barmode="group",
+        xaxis=dict(title=None, tickangle=0),
+        yaxis=dict(title=None, gridcolor="#E2E8F0"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.25,
+            xanchor="center",
+            x=0.5,
+        ),
+        margin=dict(l=10, r=10, t=10, b=40),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=420,
+    )
+    if title_text:
+        layout_args["title"] = dict(text=title_text, font=dict(size=14, color="#334155"))
+        layout_args["margin"]["t"] = 40
+    fig.update_layout(**layout_args)
+    return fig
+@st.cache_data
+def cached_client_item_qty_pivot_two_years(df_client_filtered, cur_year, prev_year, all_months):
+    """거래처 품목×년월 출고량 — 전년·당해, 동월 인접(25년 01월, 26년 01월 …)."""
+    if df_client_filtered is None or df_client_filtered.empty:
+        return pd.DataFrame()
+    yrs = [str(y) for y in (prev_year, cur_year) if y]
+    yrs = sorted(set(yrs), key=lambda y: int(str(y)))
+    if not yrs:
+        return pd.DataFrame()
+    raw = df_client_filtered.pivot_table(
+        index="품목명", columns="연도월_정렬", values="출고량", aggfunc="sum"
+    ).fillna(0)
+    cols = []
+    data = {}
+    # 동월 붙여서: 01월(전년·당해), 02월(전년·당해) …
+    for m in all_months:
+        for yr in yrs:
+            ys = str(yr)[2:]
+            key = f"{ys}년 {m}"
+            cols.append(key)
+            data[key] = raw[key] if key in raw.columns else 0
+    out = pd.DataFrame(data, index=raw.index)
+    out = out.reindex(columns=cols, fill_value=0)
+    out = out.loc[(out.fillna(0) != 0).any(axis=1)]
+    return out
+@st.cache_data
+def cached_get_yearly_monthly_qty_pivot(data_df, all_months, years):
+    """월 × 연도 출고량 합계 (전년·당해 비교용)."""
+    yrs = [str(y) for y in years if y]
+    if data_df is None or data_df.empty or not yrs:
+        return pd.DataFrame(0, index=all_months, columns=yrs)
+    pvt = data_df.pivot_table(
+        index="월", columns="연도", values="출고량", aggfunc="sum"
+    ).fillna(0)
+    pvt = pvt.reindex(index=all_months, fill_value=0)
+    pvt = pvt.reindex(columns=yrs, fill_value=0)
+    pvt.columns = [str(c) for c in pvt.columns]
+    return pvt
 # ==========================================
 # 3. 데이터 로딩 & 메모리 캐싱 (최적화) - Error 무시(on_bad_lines) 적용
 # ==========================================
@@ -5259,6 +5342,63 @@ with tab2:
                         y_format=y_fmt_c
                     ),
                     use_container_width=True, key="tab2_client_item_chart"
+                )
+        # —— 품목별 상세분석 하위: 전년·당해 출고량(품목×동월) + 월별 출고량 비교 ——
+        st.markdown("---")
+        _client_years = sorted(
+            {str(y) for y in df_client_filtered["연도"].dropna().unique()},
+            key=lambda y: int(y) if str(y).isdigit() else 0,
+        )
+        _cur_y = _client_years[-1] if _client_years else (str(years[0]) if years else None)
+        _prev_y = None
+        if _cur_y:
+            try:
+                _prev_cand = str(int(_cur_y) - 1)
+            except Exception:
+                _prev_cand = None
+            if _prev_cand and _prev_cand in _client_years:
+                _prev_y = _prev_cand
+            elif len(_client_years) >= 2:
+                _prev_y = _client_years[-2]
+        _yr_label = f"{_prev_y}·{_cur_y}" if _prev_y else str(_cur_y)
+        st.markdown(
+            f"<div class='sub-header dashboard-tab-panel-head'>"
+            f"📊 [{selected_client}] 출고량 비교 ({_yr_label})</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("왼쪽: 거래품목 × 년/월 출고량(동월 인접) · 오른쪽: 월별 출고량 전년 대비 당해 비교")
+        qty_two_y = cached_client_item_qty_pivot_two_years(
+            df_client_filtered, _cur_y, _prev_y, all_months
+        )
+        qty_month_two_y = cached_get_yearly_monthly_qty_pivot(
+            df_client_filtered,
+            all_months,
+            [y for y in (_prev_y, _cur_y) if y],
+        )
+        q_left, q_right = st.columns([1, 1])
+        with q_left:
+            if qty_two_y.empty:
+                st.info("전년·당해 출고량 데이터가 없습니다.")
+            else:
+                qty_disp = get_display_df_with_sum(qty_two_y, "합계")
+                st.dataframe(
+                    style_with_sum(qty_disp, "{:,.0f}", "Greens", axis=None),
+                    use_container_width=True,
+                    height=460,
+                )
+        with q_right:
+            if qty_month_two_y.empty or (qty_month_two_y.fillna(0) == 0).all().all():
+                st.info("전년·당해 월별 출고량 데이터가 없습니다.")
+            else:
+                render_plotly_chart(
+                    create_grouped_bar_chart(
+                        qty_month_two_y,
+                        title_text="월별 출고량 비교",
+                        y_suffix="",
+                        y_format=",.0f",
+                    ),
+                    use_container_width=True,
+                    key="tab2_client_ym_qty_compare",
                 )
 # Tab 3: 📦 품목 및 단가 분석
 with tab3:
