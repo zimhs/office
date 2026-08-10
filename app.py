@@ -5737,9 +5737,11 @@ target_items = [
 ]
 latest_update_str = "데이터 없음"
 selected_staff = []
+selected_item = []
 selected_client = "전체 거래처"
 df_base = pd.DataFrame()
 df_client_filtered = pd.DataFrame()
+df_f = pd.DataFrame()
 pivot_m_total = pd.DataFrame()
 client_item_qty_pivot = pd.DataFrame()
 sales_p = pd.DataFrame()
