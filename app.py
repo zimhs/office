@@ -5966,69 +5966,121 @@ with tab6:
                 elif btn_zoom_out: 
                     st.session_state.map_zoom = max(st.session_state.map_zoom - 2, 2) 
                 
-                fig_map = px.scatter_mapbox(
-                    map_df,
-                    lat="lat",
-                    lon="lon",
-                    color="담당자",
-                    hover_name="거래처",
-                    hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
-                    zoom=st.session_state.map_zoom,
-                    center={"lat": center_lat, "lon": center_lon},
-                    height=600
-                )
-                # 맥: 기존 marker=dict 유지 (안정화 상태 무변경)
-                # iPad: marker=dict 전체 치환 시 담당자 색이 검게 깨짐 → size/opacity만 갱신 + 색 재고정
-                if is_touch_ui():
-                    _staff_colors = {}
-                    for _tr in fig_map.data:
-                        try:
-                            _mc = getattr(_tr.marker, "color", None)
-                            if _mc is not None and str(_mc).strip() not in ("", "None"):
-                                _staff_colors[_tr.name] = _mc
-                        except Exception:
-                            pass
-                    _palette = list(px.colors.qualitative.Plotly) + list(px.colors.qualitative.Dark24)
-                    for _i, _tr in enumerate(fig_map.data):
-                        _c = _staff_colors.get(_tr.name) or _palette[_i % len(_palette)]
-                        try:
-                            fig_map.data[_i].marker.size = 14
-                            fig_map.data[_i].marker.opacity = 0.9
-                            fig_map.data[_i].marker.color = _c
-                        except Exception:
-                            pass
-                else:
-                    fig_map.update_traces(marker=dict(size=14, opacity=0.9))
-                
                 vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
                 vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
                 vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
-                
-                if "일반" in map_style_choice:
-                    mapbox_layers = [
-                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
-                    ]
-                else:
-                    mapbox_layers = [
-                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
-                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
-                    ]
-                
-                fig_map.update_layout(
-                    mapbox_style="white-bg",
-                    mapbox_layers=mapbox_layers,
-                    margin={"r": 0, "t": 10, "l": 0, "b": 0},
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=-0.15,
-                        xanchor="center",
-                        x=0.5
-                    )
-                )
-                
                 dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
-                render_plotly_chart(fig_map, use_container_width=True, key=dynamic_key, allow_drag=True)
+
+                # iPad 전용: Plotly Mapbox WebGL이 Safari에서 마커/범례를 검정으로 그림
+                # → Leaflet 원형 마커(명시 HEX)로만 우회. 맥 경로(아래 else)는 일절 변경 없음.
+                if is_touch_ui():
+                    _palette = [
+                        "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
+                        "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
+                        "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#8C564B",
+                    ]
+                    _staffs = sorted(map_df["담당자"].astype(str).unique())
+                    _cmap = {s: _palette[i % len(_palette)] for i, s in enumerate(_staffs)}
+                    _pts = []
+                    for _, _r in map_df.iterrows():
+                        _staff = str(_r["담당자"])
+                        _pts.append({
+                            "lat": float(_r["lat"]),
+                            "lon": float(_r["lon"]),
+                            "name": str(_r["거래처"]),
+                            "staff": _staff,
+                            "addr": str(_r.get("주소") or ""),
+                            "color": _cmap.get(_staff, "#636EFA"),
+                        })
+                    _legend_html = "".join(
+                        f'<span style="display:inline-flex;align-items:center;margin:0 10px 6px 0;'
+                        f'font-size:13px;color:#334155;">'
+                        f'<span style="width:12px;height:12px;border-radius:50%;background:{_cmap[s]};'
+                        f'display:inline-block;margin-right:5px;border:1px solid #94A3B8;"></span>'
+                        f"{html.escape(s)}</span>"
+                        for s in _staffs
+                    )
+                    _use_sat = "일반" not in map_style_choice
+                    _tiles_js = (
+                        f'L.tileLayer("{vworld_sat}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                        f'L.tileLayer("{vworld_hybrid}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                        if _use_sat
+                        else f'L.tileLayer("{vworld_base}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                    )
+                    _pts_json = json.dumps(_pts, ensure_ascii=False)
+                    _leaflet_html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  html, body {{ margin:0; height:100%; }}
+  #map {{ width:100%; height:560px; }}
+  .legend {{
+    padding:8px 10px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    background:#fff; border-top:1px solid #E2E8F0;
+  }}
+</style></head>
+<body>
+<div id="map"></div>
+<div class="legend"><b>담당자</b><div style="margin-top:6px;">{_legend_html}</div></div>
+<script>
+(function() {{
+  var map = L.map("map", {{ zoomControl: true }}).setView(
+    [{float(center_lat)}, {float(center_lon)}], {int(st.session_state.map_zoom)}
+  );
+  {_tiles_js}
+  var pts = {_pts_json};
+  pts.forEach(function(p) {{
+    var m = L.circleMarker([p.lat, p.lon], {{
+      radius: 8,
+      color: "#ffffff",
+      weight: 1.5,
+      fillColor: p.color,
+      fillOpacity: 0.95
+    }});
+    m.bindPopup("<b>" + p.name + "</b><br/>담당자: " + p.staff + "<br/>" + (p.addr || ""));
+    m.addTo(map);
+  }});
+}})();
+</script>
+</body></html>"""
+                    components.html(_leaflet_html, height=620, scrolling=False)
+                else:
+                    fig_map = px.scatter_mapbox(
+                        map_df,
+                        lat="lat",
+                        lon="lon",
+                        color="담당자",
+                        hover_name="거래처",
+                        hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
+                        zoom=st.session_state.map_zoom,
+                        center={"lat": center_lat, "lon": center_lon},
+                        height=600
+                    )
+                    fig_map.update_traces(marker=dict(size=14, opacity=0.9))
+                    if "일반" in map_style_choice:
+                        mapbox_layers = [
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
+                        ]
+                    else:
+                        mapbox_layers = [
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
+                        ]
+                    fig_map.update_layout(
+                        mapbox_style="white-bg",
+                        mapbox_layers=mapbox_layers,
+                        margin={"r": 0, "t": 10, "l": 0, "b": 0},
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.15,
+                            xanchor="center",
+                            x=0.5
+                        )
+                    )
+                    render_plotly_chart(fig_map, use_container_width=True, key=dynamic_key, allow_drag=True)
                 if invalid_clients:
                     with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
                         st.write(", ".join(invalid_clients))
