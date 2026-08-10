@@ -27,14 +27,21 @@ _TAB3_CMAP_GREEN = LinearSegmentedColormap.from_list(
 _TAB3_CMAP_ORANGE = LinearSegmentedColormap.from_list(
     "tab3_orange", ["#FFF7ED", "#FFEDD5", "#FDBA74"]
 )
-# OpenDartReader 임포트 (패키지명 opendartreader / 구버전 OpenDartReader 모두 대응)
+# OpenDartReader 임포트 (패키지명 여러 경로 대응 + 실패 원인 표시)
+_OPENDART_IMPORT_ERROR = ""
 try:
     from opendartreader import OpenDartReader
-except ImportError:
+except Exception as _e_od1:
     try:
-        import OpenDartReader  # type: ignore
-    except ImportError:
-        OpenDartReader = None
+        from OpenDartReader import OpenDartReader  # type: ignore
+    except Exception as _e_od2:
+        try:
+            import OpenDartReader as _odr_mod  # type: ignore
+
+            OpenDartReader = getattr(_odr_mod, "OpenDartReader", _odr_mod)
+        except Exception as _e_od3:
+            OpenDartReader = None
+            _OPENDART_IMPORT_ERROR = f"{_e_od1} / {_e_od2} / {_e_od3}"
 # 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide", initial_sidebar_state="expanded")
@@ -5422,21 +5429,143 @@ def load_equipment_file(file_bytes, file_name):
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔑 Open DART API 설정")
 API_KEY_FILE = os.path.join(CACHE_DIR, "dart_api_key.txt")
-saved_api_key = ""
-if os.path.exists(API_KEY_FILE):
-    with open(API_KEY_FILE, "r", encoding="utf-8") as f:
-        saved_api_key = f.read().strip()
+API_KEY_DESKTOP = os.path.expanduser("~/Desktop/uploaded_cache/dart_api_key.txt")
+DART_KEY_COOKIE = "dashboard_dart_api_key"
+
+
+def _read_dart_key_file(path):
+    try:
+        if path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def _write_dart_key_file(path, key):
+    try:
+        if not path or not key:
+            return
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(key.strip())
+    except Exception:
+        pass
+
+
+def _read_dart_key_cookie():
+    try:
+        cookies = getattr(st.context, "cookies", None)
+        if cookies is None:
+            return ""
+        return str(cookies.get(DART_KEY_COOKIE, "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _sync_dart_key_cookie(key):
+    """브라우저 쿠키에 API 키 저장 — 맥/iPad 재시작·새로고침 후 자동 복원."""
+    if not key:
+        return
+    safe = (
+        str(key)
+        .strip()
+        .replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace("\n", "")
+        .replace("\r", "")
+    )
+    if not safe:
+        return
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            try {{
+                var k = '{safe}';
+                var parentDoc = window.parent.document;
+                parentDoc.cookie = "{DART_KEY_COOKIE}=" + encodeURIComponent(k)
+                    + "; path=/; max-age=31536000; SameSite=Lax";
+                try {{ window.parent.localStorage.setItem("{DART_KEY_COOKIE}", k); }} catch (e) {{}}
+            }} catch (e) {{}}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def _load_saved_dart_api_key():
+    """파일 → 데스크톱 캐시 → 브라우저 쿠키 순으로 복원."""
+    for path in (API_KEY_FILE, API_KEY_DESKTOP):
+        v = _read_dart_key_file(path)
+        if v:
+            return v
+    return _read_dart_key_cookie()
+
+
+def _persist_dart_api_key(key):
+    key = (key or "").strip()
+    if not key:
+        return
+    _write_dart_key_file(API_KEY_FILE, key)
+    _write_dart_key_file(API_KEY_DESKTOP, key)
+    _sync_dart_key_cookie(key)
+
+
+saved_api_key = _load_saved_dart_api_key()
+# 쿠키/데스크톱에서만 온 키면 서버 파일에도 동기화
+if saved_api_key and not _read_dart_key_file(API_KEY_FILE):
+    _write_dart_key_file(API_KEY_FILE, saved_api_key)
+# 파일·쿠키 모두 비었을 때 localStorage → 쿠키 복원 후 1회 새로고침 (iPad Safari 대응)
+if not saved_api_key:
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            try {{
+                var name = "{DART_KEY_COOKIE}";
+                var parentWin = window.parent;
+                var parentDoc = parentWin.document;
+                var fromLs = "";
+                try {{ fromLs = parentWin.localStorage.getItem(name) || ""; }} catch (e) {{}}
+                if (!fromLs) return;
+                var hasCookie = (parentDoc.cookie || "").indexOf(name + "=") >= 0;
+                if (hasCookie) return;
+                parentDoc.cookie = name + "=" + encodeURIComponent(fromLs)
+                    + "; path=/; max-age=31536000; SameSite=Lax";
+                if (!parentWin.sessionStorage.getItem("dart_key_reloaded")) {{
+                    parentWin.sessionStorage.setItem("dart_key_reloaded", "1");
+                    parentWin.location.reload();
+                }}
+            }} catch (e) {{}}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+# text_input key 세션과 저장된 키 동기화 (재시작 자동 입력)
+if "sidebar_dart_api_key" not in st.session_state:
+    st.session_state["sidebar_dart_api_key"] = saved_api_key
+elif saved_api_key and not str(st.session_state.get("sidebar_dart_api_key") or "").strip():
+    st.session_state["sidebar_dart_api_key"] = saved_api_key
 dart_api_key = st.sidebar.text_input(
-    "DART API 키 (재무정보 연동용)", 
-    value=saved_api_key, 
-    type="password", 
-    help="금융감독원 Open DART API 키를 입력하세요. 한번 입력하면 자동 저장되어 새로고침해도 유지됩니다."
+    "DART API 키 (재무정보 연동용)",
+    type="password",
+    help="금융감독원 Open DART API 키. 파일+브라우저에 저장되어 맥/iPad 재시작 후에도 유지됩니다.",
+    key="sidebar_dart_api_key",
 )
-if dart_api_key and dart_api_key != saved_api_key:
-    with open(API_KEY_FILE, "w", encoding="utf-8") as f:
-        f.write(dart_api_key)
+if dart_api_key:
+    _persist_dart_api_key(dart_api_key)
 if OpenDartReader is None:
-    st.sidebar.caption("⚠ opendartreader 미연결 — 앱 재시작 필요 (`pip install opendartreader`)")
+    st.sidebar.warning(
+        "opendartreader 미연결 — `pip install opendartreader` 후 **앱을 완전히 재시작**하세요."
+    )
+    if _OPENDART_IMPORT_ERROR:
+        st.sidebar.caption(f"원인: `{_OPENDART_IMPORT_ERROR[:180]}`")
 elif dart_api_key:
     st.sidebar.caption("✓ DART 연동 준비됨 (거래처 분석 → 기업 재무정보)")
 else:
@@ -5551,8 +5680,7 @@ if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
               integrated_cache_path, integrated_cache_path + "_name.txt",
               TAB7_DATE_FILE, TAB8_DATE_FILE]:
         if os.path.exists(p): os.remove(p)
-    if os.path.exists(API_KEY_FILE):
-        os.remove(API_KEY_FILE)
+    # DART API 키는 캐시 초기화에서 제외 (맥/iPad 재입력 방지)
     for f_name in os.listdir(sales_cache_dir):
         os.remove(os.path.join(sales_cache_dir, f_name))
     st.rerun()
