@@ -4,6 +4,8 @@ import re
 import sys
 import html
 import json
+import glob
+import time
 import subprocess
 import shutil
 import urllib.parse
@@ -920,9 +922,45 @@ def _pick_fin_account(fin_state, exact_names, contains_names=None):
     return None
 
 
-@st.cache_resource(show_spinner=False)
+def _prepare_opendart_corp_codes_cache(max_age_days=14):
+    """OpenDartReader 일별 corpCode pickle 재다운로드 완화.
+    최근 캐시가 있으면 오늘 파일명으로 재사용해 초기화만 빠르게(내용은 동일)."""
+    docs = "docs_cache"
+    try:
+        os.makedirs(docs, exist_ok=True)
+    except Exception:
+        return
+    today = datetime.date.today().strftime("%Y%m%d")
+    today_path = os.path.join(docs, f"opendartreader_corp_codes_{today}.pkl")
+    try:
+        if os.path.exists(today_path) and os.path.getsize(today_path) > 1000:
+            return
+    except Exception:
+        pass
+    newest = None
+    newest_mtime = 0.0
+    for fp in glob.glob(os.path.join(docs, "opendartreader_corp_codes_*.pkl")):
+        try:
+            mt = os.path.getmtime(fp)
+            if mt > newest_mtime and os.path.getsize(fp) > 1000:
+                newest_mtime = mt
+                newest = fp
+        except Exception:
+            continue
+    if not newest:
+        return
+    age_days = (time.time() - newest_mtime) / 86400.0
+    if age_days <= float(max_age_days):
+        try:
+            shutil.copy2(newest, today_path)
+        except Exception:
+            pass
+
+
+@st.cache_resource(show_spinner="DART 법인목록 준비 중…")
 def _make_opendart_reader(dart_api_key: str):
     """성공한 Reader만 캐시. 실패는 예외로 올려 None을 캐시하지 않음."""
+    _prepare_opendart_corp_codes_cache(max_age_days=14)
     return OpenDartReader(str(dart_api_key).strip())
 
 
@@ -943,7 +981,7 @@ def get_opendart_reader(dart_api_key):
 
 
 @st.cache_data(show_spinner=False, max_entries=100)
-def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=4):
+def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=5):
     candidates = _company_name_candidates(company_name)
     clean_name = candidates[0] if candidates else str(company_name)
 
@@ -1101,9 +1139,19 @@ def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=4):
             info["dart_error"] = str(e)
 
     # DART 재무가 비면 네이버로 보강 (대표/업종/요약 재무)
-    if not dart_success or info["revenue"] == "정보 없음" or info["ceo"] == "정보 없음":
+    # 탄력: DART에서 법인만 찾은 경우 후보·타임아웃을 줄여 iPad/Cloud 체감 로딩 단축(결과 필드 동일)
+    need_naver = (
+        not dart_success
+        or info["revenue"] == "정보 없음"
+        or info["ceo"] == "정보 없음"
+        or info["profit"] == "정보 없음"
+    )
+    if need_naver:
         naver_hit = False
-        for name in candidates[:4]:
+        dart_matched = bool(info.get("matched_name") or info.get("corp_code"))
+        name_limit = 2 if dart_matched else 4
+        naver_timeout = 2.5 if dart_matched else 4
+        for name in candidates[:name_limit]:
             try:
                 search_query = urllib.parse.quote(f"{name} 기업정보")
                 url = f"https://search.naver.com/search.naver?query={search_query}"
@@ -1113,7 +1161,7 @@ def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=4):
                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                     )
                 }
-                response = requests.get(url, headers=headers, timeout=4)
+                response = requests.get(url, headers=headers, timeout=naver_timeout)
                 if response.status_code != 200:
                     continue
                 soup = BeautifulSoup(response.text, "html.parser")
@@ -1135,6 +1183,13 @@ def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=4):
                         if info["profit"] == "정보 없음" and i + 1 < len(texts):
                             info["profit"] = texts[i + 1]
                             naver_hit = True
+                # 필요 필드가 다 채워지면 즉시 종료
+                if (
+                    info["ceo"] != "정보 없음"
+                    and info["revenue"] != "정보 없음"
+                    and info["profit"] != "정보 없음"
+                ):
+                    naver_hit = True
                 if naver_hit:
                     if not dart_success:
                         info["source"] = "네이버 기업정보 요약"
@@ -2564,8 +2619,8 @@ def load_debt_file(debt_bytes):
     except Exception:
         pass
     return pd.DataFrame()
-@st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_bytes(file_tuples):
+def _parse_sales_uploaded_tuples(file_tuples):
+    """매출 CSV 바이트 튜플 → DataFrame (캐시 없음, 순수 파싱)."""
     if not file_tuples:
         return pd.DataFrame()
     df_list = []
@@ -2700,6 +2755,30 @@ def load_uploaded_files_from_bytes(file_tuples):
         if mask_closed.any():
             result_df.loc[mask_closed, "담당자"] = "거래종료"
     return result_df
+
+
+@st.cache_data(show_spinner="데이터 파싱 중입니다...")
+def load_uploaded_files_from_bytes(file_tuples):
+    return _parse_sales_uploaded_tuples(file_tuples)
+
+
+@st.cache_data(show_spinner="데이터 파싱 중입니다...")
+def load_uploaded_files_from_meta(file_meta):
+    """파일명·경로·mtime·size만 캐시 키로 사용.
+    새로고침마다 ~10MB CSV를 읽어 해싱하던 비용을 제거(파싱 결과는 동일)."""
+    if not file_meta:
+        return pd.DataFrame()
+    file_tuples = []
+    for item in file_meta:
+        try:
+            f_name, f_path = item[0], item[1]
+            with open(f_path, "rb") as sf:
+                file_tuples.append((f_name, sf.read()))
+        except Exception:
+            continue
+    return _parse_sales_uploaded_tuples(file_tuples)
+
+
 # ==========================================
 # 4. 피벗 및 지표 계산 연산 캐싱 (최적화)
 # ==========================================
@@ -5070,7 +5149,7 @@ def inject_top30_month_bridge():
         height=0,
     )
 def is_touch_ui():
-    """iPad UI 분기. query touch_ui / cookie / session. 맥은 False."""
+    """iPad UI 분기. query touch_ui / cookie / UA / session. 맥 데스크톱은 False."""
     try:
         if st.session_state.get("force_touch_ui") is True:
             return True
@@ -5085,6 +5164,20 @@ def is_touch_ui():
     try:
         cookies = getattr(st.context, "cookies", None)
         if cookies is not None and str(cookies.get("dashboard_touch", "")) == "1":
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    # Safari iPad는 쿠키/query 전에 UA로도 인식 (로딩 분기·감사 추출 지연에 사용)
+    try:
+        headers = getattr(st.context, "headers", None)
+        ua = ""
+        if headers is not None:
+            ua = str(headers.get("User-Agent") or headers.get("user-agent") or "")
+        if ua and (
+            re.search(r"iPad|iPhone|iPod", ua)
+            or ("Macintosh" in ua and "Mobile" in ua)
+        ):
             st.session_state["force_touch_ui"] = True
             return True
     except Exception:
@@ -5543,8 +5636,9 @@ saved_api_key = _load_saved_dart_api_key()
 # 쿠키/데스크톱에서만 온 키면 서버 파일에도 동기화
 if saved_api_key and not _read_dart_key_file(API_KEY_FILE):
     _write_dart_key_file(API_KEY_FILE, saved_api_key)
-# localStorage → 쿠키만 세팅 (location.reload 금지: 재부팅 무한로딩 원인)
-if not saved_api_key:
+# localStorage → 쿠키만 세팅 (reload 금지). iframe은 세션당 1회만 (iPad 새로고침 부담 완화)
+if not saved_api_key and not st.session_state.get("_dart_ls_cookie_tried"):
+    st.session_state["_dart_ls_cookie_tried"] = True
     components.html(
         f"""
         <script>
@@ -5684,27 +5778,46 @@ elif os.path.exists(integrated_cache_path) and os.path.exists(integrated_cache_p
 else:
     int_bytes = None
     int_name = ""
-sales_file_tuples = []
+sales_file_meta = []
 if uploaded_files_up and len(uploaded_files_up) > 0:
     for f_name in os.listdir(sales_cache_dir):
         os.remove(os.path.join(sales_cache_dir, f_name))
     for f in uploaded_files_up:
         f_bytes = f.getvalue()
         f_path = os.path.join(sales_cache_dir, f.name)
-        with open(f_path, "wb") as sf: sf.write(f_bytes)
-        sales_file_tuples.append((f.name, f_bytes))
+        with open(f_path, "wb") as sf:
+            sf.write(f_bytes)
+        try:
+            st_info = os.stat(f_path)
+            sales_file_meta.append(
+                (f.name, f_path, int(st_info.st_mtime), int(st_info.st_size))
+            )
+        except Exception:
+            sales_file_meta.append((f.name, f_path, 0, len(f_bytes)))
 else:
     if os.path.exists(sales_cache_dir):
-        for f_name in os.listdir(sales_cache_dir):
+        for f_name in sorted(os.listdir(sales_cache_dir)):
             if f_name.endswith(".csv"):
                 f_path = os.path.join(sales_cache_dir, f_name)
-                with open(f_path, "rb") as sf: sales_file_tuples.append((f_name, sf.read()))
-                
-    if not sales_file_tuples:
-        for f_name in os.listdir("."):
+                try:
+                    st_info = os.stat(f_path)
+                    sales_file_meta.append(
+                        (f_name, f_path, int(st_info.st_mtime), int(st_info.st_size))
+                    )
+                except Exception:
+                    continue
+    if not sales_file_meta:
+        for f_name in sorted(os.listdir(".")):
             if re.match(r"^20\d{2}.*\.csv$", f_name):
-                with open(f_name, "rb") as sf:
-                    sales_file_tuples.append((f_name, sf.read()))
+                f_path = os.path.abspath(f_name)
+                try:
+                    st_info = os.stat(f_path)
+                    sales_file_meta.append(
+                        (f_name, f_path, int(st_info.st_mtime), int(st_info.st_size))
+                    )
+                except Exception:
+                    continue
+sales_file_meta = tuple(sales_file_meta)
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
               tank_cache_path, tank_cache_path + "_name.txt", 
@@ -5715,6 +5828,11 @@ if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     # DART API 키는 캐시 초기화에서 제외 (맥/iPad 재입력 방지)
     for f_name in os.listdir(sales_cache_dir):
         os.remove(os.path.join(sales_cache_dir, f_name))
+    try:
+        load_uploaded_files_from_meta.clear()
+        load_uploaded_files_from_bytes.clear()
+    except Exception:
+        pass
     st.rerun()
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
@@ -5724,7 +5842,9 @@ if not debt_df.empty:
 df_tank = load_equipment_file(tank_bytes, tank_name) if tank_bytes else pd.DataFrame()
 df_vaporizer = load_equipment_file(vaporizer_bytes, vaporizer_name) if vaporizer_bytes else pd.DataFrame()
 df_integrated = load_equipment_file(int_bytes, int_name) if int_bytes else pd.DataFrame()
-full_df = load_uploaded_files_from_bytes(sales_file_tuples) if sales_file_tuples else pd.DataFrame()
+full_df = (
+    load_uploaded_files_from_meta(sales_file_meta) if sales_file_meta else pd.DataFrame()
+)
 if not full_df.empty:
     is_deposit_row = full_df["품목명"].astype(str).str.contains("입금", na=False)
     full_df = full_df[~is_deposit_row].copy()
@@ -6358,6 +6478,7 @@ with tab2:
             and _memo.get("key") == _memo_key
             and isinstance(_memo.get("c_info"), dict)
         )
+        _touch_corp = is_touch_ui()
         if _use_memo:
             c_info = dict(_memo["c_info"])
             _latest_audit = _memo.get("latest_audit")
@@ -6366,38 +6487,56 @@ with tab2:
             _ccode = c_info.get("corp_code") or ""
             _lookup = _ccode or _matched
         else:
-            with st.spinner("DART 및 네이버 기업 정보를 불러오는 중..."):
+            # 1차: 기업개요·재무만 (감사 HTML 파싱은 분리 → iPad 첫 화면 대기 단축)
+            with st.spinner("기업 정보 불러오는 중…"):
                 c_info = get_company_info_hybrid(selected_client, dart_api_key)
                 _matched = c_info.get("matched_name") or c_info.get("clean_name") or selected_client
                 _ccode = c_info.get("corp_code") or ""
                 _lookup = _ccode or _matched
-
-                # 최근 감사보고서 1건 + 의견/핵심내용
                 _latest_audit = None
                 _audit_sum = {}
                 if dart_api_key and _lookup and OpenDartReader is not None:
-                    _audits = list_dart_audit_reports(_lookup, dart_api_key)
+                    _years_back = 2 if _touch_corp else 4
+                    _audits = list_dart_audit_reports(
+                        _lookup, dart_api_key, years_back=_years_back
+                    )
                     if _audits:
                         _latest_audit = _audits[0]
-                        _audit_sum = parse_dart_audit_report_summary(
-                            _latest_audit["rcept_no"], dart_api_key
-                        )
-                        if _audit_sum.get("revenue") and c_info.get("revenue") == "정보 없음":
-                            c_info["revenue"] = _audit_sum["revenue"] + " (감사보고서 추정)"
-                        if _audit_sum.get("profit") and c_info.get("profit") == "정보 없음":
-                            c_info["profit"] = _audit_sum["profit"] + " (감사보고서 추정)"
-                        if _audit_sum.get("revenue") or _audit_sum.get("profit"):
-                            if "DART" not in str(c_info.get("source")):
-                                c_info["source"] = "DART 감사보고서 본문 추정"
+                st.session_state["_tab2_corp_memo"] = {
+                    "key": _memo_key,
+                    "c_info": dict(c_info),
+                    "latest_audit": _latest_audit,
+                    "audit_sum": {},
+                }
+
+        # 감사 본문 추출: 맥은 자동, iPad는 버튼(동일 데이터·무손실)
+        _want_audit_parse = bool(st.session_state.get("_tab2_force_audit_parse"))
+        if (
+            _latest_audit
+            and not _audit_sum
+            and dart_api_key
+            and OpenDartReader is not None
+            and (not _touch_corp or _want_audit_parse)
+        ):
+            with st.spinner("감사보고서 의견·핵심내용 추출 중…"):
+                _audit_sum = parse_dart_audit_report_summary(
+                    _latest_audit["rcept_no"], dart_api_key
+                )
+                if _audit_sum.get("revenue") and c_info.get("revenue") == "정보 없음":
+                    c_info["revenue"] = _audit_sum["revenue"] + " (감사보고서 추정)"
+                if _audit_sum.get("profit") and c_info.get("profit") == "정보 없음":
+                    c_info["profit"] = _audit_sum["profit"] + " (감사보고서 추정)"
+                if _audit_sum.get("revenue") or _audit_sum.get("profit"):
+                    if "DART" not in str(c_info.get("source")):
+                        c_info["source"] = "DART 감사보고서 본문 추정"
                 st.session_state["_tab2_corp_memo"] = {
                     "key": _memo_key,
                     "c_info": dict(c_info),
                     "latest_audit": _latest_audit,
                     "audit_sum": dict(_audit_sum) if _audit_sum else {},
                 }
+                st.session_state.pop("_tab2_force_audit_parse", None)
 
-            # 왼쪽: 기업정보 / 오른쪽: 최근 감사보고서
-            # (아래 UI는 memo/fetch 공통)
         _corp_l, _corp_r = st.columns([1, 1.15], gap="large")
         with _corp_l:
             if st.button("🔄 다시 조회", key="btn_refresh_corp", width="content"):
@@ -6410,6 +6549,7 @@ with tab2:
                     pass
                 st.session_state.pop("_opendart_last_error", None)
                 st.session_state.pop("_tab2_corp_memo", None)
+                st.session_state.pop("_tab2_force_audit_parse", None)
                 st.rerun()
             st.markdown(f"""
                 - **출처:** {c_info['source']}
@@ -6434,45 +6574,56 @@ with tab2:
 
         with _corp_r:
             if _latest_audit:
-                _op = _audit_sum.get("opinion") or "확인 불가"
-                _op_color = {
-                    "적정의견": "#166534",
-                    "한정의견": "#A16207",
-                    "부적정의견": "#B91C1C",
-                    "의견거절": "#9F1239",
-                }.get(_op, "#334155")
                 st.markdown("##### 📄 최근 감사보고서")
                 st.markdown(
                     f"[{html.escape(_latest_audit['date'])} · {html.escape(_latest_audit['name'])}]"
                     f"({_latest_audit['url']})"
                 )
-                if _audit_sum.get("chapter"):
-                    st.caption(f"추출 챕터: {_audit_sum['chapter']}")
-                st.markdown(
-                    f"<div style='margin:8px 0;padding:10px 12px;border:1px solid #E2E8F0;"
-                    f"border-radius:8px;background:#F8FAFC;'>"
-                    f"<div style='font-weight:700;color:{_op_color};font-size:15px;'>"
-                    f"감사의견: {html.escape(_op)}</div>"
-                    f"<div style='font-size:12px;color:#64748B;margin-top:4px;'>"
-                    f"{html.escape(_audit_sum.get('opinion_note') or '')}</div>"
-                    + (
-                        f"<div style='font-size:13px;color:#334155;margin-top:8px;line-height:1.45;'>"
-                        f"{html.escape(_audit_sum.get('opinion_summary') or '')}</div>"
-                        if _audit_sum.get("opinion_summary")
-                        else ""
+                if _audit_sum:
+                    _op = _audit_sum.get("opinion") or "확인 불가"
+                    _op_color = {
+                        "적정의견": "#166534",
+                        "한정의견": "#A16207",
+                        "부적정의견": "#B91C1C",
+                        "의견거절": "#9F1239",
+                    }.get(_op, "#334155")
+                    if _audit_sum.get("chapter"):
+                        st.caption(f"추출 챕터: {_audit_sum['chapter']}")
+                    st.markdown(
+                        f"<div style='margin:8px 0;padding:10px 12px;border:1px solid #E2E8F0;"
+                        f"border-radius:8px;background:#F8FAFC;'>"
+                        f"<div style='font-weight:700;color:{_op_color};font-size:15px;'>"
+                        f"감사의견: {html.escape(_op)}</div>"
+                        f"<div style='font-size:12px;color:#64748B;margin-top:4px;'>"
+                        f"{html.escape(_audit_sum.get('opinion_note') or '')}</div>"
+                        + (
+                            f"<div style='font-size:13px;color:#334155;margin-top:8px;line-height:1.45;'>"
+                            f"{html.escape(_audit_sum.get('opinion_summary') or '')}</div>"
+                            if _audit_sum.get("opinion_summary")
+                            else ""
+                        )
+                        + f"</div>",
+                        unsafe_allow_html=True,
                     )
-                    + f"</div>",
-                    unsafe_allow_html=True,
-                )
-                st.markdown("**핵심 내용 확인**")
-                st.markdown(
-                    f"""
+                    st.markdown("**핵심 내용 확인**")
+                    st.markdown(
+                        f"""
 - **핵심감사사항:** {_audit_sum.get('kam') or '확인 불가'}
 - **계속기업 불확실성:** {_audit_sum.get('going_concern') or '확인 불가'}
 - **강조사항:** {_audit_sum.get('emphasis') or '확인 불가'}
 """
-                )
-                st.caption("본문 자동 추출이라 일부 누락·오탐이 있을 수 있습니다. 원문은 위 링크에서 확인하세요.")
+                    )
+                    st.caption("본문 자동 추출이라 일부 누락·오탐이 있을 수 있습니다. 원문은 위 링크에서 확인하세요.")
+                else:
+                    if st.button(
+                        "📄 감사의견·핵심내용 추출",
+                        key="btn_parse_audit_sum",
+                        width="content",
+                        help="원문 링크는 위에 있습니다. 추출은 추가 로딩이 있습니다.",
+                    ):
+                        st.session_state["_tab2_force_audit_parse"] = True
+                        st.rerun()
+                    st.caption("원문 링크는 바로 열 수 있습니다. 의견 추출은 버튼으로 불러옵니다.")
             elif dart_api_key and _lookup and OpenDartReader is not None:
                 st.markdown("##### 📄 최근 감사보고서")
                 st.caption("최근 감사보고서 공시를 찾지 못했습니다.")
@@ -6896,7 +7047,8 @@ with tab4:
                         save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
                         
                         st.success("✅ 담당자 지정이 완료되었습니다! 대시보드를 새로고침합니다.")
-                        load_uploaded_files_from_bytes.clear() 
+                        load_uploaded_files_from_bytes.clear()
+                        load_uploaded_files_from_meta.clear()
                         st.rerun()
             else:
                 st.success("🎉 모든 거래처에 담당자가 완벽하게 지정되어 있습니다!")
@@ -6951,7 +7103,8 @@ with tab4:
                         save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
                         
                         st.success("✅ 담당자 변경이 완료되었습니다! 대시보드를 새로고침합니다.")
-                        load_uploaded_files_from_bytes.clear() 
+                        load_uploaded_files_from_bytes.clear()
+                        load_uploaded_files_from_meta.clear()
                         st.rerun()
     st.markdown("<div class='sub-header dashboard-tab-panel-head'>📋 거래 상세 내역 (최신순 800건)</div>", unsafe_allow_html=True)
     if not df_detail.empty:
