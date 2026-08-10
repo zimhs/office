@@ -27,21 +27,48 @@ _TAB3_CMAP_GREEN = LinearSegmentedColormap.from_list(
 _TAB3_CMAP_ORANGE = LinearSegmentedColormap.from_list(
     "tab3_orange", ["#FFF7ED", "#FFEDD5", "#FDBA74"]
 )
-# OpenDartReader 임포트 (패키지명 여러 경로 대응 + 실패 원인 표시)
+# OpenDartReader 임포트 (패키지명 여러 경로 대응 + 미설치 시 1회 자동 pip 설치)
 _OPENDART_IMPORT_ERROR = ""
-try:
-    from opendartreader import OpenDartReader
-except Exception as _e_od1:
-    try:
-        from OpenDartReader import OpenDartReader  # type: ignore
-    except Exception as _e_od2:
-        try:
-            import OpenDartReader as _odr_mod  # type: ignore
 
-            OpenDartReader = getattr(_odr_mod, "OpenDartReader", _odr_mod)
-        except Exception as _e_od3:
-            OpenDartReader = None
-            _OPENDART_IMPORT_ERROR = f"{_e_od1} / {_e_od2} / {_e_od3}"
+
+def _try_import_opendart():
+    try:
+        from opendartreader import OpenDartReader as _ODR
+
+        return _ODR, ""
+    except Exception as e1:
+        try:
+            from OpenDartReader import OpenDartReader as _ODR  # type: ignore
+
+            return _ODR, ""
+        except Exception as e2:
+            try:
+                import OpenDartReader as _odr_mod  # type: ignore
+
+                _ODR = getattr(_odr_mod, "OpenDartReader", _odr_mod)
+                return _ODR, ""
+            except Exception as e3:
+                return None, f"{e1} / {e2} / {e3}"
+
+
+OpenDartReader, _OPENDART_IMPORT_ERROR = _try_import_opendart()
+if OpenDartReader is None:
+    # Streamlit Cloud / iPad 배포 환경에 requirements 미반영된 경우 자동 복구 시도
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "opendartreader>=0.3.2", "-q"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        OpenDartReader, _OPENDART_IMPORT_ERROR = _try_import_opendart()
+        if OpenDartReader is not None:
+            _OPENDART_IMPORT_ERROR = ""
+    except Exception as _e_pip:
+        _OPENDART_IMPORT_ERROR = (
+            (_OPENDART_IMPORT_ERROR + f" | pip 실패: {_e_pip}")
+            if _OPENDART_IMPORT_ERROR
+            else f"pip 실패: {_e_pip}"
+        )
 # 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide", initial_sidebar_state="expanded")
@@ -5562,10 +5589,22 @@ if dart_api_key:
     _persist_dart_api_key(dart_api_key)
 if OpenDartReader is None:
     st.sidebar.warning(
-        "opendartreader 미연결 — `pip install opendartreader` 후 **앱을 완전히 재시작**하세요."
+        "opendartreader 미연결 — iPad/클라우드 환경에 패키지가 없습니다. "
+        "아래 버튼으로 설치를 시도하거나, 배포 repo의 `requirements.txt`에 "
+        "`opendartreader`를 넣고 **Rebuild** 하세요."
     )
+    if st.sidebar.button("📦 opendartreader 지금 설치 시도", key="btn_install_opendart"):
+        with st.sidebar.status("설치 중…"):
+            try:
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "opendartreader>=0.3.2"],
+                )
+                st.sidebar.success("설치 완료 — 앱을 새로고침하세요.")
+            except Exception as _ie:
+                st.sidebar.error(f"설치 실패: {_ie}")
+        st.rerun()
     if _OPENDART_IMPORT_ERROR:
-        st.sidebar.caption(f"원인: `{_OPENDART_IMPORT_ERROR[:180]}`")
+        st.sidebar.caption(f"원인: `{_OPENDART_IMPORT_ERROR[:220]}`")
 elif dart_api_key:
     st.sidebar.caption("✓ DART 연동 준비됨 (거래처 분석 → 기업 재무정보)")
 else:
