@@ -27,11 +27,14 @@ _TAB3_CMAP_GREEN = LinearSegmentedColormap.from_list(
 _TAB3_CMAP_ORANGE = LinearSegmentedColormap.from_list(
     "tab3_orange", ["#FFF7ED", "#FFEDD5", "#FDBA74"]
 )
-# OpenDartReader 임포트 (설치되지 않았을 경우를 대비한 예외 처리)
+# OpenDartReader 임포트 (패키지명 opendartreader / 구버전 OpenDartReader 모두 대응)
 try:
-    import OpenDartReader
+    from opendartreader import OpenDartReader
 except ImportError:
-    OpenDartReader = None
+    try:
+        import OpenDartReader  # type: ignore
+    except ImportError:
+        OpenDartReader = None
 # 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide", initial_sidebar_state="expanded")
@@ -128,6 +131,38 @@ def inject_custom_css():
                 overflow: hidden !important;
                 text-overflow: ellipsis !important;
                 box-sizing: border-box !important;
+            }
+            /* Tab2 카카오맵 버튼 아래 주소 — 버튼과 동일 폭·글자 크기, 간격 1mm */
+            .st-key-tab2_action_btns div[data-testid="stLinkButton"],
+            .st-key-tab2_action_btns div[data-testid="stButton"] {
+                margin-bottom: 0 !important;
+            }
+            .st-key-tab2_action_btns div[data-testid="stMarkdownContainer"] {
+                margin-top: 0 !important;
+                margin-bottom: 0 !important;
+            }
+            .st-key-tab2_action_btns [data-testid="stMarkdown"] {
+                margin-top: 1mm !important;
+                margin-bottom: 0 !important;
+            }
+            .st-key-tab2_action_btns .tab2-kakao-addr {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+                margin: 0 !important;
+                min-height: 48px !important;
+                padding: 0 16px !important;
+                font-size: 13px !important;
+                font-weight: 600 !important;
+                line-height: 1.2 !important;
+                border-radius: 8px !important;
+                border: 1px solid #E2E8F0 !important;
+                background: #FFFFFF !important;
+                text-align: center !important;
+                word-break: keep-all !important;
+                white-space: normal !important;
             }
             .metric-box {
                 background: #FFFFFF;
@@ -506,6 +541,64 @@ def apply_forward_unit_price(unit_price_df, qty_df, years, all_months):
             elif last_price > 0 and (qty == 0 or price == 0):
                 filled.at[idx, col] = last_price
     return filled
+
+
+def build_unit_price_change_pivot(unit_price_df, years, all_months, item_names=None):
+    """단가표에서 최초 적용·변동 월만 남긴 추이표 (tab3 품목 선택 시 사용).
+
+    item_names가 있으면 해당 품목만. 열=변동 연월, 값=그 시점 단가.
+    """
+    if unit_price_df is None or unit_price_df.empty:
+        return pd.DataFrame()
+    src = unit_price_df
+    if item_names:
+        keep = [i for i in item_names if i in src.index]
+        if not keep:
+            return pd.DataFrame()
+        src = src.loc[keep]
+    yrs = sorted([str(y) for y in years if y])
+    chron_cols = [
+        f"{yr[2:]}년 {m}"
+        for yr in yrs
+        for m in all_months
+        if f"{yr[2:]}년 {m}" in src.columns
+    ]
+    if not chron_cols:
+        return pd.DataFrame()
+
+    change_months = []
+    seen_m = set()
+    per_item = {}
+    for idx in src.index:
+        prev = None
+        hits = {}
+        for col in chron_cols:
+            raw = src.at[idx, col]
+            if pd.isna(raw):
+                continue
+            val = float(raw)
+            if val <= 0:
+                continue
+            if prev is None or abs(val - prev) > 0.5:
+                hits[col] = val
+                if col not in seen_m:
+                    seen_m.add(col)
+                    change_months.append(col)
+                prev = val
+        if hits:
+            per_item[idx] = hits
+    if not per_item:
+        return pd.DataFrame()
+
+    chron_rank = {c: i for i, c in enumerate(chron_cols)}
+    change_months = sorted(change_months, key=lambda c: chron_rank.get(c, 10**9))
+    out = pd.DataFrame(index=list(per_item.keys()), columns=change_months, dtype=float)
+    for idx, hits in per_item.items():
+        for col, val in hits.items():
+            out.at[idx, col] = val
+    return out
+
+
 @st.cache_data
 def convert_dfs_to_excel(dfs_dict):
     output = io.BytesIO()
@@ -727,82 +820,720 @@ def convert_dashboard_to_ppt(
 # ==========================================
 # ★ 네이버 크롤링 + DART API 하이브리드 유틸리티 ★
 # ==========================================
+def _company_name_candidates(company_name):
+    """DART/네이버 검색용 상호 후보 (구상호·법인표기 완화).
+
+    DART find_corp_code는 '라쿨'처럼 짧은 핵심 상호만 맞는 경우가 많아
+    짧은 이름을 앞에 둔다.
+    """
+    raw = str(company_name or "").strip()
+    cands = []
+
+    def _add(x):
+        x = re.sub(r"\s+", " ", str(x or "").strip())
+        if x and x not in cands:
+            cands.append(x)
+
+    _add(raw)
+    # (구.신정우) / [구 신정우] 등 이전 상호
+    for m in re.finditer(r"[\(\[]\s*구\.?\s*([^\)\]]+)[\)\]]", raw):
+        _add(m.group(1))
+    no_bracket = re.sub(r"\(.*?\)|\[.*?\]", "", raw).strip()
+    _add(no_bracket)
+    for base in list(cands):
+        core = re.sub(r"\(.*?\)|\[.*?\]", "", base).strip()
+        stripped = re.sub(
+            r"주식회사|㈜|\(주\)|유한회사|\(유\)|\s+",
+            "",
+            core,
+        ).strip()
+        _add(stripped)
+        if stripped:
+            _add(f"{stripped} 주식회사")
+            _add(f"(주){stripped}")
+    # 짧은 핵심 상호 우선 (예: 라쿨 → 라쿨 주식회사 → 원문)
+    return sorted(
+        [c for c in cands if c],
+        key=lambda x: (
+            0 if re.fullmatch(r"[가-힣A-Za-z0-9]+", x) else 1,
+            len(x),
+            x,
+        ),
+    )
+
+
+def _dart_first_corp_row(by_name):
+    """company_by_name 결과(list/DataFrame)에서 첫 법인 dict 추출."""
+    if by_name is None:
+        return None
+    if isinstance(by_name, pd.DataFrame):
+        if by_name.empty:
+            return None
+        return by_name.iloc[0].to_dict()
+    if isinstance(by_name, list) and by_name:
+        row = by_name[0]
+        return row if isinstance(row, dict) else None
+    if isinstance(by_name, dict) and by_name.get("corp_code"):
+        return by_name
+    return None
+
+
+def _fmt_dart_amount(val):
+    try:
+        n = int(str(val).replace(",", "").replace(" ", ""))
+        return f"{n:,} 원"
+    except Exception:
+        s = str(val).strip()
+        return s if s else "정보 없음"
+
+
+def _pick_fin_account(fin_state, exact_names, contains_names=None):
+    if fin_state is None or fin_state.empty or "account_nm" not in fin_state.columns:
+        return None
+    acc = fin_state["account_nm"].astype(str)
+    for nm in exact_names:
+        rows = fin_state[acc == nm]
+        if not rows.empty:
+            return rows.iloc[0]
+    for nm in contains_names or []:
+        rows = fin_state[acc.str.contains(nm, na=False)]
+        if not rows.empty:
+            return rows.iloc[0]
+    return None
+
+
+@st.cache_resource(show_spinner=False)
+def get_opendart_reader(dart_api_key):
+    """OpenDartReader 재사용 (동일 키면 재생성 안 함). 조회 결과는 동일."""
+    if not dart_api_key or OpenDartReader is None:
+        return None
+    try:
+        return OpenDartReader(dart_api_key)
+    except Exception:
+        return None
+
+
 @st.cache_data(show_spinner=False, max_entries=100)
-def get_company_info_hybrid(company_name, dart_api_key=None):
-    clean_name = re.sub(r'\(.*?\)|\[.*?\]|주식회사|㈜|\(주\)|주\)', '', company_name).strip()
-    if not clean_name:
-        clean_name = company_name 
-        
+def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=3):
+    candidates = _company_name_candidates(company_name)
+    clean_name = candidates[0] if candidates else str(company_name)
+
     info = {
         "ceo": "정보 없음",
         "industry": "정보 없음",
         "revenue": "정보 없음",
         "profit": "정보 없음",
         "clean_name": clean_name,
+        "matched_name": "",
+        "corp_code": "",
         "source": "정보 없음",
-        "dart_error": "" 
+        "dart_error": "",
+        "dart_ready": bool(dart_api_key) and OpenDartReader is not None,
     }
     dart_success = False
-    if dart_api_key and OpenDartReader is not None:
+
+    if not dart_api_key:
+        info["dart_error"] = "사이드바에 DART API 키가 없습니다."
+    elif OpenDartReader is None:
+        info["dart_error"] = "opendartreader 미설치 — 앱을 재시작해 주세요."
+    else:
         try:
-            dart = OpenDartReader(dart_api_key)
-            corp_info = dart.company(clean_name)
-            
-            if corp_info and 'ceo_nm' in corp_info:
-                info['ceo'] = corp_info['ceo_nm']
-                info['industry'] = corp_info.get('induty_nm', '정보 없음')
-                
-            fin_state = dart.finstate(clean_name, 2023)
-            if fin_state is not None and not fin_state.empty:
-                sales_row = fin_state[fin_state['account_nm'].str.contains('매출', na=False)]
-                profit_row = fin_state[fin_state['account_nm'].str.contains('영업이익', na=False)]
-                
-                if not sales_row.empty:
-                    s_val = str(sales_row['thstrm_amount'].values[0]).replace(',', '')
-                    info['revenue'] = f"{int(s_val):,} 원"
-                
-                if not profit_row.empty:
-                    p_val = str(profit_row['thstrm_amount'].values[0]).replace(',', '')
-                    info['profit'] = f"{int(p_val):,} 원"
-                    
-                info["source"] = "금융감독원 DART (2023)"
-                dart_success = True
+            dart = get_opendart_reader(dart_api_key)
+            if dart is None:
+                info["dart_error"] = "DART 연결 실패"
+                return info
+            corp_code = None
+            matched = None
+            corp_info = None
+
+            for name in candidates:
+                try:
+                    code = None
+                    if hasattr(dart, "find_corp_code"):
+                        code = dart.find_corp_code(name)
+                    if not code and hasattr(dart, "company_by_name"):
+                        row = _dart_first_corp_row(dart.company_by_name(name))
+                        if row and row.get("status", "000") in ("000", 0, "0", None, ""):
+                            code = str(row.get("corp_code") or "").strip() or None
+                            matched = str(row.get("corp_name") or name)
+                            # company_by_name 에 개요 필드가 있으면 미리 채움
+                            if row.get("ceo_nm") and not corp_info:
+                                corp_info = row
+                    if code:
+                        corp_code = str(code).strip()
+                        matched = matched or name
+                        break
+                    ci = dart.company(name)
+                    if (
+                        isinstance(ci, dict)
+                        and str(ci.get("status", "")) in ("000", "0")
+                        and (ci.get("corp_name") or ci.get("ceo_nm"))
+                    ):
+                        corp_info = ci
+                        matched = ci.get("corp_name") or name
+                        corp_code = str(ci.get("corp_code") or "").strip() or corp_code
+                        break
+                except Exception:
+                    continue
+
+            lookup_keys = []
+            for k in (corp_code, matched, clean_name):
+                if k and str(k) not in lookup_keys:
+                    lookup_keys.append(str(k))
+
+            if corp_info is None:
+                for k in lookup_keys:
+                    try:
+                        ci = dart.company(k)
+                        if (
+                            isinstance(ci, dict)
+                            and str(ci.get("status", "")) in ("000", "0")
+                            and (ci.get("corp_name") or ci.get("ceo_nm"))
+                        ):
+                            corp_info = ci
+                            break
+                    except Exception:
+                        continue
+
+            if isinstance(corp_info, dict):
+                if corp_info.get("ceo_nm"):
+                    info["ceo"] = corp_info["ceo_nm"]
+                if corp_info.get("induty_nm"):
+                    info["industry"] = corp_info.get("induty_nm") or "정보 없음"
+                info["matched_name"] = (
+                    corp_info.get("corp_name")
+                    or corp_info.get("stock_name")
+                    or matched
+                    or clean_name
+                )
+                info["corp_code"] = str(
+                    corp_info.get("corp_code") or corp_code or ""
+                ).strip()
+            elif matched:
+                info["matched_name"] = matched
+                info["corp_code"] = str(corp_code or "").strip()
+
+            # 최근 연도 재무 — corp_code 우선, 이름 보조 (비상장은 API 재무가 비는 경우 많음)
+            this_year = datetime.date.today().year
+            years_try = list(range(this_year - 1, 2019, -1))
+            fin_year_used = None
+            fin_state = None
+            for yr in years_try:
+                for k in lookup_keys:
+                    try:
+                        fs = dart.finstate(k, yr)
+                        if fs is not None and not getattr(fs, "empty", True):
+                            fin_state = fs
+                            fin_year_used = yr
+                            break
+                    except Exception:
+                        continue
+                if fin_state is not None:
+                    break
+
+            if fin_state is not None:
+                sales_row = _pick_fin_account(
+                    fin_state,
+                    exact_names=["매출액", "수익(매출액)", "영업수익"],
+                    contains_names=["매출액"],
+                )
+                profit_row = _pick_fin_account(
+                    fin_state,
+                    exact_names=["영업이익", "영업이익(손실)"],
+                    contains_names=["영업이익"],
+                )
+                if sales_row is not None and "thstrm_amount" in sales_row.index:
+                    info["revenue"] = _fmt_dart_amount(sales_row["thstrm_amount"])
+                if profit_row is not None and "thstrm_amount" in profit_row.index:
+                    info["profit"] = _fmt_dart_amount(profit_row["thstrm_amount"])
+                if info["revenue"] != "정보 없음" or info["profit"] != "정보 없음":
+                    info["source"] = f"금융감독원 DART ({fin_year_used})"
+                    dart_success = True
+                elif info["matched_name"] or info["ceo"] != "정보 없음":
+                    info["source"] = f"금융감독원 DART 기업개요"
+                    info["dart_error"] = (
+                        f"법인({info['matched_name']})은 찾았으나 "
+                        "OpenAPI 재무제표(매출/영업이익)가 없습니다. "
+                        "감사보고서 PDF는 DART 사이트에서 직접 확인하세요."
+                    )
+            elif info["matched_name"] or info["ceo"] != "정보 없음":
+                info["source"] = "금융감독원 DART 기업개요"
+                info["dart_error"] = (
+                    f"법인({info.get('matched_name') or matched})은 찾았으나 "
+                    "구조화 재무 API 값이 없습니다(비상장·감사보고서만 공시된 경우)."
+                )
+            else:
+                info["dart_error"] = (
+                    "DART에서 법인을 찾지 못했습니다. "
+                    f"시도 상호: {', '.join(candidates[:5])}"
+                )
         except Exception as e:
             info["dart_error"] = str(e)
-    if not dart_success or info['revenue'] == "정보 없음":
-        try:
-            search_query = urllib.parse.quote(clean_name + " 기업정보")
-            url = f"https://search.naver.com/search.naver?query={search_query}"
-            
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
-            
-            response = requests.get(url, headers=headers, timeout=3)
-            
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
+
+    # DART 재무가 비면 네이버로 보강 (대표/업종/요약 재무)
+    if not dart_success or info["revenue"] == "정보 없음" or info["ceo"] == "정보 없음":
+        naver_hit = False
+        for name in candidates[:4]:
+            try:
+                search_query = urllib.parse.quote(f"{name} 기업정보")
+                url = f"https://search.naver.com/search.naver?query={search_query}"
+                headers = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    )
+                }
+                response = requests.get(url, headers=headers, timeout=4)
+                if response.status_code != 200:
+                    continue
+                soup = BeautifulSoup(response.text, "html.parser")
                 texts = list(soup.stripped_strings)
-                
                 for i, text in enumerate(texts):
                     if text in ["대표자", "대표자명"]:
                         if info["ceo"] == "정보 없음" and i + 1 < len(texts):
                             info["ceo"] = texts[i + 1]
+                            naver_hit = True
                     elif text in ["업종", "산업(업종)"]:
                         if info["industry"] == "정보 없음" and i + 1 < len(texts):
                             info["industry"] = texts[i + 1]
+                            naver_hit = True
                     elif text in ["매출액"]:
                         if info["revenue"] == "정보 없음" and i + 1 < len(texts):
                             info["revenue"] = texts[i + 1]
+                            naver_hit = True
                     elif text in ["영업이익"]:
                         if info["profit"] == "정보 없음" and i + 1 < len(texts):
                             info["profit"] = texts[i + 1]
-                
-                info["source"] = "네이버 기업정보 요약"
+                            naver_hit = True
+                if naver_hit:
+                    if not dart_success:
+                        info["source"] = "네이버 기업정보 요약"
+                    elif info["revenue"] != "정보 없음" and "DART" in str(info["source"]):
+                        pass
+                    elif info["revenue"] != "정보 없음":
+                        info["source"] = f"{info['source']} + 네이버"
+                    break
+            except Exception:
+                continue
+
+    return info
+
+
+@st.cache_data(show_spinner=False, max_entries=50)
+def list_dart_audit_reports(corp_key, dart_api_key, years_back=4, _cache_v=1):
+    """DART 외부감사(감사보고서) 목록 → [{name, date, rcept_no, url}, ...]"""
+    if not corp_key or not dart_api_key or OpenDartReader is None:
+        return []
+    try:
+        dart = get_opendart_reader(dart_api_key)
+        if dart is None:
+            return []
+        end = datetime.date.today()
+        start = datetime.date(end.year - int(years_back), 1, 1)
+        # F = 외부감사관련
+        used_kind_f = True
+        df = dart.list(
+            str(corp_key),
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            kind="F",
+            final=True,
+        )
+        if df is None or getattr(df, "empty", True):
+            used_kind_f = False
+            df = dart.list(
+                str(corp_key),
+                start=start.strftime("%Y-%m-%d"),
+                end=end.strftime("%Y-%m-%d"),
+                final=True,
+            )
+        if df is None or getattr(df, "empty", True):
+            return []
+        out = []
+        for _, row in df.iterrows():
+            nm = str(row.get("report_nm") or "")
+            if not used_kind_f and "감사" not in nm:
+                continue
+            rcp = str(row.get("rcept_no") or row.get("rcp_no") or "").strip()
+            if not rcp:
+                continue
+            out.append(
+                {
+                    "name": nm or "감사보고서",
+                    "date": str(row.get("rcept_dt") or ""),
+                    "rcept_no": rcp,
+                    "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcp}",
+                }
+            )
+        out.sort(key=lambda x: x.get("date") or "", reverse=True)
+        return out[:15]
+    except Exception:
+        return []
+
+
+@st.cache_data(show_spinner=False, max_entries=30)
+def parse_dart_audit_report_summary(rcept_no, dart_api_key, _cache_v=3):
+    """최근 감사보고서에서 '독립된 감사인의 감사보고서' 챕터를 우선 읽어
+    감사의견·핵심내용을 축약 추출한다."""
+    empty = {
+        "opinion": "확인 불가",
+        "opinion_note": "본문에서 감사의견을 찾지 못했습니다.",
+        "opinion_summary": "",
+        "kam": "확인 불가",
+        "going_concern": "확인 불가",
+        "emphasis": "확인 불가",
+        "revenue": "",
+        "profit": "",
+        "chapter": "",
+    }
+    if not rcept_no or not dart_api_key or OpenDartReader is None:
+        return empty
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+
+    def _html_to_text(html_doc):
+        return BeautifulSoup(str(html_doc), "html.parser").get_text("\n", strip=True)
+
+    def _fetch_url(url):
+        try:
+            # http → https 시도
+            for u in (url, url.replace("http://", "https://")):
+                r = requests.get(u, headers=headers, timeout=8)
+                if r.status_code == 200 and len(r.text) > 200:
+                    return r.text
+        except Exception:
+            return ""
+        return ""
+
+    try:
+        dart = get_opendart_reader(dart_api_key)
+        if dart is None:
+            return empty
+        chapter_title = ""
+        text = ""
+
+        # 1) 하위문서 중 '독립된 감사인…' / '감사의견' 챕터 우선
+        try:
+            subs = dart.sub_docs(str(rcept_no), match="독립된 감사인의 감사보고서")
+            if subs is not None and not getattr(subs, "empty", True):
+                # 제목 우선순위
+                prefer = [
+                    "독립된 감사인의 감사보고서",
+                    "감사인의 보고서",
+                    "감사보고서",
+                ]
+                chosen = None
+                for pref in prefer:
+                    hit = subs[subs["title"].astype(str).str.contains(pref, na=False)]
+                    if not hit.empty:
+                        chosen = hit.iloc[0]
+                        break
+                if chosen is None:
+                    chosen = subs.iloc[0]
+                chapter_title = str(chosen.get("title") or "")
+                html_body = _fetch_url(str(chosen.get("url") or ""))
+                if html_body:
+                    text = _html_to_text(html_body)
         except Exception:
             pass
-            
-    return info
+
+        # 2) 실패 시 전체 document
+        if len(text) < 80:
+            doc = dart.document(str(rcept_no))
+            if doc:
+                text = _html_to_text(doc)
+                chapter_title = chapter_title or "감사보고서(전체)"
+
+        if len(text) < 40:
+            return empty
+
+        text_one = re.sub(r"[ \t]+", " ", text)
+        result = dict(empty)
+        result["chapter"] = chapter_title or "독립된 감사인의 감사보고서"
+
+        # —— 감사의견 문단 축약 (섹션 제목 이후)
+        opinion_block = ""
+        m_op_sec = re.search(
+            r"(?:^|\n)\s*감사\s*의견\s*\n(.+?)(?=\n\s*감사의견\s*근거|\n\s*감사의견근거|"
+            r"\n\s*핵심\s*감사|\n\s*계속기업|\n\s*강조\s*사항|\n\s*재무제표에\s*대한|"
+            r"\n\s*이사의\s*책임|\n\s*감사인의\s*책임|\Z)",
+            text,
+            flags=re.S,
+        )
+        if m_op_sec:
+            opinion_block = re.sub(r"\s+", " ", m_op_sec.group(1)).strip()
+        else:
+            # 챕터 전체에서 의견 문장만 추출
+            m2 = re.search(
+                r"(우리의\s*의견으로는.{20,500}?입니다\.)",
+                text_one,
+            )
+            if m2:
+                opinion_block = m2.group(1).strip()
+
+        if opinion_block:
+            # 너무 길면 앞 280자
+            result["opinion_summary"] = (
+                opinion_block[:279] + "…" if len(opinion_block) > 280 else opinion_block
+            )
+
+        # —— 의견 유형 판별 (문구·관용표현)
+        # 주의: '적정의견' 단어가 없어도 "공정하게 표시하고 있습니다" = 대개 적정
+        if re.search(r"의견\s*거절|거절\s*의견|의견을\s*거절", text_one):
+            result["opinion"] = "의견거절"
+            result["opinion_note"] = "자료 부족 등으로 판단을 내릴 수 없음 (위험 높음)"
+        elif re.search(r"부적정\s*의견|부적정의견|부적정\s*의견을\s*표명", text_one):
+            result["opinion"] = "부적정의견"
+            result["opinion_note"] = "재무제표가 왜곡되었을 가능성 (매우 위험)"
+        elif re.search(r"한정\s*의견|한정의견|한정\s*의견을\s*표명", text_one):
+            result["opinion"] = "한정의견"
+            result["opinion_note"] = "일부에만 이슈 — 주의 필요"
+        elif re.search(
+            r"적정\s*의견|적정의견|의견[:：]\s*적정|"
+            r"우리의\s*의견으로는.{0,120}공정하게\s*표시|"
+            r"중요성의\s*관점에서\s*공정하게\s*표시하고\s*있습니다",
+            text_one,
+        ):
+            result["opinion"] = "적정의견"
+            result["opinion_note"] = "기준에 맞게 작성됨 (가장 양호)"
+        elif opinion_block:
+            result["opinion"] = "의견 문단 확인"
+            result["opinion_note"] = "유형 키워드는 약하나 감사의견 문단은 존재합니다."
+
+        def _snip_after(patterns, max_chars=320):
+            for p in patterns:
+                m = re.search(p, text_one, flags=re.IGNORECASE)
+                if not m:
+                    continue
+                snip = text_one[m.end() : m.end() + max_chars].strip()
+                snip = re.sub(r"\s+", " ", snip)
+                snip = re.split(
+                    r"(?=핵심감사|강조사항|계속기업|재무제표|주석|독립된|감사인|이사의\s*책임|감사의견\s*근거)",
+                    snip,
+                    maxsplit=1,
+                )[0].strip()
+                if len(snip) > 20:
+                    return (snip[: max_chars - 1] + "…") if len(snip) > max_chars else snip
+            return ""
+
+        kam = _snip_after(
+            [
+                r"핵심\s*감사\s*사항\s*[:：]?",
+                r"Key\s*Audit\s*Matters?\s*[:：]?",
+                r"핵심감사사항",
+            ]
+        )
+        result["kam"] = kam or (
+            "본문에 ‘핵심감사사항’ 문구가 없거나 추출되지 않았습니다."
+            if not re.search(r"핵심\s*감사", text_one)
+            else "핵심감사사항 제목은 있으나 상세 문단 추출에 실패했습니다."
+        )
+
+        gc_hit = re.search(
+            r"계속기업.{0,40}(불확실|의문)|존속\s*능력.{0,40}불확실|계속기업으로서의\s*존속",
+            text_one,
+        )
+        if gc_hit:
+            # '의견은 변형되지 않았습니다' = 강조사항으로 언급만 한 경우 많음
+            gc_snip = _snip_after(
+                [
+                    r"계속기업으로서의\s*존속",
+                    r"계속기업.{0,10}불확실",
+                    r"존속\s*능력",
+                ],
+                max_chars=280,
+            )
+            result["going_concern"] = (
+                "⚠️ 계속기업 불확실성 언급 있음. " + (gc_snip or gc_hit.group(0))
+            )
+        else:
+            result["going_concern"] = "계속기업 불확실성 관련 문구를 찾지 못함"
+
+        emp = _snip_after([r"강조\s*사항\s*[:：]?", r"강조사항"])
+        if emp:
+            result["emphasis"] = emp
+        elif re.search(r"강조\s*사항", text_one):
+            result["emphasis"] = "강조사항 제목은 있으나 상세 문단 추출에 실패했습니다."
+        else:
+            result["emphasis"] = "강조사항 문구를 찾지 못함"
+
+        # 손익계산서 하위문서에서 매출/영업이익 보강
+        try:
+            subs_pl = dart.sub_docs(str(rcept_no), match="손익계산서")
+            if subs_pl is not None and not getattr(subs_pl, "empty", True):
+                hit = subs_pl[subs_pl["title"].astype(str).str.contains("손익", na=False)]
+                row = hit.iloc[0] if not hit.empty else subs_pl.iloc[0]
+                pl_html = _fetch_url(str(row.get("url") or ""))
+                pl_text = _html_to_text(pl_html) if pl_html else ""
+                pl_one = re.sub(r"\s+", " ", pl_text)
+                for label, key in (("매출액", "revenue"), ("영업이익", "profit")):
+                    if result.get(key):
+                        continue
+                    m = re.search(
+                        rf"{label}\s*[:：]?\s*\(?\s*([-]?[\d,]+)\s*\)?",
+                        pl_one,
+                    )
+                    if m:
+                        raw = m.group(1).replace(",", "")
+                        try:
+                            result[key] = f"{int(raw):,} 원"
+                        except Exception:
+                            result[key] = m.group(1)
+        except Exception:
+            pass
+
+        if not result.get("revenue") or not result.get("profit"):
+            for label, key in (("매출액", "revenue"), ("영업이익", "profit")):
+                if result.get(key):
+                    continue
+                m = re.search(
+                    rf"{label}\s*[:：]?\s*\(?\s*([-]?[\d,]+)\s*\)?",
+                    text_one,
+                )
+                if m:
+                    raw = m.group(1).replace(",", "")
+                    try:
+                        result[key] = f"{int(raw):,} 원"
+                    except Exception:
+                        result[key] = m.group(1)
+        return result
+    except Exception as e:
+        empty["opinion_note"] = f"본문 파싱 오류: {e}"
+        return empty
+
+
+# 하위 호환 별칭
+def try_parse_dart_audit_finance(rcept_no, dart_api_key, _cache_v=1):
+    s = parse_dart_audit_report_summary(rcept_no, dart_api_key)
+    return {k: s[k] for k in ("revenue", "profit") if s.get(k)}
+
+
+def _job_portal_query(company_name, address=None):
+    """상호 + 주소(시/군/구 정도)로 채용포털 검색어 구성."""
+    name = str(company_name or "").strip()
+    name = re.sub(r"\(.*?\)|\[.*?\]", "", name).strip()
+    name = re.sub(r"주식회사|㈜|\(주\)", "", name).strip() or str(company_name or "").strip()
+    loc = ""
+    if address and address != "등록된 주소 정보가 없습니다.":
+        # 예: 경기도 화성시 … → 화성시
+        m = re.search(
+            r"((?:서울|부산|대구|인천|광주|대전|울산|세종)[^\s]*|"
+            r"[가-힣]+(?:시|군|구))",
+            str(address),
+        )
+        if m:
+            loc = m.group(1)
+    q = f"{name} {loc}".strip() if loc else name
+    return name, loc, q
+
+
+def build_job_portal_links(company_name, address=None):
+    """사람인·워크넷(고용24)·잡코리아 검색 링크."""
+    name, loc, q = _job_portal_query(company_name, address)
+    qe = urllib.parse.quote(q)
+    ne = urllib.parse.quote(name)
+    return {
+        "query": q,
+        "name": name,
+        "loc": loc,
+        "saramin": f"https://www.saramin.co.kr/zf_user/search?searchType=search&searchword={qe}",
+        "saramin_company": (
+            f"https://www.saramin.co.kr/zf_user/search/company?searchword={ne}"
+        ),
+        "worknet": (
+            f"https://www.work.go.kr/consltJobCarpa/srch/jobInfoSrch/srchWantedInfo.do"
+            f"?searchKeyword={qe}"
+        ),
+        "work24": f"https://www.work24.go.kr/cm/c/c0100/c0101/companySearch.do?keyword={qe}",
+        "jobkorea": f"https://www.jobkorea.co.kr/Search/?stext={qe}",
+        "naver_map": f"https://map.naver.com/p/search/{urllib.parse.quote(q)}",
+    }
+
+
+@st.cache_data(show_spinner=False, max_entries=40)
+def enrich_company_from_job_portals(company_name, address=None, _cache_v=1):
+    """사람인 등에서 기업개요 보강 시도 (실패해도 링크만 반환).
+
+    재무(매출/영업이익)는 제공하지 않음. 업종·규모·소개 위주.
+    """
+    links = build_job_portal_links(company_name, address)
+    out = {
+        "links": links,
+        "snippets": [],
+        "industry": "",
+        "size": "",
+        "summary": "",
+        "source": "",
+        "note": "",
+    }
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+    # 1) 사람인 기업검색 페이지에서 텍스트 스니펫
+    try:
+        r = requests.get(links["saramin_company"], headers=headers, timeout=5)
+        if r.status_code == 200 and len(r.text) > 500:
+            soup = BeautifulSoup(r.text, "html.parser")
+            texts = [t.strip() for t in soup.stripped_strings if t and len(t.strip()) > 1]
+            # 업종/사원수 주변 추출
+            for i, t in enumerate(texts):
+                if t in ("업종", "산업") and i + 1 < len(texts) and not out["industry"]:
+                    cand = texts[i + 1]
+                    if cand not in ("업종", "산업", "기업형태") and len(cand) < 40:
+                        out["industry"] = cand
+                if t in ("사원수", "직원수", "기업규모") and i + 1 < len(texts) and not out["size"]:
+                    cand = texts[i + 1]
+                    if len(cand) < 30:
+                        out["size"] = cand
+            # 회사명 근처 소개 문장
+            name_key = links.get("name") or ""
+            for t in texts:
+                if name_key and name_key in t and 20 < len(t) < 180:
+                    out["snippets"].append(t)
+                    break
+            if out["industry"] or out["size"] or out["snippets"]:
+                out["source"] = "사람인 기업검색(자동추출)"
+                out["summary"] = " · ".join(
+                    x for x in [out.get("industry"), out.get("size")] if x
+                )
+    except Exception as e:
+        out["note"] = f"사람인 자동추출 실패: {e}"
+
+    # 2) 네이버 검색 스니펫 보강 (주소 포함)
+    if not out["summary"]:
+        try:
+            q = links["query"] + " 기업"
+            url = f"https://search.naver.com/search.naver?query={urllib.parse.quote(q)}"
+            r = requests.get(url, headers=headers, timeout=4)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, "html.parser")
+                texts = list(soup.stripped_strings)
+                for i, t in enumerate(texts):
+                    if t in ("업종", "산업(업종)") and i + 1 < len(texts) and not out["industry"]:
+                        out["industry"] = texts[i + 1]
+                    if t in ("사원수", "직원수") and i + 1 < len(texts) and not out["size"]:
+                        out["size"] = texts[i + 1]
+                if out["industry"] or out["size"]:
+                    out["source"] = (out["source"] + " + " if out["source"] else "") + "네이버요약"
+                    out["summary"] = " · ".join(
+                        x for x in [out.get("industry"), out.get("size")] if x
+                    )
+        except Exception:
+            pass
+
+    if not out["source"]:
+        out["note"] = out.get("note") or "자동추출 결과가 없어 검색 링크로만 제공합니다."
+    return out
+
 # ==========================================
 # ★ 카카오 지오코딩 API ★
 # ==========================================
@@ -1499,17 +2230,17 @@ def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0
     fig.update_layout(**layout_args)
     return fig
 def create_grouped_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0f"):
-    """월별 × 연도 비교용 그룹 막대그래프 (스택 아님)."""
+    """월별 × 연도 비교용 그룹 막대그래프 (스택 아님). 블루 톤으로 통일."""
     fig = go.Figure()
     sorted_years = sorted(pivot_df.columns, key=lambda x: str(x))
+    # 연도별 블루 스케일 (연한 하늘→진한 네이비) — 표 Blues 그라데이션과 톤 맞춤
+    _blue_scale = [
+        "#DBEAFE", "#BFDBFE", "#93C5FD", "#60A5FA",
+        "#3B82F6", "#2563EB", "#1D4ED8", "#1E3A8A",
+    ]
     color_map = {
-        "2020": "#0052CC",
-        "2021": "#4C9AFF",
-        "2022": "#FF2B2B",
-        "2023": "#FF9999",
-        "2024": "#00B894",
-        "2025": "#55E6A5",
-        "2026": "#FF9F1A",
+        str(yr): _blue_scale[i % len(_blue_scale)]
+        for i, yr in enumerate(sorted_years)
     }
     for yr in sorted_years:
         col_name = str(yr)
@@ -1544,43 +2275,104 @@ def create_grouped_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0
     fig.update_layout(**layout_args)
     return fig
 @st.cache_data
-def cached_client_item_qty_pivot_two_years(df_client_filtered, cur_year, prev_year, all_months):
-    """거래처 품목×년월 출고량 — 전년·당해, 동월 인접(25년 01월, 26년 01월 …)."""
+def cached_client_item_qty_pivot_two_years(df_client_filtered, col_keys_tuple):
+    """거래처 품목×년월 출고량 — col_keys 순서 그대로 (당월→과거 역순)."""
     if df_client_filtered is None or df_client_filtered.empty:
         return pd.DataFrame()
-    yrs = [str(y) for y in (prev_year, cur_year) if y]
-    yrs = sorted(set(yrs), key=lambda y: int(str(y)))
-    if not yrs:
+    cols = [str(c) for c in (col_keys_tuple or ()) if c]
+    if not cols:
         return pd.DataFrame()
     raw = df_client_filtered.pivot_table(
         index="품목명", columns="연도월_정렬", values="출고량", aggfunc="sum"
     ).fillna(0)
-    cols = []
-    data = {}
-    # 동월 붙여서: 01월(전년·당해), 02월(전년·당해) …
-    for m in all_months:
-        for yr in yrs:
-            ys = str(yr)[2:]
-            key = f"{ys}년 {m}"
-            cols.append(key)
-            data[key] = raw[key] if key in raw.columns else 0
+    data = {key: (raw[key] if key in raw.columns else 0) for key in cols}
     out = pd.DataFrame(data, index=raw.index)
     out = out.reindex(columns=cols, fill_value=0)
     out = out.loc[(out.fillna(0) != 0).any(axis=1)]
     return out
+
+
+@st.cache_data
+def cached_client_item_sales_pivot_two_years(df_client_filtered, col_keys_tuple):
+    """거래처 품목×년월 매출(만원, VAT포함) — col_keys 순서 (당월→과거 역순). tab2 전용."""
+    if df_client_filtered is None or df_client_filtered.empty:
+        return pd.DataFrame()
+    cols = [str(c) for c in (col_keys_tuple or ()) if c]
+    if not cols:
+        return pd.DataFrame()
+    raw = df_client_filtered.pivot_table(
+        index="품목명", columns="연도월_정렬", values="매출액", aggfunc="sum"
+    ).fillna(0)
+    data = {key: (raw[key] if key in raw.columns else 0) for key in cols}
+    out = pd.DataFrame(data, index=raw.index)
+    out = out.reindex(columns=cols, fill_value=0) * 1.1 / 10000
+    out = out.loc[(out.fillna(0) != 0).any(axis=1)]
+    return out
+
+
 @st.cache_data
 def cached_get_yearly_monthly_qty_pivot(data_df, all_months, years):
-    """월 × 연도 출고량 합계 (전년·당해 비교용)."""
+    """월 × 연도 출고량 합계 (전년·당해 비교용). years 순서 유지."""
     yrs = [str(y) for y in years if y]
-    if data_df is None or data_df.empty or not yrs:
-        return pd.DataFrame(0, index=all_months, columns=yrs)
+    # 중복 제거하되 호출 측 순서 유지
+    seen = set()
+    yrs_ordered = []
+    for y in yrs:
+        if y not in seen:
+            seen.add(y)
+            yrs_ordered.append(y)
+    if data_df is None or data_df.empty or not yrs_ordered:
+        return pd.DataFrame(0, index=all_months, columns=yrs_ordered)
     pvt = data_df.pivot_table(
         index="월", columns="연도", values="출고량", aggfunc="sum"
     ).fillna(0)
     pvt = pvt.reindex(index=all_months, fill_value=0)
-    pvt = pvt.reindex(columns=yrs, fill_value=0)
+    pvt = pvt.reindex(columns=yrs_ordered, fill_value=0)
     pvt.columns = [str(c) for c in pvt.columns]
     return pvt
+
+
+def create_item_share_hbar(share_series, title_text="당해 년평균 품목별 출고 비중"):
+    """품목 비중(%) 가로 막대 — Blues 톤 (tab2 비교용)."""
+    s = share_series.dropna().astype(float)
+    s = s[s > 0].sort_values(ascending=True)
+    if s.empty:
+        return None
+    colors = [
+        f"rgb({int(30 + 180 * (1 - i / max(len(s) - 1, 1)))},"
+        f"{int(58 + 150 * (1 - i / max(len(s) - 1, 1)))},"
+        f"{int(138 + 100 * (1 - i / max(len(s) - 1, 1)))})"
+        for i in range(len(s))
+    ]
+    fig = go.Figure(
+        go.Bar(
+            x=s.values,
+            y=s.index.astype(str),
+            orientation="h",
+            marker=dict(color=colors, line=dict(width=0)),
+            text=[f"{v:.1f}%" for v in s.values],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=dict(text=title_text, font=dict(size=14, color="#1E3A8A")),
+        xaxis=dict(
+            title=None,
+            ticksuffix="%",
+            range=[0, max(s.values) * 1.25 if len(s) else 1],
+            gridcolor="#E2E8F0",
+            zeroline=False,
+        ),
+        yaxis=dict(title=None, automargin=True),
+        margin=dict(l=10, r=40, t=40, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=max(280, 28 * len(s) + 80),
+        showlegend=False,
+    )
+    return fig
 # ==========================================
 # 3. 데이터 로딩 & 메모리 캐싱 (최적화) - Error 무시(on_bad_lines) 적용
 # ==========================================
@@ -1596,17 +2388,36 @@ def load_address_file(address_bytes):
                     k_col = temp_addr.columns[0]
                     v_col = temp_addr.columns[1]
                     temp_addr = temp_addr.dropna(subset=[k_col])
-                    return (
-                        temp_addr.astype(str)
-                        .set_index(k_col)[v_col]
-                        .to_dict()
-                    )
+                    keys = temp_addr[k_col].astype(str).str.strip()
+                    vals = temp_addr[v_col].astype(str).str.strip()
+                    # 빈/NaN 주소는 제외
+                    ok = vals.ne("") & vals.str.lower().ne("nan") & vals.str.lower().ne("none")
+                    return dict(zip(keys[ok], vals[ok]))
                 break
             except UnicodeDecodeError:
                 continue
     except Exception:
         pass
     return {}
+
+
+def resolve_client_address(client_name, addr_dict):
+    """거래처명 → 주소. 정확 일치 후 공백/법인표기 완화 매칭."""
+    if not client_name or client_name == "전체 거래처" or not addr_dict:
+        return None
+    name = str(client_name).strip()
+    if name in addr_dict:
+        return addr_dict[name]
+    # (주)/주식회사 표기 차이 완화
+    def _norm(s):
+        s = str(s).strip()
+        s = s.replace("(주)", "").replace("주식회사", "").replace("(유)", "")
+        return "".join(s.split())
+    n = _norm(name)
+    for k, v in addr_dict.items():
+        if _norm(k) == n:
+            return v
+    return None
 def _drop_debt_noise_rows(df):
     """ERP 내보내기 푸터·합계 행을 제거 (거래처/채권 데이터 오염 방지)."""
     if df.empty or "거래처" not in df.columns:
@@ -4618,6 +5429,12 @@ dart_api_key = st.sidebar.text_input(
 if dart_api_key and dart_api_key != saved_api_key:
     with open(API_KEY_FILE, "w", encoding="utf-8") as f:
         f.write(dart_api_key)
+if OpenDartReader is None:
+    st.sidebar.caption("⚠ opendartreader 미연결 — 앱 재시작 필요 (`pip install opendartreader`)")
+elif dart_api_key:
+    st.sidebar.caption("✓ DART 연동 준비됨 (거래처 분석 → 기업 재무정보)")
+else:
+    st.sidebar.caption("API 키 입력 시 매출액·영업이익 조회 가능")
 addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
 industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
 debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
@@ -4634,7 +5451,15 @@ elif os.path.exists(addr_cache_path):
 elif os.path.exists("주소.csv"):
     with open("주소.csv", "rb") as f: addr_bytes = f.read()
 else:
-    addr_bytes = None
+    # Desktop 쪽 예전 캐시 경로 자동 복구
+    _desktop_addr = os.path.expanduser("~/Desktop/uploaded_cache/address.csv")
+    if os.path.exists(_desktop_addr):
+        with open(_desktop_addr, "rb") as f:
+            addr_bytes = f.read()
+        with open(addr_cache_path, "wb") as f:
+            f.write(addr_bytes)
+    else:
+        addr_bytes = None
 if industry_file_up is not None:
     ind_bytes = industry_file_up.getvalue()
     with open(industry_cache_path, "wb") as f: f.write(ind_bytes)
@@ -4842,8 +5667,8 @@ if not debt_df.empty:
     filtered_debt_df = staff_debt_df.copy()
     if selected_client != "전체 거래처":
         filtered_debt_df = filtered_debt_df[filtered_debt_df["거래처"] == selected_client].copy()
-client_addr_raw = addr_dict.get(selected_client, "등록된 주소 정보가 없습니다.")
-if pd.isna(client_addr_raw) or str(client_addr_raw).strip().lower() == 'nan' or not str(client_addr_raw).strip():
+client_addr_raw = resolve_client_address(selected_client, addr_dict)
+if not client_addr_raw:
     client_addr = "등록된 주소 정보가 없습니다."
 else:
     client_addr = str(client_addr_raw)
@@ -5305,6 +6130,7 @@ with tab1:
                     lost_clients[["거래처", f"{prev_m_label} 매출"]].style.format({f"{prev_m_label} 매출": "{:,.0f}"}),
                     use_container_width=True, hide_index=True, height=min(480, 38 + len(lost_clients) * 35)
                 )
+
 # Tab 2: 🏢 거래처 분석
 with tab2:
     t2_c1, t2_c2 = st.columns([4, 1])
@@ -5327,10 +6153,11 @@ with tab2:
             btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
             if st.button(btn_label, key="btn_dart_info", width="stretch"):
                 st.session_state.show_corp_info = not st.session_state.show_corp_info
-                st.rerun()
         with btn_c3:
-            if client_addr != "등록된 주소 정보가 없습니다.":
-                kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(client_addr)}"
+            # 주소록 주소 우선, 없으면 거래처명으로 카카오맵 검색
+            if selected_client and selected_client != "전체 거래처":
+                kakao_q = client_addr if client_addr != "등록된 주소 정보가 없습니다." else selected_client
+                kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(kakao_q)}"
                 st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url, width="stretch")
             else:
                 st.button(
@@ -5338,17 +6165,146 @@ with tab2:
                     disabled=True,
                     key="btn_kakao_disabled",
                     width="stretch",
+                    help="사이드바에서 특정 거래처를 선택하세요.",
                 )
+            # 버튼 바로 아래 주소 표시 (tab2 전용, 버튼과 동일 폭·글자크기)
+            _addr_color = "#64748B" if client_addr == "등록된 주소 정보가 없습니다." else "#334155"
+            st.markdown(
+                f"<div class='tab2-kakao-addr' style='color:{_addr_color};'>"
+                f"📍 {html.escape(client_addr)}</div>",
+                unsafe_allow_html=True,
+            )
     if st.session_state.show_corp_info:
-        with st.spinner("DART 및 네이버 기업 정보를 불러오는 중..."):
-            c_info = get_company_info_hybrid(selected_client, dart_api_key)
+        _memo_key = (str(selected_client), str(dart_api_key or ""))
+        _memo = st.session_state.get("_tab2_corp_memo")
+        _use_memo = (
+            isinstance(_memo, dict)
+            and _memo.get("key") == _memo_key
+            and isinstance(_memo.get("c_info"), dict)
+        )
+        if _use_memo:
+            c_info = dict(_memo["c_info"])
+            _latest_audit = _memo.get("latest_audit")
+            _audit_sum = dict(_memo.get("audit_sum") or {})
+            _matched = c_info.get("matched_name") or c_info.get("clean_name") or selected_client
+            _ccode = c_info.get("corp_code") or ""
+            _lookup = _ccode or _matched
+        else:
+            with st.spinner("DART 및 네이버 기업 정보를 불러오는 중..."):
+                c_info = get_company_info_hybrid(selected_client, dart_api_key)
+                _matched = c_info.get("matched_name") or c_info.get("clean_name") or selected_client
+                _ccode = c_info.get("corp_code") or ""
+                _lookup = _ccode or _matched
+
+                # 최근 감사보고서 1건 + 의견/핵심내용
+                _latest_audit = None
+                _audit_sum = {}
+                if dart_api_key and _lookup and OpenDartReader is not None:
+                    _audits = list_dart_audit_reports(_lookup, dart_api_key)
+                    if _audits:
+                        _latest_audit = _audits[0]
+                        _audit_sum = parse_dart_audit_report_summary(
+                            _latest_audit["rcept_no"], dart_api_key
+                        )
+                        if _audit_sum.get("revenue") and c_info.get("revenue") == "정보 없음":
+                            c_info["revenue"] = _audit_sum["revenue"] + " (감사보고서 추정)"
+                        if _audit_sum.get("profit") and c_info.get("profit") == "정보 없음":
+                            c_info["profit"] = _audit_sum["profit"] + " (감사보고서 추정)"
+                        if _audit_sum.get("revenue") or _audit_sum.get("profit"):
+                            if "DART" not in str(c_info.get("source")):
+                                c_info["source"] = "DART 감사보고서 본문 추정"
+                st.session_state["_tab2_corp_memo"] = {
+                    "key": _memo_key,
+                    "c_info": dict(c_info),
+                    "latest_audit": _latest_audit,
+                    "audit_sum": dict(_audit_sum) if _audit_sum else {},
+                }
+
+            # 왼쪽: 기업정보 / 오른쪽: 최근 감사보고서
+            # (아래 UI는 memo/fetch 공통)
+        _corp_l, _corp_r = st.columns([1, 1.15], gap="large")
+        with _corp_l:
+            if st.button("🔄 다시 조회", key="btn_refresh_corp", width="content"):
+                get_company_info_hybrid.clear()
+                list_dart_audit_reports.clear()
+                parse_dart_audit_report_summary.clear()
+                st.session_state.pop("_tab2_corp_memo", None)
+                st.rerun()
             st.markdown(f"""
-            - **출처:** {c_info['source']}
-            - **대표자:** {c_info['ceo']}
-            - **업종:** {c_info['industry']}
-            - **매출액:** {c_info['revenue']}
-            - **영업이익:** {c_info['profit']}
-            """)
+                - **출처:** {c_info['source']}
+                - **조회상호:** {_matched} (법인코드 `{_ccode or '-'}`)
+                - **대표자:** {c_info['ceo']}
+                - **업종:** {c_info['industry']}
+                - **매출액:** {c_info['revenue']}
+                - **영업이익:** {c_info['profit']}
+                """)
+            if c_info.get("revenue") == "정보 없음" or c_info.get("profit") == "정보 없음":
+                if not dart_api_key:
+                    st.warning(
+                        "사이드바에 DART API 키를 입력하세요. "
+                        "([opendart.fss.or.kr](https://opendart.fss.or.kr))"
+                    )
+                elif OpenDartReader is None:
+                    st.warning("`opendartreader` 미연결 — 앱을 재시작해 주세요.")
+                elif c_info.get("dart_error"):
+                    st.info(f"DART: {c_info['dart_error']}")
+                else:
+                    st.info("공시·네이버에 재무 수치가 없는 업체일 수 있습니다.")
+
+        with _corp_r:
+            if _latest_audit:
+                _op = _audit_sum.get("opinion") or "확인 불가"
+                _op_color = {
+                    "적정의견": "#166534",
+                    "한정의견": "#A16207",
+                    "부적정의견": "#B91C1C",
+                    "의견거절": "#9F1239",
+                }.get(_op, "#334155")
+                st.markdown("##### 📄 최근 감사보고서")
+                st.markdown(
+                    f"[{html.escape(_latest_audit['date'])} · {html.escape(_latest_audit['name'])}]"
+                    f"({_latest_audit['url']})"
+                )
+                if _audit_sum.get("chapter"):
+                    st.caption(f"추출 챕터: {_audit_sum['chapter']}")
+                st.markdown(
+                    f"<div style='margin:8px 0;padding:10px 12px;border:1px solid #E2E8F0;"
+                    f"border-radius:8px;background:#F8FAFC;'>"
+                    f"<div style='font-weight:700;color:{_op_color};font-size:15px;'>"
+                    f"감사의견: {html.escape(_op)}</div>"
+                    f"<div style='font-size:12px;color:#64748B;margin-top:4px;'>"
+                    f"{html.escape(_audit_sum.get('opinion_note') or '')}</div>"
+                    + (
+                        f"<div style='font-size:13px;color:#334155;margin-top:8px;line-height:1.45;'>"
+                        f"{html.escape(_audit_sum.get('opinion_summary') or '')}</div>"
+                        if _audit_sum.get("opinion_summary")
+                        else ""
+                    )
+                    + f"</div>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown("**핵심 내용 확인**")
+                st.markdown(
+                    f"""
+- **핵심감사사항:** {_audit_sum.get('kam') or '확인 불가'}
+- **계속기업 불확실성:** {_audit_sum.get('going_concern') or '확인 불가'}
+- **강조사항:** {_audit_sum.get('emphasis') or '확인 불가'}
+"""
+                )
+                st.caption("본문 자동 추출이라 일부 누락·오탐이 있을 수 있습니다. 원문은 위 링크에서 확인하세요.")
+            elif dart_api_key and _lookup and OpenDartReader is not None:
+                st.markdown("##### 📄 최근 감사보고서")
+                st.caption("최근 감사보고서 공시를 찾지 못했습니다.")
+            else:
+                st.markdown("##### 📄 최근 감사보고서")
+                st.caption("DART 연동 후 감사보고서를 표시합니다.")
+
+        _q = urllib.parse.quote(str(_matched))
+        st.markdown(
+            f"[DART 메인](https://dart.fss.or.kr/) · "
+            f"[DART '{_matched}' 검색](https://search.naver.com/search.naver?query={_q}%20DART%20공시) · "
+            f"[네이버 기업정보](https://search.naver.com/search.naver?query={_q}%20기업정보)"
+        )
     m1, m2, m3, m4 = st.columns(4)
     tot_sales_c = df_client_filtered["매출액"].sum() * 1.1 / 10000 if not df_client_filtered.empty else 0.0
     
@@ -5368,6 +6324,114 @@ with tab2:
                 create_stacked_bar_chart(pivot_m_client, title_text=""),
                 use_container_width=True, key="tab2_client_total_chart"
             )
+        # —— 매출 비교를 품목별 상세 분석보다 위에 배치 (tab2 전용 순서) ——
+        st.markdown("---")
+        _client_years = sorted(
+            {str(y) for y in df_client_filtered["연도"].dropna().unique()},
+            key=lambda y: int(y) if str(y).isdigit() else 0,
+        )
+        _cur_y = _client_years[-1] if _client_years else (str(years[0]) if years else None)
+        _prev_y = None
+        if _cur_y:
+            try:
+                _prev_cand = str(int(_cur_y) - 1)
+            except Exception:
+                _prev_cand = None
+            if _prev_cand and _prev_cand in _client_years:
+                _prev_y = _prev_cand
+            elif len(_client_years) >= 2:
+                _prev_y = _client_years[-2]
+        _yr_label = f"{_prev_y}·{_cur_y}" if _prev_y else str(_cur_y)
+        # 당월 기준: 미래 월 제외, 당월→과거 역순 (26년 08·07·…·01 → 25년 12·…·01)
+        _latest_dt_sales = df_client_filtered["매출일_dt"].max()
+        _cur_month = (
+            _latest_dt_sales.strftime("%m월")
+            if pd.notnull(_latest_dt_sales)
+            else all_months[0]
+        )
+        _mi = all_months.index(_cur_month) if _cur_month in all_months else 0
+        _sales_col_keys = []
+        if _cur_y:
+            _ys = str(_cur_y)[2:]
+            for i in range(_mi, -1, -1):
+                _sales_col_keys.append(f"{_ys}년 {all_months[i]}")
+        if _prev_y:
+            _ps = str(_prev_y)[2:]
+            for i in range(len(all_months) - 1, -1, -1):
+                _sales_col_keys.append(f"{_ps}년 {all_months[i]}")
+        # 오른쪽 월 그래프: 당월→01월 역순만 (미도래 월 제외)
+        _months_back = list(reversed(all_months[: _mi + 1]))
+        st.markdown(
+            f"<div class='sub-header dashboard-tab-panel-head'>"
+            f"📊 [{selected_client}] 매출 비교 ({_yr_label}, {_cur_month}→과거)</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"왼쪽: 품목별 매출(만원·VAT포함) · {_cur_y}년 {_cur_month}→과거 → {_prev_y or '전년'}년 "
+            f"(매출 많은 순) · 오른쪽: 월별 매출 비교 그래프 · 하단: 당해 년평균 매출 비중"
+        )
+        sales_two_y = cached_client_item_sales_pivot_two_years(
+            df_client_filtered, tuple(_sales_col_keys)
+        )
+        sales_month_two_y = cached_get_yearly_monthly_pivot(
+            df_client_filtered,
+            _months_back,
+            [y for y in (_cur_y, _prev_y) if y],
+        )
+        q_left, q_right = st.columns([1, 1])
+        with q_left:
+            if sales_two_y.empty:
+                st.info("전년·당해 매출 데이터가 없습니다.")
+            else:
+                # 품목별 총 매출 많은 순 내림차순 — tab2 매출 비교만
+                sales_two_y = sales_two_y.loc[
+                    sales_two_y.sum(axis=1).sort_values(ascending=False).index
+                ]
+                sales_disp = get_display_df_with_sum(sales_two_y, "합계")
+                st.dataframe(
+                    style_with_sum(sales_disp, "{:,.0f}", "Blues", axis=None),
+                    use_container_width=True,
+                    height=460,
+                )
+        with q_right:
+            if sales_month_two_y.empty or (sales_month_two_y.fillna(0) == 0).all().all():
+                st.info("전년·당해 월별 매출 데이터가 없습니다.")
+            else:
+                # 월별(당해·전년) 매출 비교 그룹 막대 — tab2 전용
+                _fig_sales_cmp = create_grouped_bar_chart(
+                    sales_month_two_y,
+                    title_text=f"월별 매출 비교 ({_yr_label}, 만원)",
+                    y_suffix="만원",
+                    y_format=",.0f",
+                )
+                render_plotly_chart(
+                    _fig_sales_cmp,
+                    use_container_width=True,
+                    key="tab2_sales_yoy_grouped",
+                )
+        # 당해 년평균(월평균) 매출 기준 품목별 비중 — 가로 막대(블루 톤)
+        if _cur_y:
+            _df_cy = df_client_filtered[
+                df_client_filtered["연도"].astype(str) == str(_cur_y)
+            ]
+            if not _df_cy.empty and "매출액" in _df_cy.columns:
+                _m_pvt = _df_cy.pivot_table(
+                    index="품목명", columns="월", values="매출액", aggfunc="sum"
+                ).fillna(0)
+                _yr_avg = _m_pvt.mean(axis=1)
+                _yr_avg = _yr_avg[_yr_avg > 0]
+                if not _yr_avg.empty:
+                    _share = (_yr_avg / _yr_avg.sum() * 100).sort_values(ascending=False)
+                    _fig_share = create_item_share_hbar(
+                        _share,
+                        title_text=f"당해({_cur_y}) 년평균 매출 기준 품목별 비중",
+                    )
+                    if _fig_share is not None:
+                        render_plotly_chart(
+                            _fig_share,
+                            use_container_width=True,
+                            key="tab2_cur_year_item_share",
+                        )
         st.markdown("---")
         st.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
         
@@ -5403,8 +6467,9 @@ with tab2:
             i_col_left_c, i_col_right_c = st.columns([1, 1])
             with i_col_left_c:
                 client_item_pivot_disp = get_display_df_with_sum(client_item_pivot, "연간 합계")
+                # tab2 표 색상 통일: Blues 그라데이션
                 if "비중" in selected_metric_c:
-                    st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=460)
+                    st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.1f}%", "Blues", axis=None), use_container_width=True, height=460)
                     y_suf_c, y_fmt_c = "%", ",.1f"
                 elif "출고량" in selected_metric_c:
                     if selected_target_item_c in target_items:
@@ -5413,7 +6478,7 @@ with tab2:
                         y_suf_c, y_fmt_c = " kg", ",.0f"
                     else:
                         y_suf_c, y_fmt_c = " 개(병)", ",.0f"
-                    st.dataframe(style_with_sum(client_item_pivot_disp, f"{{:{y_fmt_c}}}", "Greens", axis=None), use_container_width=True, height=460)
+                    st.dataframe(style_with_sum(client_item_pivot_disp, f"{{:{y_fmt_c}}}", "Blues", axis=None), use_container_width=True, height=460)
                 else:
                     st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
                     y_suf_c, y_fmt_c = " 만원", ",.0f"
@@ -5427,63 +6492,6 @@ with tab2:
                         y_format=y_fmt_c
                     ),
                     use_container_width=True, key="tab2_client_item_chart"
-                )
-        # —— 품목별 상세분석 하위: 전년·당해 출고량(품목×동월) + 월별 출고량 비교 ——
-        st.markdown("---")
-        _client_years = sorted(
-            {str(y) for y in df_client_filtered["연도"].dropna().unique()},
-            key=lambda y: int(y) if str(y).isdigit() else 0,
-        )
-        _cur_y = _client_years[-1] if _client_years else (str(years[0]) if years else None)
-        _prev_y = None
-        if _cur_y:
-            try:
-                _prev_cand = str(int(_cur_y) - 1)
-            except Exception:
-                _prev_cand = None
-            if _prev_cand and _prev_cand in _client_years:
-                _prev_y = _prev_cand
-            elif len(_client_years) >= 2:
-                _prev_y = _client_years[-2]
-        _yr_label = f"{_prev_y}·{_cur_y}" if _prev_y else str(_cur_y)
-        st.markdown(
-            f"<div class='sub-header dashboard-tab-panel-head'>"
-            f"📊 [{selected_client}] 출고량 비교 ({_yr_label})</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption("왼쪽: 거래품목 × 년/월 출고량(동월 인접) · 오른쪽: 월별 출고량 전년 대비 당해 비교")
-        qty_two_y = cached_client_item_qty_pivot_two_years(
-            df_client_filtered, _cur_y, _prev_y, all_months
-        )
-        qty_month_two_y = cached_get_yearly_monthly_qty_pivot(
-            df_client_filtered,
-            all_months,
-            [y for y in (_prev_y, _cur_y) if y],
-        )
-        q_left, q_right = st.columns([1, 1])
-        with q_left:
-            if qty_two_y.empty:
-                st.info("전년·당해 출고량 데이터가 없습니다.")
-            else:
-                qty_disp = get_display_df_with_sum(qty_two_y, "합계")
-                st.dataframe(
-                    style_with_sum(qty_disp, "{:,.0f}", "Greens", axis=None),
-                    use_container_width=True,
-                    height=460,
-                )
-        with q_right:
-            if qty_month_two_y.empty or (qty_month_two_y.fillna(0) == 0).all().all():
-                st.info("전년·당해 월별 출고량 데이터가 없습니다.")
-            else:
-                render_plotly_chart(
-                    create_grouped_bar_chart(
-                        qty_month_two_y,
-                        title_text="월별 출고량 비교",
-                        y_suffix="",
-                        y_format=",.0f",
-                    ),
-                    use_container_width=True,
-                    key="tab2_client_ym_qty_compare",
                 )
 # Tab 3: 📦 품목 및 단가 분석
 with tab3:
@@ -5544,14 +6552,46 @@ with tab3:
         
     st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (실제 원본 단가) - 전체 기간 월별 고정 표시</div>", unsafe_allow_html=True)
     _price_sort_order = list(sales_p.index) if not sales_p.empty else None
-    render_tab3_dataframe_table(
-        unit_price_p,
-        "{:,.0f}",
-        target_month_col,
-        key_prefix="tab3_price",
-        table_kind="price",
-        sort_order=_price_sort_order,
+    _price_items = []
+    if not unit_price_p.empty:
+        if _price_sort_order:
+            _price_items = [i for i in _price_sort_order if i in unit_price_p.index]
+            _price_items += [i for i in unit_price_p.index if i not in _price_items]
+        else:
+            _price_items = list(unit_price_p.index)
+    _price_view = st.selectbox(
+        "단가 보기 품목",
+        options=["전체 품목 (월별 고정)"] + _price_items,
+        key="tab3_price_item_select",
+        help="특정 품목을 고르면 단가가 처음 적용·변동된 연월만 표시합니다.",
     )
+    if _price_view == "전체 품목 (월별 고정)":
+        st.caption("전체 기간 월별 고정(이월) 단가입니다. 품목을 선택하면 변동 연월만 봅니다.")
+        render_tab3_dataframe_table(
+            unit_price_p,
+            "{:,.0f}",
+            target_month_col,
+            key_prefix="tab3_price",
+            table_kind="price",
+            sort_order=_price_sort_order,
+        )
+    else:
+        st.caption(
+            f"[{_price_view}] · 열=단가 최초 적용·변동 연월만 · 값=그 시점 단가 "
+            "(월별 고정/이월 표시가 아님)"
+        )
+        _chg = build_unit_price_change_pivot(
+            unit_price_p, years, all_months, item_names=[_price_view]
+        )
+        if _chg.empty:
+            st.info("이 품목의 단가 변동(또는 최초 적용) 이력이 없습니다.")
+        else:
+            _chg_fmt = {c: "{:,.0f}" for c in _chg.columns}
+            st.dataframe(
+                _chg.style.format(_chg_fmt, na_rep=""),
+                use_container_width=True,
+                height=120,
+            )
     
 # Tab 4: 👤 담당자 & 상세내역
 with tab4:
@@ -5885,8 +6925,8 @@ with tab6:
     if map_selected_client:
         addr_display_html = "<div style='background-color: #F1F5F9; padding: 8px 12px; border-radius: 6px; border: 1px solid #CBD5E1; margin-top: 5px; margin-bottom: 15px; font-size: 13px; color: #334155;'>"
         for sc in map_selected_client:
-            raw_a = addr_dict.get(sc, "등록된 주소 정보가 없습니다.")
-            clean_a = str(raw_a) if pd.notna(raw_a) and str(raw_a).strip().lower() != 'nan' and str(raw_a).strip() else "등록된 주소 정보가 없습니다."
+            raw_a = resolve_client_address(sc, addr_dict)
+            clean_a = raw_a if raw_a else "등록된 주소 정보가 없습니다."
             addr_display_html += f"<div>📍 <b>{sc}:</b> {clean_a}</div>"
         addr_display_html += "</div>"
         st.markdown(addr_display_html, unsafe_allow_html=True)
@@ -5928,11 +6968,8 @@ with tab6:
                 c_name = row['거래처']
                 c_staff = row['담당자']
                 
-                c_addr_raw = addr_dict.get(c_name, "")
-                if pd.isna(c_addr_raw) or str(c_addr_raw).strip().lower() == 'nan' or not str(c_addr_raw).strip():
-                    c_addr = "등록된 주소 정보가 없습니다."
-                else:
-                    c_addr = str(c_addr_raw)
+                c_addr_raw = resolve_client_address(c_name, addr_dict)
+                c_addr = c_addr_raw if c_addr_raw else "등록된 주소 정보가 없습니다."
                 
                 lat, lon = get_lat_lon_kakao(c_name, c_addr, rest_api_key)
                 
