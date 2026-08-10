@@ -2663,6 +2663,12 @@ def load_uploaded_files_from_bytes(file_tuples):
             result_df.loc[mask_manual, "담당자"] = result_df.loc[mask_manual, "거래처"].map(manual_dict)
         except Exception:
             pass
+    # ★ 거래처명 맨 앞이 z/Z → 담당자 '거래종료' (대시보드 전체 공통, 최종 확정)
+    if not result_df.empty and "거래처" in result_df.columns and "담당자" in result_df.columns:
+        _client_s = result_df["거래처"].astype(str).str.strip()
+        mask_closed = _client_s.str.match(r"^[zZ]", na=False)
+        if mask_closed.any():
+            result_df.loc[mask_closed, "담당자"] = "거래종료"
     return result_df
 # ==========================================
 # 4. 피벗 및 지표 계산 연산 캐싱 (최적화)
@@ -5606,7 +5612,15 @@ if not full_df.empty:
         if pd.isna(start_dt): start_dt = pd.Timestamp("2000-01-01")
         if pd.isna(end_dt): end_dt = pd.Timestamp("2099-12-31")
         df_base = full_df[(full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)].copy()
-        selected_staff = fc3.multiselect("👤 담당자", sorted(df_base["담당자"].unique()) if not df_base.empty else [])
+        _staff_raw = (
+            sorted(df_base["담당자"].dropna().astype(str).unique())
+            if not df_base.empty and "담당자" in df_base.columns
+            else []
+        )
+        # 거래종료는 항상 선택 가능하도록 옵션에 포함 (맨 앞)
+        _staff_opts = [s for s in _staff_raw if s != "거래종료"]
+        _staff_opts = ["거래종료"] + _staff_opts
+        selected_staff = fc3.multiselect("👤 담당자", _staff_opts)
         df_staff_filtered = df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base.copy()
         all_clients = sorted(df_staff_filtered["거래처"].unique()) if not df_staff_filtered.empty else []
         client_options = ["전체 거래처"] + all_clients
@@ -6660,8 +6674,8 @@ with tab4:
         with st.expander("⚠️ 담당자 미지정 신규/누락 거래처 (직접 지정) 열기/닫기", expanded=True):
             unassigned_df = df_base[df_base["담당자"] == "미지정"]
             
-            custom_staffs = ["가스코아산"]
-            existing_staffs = [s for s in full_df["담당자"].unique() if s != "미지정"]
+            custom_staffs = ["가스코아산", "거래종료"]
+            existing_staffs = [s for s in full_df["담당자"].unique() if s not in ("미지정",)]
             combined_staffs = sorted(list(set(existing_staffs + custom_staffs)))
             
             all_staff_options = ["미지정"] + combined_staffs
