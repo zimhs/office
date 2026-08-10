@@ -27,7 +27,8 @@ _TAB3_CMAP_GREEN = LinearSegmentedColormap.from_list(
 _TAB3_CMAP_ORANGE = LinearSegmentedColormap.from_list(
     "tab3_orange", ["#FFF7ED", "#FFEDD5", "#FDBA74"]
 )
-# OpenDartReader 임포트 (패키지명 여러 경로 대응 + 미설치 시 1회 자동 pip 설치)
+# OpenDartReader 임포트 (패키지명 여러 경로 대응)
+# 주의: 시작 시 자동 pip/페이지 reload 금지 → Streamlit 재부팅 무한로딩 유발
 _OPENDART_IMPORT_ERROR = ""
 
 
@@ -52,23 +53,6 @@ def _try_import_opendart():
 
 
 OpenDartReader, _OPENDART_IMPORT_ERROR = _try_import_opendart()
-if OpenDartReader is None:
-    # Streamlit Cloud / iPad 배포 환경에 requirements 미반영된 경우 자동 복구 시도
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "opendartreader>=0.3.2", "-q"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        OpenDartReader, _OPENDART_IMPORT_ERROR = _try_import_opendart()
-        if OpenDartReader is not None:
-            _OPENDART_IMPORT_ERROR = ""
-    except Exception as _e_pip:
-        _OPENDART_IMPORT_ERROR = (
-            (_OPENDART_IMPORT_ERROR + f" | pip 실패: {_e_pip}")
-            if _OPENDART_IMPORT_ERROR
-            else f"pip 실패: {_e_pip}"
-        )
 # 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide", initial_sidebar_state="expanded")
@@ -937,18 +921,29 @@ def _pick_fin_account(fin_state, exact_names, contains_names=None):
 
 
 @st.cache_resource(show_spinner=False)
+def _make_opendart_reader(dart_api_key: str):
+    """성공한 Reader만 캐시. 실패는 예외로 올려 None을 캐시하지 않음."""
+    return OpenDartReader(str(dart_api_key).strip())
+
+
 def get_opendart_reader(dart_api_key):
-    """OpenDartReader 재사용 (동일 키면 재생성 안 함). 조회 결과는 동일."""
-    if not dart_api_key or OpenDartReader is None:
+    """OpenDartReader 재사용. 연결 실패 시 None + session 오류 메시지."""
+    key = str(dart_api_key or "").strip()
+    if not key or OpenDartReader is None:
         return None
     try:
-        return OpenDartReader(dart_api_key)
-    except Exception:
+        return _make_opendart_reader(key)
+    except Exception as e:
+        try:
+            _make_opendart_reader.clear()
+        except Exception:
+            pass
+        st.session_state["_opendart_last_error"] = str(e)
         return None
 
 
 @st.cache_data(show_spinner=False, max_entries=100)
-def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=3):
+def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=4):
     candidates = _company_name_candidates(company_name)
     clean_name = candidates[0] if candidates else str(company_name)
 
@@ -974,7 +969,8 @@ def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=3):
         try:
             dart = get_opendart_reader(dart_api_key)
             if dart is None:
-                info["dart_error"] = "DART 연결 실패"
+                _err = st.session_state.get("_opendart_last_error") or "알 수 없는 오류"
+                info["dart_error"] = f"DART 연결 실패: {_err}"
                 return info
             corp_code = None
             matched = None
@@ -5547,7 +5543,7 @@ saved_api_key = _load_saved_dart_api_key()
 # 쿠키/데스크톱에서만 온 키면 서버 파일에도 동기화
 if saved_api_key and not _read_dart_key_file(API_KEY_FILE):
     _write_dart_key_file(API_KEY_FILE, saved_api_key)
-# 파일·쿠키 모두 비었을 때 localStorage → 쿠키 복원 후 1회 새로고침 (iPad Safari 대응)
+# localStorage → 쿠키만 세팅 (location.reload 금지: 재부팅 무한로딩 원인)
 if not saved_api_key:
     components.html(
         f"""
@@ -5564,10 +5560,6 @@ if not saved_api_key:
                 if (hasCookie) return;
                 parentDoc.cookie = name + "=" + encodeURIComponent(fromLs)
                     + "; path=/; max-age=31536000; SameSite=Lax";
-                if (!parentWin.sessionStorage.getItem("dart_key_reloaded")) {{
-                    parentWin.sessionStorage.setItem("dart_key_reloaded", "1");
-                    parentWin.location.reload();
-                }}
             }} catch (e) {{}}
         }})();
         </script>
@@ -5585,24 +5577,25 @@ dart_api_key = st.sidebar.text_input(
     help="금융감독원 Open DART API 키. 파일+브라우저에 저장되어 맥/iPad 재시작 후에도 유지됩니다.",
     key="sidebar_dart_api_key",
 )
-if dart_api_key:
+# 키가 바뀌었을 때만 저장/쿠키 동기화 (매 rerun HTML 주입 방지)
+if dart_api_key and dart_api_key != saved_api_key:
     _persist_dart_api_key(dart_api_key)
+elif dart_api_key and not _read_dart_key_file(API_KEY_FILE):
+    _write_dart_key_file(API_KEY_FILE, dart_api_key)
 if OpenDartReader is None:
     st.sidebar.warning(
-        "opendartreader 미연결 — iPad/클라우드 환경에 패키지가 없습니다. "
-        "아래 버튼으로 설치를 시도하거나, 배포 repo의 `requirements.txt`에 "
-        "`opendartreader`를 넣고 **Rebuild** 하세요."
+        "opendartreader 미연결 — requirements.txt 배포 후 Reboot 하세요. "
+        "필요 시 아래 버튼으로만 설치를 시도합니다."
     )
     if st.sidebar.button("📦 opendartreader 지금 설치 시도", key="btn_install_opendart"):
-        with st.sidebar.status("설치 중…"):
-            try:
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", "opendartreader>=0.3.2"],
-                )
-                st.sidebar.success("설치 완료 — 앱을 새로고침하세요.")
-            except Exception as _ie:
-                st.sidebar.error(f"설치 실패: {_ie}")
-        st.rerun()
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "opendartreader>=0.3.2"],
+                timeout=120,
+            )
+            st.sidebar.success("설치 완료 — 상단 메뉴에서 Reboot/새로고침 하세요.")
+        except Exception as _ie:
+            st.sidebar.error(f"설치 실패: {_ie}")
     if _OPENDART_IMPORT_ERROR:
         st.sidebar.caption(f"원인: `{_OPENDART_IMPORT_ERROR[:220]}`")
 elif dart_api_key:
@@ -6409,6 +6402,11 @@ with tab2:
                 get_company_info_hybrid.clear()
                 list_dart_audit_reports.clear()
                 parse_dart_audit_report_summary.clear()
+                try:
+                    _make_opendart_reader.clear()
+                except Exception:
+                    pass
+                st.session_state.pop("_opendart_last_error", None)
                 st.session_state.pop("_tab2_corp_memo", None)
                 st.rerun()
             st.markdown(f"""
