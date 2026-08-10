@@ -1655,6 +1655,24 @@ def load_industry_file(industry_bytes):
     except Exception:
         pass
     return {}
+def dedupe_debt_client_gubun(df):
+    """동일 거래처·구분은 1행만 유지. 월 합계 절댓값이 큰 행 우선."""
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    if "거래처" not in df.columns or "구분" not in df.columns:
+        return df
+    out = df.copy()
+    out["거래처"] = out["거래처"].astype(str).str.strip()
+    out["구분"] = out["구분"].astype(str).str.strip()
+    month_cols = [c for c in out.columns if c not in ("거래처", "구분")]
+    if month_cols:
+        out["_abs_sum"] = out[month_cols].apply(pd.to_numeric, errors="coerce").fillna(0).abs().sum(axis=1)
+        out = out.sort_values(["거래처", "구분", "_abs_sum"], ascending=[True, True, False])
+        out = out.drop_duplicates(subset=["거래처", "구분"], keep="first")
+        out = out.drop(columns=["_abs_sum"])
+    else:
+        out = out.drop_duplicates(subset=["거래처", "구분"], keep="first")
+    return out.reset_index(drop=True)
 @st.cache_data(show_spinner="채권 데이터를 읽어오는 중입니다...")
 def load_debt_file(debt_bytes):
     if not debt_bytes:
@@ -1698,7 +1716,7 @@ def load_debt_file(debt_bytes):
                                     errors="coerce"
                                 ).fillna(0)
                             )
-                        return df_filtered
+                        return dedupe_debt_client_gubun(df_filtered)
                 break
             except UnicodeDecodeError:
                 continue
@@ -2278,13 +2296,13 @@ def _debt_label_cell_style(client, gubun, color_map, compact=False):
     bg = color_map.get(client, "#FFFFFF")
     return base + f"background-color:{bg};text-align:center;"
 def _debt_num_cell_font(compact=False):
-    """거래처분석 탭 dataframe과 비슷한 숫자 글씨."""
+    """숫자만 거래처명(13px)보다 한 단계 작게."""
     pad = "4px 4px" if compact else "6px 8px"
     return (
         f"padding:{pad};border-bottom:1px solid #E2E8F0;white-space:nowrap;"
-        "font-size:13px;font-weight:400;line-height:1.4;vertical-align:middle;text-align:center;"
+        "font-size:12px;font-weight:400;line-height:1.4;vertical-align:middle;text-align:center;"
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        "color:#31333F;"
+        "font-variant-numeric:tabular-nums;color:#31333F;"
     )
 PAYMENT_TERMS_PATH = os.path.join(CACHE_DIR, "payment_terms.csv")
 PAYMENT_TERMS_FALLBACK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "payment_terms.csv")
@@ -2865,7 +2883,13 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
             except (TypeError, ValueError):
                 num = 0.0
             display = f"{num:,.0f}"
-            extra_style = str(style_df.at[idx, col]) if col in style_df.columns else ""
+            # 동일 (거래처,구분) 중복 시 .at 불가 → 행번호(iat)로 접근
+            extra_style = ""
+            if col in style_df.columns and 0 <= r < len(style_df):
+                try:
+                    extra_style = str(style_df.iat[r, style_df.columns.get_loc(col)] or "")
+                except Exception:
+                    extra_style = ""
             cells.append(
                 f'<td class="dash-cell-selectable" style="{cell_font}{extra_style}" '
                 f'data-raw="{num}">{display}</td>'
@@ -3086,6 +3110,7 @@ def render_debt_month_rank_panel(
             headers = ["거래처"] + display_months + ["연체합계", bal_hdr, "결제조건", "연체개월수"]
             left_w, right_w = [140], [110, 120]
         cell = _debt_num_cell_font(compact=compact)
+        label = _debt_label_cell_style  # 거래처명 13px 유지
         body = []
         for i, client in enumerate(clients_sorted):
             bg = DEBT_CLIENT_STRIPE_A if i % 2 == 0 else DEBT_CLIENT_STRIPE_B
@@ -3093,7 +3118,7 @@ def render_debt_month_rank_panel(
             od_amts = meta.get("od_month_amts") or {}
             pink_set = set(meta.get("pink_months") or [])
             tds = [
-                f'<td class="dash-freeze-0" style="{cell}background:{bg};'
+                f'<td class="dash-freeze-0" style="{label(client, "", {client: bg}, compact=compact)}'
                 f'overflow:hidden;text-overflow:ellipsis;" '
                 f'title="{html.escape(str(client))}">{html.escape(str(client))}</td>'
             ]
@@ -4428,15 +4453,19 @@ def render_frozen_styler_html(
         })();
         </script>
         """
+    # 영업종합요약 st.dataframe(히트맵)과 동일 계열 글꼴·크기
     page_html = f"""
     <!DOCTYPE html>
     <html><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap">
     <style>
         html, body {{
             margin: 0; height: 100%; overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            font-size: 13px; color: #31333F;
+            font-family: "Source Sans 3", "Source Sans Pro", "Segoe UI", Roboto,
+                "Helvetica Neue", Arial, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+            font-size: 15px; color: #31333F;
+            -webkit-font-smoothing: antialiased;
         }}
         .wrap {{
             height: 100%; overflow: auto;
@@ -4446,23 +4475,77 @@ def render_frozen_styler_html(
         table {{
             border-collapse: separate; border-spacing: 0;
             width: max-content; min-width: 100%;
+            font-family: inherit;
+            font-size: 15px;
         }}
         th, td {{
             padding: 6px 10px; white-space: nowrap;
             border-bottom: 1px solid #E2E8F0;
+            font-family: inherit;
+            font-size: 15px;
             font-weight: 400;
+            font-variant-numeric: tabular-nums;
+            text-align: center;
+            vertical-align: middle;
+            line-height: 1.4;
         }}
         thead th {{
             position: sticky; top: 0; z-index: 6;
             background: #F0F2F6 !important;
             box-shadow: 0 1px 0 #CBD5E1;
-            font-weight: 600; text-align: right;
+            font-weight: 600; text-align: center;
+            font-size: 15px;
         }}
-        thead th:nth-child(1), thead th:nth-child(2) {{ text-align: left; }}
+        table thead tr th:nth-child(1),
+        table thead tr th:nth-child(2),
+        table tbody tr th:nth-child(1),
+        table tbody tr th:nth-child(2),
+        table tbody tr td:nth-child(1),
+        table tbody tr td:nth-child(2) {{
+            text-align: left;
+        }}
         thead th a:hover {{ text-decoration: underline !important; }}
         {''.join(left_css)}
     </style></head>
-    <body><div class="wrap">{table_html}</div>{click_js}</body></html>
+    <body><div class="wrap">{table_html}</div>
+    <script>
+    (function () {{
+      /* 상단 st.dataframe과 동일 글꼴 우선 적용 */
+      try {{
+        var pDoc = window.parent && window.parent.document;
+        if (pDoc) {{
+          var pf = window.parent.getComputedStyle(pDoc.body).fontFamily;
+          if (pf) document.body.style.fontFamily = '"Source Sans 3",' + pf;
+        }}
+      }} catch (e0) {{}}
+      /* 어두운 히트맵 칸 → 흰 글씨 (상단 st.dataframe Blues와 동일 가독성) */
+      function parseRgb(c) {{
+        if (!c) return null;
+        c = String(c).trim();
+        if (c.indexOf("rgb") === 0) {{
+          var m = c.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
+          return m ? [+m[1], +m[2], +m[3]] : null;
+        }}
+        if (c.charAt(0) === "#" && (c.length === 7 || c.length === 4)) {{
+          if (c.length === 4) c = "#" + c[1]+c[1]+c[2]+c[2]+c[3]+c[3];
+          return [parseInt(c.slice(1,3),16), parseInt(c.slice(3,5),16), parseInt(c.slice(5,7),16)];
+        }}
+        return null;
+      }}
+      function applyContrast(el) {{
+        /* 선택 월(빨강) 강조는 유지 */
+        var inline = (el.getAttribute("style") || "").toLowerCase();
+        if (inline.indexOf("#b91c1c") >= 0 || inline.indexOf("rgb(185, 28, 28)") >= 0) return;
+        var bg = el.style.backgroundColor || window.getComputedStyle(el).backgroundColor;
+        var rgb = parseRgb(bg);
+        if (!rgb) return;
+        var lum = (0.299*rgb[0] + 0.587*rgb[1] + 0.114*rgb[2]) / 255;
+        if (lum < 0.55) el.style.color = "#FFFFFF";
+      }}
+      document.querySelectorAll("td, th").forEach(applyContrast);
+    }})();
+    </script>
+    {click_js}</body></html>
     """
     components.html(page_html, height=height, scrolling=True)
 # ==========================================
@@ -4645,6 +4728,8 @@ if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
 debt_df = load_debt_file(debt_bytes) if debt_bytes else pd.DataFrame()
+if not debt_df.empty:
+    debt_df = dedupe_debt_client_gubun(debt_df)
 df_tank = load_equipment_file(tank_bytes, tank_name) if tank_bytes else pd.DataFrame()
 df_vaporizer = load_equipment_file(vaporizer_bytes, vaporizer_name) if vaporizer_bytes else pd.DataFrame()
 df_integrated = load_equipment_file(int_bytes, int_name) if int_bytes else pd.DataFrame()
@@ -5730,69 +5815,40 @@ with tab5:
             disp_debt = disp_debt.set_index(["거래처", "구분"])
             debt_highlight = selected_client != "전체 거래처"
             df_height = 500 if selected_client != "전체 거래처" else 700
-            # 월 접기/펼치기: 버튼 토글 (거래처·구분 고정)
-            if "debt_visible_months" not in st.session_state:
-                st.session_state["debt_visible_months"] = list(numeric_cols)
-            else:
-                kept = [c for c in st.session_state["debt_visible_months"] if c in numeric_cols]
-                st.session_state["debt_visible_months"] = kept if kept else list(numeric_cols)
-            with st.container(key="debt_compact_btns_months"):
-                m_cols = st.columns(len(numeric_cols), gap="small")
-                for _i, _m in enumerate(numeric_cols):
-                    with m_cols[_i]:
-                        _on = _m in st.session_state["debt_visible_months"]
-                        if st.button(
-                            str(_m),
-                            key=f"debt_month_tog_{_m}",
-                            type="primary" if _on else "secondary",
-                            width="stretch",
-                        ):
-                            cur = list(st.session_state["debt_visible_months"])
-                            if _on:
-                                if len(cur) > 1:
-                                    cur = [c for c in cur if c != _m]
-                            else:
-                                cur.append(_m)
-                                cur = [c for c in numeric_cols if c in cur]
-                            st.session_state["debt_visible_months"] = cur
-                            st.rerun()
-            show_cols = [c for c in numeric_cols if c in st.session_state["debt_visible_months"]]
-            if not show_cols:
-                st.info("표시할 월을 하나 이상 선택하세요. (거래처·구분은 항상 표시)")
-            else:
-                # 입금기준표 결제조건 → 표 맨 우측 고정 표시
-                if os.path.exists(PAYMENT_TERMS_FALLBACK) and not os.path.exists(PAYMENT_TERMS_PATH):
-                    try:
-                        shutil.copy2(PAYMENT_TERMS_FALLBACK, PAYMENT_TERMS_PATH)
-                    except Exception:
-                        pass
-                payment_terms_map = load_payment_terms_map()
-                render_debt_interactive_table(
-                    disp_debt[show_cols],
-                    debt_highlight,
-                    height=df_height,
+            show_cols = list(numeric_cols)
+            # 입금기준표 결제조건 → 표 맨 우측 고정 표시
+            if os.path.exists(PAYMENT_TERMS_FALLBACK) and not os.path.exists(PAYMENT_TERMS_PATH):
+                try:
+                    shutil.copy2(PAYMENT_TERMS_FALLBACK, PAYMENT_TERMS_PATH)
+                except Exception:
+                    pass
+            payment_terms_map = load_payment_terms_map()
+            render_debt_interactive_table(
+                disp_debt[show_cols],
+                debt_highlight,
+                height=df_height,
+                payment_terms_map=payment_terms_map,
+            )
+            # 상세표 아래: 연체개월수 요약 — 거래처(상위검색) 무시, 담당자 필터만 적용
+            if not staff_debt_df.empty:
+                _staff_num = [c for c in staff_debt_df.columns if c not in ("거래처", "구분")]
+                _staff_months = [c for c in _staff_num if staff_debt_df[c].abs().sum() > 0]
+                _rank_months = [c for c in show_cols if c in _staff_months] or _staff_months
+                render_debt_month_rank_panel(
+                    staff_debt_df,
+                    _rank_months,
                     payment_terms_map=payment_terms_map,
+                    height=480,
+                    status_month_cols=_staff_months,
                 )
-                # 상세표 아래: 연체개월수 요약 — 거래처(상위검색) 무시, 담당자 필터만 적용
-                if not staff_debt_df.empty:
-                    _staff_num = [c for c in staff_debt_df.columns if c not in ("거래처", "구분")]
-                    _staff_months = [c for c in _staff_num if staff_debt_df[c].abs().sum() > 0]
-                    _rank_months = [c for c in show_cols if c in _staff_months] or _staff_months
-                    render_debt_month_rank_panel(
-                        staff_debt_df,
-                        _rank_months,
-                        payment_terms_map=payment_terms_map,
-                        height=480,
-                        status_month_cols=_staff_months,
-                    )
-                else:
-                    render_debt_month_rank_panel(
-                        filtered_debt_df,
-                        show_cols,
-                        payment_terms_map=payment_terms_map,
-                        height=480,
-                        status_month_cols=numeric_cols,
-                    )
+            else:
+                render_debt_month_rank_panel(
+                    filtered_debt_df,
+                    show_cols,
+                    payment_terms_map=payment_terms_map,
+                    height=480,
+                    status_month_cols=numeric_cols,
+                )
 # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
 with tab6:
     t6_c1, t6_c2 = st.columns([4, 1])
@@ -5921,7 +5977,28 @@ with tab6:
                     center={"lat": center_lat, "lon": center_lon},
                     height=600
                 )
-                fig_map.update_traces(marker=dict(size=14, opacity=0.9))
+                # 맥: 기존 marker=dict 유지 (안정화 상태 무변경)
+                # iPad: marker=dict 전체 치환 시 담당자 색이 검게 깨짐 → size/opacity만 갱신 + 색 재고정
+                if is_touch_ui():
+                    _staff_colors = {}
+                    for _tr in fig_map.data:
+                        try:
+                            _mc = getattr(_tr.marker, "color", None)
+                            if _mc is not None and str(_mc).strip() not in ("", "None"):
+                                _staff_colors[_tr.name] = _mc
+                        except Exception:
+                            pass
+                    _palette = list(px.colors.qualitative.Plotly) + list(px.colors.qualitative.Dark24)
+                    for _i, _tr in enumerate(fig_map.data):
+                        _c = _staff_colors.get(_tr.name) or _palette[_i % len(_palette)]
+                        try:
+                            fig_map.data[_i].marker.size = 14
+                            fig_map.data[_i].marker.opacity = 0.9
+                            fig_map.data[_i].marker.color = _c
+                        except Exception:
+                            pass
+                else:
+                    fig_map.update_traces(marker=dict(size=14, opacity=0.9))
                 
                 vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
                 vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
