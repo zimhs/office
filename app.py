@@ -130,7 +130,64 @@ def inject_custom_css():
                 padding-left: 1px !important;
                 padding-right: 1px !important;
             }
-            /* Tab2 액션 버튼 — 가로 넓게, 글씨 한 줄로 박스 안에 */
+            /* Tab2 기업정보 통합 카드 */
+            .tab2-corp-card {
+                border: 1px solid #E2E8F0;
+                border-radius: 10px;
+                background: #FFFFFF;
+                padding: 14px 16px 12px;
+                margin: 4px 0 12px;
+            }
+            .tab2-corp-card h4 {
+                margin: 0 0 10px;
+                font-size: 16px;
+                color: #0F172A;
+                font-weight: 700;
+            }
+            .tab2-corp-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 8px 20px;
+            }
+            .tab2-corp-grid .row {
+                display: flex;
+                gap: 8px;
+                font-size: 13px;
+                line-height: 1.45;
+                color: #334155;
+            }
+            .tab2-corp-grid .k {
+                flex: 0 0 72px;
+                color: #64748B;
+                font-weight: 600;
+            }
+            .tab2-corp-grid .v { flex: 1; word-break: break-word; }
+            .tab2-corp-sec {
+                margin-top: 12px;
+                padding-top: 10px;
+                border-top: 1px solid #F1F5F9;
+            }
+            .tab2-corp-sec .sec-title {
+                font-size: 12px;
+                font-weight: 700;
+                color: #475569;
+                margin-bottom: 6px;
+                letter-spacing: 0.02em;
+            }
+            .tab2-corp-op {
+                display: inline-block;
+                margin-top: 4px;
+                padding: 4px 10px;
+                border-radius: 6px;
+                background: #F8FAFC;
+                border: 1px solid #E2E8F0;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            @media (max-width: 720px) {
+                .tab2-corp-grid { grid-template-columns: 1fr; }
+            }
+
             .st-key-tab2_action_btns div[data-testid="stButton"],
             .st-key-tab2_action_btns div[data-testid="stLinkButton"] {
                 width: 100% !important;
@@ -884,18 +941,658 @@ def _company_name_candidates(company_name):
 
 def _dart_first_corp_row(by_name):
     """company_by_name 결과(list/DataFrame)에서 첫 법인 dict 추출."""
+    rows = _dart_corp_rows(by_name)
+    return rows[0] if rows else None
+
+
+def _dart_corp_rows(by_name):
+    """company_by_name 결과 → dict 리스트."""
     if by_name is None:
-        return None
+        return []
     if isinstance(by_name, pd.DataFrame):
         if by_name.empty:
-            return None
-        return by_name.iloc[0].to_dict()
-    if isinstance(by_name, list) and by_name:
-        row = by_name[0]
-        return row if isinstance(row, dict) else None
+            return []
+        return [r.to_dict() for _, r in by_name.iterrows()]
+    if isinstance(by_name, list):
+        return [r for r in by_name if isinstance(r, dict)]
     if isinstance(by_name, dict) and by_name.get("corp_code"):
-        return by_name
-    return None
+        return [by_name]
+    return []
+
+
+def _loc_tokens_from_address(address):
+    """주소에서 동명회사 구분용 지역 토큰 (시/군/구·읍/면/동 등)."""
+    if not address or str(address).strip() in ("", "등록된 주소 정보가 없습니다."):
+        return []
+    a = re.sub(r"\(.*?\)|\[.*?\]", " ", str(address))
+    tokens = []
+    for m in re.finditer(
+        r"((?:서울|부산|대구|인천|광주|대전|울산|세종)특별시|세종특별자치시|"
+        r"경기(?:도)?|충남|충북|전남|전북|경남|경북|강원(?:도)?|제주(?:도)?)",
+        a,
+    ):
+        tokens.append(m.group(1))
+    for m in re.finditer(r"([가-힣]+(?:시|군|구))", a):
+        tokens.append(m.group(1))
+    for m in re.finditer(r"([가-힣]+(?:읍|면|동|리))", a):
+        tokens.append(m.group(1))
+    out = []
+    for t in tokens:
+        t = str(t).strip()
+        if t and t not in out:
+            out.append(t)
+    return out[:8]
+
+
+def _score_text_vs_loc_tokens(text, tokens):
+    if not tokens:
+        return 0
+    blob = str(text or "")
+    return sum(1 for t in tokens if t and t in blob)
+
+
+# --- 공장등록(팩토리온) 공공데이터 — tab2 기업정보 보강용 ---
+FACTORY_KEY_FILE = os.path.join(CACHE_DIR, "factory_api_key.txt")
+FACTORY_API_PROD_URL = (
+    "https://apis.data.go.kr/B550624/fctryRegistInfo/getFctryPrdctnService_v2"
+)
+FACTORY_API_LAND_URL = (
+    "https://apis.data.go.kr/B550624/fctryRegistLndpclInfo/getFctryLndpclService"
+)
+
+
+def _load_factory_api_key():
+    """Secrets → 로컬 파일 → session 순. 사이드바(DART)와 분리."""
+    try:
+        secrets = getattr(st, "secrets", None)
+        if secrets is not None:
+            for k in (
+                "FACTORY_API_KEY",
+                "DATA_GO_KR_SERVICE_KEY",
+                "factory_api_key",
+            ):
+                try:
+                    v = secrets.get(k) if hasattr(secrets, "get") else secrets[k]
+                except Exception:
+                    v = None
+                if v and str(v).strip():
+                    return str(v).strip()
+    except Exception:
+        pass
+    try:
+        if os.path.exists(FACTORY_KEY_FILE):
+            with open(FACTORY_KEY_FILE, "r", encoding="utf-8") as f:
+                v = f.read().strip()
+                if v:
+                    return v
+    except Exception:
+        pass
+    return str(st.session_state.get("_factory_api_key") or "").strip()
+
+
+def _persist_factory_api_key(key):
+    key = str(key or "").strip()
+    if not key:
+        return
+    st.session_state["_factory_api_key"] = key
+    try:
+        with open(FACTORY_KEY_FILE, "w", encoding="utf-8") as f:
+            f.write(key)
+    except Exception:
+        pass
+
+
+def _fmt_factory_area(val):
+    """면적 표시 — 정수만."""
+    if val is None or str(val).strip() in ("", "None", "nan"):
+        return ""
+    try:
+        s = str(val).replace(",", "").strip()
+        return f"{int(round(float(s))):,}㎡"
+    except Exception:
+        return str(val).strip()
+
+
+def _fmt_factory_date(val):
+    s = re.sub(r"\D", "", str(val or ""))
+    if len(s) >= 8:
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return str(val or "").strip()
+
+
+def _factory_extract_items(payload):
+    """공공데이터 JSON/XML-ish dict → item list."""
+    if payload is None:
+        return [], "응답 없음"
+    if not isinstance(payload, dict):
+        return [], "응답 형식 오류"
+
+    # gateway error envelope
+    gw = payload.get("OpenAPI_ServiceResponse") or {}
+    if isinstance(gw, dict) and gw.get("cmmMsgHeader"):
+        hdr = gw.get("cmmMsgHeader") or {}
+        msg = hdr.get("returnAuthMsg") or hdr.get("errMsg") or "API 게이트웨이 오류"
+        return [], str(msg)
+
+    resp = payload.get("response") if isinstance(payload.get("response"), dict) else payload
+    header = resp.get("header") if isinstance(resp, dict) else None
+    body = resp.get("body") if isinstance(resp, dict) else None
+    if isinstance(header, dict):
+        code = str(header.get("resultCode") or "")
+        if code and code not in ("00", "0", "000"):
+            return [], str(header.get("resultMsg") or f"오류코드 {code}")
+    if not isinstance(body, dict):
+        return [], "데이터 없음"
+    items = body.get("items")
+    if items is None or items == "" or items == {}:
+        return [], ""
+    if isinstance(items, dict):
+        item = items.get("item")
+    else:
+        item = items
+    if item is None:
+        return [], ""
+    if isinstance(item, list):
+        return [x for x in item if isinstance(x, dict)], ""
+    if isinstance(item, dict):
+        return [item], ""
+    return [], "항목 파싱 실패"
+
+
+def _factory_parse_response_text(text):
+    """JSON 우선, 실패 시 XML → dict. 빈 본문은 안내 메시지로 반환."""
+    raw = (text or "").strip()
+    if not raw:
+        return {
+            "OpenAPI_ServiceResponse": {
+                "cmmMsgHeader": {
+                    "errMsg": "EMPTY_BODY",
+                    "returnAuthMsg": (
+                        "API 응답이 비어 있습니다. "
+                        "일반 인증키·활용신청(승인)을 확인하세요."
+                    ),
+                }
+            }
+        }
+    if raw[0] in "{[":
+        try:
+            return json.loads(raw)
+        except Exception as e:
+            return {
+                "OpenAPI_ServiceResponse": {
+                    "cmmMsgHeader": {
+                        "errMsg": "JSON_PARSE_FAIL",
+                        "returnAuthMsg": f"JSON 파싱 실패: {e}",
+                    }
+                }
+            }
+    if raw[0] == "<" or raw.lstrip().startswith("<?xml"):
+        low = raw[:80].lower()
+        if "<html" in low or "<!doctype" in low:
+            snippet = re.sub(r"\s+", " ", raw)[:160]
+            return {
+                "OpenAPI_ServiceResponse": {
+                    "cmmMsgHeader": {
+                        "errMsg": "HTML_BODY",
+                        "returnAuthMsg": f"HTML 응답(키/URL 확인): {snippet}",
+                    }
+                }
+            }
+        try:
+            import xml.etree.ElementTree as ET
+
+            root = ET.fromstring(raw)
+
+            def _xml_to_obj(el):
+                children = list(el)
+                if not children:
+                    return (el.text or "").strip()
+                grouped = {}
+                for ch in children:
+                    grouped.setdefault(ch.tag, []).append(_xml_to_obj(ch))
+                out = {}
+                for tag, vals in grouped.items():
+                    out[tag] = vals[0] if len(vals) == 1 else vals
+                return out
+
+            return {root.tag: _xml_to_obj(root)}
+        except Exception as e:
+            return {
+                "OpenAPI_ServiceResponse": {
+                    "cmmMsgHeader": {
+                        "errMsg": "XML_PARSE_FAIL",
+                        "returnAuthMsg": f"XML 파싱 실패: {e}",
+                    }
+                }
+            }
+    snippet = re.sub(r"\s+", " ", raw)[:160]
+    return {
+        "OpenAPI_ServiceResponse": {
+            "cmmMsgHeader": {
+                "errMsg": "NON_JSON_BODY",
+                "returnAuthMsg": f"JSON/XML이 아닌 응답: {snippet}",
+            }
+        }
+    }
+
+
+def _factory_is_auth_error(err):
+    s = str(err or "")
+    return any(
+        x in s
+        for x in (
+            "SERVICE_KEY",
+            "등록되지 않은 서비스키",
+            "UNAUTHORIZED",
+            "인증키",
+            "INVALID_SERVICE_KEY",
+        )
+    )
+
+
+def _factory_http_get(url, api_key, extra_params, timeout=12):
+    """data.go.kr 호출.
+
+    주의: Encoding 키(%3D%3D)를 requests params에 넣으면 %253D로 이중인코딩되어
+    '등록되지 않은 서비스키'가 난다.
+    - Decoding 키(==) → params로 전달(라이브러리가 1회 인코딩)
+    - Encoding 키(%3D%3D) → URL에 그대로 붙임(추가 인코딩 없음)
+    """
+    raw_key = str(api_key or "").strip()
+    decoded = urllib.parse.unquote(raw_key)
+    encoded = urllib.parse.quote(decoded, safe="")
+
+    base_extra = {}
+    for k, v in (extra_params or {}).items():
+        if v is not None and str(v).strip() != "":
+            base_extra[k] = str(v).strip()
+
+    attempts = []
+    # 1) Decoding 키 + params (정상 경로)
+    attempts.append(("params", decoded))
+    # 2) Encoding 키를 URL에 raw append
+    if encoded != decoded:
+        attempts.append(("raw", encoded))
+    # 3) 사용자가 Encoding 키를 그대로 넣은 경우도 raw로 한 번 더
+    if "%" in raw_key and raw_key not in (encoded, decoded):
+        attempts.append(("raw", raw_key))
+
+    last_payload = None
+    last_auth_err = ""
+    for mode, key in attempts:
+        for resp_type in ("json", "xml"):
+            q = {
+                "pageNo": "1",
+                "numOfRows": "20",
+                "type": resp_type,
+            }
+            q.update(base_extra)
+            try:
+                if mode == "params":
+                    params = dict(q)
+                    params["serviceKey"] = key
+                    r = requests.get(url, params=params, timeout=timeout)
+                else:
+                    qs = urllib.parse.urlencode(q, doseq=True)
+                    r = requests.get(
+                        f"{url}?serviceKey={key}&{qs}", timeout=timeout
+                    )
+                payload = _factory_parse_response_text(r.text)
+                last_payload = payload
+                items, err = _factory_extract_items(payload)
+                if items:
+                    return payload
+                if _factory_is_auth_error(err):
+                    last_auth_err = err
+                    # 이 키/모드로는 인증 실패 → 다음 시도
+                    break
+            except Exception as e:
+                last_payload = {
+                    "OpenAPI_ServiceResponse": {
+                        "cmmMsgHeader": {
+                            "errMsg": "REQUEST_FAIL",
+                            "returnAuthMsg": str(e),
+                        }
+                    }
+                }
+
+    if last_auth_err:
+        return {
+            "OpenAPI_ServiceResponse": {
+                "cmmMsgHeader": {
+                    "errMsg": "SERVICE_KEY_ERROR",
+                    "returnAuthMsg": (
+                        "등록되지 않은 서비스키 — "
+                        "① data.go.kr에서 해당 API(생산정보/필지) 활용신청이 '승인'인지 확인 "
+                        "② 포털의 Decoding 키(끝 ==)로 다시 저장 후 '다시 조회' "
+                        f"(원문: {last_auth_err})"
+                    ),
+                }
+            }
+        }
+    return last_payload or {
+        "OpenAPI_ServiceResponse": {
+            "cmmMsgHeader": {
+                "errMsg": "NO_RESPONSE",
+                "returnAuthMsg": "공장등록 API 응답을 받지 못했습니다.",
+            }
+        }
+    }
+
+
+def _factory_pick_best(items, loc_tokens, company_names):
+    """주소 토큰 우선, 없으면 상호 유사도로 1건 선택. 주소 있는데 0점이면 거부."""
+    if not items:
+        return None, 0
+    name_cores = []
+    for n in company_names or []:
+        core = re.sub(
+            r"주식회사|㈜|\(주\)|유한회사|\(유\)|\s+",
+            "",
+            str(n or ""),
+        )
+        if core:
+            name_cores.append(core)
+
+    best = None
+    best_score = -1
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        adres = str(it.get("rnAdres") or it.get("adres") or "")
+        loc_score = _score_text_vs_loc_tokens(adres, loc_tokens)
+        nm = str(it.get("cmpnyNm") or "")
+        nm_core = re.sub(
+            r"주식회사|㈜|\(주\)|유한회사|\(유\)|\s+",
+            "",
+            nm,
+        )
+        name_hit = 1 if any(c and (c in nm_core or nm_core in c) for c in name_cores) else 0
+        score = loc_score * 10 + name_hit
+        if score > best_score:
+            best_score = score
+            best = it
+    if loc_tokens and best is not None:
+        adres = str(best.get("rnAdres") or best.get("adres") or "")
+        if _score_text_vs_loc_tokens(adres, loc_tokens) <= 0:
+            return None, 0
+    return best, best_score
+
+
+def _factory_row_to_info(prod_row, land_row=None):
+    row = dict(prod_row or {})
+    if isinstance(land_row, dict):
+        for k, v in land_row.items():
+            if v is not None and str(v).strip() != "":
+                row[k] = v
+    area_land = _fmt_factory_area(row.get("fctryLndpclAr"))
+    area_bldg = _fmt_factory_area(row.get("fctryDongBuldAr"))
+    return {
+        "ok": True,
+        "company": str(row.get("cmpnyNm") or "").strip(),
+        "ceo": str(row.get("rprsntvNm") or "").strip(),
+        "address": str(row.get("rnAdres") or row.get("adres") or "").strip(),
+        "industry": str(row.get("indutyNm") or "").strip(),
+        "product": str(row.get("mainProductCn") or "").strip(),
+        "land_area": area_land,
+        "bldg_area": area_bldg,
+        "zone": str(row.get("spfcSeCodeNm") or "").strip(),
+        "admin": str(row.get("cvplChrgOrgnztNm") or "").strip(),
+        "reg_date": _fmt_factory_date(row.get("frstFctryRegistDe")),
+        "tel": str(row.get("cmpnyTelno") or "").strip(),
+        "fax": str(row.get("cmpnyFxnum") or "").strip(),
+        "homepage": str(row.get("hmpadr") or "").strip(),
+        "employees": str(row.get("allEmplyCo") or "").strip(),
+        "complex": str(row.get("irsttNm") or "").strip(),
+        "manage_no": str(row.get("fctryManageNo") or "").strip(),
+        "source": "한국산업단지공단 공장등록(팩토리온)",
+        "source_url": "https://www.data.go.kr/data/15087611/openapi.do",
+        "error": "",
+    }
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_factory_registry(company_name, address=None, api_key=None, _cache_v=4):
+    """공장등록 생산정보+필지정보 조회. 상호+주소로 동명 오매칭 방지."""
+    empty = {
+        "ok": False,
+        "company": "",
+        "ceo": "",
+        "address": "",
+        "industry": "",
+        "product": "",
+        "land_area": "",
+        "bldg_area": "",
+        "zone": "",
+        "admin": "",
+        "reg_date": "",
+        "tel": "",
+        "fax": "",
+        "homepage": "",
+        "employees": "",
+        "complex": "",
+        "manage_no": "",
+        "source": "한국산업단지공단 공장등록(팩토리온)",
+        "source_url": "https://www.data.go.kr/data/15087611/openapi.do",
+        "error": "",
+    }
+    key = str(api_key or "").strip()
+    if not key:
+        empty["error"] = "공장등록 API 키가 없습니다. (공공데이터포털 인증키)"
+        return empty
+
+    candidates = _company_name_candidates(company_name)
+    loc_tokens = _loc_tokens_from_address(address)
+    adres_hint = " ".join(loc_tokens[:2]).strip() if loc_tokens else ""
+
+    def _search(url, names, with_adres=True):
+        last_err = ""
+        found = []
+        for name in names:
+            params = {"cmpnyNm": name}
+            if with_adres and adres_hint:
+                params["adres"] = adres_hint
+            payload = _factory_http_get(url, key, params)
+            items, err = _factory_extract_items(payload)
+            if err and not items:
+                last_err = err
+                if any(
+                    x in str(err)
+                    for x in (
+                        "SERVICE_KEY",
+                        "등록되지 않은 서비스키",
+                        "UNAUTHORIZED",
+                        "만료",
+                        "폐기",
+                        "응답이 비어",
+                        "EMPTY_BODY",
+                        "SERVICE_KEY_ERROR",
+                    )
+                ):
+                    return [], err, True  # fatal
+                continue
+            if items:
+                found = items
+                break
+        return found, last_err, False
+
+    # 1) 회사명(+지역) → 2) 회사명만 (지역 파라미터 때문에 0건 나는 경우 완화)
+    prod_items, last_err, fatal = _search(
+        FACTORY_API_PROD_URL, candidates[:5], with_adres=True
+    )
+    if fatal:
+        empty["error"] = last_err
+        return empty
+    if not prod_items:
+        prod_items, last_err2, fatal = _search(
+            FACTORY_API_PROD_URL, candidates[:5], with_adres=False
+        )
+        last_err = last_err2 or last_err
+        if fatal:
+            empty["error"] = last_err
+            return empty
+
+    if not prod_items:
+        land_items, last_err3, fatal = _search(
+            FACTORY_API_LAND_URL, candidates[:4], with_adres=True
+        )
+        if fatal:
+            empty["error"] = last_err3
+            return empty
+        if not land_items:
+            land_items, last_err4, fatal = _search(
+                FACTORY_API_LAND_URL, candidates[:4], with_adres=False
+            )
+            last_err3 = last_err4 or last_err3
+            if fatal:
+                empty["error"] = last_err3
+                return empty
+        best, _ = _factory_pick_best(land_items, loc_tokens, candidates)
+        if best:
+            return _factory_row_to_info(best, best)
+        empty["error"] = (
+            last_err
+            or last_err3
+            or (
+                f"『{candidates[0] if candidates else company_name}』 "
+                "공장등록 정보가 없습니다. "
+                "(미등록·500㎡ 미만·상호 불일치 가능)"
+            )
+        )
+        return empty
+
+    best_prod, score = _factory_pick_best(prod_items, loc_tokens, candidates)
+    # 주소 토큰 전부 거절됐을 때: 상호만 정확히 맞는 1건이면 허용
+    if not best_prod and prod_items and loc_tokens:
+        name_only = []
+        for it in prod_items:
+            nm = re.sub(
+                r"주식회사|㈜|\(주\)|유한회사|\(유\)|\s+",
+                "",
+                str(it.get("cmpnyNm") or ""),
+            )
+            if any(
+                c
+                and (
+                    c
+                    == nm
+                    or c in nm
+                    or nm in c
+                )
+                for c in [
+                    re.sub(
+                        r"주식회사|㈜|\(주\)|유한회사|\(유\)|\s+",
+                        "",
+                        str(x or ""),
+                    )
+                    for x in candidates
+                ]
+            ):
+                name_only.append(it)
+        if len(name_only) == 1:
+            best_prod = name_only[0]
+        elif name_only:
+            best_prod, _ = _factory_pick_best(name_only, [], candidates)
+
+    if not best_prod:
+        empty["error"] = "주소가 맞는 공장등록 정보가 없습니다. (동명 오매칭 방지)"
+        return empty
+
+    land_row = None
+    manage_no = str(best_prod.get("fctryManageNo") or "").strip()
+    land_params = {"cmpnyNm": best_prod.get("cmpnyNm") or candidates[0]}
+    if manage_no:
+        land_params["fctryManageNo"] = manage_no
+    land_payload = _factory_http_get(FACTORY_API_LAND_URL, key, land_params)
+    land_items, _ = _factory_extract_items(land_payload)
+    if not land_items and not manage_no:
+        land_payload = _factory_http_get(
+            FACTORY_API_LAND_URL,
+            key,
+            {"cmpnyNm": best_prod.get("cmpnyNm") or candidates[0]},
+        )
+        land_items, _ = _factory_extract_items(land_payload)
+    if land_items:
+        if manage_no:
+            for it in land_items:
+                if str(it.get("fctryManageNo") or "").strip() == manage_no:
+                    land_row = it
+                    break
+        if land_row is None:
+            land_row, _ = _factory_pick_best(land_items, loc_tokens, candidates)
+
+    return _factory_row_to_info(best_prod, land_row)
+
+
+def _dart_pick_corp_by_address(dart, name, loc_tokens, max_check=12):
+    """동명 법인 중 주소(adres)가 거래처 주소와 맞는 항목 우선 선택.
+    주소 토큰이 있는데 일치가 없으면 None (오매칭 방지)."""
+    rows = []
+    try:
+        if hasattr(dart, "company_by_name"):
+            rows = _dart_corp_rows(dart.company_by_name(name))
+    except Exception:
+        rows = []
+    # corp_codes 보조 검색
+    if len(rows) < 2 and hasattr(dart, "corp_codes") and dart.corp_codes is not None:
+        try:
+            cc = dart.corp_codes
+            hit = cc[cc["corp_name"].astype(str).str.contains(re.escape(str(name)), na=False)]
+            for _, r in hit.head(max_check).iterrows():
+                d = r.to_dict()
+                if d.get("corp_code") and not any(
+                    str(x.get("corp_code")) == str(d.get("corp_code")) for x in rows
+                ):
+                    rows.append(d)
+        except Exception:
+            pass
+    if not rows:
+        code = None
+        try:
+            if hasattr(dart, "find_corp_code"):
+                code = dart.find_corp_code(name)
+        except Exception:
+            code = None
+        if code:
+            rows = [{"corp_code": str(code), "corp_name": name}]
+
+    best = None
+    best_score = -1
+    for row in rows[:max_check]:
+        code = str(row.get("corp_code") or "").strip()
+        ci = row
+        if code:
+            try:
+                fetched = dart.company(code)
+                if isinstance(fetched, dict) and str(fetched.get("status", "000")) in (
+                    "000",
+                    "0",
+                    "",
+                ):
+                    ci = fetched
+            except Exception:
+                pass
+        if not isinstance(ci, dict):
+            continue
+        if str(ci.get("status", "000")) not in ("000", "0", "", "None"):
+            # status 없는 corp_codes 행은 허용
+            if ci.get("status") is not None and str(ci.get("status")) not in (
+                "000",
+                "0",
+                "",
+            ):
+                continue
+        adres = str(ci.get("adres") or ci.get("address") or "")
+        score = _score_text_vs_loc_tokens(adres, loc_tokens)
+        # 주소 없을 때: 첫 후보만 약한 점수
+        if not loc_tokens and best is None:
+            score = 0
+        if score > best_score:
+            best_score = score
+            best = ci
+    if loc_tokens and best_score <= 0:
+        return None, 0
+    return best, best_score
 
 
 def _fmt_dart_amount(val):
@@ -981,9 +1678,12 @@ def get_opendart_reader(dart_api_key):
 
 
 @st.cache_data(show_spinner=False, max_entries=100)
-def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=5):
+def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cache_v=6):
+    """기업정보 조회. address가 있으면 거래처명+지역으로 동명회사 오매칭을 줄인다."""
     candidates = _company_name_candidates(company_name)
     clean_name = candidates[0] if candidates else str(company_name)
+    loc_tokens = _loc_tokens_from_address(address)
+    loc_hint = " ".join(loc_tokens[:3]).strip()
 
     info = {
         "ceo": "정보 없음",
@@ -996,6 +1696,7 @@ def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=5):
         "source": "정보 없음",
         "dart_error": "",
         "dart_ready": bool(dart_api_key) and OpenDartReader is not None,
+        "lookup_hint": f"{clean_name} {loc_hint}".strip(),
     }
     dart_success = False
 
@@ -1009,137 +1710,124 @@ def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=5):
             if dart is None:
                 _err = st.session_state.get("_opendart_last_error") or "알 수 없는 오류"
                 info["dart_error"] = f"DART 연결 실패: {_err}"
-                return info
-            corp_code = None
-            matched = None
-            corp_info = None
-
-            for name in candidates:
-                try:
-                    code = None
-                    if hasattr(dart, "find_corp_code"):
-                        code = dart.find_corp_code(name)
-                    if not code and hasattr(dart, "company_by_name"):
-                        row = _dart_first_corp_row(dart.company_by_name(name))
-                        if row and row.get("status", "000") in ("000", 0, "0", None, ""):
-                            code = str(row.get("corp_code") or "").strip() or None
-                            matched = str(row.get("corp_name") or name)
-                            # company_by_name 에 개요 필드가 있으면 미리 채움
-                            if row.get("ceo_nm") and not corp_info:
-                                corp_info = row
-                    if code:
-                        corp_code = str(code).strip()
-                        matched = matched or name
-                        break
-                    ci = dart.company(name)
-                    if (
-                        isinstance(ci, dict)
-                        and str(ci.get("status", "")) in ("000", "0")
-                        and (ci.get("corp_name") or ci.get("ceo_nm"))
-                    ):
-                        corp_info = ci
-                        matched = ci.get("corp_name") or name
-                        corp_code = str(ci.get("corp_code") or "").strip() or corp_code
-                        break
-                except Exception:
-                    continue
-
-            lookup_keys = []
-            for k in (corp_code, matched, clean_name):
-                if k and str(k) not in lookup_keys:
-                    lookup_keys.append(str(k))
-
-            if corp_info is None:
-                for k in lookup_keys:
-                    try:
-                        ci = dart.company(k)
-                        if (
-                            isinstance(ci, dict)
-                            and str(ci.get("status", "")) in ("000", "0")
-                            and (ci.get("corp_name") or ci.get("ceo_nm"))
-                        ):
-                            corp_info = ci
-                            break
-                    except Exception:
-                        continue
-
-            if isinstance(corp_info, dict):
-                if corp_info.get("ceo_nm"):
-                    info["ceo"] = corp_info["ceo_nm"]
-                if corp_info.get("induty_nm"):
-                    info["industry"] = corp_info.get("induty_nm") or "정보 없음"
-                info["matched_name"] = (
-                    corp_info.get("corp_name")
-                    or corp_info.get("stock_name")
-                    or matched
-                    or clean_name
-                )
-                info["corp_code"] = str(
-                    corp_info.get("corp_code") or corp_code or ""
-                ).strip()
-            elif matched:
-                info["matched_name"] = matched
-                info["corp_code"] = str(corp_code or "").strip()
-
-            # 최근 연도 재무 — corp_code 우선, 이름 보조 (비상장은 API 재무가 비는 경우 많음)
-            this_year = datetime.date.today().year
-            years_try = list(range(this_year - 1, 2019, -1))
-            fin_year_used = None
-            fin_state = None
-            for yr in years_try:
-                for k in lookup_keys:
-                    try:
-                        fs = dart.finstate(k, yr)
-                        if fs is not None and not getattr(fs, "empty", True):
-                            fin_state = fs
-                            fin_year_used = yr
-                            break
-                    except Exception:
-                        continue
-                if fin_state is not None:
-                    break
-
-            if fin_state is not None:
-                sales_row = _pick_fin_account(
-                    fin_state,
-                    exact_names=["매출액", "수익(매출액)", "영업수익"],
-                    contains_names=["매출액"],
-                )
-                profit_row = _pick_fin_account(
-                    fin_state,
-                    exact_names=["영업이익", "영업이익(손실)"],
-                    contains_names=["영업이익"],
-                )
-                if sales_row is not None and "thstrm_amount" in sales_row.index:
-                    info["revenue"] = _fmt_dart_amount(sales_row["thstrm_amount"])
-                if profit_row is not None and "thstrm_amount" in profit_row.index:
-                    info["profit"] = _fmt_dart_amount(profit_row["thstrm_amount"])
-                if info["revenue"] != "정보 없음" or info["profit"] != "정보 없음":
-                    info["source"] = f"금융감독원 DART ({fin_year_used})"
-                    dart_success = True
-                elif info["matched_name"] or info["ceo"] != "정보 없음":
-                    info["source"] = f"금융감독원 DART 기업개요"
-                    info["dart_error"] = (
-                        f"법인({info['matched_name']})은 찾았으나 "
-                        "OpenAPI 재무제표(매출/영업이익)가 없습니다. "
-                        "감사보고서 PDF는 DART 사이트에서 직접 확인하세요."
-                    )
-            elif info["matched_name"] or info["ceo"] != "정보 없음":
-                info["source"] = "금융감독원 DART 기업개요"
-                info["dart_error"] = (
-                    f"법인({info.get('matched_name') or matched})은 찾았으나 "
-                    "구조화 재무 API 값이 없습니다(비상장·감사보고서만 공시된 경우)."
-                )
             else:
-                info["dart_error"] = (
-                    "DART에서 법인을 찾지 못했습니다. "
-                    f"시도 상호: {', '.join(candidates[:5])}"
-                )
+                corp_code = None
+                matched = None
+                corp_info = None
+
+                for name in candidates:
+                    try:
+                        picked, score = _dart_pick_corp_by_address(dart, name, loc_tokens)
+                        if picked and (
+                            picked.get("corp_name")
+                            or picked.get("ceo_nm")
+                            or picked.get("corp_code")
+                        ):
+                            corp_info = picked
+                            corp_code = str(picked.get("corp_code") or "").strip() or None
+                            matched = str(picked.get("corp_name") or name)
+                            if loc_tokens and score > 0:
+                                info["lookup_hint"] = f"{matched} · 주소매칭({score})"
+                            break
+                    except Exception:
+                        continue
+
+                lookup_keys = []
+                for k in (corp_code, matched, clean_name):
+                    if k and str(k) not in lookup_keys:
+                        lookup_keys.append(str(k))
+
+                if corp_info is None and not loc_tokens:
+                    for name in candidates[:3]:
+                        try:
+                            ci = dart.company(name)
+                            if (
+                                isinstance(ci, dict)
+                                and str(ci.get("status", "")) in ("000", "0")
+                                and (ci.get("corp_name") or ci.get("ceo_nm"))
+                            ):
+                                corp_info = ci
+                                matched = ci.get("corp_name") or name
+                                corp_code = str(ci.get("corp_code") or "").strip() or corp_code
+                                break
+                        except Exception:
+                            continue
+
+                if isinstance(corp_info, dict):
+                    if corp_info.get("ceo_nm"):
+                        info["ceo"] = corp_info["ceo_nm"]
+                    if corp_info.get("induty_nm"):
+                        info["industry"] = corp_info.get("induty_nm") or "정보 없음"
+                    info["matched_name"] = (
+                        corp_info.get("corp_name")
+                        or corp_info.get("stock_name")
+                        or matched
+                        or clean_name
+                    )
+                    info["corp_code"] = str(
+                        corp_info.get("corp_code") or corp_code or ""
+                    ).strip()
+                elif matched:
+                    info["matched_name"] = matched
+                    info["corp_code"] = str(corp_code or "").strip()
+
+                this_year = datetime.date.today().year
+                years_try = list(range(this_year - 1, 2019, -1))
+                fin_year_used = None
+                fin_state = None
+                for yr in years_try:
+                    for k in lookup_keys:
+                        try:
+                            fs = dart.finstate(k, yr)
+                            if fs is not None and not getattr(fs, "empty", True):
+                                fin_state = fs
+                                fin_year_used = yr
+                                break
+                        except Exception:
+                            continue
+                    if fin_state is not None:
+                        break
+
+                if fin_state is not None:
+                    sales_row = _pick_fin_account(
+                        fin_state,
+                        exact_names=["매출액", "수익(매출액)", "영업수익"],
+                        contains_names=["매출액"],
+                    )
+                    profit_row = _pick_fin_account(
+                        fin_state,
+                        exact_names=["영업이익", "영업이익(손실)"],
+                        contains_names=["영업이익"],
+                    )
+                    if sales_row is not None and "thstrm_amount" in sales_row.index:
+                        info["revenue"] = _fmt_dart_amount(sales_row["thstrm_amount"])
+                    if profit_row is not None and "thstrm_amount" in profit_row.index:
+                        info["profit"] = _fmt_dart_amount(profit_row["thstrm_amount"])
+                    if info["revenue"] != "정보 없음" or info["profit"] != "정보 없음":
+                        info["source"] = f"금융감독원 DART ({fin_year_used})"
+                        dart_success = True
+                    elif info["matched_name"] or info["ceo"] != "정보 없음":
+                        info["source"] = "금융감독원 DART 기업개요"
+                        info["dart_error"] = (
+                            f"법인({info['matched_name']})은 찾았으나 "
+                            "OpenAPI 재무제표(매출/영업이익)가 없습니다. "
+                            "감사보고서 PDF는 DART 사이트에서 직접 확인하세요."
+                        )
+                elif info["matched_name"] or info["ceo"] != "정보 없음":
+                    info["source"] = "금융감독원 DART 기업개요"
+                    info["dart_error"] = (
+                        f"법인({info.get('matched_name') or matched})은 찾았으나 "
+                        "구조화 재무 API 값이 없습니다(비상장·감사보고서만 공시된 경우)."
+                    )
+                else:
+                    loc_msg = f", 지역: {loc_hint}" if loc_hint else ""
+                    info["dart_error"] = (
+                        "DART에서 법인을 찾지 못했습니다. "
+                        f"시도 상호: {', '.join(candidates[:5])}{loc_msg}"
+                    )
         except Exception as e:
             info["dart_error"] = str(e)
 
-    # DART 재무가 비면 네이버로 보강 (대표/업종/요약 재무)
-    # 탄력: DART에서 법인만 찾은 경우 후보·타임아웃을 줄여 iPad/Cloud 체감 로딩 단축(결과 필드 동일)
     need_naver = (
         not dart_success
         or info["revenue"] == "정보 없음"
@@ -1151,21 +1839,38 @@ def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=5):
         dart_matched = bool(info.get("matched_name") or info.get("corp_code"))
         name_limit = 2 if dart_matched else 4
         naver_timeout = 2.5 if dart_matched else 4
+        naver_queries = []
         for name in candidates[:name_limit]:
+            if loc_hint:
+                naver_queries.append(f"{name} {loc_hint} 기업정보")
+            naver_queries.append(f"{name} 기업정보")
+        ordered_q = []
+        _seen_q = set()
+        for q in naver_queries:
+            if q not in _seen_q:
+                _seen_q.add(q)
+                ordered_q.append(q)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
+        for q in ordered_q:
             try:
-                search_query = urllib.parse.quote(f"{name} 기업정보")
-                url = f"https://search.naver.com/search.naver?query={search_query}"
-                headers = {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    )
-                }
+                url = (
+                    "https://search.naver.com/search.naver?query="
+                    + urllib.parse.quote(q)
+                )
                 response = requests.get(url, headers=headers, timeout=naver_timeout)
                 if response.status_code != 200:
                     continue
                 soup = BeautifulSoup(response.text, "html.parser")
                 texts = list(soup.stripped_strings)
+                head_blob = " ".join(texts[:100])
+                if loc_tokens and loc_hint and loc_hint.split()[0] in q:
+                    if not any(t in head_blob for t in loc_tokens[:3]):
+                        continue
                 for i, text in enumerate(texts):
                     if text in ["대표자", "대표자명"]:
                         if info["ceo"] == "정보 없음" and i + 1 < len(texts):
@@ -1183,7 +1888,6 @@ def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=5):
                         if info["profit"] == "정보 없음" and i + 1 < len(texts):
                             info["profit"] = texts[i + 1]
                             naver_hit = True
-                # 필요 필드가 다 채워지면 즉시 종료
                 if (
                     info["ceo"] != "정보 없음"
                     and info["revenue"] != "정보 없음"
@@ -1192,7 +1896,9 @@ def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=5):
                     naver_hit = True
                 if naver_hit:
                     if not dart_success:
-                        info["source"] = "네이버 기업정보 요약"
+                        info["source"] = "네이버 기업정보 요약" + (
+                            f" ({loc_hint})" if loc_hint else ""
+                        )
                     elif info["revenue"] != "정보 없음" and "DART" in str(info["source"]):
                         pass
                     elif info["revenue"] != "정보 없음":
@@ -1201,7 +1907,25 @@ def get_company_info_hybrid(company_name, dart_api_key=None, _cache_v=5):
             except Exception:
                 continue
 
+        if not dart_success or info["industry"] == "정보 없음":
+            try:
+                job = enrich_company_from_job_portals(
+                    company_name, address=address, _cache_v=2
+                )
+                if job.get("industry") and info["industry"] == "정보 없음":
+                    info["industry"] = job["industry"]
+                if job.get("source") and not dart_success:
+                    src = str(info.get("source") or "")
+                    if src in ("", "정보 없음"):
+                        info["source"] = job["source"]
+                    elif job["source"] not in src:
+                        info["source"] = f"{src} + {job['source']}"
+                info["job_links"] = job.get("links") or {}
+            except Exception:
+                pass
+
     return info
+
 
 
 @st.cache_data(show_spinner=False, max_entries=50)
@@ -1256,44 +1980,190 @@ def list_dart_audit_reports(corp_key, dart_api_key, years_back=4, _cache_v=1):
         return []
 
 
-@st.cache_data(show_spinner=False, max_entries=30)
-def parse_dart_audit_report_summary(rcept_no, dart_api_key, _cache_v=3):
-    """최근 감사보고서에서 '독립된 감사인의 감사보고서' 챕터를 우선 읽어
-    감사의견·핵심내용을 축약 추출한다."""
-    empty = {
-        "opinion": "확인 불가",
-        "opinion_note": "본문에서 감사의견을 찾지 못했습니다.",
-        "opinion_summary": "",
-        "kam": "확인 불가",
-        "going_concern": "확인 불가",
-        "emphasis": "확인 불가",
-        "revenue": "",
-        "profit": "",
-        "chapter": "",
-    }
-    if not rcept_no or not dart_api_key or OpenDartReader is None:
-        return empty
-
+def _dart_fetch_url_html(url, timeout=10):
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
     }
+    try:
+        for u in (url, str(url).replace("http://", "https://")):
+            r = requests.get(u, headers=headers, timeout=timeout)
+            if r.status_code == 200 and len(r.text) > 200:
+                return r.text
+    except Exception:
+        return ""
+    return ""
+
+
+def _parse_audit_note_company_overview(html_doc):
+    """주석 '1. 회사의 개요' ~ 주요 주주 지분율까지만 구조화 추출."""
+    out = {
+        "overview_intro": "",
+        "hq": "",
+        "business": "",
+        "ceo_note": "",
+        "shareholders": [],
+        "overview_ok": False,
+    }
+    if not html_doc:
+        return out
+    soup = BeautifulSoup(str(html_doc), "html.parser")
+    text = soup.get_text("\n", strip=True)
+    m = re.search(
+        r"(?:^|\n)\s*(?:1\.\s*)?회사의\s*개요\s*\n([\s\S]+?)"
+        r"(?=\n\s*2\.\s*중요한\s*회계|\n\s*2\.\s*회계|\n\s*2\.\s)",
+        text,
+    )
+    if not m:
+        m = re.search(r"회사의\s*개요\s*\n([\s\S]{80,1200})", text)
+    if not m:
+        return out
+    block = m.group(1).strip()
+    # 지분율 표 이후 회계방침이 섞이면 자름
+    block = re.split(r"\n\s*2\.\s*", block, maxsplit=1)[0].strip()
+    intro = re.split(r"\n\s*\(1\)", block, maxsplit=1)[0].strip()
+    out["overview_intro"] = re.sub(r"\s+", " ", intro)[:400]
+    for pat, key in (
+        (r"\(1\)\s*본사\s*및\s*공장\s*소재지\s*[:：]\s*(.+)", "hq"),
+        (r"\(2\)\s*주요\s*사업\s*내용\s*[:：]\s*(.+)", "business"),
+        (r"\(3\)\s*대표이사\s*[:：]\s*(.+)", "ceo_note"),
+    ):
+        mm = re.search(pat, block)
+        if mm:
+            out[key] = re.sub(r"\s+", " ", mm.group(1)).strip()[:200]
+
+    # HTML 표 우선
+    for table in soup.find_all("table"):
+        tplain = table.get_text(" ", strip=True)
+        if "지분율" not in tplain and "주주" not in tplain:
+            continue
+        rows = []
+        for tr in table.find_all("tr"):
+            cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
+            cells = [c for c in cells if c]
+            if cells:
+                rows.append(cells)
+        data_rows = [r for r in rows if len(r) >= 5 and not re.search(r"주주명|소유주식", r[0])]
+        for r in data_rows:
+            name = r[0]
+            if name in ("합계", "계"):
+                continue
+            out["shareholders"].append(
+                {
+                    "주주명": name,
+                    "당기주식수": r[1] if len(r) > 1 else "",
+                    "당기지분율": (r[2] + "%") if len(r) > 2 and r[2] and "%" not in r[2] else (r[2] if len(r) > 2 else ""),
+                    "전기주식수": r[3] if len(r) > 3 else "",
+                    "전기지분율": (r[4] + "%") if len(r) > 4 and r[4] and "%" not in r[4] else (r[4] if len(r) > 4 else ""),
+                }
+            )
+        if out["shareholders"]:
+            break
+
+    # 텍스트 fallback (표 파싱 실패 시)
+    if not out["shareholders"]:
+        for sm in re.finditer(
+            r"([가-힣A-Za-z0-9·\s]{2,40})\n([\d,]+)\n([\d.]+)\n([\d,]+)\n([\d.]+)",
+            block,
+        ):
+            name = sm.group(1).strip()
+            if name in ("합계", "계", "주주명") or "소유" in name:
+                continue
+            out["shareholders"].append(
+                {
+                    "주주명": name,
+                    "당기주식수": sm.group(2),
+                    "당기지분율": sm.group(3) + "%",
+                    "전기주식수": sm.group(4),
+                    "전기지분율": sm.group(5) + "%",
+                }
+            )
+
+    out["overview_ok"] = bool(
+        out["hq"] or out["business"] or out["ceo_note"] or out["shareholders"]
+    )
+    return out
+
+
+def _extract_going_concern_issue(text):
+    """독립된 감사인 보고서에서 '계속기업 관련 중요한 불확실성' 중점 이슈만 축약."""
+    if not text:
+        return "", False
+    text_n = re.sub(r"[ \t]+", " ", text)
+    m = re.search(
+        r"계속기업\s*관련\s*중요한\s*불확실성\s*(.+?)"
+        r"(?=재무제표에\s*대한\s*경영진|지배기구는\s*회사|"
+        r"재무제표감사에\s*대한\s*감사인|이사의\s*책임|"
+        r"감사인의\s*책임|핵심\s*감사|강조\s*사항|\Z)",
+        text_n,
+        flags=re.S,
+    )
+    if not m:
+        m = re.search(
+            r"(계속기업으로서의\s*존속능력에\s*유의적\s*의문을\s*제기.{20,500})",
+            text_n,
+        )
+        if not m:
+            return "", False
+        block = m.group(1)
+    else:
+        block = m.group(1)
+    block = re.sub(r"\s+", " ", block).strip()
+    # 의견 비변형 문구는 이슈 뒤에 짧게 남김
+    flag = True
+    # 핵심 문장만: 유동성·존속·주석 언급 위주
+    sents = re.split(r"(?<=다\.)\s+", block)
+    keep = []
+    for s in sents:
+        s = s.strip()
+        if not s:
+            continue
+        if re.search(
+            r"유동부채|유동자산|존속|불확실|주석\s*\d+|자금|차입|손실|자본잠식|의문",
+            s,
+        ):
+            keep.append(s)
+        elif re.search(r"의견은\s*이\s*사항으로부터\s*영향을\s*받지", s):
+            keep.append(s)
+    issue = " ".join(keep) if keep else block
+    if len(issue) > 480:
+        issue = issue[:479] + "…"
+    return issue, flag
+
+
+@st.cache_data(show_spinner=False, max_entries=30)
+def parse_dart_audit_report_summary(rcept_no, dart_api_key, _cache_v=5):
+    """감사보고서에서 (1) 독립된 감사인 의견·계속기업 이슈
+    (2) 주석 '회사의 개요'~지분율을 함께 추출한다."""
+    empty = {
+        "opinion": "확인 불가",
+        "opinion_note": "본문에서 감사의견을 찾지 못했습니다.",
+        "opinion_summary": "",
+        "kam": "확인 불가",
+        "going_concern": "확인 불가",
+        "going_concern_issue": "",
+        "going_concern_flag": False,
+        "emphasis": "확인 불가",
+        "revenue": "",
+        "profit": "",
+        "chapter": "",
+        "overview_intro": "",
+        "hq": "",
+        "business": "",
+        "ceo_note": "",
+        "shareholders": [],
+        "overview_ok": False,
+    }
+    if not rcept_no or not dart_api_key or OpenDartReader is None:
+        return empty
 
     def _html_to_text(html_doc):
         return BeautifulSoup(str(html_doc), "html.parser").get_text("\n", strip=True)
 
     def _fetch_url(url):
-        try:
-            # http → https 시도
-            for u in (url, url.replace("http://", "https://")):
-                r = requests.get(u, headers=headers, timeout=8)
-                if r.status_code == 200 and len(r.text) > 200:
-                    return r.text
-        except Exception:
-            return ""
-        return ""
+        return _dart_fetch_url_html(url, timeout=10)
 
     try:
         dart = get_opendart_reader(dart_api_key)
@@ -1419,23 +2289,11 @@ def parse_dart_audit_report_summary(rcept_no, dart_api_key, _cache_v=3):
             else "핵심감사사항 제목은 있으나 상세 문단 추출에 실패했습니다."
         )
 
-        gc_hit = re.search(
-            r"계속기업.{0,40}(불확실|의문)|존속\s*능력.{0,40}불확실|계속기업으로서의\s*존속",
-            text_one,
-        )
-        if gc_hit:
-            # '의견은 변형되지 않았습니다' = 강조사항으로 언급만 한 경우 많음
-            gc_snip = _snip_after(
-                [
-                    r"계속기업으로서의\s*존속",
-                    r"계속기업.{0,10}불확실",
-                    r"존속\s*능력",
-                ],
-                max_chars=280,
-            )
-            result["going_concern"] = (
-                "⚠️ 계속기업 불확실성 언급 있음. " + (gc_snip or gc_hit.group(0))
-            )
+        gc_issue, gc_flag = _extract_going_concern_issue(text)
+        result["going_concern_flag"] = bool(gc_flag)
+        result["going_concern_issue"] = gc_issue
+        if gc_flag and gc_issue:
+            result["going_concern"] = "⚠️ 계속기업 관련 중요한 불확실성 언급"
         else:
             result["going_concern"] = "계속기업 불확실성 관련 문구를 찾지 못함"
 
@@ -1486,6 +2344,23 @@ def parse_dart_audit_report_summary(rcept_no, dart_api_key, _cache_v=3):
                         result[key] = f"{int(raw):,} 원"
                     except Exception:
                         result[key] = m.group(1)
+
+        # 주석: 1. 회사의 개요 ~ 지분율
+        try:
+            note_html = ""
+            subs_note = dart.sub_docs(str(rcept_no), match="주석")
+            if subs_note is not None and not getattr(subs_note, "empty", True):
+                hit_n = subs_note[
+                    subs_note["title"].astype(str).str.contains("주석", na=False)
+                ]
+                nrow = hit_n.iloc[0] if not hit_n.empty else subs_note.iloc[0]
+                note_html = _fetch_url(str(nrow.get("url") or ""))
+            if note_html:
+                ov = _parse_audit_note_company_overview(note_html)
+                result.update(ov)
+        except Exception:
+            pass
+
         return result
     except Exception as e:
         empty["opinion_note"] = f"본문 파싱 오류: {e}"
@@ -1499,26 +2374,25 @@ def try_parse_dart_audit_finance(rcept_no, dart_api_key, _cache_v=1):
 
 
 def _job_portal_query(company_name, address=None):
-    """상호 + 주소(시/군/구 정도)로 채용포털 검색어 구성."""
+    """상호 + 주소(시/군/구·읍면동)로 채용포털 검색어 구성."""
     name = str(company_name or "").strip()
     name = re.sub(r"\(.*?\)|\[.*?\]", "", name).strip()
     name = re.sub(r"주식회사|㈜|\(주\)", "", name).strip() or str(company_name or "").strip()
-    loc = ""
-    if address and address != "등록된 주소 정보가 없습니다.":
-        # 예: 경기도 화성시 … → 화성시
-        m = re.search(
-            r"((?:서울|부산|대구|인천|광주|대전|울산|세종)[^\s]*|"
-            r"[가-힣]+(?:시|군|구))",
-            str(address),
-        )
-        if m:
-            loc = m.group(1)
+    tokens = _loc_tokens_from_address(address)
+    # 시/군/구 + 읍/면 정도만 (너무 길면 검색 노이즈)
+    loc_parts = []
+    for t in tokens:
+        if t.endswith(("시", "군", "구")) and t not in loc_parts:
+            loc_parts.append(t)
+        elif t.endswith(("읍", "면")) and len(loc_parts) < 2 and t not in loc_parts:
+            loc_parts.append(t)
+    loc = " ".join(loc_parts[:2])
     q = f"{name} {loc}".strip() if loc else name
     return name, loc, q
 
 
 def build_job_portal_links(company_name, address=None):
-    """사람인·워크넷(고용24)·잡코리아 검색 링크."""
+    """사람인·워크넷(고용24)·잡코리아 검색 링크. (상호+주소 병합)"""
     name, loc, q = _job_portal_query(company_name, address)
     qe = urllib.parse.quote(q)
     ne = urllib.parse.quote(name)
@@ -1528,7 +2402,7 @@ def build_job_portal_links(company_name, address=None):
         "loc": loc,
         "saramin": f"https://www.saramin.co.kr/zf_user/search?searchType=search&searchword={qe}",
         "saramin_company": (
-            f"https://www.saramin.co.kr/zf_user/search/company?searchword={ne}"
+            f"https://www.saramin.co.kr/zf_user/search/company?searchword={qe}"
         ),
         "worknet": (
             f"https://www.work.go.kr/consltJobCarpa/srch/jobInfoSrch/srchWantedInfo.do"
@@ -1541,11 +2415,9 @@ def build_job_portal_links(company_name, address=None):
 
 
 @st.cache_data(show_spinner=False, max_entries=40)
-def enrich_company_from_job_portals(company_name, address=None, _cache_v=1):
+def enrich_company_from_job_portals(company_name, address=None, _cache_v=2):
     """사람인 등에서 기업개요 보강 시도 (실패해도 링크만 반환).
-
-    재무(매출/영업이익)는 제공하지 않음. 업종·규모·소개 위주.
-    """
+    검색어는 상호+주소(지역) 병합. 재무는 제공하지 않음."""
     links = build_job_portal_links(company_name, address)
     out = {
         "links": links,
@@ -1563,13 +2435,27 @@ def enrich_company_from_job_portals(company_name, address=None, _cache_v=1):
         ),
         "Accept-Language": "ko-KR,ko;q=0.9",
     }
-    # 1) 사람인 기업검색 페이지에서 텍스트 스니펫
+    loc_tokens = _loc_tokens_from_address(address)
+    # 1) 사람인: 상호+지역 → 실패 시 상호만
+    saramin_urls = [links["saramin_company"]]
+    if links.get("loc"):
+        ne = urllib.parse.quote(links.get("name") or company_name)
+        saramin_urls.append(
+            f"https://www.saramin.co.kr/zf_user/search/company?searchword={ne}"
+        )
     try:
-        r = requests.get(links["saramin_company"], headers=headers, timeout=5)
-        if r.status_code == 200 and len(r.text) > 500:
+        for s_url in saramin_urls:
+            r = requests.get(s_url, headers=headers, timeout=5)
+            if r.status_code != 200 or len(r.text) <= 500:
+                continue
             soup = BeautifulSoup(r.text, "html.parser")
             texts = [t.strip() for t in soup.stripped_strings if t and len(t.strip()) > 1]
-            # 업종/사원수 주변 추출
+            head_blob = " ".join(texts[:120])
+            if loc_tokens and links.get("loc") and links["loc"].split()[0] in (
+                urllib.parse.unquote(s_url.split("searchword=")[-1])
+            ):
+                if not any(t in head_blob for t in loc_tokens[:3]):
+                    continue
             for i, t in enumerate(texts):
                 if t in ("업종", "산업") and i + 1 < len(texts) and not out["industry"]:
                     cand = texts[i + 1]
@@ -1579,7 +2465,6 @@ def enrich_company_from_job_portals(company_name, address=None, _cache_v=1):
                     cand = texts[i + 1]
                     if len(cand) < 30:
                         out["size"] = cand
-            # 회사명 근처 소개 문장
             name_key = links.get("name") or ""
             for t in texts:
                 if name_key and name_key in t and 20 < len(t) < 180:
@@ -1590,6 +2475,7 @@ def enrich_company_from_job_portals(company_name, address=None, _cache_v=1):
                 out["summary"] = " · ".join(
                     x for x in [out.get("industry"), out.get("size")] if x
                 )
+                break
     except Exception as e:
         out["note"] = f"사람인 자동추출 실패: {e}"
 
@@ -2277,7 +3163,12 @@ def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0
         '2023': '#FF9999',
         '2024': '#00B894',
         '2025': '#55E6A5',
-        '2026': '#FF9F1A'
+        '2026': '#FF9F1A',
+        # 월×주 비교용
+        '1주': '#93C5FD',
+        '2주': '#34D399',
+        '3주': '#FBBF24',
+        '4주': '#F472B6',
     }
     for yr in sorted_years:
         col_name = str(yr)
@@ -2820,6 +3711,312 @@ def cached_get_item_pivot(data_df, item_name, metric, all_months, years):
     all_yrs = [str(y) for y in years]
     pvt = pvt.reindex(columns=all_yrs, fill_value=0)
     return pvt
+
+
+def _calendar_week_of_month(day):
+    """월 내 주차: 1~7→1주, 8~14→2주, 15~21→3주, 22~31→4주."""
+    try:
+        d = int(day)
+    except (TypeError, ValueError):
+        return "4주"
+    if d <= 7:
+        return "1주"
+    if d <= 14:
+        return "2주"
+    if d <= 21:
+        return "3주"
+    return "4주"
+
+
+@st.cache_data
+def cached_get_item_week_pivot(data_df, item_name, metric, year, all_months):
+    """품목·연도 기준 월(행) × 주차(열: 1~4주) 피벗. 사용량 비교용."""
+    week_cols = ["1주", "2주", "3주", "4주"]
+    empty = pd.DataFrame(0.0, index=all_months, columns=week_cols)
+    if data_df is None or data_df.empty or not item_name or not year:
+        return empty
+    if "매출일_dt" not in data_df.columns:
+        return empty
+    yr = str(year)
+    df = data_df[
+        (data_df["품목명"] == item_name) & (data_df["연도"].astype(str) == yr)
+    ].copy()
+    if df.empty:
+        return empty
+    df = df.dropna(subset=["매출일_dt"])
+    if df.empty:
+        return empty
+    df["주차"] = df["매출일_dt"].dt.day.map(_calendar_week_of_month)
+    if metric == "매출액 (만원)":
+        pvt = (
+            df.pivot_table(index="월", columns="주차", values="매출액", aggfunc="sum")
+            .fillna(0)
+            * 1.1
+            / 10000
+        )
+    elif "출고량" in str(metric):
+        pvt = df.pivot_table(
+            index="월", columns="주차", values="출고량", aggfunc="sum"
+        ).fillna(0)
+        target_bulks = [
+            "CO2 (kg, Bulk)",
+            "N2 (kg, Bulk)",
+            "O2 (kg, Bulk)",
+            "AR (kg, Bulk)",
+        ]
+        if item_name in target_bulks:
+            pvt = pvt / 1000
+    elif "비중" in str(metric):
+        # 해당 월 품목 합 대비 주차별 비중(%) — 행 합 ≈ 100
+        pvt_amt = df.pivot_table(
+            index="월", columns="주차", values="매출액", aggfunc="sum"
+        ).fillna(0)
+        row_sum = pvt_amt.sum(axis=1).replace(0, np.nan)
+        pvt = (pvt_amt.div(row_sum, axis=0) * 100).fillna(0)
+    else:
+        pvt = df.pivot_table(
+            index="월", columns="주차", values="출고량", aggfunc="sum"
+        ).fillna(0)
+    pvt = pvt.reindex(index=all_months, fill_value=0)
+    pvt = pvt.reindex(columns=week_cols, fill_value=0)
+    return pvt
+
+
+@st.cache_data
+def cached_get_item_month_week_year(data_df, item_name, metric, all_months, years):
+    """월×주차(행 MultiIndex) × 연도(열) — 월 행 펼침용 주간 상세."""
+    week_labels = ["1주", "2주", "3주", "4주"]
+    yr_cols = [str(y) for y in years]
+    idx = pd.MultiIndex.from_product([all_months, week_labels], names=["월", "주차"])
+    empty = pd.DataFrame(0.0, index=idx, columns=yr_cols)
+    if data_df is None or data_df.empty or not item_name:
+        return empty
+    if "매출일_dt" not in data_df.columns:
+        return empty
+    df = data_df[data_df["품목명"] == item_name].copy()
+    if df.empty:
+        return empty
+    df = df.dropna(subset=["매출일_dt"])
+    if df.empty:
+        return empty
+    df["연도"] = df["연도"].astype(str)
+    df["주차"] = df["매출일_dt"].dt.day.map(_calendar_week_of_month)
+    target_bulks = [
+        "CO2 (kg, Bulk)",
+        "N2 (kg, Bulk)",
+        "O2 (kg, Bulk)",
+        "AR (kg, Bulk)",
+    ]
+    if metric == "매출액 (만원)":
+        pvt = (
+            df.pivot_table(
+                index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum"
+            )
+            .fillna(0)
+            * 1.1
+            / 10000
+        )
+    elif "출고량" in str(metric):
+        pvt = df.pivot_table(
+            index=["월", "주차"], columns="연도", values="출고량", aggfunc="sum"
+        ).fillna(0)
+        if item_name in target_bulks:
+            pvt = pvt / 1000
+    elif "비중" in str(metric):
+        pvt_item = df.pivot_table(
+            index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum"
+        ).fillna(0)
+        df_all = data_df.dropna(subset=["매출일_dt"]).copy()
+        df_all["연도"] = df_all["연도"].astype(str)
+        df_all["주차"] = df_all["매출일_dt"].dt.day.map(_calendar_week_of_month)
+        pvt_total = df_all.pivot_table(
+            index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum"
+        ).fillna(0)
+        pvt = (pvt_item / pvt_total.replace(0, np.nan) * 100).fillna(0)
+    else:
+        pvt = df.pivot_table(
+            index=["월", "주차"], columns="연도", values="출고량", aggfunc="sum"
+        ).fillna(0)
+    pvt.columns = pvt.columns.astype(str)
+    pvt = pvt.reindex(index=idx, fill_value=0)
+    pvt = pvt.reindex(columns=yr_cols, fill_value=0)
+    return pvt
+
+
+def _heatmap_cell_bg(val, vmin, vmax, cmap_name="Greens"):
+    """값 → 히트맵 배경색 (#rrggbb)."""
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return "#FFFFFF"
+    if vmax <= vmin or abs(v) < 1e-12:
+        return "#FFFFFF"
+    t = (v - vmin) / (vmax - vmin)
+    t = max(0.0, min(1.0, t))
+    try:
+        cmap = (
+            _TAB3_CMAP_GREEN
+            if cmap_name == "Greens"
+            else _TAB3_CMAP_BLUE
+            if cmap_name in ("Blues", "Purples")
+            else _TAB3_CMAP_GREEN
+        )
+        r, g, b, _a = cmap(t)
+        return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+    except Exception:
+        return "#FFFFFF"
+
+
+def render_month_expandable_week_table(
+    month_pivot,
+    week_year_pivot,
+    fmt_kind="qty",
+    cmap_name="Greens",
+    height=460,
+):
+    """월 행 클릭 → 1~4주 펼침/접힘. 열=연도(최신순). tab1 4대품목 전용."""
+    if month_pivot is None or month_pivot.empty:
+        st.info("표시할 품목 데이터가 없습니다.")
+        return
+    week_labels = ["1주", "2주", "3주", "4주"]
+    month_pivot = month_pivot.copy()
+    month_pivot.columns = month_pivot.columns.astype(str)
+    if week_year_pivot is not None and not week_year_pivot.empty:
+        week_year_pivot = week_year_pivot.copy()
+        week_year_pivot.columns = week_year_pivot.columns.astype(str)
+    year_cols = sorted(list(month_pivot.columns), reverse=True)
+    months = [m for m in month_pivot.index if str(m) != "연간 합계"]
+
+    def _fmt(v):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return "0"
+        if fmt_kind == "pct":
+            return f"{x:,.0f}%"
+        return f"{x:,.0f}"
+
+    nums = []
+    for m in months:
+        for y in year_cols:
+            try:
+                nums.append(float(month_pivot.at[m, y] if y in month_pivot.columns else 0))
+            except Exception:
+                nums.append(0.0)
+        if week_year_pivot is not None and not week_year_pivot.empty:
+            for w in week_labels:
+                for y in year_cols:
+                    try:
+                        nums.append(float(week_year_pivot.loc[(m, w), y]))
+                    except Exception:
+                        nums.append(0.0)
+    vmax = max(nums) if nums else 1.0
+    vmin = 0.0
+
+    # 연간 합계 행
+    sum_cells = []
+    for y in year_cols:
+        try:
+            s = float(month_pivot[y].sum()) if y in month_pivot.columns else 0.0
+        except Exception:
+            s = 0.0
+        sum_cells.append(s)
+
+    th = "".join(
+        f'<th style="position:sticky;top:0;z-index:2;background:#F0F2F6;padding:6px 8px;'
+        f'border-bottom:1px solid #E2E8F0;text-align:center;font-weight:600;">{html.escape(y)}</th>'
+        for y in year_cols
+    )
+    body_parts = []
+    for m in months:
+        mid = html.escape(str(m))
+        mcells = []
+        for y in year_cols:
+            try:
+                val = float(month_pivot.at[m, y] if y in month_pivot.columns else 0)
+            except Exception:
+                val = 0.0
+            bg = _heatmap_cell_bg(val, vmin, vmax, cmap_name)
+            mcells.append(
+                f'<td style="padding:5px 8px;text-align:center;background:{bg};">{_fmt(val)}</td>'
+            )
+        body_parts.append(
+            f'<tr class="mrow" data-month="{mid}" style="cursor:pointer;">'
+            f'<td class="mlabel" style="padding:5px 8px;font-weight:600;white-space:nowrap;'
+            f'position:sticky;left:0;background:#F8FAFC;border-right:1px solid #E2E8F0;">'
+            f'<span class="chev">▸</span> {mid}</td>{"".join(mcells)}</tr>'
+        )
+        for w in week_labels:
+            wcells = []
+            for y in year_cols:
+                try:
+                    val = float(week_year_pivot.loc[(m, w), y])
+                except Exception:
+                    val = 0.0
+                bg = _heatmap_cell_bg(val, vmin, vmax, cmap_name)
+                wcells.append(
+                    f'<td style="padding:4px 8px;text-align:center;background:{bg};'
+                    f'font-size:12px;color:#334155;">{_fmt(val)}</td>'
+                )
+            body_parts.append(
+                f'<tr class="wrow" data-parent="{mid}" style="display:none;background:#F8FAFC;">'
+                f'<td style="padding:4px 8px 4px 22px;color:#64748B;white-space:nowrap;'
+                f'position:sticky;left:0;background:#F1F5F9;border-right:1px solid #E2E8F0;">'
+                f'{html.escape(w)}</td>{"".join(wcells)}</tr>'
+            )
+    sum_tds = []
+    for s in sum_cells:
+        sum_tds.append(
+            f'<td style="padding:6px 8px;text-align:center;font-weight:800;'
+            f'background:#E2E8F0;">{_fmt(s)}</td>'
+        )
+    body_parts.append(
+        f'<tr style="font-weight:800;">'
+        f'<td style="padding:6px 8px;position:sticky;left:0;background:#E2E8F0;'
+        f'border-right:1px solid #CBD5E1;">연간 합계</td>{"".join(sum_tds)}</tr>'
+    )
+
+    page_html = f"""
+    <!DOCTYPE html>
+    <html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      html,body{{margin:0;height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;color:#31333F;}}
+      .hint{{padding:6px 10px;font-size:12px;color:#64748B;background:#F8FAFC;border:1px solid #E2E8F0;border-bottom:none;border-radius:4px 4px 0 0;}}
+      .wrap{{height:calc(100% - 34px);overflow:auto;border:1px solid #E2E8F0;border-radius:0 0 4px 4px;background:#fff;}}
+      table{{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;}}
+      .mrow:hover td{{filter:brightness(0.97);}}
+      .mrow.open .chev{{display:inline-block;transform:rotate(90deg);}}
+      .chev{{display:inline-block;width:1em;transition:transform .12s ease;color:#64748B;}}
+    </style></head><body>
+    <div class="hint">월 행 클릭 → 1~4주 펼침 · 다시 클릭 → 접기 · 1주=1~7일 · 2주=8~14일 · 3주=15~21일 · 4주=22~말일</div>
+    <div class="wrap">
+      <table>
+        <thead><tr>
+          <th style="position:sticky;top:0;left:0;z-index:3;background:#F0F2F6;padding:6px 8px;border-bottom:1px solid #E2E8F0;border-right:1px solid #E2E8F0;">월</th>
+          {th}
+        </tr></thead>
+        <tbody>{"".join(body_parts)}</tbody>
+      </table>
+    </div>
+    <script>
+    (function(){{
+      document.querySelectorAll('tr.mrow').forEach(function(row){{
+        row.addEventListener('click', function(){{
+          var m = row.getAttribute('data-month');
+          var open = row.classList.toggle('open');
+          document.querySelectorAll('tr.wrow[data-parent="'+m+'"]').forEach(function(wr){{
+            wr.style.display = open ? 'table-row' : 'none';
+          }});
+        }});
+      }});
+    }})();
+    </script>
+    </body></html>
+    """
+    components.html(page_html, height=height, scrolling=True)
+
+
 @st.cache_data
 def cached_get_industry_pivot(data_df, industry_name, metric, all_months, years):
     if data_df.empty:
@@ -3283,10 +4480,16 @@ def render_interactive_html_table(
     freeze_right_header=False,
     freeze_right_widths=None,
 ):
-    hint = toolbar_hint or "셀 클릭 · ⌘/Ctrl+클릭 또는 ⊕다중선택 · 복사 버튼/⌘C"
+    hint = toolbar_hint or "셀 클릭 · 방향키 이동 · ⌘/Ctrl+클릭 또는 ⊕다중선택 · 복사 버튼/⌘C"
     sum_controls = ""
     if show_sum_popup:
         sum_controls = """
+            <div class="dash-op-bar" id="dashOpBar" title="셀 선택 시 +/− 적용">
+                <span class="dash-op-label">연산</span>
+                <button type="button" class="dash-op-btn active" id="dashOpAdd">+</button>
+                <button type="button" class="dash-op-btn" id="dashOpSub">−</button>
+                <button type="button" class="dash-op-btn dash-op-reset" id="dashOpReset">초기화</button>
+            </div>
             <div class="dash-sum-inline" id="dashSumInline">
                 <span class="dash-sum-label">선택 합계</span>
                 <span id="dashSumValue">0</span>
@@ -3438,6 +4641,50 @@ def render_interactive_html_table(
             color: #334155;
         }}
         .dash-multi-btn.active {{ background: #DBEAFE; border-color: #2563EB; color: #1D4ED8; }}
+        .dash-op-bar {{
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            margin-left: 6px;
+            padding: 2px 8px;
+            border: 1px solid #E2E8F0;
+            border-radius: 6px;
+            background: #fff;
+            flex: 0 0 auto;
+        }}
+        .dash-op-label {{
+            font-size: 11px;
+            color: #64748B;
+            margin-right: 2px;
+        }}
+        .dash-op-btn {{
+            min-width: 28px;
+            padding: 3px 9px;
+            font-size: 13px;
+            font-weight: 700;
+            line-height: 1.2;
+            border: 1px solid #CBD5E1;
+            border-radius: 4px;
+            background: #F8FAFC;
+            cursor: pointer;
+            color: #334155;
+        }}
+        .dash-op-btn#dashOpAdd.active {{
+            background: #DBEAFE;
+            border-color: #2563EB;
+            color: #1D4ED8;
+        }}
+        .dash-op-btn#dashOpSub.active {{
+            background: #FEE2E2;
+            border-color: #DC2626;
+            color: #B91C1C;
+        }}
+        .dash-op-btn.dash-op-reset {{
+            font-size: 11px;
+            font-weight: 600;
+            min-width: auto;
+            padding: 3px 8px;
+        }}
         .dash-sum-inline {{
             display: none;
             margin-left: auto;
@@ -3454,6 +4701,10 @@ def render_interactive_html_table(
         .dash-sum-label {{ opacity: 0.85; font-size: 12px; }}
         #dashSumValue {{ font-size: 15px; font-weight: 700; }}
         .dash-sum-meta {{ opacity: 0.75; font-size: 11px; }}
+        .dash-cell-selectable.selected.dash-op-minus {{
+            outline-color: #DC2626;
+            background-color: #FEE2E2 !important;
+        }}
         .wrap {{
             flex: 1 1 auto;
             min-height: 0;
@@ -3473,6 +4724,13 @@ def render_interactive_html_table(
             outline-offset: -2px;
             background-color: #DBEAFE !important;
         }}
+        #dashTable tbody td.dash-cell-focus {{
+            outline: 2px solid #1D4ED8;
+            outline-offset: -2px;
+            box-shadow: inset 0 0 0 1px #93C5FD;
+        }}
+        .wrap:focus {{ outline: none; }}
+        .wrap:focus-visible {{ box-shadow: inset 0 0 0 2px #93C5FD; }}
         {freeze_css}
     </style></head><body>
     <div class="dash-shell">
@@ -3482,7 +4740,7 @@ def render_interactive_html_table(
         <button type="button" class="dash-action-btn" id="dashCopyBtn">📋 선택 복사</button>
         {sum_controls}
     </div>
-    <div class="wrap">
+    <div class="wrap" id="dashWrap" tabindex="0" aria-label="표 키보드 탐색">
         <table id="dashTable">
             <thead><tr>{''.join(header_cells)}</tr></thead>
             <tbody>{body_html}</tbody>
@@ -3493,51 +4751,162 @@ def render_interactive_html_table(
     (function() {{
         const showSum = {'true' if show_sum_popup else 'false'};
         const selected = new Set();
+        const cellSign = new WeakMap();
         let multiMode = false;
+        let opSign = 1; // +1 더하기, -1 빼기
+        let focusCell = null;
         const popup = document.getElementById('dashSumInline');
         const sumValue = document.getElementById('dashSumValue');
         const sumCount = document.getElementById('dashSumCount');
+        const wrap = document.getElementById('dashWrap');
+        const table = document.getElementById('dashTable');
+        const opAddBtn = document.getElementById('dashOpAdd');
+        const opSubBtn = document.getElementById('dashOpSub');
+        const opResetBtn = document.getElementById('dashOpReset');
         function fmt(n) {{
             return Math.round(n).toLocaleString('ko-KR');
         }}
+        function setOpSign(s) {{
+            opSign = s >= 0 ? 1 : -1;
+            if (opAddBtn) opAddBtn.classList.toggle('active', opSign > 0);
+            if (opSubBtn) opSubBtn.classList.toggle('active', opSign < 0);
+        }}
+        function clearSelection() {{
+            selected.forEach(el => {{
+                el.classList.remove('selected');
+                el.classList.remove('dash-op-minus');
+            }});
+            selected.clear();
+            updateSumUI();
+        }}
+        function applyCellSign(td, sign) {{
+            if (!td) return;
+            cellSign.set(td, sign >= 0 ? 1 : -1);
+            if (sign < 0) td.classList.add('dash-op-minus');
+            else td.classList.remove('dash-op-minus');
+        }}
         function updateSumUI() {{
             if (!showSum) return;
-            let total = 0, count = 0;
+            let total = 0, count = 0, plusN = 0, minusN = 0;
             selected.forEach(td => {{
                 const raw = td.dataset.raw;
                 if (raw === undefined || raw === '') return;
                 const v = parseFloat(raw);
-                if (!isNaN(v)) {{ total += v; count += 1; }}
+                if (isNaN(v)) return;
+                const s = cellSign.get(td);
+                const sign = (s === undefined || s === null) ? 1 : s;
+                total += v * sign;
+                count += 1;
+                if (sign < 0) minusN += 1;
+                else plusN += 1;
             }});
             if (count > 0) {{
                 if (sumValue) sumValue.textContent = fmt(total);
-                if (sumCount) sumCount.textContent = count + '개 숫자 셀';
+                if (sumCount) {{
+                    let meta = count + '개 숫자 셀';
+                    if (minusN > 0) meta += ' · +' + plusN + '/−' + minusN;
+                    sumCount.textContent = meta;
+                }}
                 if (popup) popup.classList.add('show');
             }} else {{
                 if (popup) popup.classList.remove('show');
             }}
         }}
-        document.querySelectorAll('.dash-cell-selectable').forEach(td => {{
-            td.addEventListener('click', function(e) {{
-                const additive = multiMode || e.ctrlKey || e.metaKey;
-                if (!additive) {{
-                    selected.forEach(el => el.classList.remove('selected'));
-                    selected.clear();
-                }}
-                if (td.classList.contains('selected')) {{
-                    td.classList.remove('selected');
-                    selected.delete(td);
+        function clearFocusMark() {{
+            table.querySelectorAll('td.dash-cell-focus').forEach(el => el.classList.remove('dash-cell-focus'));
+        }}
+        function focusWrap() {{
+            try {{ wrap && wrap.focus({{ preventScroll: true }}); }} catch (e) {{
+                try {{ wrap && wrap.focus(); }} catch (e2) {{}}
+            }}
+        }}
+        function selectCell(td, additive) {{
+            if (!td) return;
+            focusCell = td;
+            clearFocusMark();
+            td.classList.add('dash-cell-focus');
+            if (!additive) {{
+                selected.forEach(el => {{
+                    el.classList.remove('selected');
+                    el.classList.remove('dash-op-minus');
+                }});
+                selected.clear();
+            }}
+            if (td.classList.contains('dash-cell-selectable')) {{
+                if (additive && td.classList.contains('selected')) {{
+                    const cur = cellSign.get(td);
+                    const curSign = (cur === undefined || cur === null) ? 1 : cur;
+                    if (curSign !== opSign) {{
+                        applyCellSign(td, opSign);
+                    }} else {{
+                        td.classList.remove('selected');
+                        td.classList.remove('dash-op-minus');
+                        selected.delete(td);
+                    }}
                 }} else {{
                     td.classList.add('selected');
                     selected.add(td);
+                    applyCellSign(td, opSign);
                 }}
-                updateSumUI();
+            }}
+            try {{
+                td.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
+            }} catch (e) {{}}
+            updateSumUI();
+        }}
+        function cellCoord(td) {{
+            const tr = td.parentElement;
+            const rows = Array.from(table.querySelectorAll('tbody tr'));
+            const cells = Array.from(tr.children);
+            return {{ r: rows.indexOf(tr), c: cells.indexOf(td), rows: rows }};
+        }}
+        function moveByArrow(dr, dc, additive) {{
+            const rows = Array.from(table.querySelectorAll('tbody tr'));
+            if (!rows.length) return;
+            let cur = focusCell;
+            if (!cur || !table.contains(cur)) {{
+                cur = selected.size ? Array.from(selected)[selected.size - 1] : null;
+            }}
+            if (!cur || !table.contains(cur)) {{
+                const first = rows[0].querySelector('td');
+                if (first) selectCell(first, false);
+                return;
+            }}
+            const {{ r, c }} = cellCoord(cur);
+            const nr = Math.max(0, Math.min(rows.length - 1, r + dr));
+            const tds = Array.from(rows[nr].children);
+            if (!tds.length) return;
+            const nc = Math.max(0, Math.min(tds.length - 1, c + dc));
+            selectCell(tds[nc], additive);
+        }}
+        table.querySelectorAll('tbody td').forEach(td => {{
+            td.addEventListener('click', function(e) {{
+                const additive = multiMode || e.ctrlKey || e.metaKey;
+                selectCell(td, additive);
+                focusWrap();
             }});
         }});
         document.getElementById('dashMultiBtn').addEventListener('click', function() {{
             multiMode = !multiMode;
             this.classList.toggle('active', multiMode);
+            focusWrap();
         }});
+        if (opAddBtn) opAddBtn.addEventListener('click', function() {{
+            setOpSign(1);
+            focusWrap();
+        }});
+        if (opSubBtn) opSubBtn.addEventListener('click', function() {{
+            setOpSign(-1);
+            focusWrap();
+        }});
+        if (opResetBtn) opResetBtn.addEventListener('click', function() {{
+            clearSelection();
+            setOpSign(1);
+            clearFocusMark();
+            focusCell = null;
+            focusWrap();
+        }});
+        if (showSum) setOpSign(1);
         function selectedText() {{
             const rows = new Map();
             selected.forEach(td => {{
@@ -3600,12 +4969,29 @@ def render_interactive_html_table(
             copySelected();
         }});
         document.addEventListener('keydown', function(e) {{
+            const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+            if (tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable)) return;
             if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) {{
                 if (selected.size > 0) {{
                     e.preventDefault();
                     copySelected();
                 }}
+                return;
             }}
+            const key = e.key;
+            if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'ArrowLeft' && key !== 'ArrowRight') return;
+            // 표 영역 포커스(또는 셀 선택) 있을 때만 — 사이드바/다른 위젯 방향키 방해 금지
+            const inTable = wrap && (wrap === document.activeElement || wrap.contains(document.activeElement)
+                || (focusCell && table.contains(focusCell)) || selected.size > 0);
+            if (!inTable) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const additive = multiMode || e.shiftKey;
+            if (key === 'ArrowUp') moveByArrow(-1, 0, additive);
+            else if (key === 'ArrowDown') moveByArrow(1, 0, additive);
+            else if (key === 'ArrowLeft') moveByArrow(0, -1, additive);
+            else if (key === 'ArrowRight') moveByArrow(0, 1, additive);
+            focusWrap();
         }});
     }})();
     </script>
@@ -3789,11 +5175,11 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
     if compact:
         headers = ["거래처", "구분"] + numeric_cols + ["결제", "연체"]
         left_w, right_w = [108, 40], [52, 64]
-        hint = "셀 클릭 · 분홍=연체 · 결제/연체 열 축소 · 연체: 정상/1~3M/악성(4M+)"
+        hint = "셀 클릭 · 방향키 이동 · 분홍=연체 · 결제/연체 열 축소 · 연체: 정상/1~3M/악성(4M+)"
     else:
         headers = ["거래처", "구분"] + numeric_cols + ["결제조건", "연체개월수"]
         left_w, right_w = [160, 68], [110, 120]
-        hint = "셀 클릭 선택 · 분홍=연체 · 연체개월수: 정상 / 연체 1~3개월 / 악성(4개월+)"
+        hint = "셀 클릭 · 방향키 이동 · 분홍=연체 · 연체개월수: 정상 / 연체 1~3개월 / 악성(4개월+)"
     cell_font = _debt_num_cell_font(compact=compact)
     body_rows = []
     for r, (idx, row) in enumerate(disp_debt.iterrows()):
@@ -4097,7 +5483,7 @@ def render_debt_month_rank_panel(
             "".join(body),
             height=height,
             show_sum_popup=True,
-            toolbar_hint=f"필터: {sel_txt} · 연체월만({od_m_txt}) · 연체합계↓ · 정상 제외",
+            toolbar_hint=f"필터: {sel_txt} · 방향키 이동 · 연체월만({od_m_txt}) · 연체합계↓ · 정상 제외",
             freeze_left_cols=1,
             freeze_left_widths=left_w,
             freeze_right_header=True,
@@ -5732,15 +7118,78 @@ else:
     ind_bytes = None
 if debt_file_up is not None:
     debt_bytes = debt_file_up.getvalue()
-    with open(debt_cache_path, "wb") as f: f.write(debt_bytes)
-elif os.path.exists(debt_cache_path):
-    with open(debt_cache_path, "rb") as f: debt_bytes = f.read()
+    # Google Drive 동기화 중 부분쓰기/충돌 완화: tmp → replace
+    _debt_tmp = debt_cache_path + ".uploading"
+    try:
+        with open(_debt_tmp, "wb") as f:
+            f.write(debt_bytes)
+        os.replace(_debt_tmp, debt_cache_path)
+    except Exception:
+        with open(debt_cache_path, "wb") as f:
+            f.write(debt_bytes)
+        try:
+            if os.path.exists(_debt_tmp):
+                os.remove(_debt_tmp)
+        except Exception:
+            pass
+    # 폴더의 채권.csv와도 맞춰 두면 Finder에서 바꾼 것과 사이드바 업로드가 어긋나지 않음
+    try:
+        with open("채권.csv", "wb") as f:
+            f.write(debt_bytes)
+    except Exception:
+        pass
+    try:
+        load_debt_file.clear()
+    except Exception:
+        pass
+    st.session_state["_debt_source"] = f"업로드:{getattr(debt_file_up, 'name', '채권.csv')}"
 else:
-    debt_bytes = None
+    # ★ 핵심: uploaded_cache/debt.csv 가 있으면 예전엔 폴더 채권.csv를 영원히 무시했음
+    # → mtime이 더 최신인 쪽을 사용 (폴더 파일 교체 반영)
+    _debt_candidates = []
+    if os.path.exists(debt_cache_path):
+        try:
+            st_ = os.stat(debt_cache_path)
+            _debt_candidates.append(
+                (st_.st_mtime, st_.st_size, debt_cache_path, "캐시")
+            )
+        except Exception:
+            pass
     for f_name in os.listdir("."):
         if f_name.startswith("채권") and f_name.endswith(".csv"):
-            with open(f_name, "rb") as f: debt_bytes = f.read()
-            break
+            try:
+                st_ = os.stat(f_name)
+                _debt_candidates.append(
+                    (st_.st_mtime, st_.st_size, f_name, f"폴더:{f_name}")
+                )
+            except Exception:
+                pass
+    debt_bytes = None
+    if _debt_candidates:
+        _debt_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        _mtime, _size, _path, _label = _debt_candidates[0]
+        with open(_path, "rb") as f:
+            debt_bytes = f.read()
+        st.session_state["_debt_source"] = (
+            f"{_label} · {int(_size):,}B"
+        )
+        # 캐시가 오래됐으면 최신 폴더 파일로 캐시 갱신
+        if _path != debt_cache_path and debt_bytes:
+            try:
+                _debt_tmp = debt_cache_path + ".uploading"
+                with open(_debt_tmp, "wb") as f:
+                    f.write(debt_bytes)
+                os.replace(_debt_tmp, debt_cache_path)
+                load_debt_file.clear()
+            except Exception:
+                try:
+                    with open(debt_cache_path, "wb") as f:
+                        f.write(debt_bytes)
+                    load_debt_file.clear()
+                except Exception:
+                    pass
+    else:
+        st.session_state["_debt_source"] = "없음"
 if tank_file_up is not None:
     tank_bytes = tank_file_up.getvalue()
     tank_name = tank_file_up.name
@@ -5839,6 +7288,16 @@ industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
 debt_df = load_debt_file(debt_bytes) if debt_bytes else pd.DataFrame()
 if not debt_df.empty:
     debt_df = dedupe_debt_client_gubun(debt_df)
+    _src = st.session_state.get("_debt_source") or ""
+    st.sidebar.caption(
+        f"채권 로드됨: {len(debt_df):,}행 · 거래처 {debt_df['거래처'].nunique():,}곳"
+        + (f" · 출처 {_src}" if _src else "")
+    )
+elif debt_bytes:
+    st.sidebar.warning(
+        "채권 파일을 읽었지만 표로 변환하지 못했습니다. "
+        "CSV에 '거래처','구분' 열이 있는지 확인하세요."
+    )
 df_tank = load_equipment_file(tank_bytes, tank_name) if tank_bytes else pd.DataFrame()
 df_vaporizer = load_equipment_file(vaporizer_bytes, vaporizer_name) if vaporizer_bytes else pd.DataFrame()
 df_integrated = load_equipment_file(int_bytes, int_name) if int_bytes else pd.DataFrame()
@@ -6096,30 +7555,38 @@ with tab1:
         selected_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="overall_metric_radio")
         
     item_pivot = cached_get_item_pivot(df_base, selected_target_item, selected_metric, all_months, years)
-    
+    week_year_pivot = cached_get_item_month_week_year(
+        df_base, selected_target_item, selected_metric, all_months, years
+    )
+
+    if "비중" in selected_metric:
+        y_suf, y_fmt, _fmt_kind, _cmap = "%", ",.1f", "pct", "Purples"
+    elif "출고량" in selected_metric:
+        y_suf, y_fmt, _fmt_kind, _cmap = " 천kg", ",.1f", "qty", "Greens"
+    else:
+        y_suf, y_fmt, _fmt_kind, _cmap = " 만원", ",.0f", "amt", "Blues"
+
     i_col_left, i_col_right = st.columns([1, 1])
     with i_col_left:
-        item_pivot_disp = get_display_df_with_sum(item_pivot, "연간 합계")
-        if "비중" in selected_metric:
-            st.dataframe(style_with_sum(item_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=460)
-            y_suf, y_fmt = "%", ",.1f"
-        elif "출고량" in selected_metric:
-            st.dataframe(style_with_sum(item_pivot_disp, "{:,.1f}", "Greens", axis=None), use_container_width=True, height=460)
-            y_suf, y_fmt = " 천kg", ",.1f"
-        else:
-            st.dataframe(style_with_sum(item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
-            y_suf, y_fmt = " 만원", ",.0f"
-            
+        render_month_expandable_week_table(
+            item_pivot,
+            week_year_pivot,
+            fmt_kind=_fmt_kind,
+            cmap_name=_cmap,
+            height=500,
+        )
     with i_col_right:
         render_plotly_chart(
             create_stacked_bar_chart(
-                item_pivot, 
-                title_text="", 
-                y_suffix=y_suf, 
-                y_format=y_fmt
+                item_pivot,
+                title_text="",
+                y_suffix=y_suf,
+                y_format=y_fmt,
             ),
-            use_container_width=True, key="tab1_item_chart"
+            use_container_width=True,
+            key="tab1_item_chart",
         )
+
     st.markdown("---")
     st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
     
@@ -6470,173 +7937,436 @@ with tab2:
                 f"📍 {html.escape(client_addr)}</div>",
                 unsafe_allow_html=True,
             )
-    if st.session_state.show_corp_info:
-        _memo_key = (str(selected_client), str(dart_api_key or ""))
-        _memo = st.session_state.get("_tab2_corp_memo")
-        _use_memo = (
-            isinstance(_memo, dict)
-            and _memo.get("key") == _memo_key
-            and isinstance(_memo.get("c_info"), dict)
+
+    # 목록에 없는 거래처도 기업정보만 조회 가능 (상단 필터·매출 집계는 변경 없음)
+    _ov_c1, _ov_c2 = st.columns([1.4, 1], gap="small")
+    with _ov_c1:
+        _corp_name_override = st.text_input(
+            "목록 외 상호 (기업정보 조회용)",
+            key="tab2_corp_name_override",
+            placeholder="예: OO산업 — 비우면 상단 선택 거래처 사용",
+            help="매출 목록에 없어도 상호를 입력하면 기업 기본/재무·공장등록을 조회합니다.",
         )
-        _touch_corp = is_touch_ui()
-        if _use_memo:
-            c_info = dict(_memo["c_info"])
-            _latest_audit = _memo.get("latest_audit")
-            _audit_sum = dict(_memo.get("audit_sum") or {})
-            _matched = c_info.get("matched_name") or c_info.get("clean_name") or selected_client
-            _ccode = c_info.get("corp_code") or ""
-            _lookup = _ccode or _matched
+    with _ov_c2:
+        _corp_addr_override = st.text_input(
+            "주소 힌트 (선택)",
+            key="tab2_corp_addr_override",
+            placeholder="동명 구분 · 예: 평택시 서탄면",
+        )
+    _corp_query_name = str(_corp_name_override or "").strip()
+    if not _corp_query_name and selected_client and selected_client != "전체 거래처":
+        _corp_query_name = str(selected_client).strip()
+    _corp_query_is_override = bool(str(_corp_name_override or "").strip())
+
+    if st.session_state.show_corp_info:
+        if not _corp_query_name:
+            st.info(
+                "상단에서 거래처를 선택하거나, 위에 **목록 외 상호**를 입력한 뒤 "
+                "기업정보를 다시 열어 주세요."
+            )
         else:
-            # 1차: 기업개요·재무만 (감사 HTML 파싱은 분리 → iPad 첫 화면 대기 단축)
-            with st.spinner("기업 정보 불러오는 중…"):
-                c_info = get_company_info_hybrid(selected_client, dart_api_key)
-                _matched = c_info.get("matched_name") or c_info.get("clean_name") or selected_client
+            if _corp_query_is_override:
+                st.caption(
+                    f"목록 외 조회: **{_corp_query_name}** "
+                    "(상단 매출 필터와 별개 · 기업정보만)"
+                )
+            _addr_for_lookup = None
+            if str(_corp_addr_override or "").strip():
+                _addr_for_lookup = str(_corp_addr_override).strip()
+            elif not _corp_query_is_override:
+                _addr_for_lookup = (
+                    client_addr
+                    if client_addr and client_addr != "등록된 주소 정보가 없습니다."
+                    else None
+                )
+            else:
+                # 목록 외 상호: 주소록에 같은 이름이 있으면 활용
+                _ov_addr = resolve_client_address(_corp_query_name, addr_dict)
+                if _ov_addr and _ov_addr != "등록된 주소 정보가 없습니다.":
+                    _addr_for_lookup = _ov_addr
+
+            _memo_key = (
+                str(_corp_query_name),
+                str(dart_api_key or ""),
+                str(_addr_for_lookup or ""),
+                "ov" if _corp_query_is_override else "sel",
+            )
+            _memo = st.session_state.get("_tab2_corp_memo")
+            _use_memo = (
+                isinstance(_memo, dict)
+                and _memo.get("key") == _memo_key
+                and isinstance(_memo.get("c_info"), dict)
+            )
+            _touch_corp = is_touch_ui()
+            if _use_memo:
+                c_info = dict(_memo["c_info"])
+                _latest_audit = _memo.get("latest_audit")
+                _audit_sum = dict(_memo.get("audit_sum") or {})
+                _matched = (
+                    c_info.get("matched_name")
+                    or c_info.get("clean_name")
+                    or _corp_query_name
+                )
                 _ccode = c_info.get("corp_code") or ""
                 _lookup = _ccode or _matched
-                _latest_audit = None
-                _audit_sum = {}
-                if dart_api_key and _lookup and OpenDartReader is not None:
-                    _years_back = 2 if _touch_corp else 4
-                    _audits = list_dart_audit_reports(
-                        _lookup, dart_api_key, years_back=_years_back
+            else:
+                # 1차: 기업개요·재무만 (거래처명+주소로 동명 오매칭 완화)
+                with st.spinner("기업 정보 불러오는 중…"):
+                    c_info = get_company_info_hybrid(
+                        _corp_query_name, dart_api_key, address=_addr_for_lookup
                     )
-                    if _audits:
-                        _latest_audit = _audits[0]
-                st.session_state["_tab2_corp_memo"] = {
-                    "key": _memo_key,
-                    "c_info": dict(c_info),
-                    "latest_audit": _latest_audit,
-                    "audit_sum": {},
-                }
+                    _matched = (
+                        c_info.get("matched_name")
+                        or c_info.get("clean_name")
+                        or _corp_query_name
+                    )
+                    _ccode = c_info.get("corp_code") or ""
+                    _lookup = _ccode or _matched
+                    _latest_audit = None
+                    _audit_sum = {}
+                    if dart_api_key and _lookup and OpenDartReader is not None:
+                        _years_back = 2 if _touch_corp else 4
+                        _audits = list_dart_audit_reports(
+                            _lookup, dart_api_key, years_back=_years_back
+                        )
+                        if _audits:
+                            _latest_audit = _audits[0]
+                    st.session_state["_tab2_corp_memo"] = {
+                        "key": _memo_key,
+                        "c_info": dict(c_info),
+                        "latest_audit": _latest_audit,
+                        "audit_sum": {},
+                    }
 
-        # 감사 본문 추출: 맥은 자동, iPad는 버튼(동일 데이터·무손실)
-        _want_audit_parse = bool(st.session_state.get("_tab2_force_audit_parse"))
-        if (
-            _latest_audit
-            and not _audit_sum
-            and dart_api_key
-            and OpenDartReader is not None
-            and (not _touch_corp or _want_audit_parse)
-        ):
-            with st.spinner("감사보고서 의견·핵심내용 추출 중…"):
-                _audit_sum = parse_dart_audit_report_summary(
-                    _latest_audit["rcept_no"], dart_api_key
-                )
-                if _audit_sum.get("revenue") and c_info.get("revenue") == "정보 없음":
-                    c_info["revenue"] = _audit_sum["revenue"] + " (감사보고서 추정)"
-                if _audit_sum.get("profit") and c_info.get("profit") == "정보 없음":
-                    c_info["profit"] = _audit_sum["profit"] + " (감사보고서 추정)"
-                if _audit_sum.get("revenue") or _audit_sum.get("profit"):
-                    if "DART" not in str(c_info.get("source")):
-                        c_info["source"] = "DART 감사보고서 본문 추정"
-                st.session_state["_tab2_corp_memo"] = {
-                    "key": _memo_key,
-                    "c_info": dict(c_info),
-                    "latest_audit": _latest_audit,
-                    "audit_sum": dict(_audit_sum) if _audit_sum else {},
-                }
-                st.session_state.pop("_tab2_force_audit_parse", None)
+            # 감사 본문 추출: 맥은 자동, iPad는 버튼(동일 데이터·무손실)
+            _want_audit_parse = bool(st.session_state.get("_tab2_force_audit_parse"))
+            if (
+                _latest_audit
+                and not _audit_sum
+                and dart_api_key
+                and OpenDartReader is not None
+                and (not _touch_corp or _want_audit_parse)
+            ):
+                with st.spinner("감사 주석 개요·계속기업 이슈 추출 중…"):
+                    _audit_sum = parse_dart_audit_report_summary(
+                        _latest_audit["rcept_no"], dart_api_key
+                    )
+                    if _audit_sum.get("revenue") and c_info.get("revenue") == "정보 없음":
+                        c_info["revenue"] = _audit_sum["revenue"] + " (감사보고서 추정)"
+                    if _audit_sum.get("profit") and c_info.get("profit") == "정보 없음":
+                        c_info["profit"] = _audit_sum["profit"] + " (감사보고서 추정)"
+                    # 주석 개요로 대표/업종 보강 (기존 값 있을 때는 덮지 않음)
+                    if _audit_sum.get("ceo_note") and c_info.get("ceo") in (
+                        "",
+                        "정보 없음",
+                        None,
+                    ):
+                        c_info["ceo"] = _audit_sum["ceo_note"]
+                    if _audit_sum.get("business") and c_info.get("industry") in (
+                        "",
+                        "정보 없음",
+                        None,
+                    ):
+                        c_info["industry"] = _audit_sum["business"]
+                    if (
+                        _audit_sum.get("revenue")
+                        or _audit_sum.get("profit")
+                        or _audit_sum.get("overview_ok")
+                    ):
+                        if "DART" not in str(c_info.get("source")):
+                            c_info["source"] = "DART 감사보고서 주석·본문"
+                    st.session_state["_tab2_corp_memo"] = {
+                        "key": _memo_key,
+                        "c_info": dict(c_info),
+                        "latest_audit": _latest_audit,
+                        "audit_sum": dict(_audit_sum) if _audit_sum else {},
+                    }
+                    st.session_state.pop("_tab2_force_audit_parse", None)
 
-        _corp_l, _corp_r = st.columns([1, 1.15], gap="large")
-        with _corp_l:
-            if st.button("🔄 다시 조회", key="btn_refresh_corp", width="content"):
-                get_company_info_hybrid.clear()
-                list_dart_audit_reports.clear()
-                parse_dart_audit_report_summary.clear()
+            def _autosave_factory_api_key():
+                v = str(st.session_state.get("tab2_factory_api_key_input") or "").strip()
+                if not v:
+                    return
+                old = _load_factory_api_key()
+                if v == old:
+                    return
+                _persist_factory_api_key(v)
                 try:
-                    _make_opendart_reader.clear()
+                    fetch_factory_registry.clear()
                 except Exception:
                     pass
-                st.session_state.pop("_opendart_last_error", None)
-                st.session_state.pop("_tab2_corp_memo", None)
-                st.session_state.pop("_tab2_force_audit_parse", None)
-                st.rerun()
-            st.markdown(f"""
-                - **출처:** {c_info['source']}
-                - **조회상호:** {_matched} (법인코드 `{_ccode or '-'}`)
-                - **대표자:** {c_info['ceo']}
-                - **업종:** {c_info['industry']}
-                - **매출액:** {c_info['revenue']}
-                - **영업이익:** {c_info['profit']}
-                """)
-            if c_info.get("revenue") == "정보 없음" or c_info.get("profit") == "정보 없음":
-                if not dart_api_key:
-                    st.warning(
-                        "사이드바에 DART API 키를 입력하세요. "
-                        "([opendart.fss.or.kr](https://opendart.fss.or.kr))"
-                    )
-                elif OpenDartReader is None:
-                    st.warning("`opendartreader` 미연결 — 앱을 재시작해 주세요.")
-                elif c_info.get("dart_error"):
-                    st.info(f"DART: {c_info['dart_error']}")
-                else:
-                    st.info("공시·네이버에 재무 수치가 없는 업체일 수 있습니다.")
+                st.session_state.pop("_tab2_factory_memo", None)
 
-        with _corp_r:
-            if _latest_audit:
-                st.markdown("##### 📄 최근 감사보고서")
-                st.markdown(
-                    f"[{html.escape(_latest_audit['date'])} · {html.escape(_latest_audit['name'])}]"
-                    f"({_latest_audit['url']})"
-                )
-                if _audit_sum:
-                    _op = _audit_sum.get("opinion") or "확인 불가"
-                    _op_color = {
-                        "적정의견": "#166534",
-                        "한정의견": "#A16207",
-                        "부적정의견": "#B91C1C",
-                        "의견거절": "#9F1239",
-                    }.get(_op, "#334155")
-                    if _audit_sum.get("chapter"):
-                        st.caption(f"추출 챕터: {_audit_sum['chapter']}")
-                    st.markdown(
-                        f"<div style='margin:8px 0;padding:10px 12px;border:1px solid #E2E8F0;"
-                        f"border-radius:8px;background:#F8FAFC;'>"
-                        f"<div style='font-weight:700;color:{_op_color};font-size:15px;'>"
-                        f"감사의견: {html.escape(_op)}</div>"
-                        f"<div style='font-size:12px;color:#64748B;margin-top:4px;'>"
-                        f"{html.escape(_audit_sum.get('opinion_note') or '')}</div>"
-                        + (
-                            f"<div style='font-size:13px;color:#334155;margin-top:8px;line-height:1.45;'>"
-                            f"{html.escape(_audit_sum.get('opinion_summary') or '')}</div>"
-                            if _audit_sum.get("opinion_summary")
-                            else ""
-                        )
-                        + f"</div>",
-                        unsafe_allow_html=True,
+            _factory_key = _load_factory_api_key()
+            if "tab2_factory_api_key_input" not in st.session_state:
+                st.session_state["tab2_factory_api_key_input"] = _factory_key
+
+            # 공장등록 조회 (표시 전에 취합)
+            _f_memo_key = (
+                str(_corp_query_name),
+                str(_matched or ""),
+                str(_addr_for_lookup or ""),
+                str(_load_factory_api_key() or ""),
+            )
+            _f_memo = st.session_state.get("_tab2_factory_memo")
+            _f_use = (
+                isinstance(_f_memo, dict)
+                and _f_memo.get("key") == _f_memo_key
+                and isinstance(_f_memo.get("info"), dict)
+            )
+            if _f_use:
+                _f_info = dict(_f_memo["info"])
+            elif not _load_factory_api_key():
+                _f_info = {"ok": False, "error": "공장등록 API 키 없음"}
+            else:
+                with st.spinner("공장등록 정보 조회 중…"):
+                    _f_info = fetch_factory_registry(
+                        _matched or _corp_query_name,
+                        address=_addr_for_lookup,
+                        api_key=_load_factory_api_key(),
                     )
-                    st.markdown("**핵심 내용 확인**")
-                    st.markdown(
-                        f"""
-- **핵심감사사항:** {_audit_sum.get('kam') or '확인 불가'}
-- **계속기업 불확실성:** {_audit_sum.get('going_concern') or '확인 불가'}
-- **강조사항:** {_audit_sum.get('emphasis') or '확인 불가'}
-"""
-                    )
-                    st.caption("본문 자동 추출이라 일부 누락·오탐이 있을 수 있습니다. 원문은 위 링크에서 확인하세요.")
-                else:
-                    if st.button(
-                        "📄 감사의견·핵심내용 추출",
-                        key="btn_parse_audit_sum",
-                        width="content",
-                        help="원문 링크는 위에 있습니다. 추출은 추가 로딩이 있습니다.",
-                    ):
+                st.session_state["_tab2_factory_memo"] = {
+                    "key": _f_memo_key,
+                    "info": dict(_f_info) if isinstance(_f_info, dict) else {},
+                }
+            if not isinstance(_f_info, dict):
+                _f_info = {"ok": False, "error": "공장등록 조회 실패"}
+
+            def _corp_val(*vals):
+                for v in vals:
+                    s = str(v or "").strip()
+                    if s and s not in ("정보 없음", "-", "None", "nan"):
+                        return s
+                return ""
+
+            _ceo = _corp_val(
+                c_info.get("ceo"),
+                _f_info.get("ceo"),
+                (_audit_sum or {}).get("ceo_note"),
+            )
+            _industry = _corp_val(
+                c_info.get("industry"),
+                _f_info.get("industry"),
+                (_audit_sum or {}).get("business"),
+            )
+            _addr_show = _corp_val(
+                _f_info.get("address"),
+                _addr_for_lookup,
+                (_audit_sum or {}).get("hq"),
+            )
+            _product = _corp_val(_f_info.get("product"))
+            _tel = _corp_val(_f_info.get("tel"))
+            _hp = _corp_val(_f_info.get("homepage"))
+            if _hp and not _hp.startswith("http"):
+                _hp_href = "https://" + _hp
+            else:
+                _hp_href = _hp
+            _rev = _corp_val(c_info.get("revenue")) or "정보 없음"
+            _prf = _corp_val(c_info.get("profit")) or "정보 없음"
+            _op = _corp_val((_audit_sum or {}).get("opinion"))
+            _op_color = {
+                "적정의견": "#166534",
+                "한정의견": "#A16207",
+                "부적정의견": "#B91C1C",
+                "의견거절": "#9F1239",
+            }.get(_op, "#334155")
+            _gc_issue = ((_audit_sum or {}).get("going_concern_issue") or "").strip()
+            _gc_flag = bool((_audit_sum or {}).get("going_concern_flag"))
+
+            _toolbar = st.columns([1.2, 1, 3], gap="small")
+            with _toolbar[0]:
+                if st.button("🔄 다시 조회", key="btn_refresh_corp", width="stretch"):
+                    get_company_info_hybrid.clear()
+                    list_dart_audit_reports.clear()
+                    parse_dart_audit_report_summary.clear()
+                    try:
+                        fetch_factory_registry.clear()
+                    except Exception:
+                        pass
+                    try:
+                        _make_opendart_reader.clear()
+                    except Exception:
+                        pass
+                    st.session_state.pop("_opendart_last_error", None)
+                    st.session_state.pop("_tab2_corp_memo", None)
+                    st.session_state.pop("_tab2_factory_memo", None)
+                    st.session_state.pop("_tab2_force_audit_parse", None)
+                    st.rerun()
+            with _toolbar[1]:
+                if _touch_corp and _latest_audit and not _audit_sum:
+                    if st.button("📄 감사추출", key="btn_parse_audit_sum", width="stretch"):
                         st.session_state["_tab2_force_audit_parse"] = True
                         st.rerun()
-                    st.caption("원문 링크는 바로 열 수 있습니다. 의견 추출은 버튼으로 불러옵니다.")
-            elif dart_api_key and _lookup and OpenDartReader is not None:
-                st.markdown("##### 📄 최근 감사보고서")
-                st.caption("최근 감사보고서 공시를 찾지 못했습니다.")
-            else:
-                st.markdown("##### 📄 최근 감사보고서")
-                st.caption("DART 연동 후 감사보고서를 표시합니다.")
 
-        _q = urllib.parse.quote(str(_matched))
-        st.markdown(
-            f"[DART 메인](https://dart.fss.or.kr/) · "
-            f"[DART '{_matched}' 검색](https://search.naver.com/search.naver?query={_q}%20DART%20공시) · "
-            f"[네이버 기업정보](https://search.naver.com/search.naver?query={_q}%20기업정보)"
-        )
+            # 통합 카드 (중복 제거: 대표/업종/주소 1회)
+            _rows_basic = [
+                ("상호", html.escape(_matched or _corp_query_name)),
+                ("대표", html.escape(_ceo or "-")),
+                ("업종", html.escape(_industry or "-")),
+                ("주소", html.escape(_addr_show or "-")),
+                ("전화", html.escape(_tel or "-")),
+                (
+                    "홈페이지",
+                    (
+                        f"<a href='{html.escape(_hp_href)}' target='_blank' rel='noopener'>"
+                        f"{html.escape(_hp)}</a>"
+                        if _hp_href
+                        else "-"
+                    ),
+                ),
+            ]
+            _rows_fin = [
+                ("매출액", html.escape(_rev)),
+                ("영업이익", html.escape(_prf)),
+            ]
+            _rows_fac = []
+            if _f_info.get("ok"):
+                for lab, key in (
+                    ("주생산품", "product"),
+                    ("용지면적", "land_area"),
+                    ("건축면적", "bldg_area"),
+                    ("용도지역", "zone"),
+                    ("행정기관", "admin"),
+                    ("등록일자", "reg_date"),
+                    ("고용인원", "employees"),
+                    ("산업단지", "complex"),
+                ):
+                    vv = _corp_val(_f_info.get(key))
+                    if vv:
+                        _rows_fac.append((lab, html.escape(vv)))
+
+            def _grid_html(rows):
+                parts = ['<div class="tab2-corp-grid">']
+                for k, v in rows:
+                    parts.append(
+                        f'<div class="row"><span class="k">{html.escape(k)}</span>'
+                        f'<span class="v">{v}</span></div>'
+                    )
+                parts.append("</div>")
+                return "".join(parts)
+
+            _audit_html = ""
+            if _latest_audit:
+                _audit_html += (
+                    f'<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
+                    f'<div style="font-size:13px;margin-bottom:4px;">'
+                    f'<a href="{html.escape(_latest_audit["url"])}" target="_blank" rel="noopener">'
+                    f'{html.escape(_latest_audit["date"])} · {html.escape(_latest_audit["name"])}'
+                    f"</a></div>"
+                )
+                if _op:
+                    _audit_html += (
+                        f'<span class="tab2-corp-op" style="color:{_op_color};">'
+                        f"감사의견: {html.escape(_op)}</span>"
+                    )
+                if _gc_flag and _gc_issue:
+                    _audit_html += (
+                        f'<div style="margin-top:8px;padding:10px 12px;border:1px solid #FECACA;'
+                        f'border-radius:8px;background:#FEF2F2;color:#7F1D1D;font-size:13px;'
+                        f'line-height:1.45;">{html.escape(_gc_issue)}</div>'
+                    )
+                elif _audit_sum:
+                    _gc_cap = _corp_val((_audit_sum or {}).get("going_concern")) or "관련 문구 없음"
+                    _audit_html += (
+                        f'<div style="margin-top:6px;font-size:12px;color:#64748B;">'
+                        f"계속기업: {html.escape(_gc_cap)}</div>"
+                    )
+                _audit_html += "</div>"
+            elif dart_api_key and OpenDartReader is not None:
+                _audit_html = (
+                    '<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
+                    '<div style="font-size:12px;color:#64748B;">최근 감사보고서 공시 없음</div></div>'
+                )
+
+            _fac_html = ""
+            if _rows_fac:
+                _fac_html = (
+                    '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
+                    + _grid_html(_rows_fac)
+                    + "</div>"
+                )
+            elif _f_info.get("error") and "키 없음" not in str(_f_info.get("error")):
+                _fac_html = (
+                    '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
+                    f'<div style="font-size:12px;color:#64748B;">{html.escape(str(_f_info.get("error")))}'
+                    "</div></div>"
+                )
+
+            _src_bits = []
+            if c_info.get("source"):
+                _src_bits.append(str(c_info.get("source")))
+            if _f_info.get("ok"):
+                _src_bits.append("팩토리온")
+            _src_line = " · ".join(dict.fromkeys(_src_bits)) if _src_bits else ""
+
+            st.markdown(
+                f"""
+    <div class="tab2-corp-card">
+      <h4>🏢 {html.escape(str(_corp_query_name))}
+        <span style="font-size:12px;font-weight:500;color:#94A3B8;margin-left:8px;">
+          {html.escape(_src_line)}</span>
+      </h4>
+      <div class="sec-title">기본 · 재무</div>
+      {_grid_html(_rows_basic + _rows_fin)}
+      {_fac_html}
+      {_audit_html}
+    </div>
+    """,
+                unsafe_allow_html=True,
+            )
+
+            if (_rev == "정보 없음" or _prf == "정보 없음") and c_info.get("dart_error"):
+                st.caption(f"DART: {c_info.get('dart_error')}")
+
+            _sh = (_audit_sum or {}).get("shareholders") or []
+            if _sh:
+                with st.expander("주요 주주 · 지분율", expanded=False):
+                    st.dataframe(
+                        pd.DataFrame(_sh),
+                        width="stretch",
+                        hide_index=True,
+                        height=min(160, 38 + 28 * len(_sh)),
+                    )
+
+            with st.expander(
+                "공장등록 API 키 (자동저장)",
+                expanded=not bool(_load_factory_api_key()),
+            ):
+                st.caption(
+                    "입력 후 Enter(또는 포커스 이동) 시 자동 저장됩니다. "
+                    "Decoding 키(끝 `==`) 권장. "
+                    "([생산정보](https://www.data.go.kr/data/15087611/openapi.do) · "
+                    "[필지](https://www.data.go.kr/data/15087615/openapi.do))"
+                )
+                st.text_input(
+                    "공공데이터 일반 인증키",
+                    type="password",
+                    key="tab2_factory_api_key_input",
+                    placeholder="data.go.kr 일반 인증키",
+                    on_change=_autosave_factory_api_key,
+                    label_visibility="collapsed",
+                )
+                if _load_factory_api_key():
+                    st.caption("✓ 키가 저장되어 있습니다.")
+
+            _loc_bits = _loc_tokens_from_address(_addr_for_lookup)
+            _q_base = str(_matched)
+            _q_merged = f"{_q_base} {' '.join(_loc_bits[:2])}".strip() if _loc_bits else _q_base
+            _q = urllib.parse.quote(_q_merged)
+            _links = (c_info.get("job_links") or {}) if isinstance(c_info, dict) else {}
+            _saramin = _links.get("saramin_company") or (
+                "https://www.saramin.co.kr/zf_user/search/company?searchword=" + _q
+            )
+            st.markdown(
+                f"[DART](https://dart.fss.or.kr/) · "
+                f"[네이버 기업정보](https://search.naver.com/search.naver?query={_q}%20기업정보) · "
+                f"[사람인]({_saramin})"
+                + (
+                    f" · [팩토리온 원문]({_f_info.get('source_url')})"
+                    if _f_info.get("ok")
+                    else ""
+                )
+            )
     m1, m2, m3, m4 = st.columns(4)
     tot_sales_c = df_client_filtered["매출액"].sum() * 1.1 / 10000 if not df_client_filtered.empty else 0.0
     
