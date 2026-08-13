@@ -757,6 +757,113 @@ def _is_xlsx_bytes(data: bytes) -> bool:
     return data[:2] == b"PK"
 
 
+def _sanitize_worklog_xlsx_file(path: str) -> bool:
+    """양식 밖 거대 row(예: 1048417행) 제거 + dimension 축소. 무한로딩/지연 방지."""
+    import io
+    import zipfile
+
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        with zipfile.ZipFile(path, "r") as zin:
+            names = zin.namelist()
+            sheet_names = [
+                n
+                for n in names
+                if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")
+            ]
+            if not sheet_names:
+                return False
+            parts: dict[str, bytes] = {n: zin.read(n) for n in names}
+
+        changed = False
+        dim_pat = re.compile(r'<dimension[^/]*/>')
+        row_pat = re.compile(r'<row\b[^>]*\br="(\d+)"[^>]*>.*?</row>', re.S)
+        # mergeCell ref like "A1:B2"
+        merge_pat = re.compile(r'<mergeCell\b[^>]*\bref="([^"]+)"[^>]*/>')
+
+        def _col_row(addr: str) -> tuple[int, int] | None:
+            m = re.fullmatch(r"([A-Z]+)(\d+)", addr.upper())
+            if not m:
+                return None
+            col_s, row_s = m.group(1), m.group(2)
+            col = 0
+            for ch in col_s:
+                col = col * 26 + (ord(ch) - 64)
+            return col, int(row_s)
+
+        for sn in sheet_names:
+            xml = parts[sn].decode("utf-8", errors="replace")
+            orig = xml
+
+            def _keep_row(m: re.Match) -> str:
+                try:
+                    r = int(m.group(1))
+                except Exception:
+                    return m.group(0)
+                return m.group(0) if r <= WL_MAX_ROW else ""
+
+            xml = row_pat.sub(_keep_row, xml)
+
+            def _keep_merge(m: re.Match) -> str:
+                ref = m.group(1)
+                try:
+                    a, b = ref.split(":")
+                    ca, ra = _col_row(a) or (0, 0)
+                    cb, rb = _col_row(b) or (0, 0)
+                    if max(ra, rb) > WL_MAX_ROW or max(ca, cb) > WL_MAX_COL:
+                        return ""
+                except Exception:
+                    return m.group(0)
+                return m.group(0)
+
+            xml = merge_pat.sub(_keep_merge, xml)
+            try:
+                from openpyxl.utils import get_column_letter as _gcl
+            except Exception:
+                _gcl = get_column_letter
+            if _gcl is None:
+                # A=1 ... AB=28 fallback
+                def _gcl(n: int) -> str:
+                    s = ""
+                    while n:
+                        n, r = divmod(n - 1, 26)
+                        s = chr(65 + r) + s
+                    return s or "A"
+
+            new_dim = f'<dimension ref="A1:{_gcl(WL_MAX_COL)}{WL_MAX_ROW}"/>'
+            if dim_pat.search(xml):
+                xml = dim_pat.sub(new_dim, xml, count=1)
+            else:
+                xml = xml.replace("<worksheet", f"<worksheet", 1)
+                xml = re.sub(
+                    r"(<worksheet[^>]*>)",
+                    r"\1" + new_dim,
+                    xml,
+                    count=1,
+                )
+            if xml != orig:
+                parts[sn] = xml.encode("utf-8")
+                changed = True
+
+        if not changed:
+            return False
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for n, data in parts.items():
+                zout.writestr(n, data)
+        with open(path, "wb") as f:
+            f.write(buf.getvalue())
+        try:
+            _content_line_units.cache_clear()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 def _ingest_workbook_bytes(raw: bytes, preferred_name: str = "8월_업무일지.xlsx") -> tuple[bool, str]:
     """업로드/다운로드 바이트를 template.xlsx 로 저장."""
     if not raw:
@@ -781,6 +888,8 @@ def _ingest_workbook_bytes(raw: bytes, preferred_name: str = "8월_업무일지.
             f.write(raw)
         with open(WORKLOG_TEMPLATE, "wb") as f:
             f.write(raw)
+        # 업로드본에 거대 row가 있으면 탭이 무한로딩되므로 즉시 정리
+        _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
         try:
             _content_line_units.cache_clear()
         except Exception:
@@ -832,8 +941,20 @@ def _render_files_open_uploader(*, key_suffix: str = "main") -> bool:
     except Exception as e:
         st.error(f"파일 읽기 실패: {e}")
         return False
-    ok, msg = _ingest_workbook_bytes(raw, preferred_name=getattr(up, "name", None) or "8월_업무일지.xlsx")
+    # 같은 업로드로 st.rerun 무한루프 방지
+    try:
+        sig = f"{getattr(up, 'name', '')}:{len(raw)}:{hash(raw[:4096])}"
+    except Exception:
+        sig = f"{getattr(up, 'name', '')}:{len(raw)}"
+    sig_key = f"wl_ingest_sig_{key_suffix}"
+    if st.session_state.get(sig_key) == sig and os.path.exists(WORKLOG_TEMPLATE):
+        return False
+    ok, msg = _ingest_workbook_bytes(
+        raw, preferred_name=getattr(up, "name", None) or "8월_업무일지.xlsx"
+    )
     if ok:
+        st.session_state[sig_key] = sig
+        st.session_state["wl_template_ready"] = True
         st.success(msg)
         st.rerun()
     st.error(msg)
@@ -847,25 +968,36 @@ def _render_files_open_uploader(*, key_suffix: str = "main") -> bool:
 
 def _offer_template_upload() -> bool:
     """Cloud/iPad: Files 우선 → 구글드라이브 링크로 8월 양식 준비."""
+    # 이미 양식이 있으면 자동 rerun 금지(무한로딩 원인)
+    if os.path.exists(WORKLOG_TEMPLATE):
+        _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
+        return True
+
     # 1) 아이패드 Files에서 직접 열기 (가장 확실)
     st.subheader("📂 Files에 있는 엑셀 열기")
     if _render_files_open_uploader(key_suffix="need_template"):
         return True
 
-    # 2) 구글드라이브 자동(시크릿/저장 URL)
+    # 2) 클라우드 자동(시크릿/저장 URL) — 새로 받은 경우에만 rerun
+    before = os.path.exists(WORKLOG_TEMPLATE)
     if try_fetch_template_from_gdrive() and os.path.exists(WORKLOG_TEMPLATE):
-        st.success("구글드라이브 8월 양식을 연결했습니다.")
-        st.rerun()
+        _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
+        if not before:
+            st.success("클라우드 8월 양식을 연결했습니다.")
+            st.rerun()
+        return True
 
     # 3) 로컬/캐시 자동
     found = find_worklog_template_source()
     if found and os.path.isfile(found):
         try:
-            _ensure_dirs()
             if not os.path.exists(WORKLOG_TEMPLATE):
+                os.makedirs(WORKLOG_DIR, exist_ok=True)
                 shutil.copy2(found, WORKLOG_TEMPLATE)
-            st.success(f"8월/업무일지 양식을 연결했습니다: `{os.path.basename(found)}`")
-            st.rerun()
+                _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
+                st.success(f"8월/업무일지 양식을 연결했습니다: `{os.path.basename(found)}`")
+                st.rerun()
+            return True
         except Exception as e:
             st.error(f"양식 연결 실패: {e}")
 
@@ -880,6 +1012,8 @@ def _offer_template_upload() -> bool:
                     saved_url = (f.read() or "").strip()
         except Exception:
             pass
+    if not saved_url:
+        saved_url = WORKLOG_DEFAULT_CLOUD_URL
     gurl = st.text_input(
         "클라우드 링크 (OneDrive/SharePoint/구글드라이브)",
         value=saved_url,
@@ -891,6 +1025,7 @@ def _offer_template_upload() -> bool:
         with st.spinner("클라우드에서 8월 엑셀 다운로드 중..."):
             ok, msg = download_worklog_template_from_cloud_url(gurl)
         if ok:
+            _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
             st.success(msg)
             st.rerun()
         st.error(msg)
@@ -1050,10 +1185,12 @@ def _ensure_dirs() -> None:
     os.makedirs(os.path.join("uploaded_cache", "ipad"), exist_ok=True)
     os.makedirs(WORKLOG_GDRIVE_CACHE_DIR, exist_ok=True)
     if os.path.exists(WORKLOG_TEMPLATE):
+        _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
         return
     # 1순위: 구글드라이브(시크릿/저장 링크)
     try:
         if try_fetch_template_from_gdrive() and os.path.exists(WORKLOG_TEMPLATE):
+            _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
             return
     except Exception:
         pass
@@ -1062,6 +1199,7 @@ def _ensure_dirs() -> None:
     if src and os.path.isfile(src):
         try:
             shutil.copy2(src, WORKLOG_TEMPLATE)
+            _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
             try:
                 _content_line_units.cache_clear()
             except Exception:
@@ -2178,14 +2316,20 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             if touch:
                 st.markdown("</div>", unsafe_allow_html=True)
             return
-        # 저장된 템플릿이 깨져 있으면 Files에서 다시 열기
+        # 저장된 템플릿이 깨져 있으면 정리 후 재시도 (rerun 루프 금지)
         if load_workbook is not None:
             try:
+                _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
                 _wb_chk = load_workbook(WORKLOG_TEMPLATE, read_only=True, data_only=False)
                 _wb_chk.close()
             except Exception as _te:
                 st.error(f"저장된 양식을 열 수 없습니다: {_te}")
-                st.info("Files에 있는 8월 엑셀을 다시 선택해 주세요.")
+                st.info("아래에서 Files의 8월 엑셀을 다시 선택해 주세요.")
+                # 깨진 파일 제거 후 업로드 UI (존재하면 자동 rerun 하지 않음)
+                try:
+                    os.remove(WORKLOG_TEMPLATE)
+                except Exception:
+                    pass
                 _offer_template_upload()
                 if touch:
                     st.markdown("</div>", unsafe_allow_html=True)
