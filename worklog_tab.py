@@ -649,14 +649,115 @@ def _inject_worklog_touch_css() -> None:
     )
 
 
+def _is_xlsx_bytes(data: bytes) -> bool:
+    """xlsx(ZIP) 시그니처 확인. iPad Files가 확장자/MIME을 빼먹어도 통과."""
+    if not data or len(data) < 4:
+        return False
+    # ZIP local file header
+    return data[:2] == b"PK"
+
+
+def _ingest_workbook_bytes(raw: bytes, preferred_name: str = "8월_업무일지.xlsx") -> tuple[bool, str]:
+    """업로드/다운로드 바이트를 template.xlsx 로 저장."""
+    if not raw:
+        return False, "파일이 비어 있습니다."
+    if not _is_xlsx_bytes(raw):
+        # xls(구형) OLE 시그니처
+        if raw[:8] == b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1":
+            return False, "구형 .xls 입니다. Excel에서 .xlsx 로 저장한 뒤 다시 선택해 주세요."
+        head = raw[:80].lstrip()
+        if head.startswith(b"<") or b"html" in head[:40].lower():
+            return False, "엑셀이 아니라 웹페이지입니다. Files에서 파일이 구름(↓) 아이콘이면 먼저 다운로드하세요."
+        return False, "엑셀(.xlsx) 형식이 아닙니다. Files → 구글드라이브에서 .xlsx 를 선택해 주세요."
+    try:
+        _ensure_dirs()
+        safe_name = os.path.basename(preferred_name or "8월_업무일지.xlsx").strip() or "8월_업무일지.xlsx"
+        if not safe_name.lower().endswith(".xlsx"):
+            safe_name += ".xlsx"
+        ipad_dir = os.path.join("uploaded_cache", "ipad")
+        os.makedirs(ipad_dir, exist_ok=True)
+        ipad_path = os.path.join(ipad_dir, safe_name)
+        with open(ipad_path, "wb") as f:
+            f.write(raw)
+        with open(WORKLOG_TEMPLATE, "wb") as f:
+            f.write(raw)
+        try:
+            _content_line_units.cache_clear()
+        except Exception:
+            pass
+        # openpyxl로 한 번 열어 유효성 확인
+        if load_workbook is not None:
+            try:
+                wb = load_workbook(WORKLOG_TEMPLATE, read_only=True, data_only=False)
+                wb.close()
+            except Exception as e:
+                try:
+                    os.remove(WORKLOG_TEMPLATE)
+                except Exception:
+                    pass
+                return False, f"엑셀을 열 수 없습니다(손상/암호): {e}"
+        return True, f"Files 엑셀 열림: {safe_name}"
+    except Exception as e:
+        return False, f"저장 실패: {e}"
+
+
+def _render_files_open_uploader(*, key_suffix: str = "main") -> bool:
+    """아이패드 Files에서 엑셀 고르기. 성공·rerun 시 True."""
+    touch = _is_touch_ui()
+    st.markdown(
+        """
+        <div style="padding:10px 12px;border:1px solid #99F6E4;background:#F0FDFA;
+        border-radius:10px;margin:0 0 10px;font-size:13px;color:#134E4A;line-height:1.45;">
+        <b>아이패드 Files에서 열기</b><br>
+        1) 아래 <b>찾아보기</b> 탭<br>
+        2) <b>Browse</b> → <b>Files</b> / <b>Google Drive</b><br>
+        3) <b>8월 엑셀(.xlsx)</b> 선택<br>
+        ※ 파일에 구름 ⬇️ 표시면 먼저 눌러 다운로드한 뒤 선택하세요.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    # type 제한 없음 → iOS Safari/Files MIME 불일치로 선택 불가 문제 회피
+    up = st.file_uploader(
+        "Files / 구글드라이브 엑셀 선택",
+        type=None,
+        key=f"wl_files_open_{key_suffix}",
+        help="확장자가 안 보여도 됩니다. xlsx 내용이면 자동 인식합니다.",
+        label_visibility="visible",
+    )
+    if up is None:
+        return False
+    try:
+        raw = up.getvalue()
+    except Exception as e:
+        st.error(f"파일 읽기 실패: {e}")
+        return False
+    ok, msg = _ingest_workbook_bytes(raw, preferred_name=getattr(up, "name", None) or "8월_업무일지.xlsx")
+    if ok:
+        st.success(msg)
+        st.rerun()
+    st.error(msg)
+    if touch:
+        st.info(
+            "여전히 안 열리면: Files 앱에서 해당 엑셀을 길게 누르기 → "
+            "다운로드/보관에 저장 후, 다시 이 화면에서 선택하세요."
+        )
+    return False
+
+
 def _offer_template_upload() -> bool:
-    """Cloud/iPad: 구글드라이브·Files에서 8월 양식 준비."""
-    # 1) 구글드라이브 자동(시크릿/저장 URL)
+    """Cloud/iPad: Files 우선 → 구글드라이브 링크로 8월 양식 준비."""
+    # 1) 아이패드 Files에서 직접 열기 (가장 확실)
+    st.subheader("📂 Files에 있는 엑셀 열기")
+    if _render_files_open_uploader(key_suffix="need_template"):
+        return True
+
+    # 2) 구글드라이브 자동(시크릿/저장 URL)
     if try_fetch_template_from_gdrive() and os.path.exists(WORKLOG_TEMPLATE):
         st.success("구글드라이브 8월 양식을 연결했습니다.")
         st.rerun()
 
-    # 2) 로컬/캐시 자동
+    # 3) 로컬/캐시 자동
     found = find_worklog_template_source()
     if found and os.path.isfile(found):
         try:
@@ -668,11 +769,8 @@ def _offer_template_upload() -> bool:
         except Exception as e:
             st.error(f"양식 연결 실패: {e}")
 
-    st.warning(
-        "업무일지 템플릿이 없습니다. "
-        "**구글드라이브 8월 엑셀** 공유 링크를 넣거나, 아이패드 Files에서 파일을 선택하세요."
-    )
-
+    st.markdown("---")
+    st.caption("또는 구글드라이브 공유 링크로 불러오기")
     saved_url = _gdrive_url_from_secrets() or _load_saved_gdrive_url()
     gurl = st.text_input(
         "구글드라이브 링크 (8월 업무일지 파일 또는 폴더)",
@@ -688,37 +786,6 @@ def _offer_template_upload() -> bool:
             st.success(msg)
             st.rerun()
         st.error(msg)
-
-    st.caption("또는 아이패드 Files에서 직접 업로드")
-    up = st.file_uploader(
-        "아이패드 Files → 8월 업무일지.xlsx",
-        type=["xlsx"],
-        key="wl_template_uploader",
-        help="Files 앱 / 구글드라이브 앱에서 8월 업무일지 엑셀을 올리면 양식으로 저장됩니다.",
-    )
-    if up is None:
-        return False
-    try:
-        _ensure_dirs()
-        raw = up.getvalue()
-        safe_name = os.path.basename(up.name or "8월_업무일지.xlsx")
-        if not safe_name.lower().endswith(".xlsx"):
-            safe_name += ".xlsx"
-        ipad_dir = os.path.join("uploaded_cache", "ipad")
-        os.makedirs(ipad_dir, exist_ok=True)
-        ipad_path = os.path.join(ipad_dir, safe_name)
-        with open(ipad_path, "wb") as f:
-            f.write(raw)
-        with open(WORKLOG_TEMPLATE, "wb") as f:
-            f.write(raw)
-        try:
-            _content_line_units.cache_clear()
-        except Exception:
-            pass
-        st.success(f"템플릿 저장: {safe_name}")
-        st.rerun()
-    except Exception as e:
-        st.error(f"템플릿 저장 실패: {e}")
     return False
 
 
@@ -2003,6 +2070,18 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             if touch:
                 st.markdown("</div>", unsafe_allow_html=True)
             return
+        # 저장된 템플릿이 깨져 있으면 Files에서 다시 열기
+        if load_workbook is not None:
+            try:
+                _wb_chk = load_workbook(WORKLOG_TEMPLATE, read_only=True, data_only=False)
+                _wb_chk.close()
+            except Exception as _te:
+                st.error(f"저장된 양식을 열 수 없습니다: {_te}")
+                st.info("Files에 있는 8월 엑셀을 다시 선택해 주세요.")
+                _offer_template_upload()
+                if touch:
+                    st.markdown("</div>", unsafe_allow_html=True)
+                return
     except Exception as e:
         st.error(f"템플릿 준비 실패: {e}")
         if touch:
@@ -2031,6 +2110,14 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 st.session_state["worklog_selected"] = clicked
                 st.rerun()
 
+    # iPad: Files에 있는 엑셀을 언제든 다시 열 수 있게
+    if touch:
+        with st.expander("📂 Files에 있는 엑셀 다시 열기", expanded=False):
+            _render_files_open_uploader(key_suffix="replace_template")
+    else:
+        with st.expander("📂 양식 엑셀 다시 열기 (Files/업로드)", expanded=False):
+            _render_files_open_uploader(key_suffix="replace_template_mac")
+
     # 맥: 좌 미리보기 / 우 입력. iPad: 세로 스택(입력 먼저)으로 터치 안정화.
     if touch:
         col_input = st.container()
@@ -2050,7 +2137,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         p1, p2, p3 = st.columns(3)
         with p1:
-            do_print = st.button("원본양식 인쇄", width="stretch", key="wl_print_btn")
+            do_print = st.button(
+                "원본양식 인쇄" if not touch else "브라우저 인쇄",
+                width="stretch",
+                key="wl_print_btn",
+            )
         with p2:
             path_saved = worklog_path(selected)
             xbytes = b""
@@ -2067,16 +2158,17 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 except Exception:
                     xbytes = b""
             st.download_button(
-                "엑셀 저장본",
+                "Files에 엑셀 저장" if touch else "엑셀 저장본",
                 data=xbytes,
                 file_name=f"일일업무일지_{selected.isoformat()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
                 key="wl_dl_btn",
                 disabled=not xbytes,
+                help="아이패드에서는 다운로드 후 Files/엑셀·Numbers로 여세요.",
             )
         with p3:
-            st.caption("인쇄 = Excel 원본" if not touch else "인쇄 = 브라우저")
+            st.caption("인쇄 = Excel 원본" if not touch else "다운로드 후 Files에서 열기")
 
     with col_input:
         st.markdown("##### 업무 입력")
