@@ -29,6 +29,11 @@ WORKLOG_TEMPLATE = os.path.join(WORKLOG_DIR, "template.xlsx")
 WORKLOG_TEMPLATE_SRC = os.path.expanduser("~/Desktop/업무일지.xlsx")
 WORKLOG_GDRIVE_URL_FILE = os.path.join(WORKLOG_DIR, "gdrive_template_url.txt")
 WORKLOG_GDRIVE_CACHE_DIR = os.path.join("uploaded_cache", "gdrive")
+# OneDrive/SharePoint「8월」기본 공유 링크 (앱/재배포 시 자동 동기화)
+WORKLOG_DEFAULT_CLOUD_URL = (
+    "https://jijidatech-my.sharepoint.com/:x:/g/personal/14749_office365pp_co/"
+    "IQA3JEkaLXRPSIDBSkFoYFx2AcsFuwhCPCo5vhn1_J0PWrw?e=KDuaFa"
+)
 # 아이패드 Files / 맥 Desktop 등에 둔 8월(또는 업무일지) 양식 후보
 _WORKLOG_TEMPLATE_NAME_HINTS = (
     "업무일지",
@@ -402,6 +407,8 @@ def try_fetch_template_from_gdrive() -> bool:
                     url = (f.read() or "").strip()
         except Exception:
             url = ""
+    if not url:
+        url = WORKLOG_DEFAULT_CLOUD_URL
     if not url:
         return False
     ok, _msg = download_worklog_template_from_cloud_url(url)
