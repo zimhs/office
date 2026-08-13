@@ -26,6 +26,128 @@ except Exception:  # pragma: no cover
 WORKLOG_DIR = os.path.join("uploaded_cache", "worklog")
 WORKLOG_TEMPLATE = os.path.join(WORKLOG_DIR, "template.xlsx")
 WORKLOG_TEMPLATE_SRC = os.path.expanduser("~/Desktop/업무일지.xlsx")
+# 아이패드 Files / 맥 Desktop 등에 둔 8월(또는 업무일지) 양식 후보
+_WORKLOG_TEMPLATE_NAME_HINTS = (
+    "업무일지",
+    "일일업무",
+    "8월",
+    "08월",
+    "2026-08",
+    "2026_08",
+    "202608",
+)
+
+
+def _path_looks_like_worklog_xlsx(path: str) -> bool:
+    name = os.path.basename(path)
+    if not name.lower().endswith(".xlsx"):
+        return False
+    if name.startswith("~$") or name.startswith("_preview_"):
+        return False
+    if name == "template.xlsx":
+        return False
+    base = name[:-5]
+    # 날짜 저장본(YYYY-MM-DD.xlsx)도 양식 소스로 허용(8월분 우선)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", base):
+        return base.startswith("2026-08") or base[5:7] == "08"
+    return any(h.lower() in name.lower() or h in name for h in _WORKLOG_TEMPLATE_NAME_HINTS)
+
+
+def _iter_xlsx_under(root: str, *, max_depth: int = 3):
+    if not root or not os.path.isdir(root):
+        return
+    root = os.path.abspath(root)
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            rel = os.path.relpath(dirpath, root)
+            depth = 0 if rel == "." else rel.count(os.sep) + 1
+            if depth > max_depth:
+                dirnames[:] = []
+                continue
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d not in {".git", "node_modules", "__pycache__", "Library"}
+                and not d.startswith(".")
+            ]
+            for fn in filenames:
+                if fn.lower().endswith(".xlsx") and not fn.startswith("~$"):
+                    yield os.path.join(dirpath, fn)
+    except Exception:
+        return
+
+
+def _template_search_roots() -> list[str]:
+    home = os.path.expanduser("~")
+    roots = [
+        WORKLOG_DIR,
+        os.path.join("uploaded_cache", "ipad"),
+        os.path.join("uploaded_cache", "아이패드"),
+        os.path.join(home, "Desktop"),
+        os.path.join(home, "Desktop", "아이패드"),
+        os.path.join(home, "Desktop", "iPad"),
+        os.path.join(home, "Desktop", "Files"),
+        os.path.join(home, "Documents"),
+        os.path.join(home, "Documents", "아이패드"),
+        os.path.join(home, "Documents", "Files"),
+        # iCloud Drive (맥·아이패드 Files 동기화)
+        os.path.join(home, "Library", "Mobile Documents", "com~apple~CloudDocs"),
+        os.path.join(
+            home, "Library", "Mobile Documents", "com~apple~CloudDocs", "Downloads"
+        ),
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for r in roots:
+        try:
+            ap = os.path.abspath(r)
+        except Exception:
+            continue
+        if ap in seen:
+            continue
+        seen.add(ap)
+        out.append(r)
+    return out
+
+
+def _score_template_candidate(path: str) -> tuple[int, float]:
+    """높을수록 우선. 8월·업무일지 이름 가산, 최신 mtime 가산."""
+    name = os.path.basename(path)
+    score = 0
+    if "업무일지" in name or "일일업무" in name:
+        score += 50
+    if any(h in name for h in ("8월", "08월", "2026-08", "2026_08", "202608")):
+        score += 80
+    if re.fullmatch(r"2026-08-\d{2}\.xlsx", name):
+        score += 40
+    if os.path.basename(os.path.dirname(path)) in {
+        "아이패드",
+        "ipad",
+        "iPad",
+        "Files",
+        "worklog",
+    }:
+        score += 20
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        mtime = 0.0
+    return score, mtime
+
+
+def find_worklog_template_source() -> str | None:
+    """Desktop/아이패드 Files/캐시에서 8월·업무일지 엑셀을 찾는다."""
+    if os.path.exists(WORKLOG_TEMPLATE_SRC) and os.path.isfile(WORKLOG_TEMPLATE_SRC):
+        return WORKLOG_TEMPLATE_SRC
+    cands: list[str] = []
+    for root in _template_search_roots():
+        for path in _iter_xlsx_under(root, max_depth=3):
+            if _path_looks_like_worklog_xlsx(path):
+                cands.append(path)
+    if not cands:
+        return None
+    cands.sort(key=_score_template_candidate, reverse=True)
+    return cands[0]
 
 WL_MIN_ROW, WL_MAX_ROW = 1, 47
 WL_MIN_COL, WL_MAX_COL = 3, 28  # C ~ AB
@@ -364,23 +486,48 @@ def _inject_worklog_touch_css() -> None:
 
 def _offer_template_upload() -> bool:
     """Cloud/iPad: Desktop 템플릿이 없을 때 업로드로 준비. 성공 시 True."""
+    found = find_worklog_template_source()
+    if found and os.path.isfile(found):
+        try:
+            _ensure_dirs()
+            if not os.path.exists(WORKLOG_TEMPLATE):
+                shutil.copy2(found, WORKLOG_TEMPLATE)
+            st.success(f"8월/업무일지 양식을 연결했습니다: `{os.path.basename(found)}`")
+            st.rerun()
+        except Exception as e:
+            st.error(f"양식 연결 실패: {e}")
     st.warning(
         "업무일지 템플릿이 없습니다. "
-        "맥에서는 `Desktop/업무일지.xlsx`를 두거나, 아래에서 양식 파일을 업로드하세요."
+        "아이패드 **Files** 안의 **8월 엑셀(업무일지)** 을 선택해 주세요. "
+        "(맥이면 Desktop/`업무일지.xlsx` 또는 아이패드 동기화 폴더도 자동 검색합니다.)"
     )
     up = st.file_uploader(
-        "업무일지.xlsx 템플릿 업로드",
+        "아이패드 Files → 8월 업무일지.xlsx",
         type=["xlsx"],
         key="wl_template_uploader",
-        help="원본 양식 엑셀을 한 번 올리면 Cloud/iPad에서도 동일하게 사용합니다.",
+        help="Files 앱의 8월 업무일지 엑셀을 올리면 양식으로 저장됩니다.",
     )
     if up is None:
         return False
     try:
         _ensure_dirs()
+        raw = up.getvalue()
+        # 원본도 ipad 캐시에 보관(파일명 유지) + template.xlsx 로 복사
+        safe_name = os.path.basename(up.name or "8월_업무일지.xlsx")
+        if not safe_name.lower().endswith(".xlsx"):
+            safe_name += ".xlsx"
+        ipad_dir = os.path.join("uploaded_cache", "ipad")
+        os.makedirs(ipad_dir, exist_ok=True)
+        ipad_path = os.path.join(ipad_dir, safe_name)
+        with open(ipad_path, "wb") as f:
+            f.write(raw)
         with open(WORKLOG_TEMPLATE, "wb") as f:
-            f.write(up.getvalue())
-        st.success("템플릿이 저장되었습니다. 화면을 다시 불러옵니다.")
+            f.write(raw)
+        try:
+            _content_line_units.cache_clear()
+        except Exception:
+            pass
+        st.success(f"템플릿 저장: {safe_name}")
         st.rerun()
     except Exception as e:
         st.error(f"템플릿 저장 실패: {e}")
@@ -537,8 +684,19 @@ def _spill_all_content(cells: dict) -> dict:
 
 def _ensure_dirs() -> None:
     os.makedirs(WORKLOG_DIR, exist_ok=True)
-    if not os.path.exists(WORKLOG_TEMPLATE) and os.path.exists(WORKLOG_TEMPLATE_SRC):
-        shutil.copy2(WORKLOG_TEMPLATE_SRC, WORKLOG_TEMPLATE)
+    os.makedirs(os.path.join("uploaded_cache", "ipad"), exist_ok=True)
+    if os.path.exists(WORKLOG_TEMPLATE):
+        return
+    src = find_worklog_template_source()
+    if src and os.path.isfile(src):
+        try:
+            shutil.copy2(src, WORKLOG_TEMPLATE)
+            try:
+                _content_line_units.cache_clear()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 def worklog_path(d: date) -> str:
