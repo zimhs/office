@@ -10432,10 +10432,17 @@ with tab9:
 
 with tab10:
     # 업무일지 탭 전용 — 다른 탭과 공유 상태/헬퍼를 쓰지 않음.
-    # worklog_tab.py 수정이 즉시 반영되도록 매 실행 시 reload.
-    import importlib
+    # iPad/Cloud: 모듈 누락·로드 실패 시에도 다른 탭은 유지 (매 실행 reload 금지).
+    try:
+        import worklog_tab as _worklog_tab
 
-    import worklog_tab as _worklog_tab
-
-    importlib.reload(_worklog_tab)
-    _worklog_tab.render_worklog_tab(latest_update_str)
+        _worklog_tab.render_worklog_tab(latest_update_str)
+    except ModuleNotFoundError:
+        st.error(
+            "일일업무일지 모듈(`worklog_tab.py`)을 찾을 수 없습니다. "
+            "배포 파일에 포함되었는지 확인해 주세요."
+        )
+        st.info("다른 탭은 정상 이용 가능합니다.")
+    except Exception as _wl_err:
+        st.error(f"일일업무일지 탭 오류: {_wl_err}")
+        st.info("다른 탭은 정상 이용 가능합니다.")
