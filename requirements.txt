@@ -10,3 +10,4 @@ kaleido
 requests
 beautifulsoup4
 opendartreader>=0.3.2
+gdown>=5.2.0
