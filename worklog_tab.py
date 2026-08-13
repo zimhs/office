@@ -225,11 +225,95 @@ def _pick_august_xlsx(paths: list[str]) -> str | None:
     return scored[0][0]
 
 
+def _is_sharepoint_or_onedrive_url(url: str) -> bool:
+    u = (url or "").lower()
+    return (
+        "sharepoint.com" in u
+        or "onedrive.live.com" in u
+        or "1drv.ms" in u
+        or "office365" in u
+    )
+
+
+def download_worklog_template_from_sharepoint(url: str) -> tuple[bool, str]:
+    """OneDrive/SharePoint 공유 링크에서 xlsx 다운로드 → template.xlsx."""
+    url = (url or "").strip()
+    if not url:
+        return False, "SharePoint/OneDrive 링크가 비어 있습니다."
+    try:
+        import requests
+    except Exception as e:
+        return False, f"requests 필요: {e}"
+
+    os.makedirs(WORKLOG_GDRIVE_CACHE_DIR, exist_ok=True)
+    os.makedirs(WORKLOG_DIR, exist_ok=True)
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+            )
+        }
+    )
+    candidates = [
+        url if "download=1" in url else (url + ("&" if "?" in url else "?") + "download=1"),
+        url.replace("/:x:/", "/:u:/").replace("/:w:/", "/:u:/").replace("/:b:/", "/:u:/"),
+        url,
+    ]
+    last_err = "다운로드 실패"
+    for cand in candidates:
+        try:
+            r = session.get(cand, allow_redirects=True, timeout=90)
+            raw = r.content or b""
+            if raw[:2] != b"PK":
+                last_err = f"엑셀이 아님 (HTTP {r.status_code})"
+                continue
+            tmp = os.path.join(WORKLOG_GDRIVE_CACHE_DIR, "sharepoint_download.xlsx")
+            with open(tmp, "wb") as f:
+                f.write(raw)
+            ok, msg = _ingest_workbook_bytes(raw, preferred_name="8월.xlsx")
+            if ok:
+                _save_gdrive_url(url)
+                try:
+                    with open(
+                        os.path.join(WORKLOG_DIR, "sharepoint_template_url.txt"),
+                        "w",
+                        encoding="utf-8",
+                    ) as sf:
+                        sf.write(url)
+                except Exception:
+                    pass
+                return True, f"OneDrive/SharePoint 양식 연결 ({len(raw):,} bytes)"
+            last_err = msg
+        except Exception as e:
+            last_err = str(e)
+    return False, f"SharePoint 불러오기 실패: {last_err}"
+
+
+def download_worklog_template_from_cloud_url(url: str) -> tuple[bool, str]:
+    """구글드라이브 또는 OneDrive/SharePoint 공유 링크 처리."""
+    url = (url or "").strip()
+    if not url:
+        return False, "클라우드 링크가 비어 있습니다."
+    if _is_sharepoint_or_onedrive_url(url):
+        return download_worklog_template_from_sharepoint(url)
+    if "drive.google.com" in url.lower() or "docs.google.com" in url.lower():
+        return download_worklog_template_from_gdrive(url)
+    # 미확인 URL도 SharePoint 방식(download=1) 먼저 시도 후 gdown
+    ok, msg = download_worklog_template_from_sharepoint(url)
+    if ok:
+        return ok, msg
+    return download_worklog_template_from_gdrive(url)
+
+
 def download_worklog_template_from_gdrive(url: str) -> tuple[bool, str]:
     """구글드라이브 공유 링크(파일/폴더)에서 8월·업무일지 xlsx를 template으로 저장."""
     url = (url or "").strip()
     if not url:
         return False, "구글드라이브 링크가 비어 있습니다."
+    if _is_sharepoint_or_onedrive_url(url):
+        return download_worklog_template_from_sharepoint(url)
     try:
         import gdown
     except Exception:
@@ -310,8 +394,17 @@ def try_fetch_template_from_gdrive() -> bool:
         return True
     url = _gdrive_url_from_secrets() or _load_saved_gdrive_url()
     if not url:
+        # SharePoint 저장 URL
+        try:
+            sp = os.path.join(WORKLOG_DIR, "sharepoint_template_url.txt")
+            if os.path.exists(sp):
+                with open(sp, "r", encoding="utf-8") as f:
+                    url = (f.read() or "").strip()
+        except Exception:
+            url = ""
+    if not url:
         return False
-    ok, _msg = download_worklog_template_from_gdrive(url)
+    ok, _msg = download_worklog_template_from_cloud_url(url)
     return ok
 
 WL_MIN_ROW, WL_MAX_ROW = 1, 47
@@ -670,12 +763,12 @@ def _ingest_workbook_bytes(raw: bytes, preferred_name: str = "8월_업무일지.
             return False, "엑셀이 아니라 웹페이지입니다. Files에서 파일이 구름(↓) 아이콘이면 먼저 다운로드하세요."
         return False, "엑셀(.xlsx) 형식이 아닙니다. Files → 구글드라이브에서 .xlsx 를 선택해 주세요."
     try:
-        _ensure_dirs()
+        os.makedirs(WORKLOG_DIR, exist_ok=True)
+        os.makedirs(os.path.join("uploaded_cache", "ipad"), exist_ok=True)
         safe_name = os.path.basename(preferred_name or "8월_업무일지.xlsx").strip() or "8월_업무일지.xlsx"
         if not safe_name.lower().endswith(".xlsx"):
             safe_name += ".xlsx"
         ipad_dir = os.path.join("uploaded_cache", "ipad")
-        os.makedirs(ipad_dir, exist_ok=True)
         ipad_path = os.path.join(ipad_dir, safe_name)
         with open(ipad_path, "wb") as f:
             f.write(raw)
@@ -770,18 +863,26 @@ def _offer_template_upload() -> bool:
             st.error(f"양식 연결 실패: {e}")
 
     st.markdown("---")
-    st.caption("또는 구글드라이브 공유 링크로 불러오기")
+    st.caption("또는 OneDrive / SharePoint / 구글드라이브 공유 링크로 불러오기")
     saved_url = _gdrive_url_from_secrets() or _load_saved_gdrive_url()
+    if not saved_url:
+        try:
+            sp = os.path.join(WORKLOG_DIR, "sharepoint_template_url.txt")
+            if os.path.exists(sp):
+                with open(sp, "r", encoding="utf-8") as f:
+                    saved_url = (f.read() or "").strip()
+        except Exception:
+            pass
     gurl = st.text_input(
-        "구글드라이브 링크 (8월 업무일지 파일 또는 폴더)",
+        "클라우드 링크 (OneDrive/SharePoint/구글드라이브)",
         value=saved_url,
         key="wl_gdrive_url",
-        placeholder="https://drive.google.com/file/d/... 또는 /folders/...",
-        help="공유를 ‘링크가 있는 모든 사용자’로 연 뒤 URL을 붙여 넣으세요.",
+        placeholder="https://...sharepoint.com/:x:/... 또는 drive.google.com/...",
+        help="공유 링크를 붙여 넣으세요. OneDrive「8월」파일 링크도 됩니다.",
     )
-    if st.button("📥 구글드라이브에서 불러오기", key="wl_gdrive_fetch", width="stretch"):
-        with st.spinner("구글드라이브에서 8월 엑셀 다운로드 중..."):
-            ok, msg = download_worklog_template_from_gdrive(gurl)
+    if st.button("📥 클라우드에서 불러오기", key="wl_gdrive_fetch", width="stretch"):
+        with st.spinner("클라우드에서 8월 엑셀 다운로드 중..."):
+            ok, msg = download_worklog_template_from_cloud_url(gurl)
         if ok:
             st.success(msg)
             st.rerun()
