@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import unicodedata
 from datetime import date
 from functools import lru_cache
@@ -26,6 +27,8 @@ except Exception:  # pragma: no cover
 WORKLOG_DIR = os.path.join("uploaded_cache", "worklog")
 WORKLOG_TEMPLATE = os.path.join(WORKLOG_DIR, "template.xlsx")
 WORKLOG_TEMPLATE_SRC = os.path.expanduser("~/Desktop/업무일지.xlsx")
+WORKLOG_GDRIVE_URL_FILE = os.path.join(WORKLOG_DIR, "gdrive_template_url.txt")
+WORKLOG_GDRIVE_CACHE_DIR = os.path.join("uploaded_cache", "gdrive")
 # 아이패드 Files / 맥 Desktop 등에 둔 8월(또는 업무일지) 양식 후보
 _WORKLOG_TEMPLATE_NAME_HINTS = (
     "업무일지",
@@ -81,6 +84,7 @@ def _template_search_roots() -> list[str]:
     home = os.path.expanduser("~")
     roots = [
         WORKLOG_DIR,
+        WORKLOG_GDRIVE_CACHE_DIR,
         os.path.join("uploaded_cache", "ipad"),
         os.path.join("uploaded_cache", "아이패드"),
         os.path.join(home, "Desktop"),
@@ -148,6 +152,167 @@ def find_worklog_template_source() -> str | None:
         return None
     cands.sort(key=_score_template_candidate, reverse=True)
     return cands[0]
+
+
+def _extract_gdrive_id(text: str) -> str | None:
+    s = (text or "").strip()
+    if not s:
+        return None
+    m = re.search(r"/folders/([a-zA-Z0-9_-]+)", s)
+    if m:
+        return m.group(1)
+    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", s)
+    if m:
+        return m.group(1)
+    m = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", s)
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"[a-zA-Z0-9_-]{20,}", s):
+        return s
+    return None
+
+
+def _is_gdrive_folder_url(text: str) -> bool:
+    return "/folders/" in (text or "")
+
+
+def _load_saved_gdrive_url() -> str:
+    try:
+        if os.path.exists(WORKLOG_GDRIVE_URL_FILE):
+            with open(WORKLOG_GDRIVE_URL_FILE, "r", encoding="utf-8") as f:
+                return (f.read() or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _save_gdrive_url(url: str) -> None:
+    os.makedirs(WORKLOG_DIR, exist_ok=True)
+    with open(WORKLOG_GDRIVE_URL_FILE, "w", encoding="utf-8") as f:
+        f.write((url or "").strip())
+
+
+def _gdrive_url_from_secrets() -> str:
+    try:
+        secrets = getattr(st, "secrets", None)
+        if secrets is None:
+            return ""
+        for key in ("WORKLOG_GDRIVE_URL", "worklog_gdrive_url", "GDRIVE_WORKLOG_URL"):
+            try:
+                val = secrets.get(key) if hasattr(secrets, "get") else secrets[key]
+            except Exception:
+                val = None
+            if val:
+                return str(val).strip()
+    except Exception:
+        pass
+    # 환경변수(Streamlit Cloud secrets / Cursor env)
+    for key in ("WORKLOG_GDRIVE_URL", "worklog_gdrive_url", "GDRIVE_WORKLOG_URL"):
+        val = os.environ.get(key, "")
+        if val:
+            return str(val).strip()
+    return ""
+
+
+def _pick_august_xlsx(paths: list[str]) -> str | None:
+    xlsx = [p for p in paths if p.lower().endswith(".xlsx") and not os.path.basename(p).startswith("~$")]
+    if not xlsx:
+        return None
+    scored = [(p, _score_template_candidate(p)) for p in xlsx if _path_looks_like_worklog_xlsx(p)]
+    if not scored:
+        scored = [(p, _score_template_candidate(p)) for p in xlsx]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[0][0]
+
+
+def download_worklog_template_from_gdrive(url: str) -> tuple[bool, str]:
+    """구글드라이브 공유 링크(파일/폴더)에서 8월·업무일지 xlsx를 template으로 저장."""
+    url = (url or "").strip()
+    if not url:
+        return False, "구글드라이브 링크가 비어 있습니다."
+    try:
+        import gdown
+    except Exception:
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "gdown", "-q"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            import gdown  # type: ignore
+        except Exception as e:
+            return False, f"gdown 설치 실패: {e}"
+
+    os.makedirs(WORKLOG_GDRIVE_CACHE_DIR, exist_ok=True)
+    os.makedirs(WORKLOG_DIR, exist_ok=True)
+    file_id = _extract_gdrive_id(url)
+    try:
+        if _is_gdrive_folder_url(url) or (
+            file_id and "folders" in url
+        ):
+            # 폴더: 내려받은 뒤 8월/업무일지 xlsx 선택
+            out_dir = os.path.join(WORKLOG_GDRIVE_CACHE_DIR, "folder")
+            if os.path.isdir(out_dir):
+                shutil.rmtree(out_dir, ignore_errors=True)
+            os.makedirs(out_dir, exist_ok=True)
+            folder_url = url if "http" in url else f"https://drive.google.com/drive/folders/{file_id}"
+            gdown.download_folder(folder_url, output=out_dir, quiet=True, use_cookies=False)
+            found: list[str] = []
+            for root, _, files in os.walk(out_dir):
+                for fn in files:
+                    if fn.lower().endswith(".xlsx"):
+                        found.append(os.path.join(root, fn))
+            picked = _pick_august_xlsx(found)
+            if not picked:
+                return False, "폴더에서 8월/업무일지 xlsx를 찾지 못했습니다."
+            shutil.copy2(picked, WORKLOG_TEMPLATE)
+            ipad_copy = os.path.join(
+                "uploaded_cache", "ipad", os.path.basename(picked) or "8월_업무일지.xlsx"
+            )
+            os.makedirs(os.path.dirname(ipad_copy), exist_ok=True)
+            shutil.copy2(picked, ipad_copy)
+        else:
+            tmp_path = os.path.join(WORKLOG_GDRIVE_CACHE_DIR, "drive_download.xlsx")
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            # 파일 공유 링크 / ID
+            if file_id and "http" not in url:
+                result = gdown.download(id=file_id, output=tmp_path, quiet=True)
+            else:
+                result = gdown.download(url=url, output=tmp_path, quiet=True, fuzzy=True)
+            if not result or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) < 64:
+                return False, "다운로드 실패(공유를 '링크가 있는 모든 사용자'로 열어 주세요)."
+            # HTML 에러 페이지가 저장된 경우 거부
+            with open(tmp_path, "rb") as f:
+                head = f.read(32)
+            if head.lstrip().startswith(b"<") or b"<!DOCTYPE" in head[:64].upper():
+                return False, "다운로드가 HTML입니다. Drive 공유 권한을 확인해 주세요."
+            shutil.copy2(tmp_path, WORKLOG_TEMPLATE)
+            ipad_copy = os.path.join("uploaded_cache", "ipad", "8월_업무일지_gdrive.xlsx")
+            os.makedirs(os.path.dirname(ipad_copy), exist_ok=True)
+            shutil.copy2(tmp_path, ipad_copy)
+        try:
+            _content_line_units.cache_clear()
+        except Exception:
+            pass
+        _save_gdrive_url(url)
+        return True, f"구글드라이브에서 양식 연결: {os.path.basename(WORKLOG_TEMPLATE)}"
+    except Exception as e:
+        return False, f"구글드라이브 불러오기 실패: {e}"
+
+
+def try_fetch_template_from_gdrive() -> bool:
+    """secrets/저장 URL로 템플릿 자동 동기화. 성공 시 True."""
+    if os.path.exists(WORKLOG_TEMPLATE):
+        return True
+    url = _gdrive_url_from_secrets() or _load_saved_gdrive_url()
+    if not url:
+        return False
+    ok, _msg = download_worklog_template_from_gdrive(url)
+    return ok
 
 WL_MIN_ROW, WL_MAX_ROW = 1, 47
 WL_MIN_COL, WL_MAX_COL = 3, 28  # C ~ AB
@@ -485,7 +650,13 @@ def _inject_worklog_touch_css() -> None:
 
 
 def _offer_template_upload() -> bool:
-    """Cloud/iPad: Desktop 템플릿이 없을 때 업로드로 준비. 성공 시 True."""
+    """Cloud/iPad: 구글드라이브·Files에서 8월 양식 준비."""
+    # 1) 구글드라이브 자동(시크릿/저장 URL)
+    if try_fetch_template_from_gdrive() and os.path.exists(WORKLOG_TEMPLATE):
+        st.success("구글드라이브 8월 양식을 연결했습니다.")
+        st.rerun()
+
+    # 2) 로컬/캐시 자동
     found = find_worklog_template_source()
     if found and os.path.isfile(found):
         try:
@@ -496,23 +667,40 @@ def _offer_template_upload() -> bool:
             st.rerun()
         except Exception as e:
             st.error(f"양식 연결 실패: {e}")
+
     st.warning(
         "업무일지 템플릿이 없습니다. "
-        "아이패드 **Files** 안의 **8월 엑셀(업무일지)** 을 선택해 주세요. "
-        "(맥이면 Desktop/`업무일지.xlsx` 또는 아이패드 동기화 폴더도 자동 검색합니다.)"
+        "**구글드라이브 8월 엑셀** 공유 링크를 넣거나, 아이패드 Files에서 파일을 선택하세요."
     )
+
+    saved_url = _gdrive_url_from_secrets() or _load_saved_gdrive_url()
+    gurl = st.text_input(
+        "구글드라이브 링크 (8월 업무일지 파일 또는 폴더)",
+        value=saved_url,
+        key="wl_gdrive_url",
+        placeholder="https://drive.google.com/file/d/... 또는 /folders/...",
+        help="공유를 ‘링크가 있는 모든 사용자’로 연 뒤 URL을 붙여 넣으세요.",
+    )
+    if st.button("📥 구글드라이브에서 불러오기", key="wl_gdrive_fetch", width="stretch"):
+        with st.spinner("구글드라이브에서 8월 엑셀 다운로드 중..."):
+            ok, msg = download_worklog_template_from_gdrive(gurl)
+        if ok:
+            st.success(msg)
+            st.rerun()
+        st.error(msg)
+
+    st.caption("또는 아이패드 Files에서 직접 업로드")
     up = st.file_uploader(
         "아이패드 Files → 8월 업무일지.xlsx",
         type=["xlsx"],
         key="wl_template_uploader",
-        help="Files 앱의 8월 업무일지 엑셀을 올리면 양식으로 저장됩니다.",
+        help="Files 앱 / 구글드라이브 앱에서 8월 업무일지 엑셀을 올리면 양식으로 저장됩니다.",
     )
     if up is None:
         return False
     try:
         _ensure_dirs()
         raw = up.getvalue()
-        # 원본도 ipad 캐시에 보관(파일명 유지) + template.xlsx 로 복사
         safe_name = os.path.basename(up.name or "8월_업무일지.xlsx")
         if not safe_name.lower().endswith(".xlsx"):
             safe_name += ".xlsx"
@@ -685,8 +873,16 @@ def _spill_all_content(cells: dict) -> dict:
 def _ensure_dirs() -> None:
     os.makedirs(WORKLOG_DIR, exist_ok=True)
     os.makedirs(os.path.join("uploaded_cache", "ipad"), exist_ok=True)
+    os.makedirs(WORKLOG_GDRIVE_CACHE_DIR, exist_ok=True)
     if os.path.exists(WORKLOG_TEMPLATE):
         return
+    # 1순위: 구글드라이브(시크릿/저장 링크)
+    try:
+        if try_fetch_template_from_gdrive() and os.path.exists(WORKLOG_TEMPLATE):
+            return
+    except Exception:
+        pass
+    # 2순위: Desktop / Files / 캐시
     src = find_worklog_template_source()
     if src and os.path.isfile(src):
         try:
