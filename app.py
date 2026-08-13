@@ -3410,8 +3410,49 @@ def _drop_debt_noise_rows(df):
         | client_raw.isin(["", "nan", "None", "NaN"])
     )
     return df.loc[~noise].copy()
+
+# 거래처명이 비어 있는 매출 행용 고정 키 (CSV 저장·재로드 시 NaN으로 깨지지 않음)
+EMPTY_CLIENT_LABEL = "(거래처명 없음)"
+
+
+def _is_valid_client_name(name) -> bool:
+    """실거래처명 여부. 빈칸/NaN 마커는 False (이후 EMPTY_CLIENT_LABEL로 치환)."""
+    if name is None or (isinstance(name, float) and pd.isna(name)):
+        return False
+    s = str(name).strip()
+    if not s:
+        return False
+    if s == EMPTY_CLIENT_LABEL:
+        return True
+    return s.lower() not in {"nan", "none", "nat", "null"}
+
+
+def _is_mappable_client_name(name) -> bool:
+    """담당자 수동 매핑에 쓸 수 있는 거래처명(빈칸·미지정 표기 제외)."""
+    if name is None or (isinstance(name, float) and pd.isna(name)):
+        return False
+    s = str(name).strip()
+    if s == EMPTY_CLIENT_LABEL:
+        return True
+    if not _is_valid_client_name(name):
+        return False
+    return s not in {"미지정", "-", ".", "없음"} and s.lower() not in {"nan", "none"}
+
+
+def _normalize_manual_client_key(name) -> str | None:
+    """수동 매핑 CSV 키 정규화. 빈/NaN 키 → EMPTY_CLIENT_LABEL."""
+    if name is None or (isinstance(name, float) and pd.isna(name)):
+        return EMPTY_CLIENT_LABEL
+    s = str(name).strip()
+    if not s or s.lower() in {"nan", "none", "nat", "null"}:
+        return EMPTY_CLIENT_LABEL
+    if _is_mappable_client_name(s):
+        return s
+    return None
+
+
 def _drop_sales_noise_rows(df):
-    """매출 CSV 하단 타임스탬프·이월미수 행 제거."""
+    """매출 CSV 하단 타임스탬프·이월미수 행 제거(실거래처·빈거래처 매출 무손실)."""
     if df.empty:
         return df
     noise = pd.Series(False, index=df.index)
@@ -3598,8 +3639,12 @@ def _parse_sales_uploaded_tuples(file_tuples):
             df["단가"] = pd.to_numeric(
                 df["단가"].astype(str).str.replace(r"[^\d.-]", "", regex=True), errors="coerce"
             ).fillna(0) if "단가" in df.columns else 0
-            df["거래처"] = df["거래처"].fillna("미지정").astype(str).str.strip()
+            df["거래처"] = df["거래처"].fillna("").astype(str).str.strip()
             df["담당자"] = df["담당자"].fillna("미지정").astype(str).str.strip()
+            # 빈 거래처 → 고정 라벨(담당자 매핑·집계 가능, 매출 무손실)
+            _blank_client = ~df["거래처"].map(_is_valid_client_name)
+            if _blank_client.any():
+                df.loc[_blank_client, "거래처"] = EMPTY_CLIENT_LABEL
             df = normalize_items_vectorized(df)
             df = df.dropna(subset=["매출일_dt"])
             df["연도"] = df["매출일_dt"].dt.year.astype(str)
@@ -3629,16 +3674,8 @@ def _parse_sales_uploaded_tuples(file_tuples):
             .fillna("미지정")
         )
         result_df.loc[result_df["담당자"].isin(invalid_staff_markers), "담당자"] = "미지정"
-    # 수동 지정 매핑 적용 (무손실 보존)
-    manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
-    if os.path.exists(manual_map_path) and not result_df.empty:
-        try:
-            manual_df = pd.read_csv(manual_map_path)
-            manual_dict = manual_df.set_index("거래처")["담당자"].to_dict()
-            mask_manual = result_df["거래처"].isin(manual_dict.keys())
-            result_df.loc[mask_manual, "담당자"] = result_df.loc[mask_manual, "거래처"].map(manual_dict)
-        except Exception:
-            pass
+    # 수동 지정 매핑 적용 (무손실 보존 · 빈 거래처 키는 EMPTY_CLIENT_LABEL로 복구)
+    result_df = _apply_manual_staff_mapping(result_df)
     # ★ 거래처명 맨 앞이 z/Z → 담당자 '거래종료' (대시보드 전체 공통, 최종 확정)
     if not result_df.empty and "거래처" in result_df.columns and "담당자" in result_df.columns:
         _client_s = result_df["거래처"].astype(str).str.strip()
@@ -3648,15 +3685,60 @@ def _parse_sales_uploaded_tuples(file_tuples):
     return result_df
 
 
+def _apply_manual_staff_mapping(df):
+    """수동 담당자 매핑을 캐시 밖에서도 강제 적용. 빈 거래처 → EMPTY_CLIENT_LABEL."""
+    if df is None or df.empty or "거래처" not in df.columns:
+        return df if df is not None else pd.DataFrame()
+    out = df.copy()
+    out["거래처"] = out["거래처"].fillna("").astype(str).str.strip()
+    blank = ~out["거래처"].map(_is_valid_client_name)
+    if blank.any():
+        out.loc[blank, "거래처"] = EMPTY_CLIENT_LABEL
+    manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
+    if not os.path.exists(manual_map_path):
+        return out
+    if "담당자" not in out.columns:
+        out["담당자"] = "미지정"
+    try:
+        manual_df = pd.read_csv(manual_map_path)
+        if "거래처" not in manual_df.columns or "담당자" not in manual_df.columns:
+            return out
+        manual_dict = {}
+        for _, mrow in manual_df.iterrows():
+            ck = _normalize_manual_client_key(mrow["거래처"])
+            if ck is None:
+                continue
+            staff = str(mrow["담당자"]).strip() if pd.notna(mrow["담당자"]) else ""
+            if staff and staff not in ("nan", "None", "NaN", "미지정"):
+                manual_dict[ck] = staff
+        if manual_dict:
+            mask_manual = out["거래처"].isin(manual_dict.keys())
+            out.loc[mask_manual, "담당자"] = out.loc[mask_manual, "거래처"].map(manual_dict)
+    except Exception:
+        pass
+    return out
+
+
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_bytes(file_tuples):
+def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=4):
     return _parse_sales_uploaded_tuples(file_tuples)
 
 
+def _manual_staff_map_cache_token():
+    """담당자 수동매핑 CSV 변경 시 매출 캐시를 무효화하기 위한 토큰."""
+    path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
+    try:
+        st_info = os.stat(path)
+        return (int(st_info.st_mtime_ns), int(st_info.st_size))
+    except OSError:
+        return (0, 0)
+
+
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_meta(file_meta):
+def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=4):
     """파일명·경로·mtime·size만 캐시 키로 사용.
-    새로고침마다 ~10MB CSV를 읽어 해싱하던 비용을 제거(파싱 결과는 동일)."""
+    새로고침마다 ~10MB CSV를 읽어 해싱하던 비용을 제거(파싱 결과는 동일).
+    manual_map_token / parse_version: 매핑·파서 변경 시 캐시 무효화."""
     if not file_meta:
         return pd.DataFrame()
     file_tuples = []
@@ -3843,38 +3925,90 @@ def cached_get_item_month_week_year(data_df, item_name, metric, all_months, year
     return pvt
 
 
-def _heatmap_cell_bg(val, vmin, vmax, cmap_name="Greens"):
-    """값 → 히트맵 배경색 (#rrggbb)."""
+def _styler_heatmap_colors(data_df, cmap_name="Blues"):
+    """style_with_sum / st.dataframe 과 동일한 background_gradient 색·글자색.
+    returns dict[(row_label, col_label)] -> (bg_hex, fg_hex)
+    """
+    out = {}
+    if data_df is None or getattr(data_df, "empty", True):
+        return out
+    try:
+        num = data_df.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        if num.empty:
+            return out
+        name = cmap_name if cmap_name in ("Blues", "Greens", "Purples") else "Blues"
+        styler = num.style.background_gradient(cmap=name, axis=None)
+        styler._compute()
+        ctx = getattr(styler, "ctx", None) or {}
+        idxs = list(num.index)
+        cols = list(num.columns)
+        for (r, c), props in ctx.items():
+            if r >= len(idxs) or c >= len(cols):
+                continue
+            bg, fg = "#FFFFFF", "#31333F"
+            for item in props:
+                if not isinstance(item, (list, tuple)) or len(item) < 2:
+                    continue
+                k, v = str(item[0]).lower(), str(item[1]).strip()
+                if "background" in k:
+                    bg = v
+                elif k == "color":
+                    fg = v
+            try:
+                if abs(float(num.iat[r, c])) < 1e-12:
+                    bg, fg = "#FFFFFF", "#31333F"
+            except Exception:
+                pass
+            if fg.lower() in ("#000", "#000000", "black", "rgb(0, 0, 0)"):
+                fg = "#31333F"
+            out[(idxs[r], cols[c])] = (bg, fg)
+    except Exception:
+        pass
+    return out
+
+
+def _heatmap_cell_bg(val, vmin, vmax, cmap_name="Blues"):
+    """값 → 히트맵 배경색 (#rrggbb). 폴백용."""
     try:
         v = float(val)
     except (TypeError, ValueError):
         return "#FFFFFF"
     if vmax <= vmin or abs(v) < 1e-12:
         return "#FFFFFF"
-    t = (v - vmin) / (vmax - vmin)
-    t = max(0.0, min(1.0, t))
+    t = float(max(0.0, min(1.0, (v - vmin) / (vmax - vmin))))
     try:
-        cmap = (
-            _TAB3_CMAP_GREEN
-            if cmap_name == "Greens"
-            else _TAB3_CMAP_BLUE
-            if cmap_name in ("Blues", "Purples")
-            else _TAB3_CMAP_GREEN
-        )
+        import matplotlib.pyplot as plt
+
+        name = cmap_name if cmap_name in ("Blues", "Greens", "Purples") else "Blues"
+        cmap = plt.get_cmap(name)
         r, g, b, _a = cmap(t)
-        return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+        return f"#{int(round(r * 255)):02x}{int(round(g * 255)):02x}{int(round(b * 255)):02x}"
     except Exception:
         return "#FFFFFF"
+
+
+def _heatmap_text_color(bg_hex):
+    """어두운 칸은 흰 글씨."""
+    try:
+        h = str(bg_hex or "").lstrip("#")
+        if len(h) != 6:
+            return "#31333F"
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+        return "#FFFFFF" if lum < 0.55 else "#31333F"
+    except Exception:
+        return "#31333F"
 
 
 def render_month_expandable_week_table(
     month_pivot,
     week_year_pivot,
     fmt_kind="qty",
-    cmap_name="Greens",
+    cmap_name="Blues",
     height=460,
 ):
-    """월 행 클릭 → 1~4주 펼침/접힘. 열=연도(최신순). tab1 4대품목 전용."""
+    """월 행 클릭 → 1~4주 펼침/접힘. tab1 4대품목 전용.
+    그라데이션=상단 Blues와 동일, 글씨 크기는 고정(부모 복사 금지·레이아웃 안정)."""
     if month_pivot is None or month_pivot.empty:
         st.info("표시할 품목 데이터가 없습니다.")
         return
@@ -3896,24 +4030,46 @@ def render_month_expandable_week_table(
             return f"{x:,.0f}%"
         return f"{x:,.0f}"
 
-    nums = []
+    month_only = month_pivot.reindex(index=months, columns=year_cols).fillna(0.0)
+    month_colors = _styler_heatmap_colors(month_only, cmap_name)
+    week_colors = {}
+    if week_year_pivot is not None and not week_year_pivot.empty:
+        try:
+            wdf = week_year_pivot.reindex(columns=year_cols).fillna(0.0)
+            week_colors = _styler_heatmap_colors(wdf, cmap_name)
+        except Exception:
+            week_colors = {}
+
+    month_nums = []
     for m in months:
         for y in year_cols:
             try:
-                nums.append(float(month_pivot.at[m, y] if y in month_pivot.columns else 0))
+                month_nums.append(float(month_only.at[m, y]))
             except Exception:
-                nums.append(0.0)
-        if week_year_pivot is not None and not week_year_pivot.empty:
-            for w in week_labels:
-                for y in year_cols:
-                    try:
-                        nums.append(float(week_year_pivot.loc[(m, w), y]))
-                    except Exception:
-                        nums.append(0.0)
-    vmax = max(nums) if nums else 1.0
+                month_nums.append(0.0)
+    vmax = max(month_nums) if month_nums else 1.0
     vmin = 0.0
 
-    # 연간 합계 행
+    def _cell_style(val, key, week=False):
+        bg_fg = None
+        if week and key in week_colors:
+            bg_fg = week_colors[key]
+        elif (not week) and key in month_colors:
+            bg_fg = month_colors[key]
+        if bg_fg:
+            bg, fg = bg_fg
+        else:
+            bg = _heatmap_cell_bg(val, vmin, vmax, cmap_name)
+            fg = _heatmap_text_color(bg)
+        pad = "6px 8px" if not week else "5px 8px"
+        fsz = "13px" if not week else "12px"
+        return (
+            f"padding:{pad};text-align:right;vertical-align:middle;"
+            f"background:{bg};color:{fg};font-size:{fsz};font-weight:400;"
+            f"line-height:1.35;border-bottom:1px solid #E6EAF0;"
+            f"border-right:1px solid #EEF2F6;white-space:nowrap;"
+        )
+
     sum_cells = []
     for y in year_cols:
         try:
@@ -3924,7 +4080,9 @@ def render_month_expandable_week_table(
 
     th = "".join(
         f'<th style="position:sticky;top:0;z-index:2;background:#F0F2F6;padding:6px 8px;'
-        f'border-bottom:1px solid #E2E8F0;text-align:center;font-weight:600;">{html.escape(y)}</th>'
+        f'border-bottom:1px solid #D0D7DE;border-right:1px solid #E6EAF0;'
+        f'text-align:right;vertical-align:middle;font-weight:600;font-size:13px;'
+        f'color:#31333F;line-height:1.35;white-space:nowrap;">{html.escape(y)}</th>'
         for y in year_cols
     )
     body_parts = []
@@ -3933,17 +4091,17 @@ def render_month_expandable_week_table(
         mcells = []
         for y in year_cols:
             try:
-                val = float(month_pivot.at[m, y] if y in month_pivot.columns else 0)
+                val = float(month_only.at[m, y])
             except Exception:
                 val = 0.0
-            bg = _heatmap_cell_bg(val, vmin, vmax, cmap_name)
-            mcells.append(
-                f'<td style="padding:5px 8px;text-align:center;background:{bg};">{_fmt(val)}</td>'
-            )
+            stl = _cell_style(val, (m, y), week=False)
+            mcells.append(f'<td style="{stl}">{_fmt(val)}</td>')
         body_parts.append(
             f'<tr class="mrow" data-month="{mid}" style="cursor:pointer;">'
-            f'<td class="mlabel" style="padding:5px 8px;font-weight:600;white-space:nowrap;'
-            f'position:sticky;left:0;background:#F8FAFC;border-right:1px solid #E2E8F0;">'
+            f'<td class="mlabel" style="padding:6px 8px;font-weight:600;font-size:13px;'
+            f'line-height:1.35;white-space:nowrap;color:#31333F;text-align:left;'
+            f'position:sticky;left:0;z-index:1;background:#F0F2F6;'
+            f'border-right:1px solid #D0D7DE;border-bottom:1px solid #E6EAF0;">'
             f'<span class="chev">▸</span> {mid}</td>{"".join(mcells)}</tr>'
         )
         for w in week_labels:
@@ -3953,27 +4111,29 @@ def render_month_expandable_week_table(
                     val = float(week_year_pivot.loc[(m, w), y])
                 except Exception:
                     val = 0.0
-                bg = _heatmap_cell_bg(val, vmin, vmax, cmap_name)
-                wcells.append(
-                    f'<td style="padding:4px 8px;text-align:center;background:{bg};'
-                    f'font-size:12px;color:#334155;">{_fmt(val)}</td>'
-                )
+                stl = _cell_style(val, ((m, w), y), week=True)
+                wcells.append(f'<td style="{stl}">{_fmt(val)}</td>')
             body_parts.append(
-                f'<tr class="wrow" data-parent="{mid}" style="display:none;background:#F8FAFC;">'
-                f'<td style="padding:4px 8px 4px 22px;color:#64748B;white-space:nowrap;'
-                f'position:sticky;left:0;background:#F1F5F9;border-right:1px solid #E2E8F0;">'
+                f'<tr class="wrow" data-parent="{mid}" style="display:none;">'
+                f'<td style="padding:5px 8px 5px 22px;color:#64748B;font-size:12px;'
+                f'line-height:1.35;white-space:nowrap;text-align:left;'
+                f'position:sticky;left:0;z-index:1;background:#F8FAFC;'
+                f'border-right:1px solid #E6EAF0;border-bottom:1px solid #E6EAF0;">'
                 f'{html.escape(w)}</td>{"".join(wcells)}</tr>'
             )
     sum_tds = []
     for s in sum_cells:
         sum_tds.append(
-            f'<td style="padding:6px 8px;text-align:center;font-weight:800;'
-            f'background:#E2E8F0;">{_fmt(s)}</td>'
+            f'<td style="padding:6px 8px;text-align:right;font-weight:700;font-size:13px;'
+            f'line-height:1.35;background:#E2E8F0;color:#0F172A;white-space:nowrap;'
+            f'border-top:1px solid #CBD5E1;">{_fmt(s)}</td>'
         )
     body_parts.append(
-        f'<tr style="font-weight:800;">'
-        f'<td style="padding:6px 8px;position:sticky;left:0;background:#E2E8F0;'
-        f'border-right:1px solid #CBD5E1;">연간 합계</td>{"".join(sum_tds)}</tr>'
+        f'<tr style="font-weight:700;">'
+        f'<td style="padding:6px 8px;font-size:13px;line-height:1.35;text-align:left;'
+        f'position:sticky;left:0;z-index:1;background:#E2E8F0;color:#0F172A;'
+        f'border-right:1px solid #CBD5E1;border-top:1px solid #CBD5E1;white-space:nowrap;">'
+        f'연간 합계</td>{"".join(sum_tds)}</tr>'
     )
 
     page_html = f"""
@@ -3981,10 +4141,26 @@ def render_month_expandable_week_table(
     <html><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-      html,body{{margin:0;height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;color:#31333F;}}
-      .hint{{padding:6px 10px;font-size:12px;color:#64748B;background:#F8FAFC;border:1px solid #E2E8F0;border-bottom:none;border-radius:4px 4px 0 0;}}
-      .wrap{{height:calc(100% - 34px);overflow:auto;border:1px solid #E2E8F0;border-radius:0 0 4px 4px;background:#fff;}}
-      table{{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;}}
+      html,body{{
+        margin:0;height:100%;overflow:hidden;
+        font-family:"Source Sans Pro","Source Sans 3","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+        font-size:13px;color:#31333F;background:#fff;
+        -webkit-font-smoothing:antialiased;
+      }}
+      .hint{{
+        padding:6px 10px;font-size:12px;color:#64748B;background:#F8FAFC;
+        border:1px solid #E2E8F0;border-bottom:none;border-radius:0.5rem 0.5rem 0 0;
+        font-family:inherit;
+      }}
+      .wrap{{
+        height:calc(100% - 34px);overflow:auto;-webkit-overflow-scrolling:touch;
+        border:1px solid #E2E8F0;border-radius:0 0 0.5rem 0.5rem;background:#fff;
+      }}
+      table{{
+        border-collapse:separate;border-spacing:0;width:100%;
+        table-layout:fixed;font-family:inherit;font-size:13px;
+      }}
+      th,td{{overflow:hidden;text-overflow:ellipsis;}}
       .mrow:hover td{{filter:brightness(0.97);}}
       .mrow.open .chev{{display:inline-block;transform:rotate(90deg);}}
       .chev{{display:inline-block;width:1em;transition:transform .12s ease;color:#64748B;}}
@@ -3993,7 +4169,9 @@ def render_month_expandable_week_table(
     <div class="wrap">
       <table>
         <thead><tr>
-          <th style="position:sticky;top:0;left:0;z-index:3;background:#F0F2F6;padding:6px 8px;border-bottom:1px solid #E2E8F0;border-right:1px solid #E2E8F0;">월</th>
+          <th style="position:sticky;top:0;left:0;z-index:3;background:#F0F2F6;padding:6px 8px;
+            border-bottom:1px solid #D0D7DE;border-right:1px solid #D0D7DE;width:4.5rem;
+            text-align:left;font-weight:600;font-size:13px;color:#31333F;line-height:1.35;">월</th>
           {th}
         </tr></thead>
         <tbody>{"".join(body_parts)}</tbody>
@@ -4014,7 +4192,8 @@ def render_month_expandable_week_table(
     </script>
     </body></html>
     """
-    components.html(page_html, height=height, scrolling=True)
+    components.html(page_html, height=height, scrolling=False)
+
 
 
 @st.cache_data
@@ -4251,7 +4430,78 @@ def cached_prepare_active_df(df, target_col):
     return prepare_active_df_fast(df, target_col)
 DEBT_PINK_SOFT = "#FFE4E6"
 DEBT_CLIENT_STRIPE_A = "#FFFFFF"
-DEBT_CLIENT_STRIPE_B = "#E2E8F0"
+DEBT_CLIENT_STRIPE_B = "#FFFFFF"  # 거래처 구분은 줄무늬 대신 선만 사용
+DEBT_CLIENT_SEP = ""  # 구분선 없이 색 계열로만 거래처 구분
+# 채권 히트맵 — 스크린샷 상한까지만 (진한 네이비/진녹 금지)
+_DEBT_CMAP_BLUE = LinearSegmentedColormap.from_list(
+    "debt_blue_cap", ["#FFFFFF", "#DEEBF7", "#9DC3E6", "#5B9BD5"]
+)
+_DEBT_CMAP_GREEN = LinearSegmentedColormap.from_list(
+    "debt_green_cap", ["#FFFFFF", "#E2EFDA", "#A9D08E", "#70AD47"]
+)
+
+
+def _debt_heat_cell_css(val, vmin, vmax, family="blue"):
+    """홀수거래처=파란 · 짝수=초록. 0=흰색 · 진하기 상한=스크린샷 수준."""
+    try:
+        v = abs(float(val))
+    except (TypeError, ValueError):
+        return "background-color:#FFFFFF;color:#31333F;"
+    if vmax <= vmin or v < 1e-12:
+        return "background-color:#FFFFFF;color:#31333F;"
+    vs = float(np.sqrt(v))
+    vmax_s = float(np.sqrt(max(vmax, 0.0)))
+    t = float(max(0.0, min(1.0, vs / vmax_s))) if vmax_s > 0 else 0.0
+    cmap = _DEBT_CMAP_BLUE if family != "green" else _DEBT_CMAP_GREEN
+    try:
+        r, g, b, _a = cmap(t)
+        bg = f"#{int(round(r * 255)):02x}{int(round(g * 255)):02x}{int(round(b * 255)):02x}"
+    except Exception:
+        bg = "#FFFFFF"
+    # 상한 색이 밝아 글자는 항상 진한 회색
+    return f"background-color:{bg};color:#31333F;"
+
+
+def _debt_blues_cell_css(val, vmin, vmax):
+    """하위 호환: 파란 계열."""
+    return _debt_heat_cell_css(val, vmin, vmax, family="blue")
+
+
+def _debt_gubun_vmax(abs_vals):
+    """구분별 스케일: 양의 값 95퍼센타일(없으면 max)."""
+    pos = abs_vals[abs_vals > 1e-12]
+    if pos.size == 0:
+        return 0.0
+    try:
+        return float(max(np.percentile(pos, 95), pos.min()))
+    except Exception:
+        return float(np.nanmax(pos))
+
+
+def _debt_client_color_family_map(clients_unique):
+    """구분선 없이 거래처 구분: 홀수=파란, 짝수=초록."""
+    out = {}
+    n = 0
+    for client in clients_unique:
+        if client == "📌 [전체 합계]":
+            out[client] = "blue"
+            continue
+        n += 1
+        out[client] = "blue" if (n % 2 == 1) else "green"
+    return out
+
+
+def _debt_family_tint(family="blue", strength=0.30):
+    """거래처/구분/결제/연체 열용 연한 배경 (같은 계열 그라디언트)."""
+    try:
+        t = float(max(0.0, min(1.0, strength)))
+        cmap = _DEBT_CMAP_BLUE if family != "green" else _DEBT_CMAP_GREEN
+        r, g, b, _a = cmap(t)
+        return f"#{int(round(r * 255)):02x}{int(round(g * 255)):02x}{int(round(b * 255)):02x}"
+    except Exception:
+        return "#DEEBF7" if family != "green" else "#E2EFDA"
+
+
 def payment_term_credit_months(term):
     """결제조건 → 정상채권으로 인정하는 최대 경과개월(age).
     age0=당월. 익월말 → age<=1(당월·전월) 정상, age>=2 연체.
@@ -4324,28 +4574,50 @@ def format_debt_status_label(overdue_amt, overdue_months):
         return "악성"
     return f"연체 {int(overdue_months)}개월"
 def apply_debt_style_fast(df, highlight_debt=True, payment_terms_map=None):
-    """분홍 = 연체분만. 익월말이면 전월 매출은 정상(분홍 X). 잔액0이면 분홍 없음."""
-    styles = np.full(df.shape, '', dtype=object)
+    """홀수=파란·짝수=초록 그라디언트(진하기 상한) + 연체 분홍. 구분선 없음."""
+    styles = np.full(df.shape, "", dtype=object)
     terms_map = payment_terms_map or {}
-    clients = df.index.get_level_values('거래처')
-    gubuns = df.index.get_level_values('구분')
+    clients = df.index.get_level_values("거래처")
+    gubuns = df.index.get_level_values("구분")
     u_clients_fast = clients.unique()
-    color_map_fast = {
-        client: DEBT_CLIENT_STRIPE_A if i % 2 == 0 else DEBT_CLIENT_STRIPE_B
-        for i, client in enumerate(u_clients_fast)
-    }
+    is_total = clients.to_numpy() == "📌 [전체 합계]"
+    family_map = _debt_client_color_family_map(u_clients_fast)
+    client_arr = clients.to_numpy()
+
+    # 1) 기본 흰색 / 합계 회색
     for r in range(df.shape[0]):
-        client = clients[r]
-        if client == "📌 [전체 합계]":
-            row_style = 'background-color: #E2E8F0; font-weight: 700;'
+        if is_total[r]:
+            styles[r, :] = "background-color:#E2E8F0;font-weight:700;color:#0F172A;"
         else:
-            row_style = f'background-color: {color_map_fast.get(client, DEBT_CLIENT_STRIPE_A)};'
-        styles[r, :] = row_style
+            styles[r, :] = "background-color:#FFFFFF;color:#31333F;"
+
+    # 2) 구분별 스케일 + 거래처 홀수/짝수 색 계열
+    if df.shape[1] > 0:
+        arr = df.apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        abs_arr = np.abs(arr)
+        abs_arr[is_total, :] = 0.0
+        gubun_arr = gubuns.to_numpy()
+        for gubun_name in pd.unique(gubun_arr):
+            if gubun_name is None or (isinstance(gubun_name, float) and pd.isna(gubun_name)):
+                continue
+            row_mask = (gubun_arr == gubun_name) & (~is_total)
+            if not row_mask.any():
+                continue
+            vmax = _debt_gubun_vmax(abs_arr[row_mask, :])
+            if vmax <= 0:
+                continue
+            rows_idx = np.where(row_mask)[0]
+            for r in rows_idx:
+                fam = family_map.get(client_arr[r], "blue")
+                for c in range(df.shape[1]):
+                    styles[r, c] = _debt_heat_cell_css(arr[r, c], 0.0, vmax, family=fam)
+
     def apply_pink_cell(old_style, pink_bg=DEBT_PINK_SOFT):
-        s = re.sub(r'background-color:\s*#[0-9a-fA-F]+;', '', old_style)
-        s = re.sub(r'color:\s*#[0-9a-fA-F]+;', '', s)
-        s = re.sub(r'font-weight:\s*\d+;', '', s)
-        return s + f' background-color: {pink_bg};'
+        s = re.sub(r"background-color:\s*#[0-9a-fA-F]+;", "", old_style or "")
+        s = re.sub(r"color:\s*#[0-9a-fA-F]+;", "", s)
+        s = re.sub(r"font-weight:\s*\d+;", "", s)
+        return s + f" background-color: {pink_bg};color:#9F1239;"
+
     if df.shape[1] == 0:
         return pd.DataFrame(styles, index=df.index, columns=df.columns)
     current_month_idx = df.shape[1] - 1
@@ -4356,9 +4628,9 @@ def apply_debt_style_fast(df, highlight_debt=True, payment_terms_map=None):
         i_sal = -1
         i_bal = -1
         for r in client_rows:
-            if gubuns[r] == '매출':
+            if gubuns[r] == "매출":
                 i_sal = r
-            elif gubuns[r] == '잔액':
+            elif gubuns[r] == "잔액":
                 i_bal = r
         if i_sal == -1 or i_bal == -1:
             continue
@@ -5165,9 +5437,15 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
     numeric_cols = list(disp_debt.columns)
     clients = disp_debt.index.get_level_values("거래처")
     u_clients = clients.unique()
+    # 거래처·구분·결제·연체까지 같은 계열 색으로 구분 (홀수=파란, 짝수=초록)
+    family_map = _debt_client_color_family_map(u_clients)
     color_map = {
-        client: DEBT_CLIENT_STRIPE_A if i % 2 == 0 else DEBT_CLIENT_STRIPE_B
-        for i, client in enumerate(u_clients)
+        client: (
+            "#E2E8F0"
+            if client == "📌 [전체 합계]"
+            else _debt_family_tint(family_map.get(client, "blue"), 0.32)
+        )
+        for client in u_clients
     }
     long_cnt = sum(1 for v in status_map.values() if v == "악성")
     # 거래처분석 탭과 동일: 13px / 보통 굵기 · 중간정렬 (연체 분홍만 강조)
@@ -5175,18 +5453,21 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
     if compact:
         headers = ["거래처", "구분"] + numeric_cols + ["결제", "연체"]
         left_w, right_w = [108, 40], [52, 64]
-        hint = "셀 클릭 · 방향키 이동 · 분홍=연체 · 결제/연체 열 축소 · 연체: 정상/1~3M/악성(4M+)"
+        hint = "셀 클릭 · 홀수=파란/짝수=초록(거래처~연체 열 포함) · 분홍=연체금액"
     else:
         headers = ["거래처", "구분"] + numeric_cols + ["결제조건", "연체개월수"]
         left_w, right_w = [160, 68], [110, 120]
-        hint = "셀 클릭 · 방향키 이동 · 분홍=연체 · 연체개월수: 정상 / 연체 1~3개월 / 악성(4개월+)"
+        hint = "셀 클릭 · 홀수=파란 · 짝수=초록 · 거래처/구분/결제조건/연체개월수까지 색 구분 · 분홍=연체금액"
     cell_font = _debt_num_cell_font(compact=compact)
     body_rows = []
+    prev_client = None
     for r, (idx, row) in enumerate(disp_debt.iterrows()):
         client, gubun = idx[0], idx[1]
+        sep = DEBT_CLIENT_SEP if (prev_client is not None and client != prev_client) else ""
+        prev_client = client
         cells = [
-            f'<td class="dash-cell-selectable dash-freeze-0" style="{_debt_label_cell_style(client, "", color_map, compact=compact)}" title="{html.escape(str(client))}">{html.escape(str(client))}</td>',
-            f'<td class="dash-cell-selectable dash-freeze-1" style="{_debt_label_cell_style(client, gubun, color_map, compact=compact)}">{html.escape(str(gubun))}</td>',
+            f'<td class="dash-cell-selectable dash-freeze-0" style="{_debt_label_cell_style(client, "", color_map, compact=compact)}{sep}" title="{html.escape(str(client))}">{html.escape(str(client))}</td>',
+            f'<td class="dash-cell-selectable dash-freeze-1" style="{_debt_label_cell_style(client, gubun, color_map, compact=compact)}{sep}">{html.escape(str(gubun))}</td>',
         ]
         for col in numeric_cols:
             val = row[col]
@@ -5203,10 +5484,10 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
                 except Exception:
                     extra_style = ""
             cells.append(
-                f'<td class="dash-cell-selectable" style="{cell_font}{extra_style}" '
+                f'<td class="dash-cell-selectable" style="{cell_font}{extra_style}{sep}" '
                 f'data-raw="{num}">{display}</td>'
             )
-        # 결제조건·연체는 잔액 행에만 1회 · 글자크기/굵기 동일 · 중간정렬
+        # 결제조건·연체도 거래처 계열 색 (잔액 행에만 문구)
         if client == "📌 [전체 합계]":
             term_bg = "#E2E8F0"
             if gubun == "잔액":
@@ -5217,7 +5498,7 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
             else:
                 term, status = "", ""
         else:
-            term_bg = color_map.get(client, DEBT_CLIENT_STRIPE_A)
+            term_bg = color_map.get(client, _debt_family_tint("blue", 0.32))
             if gubun == "잔액":
                 term = resolve_payment_term(client, terms_map)
                 status = status_map.get(client, "정상")
@@ -5226,7 +5507,7 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
         status_disp = status
         if compact and status.startswith("연체 ") and status.endswith("개월"):
             status_disp = status.replace("연체 ", "").replace("개월", "M")
-        meta_style = f"{cell_font}background-color:{term_bg};white-space:normal;"
+        meta_style = f"{cell_font}background-color:{term_bg};white-space:normal;{sep}"
         term_show = term if gubun == "잔액" else ""
         term_fallback = "—" if (client != "📌 [전체 합계]" and gubun == "잔액" and not term) else ""
         cells.append(
@@ -5241,8 +5522,19 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
             st_color = "#C2410C"
         else:
             st_color = "#31333F"
+        # 연체/악성이면 연체개월수 열에 분홍 배경 우선
+        status_bg = term_bg
+        if gubun == "잔액" and client != "📌 [전체 합계]":
+            if status == "악성" or (isinstance(status, str) and ("연체" in status or status.startswith("악성"))):
+                status_bg = DEBT_PINK_SOFT
+        status_style = (
+            f"{cell_font}background-color:{status_bg};white-space:normal;"
+            f"color:{st_color};{sep}"
+        )
+        if status_bg == DEBT_PINK_SOFT:
+            status_style += "font-weight:600;"
         cells.append(
-            f'<td class="dash-freeze-r0" style="{meta_style}color:{st_color};" '
+            f'<td class="dash-freeze-r0" style="{status_style}" '
             f'title="{html.escape(status)}">{html.escape(status_disp)}</td>'
         )
         body_rows.append(f"<tr>{''.join(cells)}</tr>")
@@ -5423,37 +5715,51 @@ def render_debt_month_rank_panel(
             left_w, right_w = [140], [110, 120]
         cell = _debt_num_cell_font(compact=compact)
         label = _debt_label_cell_style  # 거래처명 13px 유지
+        # 연체합계 기준 히트맵 (홀수=파란·짝수=초록 · 진하기 상한)
+        _od_vals = np.array(
+            [float(od_meta.get(c, {}).get("overdue_amt") or 0.0) for c in clients_sorted],
+            dtype=float,
+        )
+        _od_vmax = _debt_gubun_vmax(np.abs(_od_vals))
+        _od_fam = _debt_client_color_family_map(clients_sorted)
         body = []
         for i, client in enumerate(clients_sorted):
-            bg = DEBT_CLIENT_STRIPE_A if i % 2 == 0 else DEBT_CLIENT_STRIPE_B
+            fam = _od_fam.get(client, "blue")
+            bg = _debt_family_tint(fam, 0.32)
+            sep = DEBT_CLIENT_SEP if i > 0 else ""
             meta = od_meta.get(client, {})
             od_amts = meta.get("od_month_amts") or {}
             pink_set = set(meta.get("pink_months") or [])
             tds = [
-                f'<td class="dash-freeze-0" style="{label(client, "", {client: bg}, compact=compact)}'
+                f'<td class="dash-freeze-0" style="{label(client, "", {client: bg}, compact=compact)}{sep}'
                 f'overflow:hidden;text-overflow:ellipsis;" '
                 f'title="{html.escape(str(client))}">{html.escape(str(client))}</td>'
             ]
             for m in display_months:
                 if m in pink_set and float(od_amts.get(m, 0) or 0) > 0:
                     v = float(od_amts[m])
+                    # 연체월 금액: 분홍 배경 우선
                     tds.append(
-                        f'<td class="dash-cell-selectable" style="{cell}background:{DEBT_PINK_SOFT};" '
+                        f'<td class="dash-cell-selectable" style="{cell}'
+                        f'background-color:{DEBT_PINK_SOFT};color:#9F1239;{sep}" '
                         f'data-raw="{v}">{v:,.0f}</td>'
                     )
                 else:
                     tds.append(
-                        f'<td class="dash-cell-selectable" style="{cell}background:{bg};color:#94A3B8;" '
+                        f'<td class="dash-cell-selectable" style="{cell}background:#FFFFFF;color:#94A3B8;{sep}" '
                         f'data-raw="">—</td>'
                     )
             od_total = float(meta.get("overdue_amt") or 0.0)
             cur_bal = float(meta.get("cur_bal") or 0.0)
+            # 연체합계도 분홍 우선
             tds.append(
-                f'<td class="dash-cell-selectable" style="{cell}background:{bg};font-weight:600;" '
+                f'<td class="dash-cell-selectable" style="{cell}'
+                f'background-color:{DEBT_PINK_SOFT};color:#9F1239;font-weight:600;{sep}" '
                 f'data-raw="{od_total}">{od_total:,.0f}</td>'
             )
+            heat_bal = _debt_heat_cell_css(cur_bal, 0.0, _od_vmax or 1.0, family=fam)
             tds.append(
-                f'<td class="dash-cell-selectable" style="{cell}background:{bg};" '
+                f'<td class="dash-cell-selectable" style="{cell}{heat_bal}{sep}" '
                 f'data-raw="{cur_bal}">{cur_bal:,.0f}</td>'
             )
             term = resolve_payment_term(client, terms_map) or "—"
@@ -5468,11 +5774,13 @@ def render_debt_month_rank_panel(
             else:
                 sc = "#31333F"
             tds.append(
-                f'<td class="dash-freeze-r1" style="{cell}background-color:{bg};white-space:normal;" '
+                f'<td class="dash-freeze-r1" style="{cell}background-color:{bg};white-space:normal;{sep}" '
                 f'title="{html.escape(term)}">{html.escape(term)}</td>'
             )
+            # 연체개월수: 분홍 배경 최우선
             tds.append(
-                f'<td class="dash-freeze-r0" style="{cell}background-color:{bg};color:{sc};" '
+                f'<td class="dash-freeze-r0" style="{cell}'
+                f'background-color:{DEBT_PINK_SOFT};color:{sc};font-weight:600;{sep}" '
                 f'title="{html.escape(status)}">{html.escape(status_disp)}</td>'
             )
             body.append(f"<tr>{''.join(tds)}</tr>")
@@ -5483,7 +5791,7 @@ def render_debt_month_rank_panel(
             "".join(body),
             height=height,
             show_sum_popup=True,
-            toolbar_hint=f"필터: {sel_txt} · 방향키 이동 · 연체월만({od_m_txt}) · 연체합계↓ · 정상 제외",
+            toolbar_hint=f"필터: {sel_txt} · 분홍=연체개월/연체월/연체합계 · 연체합계↓ · 정상 제외",
             freeze_left_cols=1,
             freeze_left_widths=left_w,
             freeze_right_header=True,
@@ -5556,6 +5864,11 @@ def cached_staff_pivot(df_base, desired_order):
     
     df_p = staff_raw.reindex(columns=staff_cols, fill_value=0)
     
+    row_totals = df_p.sum(axis=1)
+    # 합계 0인 담당자(특히 미지정 잔상)는 표에서 제거
+    df_p = df_p.loc[row_totals > 1e-9].copy()
+    if df_p.empty:
+        return pd.DataFrame()
     row_totals = df_p.sum(axis=1)
     total_all = row_totals.sum()
     
@@ -6790,7 +7103,7 @@ def render_frozen_styler_html(
             margin: 0; height: 100%; overflow: hidden;
             font-family: "Source Sans 3", "Source Sans Pro", "Segoe UI", Roboto,
                 "Helvetica Neue", Arial, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
-            font-size: 15px; color: #31333F;
+            font-size: 13px; color: #31333F;
             -webkit-font-smoothing: antialiased;
         }}
         .wrap {{
@@ -6802,25 +7115,25 @@ def render_frozen_styler_html(
             border-collapse: separate; border-spacing: 0;
             width: max-content; min-width: 100%;
             font-family: inherit;
-            font-size: 15px;
+            font-size: 13px;
         }}
         th, td {{
-            padding: 6px 10px; white-space: nowrap;
+            padding: 6px 8px; white-space: nowrap;
             border-bottom: 1px solid #E2E8F0;
             font-family: inherit;
-            font-size: 15px;
+            font-size: 13px;
             font-weight: 400;
             font-variant-numeric: tabular-nums;
             text-align: center;
             vertical-align: middle;
-            line-height: 1.4;
+            line-height: 1.35;
         }}
         thead th {{
             position: sticky; top: 0; z-index: 6;
             background: #F0F2F6 !important;
             box-shadow: 0 1px 0 #CBD5E1;
             font-weight: 600; text-align: center;
-            font-size: 15px;
+            font-size: 13px;
         }}
         table thead tr th:nth-child(1),
         table thead tr th:nth-child(2),
@@ -7302,8 +7615,21 @@ df_tank = load_equipment_file(tank_bytes, tank_name) if tank_bytes else pd.DataF
 df_vaporizer = load_equipment_file(vaporizer_bytes, vaporizer_name) if vaporizer_bytes else pd.DataFrame()
 df_integrated = load_equipment_file(int_bytes, int_name) if int_bytes else pd.DataFrame()
 full_df = (
-    load_uploaded_files_from_meta(sales_file_meta) if sales_file_meta else pd.DataFrame()
+    load_uploaded_files_from_meta(
+        sales_file_meta,
+        _manual_staff_map_cache_token(),
+        4,
+    )
+    if sales_file_meta
+    else pd.DataFrame()
 )
+# 캐시에 옛 담당자가 남아 있어도 매핑·빈거래처 정규화는 매 실행마다 강제
+if not full_df.empty:
+    full_df = _apply_manual_staff_mapping(full_df)
+    _client_s = full_df["거래처"].astype(str).str.strip()
+    mask_closed = _client_s.str.match(r"^[zZ]", na=False)
+    if mask_closed.any():
+        full_df.loc[mask_closed, "담당자"] = "거래종료"
 if not full_df.empty:
     is_deposit_row = full_df["품목명"].astype(str).str.contains("입금", na=False)
     full_df = full_df[~is_deposit_row].copy()
@@ -7504,7 +7830,7 @@ except ImportError:
     st.sidebar.warning("PPT 내보내기: `pip install python-pptx kaleido` 설치 후 이용하세요.")
 except Exception as exc:
     st.sidebar.error(f"PPT 생성 오류: {exc}")
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
     [
         "📌 영업 종합 요약",
         "🏢 거래처 분석",
@@ -7515,6 +7841,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
         "🏭 설비 재고 현황",
         "🛢️ 통합 탱크 재고",
         "📈 수익성 분석",
+        "📝 일일업무일지",
     ]
 )
 inject_sticky_tabs_script()
@@ -7573,7 +7900,7 @@ with tab1:
             week_year_pivot,
             fmt_kind=_fmt_kind,
             cmap_name=_cmap,
-            height=500,
+            height=460,
         )
     with i_col_right:
         render_plotly_chart(
@@ -7711,12 +8038,14 @@ with tab1:
             rank_m = st.session_state["top30_month"]
             rank_month_label = f"{current_year_str}년 {rank_m}"
             # top30-section-flag: iPad CSS 스택용 마커 (맥 레이아웃/데이터 무손실)
+            # 상단 연도별 월매출 표·그래프와 동일: 1:1 열, 높이 460
+            _TOP30_H = 460
             with st.container():
                 st.markdown("<div class='top30-section-flag' style='display:none'></div>", unsafe_allow_html=True)
-                p_col1, p_col2 = st.columns([1.2, 0.8])
+                p_col1, p_col2 = st.columns([1, 1])
                 with p_col1:
                     st.markdown(
-                        f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>"
+                        f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
                         f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
                         f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
                         f"{'← 월 선택 또는 표 헤더 클릭' if is_touch_ui() else '← 월 버튼 또는 표 헤더 클릭'}"
@@ -7749,7 +8078,7 @@ with tab1:
                                     _m,
                                     key=f"top30_month_btn_{_m}",
                                     type="primary" if _m == rank_m else "secondary",
-                                    use_container_width=True,
+                                    width="stretch",
                                 ):
                                     _clicked_m = _m
                         if _clicked_m:
@@ -7785,7 +8114,7 @@ with tab1:
                     
                     render_frozen_styler_html(
                         styled_top30,
-                        height=450,
+                        height=_TOP30_H,
                         freeze_left_n=2,
                         freeze_widths=[44, 160],
                         clickable_cols=all_months,
@@ -7794,8 +8123,14 @@ with tab1:
                     )
                 with p_col2:
                     st.markdown(
-                        f"<div class='top30-donut-title' style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>"
+                        f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
                         f"🍩 [{rank_month_label}] 업종별 매출 비중</div>",
+                        unsafe_allow_html=True,
+                    )
+                    # 왼쪽 월 선택 줄과 높이를 맞춰 표·그래프 상단 정렬
+                    _ctrl_h = 42 if is_touch_ui() else 40
+                    st.markdown(
+                        f"<div style='height:{_ctrl_h}px;margin:0 0 8px;' aria-hidden='true'></div>",
                         unsafe_allow_html=True,
                     )
                     
@@ -7813,18 +8148,31 @@ with tab1:
                             hole=0.4,
                             color_discrete_sequence=px.colors.qualitative.Pastel
                         )
-                        fig_donut.update_traces(textposition='inside', textinfo='percent+label')
+                        fig_donut.update_traces(
+                            textposition='inside',
+                            textinfo='percent+label',
+                            textfont_size=12,
+                        )
                         fig_donut.update_layout(
                             showlegend=True,
-                            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5),
-                            margin=dict(l=10, r=10, t=10, b=10),
-                            height=450,
+                            legend=dict(
+                                orientation="h",
+                                yanchor="top",
+                                y=-0.02,
+                                xanchor="center",
+                                x=0.5,
+                                font=dict(size=11),
+                            ),
+                            margin=dict(l=8, r=8, t=8, b=72),
+                            height=_TOP30_H,
                             autosize=True,
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
                         )
                         render_plotly_chart(
                             fig_donut,
-                            use_container_width=True,
                             key=f"top30_donut_{rank_m}",
+                            height=_TOP30_H,
                         )
         else:
             st.info("당해년도 매출 데이터가 없습니다.")
@@ -8721,6 +9069,9 @@ with tab4:
     if not df_base.empty:
         with st.expander("⚠️ 담당자 미지정 신규/누락 거래처 (직접 지정) 열기/닫기", expanded=True):
             unassigned_df = df_base[df_base["담당자"] == "미지정"]
+            # 거래처명 없는 노이즈 행은 지정 불가 → 목록에서 제외(실거래처만 표시)
+            if not unassigned_df.empty and "거래처" in unassigned_df.columns:
+                unassigned_df = unassigned_df[unassigned_df["거래처"].map(_is_mappable_client_name)]
             
             custom_staffs = ["가스코아산", "거래종료"]
             existing_staffs = [s for s in full_df["담당자"].unique() if s not in ("미지정",)]
@@ -8762,16 +9113,25 @@ with tab4:
                     changed_rows = edited_unassigned[edited_unassigned["담당자지정"] != "미지정"]
                     if not changed_rows.empty:
                         manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
+                        existing_map = {}
                         if os.path.exists(manual_map_path):
                             try:
-                                existing_map = pd.read_csv(manual_map_path).set_index("거래처")["담당자"].to_dict()
-                            except:
+                                _em = pd.read_csv(manual_map_path)
+                                for _, mrow in _em.iterrows():
+                                    ck = _normalize_manual_client_key(mrow["거래처"])
+                                    if ck is None:
+                                        continue
+                                    staff = str(mrow["담당자"]).strip() if pd.notna(mrow["담당자"]) else ""
+                                    if staff:
+                                        existing_map[ck] = staff
+                            except Exception:
                                 existing_map = {}
-                        else:
-                            existing_map = {}
                             
                         for _, row in changed_rows.iterrows():
-                            existing_map[row["거래처"]] = row["담당자지정"]
+                            ck = _normalize_manual_client_key(row["거래처"])
+                            if ck is None:
+                                continue
+                            existing_map[ck] = row["담당자지정"]
                             
                         save_df = pd.DataFrame(list(existing_map.items()), columns=["거래처", "담당자"])
                         save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
@@ -8780,6 +9140,8 @@ with tab4:
                         load_uploaded_files_from_bytes.clear()
                         load_uploaded_files_from_meta.clear()
                         st.rerun()
+                    else:
+                        st.warning("저장할 담당자 지정이 없습니다.")
             else:
                 st.success("🎉 모든 거래처에 담당자가 완벽하게 지정되어 있습니다!")
                 
@@ -8818,16 +9180,25 @@ with tab4:
                     changed_assigned = edited_assigned[edited_assigned["새담당자변경"] != edited_assigned["현재담당자"]]
                     if not changed_assigned.empty:
                         manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
+                        existing_map = {}
                         if os.path.exists(manual_map_path):
                             try:
-                                existing_map = pd.read_csv(manual_map_path).set_index("거래처")["담당자"].to_dict()
-                            except:
+                                _em = pd.read_csv(manual_map_path)
+                                for _, mrow in _em.iterrows():
+                                    ck = _normalize_manual_client_key(mrow["거래처"])
+                                    if ck is None:
+                                        continue
+                                    staff = str(mrow["담당자"]).strip() if pd.notna(mrow["담당자"]) else ""
+                                    if staff:
+                                        existing_map[ck] = staff
+                            except Exception:
                                 existing_map = {}
-                        else:
-                            existing_map = {}
                             
                         for _, row in changed_assigned.iterrows():
-                            existing_map[row["거래처"]] = row["새담당자변경"]
+                            ck = _normalize_manual_client_key(row["거래처"])
+                            if ck is None:
+                                continue
+                            existing_map[ck] = row["새담당자변경"]
                             
                         save_df = pd.DataFrame(list(existing_map.items()), columns=["거래처", "담당자"])
                         save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
@@ -10058,3 +10429,13 @@ def _render_profitability_analysis_tab(latest_update_str):
 
 with tab9:
     _render_profitability_analysis_tab(latest_update_str)
+
+with tab10:
+    # 업무일지 탭 전용 — 다른 탭과 공유 상태/헬퍼를 쓰지 않음.
+    # worklog_tab.py 수정이 즉시 반영되도록 매 실행 시 reload.
+    import importlib
+
+    import worklog_tab as _worklog_tab
+
+    importlib.reload(_worklog_tab)
+    _worklog_tab.render_worklog_tab(latest_update_str)
