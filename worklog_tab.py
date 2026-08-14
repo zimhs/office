@@ -39,6 +39,8 @@ def _invalidate_saved_dates_cache() -> None:
 WORKLOG_DIR = os.path.join("uploaded_cache", "worklog")
 WORKLOG_TEMPLATE = os.path.join(WORKLOG_DIR, "template.xlsx")
 WORKLOG_TEMPLATE_SRC = os.path.expanduser("~/Desktop/업무일지.xlsx")
+# Google Drive「다른 컴퓨터/…/Desktop/업무/일지」또는 로컬 Desktop/업무/일지
+WORKLOG_ARCHIVE_REL = os.path.join("Desktop", "업무", "일지")
 
 WL_MIN_ROW, WL_MAX_ROW = 1, 47
 WL_MIN_COL, WL_MAX_COL = 3, 28  # C ~ AB
@@ -478,6 +480,76 @@ def _ensure_dirs() -> None:
         shutil.copy2(WORKLOG_TEMPLATE_SRC, WORKLOG_TEMPLATE)
 
 
+def _iter_google_drive_roots() -> list[str]:
+    cloud = os.path.join(os.path.expanduser("~"), "Library", "CloudStorage")
+    if not os.path.isdir(cloud):
+        return []
+    roots: list[str] = []
+    try:
+        for name in sorted(os.listdir(cloud)):
+            if name.startswith("GoogleDrive"):
+                roots.append(os.path.join(cloud, name))
+    except OSError:
+        return []
+    return roots
+
+
+def resolve_worklog_archive_root() -> str | None:
+    """업무/일지 보관 루트 (년도 폴더의 부모).
+
+    우선순위:
+    1) Google Drive「다른 컴퓨터/*/Desktop/업무/일지」(이미 있는 경로)
+    2) ~/Desktop/업무/일지
+    3) Google Drive에서 Desktop/업무 까지 보이면 일지 폴더 생성
+    """
+    candidates: list[str] = []
+    home = os.path.expanduser("~")
+    candidates.append(os.path.join(home, "Desktop", "업무", "일지"))
+
+    for groot in _iter_google_drive_roots():
+        for other_name in ("다른 컴퓨터", "Computers"):
+            other = os.path.join(groot, other_name)
+            if not os.path.isdir(other):
+                continue
+            try:
+                pcs = sorted(os.listdir(other))
+            except OSError:
+                continue
+            # 「내 컴퓨터 (1)」을 우선
+            pcs.sort(key=lambda n: (0 if "(1)" in n else 1, n))
+            for pc in pcs:
+                candidates.append(os.path.join(other, pc, WORKLOG_ARCHIVE_REL))
+
+    existing = [p for p in candidates if os.path.isdir(p)]
+    if existing:
+        return existing[0]
+
+    # 없으면 Desktop/업무 아래에 일지 생성 시도
+    for p in candidates:
+        parent = os.path.dirname(p)  # …/업무
+        grand = os.path.dirname(parent)  # …/Desktop
+        if os.path.isdir(grand):
+            try:
+                os.makedirs(p, exist_ok=True)
+                return p
+            except OSError:
+                continue
+    return None
+
+
+def worklog_archive_path(d: date) -> str | None:
+    """달력 외 보관 경로: …/일지/{년도}/{YYYY-MM-DD}.xlsx (년도 폴더 없으면 생성)."""
+    root = resolve_worklog_archive_root()
+    if not root:
+        return None
+    year_dir = os.path.join(root, str(d.year))
+    try:
+        os.makedirs(year_dir, exist_ok=True)
+    except OSError:
+        return None
+    return os.path.join(year_dir, f"{d.isoformat()}.xlsx")
+
+
 def worklog_path(d: date) -> str:
     return os.path.join(WORKLOG_DIR, f"{d.isoformat()}.xlsx")
 
@@ -587,11 +659,26 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, blank_base: bool = F
 
 
 def save_worklog_cells(d: date, cells: dict) -> str:
+    """달력용 캐시에 저장하고, Desktop/업무/일지/{년도}에도 복사(맥 로컬).
+
+    iPad/Cloud에는 Google Drive「다른 컴퓨터」경로가 없으므로 달력 저장만 하고
+    보조 복사는 조용히 건너뛴다.
+    """
     path = worklog_path(d)
     is_new = not os.path.exists(path)
     cells = _spill_all_content(cells)
     write_cells_to_path(path, d, cells, blank_base=is_new)
     _invalidate_saved_dates_cache()
+    st.session_state.pop("wl_last_archive_path", None)
+    st.session_state.pop("wl_last_archive_err", None)
+    try:
+        archive = worklog_archive_path(d)
+        if archive:
+            shutil.copy2(path, archive)
+            st.session_state["wl_last_archive_path"] = archive
+    except Exception as e:
+        # 달력 저장은 이미 성공 — 보조 경로 실패는 맥에서만 안내
+        st.session_state["wl_last_archive_err"] = str(e)
     return path
 
 
@@ -742,6 +829,35 @@ def _border_css(cell) -> str:
     return "".join(parts)
 
 
+def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
+    """표시 범위(C~AB, 1~47)의 비스케일 픽셀 폭·높이."""
+    if load_workbook is None or not path or not os.path.exists(path):
+        return 900, 1312
+    try:
+        wb = load_workbook(path, data_only=False)
+        ws = wb.active
+        total_w = 0
+        for c in range(WL_MIN_COL, WL_MAX_COL + 1):
+            total_w += max(12, int(float(_excel_col_width(ws, c)) * 8))
+        total_h = 0
+        for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
+            h = ws.row_dimensions[r].height
+            # Excel pt → CSS px (96dpi). 행 테두리 1px 여유.
+            total_h += (int(round(float(h) * 96 / 72)) if h else 28) + 1
+        wb.close()
+        return max(1, total_w), max(1, total_h)
+    except Exception:
+        return 900, 1312
+
+
+def _scaled_view_frame_size(path: str, scale: float) -> tuple[int, int]:
+    """scale 적용 후 iframe에 넣을 폭·높이 (하단 잘림 방지 여유 포함)."""
+    w, h = _worklog_sheet_pixel_size(path)
+    s = float(scale) if scale and scale > 0 else 1.0
+    # body padding·테두리·서브픽셀·Streamlit iframe 여유
+    return int(w * s) + 28, int(h * s) + 64
+
+
 def workbook_to_html(path: str) -> str:
     """원본 엑셀 양식 범위를 HTML 테이블로 변환 (병합·테두리·폰트 유지)."""
     if load_workbook is None:
@@ -786,7 +902,8 @@ def workbook_to_html(path: str) -> str:
     rows_html = []
     for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
         h = ws.row_dimensions[r].height
-        height_px = int(float(h) * 1.333) if h else 28
+    # 행 높이도 pt→px 동일 공식 (표시·측정 일치)
+        height_px = int(round(float(h) * 96 / 72)) if h else 28
         tds = []
         for c in range(WL_MIN_COL, WL_MAX_COL + 1):
             if (r, c) in skip:
@@ -820,21 +937,26 @@ def workbook_to_html(path: str) -> str:
             white = "nowrap" if is_content else "pre-wrap"
             overflow = "hidden" if is_content else "visible"
             style = (
+                f"box-sizing:border-box;"
                 f"font-family:'{html.escape(fname)}','Apple SD Gothic Neo','Batang',serif;"
                 f"font-size:{fsize}px;font-weight:{bold};"
                 f"text-align:{ha};vertical-align:{va};"
                 f"background:{fill};{border}"
-                f"padding:2px 4px;white-space:{white};overflow:{overflow};"
+                f"padding:0 3px;white-space:{white};overflow:{overflow};"
                 f"word-break:keep-all;max-width:100%;"
                 f"height:{height_px}px;min-height:{height_px}px;max-height:{height_px}px;"
+                f"line-height:1.15;"
             )
             tds.append(f'<td{span} style="{style}">{esc}</td>')
-        rows_html.append(f'<tr style="height:{height_px}px">{"".join(tds)}</tr>')
+        rows_html.append(
+            f'<tr style="height:{height_px}px;box-sizing:border-box;">'
+            f'{"".join(tds)}</tr>'
+        )
 
     colgroup = "".join(f'<col style="width:{w}px">' for w in col_widths)
     wb.close()
     return f"""
-    <table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;">
+    <table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;box-sizing:border-box;">
       <colgroup>{colgroup}</colgroup>
       <tbody>{"".join(rows_html)}</tbody>
     </table>
@@ -860,9 +982,31 @@ def render_worklog_view_html(
         </div>
         """
         scale = 1.0
-    scale_css = f"transform:scale({scale}); transform-origin:top left;" if scale < 1 else ""
-    if wrap_height is None:
-        wrap_height = "auto" if print_mode else "860px"
+    frame_w, frame_h = _scaled_view_frame_size(path, scale)
+    # zoom은 레이아웃까지 축소. wrap은 auto로 두어 하단이 clip 되지 않게 함.
+    if print_mode or scale >= 1:
+        scale_css = ""
+        scale_css_fallback = ""
+        wrap_h = "auto"
+        wrap_w = "auto"
+        wrap_overflow = "visible"
+        body_overflow = "visible"
+        body_h = "auto"
+    else:
+        s = float(scale)
+        raw_w, raw_h = _worklog_sheet_pixel_size(path)
+        scale_css = f"zoom:{s};width:fit-content;"
+        scale_css_fallback = (
+            f"transform:scale({s});transform-origin:top left;"
+            f"margin-bottom:{(s - 1) * raw_h:.1f}px;width:fit-content;"
+        )
+        wrap_h = "auto"
+        wrap_w = f"{frame_w}px"
+        wrap_overflow = "visible"
+        body_overflow = "hidden"
+        body_h = f"{frame_h}px"
+    if wrap_height is not None:
+        wrap_h = wrap_height
     auto_script = ""
     if auto_print:
         auto_script = """
@@ -879,13 +1023,24 @@ def render_worklog_view_html(
           })();
         </script>
         """
+    fallback_block = ""
+    if not print_mode and scale < 1:
+        fallback_block = f"""
+  @supports not (zoom: 1) {{
+    .sheet-scale {{ {scale_css_fallback} }}
+  }}
+"""
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>일일업무일지</title>
 <style>
   @page {{ size: A4 portrait; margin: 10mm; }}
-  html, body {{ margin:0; padding:0; background:#fff; }}
-  body {{ padding:4px; }}
+  html, body {{
+    margin:0; padding:0; background:#fff;
+    overflow:{body_overflow} !important;
+    height:{body_h};
+  }}
+  body {{ padding:6px; box-sizing:border-box; }}
   .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }}
   .toolbar button {{
     padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px;
@@ -893,14 +1048,21 @@ def render_worklog_view_html(
   }}
   .toolbar .hint {{ font:12px/1.4 sans-serif; color:#64748B; }}
   .wrap {{
-    overflow:auto; height:{wrap_height};
+    overflow:{wrap_overflow} !important; height:{wrap_h};
+    width:{wrap_w}; max-width:100%;
     border:1px solid #94A3B8; background:#fff;
+    box-sizing:border-box;
   }}
-  .sheet-scale {{ {scale_css} width:fit-content; }}
+  .sheet-scale {{ {scale_css} }}
+  .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }}
+  {fallback_block}
   @media print {{
+    html, body {{ overflow:visible !important; height:auto; }}
     .toolbar {{ display:none !important; }}
-    .wrap {{ overflow:visible; height:auto; border:none; }}
-    .sheet-scale {{ transform:none !important; }}
+    .wrap {{ overflow:visible !important; height:auto; width:auto; border:none; }}
+    .sheet-scale {{
+      zoom:1 !important; transform:none !important; margin-bottom:0 !important;
+    }}
     body {{ padding:0; }}
   }}
 </style></head>
@@ -1052,8 +1214,10 @@ def _content_row_usage(entries: list[dict] | None) -> dict:
     }
 
 
-def _render_row_remain_gauge(usage: dict, *, height_px: int = 520) -> None:
-    """보기·입력 사이 세로 게이지: 전체 내용칸 대비 남은 칸수."""
+def _render_row_remain_gauge(usage: dict, *, height_px: int = 980) -> None:
+    """보기·입력 사이 세로 게이지: 전체 내용칸 대비 남은 칸수.
+    저장 버튼 근처까지 세로로 길게 (폭은 좁게 유지).
+    """
     total = max(1, int(usage.get("total") or 1))
     used = max(0, int(usage.get("used") or 0))
     rem = max(0, int(usage.get("remaining") or 0))
@@ -1086,13 +1250,13 @@ def _render_row_remain_gauge(usage: dict, *, height_px: int = 520) -> None:
 
     # 위에서부터 사용칸(회색) → 아래 남은칸(색) 순서의 세그먼트
     segs: list[str] = []
-    gap = max(1, int(3 if total <= 20 else 2))
+    gap = max(1, int(2 if total <= 20 else 1))
     for i in range(total):
         # i=0 이 맨 위
         is_used = i < used_show
         bg = used_color if is_used else rem_color
         segs.append(
-            f'<div style="flex:1 1 0;min-height:4px;border-radius:3px;background:{bg};'
+            f'<div style="flex:1 1 0;min-height:3px;border-radius:3px;background:{bg};'
             f'margin:0 0 {gap}px 0;opacity:{0.55 if is_used else 1};"></div>'
         )
     # 마지막 margin 제거용
@@ -1101,38 +1265,38 @@ def _render_row_remain_gauge(usage: dict, *, height_px: int = 520) -> None:
 
     next_row = usage.get("next_row")
     next_txt = f"다음 G{next_row}" if next_row else "칸 끝"
-    bar_h = max(300, height_px - 150)
+    # 상단 숫자·하단 라벨 영역 제외한 막대 본체 높이
+    bar_h = max(520, height_px - 120)
 
     st.markdown(
         f"""
 <div style="
   display:flex;flex-direction:column;align-items:center;justify-content:flex-start;
-  gap:8px;padding:6px 2px 4px;min-height:{height_px}px;
+  gap:6px;padding:2px 2px 0;min-height:{height_px}px;height:{height_px}px;
   font-family:'Pretendard','Apple SD Gothic Neo',sans-serif;
 ">
-  <div style="text-align:center;line-height:1.15;">
+  <div style="text-align:center;line-height:1.1;flex:0 0 auto;">
     <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:#64748B;">{label}</div>
-    <div style="font-size:24px;font-weight:800;color:{accent};margin-top:1px;">{big}</div>
+    <div style="font-size:22px;font-weight:800;color:{accent};margin-top:1px;">{big}</div>
     <div style="font-size:10px;color:#94A3B8;">칸</div>
   </div>
 
   <div style="
-    display:flex;flex-direction:column;justify-content:flex-start;
-    width:26px;height:{bar_h}px;padding:4px 3px;
+    display:flex;flex-direction:column;justify-content:flex-start;flex:1 1 auto;
+    width:26px;min-height:{bar_h}px;height:{bar_h}px;padding:4px 3px;
     border-radius:10px;background:#F8FAFC;
     box-shadow:inset 0 0 0 1px #E2E8F0;
   " title="전체 {total}칸 · 사용 {used}칸 · 남음 {rem}칸">
     {"".join(segs)}
   </div>
 
-  <div style="text-align:center;line-height:1.3;">
+  <div style="text-align:center;line-height:1.25;flex:0 0 auto;">
     <div style="font-size:11px;font-weight:800;color:#0F172A;">
       <span style="color:{accent};">{rem_show}</span>
       <span style="color:#94A3B8;font-weight:600;"> / {total}</span>
     </div>
     <div style="font-size:10px;color:#64748B;">남은칸 / 전체칸</div>
-    <div style="font-size:10px;color:#94A3B8;margin-top:4px;">사용 {used_show}칸</div>
-    <div style="font-size:10px;color:#64748B;margin-top:2px;">{next_txt}</div>
+    <div style="font-size:10px;color:#94A3B8;margin-top:2px;">사용 {used_show}칸 · {next_txt}</div>
   </div>
 </div>
         """,
@@ -1311,7 +1475,7 @@ def render_readable_preview_html(d: date, cells: dict) -> str:
   <div class="card">
     <div class="head">
       <div class="title">일일업무일지</div>
-      <div class="sub">{date_label} · 화면용 요약 (저장은 원본 엑셀 양식 유지)</div>
+      <div class="sub">{date_label}</div>
     </div>
     <div class="sec">
       <h3>거래처 · 내용</h3>
@@ -1589,6 +1753,28 @@ def _commit_enter_on_cell(
 
 def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     """거래처 칸: text_input + Enter/＋ 다음 칸 · 폭 초과 시 자동 분할."""
+    # 거래처 칸만 옅은 민트 (내용 칸과 구분). 첫 칸 마운트 시에만 스타일 1회 출력.
+    if entry_i == 0:
+        st.markdown(
+            """
+<style>
+/* 일일업무일지 — 거래처 text_input 배경 */
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"] > div,
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="input"] > div,
+div[class*="st-key-wl_ent_cl_"] input {
+  background-color: #E7F5F2 !important;
+  border-color: #B7DDD4 !important;
+}
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"] > div:focus-within,
+div[class*="st-key-wl_ent_cl_"] input:focus {
+  background-color: #DFF3EE !important;
+  border-color: #7CBCAD !important;
+}
+</style>
+            """,
+            unsafe_allow_html=True,
+        )
+
     if int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0) <= 0:
         raw = str(st.session_state.get(f"wl_ent_c_{iso}_{entry_i}", "") or "")
         _seed_entry_clients(iso, entry_i, raw)
@@ -1610,7 +1796,7 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
                 f"거래처 {entry_i + 1}-{j + 1}",
                 key=_entry_client_key(iso, entry_i, j),
                 label_visibility="collapsed",
-                placeholder=f"거래처 {j + 1}칸 (Enter/＋ = 다음 · 칸 초과 시 자동)",
+                placeholder="",
             )
         with row_r:
             is_last_empty = (
@@ -1671,7 +1857,7 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
                 f"내용 {entry_i + 1}-{j + 1}",
                 key=_entry_line_key(iso, entry_i, j),
                 label_visibility="collapsed",
-                placeholder=f"{j + 1}칸 (빈 칸도 저장 · Enter 또는 ＋)",
+                placeholder="",
             )
         with row_r:
             is_last_empty = (
@@ -2199,14 +2385,13 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         with col_preview:
             st.markdown("##### 업무일지 보기")
-            st.caption("요약 미리보기 · 저장하면 원본 엑셀 양식에 반영")
             try:
                 view_html = render_readable_preview_html(selected, draft)
                 components.html(view_html, height=900, scrolling=True)
             except Exception as e:
                 st.error(f"미리보기 오류: {e}")
 
-            p1, p2, p3 = st.columns(3)
+            p1, p2 = st.columns(2)
             with p1:
                 do_print = st.button("미리보기", width="stretch", key="wl_print_btn")
             with p2:
@@ -2232,8 +2417,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     key="wl_dl_btn",
                     disabled=not xbytes,
                 )
-            with p3:
-                st.caption("Excel 원본 양식")
 
             if do_print:
                 cells_now = _cells_from_widgets(selected)
@@ -2261,11 +2444,12 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         st.error(f"대체 미리보기도 실패: {e2}")
 
         with col_gauge:
+            # 오른쪽 「저장」버튼 근처까지 세로로 맞춤 (폭 26px 유지)
             st.markdown(
-                "<div style='height:1.6rem'></div>",
+                "<div style='height:0.35rem'></div>",
                 unsafe_allow_html=True,
             )
-            _render_row_remain_gauge(_gauge_usage, height_px=560)
+            _render_row_remain_gauge(_gauge_usage, height_px=1020)
 
         with col_input:
             st.markdown("##### 업무 입력")
@@ -2589,12 +2773,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             st.session_state[f"wl_do_del_{iso2}"] = i
                             _wl_rerun()
                         _cu = _client_line_units()
-                        st.markdown(
-                            "<div style='font-size:11px;color:#64748B;margin:0 0 2px;'>"
-                            f"거래처 (한 칸 ≈ 반각 {_cu}자 · <b>Enter/＋ = 다음 칸</b> · "
-                            "칸 초과 시 자동)</div>",
-                            unsafe_allow_html=True,
-                        )
                         if int(
                             st.session_state.get(_entry_client_count_key(iso2, i), 0)
                             or 0
@@ -2616,11 +2794,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                     ),
                                 )
                         _mount_entry_client_editor(iso2, i, _cu)
-                        st.markdown(
-                            "<div style='font-size:11px;color:#64748B;margin:4px 0 2px;'>내용 "
-                            f"(한 칸 ≈ 반각 {max_u}자 · <b>Enter/＋ = 다음 칸</b> · 가득 차면 자동 분할)</div>",
-                            unsafe_allow_html=True,
-                        )
                         if int(st.session_state.get(_entry_line_count_key(iso2, i), 0) or 0) <= 0:
                             lines0 = None
                             # stored entries may have lines
@@ -2761,11 +2934,16 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             st.session_state[_entries_key(d)] = packed_entries
                             st.session_state[_next_key(d)] = "\n".join(nd)
                             st.session_state[_notes_key(d)] = "\n".join(nt)
+                            arch = st.session_state.get("wl_last_archive_path") or ""
+                            msg = f"저장 완료: {os.path.basename(path)}"
+                            if arch:
+                                msg += f" · 일지/{d.year}/{os.path.basename(arch)}"
+                            # iPad/Cloud는 일지 폴더가 없어도 달력 저장만으로 성공 처리
                             st.session_state[f"wl_pending_sync_{iso2}"] = {
                                 "entries": packed_entries,
                                 "next": "\n".join(nd),
                                 "notes": "\n".join(nt),
-                                "msg": f"저장 완료: {os.path.basename(path)}",
+                                "msg": msg,
                             }
                             _wl_rerun()
                     except Exception as e:
@@ -2773,34 +2951,42 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
             _wl_entry_editor()
 
-        # 하단 고정: 원본 엑셀 양식 (화면 약 1/4) — 저장 반영 확인용
+        # 하단: 원본 엑셀 양식 — 배율 유지, iframe 스크롤 없이 전체 표시
         st.markdown("---")
         st.markdown("##### 원본 엑셀 양식")
-        st.caption(
-            "저장하면 아래 양식에 바로 반영됩니다 · 스크롤해서 전체 확인 · "
-            "크게 보려면 위 「미리보기」"
-        )
         try:
-            # draft는 위젯 기준. 저장 직후엔 pending sync로 위젯이 맞춰져 다시 그림.
             form_cells = _cells_from_widgets(selected)
             form_sig = json.dumps(form_cells, ensure_ascii=False, sort_keys=True)
-            sig_key = f"wl_form_sig_v2_{selected.isoformat()}"
-            html_key = f"wl_form_html_v2_{selected.isoformat()}"
+            form_scale = 0.42
+            sig_key = f"wl_form_sig_v5_{selected.isoformat()}"
+            html_key = f"wl_form_html_v5_{selected.isoformat()}"
+            h_key = f"wl_form_h_v5_{selected.isoformat()}"
             if st.session_state.get(sig_key) != form_sig:
                 form_path = _build_preview_file(selected, form_cells)
+                _, frame_h = _scaled_view_frame_size(form_path, form_scale)
                 st.session_state[html_key] = render_worklog_view_html(
                     form_path,
                     print_mode=False,
-                    scale=0.42,
-                    wrap_height="100%",
+                    scale=form_scale,
                 )
+                st.session_state[h_key] = int(frame_h)
                 st.session_state[sig_key] = form_sig
+            # 이전 세션 캐시 제거
+            for k in list(st.session_state.keys()):
+                if isinstance(k, str) and (
+                    k.startswith("wl_form_html_v2_")
+                    or k.startswith("wl_form_html_v3_")
+                    or k.startswith("wl_form_html_v4_")
+                    or k.startswith("wl_form_sig_v2_")
+                    or k.startswith("wl_form_sig_v3_")
+                    or k.startswith("wl_form_sig_v4_")
+                ):
+                    st.session_state.pop(k, None)
             components.html(
                 st.session_state.get(html_key) or "",
-                height=280,
-                scrolling=True,
+                height=max(240, int(st.session_state.get(h_key) or 640)),
+                scrolling=False,
             )
         except Exception as e:
             st.caption(f"원본 양식 표시 실패: {e}")
-
     _worklog_main()
