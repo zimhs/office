@@ -11,8 +11,6 @@ import shutil
 import subprocess
 import unicodedata
 from datetime import date
-from functools import lru_cache
-
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit.errors import StreamlitAPIException
@@ -57,6 +55,10 @@ WL_CONTENT_COL_END = 24  # X
 # 거래처 병합 열 C~F
 WL_CLIENT_COL_START = 3  # C
 WL_CLIENT_COL_END = 6  # F
+
+# 원본 양식(바탕체 14pt) G:X / C:F 실측. 기기·템플릿 측정 편차 없이 동일 적용.
+WL_CONTENT_LINE_UNITS = 69
+WL_CLIENT_LINE_UNITS = 15
 
 # 내용 칸 편집기 (CCv2) — Enter로 다음 칸 생성/이동을 JS에서 직접 처리
 _WL_LINES_HTML = """
@@ -127,7 +129,15 @@ export default function (component) {
       (o >= 0x1100 && o <= 0x11ff) ||
       (o >= 0x3130 && o <= 0x318f) ||
       (o >= 0x2e80 && o <= 0x9fff) ||
-      (o >= 0xff00 && o <= 0xffef)
+      (o >= 0xf900 && o <= 0xfaff) ||
+      (o >= 0xff00 && o <= 0xffef) ||
+      (o >= 0x2190 && o <= 0x21ff) ||
+      (o >= 0x2460 && o <= 0x24ff) ||
+      (o >= 0x2500 && o <= 0x25ff) ||
+      (o >= 0x2600 && o <= 0x26ff) ||
+      o === 0x00b7 ||
+      o === 0x203b ||
+      o === 0x2713
     )
       return 2;
     return 1;
@@ -327,7 +337,10 @@ def _scrub_dummy_label(val: str) -> str:
 
 
 def _char_units(ch: str) -> int:
-    """엑셀 동아시아 폭: 전각·한글·호환자모=2, 그 외=1."""
+    """엑셀 동아시아 폭: 전각·한글·호환자모·기호(※○★ 등)=2, 그 외=1.
+
+    JS charUnits 와 범위를 맞춰 입력 중 줄바꿈과 저장 적용값이 같게 한다.
+    """
     ea = unicodedata.east_asian_width(ch)
     if ea in ("F", "W", "A"):
         return 2
@@ -379,49 +392,14 @@ def _excel_width_to_px(width: float) -> int:
     return max(10, int(w * 7 + 5))
 
 
-@lru_cache(maxsize=1)
 def _content_line_units() -> int:
-    """원본 G:X 병합 폭 기준 — 엑셀 바탕체 14pt 한 줄에 가깝게 채운 뒤 다음 행.
-
-    반각=1, 한글 음절/호환자모=2. 원본 스크린샷 기준 긴 줄이 칸의 ~92%를 채움.
-    """
-    fallback = 70
-    if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
-        return fallback
-    try:
-        # read_only 시트는 column_dimensions 가 없어 폭 계산 불가
-        wb = load_workbook(WORKLOG_TEMPLATE, data_only=False)
-        ws = wb.active
-        total = sum(
-            _excel_col_width(ws, c)
-            for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
-        )
-        wb.close()
-        # 열폭(기본글꼴 문자수) → 바탕 14pt 실측 채움에 맞춤
-        units = int(total * (11 / 14) * 1.05)
-        return max(60, min(units, 72))
-    except Exception:
-        return fallback
+    """원본 G:X 병합 폭 — 아이패드/맥/대시보드 공통 적용값."""
+    return WL_CONTENT_LINE_UNITS
 
 
-@lru_cache(maxsize=1)
 def _client_line_units() -> int:
-    """원본 C:F 거래처 병합 폭 기준 — 칸을 넘기면 다음 행으로(반각=1)."""
-    fallback = 18
-    if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
-        return fallback
-    try:
-        wb = load_workbook(WORKLOG_TEMPLATE, data_only=False)
-        ws = wb.active
-        total = sum(
-            _excel_col_width(ws, c)
-            for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
-        )
-        wb.close()
-        units = int(total * (11 / 14) * 1.05)
-        return max(12, min(units, 28))
-    except Exception:
-        return fallback
+    """원본 C:F 거래처 병합 폭 — 아이패드/맥/대시보드 공통 적용값."""
+    return WL_CLIENT_LINE_UNITS
 
 
 def _fit_by_units(s: str, max_units: int | None = None) -> tuple[str, str]:
@@ -510,13 +488,13 @@ def _iter_google_drive_roots() -> list[str]:
     return roots
 
 
-def resolve_worklog_archive_root() -> str | None:
+def resolve_worklog_archive_root(*, create: bool = True) -> str | None:
     """업무/일지 보관 루트 (년도 폴더의 부모).
 
     우선순위:
     1) Google Drive「다른 컴퓨터/*/Desktop/업무/일지」(이미 있는 경로)
     2) ~/Desktop/업무/일지
-    3) Google Drive에서 Desktop/업무 까지 보이면 일지 폴더 생성
+    3) create=True 이고 Desktop/업무 까지 보이면 일지 폴더 생성
     """
     candidates: list[str] = []
     home = os.path.expanduser("~")
@@ -540,6 +518,9 @@ def resolve_worklog_archive_root() -> str | None:
     if existing:
         return existing[0]
 
+    if not create:
+        return None
+
     # 없으면 Desktop/업무 아래에 일지 생성 시도
     for p in candidates:
         parent = os.path.dirname(p)  # …/업무
@@ -553,17 +534,59 @@ def resolve_worklog_archive_root() -> str | None:
     return None
 
 
-def worklog_archive_path(d: date) -> str | None:
-    """달력 외 보관 경로: …/일지/{년도}/{YYYY-MM-DD}.xlsx (년도 폴더 없으면 생성)."""
-    root = resolve_worklog_archive_root()
+def worklog_archive_path(d: date, *, create: bool = True) -> str | None:
+    """달력 외 보관 경로: …/일지/{년도}/{YYYY-MM-DD}.xlsx."""
+    root = resolve_worklog_archive_root(create=create)
     if not root:
         return None
     year_dir = os.path.join(root, str(d.year))
-    try:
-        os.makedirs(year_dir, exist_ok=True)
-    except OSError:
+    if create:
+        try:
+            os.makedirs(year_dir, exist_ok=True)
+        except OSError:
+            return None
+    elif not os.path.isdir(year_dir):
         return None
     return os.path.join(year_dir, f"{d.isoformat()}.xlsx")
+
+
+def _list_archive_dates() -> set[str]:
+    """맥 일지 폴더에만 있는 날짜도 달력에 표시."""
+    root = resolve_worklog_archive_root(create=False)
+    if not root or not os.path.isdir(root):
+        return set()
+    out: set[str] = set()
+    try:
+        for year_name in os.listdir(root):
+            year_dir = os.path.join(root, year_name)
+            if not os.path.isdir(year_dir) or not year_name.isdigit():
+                continue
+            for name in os.listdir(year_dir):
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}\.xlsx", name):
+                    out.add(name[:10])
+    except OSError:
+        return set()
+    return out
+
+
+def _sync_cache_with_archive(d: date) -> None:
+    """달력 캐시가 없거나 일지 폴더가 더 최신이면 캐시로 가져온다."""
+    try:
+        archive = worklog_archive_path(d, create=False)
+        if not archive or not os.path.exists(archive):
+            return
+        cache = worklog_path(d)
+        if os.path.exists(cache):
+            try:
+                if os.path.getmtime(archive) <= os.path.getmtime(cache) + 1:
+                    return
+            except OSError:
+                return
+        _ensure_dirs()
+        shutil.copy2(archive, cache)
+        _invalidate_saved_dates_cache()
+    except OSError:
+        return
 
 
 def worklog_path(d: date) -> str:
@@ -586,6 +609,7 @@ def list_saved_worklog_dates() -> set[str]:
             and "_인쇄" not in name
         ):
             out.add(name.replace(".xlsx", ""))
+    out |= _list_archive_dates()
     st.session_state["wl_saved_dates_cache"] = out
     return out
 
@@ -685,6 +709,10 @@ def save_worklog_cells(d: date, cells: dict) -> str:
     cells = _spill_all_content(cells)
     write_cells_to_path(path, d, cells, blank_base=is_new)
     _invalidate_saved_dates_cache()
+    try:
+        st.session_state[f"wl_file_mtime_{d.isoformat()}"] = float(os.path.getmtime(path))
+    except OSError:
+        pass
     st.session_state.pop("wl_last_archive_path", None)
     st.session_state.pop("wl_last_archive_err", None)
     try:
@@ -709,6 +737,9 @@ def delete_worklog_day(d: date) -> list[str]:
         os.path.join(WORKLOG_DIR, f"_preview_{iso}.xlsx"),
         os.path.join(WORKLOG_DIR, f"일일업무일지_{iso}_인쇄.xlsx"),
     ]
+    arch = worklog_archive_path(d, create=False)
+    if arch:
+        targets.append(arch)
     for name in os.listdir(WORKLOG_DIR):
         if iso in name and name.endswith(".xlsx") and name != "template.xlsx":
             targets.append(os.path.join(WORKLOG_DIR, name))
@@ -733,6 +764,7 @@ def delete_worklog_day(d: date) -> list[str]:
     st.session_state[_next_key(d)] = ""
     st.session_state[_notes_key(d)] = ""
     st.session_state[f"wl_entry_count_{iso}"] = 1
+    st.session_state[f"wl_file_mtime_{iso}"] = 0.0
     st.session_state[f"wl_pending_sync_{iso}"] = {
         "entries": empty,
         "next": "",
@@ -751,6 +783,9 @@ def reassign_worklog_date(old: date, new: date) -> str:
         return "same"
     if os.path.exists(worklog_path(new)):
         raise FileExistsError(f"{new.isoformat()} 에 이미 저장된 일지가 있습니다.")
+    _sync_cache_with_archive(new)
+    if os.path.exists(worklog_path(new)):
+        raise FileExistsError(f"{new.isoformat()} 에 이미 저장된 일지가 있습니다.")
 
     # 현재 입력 우선, 없으면 파일
     try:
@@ -760,6 +795,9 @@ def reassign_worklog_date(old: date, new: date) -> str:
     cells["date"] = format_worklog_date(new)
 
     old_saved = os.path.exists(worklog_path(old))
+    if not old_saved:
+        _sync_cache_with_archive(old)
+        old_saved = os.path.exists(worklog_path(old))
     if old_saved or any(
         str(cells.get(f"G{r}", "") or "").strip()
         or str(cells.get(f"C{r}", "") or "").strip()
@@ -768,7 +806,13 @@ def reassign_worklog_date(old: date, new: date) -> str:
         save_worklog_cells(new, cells)
 
     if old_saved:
-        for path in (worklog_path(old), _preview_path(old), _print_xlsx_path(old)):
+        old_arch = worklog_archive_path(old, create=False)
+        for path in (
+            worklog_path(old),
+            _preview_path(old),
+            _print_xlsx_path(old),
+            *([old_arch] if old_arch else []),
+        ):
             if os.path.exists(path):
                 try:
                     os.remove(path)
@@ -969,11 +1013,11 @@ def workbook_to_html(path: str) -> str:
             c0 = c - WL_MIN_COL
             span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
             width_css = f"width:{span_w}px;min-width:{span_w}px;max-width:{span_w}px;" if span_w else ""
-            # macOS에 Batang 없을 때 명조 계열로 폭이 비슷하게
+            # 아이패드·맥 브라우저가 같은 명조 웹폰트를 쓰도록 (Batang 유무 차이 제거)
             style = (
                 f"box-sizing:border-box;{width_css}"
-                f"font-family:'{html.escape(fname_css)}','Batang','BatangChe',"
-                f"'Apple Myungjo','AppleMyungjo','Nanum Myeongjo','Malgun Gothic',serif;"
+                f"font-family:'Nanum Myeongjo','{html.escape(fname_css)}','Batang','BatangChe',"
+                f"'Apple Myungjo','AppleMyungjo','Malgun Gothic',serif;"
                 f"font-size:{fsize_px:.4f}px;font-weight:{bold};"
                 f"text-align:{ha};vertical-align:{va};"
                 f"background:{fill};{border}"
@@ -1068,6 +1112,7 @@ def render_worklog_view_html(
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>일일업무일지</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap">
 <style>
   @page {{ size: A4 portrait; margin: 10mm; }}
   html, body {{
@@ -1560,12 +1605,47 @@ def _boot_key(d: date) -> str:
     return f"worklog_booted_{d.isoformat()}"
 
 
+def _mtime_key(d: date) -> str:
+    return f"wl_file_mtime_{d.isoformat()}"
+
+
+def _disk_mtime(d: date) -> float:
+    """일지 폴더가 더 최신이면 캐시로 가져온 뒤, 달력 파일 mtime."""
+    _sync_cache_with_archive(d)
+    path = worklog_path(d)
+    try:
+        return float(os.path.getmtime(path)) if os.path.exists(path) else 0.0
+    except OSError:
+        return 0.0
+
+
 def _init_widget_state(d: date) -> dict:
-    """엑셀 → 항목(거래처/내용) 세션 상태로 로드. 이미 boot면 디스크 재읽기 생략."""
+    """엑셀 → 항목 세션 로드. 디스크가 더 최신이면(다른 기기 저장) 다시 읽는다."""
     bk = _boot_key(d)
     ek = _entries_key(d)
-    if st.session_state.get(bk) and ek in st.session_state:
+    mk = _mtime_key(d)
+    iso = d.isoformat()
+    mtime = _disk_mtime(d)
+
+    # 방금 이 세션에서 저장/삭제한 경우 위젯 시드는 pending 이 담당
+    if isinstance(st.session_state.get(f"wl_pending_sync_{iso}"), dict):
+        st.session_state[mk] = mtime
+        st.session_state[bk] = True
         return {}
+
+    known = st.session_state.get(mk)
+    if (
+        st.session_state.get(bk)
+        and ek in st.session_state
+        and known is not None
+        and abs(float(known) - mtime) < 0.5
+    ):
+        return {}
+
+    # 다른 기기/세션이 파일을 바꾼 경우 위젯을 비우고 디스크 값으로 교체
+    if st.session_state.get(bk) and known is not None:
+        _clear_date_widget_state(d)
+
     cells = read_worklog_cells(d)
     # 예전 칸별입력 boot 만 있는 경우도 항목 모드로 마이그레이션
     entries = _grouped_entries_from_cells(cells)
@@ -1576,6 +1656,7 @@ def _init_widget_state(d: date) -> dict:
     st.session_state[_next_key(d)] = "\n".join(next_day)
     st.session_state[_notes_key(d)] = "\n".join(notes)
     st.session_state[bk] = True
+    st.session_state[mk] = mtime
     return cells
 
 
@@ -1950,7 +2031,7 @@ export default function (component) {
   const iso = (data && data.iso) || "";
   const focusKey = (data && data.focus_key) || "";
   const clientMax = Number((data && data.client_max_u) || 15);
-  const contentMax = Number((data && data.content_max_u) || 72);
+  const contentMax = Number((data && data.content_max_u) || 69);
   let lastSent = "";
 
   function charUnits(ch) {
@@ -1960,7 +2041,15 @@ export default function (component) {
       (o >= 0x1100 && o <= 0x11ff) ||
       (o >= 0x3130 && o <= 0x318f) ||
       (o >= 0x2e80 && o <= 0x9fff) ||
-      (o >= 0xff00 && o <= 0xffef)
+      (o >= 0xf900 && o <= 0xfaff) ||
+      (o >= 0xff00 && o <= 0xffef) ||
+      (o >= 0x2190 && o <= 0x21ff) ||
+      (o >= 0x2460 && o <= 0x24ff) ||
+      (o >= 0x2500 && o <= 0x25ff) ||
+      (o >= 0x2600 && o <= 0x26ff) ||
+      o === 0x00b7 ||
+      o === 0x203b ||
+      o === 0x2713
     )
       return 2;
     return 1;
@@ -2099,7 +2188,7 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v4",
+    "worklog_cell_nav_hook_v5",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -2502,6 +2591,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         if st.session_state.pop("wl_do_delete_day", None) == selected.isoformat():
             delete_worklog_day(selected)
 
+        _invalidate_saved_dates_cache()
         saved = list_saved_worklog_dates()
         _init_widget_state(selected)
         draft = _cells_from_widgets(selected)
@@ -3122,9 +3212,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             form_cells = _cells_from_widgets(selected)
             form_sig = json.dumps(form_cells, ensure_ascii=False, sort_keys=True)
             form_scale = 0.42
-            sig_key = f"wl_form_sig_v8_{selected.isoformat()}"
-            html_key = f"wl_form_html_v8_{selected.isoformat()}"
-            h_key = f"wl_form_h_v8_{selected.isoformat()}"
+            sig_key = f"wl_form_sig_v9_{selected.isoformat()}"
+            html_key = f"wl_form_html_v9_{selected.isoformat()}"
+            h_key = f"wl_form_h_v9_{selected.isoformat()}"
             if st.session_state.get(sig_key) != form_sig:
                 form_path = _build_preview_file(selected, form_cells)
                 _, frame_h = _scaled_view_frame_size(form_path, form_scale)
@@ -3143,9 +3233,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     or k.startswith("wl_form_h_v")
                 ):
                     if not (
-                        k.startswith("wl_form_html_v8_")
-                        or k.startswith("wl_form_sig_v8_")
-                        or k.startswith("wl_form_h_v8_")
+                        k.startswith("wl_form_html_v9_")
+                        or k.startswith("wl_form_sig_v9_")
+                        or k.startswith("wl_form_h_v9_")
                     ):
                         st.session_state.pop(k, None)
             components.html(
