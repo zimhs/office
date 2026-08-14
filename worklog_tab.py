@@ -742,6 +742,34 @@ def _border_css(cell) -> str:
     return "".join(parts)
 
 
+def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
+    """표시 범위(C~AB, 1~47)의 비스케일 픽셀 폭·높이."""
+    if load_workbook is None or not path or not os.path.exists(path):
+        return 900, 1312
+    try:
+        wb = load_workbook(path, data_only=False)
+        ws = wb.active
+        total_w = 0
+        for c in range(WL_MIN_COL, WL_MAX_COL + 1):
+            total_w += max(12, int(float(_excel_col_width(ws, c)) * 8))
+        total_h = 0
+        for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
+            h = ws.row_dimensions[r].height
+            total_h += int(float(h) * 1.333) if h else 28
+        wb.close()
+        return max(1, total_w), max(1, total_h)
+    except Exception:
+        return 900, 1312
+
+
+def _scaled_view_frame_size(path: str, scale: float) -> tuple[int, int]:
+    """scale 적용 후 iframe에 넣을 폭·높이 (스크롤 없이 전체 노출)."""
+    w, h = _worklog_sheet_pixel_size(path)
+    s = float(scale) if scale and scale > 0 else 1.0
+    # body padding 4px*2 + border
+    return int(w * s) + 12, int(h * s) + 12
+
+
 def workbook_to_html(path: str) -> str:
     """원본 엑셀 양식 범위를 HTML 테이블로 변환 (병합·테두리·폰트 유지)."""
     if load_workbook is None:
@@ -860,9 +888,34 @@ def render_worklog_view_html(
         </div>
         """
         scale = 1.0
-    scale_css = f"transform:scale({scale}); transform-origin:top left;" if scale < 1 else ""
-    if wrap_height is None:
-        wrap_height = "auto" if print_mode else "860px"
+    frame_w, frame_h = _scaled_view_frame_size(path, scale)
+    # zoom은 레이아웃 크기까지 줄여 iframe 스크롤이 안 생김.
+    # transform만 쓰면 시각만 줄고 높이는 그대로라 스크롤이 남음.
+    if print_mode or scale >= 1:
+        scale_css = ""
+        scale_css_fallback = ""
+        wrap_h = "auto"
+        wrap_w = "auto"
+        wrap_overflow = "visible"
+        body_overflow = "visible"
+    else:
+        s = float(scale)
+        raw_h = max(1, int(frame_h / s) - 12)
+        # zoom: Chrome/Safari(Streamlit) — 레이아웃까지 축소되어 스크롤 제거.
+        # @supports 없는 구형만 transform+음수 margin.
+        scale_css = (
+            f"zoom:{s};width:fit-content;"
+        )
+        scale_css_fallback = (
+            f"transform:scale({s});transform-origin:top left;"
+            f"margin-bottom:{(s - 1) * raw_h:.1f}px;width:fit-content;"
+        )
+        wrap_h = f"{frame_h}px"
+        wrap_w = f"{frame_w}px"
+        wrap_overflow = "hidden"
+        body_overflow = "hidden"
+    if wrap_height is not None:
+        wrap_h = wrap_height
     auto_script = ""
     if auto_print:
         auto_script = """
@@ -879,13 +932,24 @@ def render_worklog_view_html(
           })();
         </script>
         """
+    fallback_block = ""
+    if not print_mode and scale < 1:
+        fallback_block = f"""
+  @supports not (zoom: 1) {{
+    .sheet-scale {{ {scale_css_fallback} }}
+  }}
+"""
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>일일업무일지</title>
 <style>
   @page {{ size: A4 portrait; margin: 10mm; }}
-  html, body {{ margin:0; padding:0; background:#fff; }}
-  body {{ padding:4px; }}
+  html, body {{
+    margin:0; padding:0; background:#fff;
+    overflow:{body_overflow} !important;
+    height:{"auto" if print_mode else str(frame_h) + "px"};
+  }}
+  body {{ padding:4px; box-sizing:border-box; }}
   .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }}
   .toolbar button {{
     padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px;
@@ -893,14 +957,20 @@ def render_worklog_view_html(
   }}
   .toolbar .hint {{ font:12px/1.4 sans-serif; color:#64748B; }}
   .wrap {{
-    overflow:auto; height:{wrap_height};
+    overflow:{wrap_overflow} !important; height:{wrap_h};
+    width:{wrap_w}; max-width:100%;
     border:1px solid #94A3B8; background:#fff;
+    box-sizing:border-box;
   }}
-  .sheet-scale {{ {scale_css} width:fit-content; }}
+  .sheet-scale {{ {scale_css} }}
+  {fallback_block}
   @media print {{
+    html, body {{ overflow:visible !important; height:auto; }}
     .toolbar {{ display:none !important; }}
-    .wrap {{ overflow:visible; height:auto; border:none; }}
-    .sheet-scale {{ transform:none !important; }}
+    .wrap {{ overflow:visible !important; height:auto; width:auto; border:none; }}
+    .sheet-scale {{
+      zoom:1 !important; transform:none !important; margin-bottom:0 !important;
+    }}
     body {{ padding:0; }}
   }}
 </style></head>
@@ -2773,34 +2843,44 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
             _wl_entry_editor()
 
-        # 하단 고정: 원본 엑셀 양식 (화면 약 1/4) — 저장 반영 확인용
+        # 하단: 원본 엑셀 양식 — 배율 유지, iframe 스크롤 없이 전체 표시
         st.markdown("---")
         st.markdown("##### 원본 엑셀 양식")
         st.caption(
-            "저장하면 아래 양식에 바로 반영됩니다 · 스크롤해서 전체 확인 · "
+            "저장하면 아래 양식에 바로 반영됩니다 · 스크롤 없이 전체 표시 · "
             "크게 보려면 위 「미리보기」"
         )
         try:
-            # draft는 위젯 기준. 저장 직후엔 pending sync로 위젯이 맞춰져 다시 그림.
             form_cells = _cells_from_widgets(selected)
             form_sig = json.dumps(form_cells, ensure_ascii=False, sort_keys=True)
-            sig_key = f"wl_form_sig_v2_{selected.isoformat()}"
-            html_key = f"wl_form_html_v2_{selected.isoformat()}"
+            form_scale = 0.42
+            sig_key = f"wl_form_sig_v4_{selected.isoformat()}"
+            html_key = f"wl_form_html_v4_{selected.isoformat()}"
+            h_key = f"wl_form_h_v4_{selected.isoformat()}"
             if st.session_state.get(sig_key) != form_sig:
                 form_path = _build_preview_file(selected, form_cells)
+                _, frame_h = _scaled_view_frame_size(form_path, form_scale)
                 st.session_state[html_key] = render_worklog_view_html(
                     form_path,
                     print_mode=False,
-                    scale=0.42,
-                    wrap_height="100%",
+                    scale=form_scale,
                 )
+                st.session_state[h_key] = int(frame_h)
                 st.session_state[sig_key] = form_sig
+            # 이전 세션 캐시(v2/v3·스크롤 iframe) 제거
+            for k in list(st.session_state.keys()):
+                if isinstance(k, str) and (
+                    k.startswith("wl_form_html_v2_")
+                    or k.startswith("wl_form_html_v3_")
+                    or k.startswith("wl_form_sig_v2_")
+                    or k.startswith("wl_form_sig_v3_")
+                ):
+                    st.session_state.pop(k, None)
             components.html(
                 st.session_state.get(html_key) or "",
-                height=280,
-                scrolling=True,
+                height=max(200, int(st.session_state.get(h_key) or 580)),
+                scrolling=False,
             )
         except Exception as e:
             st.caption(f"원본 양식 표시 실패: {e}")
-
     _worklog_main()
