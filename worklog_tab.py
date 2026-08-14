@@ -755,7 +755,8 @@ def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
         total_h = 0
         for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
             h = ws.row_dimensions[r].height
-            total_h += int(float(h) * 1.333) if h else 28
+            # Excel pt → CSS px (96dpi). 행 테두리 1px 여유.
+            total_h += (int(round(float(h) * 96 / 72)) if h else 28) + 1
         wb.close()
         return max(1, total_w), max(1, total_h)
     except Exception:
@@ -763,11 +764,11 @@ def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
 
 
 def _scaled_view_frame_size(path: str, scale: float) -> tuple[int, int]:
-    """scale 적용 후 iframe에 넣을 폭·높이 (스크롤 없이 전체 노출)."""
+    """scale 적용 후 iframe에 넣을 폭·높이 (하단 잘림 방지 여유 포함)."""
     w, h = _worklog_sheet_pixel_size(path)
     s = float(scale) if scale and scale > 0 else 1.0
-    # body padding 4px*2 + border
-    return int(w * s) + 12, int(h * s) + 12
+    # body padding·테두리·서브픽셀·Streamlit iframe 여유
+    return int(w * s) + 28, int(h * s) + 64
 
 
 def workbook_to_html(path: str) -> str:
@@ -814,7 +815,8 @@ def workbook_to_html(path: str) -> str:
     rows_html = []
     for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
         h = ws.row_dimensions[r].height
-        height_px = int(float(h) * 1.333) if h else 28
+    # 행 높이도 pt→px 동일 공식 (표시·측정 일치)
+        height_px = int(round(float(h) * 96 / 72)) if h else 28
         tds = []
         for c in range(WL_MIN_COL, WL_MAX_COL + 1):
             if (r, c) in skip:
@@ -848,21 +850,26 @@ def workbook_to_html(path: str) -> str:
             white = "nowrap" if is_content else "pre-wrap"
             overflow = "hidden" if is_content else "visible"
             style = (
+                f"box-sizing:border-box;"
                 f"font-family:'{html.escape(fname)}','Apple SD Gothic Neo','Batang',serif;"
                 f"font-size:{fsize}px;font-weight:{bold};"
                 f"text-align:{ha};vertical-align:{va};"
                 f"background:{fill};{border}"
-                f"padding:2px 4px;white-space:{white};overflow:{overflow};"
+                f"padding:0 3px;white-space:{white};overflow:{overflow};"
                 f"word-break:keep-all;max-width:100%;"
                 f"height:{height_px}px;min-height:{height_px}px;max-height:{height_px}px;"
+                f"line-height:1.15;"
             )
             tds.append(f'<td{span} style="{style}">{esc}</td>')
-        rows_html.append(f'<tr style="height:{height_px}px">{"".join(tds)}</tr>')
+        rows_html.append(
+            f'<tr style="height:{height_px}px;box-sizing:border-box;">'
+            f'{"".join(tds)}</tr>'
+        )
 
     colgroup = "".join(f'<col style="width:{w}px">' for w in col_widths)
     wb.close()
     return f"""
-    <table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;">
+    <table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;box-sizing:border-box;">
       <colgroup>{colgroup}</colgroup>
       <tbody>{"".join(rows_html)}</tbody>
     </table>
@@ -889,8 +896,7 @@ def render_worklog_view_html(
         """
         scale = 1.0
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
-    # zoom은 레이아웃 크기까지 줄여 iframe 스크롤이 안 생김.
-    # transform만 쓰면 시각만 줄고 높이는 그대로라 스크롤이 남음.
+    # zoom은 레이아웃까지 축소. wrap은 auto로 두어 하단이 clip 되지 않게 함.
     if print_mode or scale >= 1:
         scale_css = ""
         scale_css_fallback = ""
@@ -898,22 +904,20 @@ def render_worklog_view_html(
         wrap_w = "auto"
         wrap_overflow = "visible"
         body_overflow = "visible"
+        body_h = "auto"
     else:
         s = float(scale)
-        raw_h = max(1, int(frame_h / s) - 12)
-        # zoom: Chrome/Safari(Streamlit) — 레이아웃까지 축소되어 스크롤 제거.
-        # @supports 없는 구형만 transform+음수 margin.
-        scale_css = (
-            f"zoom:{s};width:fit-content;"
-        )
+        raw_w, raw_h = _worklog_sheet_pixel_size(path)
+        scale_css = f"zoom:{s};width:fit-content;"
         scale_css_fallback = (
             f"transform:scale({s});transform-origin:top left;"
             f"margin-bottom:{(s - 1) * raw_h:.1f}px;width:fit-content;"
         )
-        wrap_h = f"{frame_h}px"
+        wrap_h = "auto"
         wrap_w = f"{frame_w}px"
-        wrap_overflow = "hidden"
+        wrap_overflow = "visible"
         body_overflow = "hidden"
+        body_h = f"{frame_h}px"
     if wrap_height is not None:
         wrap_h = wrap_height
     auto_script = ""
@@ -947,9 +951,9 @@ def render_worklog_view_html(
   html, body {{
     margin:0; padding:0; background:#fff;
     overflow:{body_overflow} !important;
-    height:{"auto" if print_mode else str(frame_h) + "px"};
+    height:{body_h};
   }}
-  body {{ padding:4px; box-sizing:border-box; }}
+  body {{ padding:6px; box-sizing:border-box; }}
   .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }}
   .toolbar button {{
     padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px;
@@ -963,6 +967,7 @@ def render_worklog_view_html(
     box-sizing:border-box;
   }}
   .sheet-scale {{ {scale_css} }}
+  .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }}
   {fallback_block}
   @media print {{
     html, body {{ overflow:visible !important; height:auto; }}
@@ -2854,9 +2859,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             form_cells = _cells_from_widgets(selected)
             form_sig = json.dumps(form_cells, ensure_ascii=False, sort_keys=True)
             form_scale = 0.42
-            sig_key = f"wl_form_sig_v4_{selected.isoformat()}"
-            html_key = f"wl_form_html_v4_{selected.isoformat()}"
-            h_key = f"wl_form_h_v4_{selected.isoformat()}"
+            sig_key = f"wl_form_sig_v5_{selected.isoformat()}"
+            html_key = f"wl_form_html_v5_{selected.isoformat()}"
+            h_key = f"wl_form_h_v5_{selected.isoformat()}"
             if st.session_state.get(sig_key) != form_sig:
                 form_path = _build_preview_file(selected, form_cells)
                 _, frame_h = _scaled_view_frame_size(form_path, form_scale)
@@ -2867,18 +2872,20 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 )
                 st.session_state[h_key] = int(frame_h)
                 st.session_state[sig_key] = form_sig
-            # 이전 세션 캐시(v2/v3·스크롤 iframe) 제거
+            # 이전 세션 캐시 제거
             for k in list(st.session_state.keys()):
                 if isinstance(k, str) and (
                     k.startswith("wl_form_html_v2_")
                     or k.startswith("wl_form_html_v3_")
+                    or k.startswith("wl_form_html_v4_")
                     or k.startswith("wl_form_sig_v2_")
                     or k.startswith("wl_form_sig_v3_")
+                    or k.startswith("wl_form_sig_v4_")
                 ):
                     st.session_state.pop(k, None)
             components.html(
                 st.session_state.get(html_key) or "",
-                height=max(200, int(st.session_state.get(h_key) or 580)),
+                height=max(240, int(st.session_state.get(h_key) or 640)),
                 scrolling=False,
             )
         except Exception as e:
