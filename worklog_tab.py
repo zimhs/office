@@ -366,10 +366,26 @@ def _excel_col_width(ws, col_idx: int) -> float:
         return 8.43
 
 
+def _excel_width_to_px(width: float) -> int:
+    """엑셀 열 폭 → CSS px.
+
+    공식 mdw=7 은 내용칸이 너무 좁아 14pt 한글이 잘림.
+    원본 스크린샷 채움(~92%)에 맞춘 계수.
+    """
+    try:
+        w = float(width)
+    except (TypeError, ValueError):
+        w = 8.43
+    return max(10, int(w * 7 + 5))
+
+
 @lru_cache(maxsize=1)
 def _content_line_units() -> int:
-    """원본 G:X 병합 폭 기준 — 한 칸을 거의 채운 뒤 다음 행으로 넘김(반각=1)."""
-    fallback = 56
+    """원본 G:X 병합 폭 기준 — 엑셀 바탕체 14pt 한 줄에 가깝게 채운 뒤 다음 행.
+
+    반각=1, 한글 음절/호환자모=2. 원본 스크린샷 기준 긴 줄이 칸의 ~92%를 채움.
+    """
+    fallback = 70
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -381,9 +397,9 @@ def _content_line_units() -> int:
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        # 열폭=기본글꼴(맑은고딕 11) 기준, 셀 글꼴 바탕체 14 → 칸을 거의 끝까지 채움
+        # 열폭(기본글꼴 문자수) → 바탕 14pt 실측 채움에 맞춤
         units = int(total * (11 / 14) * 1.05)
-        return max(56, min(units, 74))
+        return max(60, min(units, 72))
     except Exception:
         return fallback
 
@@ -838,7 +854,7 @@ def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
         ws = wb.active
         total_w = 0
         for c in range(WL_MIN_COL, WL_MAX_COL + 1):
-            total_w += max(12, int(float(_excel_col_width(ws, c)) * 8))
+            total_w += _excel_width_to_px(_excel_col_width(ws, c))
         total_h = 0
         for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
             h = ws.row_dimensions[r].height
@@ -895,14 +911,14 @@ def workbook_to_html(path: str) -> str:
     total_w = 0.0
     for c in range(WL_MIN_COL, WL_MAX_COL + 1):
         w = _excel_col_width(ws, c)
-        px = max(12, int(float(w) * 8))
+        px = _excel_width_to_px(w)
         col_widths.append(px)
         total_w += px
 
     rows_html = []
     for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
         h = ws.row_dimensions[r].height
-    # 행 높이도 pt→px 동일 공식 (표시·측정 일치)
+        # 행 높이도 pt→px 동일 공식 (표시·측정 일치)
         height_px = int(round(float(h) * 96 / 72)) if h else 28
         tds = []
         for c in range(WL_MIN_COL, WL_MAX_COL + 1):
@@ -917,7 +933,16 @@ def workbook_to_html(path: str) -> str:
                 text = "" if val is None else str(val)
             font = cell.font
             fname = font.name or "Batang"
-            fsize = int(font.size or 12)
+            # 엑셀 한글 폰트명 정규화
+            if fname in ("맑은 고딕", "Malgun Gothic"):
+                fname_css = "Malgun Gothic"
+            elif fname in ("바탕", "바탕체", "Batang", "BatangChe"):
+                fname_css = "Batang"
+            else:
+                fname_css = fname
+            # 엑셀 pt → CSS px (96dpi). pt 단위가 iframe에서 작게 먹히는 경우 대비.
+            fsize_pt = float(font.size or 12)
+            fsize_px = fsize_pt * 96.0 / 72.0
             bold = "bold" if font.bold else "normal"
             align = cell.alignment
             ha = align.horizontal or "left"
@@ -931,21 +956,31 @@ def workbook_to_html(path: str) -> str:
                 span += f' rowspan="{rs}"'
             if cs > 1:
                 span += f' colspan="{cs}"'
+            # 소프트 빈 줄(항목 안 빈 칸)은 화면에서도 비어 보이게
+            if text in (_WL_SOFT_BLANK, "\u00a0"):
+                text = ""
             esc = html.escape(text).replace("\n", "<br>")
             # 내용칸은 한 행=한 줄 (원본 엑셀과 동일하게 칸 밖으로 줄바꿈하지 않음)
             is_content = c == 7 and 9 <= r <= 39
-            white = "nowrap" if is_content else "pre-wrap"
-            overflow = "hidden" if is_content else "visible"
+            is_client = c == 3 and 9 <= r <= 39
+            white = "nowrap" if (is_content or is_client) else "pre-wrap"
+            overflow = "hidden" if (is_content or is_client) else "visible"
+            # 병합 셀 폭 = 포함 열 합 (고정 레이아웃에서 원본과 같은 채움감)
+            c0 = c - WL_MIN_COL
+            span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
+            width_css = f"width:{span_w}px;min-width:{span_w}px;max-width:{span_w}px;" if span_w else ""
+            # macOS에 Batang 없을 때 명조 계열로 폭이 비슷하게
             style = (
-                f"box-sizing:border-box;"
-                f"font-family:'{html.escape(fname)}','Apple SD Gothic Neo','Batang',serif;"
-                f"font-size:{fsize}px;font-weight:{bold};"
+                f"box-sizing:border-box;{width_css}"
+                f"font-family:'{html.escape(fname_css)}','Batang','BatangChe',"
+                f"'Apple Myungjo','AppleMyungjo','Nanum Myeongjo','Malgun Gothic',serif;"
+                f"font-size:{fsize_px:.4f}px;font-weight:{bold};"
                 f"text-align:{ha};vertical-align:{va};"
                 f"background:{fill};{border}"
-                f"padding:0 3px;white-space:{white};overflow:{overflow};"
-                f"word-break:keep-all;max-width:100%;"
+                f"padding:0 2px;white-space:{white};overflow:{overflow};"
+                f"text-overflow:clip;word-break:keep-all;"
                 f"height:{height_px}px;min-height:{height_px}px;max-height:{height_px}px;"
-                f"line-height:1.15;"
+                f"line-height:{height_px}px;"
             )
             tds.append(f'<td{span} style="{style}">{esc}</td>')
         rows_html.append(
@@ -1082,19 +1117,27 @@ def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     return max(0, min(10, n))
 
 
+# 항목 안 빈 내용줄 표식 (완전 빈 칸=항목 사이 간격과 구분)
+_WL_SOFT_BLANK = " "
+
+
 def _grouped_entries_from_cells(cells: dict) -> list[dict]:
     """엑셀 행 → 논리 항목.
 
-    - 빈 행 뒤에 오면 새 항목 (앞 빈 행 수 = 이전 blank_after)
+    - 완전 빈 행(C·G 둘 다 비움) 뒤에 오면 새 항목 (앞 빈 행 수 = 이전 blank_after)
+    - 내용칸만 공백 한 칸(SOFT_BLANK)이면 같은 항목의 빈 줄
     - 빈 행 없이 이어지면 같은 항목: 거래처·내용 칸을 각각 이어 붙임
-      (예: C=예성이엔지 / C=(음성지점) → 거래처 2칸)
     """
     entries: list[dict] = []
     blank_run = 0
     for r in WL_CLIENT_ROWS:
-        client = _scrub_dummy_label(str(cells.get(f"C{r}", "") or "")).strip()
-        content = _scrub_dummy_label(str(cells.get(f"G{r}", "") or ""))
-        empty = not client and not (content or "").strip()
+        raw_c = str(cells.get(f"C{r}", "") or "")
+        raw_g = str(cells.get(f"G{r}", "") or "")
+        client = _scrub_dummy_label(raw_c).strip()
+        # 소프트 빈 줄은 strip 하지 않은 채 판별
+        soft_blank = raw_g == _WL_SOFT_BLANK or raw_g == "\u00a0"
+        content = "" if soft_blank else _scrub_dummy_label(raw_g)
+        empty = not client and not soft_blank and not (content or "").strip()
         if empty:
             blank_run += 1
             continue
@@ -1114,7 +1157,7 @@ def _grouped_entries_from_cells(cells: dict) -> list[dict]:
                 }
             )
         else:
-            # 같은 항목 연속 칸 (거래처 줄바꿈 / 내용 추가)
+            # 같은 항목 연속 칸 (거래처 줄바꿈 / 내용 추가 / 항목 안 빈 줄)
             if blank_run > 0:
                 for _ in range(blank_run):
                     entries[-1].setdefault("lines", []).append("")
@@ -1124,8 +1167,10 @@ def _grouped_entries_from_cells(cells: dict) -> list[dict]:
             cl = ent.setdefault("client_lines", [])
             if not cl and str(ent.get("client") or "").strip():
                 cl[:] = [str(ent.get("client") or "").strip()]
-            cl.append(client)
-            ent["client"] = "\n".join(x for x in cl if x is not None)
+            # 내용만 이어지는 행·소프트 빈 줄은 거래처 칸을 늘리지 않음
+            if client:
+                cl.append(client)
+            ent["client"] = "\n".join(x for x in cl if (x or "").strip())
             ent.setdefault("lines", []).append(content or "")
             ent["content"] = "\n".join(ent.get("lines") or [])
     return entries
@@ -1337,7 +1382,12 @@ def _pack_entries_to_cells(
                 break
             r = rows[row_i]
             cells[f"C{r}"] = clients[j] if j < len(clients) else ""
-            cells[f"G{r}"] = chunks[j] if j < len(chunks) else ""
+            # 항목 안 빈 내용줄은 공백 한 칸으로 남겨, 항목 사이 완전 빈 행과 구분
+            if j < len(chunks):
+                g = chunks[j]
+                cells[f"G{r}"] = _WL_SOFT_BLANK if g == "" else g
+            else:
+                cells[f"G{r}"] = ""
             row_i += 1
         wrote_any = True
         prev_gap = _entry_blank_after(ent, 1)
@@ -1797,6 +1847,7 @@ div[class*="st-key-wl_ent_cl_"] input:focus {
                 key=_entry_client_key(iso, entry_i, j),
                 label_visibility="collapsed",
                 placeholder="",
+                autocomplete="off",
             )
         with row_r:
             is_last_empty = (
@@ -1858,6 +1909,7 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
                 key=_entry_line_key(iso, entry_i, j),
                 label_visibility="collapsed",
                 placeholder="",
+                autocomplete="off",
             )
         with row_r:
             is_last_empty = (
@@ -1898,7 +1950,7 @@ export default function (component) {
   const iso = (data && data.iso) || "";
   const focusKey = (data && data.focus_key) || "";
   const clientMax = Number((data && data.client_max_u) || 15);
-  const contentMax = Number((data && data.content_max_u) || 56);
+  const contentMax = Number((data && data.content_max_u) || 72);
   let lastSent = "";
 
   function charUnits(ch) {
@@ -2004,6 +2056,14 @@ export default function (component) {
   document.addEventListener("keydown", onKey, true);
   document.addEventListener("input", onInput, true);
   document.addEventListener("compositionend", onCompEnd, true);
+  const onFocusIn = (e) => {
+    const info = resolveKey(e.target);
+    if (!info) return;
+    try {
+      setTriggerValue("focus", info.key);
+    } catch (err) {}
+  };
+  document.addEventListener("focusin", onFocusIn, true);
 
   if (focusKey) {
     const go = () => {
@@ -2033,15 +2093,102 @@ export default function (component) {
     document.removeEventListener("keydown", onKey, true);
     document.removeEventListener("input", onInput, true);
     document.removeEventListener("compositionend", onCompEnd, true);
+    document.removeEventListener("focusin", onFocusIn, true);
   };
 }
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v3",
+    "worklog_cell_nav_hook_v4",
     js=_WL_ENTER_HOOK_JS,
 )
 
+
+
+_WL_SPECIAL_CHARS = [
+    "※",
+    "★",
+    "☆",
+    "○",
+    "●",
+    "◎",
+    "▲",
+    "△",
+    "■",
+    "□",
+    "→",
+    "←",
+    "·",
+    "～",
+    "【",
+    "】",
+    "「",
+    "」",
+    "①",
+    "②",
+    "③",
+    "✓",
+    "◇",
+    "◆",
+]
+
+
+def _render_worklog_special_chars() -> None:
+    """자주 쓰는 특수문자 — 한 줄·작은 버튼, 클릭 시 활성 칸에 삽입."""
+    st.markdown(
+        """
+<style>
+div[class*="st-key-wl_sp_"] button {
+  font-size: 0.78rem !important;
+  padding: 0 !important;
+  min-height: 1.35rem !important;
+  height: 1.35rem !important;
+  line-height: 1.35rem !important;
+  border-radius: 0.35rem !important;
+}
+div[class*="st-key-wl_sp_"] {
+  min-width: 0 !important;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(len(_WL_SPECIAL_CHARS), gap="small")
+    for i, ch in enumerate(_WL_SPECIAL_CHARS):
+        with cols[i]:
+            if st.button(
+                ch,
+                key=f"wl_sp_{i}",
+                width="stretch",
+                help=f"「{ch}」삽입 (칸을 먼저 클릭)",
+            ):
+                st.session_state["wl_pending_special"] = ch
+
+
+def _apply_pending_special_char() -> None:
+    """대기 중인 특수문자를 활성 칸에 붙이거나 클립보드로 복사."""
+    ch = st.session_state.pop("wl_pending_special", None)
+    if not ch:
+        return
+    ak = st.session_state.get("wl_active_cell_key")
+    if isinstance(ak, str) and (
+        ak.startswith("wl_ent_ln_") or ak.startswith("wl_ent_cl_")
+    ):
+        st.session_state[ak] = str(st.session_state.get(ak) or "") + str(ch)
+        st.session_state["wl_special_msg"] = f"「{ch}」삽입"
+        return
+    # 포커스된 칸이 없으면 클립보드 복사
+    try:
+        components.html(
+            f"""<!DOCTYPE html><html><body><script>
+try {{ navigator.clipboard.writeText({json.dumps(ch)}); }} catch (e) {{}}
+</script></body></html>""",
+            height=0,
+            scrolling=False,
+        )
+    except Exception:
+        pass
+    st.session_state["wl_special_msg"] = f"「{ch}」복사됨 · 칸 클릭 후 ⌘V"
 
 
 def _seed_entry_lines(
@@ -2192,12 +2339,16 @@ def _preview_path(d: date) -> str:
 
 
 def _build_preview_file(d: date, cells: dict) -> str:
-    """날짜 파일은 건드리지 않고 미리보기용 임시 xlsx 생성."""
+    """날짜 파일은 건드리지 않고 미리보기용 임시 xlsx 생성.
+
+    항상 템플릿에서 새로 만들어, 이전 저장본 잔여 값이 섞이지 않게 한다.
+    """
     _ensure_dirs()
-    src = worklog_path(d) if os.path.exists(worklog_path(d)) else WORKLOG_TEMPLATE
+    if not os.path.exists(WORKLOG_TEMPLATE):
+        raise FileNotFoundError("업무일지 템플릿이 없습니다.")
     dst = _preview_path(d)
-    shutil.copy2(src, dst)
-    write_cells_to_path(dst, d, cells, blank_base=not os.path.exists(worklog_path(d)))
+    shutil.copy2(WORKLOG_TEMPLATE, dst)
+    write_cells_to_path(dst, d, cells, blank_base=True)
     return dst
 
 
@@ -2354,7 +2505,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         saved = list_saved_worklog_dates()
         _init_widget_state(selected)
         draft = _cells_from_widgets(selected)
-        status = "저장됨" if selected.isoformat() in saved else "미저장"
 
         # 날짜 선택(저장 후에도 변경 가능) · 달력 · 작은 삭제
         if st.session_state.get("wl_date_sync") != selected.isoformat():
@@ -2461,7 +2611,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     key="wl_date_pick",
                     help="저장 후에도 날짜를 바꿀 수 있습니다. 빈 날짜로 바꾸면 이 일지가 그 날짜로 옮겨집니다.",
                 )
-                st.caption(f"{format_worklog_date(selected)} · {status}")
+                _render_worklog_special_chars()
+                msg = st.session_state.pop("wl_special_msg", None)
+                if msg:
+                    st.caption(msg)
             with bar_cal:
                 st.markdown(
                     "<div style='height:1.55rem'></div>", unsafe_allow_html=True
@@ -2506,6 +2659,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         st.error(str(e))
                         st.session_state["wl_date_sync"] = ""
                         _wl_rerun()
+
+            _apply_pending_special_char()
 
             iso = selected.isoformat()
             ek = _entries_key(selected)
@@ -2713,6 +2868,14 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         "v": val,
                     }
 
+                def _on_focus_trigger():
+                    hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
+                    if not isinstance(hook, dict):
+                        return
+                    fk = str(hook.get("focus") or "")
+                    if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
+                        st.session_state["wl_active_cell_key"] = fk
+
                 focus_key = st.session_state.pop(f"wl_focus_ln_{iso2}", None)
                 if isinstance(focus_key, str) and (
                     focus_key.startswith("wl_ent_ln_")
@@ -2848,6 +3011,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         "content_max_u": _content_line_units(),
                     },
                     on_enter_change=_on_enter_trigger,
+                    on_focus_change=_on_focus_trigger,
                     width="stretch",
                     height=1,
                 )
@@ -2958,9 +3122,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             form_cells = _cells_from_widgets(selected)
             form_sig = json.dumps(form_cells, ensure_ascii=False, sort_keys=True)
             form_scale = 0.42
-            sig_key = f"wl_form_sig_v5_{selected.isoformat()}"
-            html_key = f"wl_form_html_v5_{selected.isoformat()}"
-            h_key = f"wl_form_h_v5_{selected.isoformat()}"
+            sig_key = f"wl_form_sig_v8_{selected.isoformat()}"
+            html_key = f"wl_form_html_v8_{selected.isoformat()}"
+            h_key = f"wl_form_h_v8_{selected.isoformat()}"
             if st.session_state.get(sig_key) != form_sig:
                 form_path = _build_preview_file(selected, form_cells)
                 _, frame_h = _scaled_view_frame_size(form_path, form_scale)
@@ -2974,14 +3138,16 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             # 이전 세션 캐시 제거
             for k in list(st.session_state.keys()):
                 if isinstance(k, str) and (
-                    k.startswith("wl_form_html_v2_")
-                    or k.startswith("wl_form_html_v3_")
-                    or k.startswith("wl_form_html_v4_")
-                    or k.startswith("wl_form_sig_v2_")
-                    or k.startswith("wl_form_sig_v3_")
-                    or k.startswith("wl_form_sig_v4_")
+                    k.startswith("wl_form_html_v")
+                    or k.startswith("wl_form_sig_v")
+                    or k.startswith("wl_form_h_v")
                 ):
-                    st.session_state.pop(k, None)
+                    if not (
+                        k.startswith("wl_form_html_v8_")
+                        or k.startswith("wl_form_sig_v8_")
+                        or k.startswith("wl_form_h_v8_")
+                    ):
+                        st.session_state.pop(k, None)
             components.html(
                 st.session_state.get(html_key) or "",
                 height=max(240, int(st.session_state.get(h_key) or 640)),
