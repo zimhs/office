@@ -9,13 +9,13 @@ import platform
 import re
 import shutil
 import subprocess
-import sys
 import unicodedata
 from datetime import date
 from functools import lru_cache
 
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit.errors import StreamlitAPIException
 
 try:
     from openpyxl import load_workbook
@@ -24,395 +24,21 @@ except Exception:  # pragma: no cover
     load_workbook = None
     get_column_letter = None
 
+
+def _wl_rerun() -> None:
+    """업무일지 fragment 안이면 fragment만 다시 실행 (전체 앱 로딩 방지)."""
+    try:
+        st.rerun(scope="fragment")
+    except StreamlitAPIException:
+        st.rerun()
+
+
+def _invalidate_saved_dates_cache() -> None:
+    st.session_state.pop("wl_saved_dates_cache", None)
+
 WORKLOG_DIR = os.path.join("uploaded_cache", "worklog")
 WORKLOG_TEMPLATE = os.path.join(WORKLOG_DIR, "template.xlsx")
 WORKLOG_TEMPLATE_SRC = os.path.expanduser("~/Desktop/업무일지.xlsx")
-WORKLOG_GDRIVE_URL_FILE = os.path.join(WORKLOG_DIR, "gdrive_template_url.txt")
-WORKLOG_GDRIVE_CACHE_DIR = os.path.join("uploaded_cache", "gdrive")
-# OneDrive/SharePoint「8월」기본 공유 링크 (앱/재배포 시 자동 동기화)
-WORKLOG_DEFAULT_CLOUD_URL = (
-    "https://jijidatech-my.sharepoint.com/:x:/g/personal/14749_office365pp_co/"
-    "IQA3JEkaLXRPSIDBSkFoYFx2AcsFuwhCPCo5vhn1_J0PWrw?e=KDuaFa"
-)
-# 아이패드 Files / 맥 Desktop 등에 둔 8월(또는 업무일지) 양식 후보
-_WORKLOG_TEMPLATE_NAME_HINTS = (
-    "업무일지",
-    "일일업무",
-    "8월",
-    "08월",
-    "2026-08",
-    "2026_08",
-    "202608",
-)
-
-
-def _path_looks_like_worklog_xlsx(path: str) -> bool:
-    name = os.path.basename(path)
-    if not name.lower().endswith(".xlsx"):
-        return False
-    if name.startswith("~$") or name.startswith("_preview_"):
-        return False
-    if name == "template.xlsx":
-        return False
-    base = name[:-5]
-    # 날짜 저장본(YYYY-MM-DD.xlsx)도 양식 소스로 허용(8월분 우선)
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", base):
-        return base.startswith("2026-08") or base[5:7] == "08"
-    return any(h.lower() in name.lower() or h in name for h in _WORKLOG_TEMPLATE_NAME_HINTS)
-
-
-def _iter_xlsx_under(root: str, *, max_depth: int = 3):
-    if not root or not os.path.isdir(root):
-        return
-    root = os.path.abspath(root)
-    try:
-        for dirpath, dirnames, filenames in os.walk(root):
-            rel = os.path.relpath(dirpath, root)
-            depth = 0 if rel == "." else rel.count(os.sep) + 1
-            if depth > max_depth:
-                dirnames[:] = []
-                continue
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if d not in {".git", "node_modules", "__pycache__", "Library"}
-                and not d.startswith(".")
-            ]
-            for fn in filenames:
-                if fn.lower().endswith(".xlsx") and not fn.startswith("~$"):
-                    yield os.path.join(dirpath, fn)
-    except Exception:
-        return
-
-
-def _template_search_roots() -> list[str]:
-    home = os.path.expanduser("~")
-    roots = [
-        WORKLOG_DIR,
-        WORKLOG_GDRIVE_CACHE_DIR,
-        os.path.join("uploaded_cache", "ipad"),
-        os.path.join("uploaded_cache", "아이패드"),
-        os.path.join(home, "Desktop"),
-        os.path.join(home, "Desktop", "아이패드"),
-        os.path.join(home, "Desktop", "iPad"),
-        os.path.join(home, "Desktop", "Files"),
-        os.path.join(home, "Documents"),
-        os.path.join(home, "Documents", "아이패드"),
-        os.path.join(home, "Documents", "Files"),
-        # iCloud Drive (맥·아이패드 Files 동기화)
-        os.path.join(home, "Library", "Mobile Documents", "com~apple~CloudDocs"),
-        os.path.join(
-            home, "Library", "Mobile Documents", "com~apple~CloudDocs", "Downloads"
-        ),
-    ]
-    out: list[str] = []
-    seen: set[str] = set()
-    for r in roots:
-        try:
-            ap = os.path.abspath(r)
-        except Exception:
-            continue
-        if ap in seen:
-            continue
-        seen.add(ap)
-        out.append(r)
-    return out
-
-
-def _score_template_candidate(path: str) -> tuple[int, float]:
-    """높을수록 우선. 8월·업무일지 이름 가산, 최신 mtime 가산."""
-    name = os.path.basename(path)
-    score = 0
-    if "업무일지" in name or "일일업무" in name:
-        score += 50
-    if any(h in name for h in ("8월", "08월", "2026-08", "2026_08", "202608")):
-        score += 80
-    if re.fullmatch(r"2026-08-\d{2}\.xlsx", name):
-        score += 40
-    if os.path.basename(os.path.dirname(path)) in {
-        "아이패드",
-        "ipad",
-        "iPad",
-        "Files",
-        "worklog",
-    }:
-        score += 20
-    try:
-        mtime = os.path.getmtime(path)
-    except Exception:
-        mtime = 0.0
-    return score, mtime
-
-
-def find_worklog_template_source() -> str | None:
-    """Desktop/아이패드 Files/캐시에서 8월·업무일지 엑셀을 찾는다."""
-    if os.path.exists(WORKLOG_TEMPLATE_SRC) and os.path.isfile(WORKLOG_TEMPLATE_SRC):
-        return WORKLOG_TEMPLATE_SRC
-    cands: list[str] = []
-    for root in _template_search_roots():
-        for path in _iter_xlsx_under(root, max_depth=3):
-            if _path_looks_like_worklog_xlsx(path):
-                cands.append(path)
-    if not cands:
-        return None
-    cands.sort(key=_score_template_candidate, reverse=True)
-    return cands[0]
-
-
-def _extract_gdrive_id(text: str) -> str | None:
-    s = (text or "").strip()
-    if not s:
-        return None
-    m = re.search(r"/folders/([a-zA-Z0-9_-]+)", s)
-    if m:
-        return m.group(1)
-    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", s)
-    if m:
-        return m.group(1)
-    m = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", s)
-    if m:
-        return m.group(1)
-    if re.fullmatch(r"[a-zA-Z0-9_-]{20,}", s):
-        return s
-    return None
-
-
-def _is_gdrive_folder_url(text: str) -> bool:
-    return "/folders/" in (text or "")
-
-
-def _load_saved_gdrive_url() -> str:
-    try:
-        if os.path.exists(WORKLOG_GDRIVE_URL_FILE):
-            with open(WORKLOG_GDRIVE_URL_FILE, "r", encoding="utf-8") as f:
-                return (f.read() or "").strip()
-    except Exception:
-        pass
-    return ""
-
-
-def _save_gdrive_url(url: str) -> None:
-    os.makedirs(WORKLOG_DIR, exist_ok=True)
-    with open(WORKLOG_GDRIVE_URL_FILE, "w", encoding="utf-8") as f:
-        f.write((url or "").strip())
-
-
-def _gdrive_url_from_secrets() -> str:
-    try:
-        secrets = getattr(st, "secrets", None)
-        if secrets is None:
-            return ""
-        for key in ("WORKLOG_GDRIVE_URL", "worklog_gdrive_url", "GDRIVE_WORKLOG_URL"):
-            try:
-                val = secrets.get(key) if hasattr(secrets, "get") else secrets[key]
-            except Exception:
-                val = None
-            if val:
-                return str(val).strip()
-    except Exception:
-        pass
-    # 환경변수(Streamlit Cloud secrets / Cursor env)
-    for key in ("WORKLOG_GDRIVE_URL", "worklog_gdrive_url", "GDRIVE_WORKLOG_URL"):
-        val = os.environ.get(key, "")
-        if val:
-            return str(val).strip()
-    return ""
-
-
-def _pick_august_xlsx(paths: list[str]) -> str | None:
-    xlsx = [p for p in paths if p.lower().endswith(".xlsx") and not os.path.basename(p).startswith("~$")]
-    if not xlsx:
-        return None
-    scored = [(p, _score_template_candidate(p)) for p in xlsx if _path_looks_like_worklog_xlsx(p)]
-    if not scored:
-        scored = [(p, _score_template_candidate(p)) for p in xlsx]
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[0][0]
-
-
-def _is_sharepoint_or_onedrive_url(url: str) -> bool:
-    u = (url or "").lower()
-    return (
-        "sharepoint.com" in u
-        or "onedrive.live.com" in u
-        or "1drv.ms" in u
-        or "office365" in u
-    )
-
-
-def download_worklog_template_from_sharepoint(url: str) -> tuple[bool, str]:
-    """OneDrive/SharePoint 공유 링크에서 xlsx 다운로드 → template.xlsx."""
-    url = (url or "").strip()
-    if not url:
-        return False, "SharePoint/OneDrive 링크가 비어 있습니다."
-    try:
-        import requests
-    except Exception as e:
-        return False, f"requests 필요: {e}"
-
-    os.makedirs(WORKLOG_GDRIVE_CACHE_DIR, exist_ok=True)
-    os.makedirs(WORKLOG_DIR, exist_ok=True)
-    session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-            )
-        }
-    )
-    candidates = [
-        url if "download=1" in url else (url + ("&" if "?" in url else "?") + "download=1"),
-        url.replace("/:x:/", "/:u:/").replace("/:w:/", "/:u:/").replace("/:b:/", "/:u:/"),
-        url,
-    ]
-    last_err = "다운로드 실패"
-    for cand in candidates:
-        try:
-            r = session.get(cand, allow_redirects=True, timeout=90)
-            raw = r.content or b""
-            if raw[:2] != b"PK":
-                last_err = f"엑셀이 아님 (HTTP {r.status_code})"
-                continue
-            tmp = os.path.join(WORKLOG_GDRIVE_CACHE_DIR, "sharepoint_download.xlsx")
-            with open(tmp, "wb") as f:
-                f.write(raw)
-            ok, msg = _ingest_workbook_bytes(raw, preferred_name="8월.xlsx")
-            if ok:
-                _save_gdrive_url(url)
-                try:
-                    with open(
-                        os.path.join(WORKLOG_DIR, "sharepoint_template_url.txt"),
-                        "w",
-                        encoding="utf-8",
-                    ) as sf:
-                        sf.write(url)
-                except Exception:
-                    pass
-                return True, f"OneDrive/SharePoint 양식 연결 ({len(raw):,} bytes)"
-            last_err = msg
-        except Exception as e:
-            last_err = str(e)
-    return False, f"SharePoint 불러오기 실패: {last_err}"
-
-
-def download_worklog_template_from_cloud_url(url: str) -> tuple[bool, str]:
-    """구글드라이브 또는 OneDrive/SharePoint 공유 링크 처리."""
-    url = (url or "").strip()
-    if not url:
-        return False, "클라우드 링크가 비어 있습니다."
-    if _is_sharepoint_or_onedrive_url(url):
-        return download_worklog_template_from_sharepoint(url)
-    if "drive.google.com" in url.lower() or "docs.google.com" in url.lower():
-        return download_worklog_template_from_gdrive(url)
-    # 미확인 URL도 SharePoint 방식(download=1) 먼저 시도 후 gdown
-    ok, msg = download_worklog_template_from_sharepoint(url)
-    if ok:
-        return ok, msg
-    return download_worklog_template_from_gdrive(url)
-
-
-def download_worklog_template_from_gdrive(url: str) -> tuple[bool, str]:
-    """구글드라이브 공유 링크(파일/폴더)에서 8월·업무일지 xlsx를 template으로 저장."""
-    url = (url or "").strip()
-    if not url:
-        return False, "구글드라이브 링크가 비어 있습니다."
-    if _is_sharepoint_or_onedrive_url(url):
-        return download_worklog_template_from_sharepoint(url)
-    try:
-        import gdown
-    except Exception:
-        try:
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "gdown", "-q"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            import gdown  # type: ignore
-        except Exception as e:
-            return False, f"gdown 설치 실패: {e}"
-
-    os.makedirs(WORKLOG_GDRIVE_CACHE_DIR, exist_ok=True)
-    os.makedirs(WORKLOG_DIR, exist_ok=True)
-    file_id = _extract_gdrive_id(url)
-    try:
-        if _is_gdrive_folder_url(url) or (
-            file_id and "folders" in url
-        ):
-            # 폴더: 내려받은 뒤 8월/업무일지 xlsx 선택
-            out_dir = os.path.join(WORKLOG_GDRIVE_CACHE_DIR, "folder")
-            if os.path.isdir(out_dir):
-                shutil.rmtree(out_dir, ignore_errors=True)
-            os.makedirs(out_dir, exist_ok=True)
-            folder_url = url if "http" in url else f"https://drive.google.com/drive/folders/{file_id}"
-            gdown.download_folder(folder_url, output=out_dir, quiet=True, use_cookies=False)
-            found: list[str] = []
-            for root, _, files in os.walk(out_dir):
-                for fn in files:
-                    if fn.lower().endswith(".xlsx"):
-                        found.append(os.path.join(root, fn))
-            picked = _pick_august_xlsx(found)
-            if not picked:
-                return False, "폴더에서 8월/업무일지 xlsx를 찾지 못했습니다."
-            shutil.copy2(picked, WORKLOG_TEMPLATE)
-            ipad_copy = os.path.join(
-                "uploaded_cache", "ipad", os.path.basename(picked) or "8월_업무일지.xlsx"
-            )
-            os.makedirs(os.path.dirname(ipad_copy), exist_ok=True)
-            shutil.copy2(picked, ipad_copy)
-        else:
-            tmp_path = os.path.join(WORKLOG_GDRIVE_CACHE_DIR, "drive_download.xlsx")
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-            # 파일 공유 링크 / ID
-            if file_id and "http" not in url:
-                result = gdown.download(id=file_id, output=tmp_path, quiet=True)
-            else:
-                result = gdown.download(url=url, output=tmp_path, quiet=True, fuzzy=True)
-            if not result or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) < 64:
-                return False, "다운로드 실패(공유를 '링크가 있는 모든 사용자'로 열어 주세요)."
-            # HTML 에러 페이지가 저장된 경우 거부
-            with open(tmp_path, "rb") as f:
-                head = f.read(32)
-            if head.lstrip().startswith(b"<") or b"<!DOCTYPE" in head[:64].upper():
-                return False, "다운로드가 HTML입니다. Drive 공유 권한을 확인해 주세요."
-            shutil.copy2(tmp_path, WORKLOG_TEMPLATE)
-            ipad_copy = os.path.join("uploaded_cache", "ipad", "8월_업무일지_gdrive.xlsx")
-            os.makedirs(os.path.dirname(ipad_copy), exist_ok=True)
-            shutil.copy2(tmp_path, ipad_copy)
-        try:
-            _content_line_units.cache_clear()
-        except Exception:
-            pass
-        _save_gdrive_url(url)
-        return True, f"구글드라이브에서 양식 연결: {os.path.basename(WORKLOG_TEMPLATE)}"
-    except Exception as e:
-        return False, f"구글드라이브 불러오기 실패: {e}"
-
-
-def try_fetch_template_from_gdrive() -> bool:
-    """secrets/저장 URL로 템플릿 자동 동기화. 성공 시 True."""
-    if os.path.exists(WORKLOG_TEMPLATE):
-        return True
-    url = _gdrive_url_from_secrets() or _load_saved_gdrive_url()
-    if not url:
-        # SharePoint 저장 URL
-        try:
-            sp = os.path.join(WORKLOG_DIR, "sharepoint_template_url.txt")
-            if os.path.exists(sp):
-                with open(sp, "r", encoding="utf-8") as f:
-                    url = (f.read() or "").strip()
-        except Exception:
-            url = ""
-    if not url:
-        url = WORKLOG_DEFAULT_CLOUD_URL
-    if not url:
-        return False
-    ok, _msg = download_worklog_template_from_cloud_url(url)
-    return ok
 
 WL_MIN_ROW, WL_MAX_ROW = 1, 47
 WL_MIN_COL, WL_MAX_COL = 3, 28  # C ~ AB
@@ -426,6 +52,9 @@ WL_NOTE_ROWS = list(range(44, 48))  # D (특이사 항 본문)
 # 내용 병합 열 G~X (원본 양식). 한 줄 폭은 템플릿에서 계산.
 WL_CONTENT_COL_START = 7  # G
 WL_CONTENT_COL_END = 24  # X
+# 거래처 병합 열 C~F
+WL_CLIENT_COL_START = 3  # C
+WL_CLIENT_COL_END = 6  # F
 
 # 내용 칸 편집기 (CCv2) — Enter로 다음 칸 생성/이동을 JS에서 직접 처리
 _WL_LINES_HTML = """
@@ -433,42 +62,36 @@ _WL_LINES_HTML = """
 """
 
 _WL_LINES_CSS = """
-/* 맥·iPad 공통: 16px로 Safari 자동줌 방지, 터치 타깃 확보 */
-.wl-lines { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 100%; box-sizing: border-box; }
-.wl-row { display: flex; gap: 6px; align-items: center; width: 100%; }
+.wl-lines { display: flex; flex-direction: column; gap: 4px; width: 100%; max-width: 420px; }
+.wl-row { display: flex; gap: 4px; align-items: center; width: 100%; }
 .wl-row input {
   flex: 1 1 auto;
   min-width: 0;
   width: 100%;
-  min-height: 44px;
-  height: 44px;
-  padding: 0.35rem 0.5rem;
+  height: 1.55rem;
+  padding: 0.1rem 0.35rem;
   border: 1px solid #94A3B8;
-  border-radius: 6px;
+  border-radius: 4px;
   background: #fff;
   color: #0F172A;
-  font-size: 16px;
-  line-height: 1.25;
+  font-size: 0.75rem;
+  line-height: 1.2;
   outline: none;
-  -webkit-appearance: none;
-  appearance: none;
 }
 .wl-row input:focus {
   border-color: #0F766E;
   box-shadow: 0 0 0 1px #0F766E;
 }
 .wl-row button {
-  flex: 0 0 52px;
-  min-height: 44px;
-  height: 44px;
+  flex: 0 0 40px;
+  height: 1.55rem;
   border: 1px solid #CBD5E1;
-  border-radius: 6px;
+  border-radius: 4px;
   background: #F8FAFC;
   color: #334155;
-  font-size: 14px;
+  font-size: 0.68rem;
   padding: 0;
   cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
 }
 .wl-row button:hover { background: #F1F5F9; }
 .wl-row button.hidden { visibility: hidden; pointer-events: none; }
@@ -681,357 +304,6 @@ _WL_LINES_EDITOR = st.components.v2.component(
 )
 
 
-def _is_touch_ui() -> bool:
-    """iPad/터치 UI 분기. app.py is_touch_ui와 동일 기준(맥 무손실)."""
-    try:
-        if st.session_state.get("force_touch_ui") is True:
-            return True
-        v = st.query_params.get("touch_ui", "")
-        if isinstance(v, list):
-            v = v[0] if v else ""
-        if str(v) == "1":
-            st.session_state["force_touch_ui"] = True
-            return True
-    except Exception:
-        pass
-    try:
-        cookies = getattr(st.context, "cookies", None)
-        if cookies is not None and str(cookies.get("dashboard_touch", "")) == "1":
-            st.session_state["force_touch_ui"] = True
-            return True
-    except Exception:
-        pass
-    try:
-        headers = getattr(st.context, "headers", None)
-        ua = ""
-        if headers is not None:
-            ua = str(headers.get("User-Agent") or headers.get("user-agent") or "")
-        if ua and (
-            re.search(r"iPad|iPhone|iPod", ua)
-            or ("Macintosh" in ua and "Mobile" in ua)
-        ):
-            st.session_state["force_touch_ui"] = True
-            return True
-    except Exception:
-        pass
-    return bool(st.session_state.get("force_touch_ui"))
-
-
-def _inject_worklog_touch_css() -> None:
-    """일일업무일지 탭만 — iPad 레이아웃·버튼·iframe 안정화."""
-    st.markdown(
-        """
-        <style>
-        .worklog-touch-scope div[data-testid="stButton"] > button,
-        .worklog-touch-scope div[data-testid="stDownloadButton"] > button {
-            min-height: 48px !important;
-            font-size: 15px !important;
-            font-weight: 600 !important;
-        }
-        .worklog-touch-scope textarea,
-        .worklog-touch-scope input,
-        .worklog-touch-scope [data-baseweb="input"] input,
-        .worklog-touch-scope [data-baseweb="textarea"] textarea,
-        .worklog-touch-scope [data-baseweb="select"] {
-            font-size: 16px !important;
-            min-height: 44px !important;
-        }
-        .worklog-touch-scope iframe {
-            max-width: 100% !important;
-            -webkit-overflow-scrolling: touch !important;
-        }
-        .worklog-touch-scope [data-testid="stHorizontalBlock"] {
-            flex-wrap: wrap !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _is_xlsx_bytes(data: bytes) -> bool:
-    """xlsx(ZIP) 시그니처 확인. iPad Files가 확장자/MIME을 빼먹어도 통과."""
-    if not data or len(data) < 4:
-        return False
-    # ZIP local file header
-    return data[:2] == b"PK"
-
-
-def _sanitize_worklog_xlsx_file(path: str) -> bool:
-    """양식 밖 거대 row(예: 1048417행) 제거 + dimension 축소. 무한로딩/지연 방지."""
-    import io
-    import zipfile
-
-    if not path or not os.path.exists(path):
-        return False
-    try:
-        with zipfile.ZipFile(path, "r") as zin:
-            names = zin.namelist()
-            sheet_names = [
-                n
-                for n in names
-                if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")
-            ]
-            if not sheet_names:
-                return False
-            parts: dict[str, bytes] = {n: zin.read(n) for n in names}
-
-        changed = False
-        dim_pat = re.compile(r'<dimension[^/]*/>')
-        row_pat = re.compile(r'<row\b[^>]*\br="(\d+)"[^>]*>.*?</row>', re.S)
-        # mergeCell ref like "A1:B2"
-        merge_pat = re.compile(r'<mergeCell\b[^>]*\bref="([^"]+)"[^>]*/>')
-
-        def _col_row(addr: str) -> tuple[int, int] | None:
-            m = re.fullmatch(r"([A-Z]+)(\d+)", addr.upper())
-            if not m:
-                return None
-            col_s, row_s = m.group(1), m.group(2)
-            col = 0
-            for ch in col_s:
-                col = col * 26 + (ord(ch) - 64)
-            return col, int(row_s)
-
-        for sn in sheet_names:
-            xml = parts[sn].decode("utf-8", errors="replace")
-            orig = xml
-
-            def _keep_row(m: re.Match) -> str:
-                try:
-                    r = int(m.group(1))
-                except Exception:
-                    return m.group(0)
-                return m.group(0) if r <= WL_MAX_ROW else ""
-
-            xml = row_pat.sub(_keep_row, xml)
-
-            def _keep_merge(m: re.Match) -> str:
-                ref = m.group(1)
-                try:
-                    a, b = ref.split(":")
-                    ca, ra = _col_row(a) or (0, 0)
-                    cb, rb = _col_row(b) or (0, 0)
-                    if max(ra, rb) > WL_MAX_ROW or max(ca, cb) > WL_MAX_COL:
-                        return ""
-                except Exception:
-                    return m.group(0)
-                return m.group(0)
-
-            xml = merge_pat.sub(_keep_merge, xml)
-            try:
-                from openpyxl.utils import get_column_letter as _gcl
-            except Exception:
-                _gcl = get_column_letter
-            if _gcl is None:
-                # A=1 ... AB=28 fallback
-                def _gcl(n: int) -> str:
-                    s = ""
-                    while n:
-                        n, r = divmod(n - 1, 26)
-                        s = chr(65 + r) + s
-                    return s or "A"
-
-            new_dim = f'<dimension ref="A1:{_gcl(WL_MAX_COL)}{WL_MAX_ROW}"/>'
-            if dim_pat.search(xml):
-                xml = dim_pat.sub(new_dim, xml, count=1)
-            else:
-                xml = xml.replace("<worksheet", f"<worksheet", 1)
-                xml = re.sub(
-                    r"(<worksheet[^>]*>)",
-                    r"\1" + new_dim,
-                    xml,
-                    count=1,
-                )
-            if xml != orig:
-                parts[sn] = xml.encode("utf-8")
-                changed = True
-
-        if not changed:
-            return False
-
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
-            for n, data in parts.items():
-                zout.writestr(n, data)
-        with open(path, "wb") as f:
-            f.write(buf.getvalue())
-        try:
-            _content_line_units.cache_clear()
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
-
-
-def _ingest_workbook_bytes(raw: bytes, preferred_name: str = "8월_업무일지.xlsx") -> tuple[bool, str]:
-    """업로드/다운로드 바이트를 template.xlsx 로 저장."""
-    if not raw:
-        return False, "파일이 비어 있습니다."
-    if not _is_xlsx_bytes(raw):
-        # xls(구형) OLE 시그니처
-        if raw[:8] == b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1":
-            return False, "구형 .xls 입니다. Excel에서 .xlsx 로 저장한 뒤 다시 선택해 주세요."
-        head = raw[:80].lstrip()
-        if head.startswith(b"<") or b"html" in head[:40].lower():
-            return False, "엑셀이 아니라 웹페이지입니다. Files에서 파일이 구름(↓) 아이콘이면 먼저 다운로드하세요."
-        return False, "엑셀(.xlsx) 형식이 아닙니다. Files → 구글드라이브에서 .xlsx 를 선택해 주세요."
-    try:
-        os.makedirs(WORKLOG_DIR, exist_ok=True)
-        os.makedirs(os.path.join("uploaded_cache", "ipad"), exist_ok=True)
-        safe_name = os.path.basename(preferred_name or "8월_업무일지.xlsx").strip() or "8월_업무일지.xlsx"
-        if not safe_name.lower().endswith(".xlsx"):
-            safe_name += ".xlsx"
-        ipad_dir = os.path.join("uploaded_cache", "ipad")
-        ipad_path = os.path.join(ipad_dir, safe_name)
-        with open(ipad_path, "wb") as f:
-            f.write(raw)
-        with open(WORKLOG_TEMPLATE, "wb") as f:
-            f.write(raw)
-        # 업로드본에 거대 row가 있으면 탭이 무한로딩되므로 즉시 정리
-        _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
-        try:
-            _content_line_units.cache_clear()
-        except Exception:
-            pass
-        # openpyxl로 한 번 열어 유효성 확인
-        if load_workbook is not None:
-            try:
-                wb = load_workbook(WORKLOG_TEMPLATE, read_only=True, data_only=False)
-                wb.close()
-            except Exception as e:
-                try:
-                    os.remove(WORKLOG_TEMPLATE)
-                except Exception:
-                    pass
-                return False, f"엑셀을 열 수 없습니다(손상/암호): {e}"
-        return True, f"Files 엑셀 열림: {safe_name}"
-    except Exception as e:
-        return False, f"저장 실패: {e}"
-
-
-def _render_files_open_uploader(*, key_suffix: str = "main") -> bool:
-    """아이패드 Files에서 엑셀 고르기. 성공·rerun 시 True."""
-    touch = _is_touch_ui()
-    st.markdown(
-        """
-        <div style="padding:10px 12px;border:1px solid #99F6E4;background:#F0FDFA;
-        border-radius:10px;margin:0 0 10px;font-size:13px;color:#134E4A;line-height:1.45;">
-        <b>아이패드 Files에서 열기</b><br>
-        1) 아래 <b>찾아보기</b> 탭<br>
-        2) <b>Browse</b> → <b>Files</b> / <b>Google Drive</b><br>
-        3) <b>8월 엑셀(.xlsx)</b> 선택<br>
-        ※ 파일에 구름 ⬇️ 표시면 먼저 눌러 다운로드한 뒤 선택하세요.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    # type 제한 없음 → iOS Safari/Files MIME 불일치로 선택 불가 문제 회피
-    up = st.file_uploader(
-        "Files / 구글드라이브 엑셀 선택",
-        type=None,
-        key=f"wl_files_open_{key_suffix}",
-        help="확장자가 안 보여도 됩니다. xlsx 내용이면 자동 인식합니다.",
-        label_visibility="visible",
-    )
-    if up is None:
-        return False
-    try:
-        raw = up.getvalue()
-    except Exception as e:
-        st.error(f"파일 읽기 실패: {e}")
-        return False
-    # 같은 업로드로 st.rerun 무한루프 방지
-    try:
-        sig = f"{getattr(up, 'name', '')}:{len(raw)}:{hash(raw[:4096])}"
-    except Exception:
-        sig = f"{getattr(up, 'name', '')}:{len(raw)}"
-    sig_key = f"wl_ingest_sig_{key_suffix}"
-    if st.session_state.get(sig_key) == sig and os.path.exists(WORKLOG_TEMPLATE):
-        return False
-    ok, msg = _ingest_workbook_bytes(
-        raw, preferred_name=getattr(up, "name", None) or "8월_업무일지.xlsx"
-    )
-    if ok:
-        st.session_state[sig_key] = sig
-        st.session_state["wl_template_ready"] = True
-        st.success(msg)
-        st.rerun()
-    st.error(msg)
-    if touch:
-        st.info(
-            "여전히 안 열리면: Files 앱에서 해당 엑셀을 길게 누르기 → "
-            "다운로드/보관에 저장 후, 다시 이 화면에서 선택하세요."
-        )
-    return False
-
-
-def _offer_template_upload() -> bool:
-    """Cloud/iPad: Files 우선 → 구글드라이브 링크로 8월 양식 준비."""
-    # 이미 양식이 있으면 자동 rerun 금지(무한로딩 원인)
-    if os.path.exists(WORKLOG_TEMPLATE):
-        _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
-        return True
-
-    # 1) 아이패드 Files에서 직접 열기 (가장 확실)
-    st.subheader("📂 Files에 있는 엑셀 열기")
-    if _render_files_open_uploader(key_suffix="need_template"):
-        return True
-
-    # 2) 클라우드 자동(시크릿/저장 URL) — 새로 받은 경우에만 rerun
-    before = os.path.exists(WORKLOG_TEMPLATE)
-    if try_fetch_template_from_gdrive() and os.path.exists(WORKLOG_TEMPLATE):
-        _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
-        if not before:
-            st.success("클라우드 8월 양식을 연결했습니다.")
-            st.rerun()
-        return True
-
-    # 3) 로컬/캐시 자동
-    found = find_worklog_template_source()
-    if found and os.path.isfile(found):
-        try:
-            if not os.path.exists(WORKLOG_TEMPLATE):
-                os.makedirs(WORKLOG_DIR, exist_ok=True)
-                shutil.copy2(found, WORKLOG_TEMPLATE)
-                _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
-                st.success(f"8월/업무일지 양식을 연결했습니다: `{os.path.basename(found)}`")
-                st.rerun()
-            return True
-        except Exception as e:
-            st.error(f"양식 연결 실패: {e}")
-
-    st.markdown("---")
-    st.caption("또는 OneDrive / SharePoint / 구글드라이브 공유 링크로 불러오기")
-    saved_url = _gdrive_url_from_secrets() or _load_saved_gdrive_url()
-    if not saved_url:
-        try:
-            sp = os.path.join(WORKLOG_DIR, "sharepoint_template_url.txt")
-            if os.path.exists(sp):
-                with open(sp, "r", encoding="utf-8") as f:
-                    saved_url = (f.read() or "").strip()
-        except Exception:
-            pass
-    if not saved_url:
-        saved_url = WORKLOG_DEFAULT_CLOUD_URL
-    gurl = st.text_input(
-        "클라우드 링크 (OneDrive/SharePoint/구글드라이브)",
-        value=saved_url,
-        key="wl_gdrive_url",
-        placeholder="https://...sharepoint.com/:x:/... 또는 drive.google.com/...",
-        help="공유 링크를 붙여 넣으세요. OneDrive「8월」파일 링크도 됩니다.",
-    )
-    if st.button("📥 클라우드에서 불러오기", key="wl_gdrive_fetch", width="stretch"):
-        with st.spinner("클라우드에서 8월 엑셀 다운로드 중..."):
-            ok, msg = download_worklog_template_from_cloud_url(gurl)
-        if ok:
-            _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
-            st.success(msg)
-            st.rerun()
-        st.error(msg)
-    return False
-
-
 def _entry_lines_comp_key(iso: str, entry_i: int) -> str:
     return f"wl_lines_comp_{iso}_{entry_i}"
 
@@ -1114,6 +386,26 @@ def _content_line_units() -> int:
         return fallback
 
 
+@lru_cache(maxsize=1)
+def _client_line_units() -> int:
+    """원본 C:F 거래처 병합 폭 기준 — 칸을 넘기면 다음 행으로(반각=1)."""
+    fallback = 18
+    if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
+        return fallback
+    try:
+        wb = load_workbook(WORKLOG_TEMPLATE, data_only=False)
+        ws = wb.active
+        total = sum(
+            _excel_col_width(ws, c)
+            for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
+        )
+        wb.close()
+        units = int(total * (11 / 14) * 1.05)
+        return max(12, min(units, 28))
+    except Exception:
+        return fallback
+
+
 def _fit_by_units(s: str, max_units: int | None = None) -> tuple[str, str]:
     """max_units 안에 들어가는 접두 / 나머지."""
     if max_units is None:
@@ -1182,30 +474,8 @@ def _spill_all_content(cells: dict) -> dict:
 
 def _ensure_dirs() -> None:
     os.makedirs(WORKLOG_DIR, exist_ok=True)
-    os.makedirs(os.path.join("uploaded_cache", "ipad"), exist_ok=True)
-    os.makedirs(WORKLOG_GDRIVE_CACHE_DIR, exist_ok=True)
-    if os.path.exists(WORKLOG_TEMPLATE):
-        _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
-        return
-    # 1순위: 구글드라이브(시크릿/저장 링크)
-    try:
-        if try_fetch_template_from_gdrive() and os.path.exists(WORKLOG_TEMPLATE):
-            _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
-            return
-    except Exception:
-        pass
-    # 2순위: Desktop / Files / 캐시
-    src = find_worklog_template_source()
-    if src and os.path.isfile(src):
-        try:
-            shutil.copy2(src, WORKLOG_TEMPLATE)
-            _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
-            try:
-                _content_line_units.cache_clear()
-            except Exception:
-                pass
-        except Exception:
-            pass
+    if not os.path.exists(WORKLOG_TEMPLATE) and os.path.exists(WORKLOG_TEMPLATE_SRC):
+        shutil.copy2(WORKLOG_TEMPLATE_SRC, WORKLOG_TEMPLATE)
 
 
 def worklog_path(d: date) -> str:
@@ -1213,6 +483,9 @@ def worklog_path(d: date) -> str:
 
 
 def list_saved_worklog_dates() -> set[str]:
+    cached = st.session_state.get("wl_saved_dates_cache")
+    if isinstance(cached, set):
+        return cached
     _ensure_dirs()
     out: set[str] = set()
     for name in os.listdir(WORKLOG_DIR):
@@ -1222,8 +495,10 @@ def list_saved_worklog_dates() -> set[str]:
             and name[0:4].isdigit()
             and name not in {"template.xlsx"}
             and not name.startswith("_preview_")
+            and "_인쇄" not in name
         ):
             out.add(name.replace(".xlsx", ""))
+    st.session_state["wl_saved_dates_cache"] = out
     return out
 
 
@@ -1316,7 +591,107 @@ def save_worklog_cells(d: date, cells: dict) -> str:
     is_new = not os.path.exists(path)
     cells = _spill_all_content(cells)
     write_cells_to_path(path, d, cells, blank_base=is_new)
+    _invalidate_saved_dates_cache()
     return path
+
+
+def delete_worklog_day(d: date) -> list[str]:
+    """해당일 저장 파일·미리보기·인쇄본 삭제. 세션 입력 상태도 비움."""
+    _ensure_dirs()
+    iso = d.isoformat()
+    removed: list[str] = []
+    # 날짜 관련 파일 전부 제거 (저장본·미리보기·인쇄본)
+    targets = [
+        worklog_path(d),
+        os.path.join(WORKLOG_DIR, f"_preview_{iso}.xlsx"),
+        os.path.join(WORKLOG_DIR, f"일일업무일지_{iso}_인쇄.xlsx"),
+    ]
+    for name in os.listdir(WORKLOG_DIR):
+        if iso in name and name.endswith(".xlsx") and name != "template.xlsx":
+            targets.append(os.path.join(WORKLOG_DIR, name))
+    seen: set[str] = set()
+    for path in targets:
+        if path in seen:
+            continue
+        seen.add(path)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+                removed.append(os.path.basename(path))
+            except OSError:
+                pass
+
+    _invalidate_saved_dates_cache()
+    _clear_date_widget_state(d)
+    # 빈 상태로 강제 리셋 (다음 _init 이 파일을 다시 안 읽도록 boot=True + 빈 entries)
+    empty = [{"client": "", "content": "", "lines": [], "blank_after": 1}]
+    st.session_state[_boot_key(d)] = True
+    st.session_state[_entries_key(d)] = empty
+    st.session_state[_next_key(d)] = ""
+    st.session_state[_notes_key(d)] = ""
+    st.session_state[f"wl_entry_count_{iso}"] = 1
+    st.session_state[f"wl_pending_sync_{iso}"] = {
+        "entries": empty,
+        "next": "",
+        "notes": "",
+        "msg": (
+            f"삭제 완료"
+            + (f": {', '.join(removed)}" if removed else " (저장본 없음, 입력만 초기화)")
+        ),
+    }
+    return removed
+
+
+def reassign_worklog_date(old: date, new: date) -> str:
+    """입력/저장본을 새 날짜로 옮긴다. new 에 기존 저장본이 있으면 오류."""
+    if old == new:
+        return "same"
+    if os.path.exists(worklog_path(new)):
+        raise FileExistsError(f"{new.isoformat()} 에 이미 저장된 일지가 있습니다.")
+
+    # 현재 입력 우선, 없으면 파일
+    try:
+        cells = _cells_from_widgets(old)
+    except Exception:
+        cells = read_worklog_cells(old)
+    cells["date"] = format_worklog_date(new)
+
+    old_saved = os.path.exists(worklog_path(old))
+    if old_saved or any(
+        str(cells.get(f"G{r}", "") or "").strip()
+        or str(cells.get(f"C{r}", "") or "").strip()
+        for r in WL_CONTENT_ROWS
+    ) or any(str(cells.get(f"D{r}", "") or "").strip() for r in WL_NEXT_ROWS + WL_NOTE_ROWS):
+        save_worklog_cells(new, cells)
+
+    if old_saved:
+        for path in (worklog_path(old), _preview_path(old), _print_xlsx_path(old)):
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+    entries = _grouped_entries_from_cells(cells) or [
+        {"client": "", "content": "", "lines": [], "blank_after": 1}
+    ]
+    _, nd, nt = _entries_from_cells(cells)
+    _clear_date_widget_state(old)
+    st.session_state["worklog_selected"] = new
+    st.session_state["worklog_month"] = date(new.year, new.month, 1)
+    st.session_state[_boot_key(new)] = True
+    st.session_state[_entries_key(new)] = entries
+    st.session_state[_next_key(new)] = "\n".join(nd)
+    st.session_state[_notes_key(new)] = "\n".join(nt)
+    st.session_state[f"wl_entry_count_{new.isoformat()}"] = len(entries)
+    st.session_state[f"wl_pending_sync_{new.isoformat()}"] = {
+        "entries": entries,
+        "next": "\n".join(nd),
+        "notes": "\n".join(nt),
+        "msg": "",
+    }
+    _invalidate_saved_dates_cache()
+    return "moved" if old_saved else "retargeted"
 
 
 def _cell_fill_color(cell) -> str | None:
@@ -1338,6 +713,7 @@ def _cell_fill_color(cell) -> str | None:
 
 
 def _border_css(cell) -> str:
+    """엑셀에 실제로 있는 테두리만 반영. 없으면 빈 칸 격자(가짜 박스)를 그리지 않음."""
     parts = []
     try:
         b = cell.border
@@ -1349,10 +725,21 @@ def _border_css(cell) -> str:
         ):
             side = getattr(b, side_name, None)
             if side and side.style:
-                parts.append(f"{css_side}:1px solid #111;")
+                color = "#111"
+                try:
+                    c = side.color
+                    if c is not None and getattr(c, "type", None) == "rgb" and c.rgb:
+                        rgb = str(c.rgb)
+                        if len(rgb) == 8:
+                            rgb = rgb[2:]
+                        if rgb and rgb != "00000000":
+                            color = f"#{rgb}"
+                except Exception:
+                    pass
+                parts.append(f"{css_side}:1px solid {color};")
     except Exception:
         pass
-    return "".join(parts) if parts else "border:1px solid #333;"
+    return "".join(parts)
 
 
 def workbook_to_html(path: str) -> str:
@@ -1460,6 +847,7 @@ def render_worklog_view_html(
     print_mode: bool = False,
     scale: float = 0.55,
     auto_print: bool = False,
+    wrap_height: str | None = None,
 ) -> str:
     """원본 엑셀 양식 HTML (인쇄/보고용)."""
     sheet = workbook_to_html(path)
@@ -1473,29 +861,31 @@ def render_worklog_view_html(
         """
         scale = 1.0
     scale_css = f"transform:scale({scale}); transform-origin:top left;" if scale < 1 else ""
-    wrap_height = "auto" if print_mode else "860px"
+    if wrap_height is None:
+        wrap_height = "auto" if print_mode else "860px"
     auto_script = ""
     if auto_print:
         auto_script = """
         <script>
           (function() {
+            var tries = 0;
             function go() {
+              tries += 1;
               try { window.focus(); window.print(); } catch (e) {}
+              if (tries < 3) setTimeout(go, 400 * tries);
             }
-            // iframe 로드 직후 인쇄창
-            if (document.readyState === 'complete') setTimeout(go, 250);
-            else window.addEventListener('load', function() { setTimeout(go, 250); });
+            if (document.readyState === 'complete') setTimeout(go, 200);
+            else window.addEventListener('load', function() { setTimeout(go, 200); });
           })();
         </script>
         """
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>일일업무일지</title>
 <style>
   @page {{ size: A4 portrait; margin: 10mm; }}
   html, body {{ margin:0; padding:0; background:#fff; }}
-  body {{ padding:6px; }}
+  body {{ padding:4px; }}
   .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }}
   .toolbar button {{
     padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px;
@@ -1533,8 +923,9 @@ def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
 def _grouped_entries_from_cells(cells: dict) -> list[dict]:
     """엑셀 행 → 논리 항목.
 
-    - 거래처가 있으면 새 항목 (앞 빈 행 = 이전 blank_after)
-    - 거래처 없이 내용만 있으면 이전 항목에 칸 추가 (빈 칸도 유지)
+    - 빈 행 뒤에 오면 새 항목 (앞 빈 행 수 = 이전 blank_after)
+    - 빈 행 없이 이어지면 같은 항목: 거래처·내용 칸을 각각 이어 붙임
+      (예: C=예성이엔지 / C=(음성지점) → 거래처 2칸)
     """
     entries: list[dict] = []
     blank_run = 0
@@ -1545,28 +936,60 @@ def _grouped_entries_from_cells(cells: dict) -> list[dict]:
         if empty:
             blank_run += 1
             continue
-        if client or not entries:
+        if not entries or blank_run > 0:
             if entries:
                 entries[-1]["blank_after"] = max(0, min(10, blank_run))
             blank_run = 0
+            client_lines = [client] if client else []
             lines = [content or ""]
             entries.append(
                 {
-                    "client": client,
+                    "client": "\n".join(client_lines),
+                    "client_lines": client_lines,
                     "content": "\n".join(lines),
                     "lines": lines,
                     "blank_after": 1,
                 }
             )
         else:
-            # 항목 내부 빈 칸 보존 후 내용 칸 추가
+            # 같은 항목 연속 칸 (거래처 줄바꿈 / 내용 추가)
             if blank_run > 0:
                 for _ in range(blank_run):
                     entries[-1].setdefault("lines", []).append("")
+                    entries[-1].setdefault("client_lines", []).append("")
                 blank_run = 0
-            entries[-1].setdefault("lines", []).append(content or "")
-            entries[-1]["content"] = "\n".join(entries[-1].get("lines") or [])
+            ent = entries[-1]
+            cl = ent.setdefault("client_lines", [])
+            if not cl and str(ent.get("client") or "").strip():
+                cl[:] = [str(ent.get("client") or "").strip()]
+            cl.append(client)
+            ent["client"] = "\n".join(x for x in cl if x is not None)
+            ent.setdefault("lines", []).append(content or "")
+            ent["content"] = "\n".join(ent.get("lines") or [])
     return entries
+
+
+def _entry_client_lines(ent: dict | None) -> list[str]:
+    """거래처 칸 목록 (줄바꿈·칸폭 초과 = 다음 C칸)."""
+    if not ent:
+        return []
+    raw = ent.get("client_lines")
+    if isinstance(raw, list) and raw:
+        src = [str(x or "") for x in raw]
+    else:
+        src = str(ent.get("client") or "").splitlines() or (
+            [str(ent.get("client") or "")] if str(ent.get("client") or "").strip() else []
+        )
+    max_u = _client_line_units()
+    out: list[str] = []
+    for line in src:
+        s = str(line or "")
+        if not s.strip():
+            # 중간 빈 줄은 유지하지 않음 (거래처는 연속 칸)
+            continue
+        parts = _chunk_text(s, max_u) or [s]
+        out.extend(parts)
+    return out
 
 
 def _entry_pack_lines(ent: dict) -> list[str]:
@@ -1584,7 +1007,7 @@ def _entry_pack_lines(ent: dict) -> list[str]:
             continue
         parts = _chunk_text(line, max_u) or [line]
         out.extend(parts)
-    if not out and str(ent.get("client") or "").strip():
+    if not out and _entry_client_lines(ent):
         out = [""]
     return out
 
@@ -1597,13 +1020,15 @@ def _content_row_usage(entries: list[dict] | None) -> dict:
     prev_gap = 0
     per_entry: list[int] = []
     for ent in entries or []:
-        client = str(ent.get("client") or "").strip()
+        clients = _entry_client_lines(ent)
         pack_lines = _entry_pack_lines(ent)
-        if not client and not any((x or "").strip() for x in pack_lines):
+        if not any(str(x).strip() for x in clients) and not any(
+            (x or "").strip() for x in pack_lines
+        ):
             per_entry.append(0)
             continue
         gap = prev_gap if wrote_any else 0
-        lines = max(1, len(pack_lines))
+        lines = max(len(clients), len(pack_lines), 1)
         need = gap + lines
         per_entry.append(need)
         used += need
@@ -1627,6 +1052,94 @@ def _content_row_usage(entries: list[dict] | None) -> dict:
     }
 
 
+def _render_row_remain_gauge(usage: dict, *, height_px: int = 520) -> None:
+    """보기·입력 사이 세로 게이지: 전체 내용칸 대비 남은 칸수."""
+    total = max(1, int(usage.get("total") or 1))
+    used = max(0, int(usage.get("used") or 0))
+    rem = max(0, int(usage.get("remaining") or 0))
+    overflow = bool(usage.get("overflow"))
+
+    if overflow:
+        accent = "#DC2626"
+        used_color = "#FECACA"
+        rem_color = "#FEE2E2"
+        label = "초과"
+        big = f"+{used - total}"
+        rem_show = 0
+        used_show = total
+    elif rem <= 3:
+        accent = "#D97706"
+        used_color = "#E2E8F0"
+        rem_color = "#FBBF24"
+        label = "남음"
+        big = str(rem)
+        rem_show = rem
+        used_show = min(used, total)
+    else:
+        accent = "#0F766E"
+        used_color = "#E2E8F0"
+        rem_color = "#14B8A6"
+        label = "남음"
+        big = str(rem)
+        rem_show = rem
+        used_show = min(used, total)
+
+    # 위에서부터 사용칸(회색) → 아래 남은칸(색) 순서의 세그먼트
+    segs: list[str] = []
+    gap = max(1, int(3 if total <= 20 else 2))
+    for i in range(total):
+        # i=0 이 맨 위
+        is_used = i < used_show
+        bg = used_color if is_used else rem_color
+        segs.append(
+            f'<div style="flex:1 1 0;min-height:4px;border-radius:3px;background:{bg};'
+            f'margin:0 0 {gap}px 0;opacity:{0.55 if is_used else 1};"></div>'
+        )
+    # 마지막 margin 제거용
+    if segs:
+        segs[-1] = segs[-1].replace(f"margin:0 0 {gap}px 0;", "margin:0;")
+
+    next_row = usage.get("next_row")
+    next_txt = f"다음 G{next_row}" if next_row else "칸 끝"
+    bar_h = max(300, height_px - 150)
+
+    st.markdown(
+        f"""
+<div style="
+  display:flex;flex-direction:column;align-items:center;justify-content:flex-start;
+  gap:8px;padding:6px 2px 4px;min-height:{height_px}px;
+  font-family:'Pretendard','Apple SD Gothic Neo',sans-serif;
+">
+  <div style="text-align:center;line-height:1.15;">
+    <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:#64748B;">{label}</div>
+    <div style="font-size:24px;font-weight:800;color:{accent};margin-top:1px;">{big}</div>
+    <div style="font-size:10px;color:#94A3B8;">칸</div>
+  </div>
+
+  <div style="
+    display:flex;flex-direction:column;justify-content:flex-start;
+    width:26px;height:{bar_h}px;padding:4px 3px;
+    border-radius:10px;background:#F8FAFC;
+    box-shadow:inset 0 0 0 1px #E2E8F0;
+  " title="전체 {total}칸 · 사용 {used}칸 · 남음 {rem}칸">
+    {"".join(segs)}
+  </div>
+
+  <div style="text-align:center;line-height:1.3;">
+    <div style="font-size:11px;font-weight:800;color:#0F172A;">
+      <span style="color:{accent};">{rem_show}</span>
+      <span style="color:#94A3B8;font-weight:600;"> / {total}</span>
+    </div>
+    <div style="font-size:10px;color:#64748B;">남은칸 / 전체칸</div>
+    <div style="font-size:10px;color:#94A3B8;margin-top:4px;">사용 {used_show}칸</div>
+    <div style="font-size:10px;color:#64748B;margin-top:2px;">{next_txt}</div>
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _pack_entries_to_cells(
     d: date,
     entries: list[dict],
@@ -1645,21 +1158,22 @@ def _pack_entries_to_cells(
     wrote_any = False
     prev_gap = 0
     for ent in entries or []:
-        client = str(ent.get("client") or "").strip()
+        clients = _entry_client_lines(ent)
         chunks = _entry_pack_lines(ent)
-        if not client and not any((x or "").strip() for x in chunks):
+        if not any(str(x).strip() for x in clients) and not any(
+            (x or "").strip() for x in chunks
+        ):
             continue
         # 이전 항목이 지정한 빈 칸만큼 띄움
         if wrote_any:
             row_i += max(0, int(prev_gap))
-        if not chunks:
-            chunks = [""]
-        for j, head in enumerate(chunks):
+        n = max(len(clients), len(chunks), 1)
+        for j in range(n):
             if row_i >= len(rows):
                 break
             r = rows[row_i]
-            cells[f"C{r}"] = client if j == 0 else ""
-            cells[f"G{r}"] = head
+            cells[f"C{r}"] = clients[j] if j < len(clients) else ""
+            cells[f"G{r}"] = chunks[j] if j < len(chunks) else ""
             row_i += 1
         wrote_any = True
         prev_gap = _entry_blank_after(ent, 1)
@@ -1697,7 +1211,11 @@ def render_readable_preview_html(d: date, cells: dict) -> str:
     if rows:
         work_items = []
         for i, (client, content) in enumerate(rows, 1):
-            c = html.escape(client) if client else "<span class='muted'>(거래처 없음)</span>"
+            c = (
+                html.escape(client).replace("\n", "<br>")
+                if client
+                else "<span class='muted'>(거래처 없음)</span>"
+            )
             t = html.escape(content) if content else "<span class='muted'>—</span>"
             work_items.append(
                 f"""<div class="item">
@@ -1759,7 +1277,7 @@ def render_readable_preview_html(d: date, cells: dict) -> str:
     background:#CCFBF1; color:#0F766E; font-weight:700; font-size:13px;
     display:flex; align-items:center; justify-content:center;
   }}
-  .client {{ font-size:15px; font-weight:700; color:#134E4A; margin-bottom:4px; }}
+  .client {{ font-size:15px; font-weight:700; color:#134E4A; margin-bottom:4px; white-space:pre-wrap; }}
   .content {{ font-size:14px; line-height:1.55; color:#334155; white-space:pre-wrap; word-break:break-word; }}
   .muted {{ color:#94A3B8; font-weight:500; }}
   .empty {{
@@ -1829,20 +1347,21 @@ def _boot_key(d: date) -> str:
 
 
 def _init_widget_state(d: date) -> dict:
-    """엑셀 → 항목(거래처/내용) 세션 상태로 로드."""
-    cells = read_worklog_cells(d)
+    """엑셀 → 항목(거래처/내용) 세션 상태로 로드. 이미 boot면 디스크 재읽기 생략."""
     bk = _boot_key(d)
     ek = _entries_key(d)
+    if st.session_state.get(bk) and ek in st.session_state:
+        return {}
+    cells = read_worklog_cells(d)
     # 예전 칸별입력 boot 만 있는 경우도 항목 모드로 마이그레이션
-    if not st.session_state.get(bk) or ek not in st.session_state:
-        entries = _grouped_entries_from_cells(cells)
-        if not entries:
-            entries = [{"client": "", "content": ""}]
-        st.session_state[ek] = entries
-        _, next_day, notes = _entries_from_cells(cells)
-        st.session_state[_next_key(d)] = "\n".join(next_day)
-        st.session_state[_notes_key(d)] = "\n".join(notes)
-        st.session_state[bk] = True
+    entries = _grouped_entries_from_cells(cells)
+    if not entries:
+        entries = [{"client": "", "content": ""}]
+    st.session_state[ek] = entries
+    _, next_day, notes = _entries_from_cells(cells)
+    st.session_state[_next_key(d)] = "\n".join(next_day)
+    st.session_state[_notes_key(d)] = "\n".join(notes)
+    st.session_state[bk] = True
     return cells
 
 
@@ -1855,24 +1374,20 @@ def _entry_line_key(iso: str, entry_i: int, line_j: int) -> str:
 
 
 def _lines_from_entry_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bool = True) -> list[str]:
-    """칸 위젯/컴포넌트 → 줄 목록. 중간 빈 칸은 유지. 끝의 편집용 빈 칸 1개는 선택적 유지."""
-    live = st.session_state.get(_entry_lines_live_key(iso, entry_i))
-    ck = _entry_lines_comp_key(iso, entry_i)
-    cs = st.session_state.get(ck)
-    if isinstance(live, list):
-        parts = [str(x or "") for x in live]
-    elif isinstance(cs, dict) and isinstance(cs.get("lines"), list):
-        parts = [str(x or "") for x in cs.get("lines") or []]
+    """칸 위젯 → 줄 목록. 중간 빈 칸은 유지. 끝의 편집용 빈 칸 1개는 선택적 유지."""
+    lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
+    if lc > 0:
+        parts = [
+            str(st.session_state.get(_entry_line_key(iso, entry_i, j), "") or "")
+            for j in range(lc)
+        ]
     else:
-        lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
-        if lc <= 0:
+        live = st.session_state.get(_entry_lines_live_key(iso, entry_i))
+        if isinstance(live, list):
+            parts = [str(x or "") for x in live]
+        else:
             raw = str(st.session_state.get(f"wl_ent_t_{iso}_{entry_i}", "") or "")
             parts = [raw] if raw else ([""] if keep_trailing_empty else [])
-        else:
-            parts = [
-                str(st.session_state.get(_entry_line_key(iso, entry_i, j), "") or "")
-                for j in range(lc)
-            ]
     if not keep_trailing_empty:
         while parts and parts[-1] == "":
             parts.pop()
@@ -1905,7 +1420,7 @@ def _set_comp_lines_state(
 
 
 def _apply_entry_lines(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None) -> None:
-    """줄 목록을 컴포넌트/레거시 키에 반영. 끝에 편집용 빈 칸 1개 유지."""
+    """줄 목록을 text_input 키에 반영. 끝에 편집용 빈 칸 1개 유지."""
     chunks = [str(x or "") for x in (lines or [])]
     if not chunks or chunks[-1] != "":
         chunks.append("")
@@ -1916,66 +1431,431 @@ def _apply_entry_lines(iso: str, entry_i: int, lines: list[str], *, focus_j: int
     for j, line in enumerate(chunks):
         st.session_state[_entry_line_key(iso, entry_i, j)] = line
     st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(chunks)
-    _set_comp_lines_state(iso, entry_i, chunks, focus_j=focus_j)
-    rk = _entry_lines_rev_key(iso, entry_i)
-    st.session_state[rk] = int(st.session_state.get(rk, 0) or 0) + 1
+    st.session_state[_entry_lines_live_key(iso, entry_i)] = list(chunks)
+    if focus_j is not None:
+        fj = max(0, min(int(focus_j), len(chunks) - 1))
+        st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, fj)
+
+
+def _insert_line_after(iso: str, entry_i: int, line_j: int) -> None:
+    """현재 칸 바로 아래 빈 칸을 만들고 포커스 이동."""
+    cur = _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)
+    if not cur:
+        cur = [""]
+    while len(cur) <= line_j:
+        cur.append("")
+    key = _entry_line_key(iso, entry_i, line_j)
+    if key in st.session_state:
+        cur[line_j] = str(st.session_state.get(key) or "")
+    cur.insert(line_j + 1, "")
+    _apply_entry_lines(iso, entry_i, cur, focus_j=line_j + 1)
+
+
+def _entry_client_count_key(iso: str, entry_i: int) -> str:
+    return f"wl_ent_clc_{iso}_{entry_i}"
+
+
+def _entry_client_key(iso: str, entry_i: int, line_j: int) -> str:
+    return f"wl_ent_cl_{iso}_{entry_i}_{line_j}"
+
+
+def _clients_from_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bool = False) -> list[str]:
+    """거래처 칸 위젯 → 목록."""
+    lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
+    if lc > 0:
+        parts = [
+            str(st.session_state.get(_entry_client_key(iso, entry_i, j), "") or "")
+            for j in range(lc)
+        ]
+    else:
+        raw = str(st.session_state.get(f"wl_ent_c_{iso}_{entry_i}", "") or "")
+        parts = raw.splitlines() if raw else ([""] if keep_trailing_empty else [])
+    if not keep_trailing_empty:
+        while parts and not str(parts[-1]).strip():
+            parts.pop()
+    elif parts and str(parts[-1]).strip() != "":
+        parts = list(parts) + [""]
+    elif not parts and keep_trailing_empty:
+        parts = [""]
+    return parts
+
+
+def _apply_entry_clients(
+    iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None
+) -> None:
+    """거래처 칸 text_input 키에 반영. 끝에 편집용 빈 칸 1개 유지."""
+    chunks = [str(x or "") for x in (lines or [])]
+    if not chunks or chunks[-1] != "":
+        chunks.append("")
+    old = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
+    for j in range(max(old, len(chunks)) + 3):
+        st.session_state.pop(_entry_client_key(iso, entry_i, j), None)
+    st.session_state[_entry_client_count_key(iso, entry_i)] = len(chunks)
+    for j, line in enumerate(chunks):
+        st.session_state[_entry_client_key(iso, entry_i, j)] = line
+    filled = list(chunks)
+    while filled and filled[-1] == "":
+        filled.pop()
+    st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(filled)
+    if focus_j is not None:
+        fj = max(0, min(int(focus_j), len(chunks) - 1))
+        st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, fj)
+
+
+def _seed_entry_clients(iso: str, entry_i: int, client: str | list[str]) -> None:
+    max_u = _client_line_units()
+    if isinstance(client, list):
+        src = [str(x or "") for x in client]
+    else:
+        raw = str(client or "")
+        src = raw.splitlines() if raw else [""]
+    chunks: list[str] = []
+    for line in src:
+        s = str(line or "")
+        if not s.strip():
+            if not chunks:
+                chunks = [""]
+            continue
+        chunks.extend(_chunk_text(s, max_u) or [s])
+    if not chunks:
+        chunks = [""]
+    fj = max(0, len(chunks) - 1)
+    for j, line in enumerate(chunks):
+        if _display_units(line) >= max_u:
+            fj = min(j + 1, len(chunks))
+    _apply_entry_clients(iso, entry_i, chunks, focus_j=fj)
+
+
+def _insert_client_after(iso: str, entry_i: int, line_j: int) -> None:
+    cur = _clients_from_widgets(iso, entry_i, keep_trailing_empty=True)
+    if not cur:
+        cur = [""]
+    while len(cur) <= line_j:
+        cur.append("")
+    key = _entry_client_key(iso, entry_i, line_j)
+    if key in st.session_state:
+        cur[line_j] = str(st.session_state.get(key) or "")
+    cur.insert(line_j + 1, "")
+    _apply_entry_clients(iso, entry_i, cur, focus_j=line_j + 1)
+
+
+def _commit_enter_on_cell(
+    kind: str, iso: str, entry_i: int, line_j: int, value: str
+) -> None:
+    """입력값 반영 → 칸폭 초과 시 분할 → 다음 칸(넘친 내용) 포커스."""
+    value = str(value or "")
+    if kind == "wl_ent_cl":
+        max_u = _client_line_units()
+        cur = _clients_from_widgets(iso, entry_i, keep_trailing_empty=True)
+        while len(cur) <= line_j:
+            cur.append("")
+        if cur and cur[-1] == "":
+            cur = cur[:-1]
+        head, tail = cur[:line_j], cur[line_j + 1 :]
+        if _display_units(value) > max_u:
+            pieces = _chunk_text(value, max_u) or [value]
+        else:
+            pieces = [value]
+        focus = line_j + 1
+        if len(pieces) == 1:
+            new = head + pieces + [""] + list(tail)
+        else:
+            new = head + pieces + list(tail)
+            if focus >= len(new):
+                new.append("")
+        _apply_entry_clients(iso, entry_i, new, focus_j=min(focus, len(new) - 1))
+        return
+
+    max_u = _content_line_units()
+    cur = _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)
+    while len(cur) <= line_j:
+        cur.append("")
+    if cur and cur[-1] == "":
+        cur = cur[:-1]
+    head, tail = cur[:line_j], cur[line_j + 1 :]
+    if _display_units(value) > max_u:
+        pieces = _chunk_text(value, max_u) or [value]
+    else:
+        pieces = [value]
+    focus = line_j + 1
+    if len(pieces) == 1:
+        new = head + pieces + [""] + list(tail)
+    else:
+        new = head + pieces + list(tail)
+        if focus >= len(new):
+            new.append("")
+    _apply_entry_lines(iso, entry_i, new, focus_j=min(focus, len(new) - 1))
+
+
+def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
+    """거래처 칸: text_input + Enter/＋ 다음 칸 · 폭 초과 시 자동 분할."""
+    if int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0) <= 0:
+        raw = str(st.session_state.get(f"wl_ent_c_{iso}_{entry_i}", "") or "")
+        _seed_entry_clients(iso, entry_i, raw)
+
+    lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 1) or 1)
+    parts = [
+        str(st.session_state.get(_entry_client_key(iso, entry_i, j), "") or "")
+        for j in range(lc)
+    ]
+    if any(_display_units(p) > max_u for p in parts):
+        full = "".join(parts)
+        _seed_entry_clients(iso, entry_i, full)
+        lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 1) or 1)
+
+    for j in range(lc):
+        row_l, row_r = st.columns([8, 1], gap="small")
+        with row_l:
+            st.text_input(
+                f"거래처 {entry_i + 1}-{j + 1}",
+                key=_entry_client_key(iso, entry_i, j),
+                label_visibility="collapsed",
+                placeholder=f"거래처 {j + 1}칸 (Enter/＋ = 다음 · 칸 초과 시 자동)",
+            )
+        with row_r:
+            is_last_empty = (
+                j == lc - 1
+                and str(
+                    st.session_state.get(_entry_client_key(iso, entry_i, j), "") or ""
+                )
+                == ""
+            )
+            if is_last_empty:
+                if st.button(
+                    "＋",
+                    key=f"wl_cl_add_{iso}_{entry_i}_{j}",
+                    width="stretch",
+                    help="아래 거래처 칸 추가",
+                ):
+                    st.session_state[f"wl_do_insert_cl_{iso}"] = (entry_i, j)
+                    _wl_rerun()
+            elif st.button(
+                "삭제",
+                key=f"wl_cl_del_{iso}_{entry_i}_{j}",
+                width="stretch",
+                help=f"거래처 {j + 1}칸 삭제",
+            ):
+                st.session_state[f"wl_do_del_cl_{iso}"] = (entry_i, j)
+                _wl_rerun()
+
+    out = _clients_from_widgets(iso, entry_i, keep_trailing_empty=True)
+    st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(
+        _clients_from_widgets(iso, entry_i, keep_trailing_empty=False)
+    )
+    return out
 
 
 def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
-    """내용 칸 CCv2 편집터. Enter=다음 칸 생성/이동."""
-    ck = _entry_lines_comp_key(iso, entry_i)
-    live_key = _entry_lines_live_key(iso, entry_i)
-    cs = st.session_state.get(ck)
-    if isinstance(cs, dict) and isinstance(cs.get("lines"), list):
-        lines = [str(x or "") for x in cs.get("lines") or []]
-        focus = cs.get("focus", -1)
-    elif isinstance(st.session_state.get(live_key), list):
-        lines = [str(x or "") for x in st.session_state.get(live_key) or []]
-        focus = -1
-    else:
-        lines = [""]
-        focus = -1
-    if not lines or lines[-1] != "":
-        lines = list(lines) + [""]
-    rev = int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0)
-    try:
-        focus_n = int(focus)
-    except (TypeError, ValueError):
-        focus_n = -1
+    """내용 칸: Streamlit text_input (입력 안정) + 칸 추가/삭제."""
+    if int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0) <= 0:
+        live = st.session_state.get(_entry_lines_live_key(iso, entry_i))
+        if isinstance(live, list) and live:
+            _apply_entry_lines(iso, entry_i, [str(x or "") for x in live])
+        else:
+            _apply_entry_lines(iso, entry_i, [""])
 
-    def _on_lines_change() -> None:
-        cur = st.session_state.get(ck)
-        if isinstance(cur, dict) and isinstance(cur.get("lines"), list):
-            synced = [str(x or "") for x in cur.get("lines") or []]
-            st.session_state[live_key] = synced
-            st.session_state[_entry_line_count_key(iso, entry_i)] = len(synced)
-            for j, line in enumerate(synced):
-                st.session_state[_entry_line_key(iso, entry_i, j)] = line
-            st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(synced)
+    lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 1) or 1)
+    parts = [
+        str(st.session_state.get(_entry_line_key(iso, entry_i, j), "") or "")
+        for j in range(lc)
+    ]
+    if any(_display_units(p) > max_u for p in parts):
+        full = "".join(parts)
+        _seed_entry_lines(iso, entry_i, full)
+        lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 1) or 1)
 
-    result = _WL_LINES_EDITOR(
-        key=ck,
-        data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "rev": rev},
-        default={"lines": lines, "focus": focus_n},
-        on_lines_change=_on_lines_change,
-        on_focus_change=lambda: None,
-        width="stretch",
-        height="content",
+    for j in range(lc):
+        row_l, row_r = st.columns([8, 1], gap="small")
+        with row_l:
+            st.text_input(
+                f"내용 {entry_i + 1}-{j + 1}",
+                key=_entry_line_key(iso, entry_i, j),
+                label_visibility="collapsed",
+                placeholder=f"{j + 1}칸 (빈 칸도 저장 · Enter 또는 ＋)",
+            )
+        with row_r:
+            is_last_empty = (
+                j == lc - 1
+                and str(st.session_state.get(_entry_line_key(iso, entry_i, j), "") or "")
+                == ""
+            )
+            if is_last_empty:
+                if st.button(
+                    "＋",
+                    key=f"wl_ln_add_{iso}_{entry_i}_{j}",
+                    width="stretch",
+                    help="아래 칸 추가",
+                ):
+                    st.session_state[f"wl_do_insert_ln_{iso}"] = (entry_i, j)
+                    _wl_rerun()
+            elif st.button(
+                "삭제",
+                key=f"wl_ln_del_{iso}_{entry_i}_{j}",
+                width="stretch",
+                help=f"{j + 1}칸 삭제",
+            ):
+                st.session_state[f"wl_do_del_ln_{iso}"] = (entry_i, j)
+                _wl_rerun()
+
+    out = _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)
+    st.session_state[_entry_lines_live_key(iso, entry_i)] = out
+    st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(
+        _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=False)
     )
-    out = result.lines if isinstance(getattr(result, "lines", None), list) else lines
-    out = [str(x or "") for x in out]
-    if not out or out[-1] != "":
-        out = list(out) + [""]
-    st.session_state[live_key] = out
-    # 레거시 키 동기화(저장/사용량용). rev는 올리지 않음.
-    old = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
-    for j in range(max(old, len(out)) + 3):
-        st.session_state.pop(_entry_line_key(iso, entry_i, j), None)
-    st.session_state[_entry_line_count_key(iso, entry_i)] = len(out)
-    for j, line in enumerate(out):
-        st.session_state[_entry_line_key(iso, entry_i, j)] = line
-    st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(out)
     return out
+
+
+# Enter / 칸초과 → 다음 칸 (document 키 훅)
+_WL_ENTER_HOOK_JS = r"""
+export default function (component) {
+  const { data, setTriggerValue } = component;
+  const iso = (data && data.iso) || "";
+  const focusKey = (data && data.focus_key) || "";
+  const clientMax = Number((data && data.client_max_u) || 15);
+  const contentMax = Number((data && data.content_max_u) || 56);
+  let lastSent = "";
+
+  function charUnits(ch) {
+    const o = ch.charCodeAt(0);
+    if (
+      (o >= 0xac00 && o <= 0xd7a3) ||
+      (o >= 0x1100 && o <= 0x11ff) ||
+      (o >= 0x3130 && o <= 0x318f) ||
+      (o >= 0x2e80 && o <= 0x9fff) ||
+      (o >= 0xff00 && o <= 0xffef)
+    )
+      return 2;
+    return 1;
+  }
+  function displayUnits(s) {
+    let w = 0;
+    s = String(s || "");
+    for (let i = 0; i < s.length; i++) w += charUnits(s.charAt(i));
+    return w;
+  }
+  function fitByUnits(s, max) {
+    s = String(s || "");
+    if (displayUnits(s) <= max) return { head: s, tail: "" };
+    let acc = 0;
+    for (let i = 0; i < s.length; i++) {
+      const cu = charUnits(s.charAt(i));
+      if (acc + cu > max) {
+        if (i === 0) return { head: s.slice(0, 1), tail: s.slice(1) };
+        return { head: s.slice(0, i), tail: s.slice(i) };
+      }
+      acc += cu;
+    }
+    return { head: s, tail: "" };
+  }
+  function resolveKey(t) {
+    if (!t || String(t.tagName || "").toUpperCase() !== "INPUT") return null;
+    const wrap = t.closest
+      ? t.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]')
+      : null;
+    if (!wrap) return null;
+    const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
+      const s = String(c);
+      return (
+        s.indexOf("st-key-wl_ent_ln_") !== -1 ||
+        s.indexOf("st-key-wl_ent_cl_") !== -1
+      );
+    });
+    if (!cls) return null;
+    const key = String(cls).replace(/^st-key-/, "");
+    const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)$/.exec(key);
+    if (!m || m[2] !== iso) return null;
+    return { key: key, kind: m[1], maxU: m[1] === "wl_ent_cl" ? clientMax : contentMax };
+  }
+  function emit(key, value) {
+    const payload = JSON.stringify({
+      key: key,
+      t: Date.now(),
+      v: String(value || ""),
+    });
+    if (payload === lastSent) return;
+    lastSent = payload;
+    setTriggerValue("enter", payload);
+  }
+
+  const onKey = (e) => {
+    if (e.key !== "Enter") return;
+    if (e.isComposing) return;
+    const info = resolveKey(e.target);
+    if (!info) return;
+    e.preventDefault();
+    e.stopPropagation();
+    emit(info.key, e.target.value || "");
+  };
+
+  // 원본 칸 폭을 넘는 순간 → 다음 칸으로 (입력 중 자동)
+  const onInput = (e) => {
+    if (e.isComposing) return;
+    const t = e.target;
+    const info = resolveKey(t);
+    if (!info) return;
+    const v = String(t.value || "");
+    if (displayUnits(v) <= info.maxU) return;
+    const { head } = fitByUnits(v, info.maxU);
+    try {
+      t.value = head;
+    } catch (err) {}
+    emit(info.key, v);
+  };
+
+  const onCompEnd = (e) => {
+    const t = e.target;
+    const info = resolveKey(t);
+    if (!info) return;
+    const v = String(t.value || "");
+    if (displayUnits(v) <= info.maxU) return;
+    const { head } = fitByUnits(v, info.maxU);
+    try {
+      t.value = head;
+    } catch (err) {}
+    emit(info.key, v);
+  };
+
+  document.addEventListener("keydown", onKey, true);
+  document.addEventListener("input", onInput, true);
+  document.addEventListener("compositionend", onCompEnd, true);
+
+  if (focusKey) {
+    const go = () => {
+      const el = document.querySelector(
+        'div[class*="st-key-' + focusKey + '"] input'
+      );
+      if (!el) return false;
+      try {
+        el.focus({ preventScroll: false });
+        const n = (el.value || "").length;
+        el.setSelectionRange(n, n);
+      } catch (e1) {
+        try {
+          el.focus();
+        } catch (e2) {}
+      }
+      return true;
+    };
+    go();
+    setTimeout(go, 50);
+    setTimeout(go, 150);
+    setTimeout(go, 350);
+    setTimeout(go, 600);
+  }
+
+  return () => {
+    document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("input", onInput, true);
+    document.removeEventListener("compositionend", onCompEnd, true);
+  };
+}
+"""
+
+_WL_ENTER_HOOK = st.components.v2.component(
+    "worklog_cell_nav_hook_v3",
+    js=_WL_ENTER_HOOK_JS,
+)
+
 
 
 def _seed_entry_lines(
@@ -2012,8 +1892,17 @@ def _read_editor_entries(d: date) -> list[dict]:
         ck = f"wl_ent_c_{iso}_{i}"
         gk = f"wl_ent_gap_{iso}_{i}"
         lc = int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0)
-        if ck in st.session_state or lc > 0 or f"wl_ent_t_{iso}_{i}" in st.session_state:
-            client = str(st.session_state.get(ck, "") or "")
+        if ck in st.session_state or lc > 0 or f"wl_ent_t_{iso}_{i}" in st.session_state or int(
+            st.session_state.get(_entry_client_count_key(iso, i), 0) or 0
+        ) > 0:
+            if int(st.session_state.get(_entry_client_count_key(iso, i), 0) or 0) > 0:
+                client_lines = _clients_from_widgets(
+                    iso, i, keep_trailing_empty=False
+                )
+                client = "\n".join(client_lines)
+            else:
+                client = str(st.session_state.get(ck, "") or "")
+                client_lines = _entry_client_lines({"client": client})
             lines = _lines_from_entry_widgets(iso, i, keep_trailing_empty=False)
             content = "\n".join(lines)
             if gk in st.session_state:
@@ -2024,6 +1913,9 @@ def _read_editor_entries(d: date) -> list[dict]:
                 blank_after = 1
         elif i < len(stored):
             client = str(stored[i].get("client") or "")
+            if not client and isinstance(stored[i].get("client_lines"), list):
+                client = "\n".join(str(x or "") for x in stored[i].get("client_lines") or [])
+            client_lines = _entry_client_lines(stored[i])
             lines = stored[i].get("lines")
             if not isinstance(lines, list):
                 lines = _chunk_text(str(stored[i].get("content") or ""), _content_line_units()) or []
@@ -2034,16 +1926,17 @@ def _read_editor_entries(d: date) -> list[dict]:
             )
             blank_after = _entry_blank_after(stored[i], 1)
         else:
-            client, content, blank_after, lines = "", "", 1, []
+            client, content, blank_after, lines, client_lines = "", "", 1, [], []
         out.append(
             {
                 "client": client,
+                "client_lines": client_lines,
                 "content": content,
                 "lines": lines,
                 "blank_after": blank_after,
             }
         )
-    return out or [{"client": "", "content": "", "lines": [], "blank_after": 1}]
+    return out or [{"client": "", "client_lines": [], "content": "", "lines": [], "blank_after": 1}]
 
 
 def _cells_from_widgets(d: date) -> dict:
@@ -2071,6 +1964,8 @@ def _clear_date_widget_state(d: date) -> None:
         f"wl_ent_gap_{iso}_",
         f"wl_ent_ln_{iso}_",
         f"wl_ent_lc_{iso}_",
+        f"wl_ent_cl_{iso}_",
+        f"wl_ent_clc_{iso}_",
         f"wl_ent_rev_{iso}_",
         f"wl_lines_comp_{iso}_",
         f"wl_lines_live_{iso}_",
@@ -2148,76 +2043,27 @@ def prepare_print_xlsx(d: date, cells: dict) -> str:
 
 def open_excel_print_preview(xlsx_path: str) -> tuple[bool, str]:
     """
-    macOS + Microsoft Excel 에서 원본 파일을 열고 인쇄 대화상자(미리보기)를 띄움.
-    원격/서버 환경이거나 Excel이 없으면 실패 → 호출측에서 HTML 폴백.
+    macOS + Microsoft Excel 에서 원본 파일을 **열기만** 한다.
+    인쇄·인쇄 미리보기·⌘P 는 실행하지 않음 (사용자가 직접 확인 후 인쇄).
     """
     abs_path = os.path.abspath(xlsx_path)
     if not os.path.exists(abs_path):
-        return False, "인쇄용 엑셀 파일이 없습니다."
+        return False, "미리보기용 엑셀 파일이 없습니다."
     if platform.system() != "Darwin":
-        return False, "Excel 인쇄 미리보기는 macOS 로컬 실행에서만 지원됩니다."
+        return False, "Excel 미리보기는 macOS 로컬 실행에서만 지원됩니다."
 
     excel = _excel_app_path()
-    if not excel:
-        # Excel 없으면 기본 앱으로라도 연다
-        try:
-            subprocess.Popen(["open", abs_path], start_new_session=True)
-            return True, "기본 앱으로 엑셀 파일을 열었습니다. 앱에서 ⌘P 로 인쇄하세요."
-        except Exception as e:
-            return False, f"파일 열기 실패: {e}"
-
-    # 1) Excel로 원본 파일 오픈
-    # 2) ⌘P → Excel 인쇄 창(미리보기 포함)
-    # System Events 접근 권한이 없으면 파일만 열린 상태로 안내
-    escaped = abs_path.replace("\\", "\\\\").replace('"', '\\"')
-    script = f'''
-set theFile to POSIX file "{escaped}"
-tell application "Microsoft Excel"
-    activate
-    open theFile
-end tell
-delay 1.0
-try
-    tell application "System Events"
-        tell process "Microsoft Excel"
-            set frontmost to true
-            keystroke "p" using {{command down}}
-        end tell
-    end tell
-    return "print"
-on error
-    return "opened"
-end try
-'''
     try:
-        r = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if r.returncode != 0:
-            # AppleScript 실패 시 open -a 로라도 오픈
+        if excel:
             subprocess.Popen(
                 ["open", "-a", "Microsoft Excel", abs_path],
                 start_new_session=True,
             )
-            return True, "Excel에서 원본 양식을 열었습니다. ⌘P 로 인쇄 미리보기를 여세요."
-        out = (r.stdout or "").strip()
-        if out == "print":
-            return True, "Excel 원본 양식 + 인쇄 미리보기를 열었습니다."
-        return True, "Excel에서 원본 양식을 열었습니다. ⌘P 로 인쇄 미리보기를 여세요."
-    except subprocess.TimeoutExpired:
-        return True, "Excel 실행 중입니다. 창이 뜨면 ⌘P 로 인쇄하세요."
+        else:
+            subprocess.Popen(["open", abs_path], start_new_session=True)
+        return True, "Excel에서 원본 양식을 열었습니다. (인쇄는 실행하지 않음)"
     except Exception as e:
-        try:
-            subprocess.Popen(
-                ["open", "-a", "Microsoft Excel", abs_path],
-                start_new_session=True,
-            )
-            return True, f"Excel로 파일을 열었습니다(⌘P). 참고: {e}"
-        except Exception as e2:
-            return False, f"Excel 실행 실패: {e2}"
+        return False, f"Excel 실행 실패: {e}"
 
 
 def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
@@ -2233,14 +2079,14 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
             if m < 1:
                 y, m = y - 1, 12
             st.session_state["worklog_month"] = date(y, m, 1)
-            st.rerun()
+            _wl_rerun()
     with nav[1]:
         if st.button("▶", key="wl_next_month", width="stretch"):
             y, m = month_anchor.year, month_anchor.month + 1
             if m > 12:
                 y, m = y + 1, 1
             st.session_state["worklog_month"] = date(y, m, 1)
-            st.rerun()
+            _wl_rerun()
     with nav[2]:
         st.markdown(
             f"<div style='text-align:center;font-weight:700;font-size:14px;padding:4px 0;'>"
@@ -2252,7 +2098,9 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
             today = date.today()
             st.session_state["worklog_selected"] = today
             st.session_state["worklog_month"] = date(today.year, today.month, 1)
-            st.rerun()
+            # date_input 동기화는 다음 런 위젯 생성 전에 수행
+            st.session_state["wl_date_sync"] = ""
+            _wl_rerun()
 
     st.caption("• = 저장됨 · 날짜를 누르면 해당일 일지로 전환")
     weeks = ["월", "화", "수", "목", "금", "토", "일"]
@@ -2290,467 +2138,669 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
 
 
 def render_worklog_tab(latest_update_str: str = "") -> None:
-    """일일업무일지 탭 본체."""
-    touch = _is_touch_ui()
-    if touch:
-        _inject_worklog_touch_css()
-        st.markdown("<div class='worklog-touch-scope'>", unsafe_allow_html=True)
-
-    head_l, head_r = st.columns([4, 1])
-    head_l.markdown(
-        "<div class='sub-header dashboard-tab-panel-head'>일일업무일지</div>",
-        unsafe_allow_html=True,
-    )
-    if latest_update_str:
-        head_r.caption(latest_update_str)
+    """일일업무일지 탭 본체. (latest_update_str은 호환용 — 표시하지 않음)"""
 
     if load_workbook is None:
         st.error("openpyxl 이 필요합니다. `pip install openpyxl` 후 다시 실행하세요.")
-        if touch:
-            st.markdown("</div>", unsafe_allow_html=True)
         return
     try:
         _ensure_dirs()
         if not os.path.exists(WORKLOG_TEMPLATE):
-            _offer_template_upload()
-            if touch:
-                st.markdown("</div>", unsafe_allow_html=True)
+            st.error(
+                "업무일지 템플릿을 찾을 수 없습니다. "
+                "`Desktop/업무일지.xlsx` 또는 `uploaded_cache/worklog/template.xlsx` 를 준비하세요."
+            )
             return
-        # 저장된 템플릿이 깨져 있으면 정리 후 재시도 (rerun 루프 금지)
-        if load_workbook is not None:
-            try:
-                _sanitize_worklog_xlsx_file(WORKLOG_TEMPLATE)
-                _wb_chk = load_workbook(WORKLOG_TEMPLATE, read_only=True, data_only=False)
-                _wb_chk.close()
-            except Exception as _te:
-                st.error(f"저장된 양식을 열 수 없습니다: {_te}")
-                st.info("아래에서 Files의 8월 엑셀을 다시 선택해 주세요.")
-                # 깨진 파일 제거 후 업로드 UI (존재하면 자동 rerun 하지 않음)
-                try:
-                    os.remove(WORKLOG_TEMPLATE)
-                except Exception:
-                    pass
-                _offer_template_upload()
-                if touch:
-                    st.markdown("</div>", unsafe_allow_html=True)
-                return
     except Exception as e:
         st.error(f"템플릿 준비 실패: {e}")
-        if touch:
-            st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    if "worklog_selected" not in st.session_state:
-        st.session_state["worklog_selected"] = date.today()
-    selected: date = st.session_state["worklog_selected"]
-    saved = list_saved_worklog_dates()
-    _init_widget_state(selected)
-    draft = _cells_from_widgets(selected)
-    status = "저장됨" if selected.isoformat() in saved else "미저장"
+    @st.fragment
+    def _worklog_main() -> None:
+        if "worklog_selected" not in st.session_state:
+            st.session_state["worklog_selected"] = date.today()
+        selected: date = st.session_state["worklog_selected"]
 
-    # 날짜: 팝업(popover) — 화면 공간 최소 사용
-    bar_l, bar_r = st.columns([3.2, 1.2], gap="small")
-    with bar_l:
+        # 삭제 요청은 위젯 생성 전에 처리
+        if st.session_state.pop("wl_do_delete_day", None) == selected.isoformat():
+            delete_worklog_day(selected)
+
+        saved = list_saved_worklog_dates()
+        _init_widget_state(selected)
+        draft = _cells_from_widgets(selected)
+        status = "저장됨" if selected.isoformat() in saved else "미저장"
+
+        # 날짜 선택(저장 후에도 변경 가능) · 달력 · 작은 삭제
+        if st.session_state.get("wl_date_sync") != selected.isoformat():
+            st.session_state["wl_date_pick"] = selected
+            st.session_state["wl_date_sync"] = selected.isoformat()
+
         st.markdown(
-            f"**선택일** {format_worklog_date(selected)} · {status}",
+            """
+            <style>
+            div[class*="st-key-wl_del_day_open"] button,
+            div[class*="st-key-wl_del_day_yes"] button {
+              font-size: 0.72rem !important;
+              padding: 0.12rem 0.4rem !important;
+              min-height: 1.55rem !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
         )
-    with bar_r:
-        with st.popover("📅 날짜 선택", width="stretch"):
-            clicked = _render_month_calendar(selected, saved)
-            if clicked is not None and clicked != selected:
-                _clear_date_widget_state(selected)
-                st.session_state["worklog_selected"] = clicked
-                st.rerun()
 
-    # iPad: Files에 있는 엑셀을 언제든 다시 열 수 있게
-    if touch:
-        with st.expander("📂 Files에 있는 엑셀 다시 열기", expanded=False):
-            _render_files_open_uploader(key_suffix="replace_template")
-    else:
-        with st.expander("📂 양식 엑셀 다시 열기 (Files/업로드)", expanded=False):
-            _render_files_open_uploader(key_suffix="replace_template_mac")
-
-    # 맥: 좌 미리보기 / 우 입력. iPad: 세로 스택(입력 먼저)으로 터치 안정화.
-    if touch:
-        col_input = st.container()
-        col_preview = st.container()
-    else:
-        col_preview, col_input = st.columns(2, gap="medium")
-
-    with col_preview:
-        st.markdown("##### 업무일지 보기")
-        st.caption("요약 미리보기 · 저장하면 원본 엑셀 양식에 반영")
+        # 왼쪽 요약 보기 · 가운데 남은행 게이지 · 오른쪽 입력
         try:
-            view_html = render_readable_preview_html(selected, draft)
-            preview_h = 620 if touch else 900
-            components.html(view_html, height=preview_h, scrolling=True)
-        except Exception as e:
-            st.error(f"미리보기 오류: {e}")
+            _gauge_usage = _content_row_usage(_read_editor_entries(selected))
+        except Exception:
+            _gauge_usage = _content_row_usage([])
 
-        p1, p2, p3 = st.columns(3)
-        with p1:
-            do_print = st.button(
-                "원본양식 인쇄" if not touch else "브라우저 인쇄",
-                width="stretch",
-                key="wl_print_btn",
-            )
-        with p2:
-            path_saved = worklog_path(selected)
-            xbytes = b""
-            src = path_saved if os.path.exists(path_saved) else None
-            if src and os.path.exists(src):
-                with open(src, "rb") as f:
-                    xbytes = f.read()
-            else:
-                # 미저장이면 현재 입력으로 임시 엑셀 생성 후 제공
-                try:
-                    tmp = _build_preview_file(selected, draft)
-                    with open(tmp, "rb") as f:
+        col_preview, col_gauge, col_input = st.columns([1, 0.14, 1], gap="small")
+
+        with col_preview:
+            st.markdown("##### 업무일지 보기")
+            st.caption("요약 미리보기 · 저장하면 원본 엑셀 양식에 반영")
+            try:
+                view_html = render_readable_preview_html(selected, draft)
+                components.html(view_html, height=900, scrolling=True)
+            except Exception as e:
+                st.error(f"미리보기 오류: {e}")
+
+            p1, p2, p3 = st.columns(3)
+            with p1:
+                do_print = st.button("미리보기", width="stretch", key="wl_print_btn")
+            with p2:
+                path_saved = worklog_path(selected)
+                xbytes = b""
+                src = path_saved if os.path.exists(path_saved) else None
+                if src and os.path.exists(src):
+                    with open(src, "rb") as f:
                         xbytes = f.read()
-                except Exception:
-                    xbytes = b""
-            st.download_button(
-                "Files에 엑셀 저장" if touch else "엑셀 저장본",
-                data=xbytes,
-                file_name=f"일일업무일지_{selected.isoformat()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width="stretch",
-                key="wl_dl_btn",
-                disabled=not xbytes,
-                help="아이패드에서는 다운로드 후 Files/엑셀·Numbers로 여세요.",
-            )
-        with p3:
-            st.caption("인쇄 = Excel 원본" if not touch else "다운로드 후 Files에서 열기")
-
-    with col_input:
-        st.markdown("##### 업무 입력")
-        _max_u_cap = _content_line_units()
-        st.caption(
-            f"내용 칸이 가득 차면(반각 {_max_u_cap}자 / 한글 {_max_u_cap // 2}자) "
-            "자동으로 다음 칸으로 넘어갑니다"
-        )
-
-        iso = selected.isoformat()
-        ek = _entries_key(selected)
-        if ek not in st.session_state or not st.session_state[ek]:
-            st.session_state[ek] = [{"client": "", "content": ""}]
-
-        def _seed_entry_widgets(entries_list: list[dict], next_txt: str, notes_txt: str) -> None:
-            """위젯 생성 전에만 호출 — 키를 지우고 다시 심는다."""
-            old_n = int(st.session_state.get(f"wl_entry_count_{iso}", 0) or 0)
-            for i in range(max(old_n, len(entries_list)) + 2):
-                st.session_state.pop(f"wl_ent_c_{iso}_{i}", None)
-                st.session_state.pop(f"wl_ent_t_{iso}_{i}", None)
-                st.session_state.pop(f"wl_ent_gap_{iso}_{i}", None)
-                st.session_state.pop(f"wl_exp_{iso}_{i}", None)
-                st.session_state.pop(_entry_lines_comp_key(iso, i), None)
-                st.session_state.pop(_entry_lines_rev_key(iso, i), None)
-                st.session_state.pop(_entry_lines_live_key(iso, i), None)
-                old_lc = int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0)
-                for j in range(old_lc + 3):
-                    st.session_state.pop(_entry_line_key(iso, i, j), None)
-                st.session_state.pop(_entry_line_count_key(iso, i), None)
-            st.session_state.pop(f"wl_next_area_{iso}", None)
-            st.session_state.pop(f"wl_notes_area_{iso}", None)
-            st.session_state[ek] = entries_list
-            st.session_state[f"wl_entry_count_{iso}"] = len(entries_list)
-            for i, ent in enumerate(entries_list):
-                st.session_state[f"wl_ent_c_{iso}_{i}"] = ent.get("client") or ""
-                st.session_state[f"wl_ent_gap_{iso}_{i}"] = _entry_blank_after(ent, 1)
-                lines = ent.get("lines")
-                if isinstance(lines, list):
-                    _apply_entry_lines(iso, i, [str(x or "") for x in lines])
                 else:
-                    _seed_entry_lines(iso, i, ent.get("content") or "")
-            st.session_state[f"wl_next_area_{iso}"] = next_txt
-            st.session_state[f"wl_notes_area_{iso}"] = notes_txt
-            st.session_state[_next_key(selected)] = next_txt
-            st.session_state[_notes_key(selected)] = notes_txt
+                    try:
+                        tmp = _build_preview_file(selected, draft)
+                        with open(tmp, "rb") as f:
+                            xbytes = f.read()
+                    except Exception:
+                        xbytes = b""
+                st.download_button(
+                    "엑셀 저장본",
+                    data=xbytes,
+                    file_name=f"일일업무일지_{selected.isoformat()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch",
+                    key="wl_dl_btn",
+                    disabled=not xbytes,
+                )
+            with p3:
+                st.caption("Excel 원본 양식")
 
-        # 저장 후 pending → 위젯 생성 전에 적용
-        pending = st.session_state.pop(f"wl_pending_sync_{iso}", None)
-        if isinstance(pending, dict):
-            ents = pending.get("entries") or [{"client": "", "content": ""}]
-            _seed_entry_widgets(
-                ents,
-                pending.get("next") or "",
-                pending.get("notes") or "",
-            )
-            if pending.get("msg"):
-                st.success(pending["msg"])
+            if do_print:
+                cells_now = _cells_from_widgets(selected)
+                try:
+                    xlsx_abs = prepare_print_xlsx(selected, cells_now)
+                    ok, msg = open_excel_print_preview(xlsx_abs)
+                    if ok:
+                        st.success(msg)
+                        st.caption(f"파일: `{xlsx_abs}`")
+                    else:
+                        st.warning(msg + " → 화면 원본 양식으로 대체합니다.")
+                        print_html = render_worklog_view_html(
+                            xlsx_abs, print_mode=False, auto_print=False, scale=0.7
+                        )
+                        components.html(print_html, height=700, scrolling=True)
+                except Exception as e:
+                    st.error(f"원본 미리보기 오류: {e}")
+                    try:
+                        preview = _build_preview_file(selected, cells_now)
+                        print_html = render_worklog_view_html(
+                            preview, print_mode=False, auto_print=False, scale=0.7
+                        )
+                        components.html(print_html, height=700, scrolling=True)
+                    except Exception as e2:
+                        st.error(f"대체 미리보기도 실패: {e2}")
 
-        # 추가/삭제 전: 위젯에 있던 최신 값 반영
-        add_clicked = st.session_state.pop(f"wl_do_add_{iso}", False)
-        del_idx = st.session_state.pop(f"wl_do_del_{iso}", None)
-        if add_clicked or isinstance(del_idx, int):
-            entries = _read_editor_entries(selected)
-            if isinstance(del_idx, int) and 0 <= del_idx < len(entries):
-                entries.pop(del_idx)
-            if add_clicked:
-                entries.append({"client": "", "content": "", "blank_after": 1})
-            if not entries:
-                entries = [{"client": "", "content": "", "blank_after": 1}]
-            next_txt = str(
-                st.session_state.get(f"wl_next_area_{iso}")
-                or st.session_state.get(_next_key(selected), "")
-                or ""
+        with col_gauge:
+            st.markdown(
+                "<div style='height:1.6rem'></div>",
+                unsafe_allow_html=True,
             )
-            notes_txt = str(
-                st.session_state.get(f"wl_notes_area_{iso}")
-                or st.session_state.get(_notes_key(selected), "")
-                or ""
-            )
-            _seed_entry_widgets(entries, next_txt, notes_txt)
-            if add_clicked:
-                # 새로 추가한 항목만 펼침
-                for _i in range(len(entries)):
-                    st.session_state[f"wl_exp_{iso}_{_i}"] = _i == len(entries) - 1
-                st.session_state[f"wl_force_expand_{iso}"] = len(entries) - 1
-        else:
-            entries = list(st.session_state[ek])
-            for i, ent in enumerate(entries):
-                ck = f"wl_ent_c_{iso}_{i}"
-                gk = f"wl_ent_gap_{iso}_{i}"
-                if ck not in st.session_state:
-                    st.session_state[ck] = ent.get("client") or ""
-                if gk not in st.session_state:
-                    st.session_state[gk] = _entry_blank_after(ent, 1)
-                if int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0) <= 0:
-                    lines0 = ent.get("lines")
-                    if isinstance(lines0, list):
-                        _apply_entry_lines(iso, i, [str(x or "") for x in lines0])
+            _render_row_remain_gauge(_gauge_usage, height_px=560)
+
+        with col_input:
+            st.markdown("##### 업무 입력")
+
+            bar_date, bar_cal, bar_del = st.columns([2.4, 1.1, 0.7], gap="small")
+            with bar_date:
+                picked = st.date_input(
+                    "업무일지 날짜",
+                    key="wl_date_pick",
+                    help="저장 후에도 날짜를 바꿀 수 있습니다. 빈 날짜로 바꾸면 이 일지가 그 날짜로 옮겨집니다.",
+                )
+                st.caption(f"{format_worklog_date(selected)} · {status}")
+            with bar_cal:
+                st.markdown(
+                    "<div style='height:1.55rem'></div>", unsafe_allow_html=True
+                )
+                with st.popover("📅 달력", width="stretch"):
+                    clicked = _render_month_calendar(selected, saved)
+                    if clicked is not None and clicked != selected:
+                        _clear_date_widget_state(selected)
+                        st.session_state["worklog_selected"] = clicked
+                        st.session_state["worklog_month"] = date(
+                            clicked.year, clicked.month, 1
+                        )
+                        st.session_state["wl_date_sync"] = ""
+                        _wl_rerun()
+            with bar_del:
+                st.markdown(
+                    "<div style='height:1.55rem'></div>", unsafe_allow_html=True
+                )
+                with st.popover("삭제", width="content", key="wl_del_day_open"):
+                    st.caption("이 날짜 일지 전체 삭제")
+                    if st.button(
+                        "확정", type="primary", width="content", key="wl_del_day_yes"
+                    ):
+                        st.session_state["wl_do_delete_day"] = selected.isoformat()
+                        _wl_rerun()
+
+            if isinstance(picked, date) and picked != selected:
+                if os.path.exists(worklog_path(picked)):
+                    _clear_date_widget_state(selected)
+                    st.session_state["worklog_selected"] = picked
+                    st.session_state["worklog_month"] = date(
+                        picked.year, picked.month, 1
+                    )
+                    st.session_state["wl_date_sync"] = ""
+                    _wl_rerun()
+                else:
+                    try:
+                        reassign_worklog_date(selected, picked)
+                        st.session_state["wl_date_sync"] = ""
+                        _wl_rerun()
+                    except FileExistsError as e:
+                        st.error(str(e))
+                        st.session_state["wl_date_sync"] = ""
+                        _wl_rerun()
+
+            iso = selected.isoformat()
+            ek = _entries_key(selected)
+            if ek not in st.session_state or not st.session_state[ek]:
+                st.session_state[ek] = [{"client": "", "content": ""}]
+
+            def _seed_entry_widgets(entries_list: list[dict], next_txt: str, notes_txt: str) -> None:
+                """위젯 생성 전에만 호출 — 키를 지우고 다시 심는다."""
+                old_n = int(st.session_state.get(f"wl_entry_count_{iso}", 0) or 0)
+                for i in range(max(old_n, len(entries_list)) + 2):
+                    st.session_state.pop(f"wl_ent_c_{iso}_{i}", None)
+                    st.session_state.pop(f"wl_ent_t_{iso}_{i}", None)
+                    st.session_state.pop(f"wl_ent_gap_{iso}_{i}", None)
+                    st.session_state.pop(f"wl_exp_{iso}_{i}", None)
+                    st.session_state.pop(_entry_lines_comp_key(iso, i), None)
+                    st.session_state.pop(_entry_lines_rev_key(iso, i), None)
+                    st.session_state.pop(_entry_lines_live_key(iso, i), None)
+                    old_lc = int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0)
+                    for j in range(old_lc + 3):
+                        st.session_state.pop(_entry_line_key(iso, i, j), None)
+                    st.session_state.pop(_entry_line_count_key(iso, i), None)
+                    old_cc = int(
+                        st.session_state.get(_entry_client_count_key(iso, i), 0) or 0
+                    )
+                    for j in range(old_cc + 3):
+                        st.session_state.pop(_entry_client_key(iso, i, j), None)
+                    st.session_state.pop(_entry_client_count_key(iso, i), None)
+                st.session_state.pop(f"wl_next_area_{iso}", None)
+                st.session_state.pop(f"wl_notes_area_{iso}", None)
+                st.session_state[ek] = entries_list
+                st.session_state[f"wl_entry_count_{iso}"] = len(entries_list)
+                for i, ent in enumerate(entries_list):
+                    clines = ent.get("client_lines")
+                    if isinstance(clines, list) and clines:
+                        _seed_entry_clients(iso, i, clines)
+                    else:
+                        _seed_entry_clients(iso, i, ent.get("client") or "")
+                    st.session_state[f"wl_ent_gap_{iso}_{i}"] = _entry_blank_after(ent, 1)
+                    lines = ent.get("lines")
+                    if isinstance(lines, list):
+                        _apply_entry_lines(iso, i, [str(x or "") for x in lines])
                     else:
                         _seed_entry_lines(iso, i, ent.get("content") or "")
-            st.session_state[f"wl_entry_count_{iso}"] = len(entries)
-            nk = f"wl_next_area_{iso}"
-            ok = f"wl_notes_area_{iso}"
-            if nk not in st.session_state:
-                st.session_state[nk] = st.session_state.get(_next_key(selected), "")
-            if ok not in st.session_state:
-                st.session_state[ok] = st.session_state.get(_notes_key(selected), "")
+                st.session_state[f"wl_next_area_{iso}"] = next_txt
+                st.session_state[f"wl_notes_area_{iso}"] = notes_txt
+                st.session_state[_next_key(selected)] = next_txt
+                st.session_state[_notes_key(selected)] = notes_txt
 
-        @st.fragment
-        def _wl_entry_editor():
-            d = st.session_state.get("worklog_selected") or selected
-            iso2 = d.isoformat()
-            n = int(st.session_state.get(f"wl_entry_count_{iso2}", 1) or 1)
-            max_u = _content_line_units()
-
-            _force_open = st.session_state.pop(f"wl_force_expand_{iso2}", None)
-            if isinstance(_force_open, int):
-                st.session_state[f"wl_exp_{iso2}_{_force_open}"] = True
-
-            # 전체 내용칸 잔여 (입력 반영)
-            _live_entries = _read_editor_entries(d)
-            _usage = _content_row_usage(_live_entries)
-            _rem = _usage["remaining"]
-            _used = _usage["used"]
-            _tot = _usage["total"]
-            _warn = _usage["overflow"] or _rem <= 3
-            _color = "#B91C1C" if _warn else "#0F766E"
-            _next = _usage["next_row"]
-            _next_txt = f"다음 빈 행 G{_next}" if _next else "내용칸 끝"
-            st.markdown(
-                f"<div style='margin:0 0 10px;padding:8px 12px;border-radius:8px;"
-                f"border:1px solid {'#FECACA' if _warn else '#99F6E4'};"
-                f"background:{'#FEF2F2' if _warn else '#F0FDFA'};"
-                f"font-size:12px;color:{_color};font-weight:600;'>"
-                f"원본 내용칸 · 사용 {_used}/{_tot}행 · "
-                f"<span style='font-size:14px;'>남은 {_rem}행</span>"
-                f" · 마지막 G{_usage['last_row']} · {_next_txt}"
-                f"{' · 용량 초과' if _usage['overflow'] else ''}"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-
-            for i in range(n):
-                client_now = str(st.session_state.get(f"wl_ent_c_{iso2}_{i}", "") or "").strip()
-                body_now = _content_from_entry_lines(iso2, i).strip().replace("\n", " ")
-                if len(body_now) > 24:
-                    body_now = body_now[:24] + "…"
-                label = f"항목 {i + 1}"
-                if client_now:
-                    label += f" · {client_now}"
-                elif body_now:
-                    label += f" · {body_now}"
-                else:
-                    label += " · (비어 있음)"
-
-                exp_key = f"wl_exp_{iso2}_{i}"
-                # 기본: 마지막 항목만 펼침 (키로 이후 사용자 토글 유지)
-                default_open = i == n - 1
-                if exp_key not in st.session_state:
-                    st.session_state[exp_key] = default_open
-
-                with st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=exp_key):
-                    if st.button(
-                        "이 항목 삭제",
-                        key=f"wl_del_btn_{iso2}_{i}",
-                        width="stretch",
-                    ):
-                        st.session_state[f"wl_do_del_{iso2}"] = i
-                        st.rerun()
-                    st.text_input(
-                        "거래처",
-                        key=f"wl_ent_c_{iso2}_{i}",
-                        placeholder="거래처명 입력",
-                    )
-                    st.markdown(
-                        "<div style='font-size:11px;color:#64748B;margin:4px 0 2px;'>내용 "
-                        f"(한 칸 ≈ 반각 {max_u}자 · <b>Enter=다음 칸 생성</b> · 가득 차면 자동 분할)</div>",
-                        unsafe_allow_html=True,
-                    )
-                    ck = _entry_lines_comp_key(iso2, i)
-                    if not (
-                        isinstance(st.session_state.get(ck), dict)
-                        and isinstance((st.session_state.get(ck) or {}).get("lines"), list)
-                    ):
-                        _seed_entry_lines(
-                            iso2,
-                            i,
-                            str(st.session_state.get(f"wl_ent_t_{iso2}_{i}", "") or ""),
-                        )
-                    _mount_entry_lines_editor(iso2, i, max_u)
-                    _filled = len(
-                        _lines_from_entry_widgets(iso2, i, keep_trailing_empty=False)
-                    )
-                    gap_key = f"wl_ent_gap_{iso2}_{i}"
-                    if gap_key not in st.session_state:
-                        st.session_state[gap_key] = _entry_blank_after(
-                            (_live_entries[i] if i < len(_live_entries) else None),
-                            1,
-                        )
-                    st.number_input(
-                        "다음 항목 전 빈 칸 수",
-                        min_value=0,
-                        max_value=10,
-                        step=1,
-                        key=gap_key,
-                        help="이 항목 다음에 원본 엑셀에서 비워 둘 행 수 (0이면 바로 붙음)",
-                    )
-                    _ent_rows = (
-                        _usage["per_entry"][i]
-                        if i < len(_usage["per_entry"])
-                        else max(_filled, 1)
-                    )
-                    st.caption(
-                        f"이 항목 약 {_ent_rows}행 사용 · "
-                        f"전체 남은 {_rem}행 (마지막 칸 G{_usage['last_row']})"
-                    )
-
-            if st.button("＋ 항목 추가", key=f"wl_add_btn_{iso2}", width="stretch"):
-                st.session_state[f"wl_do_add_{iso2}"] = True
-                st.rerun()
-
-            st.markdown(
-                "<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>"
-                "익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>",
-                unsafe_allow_html=True,
-            )
-            st.text_area(
-                "익일업무",
-                key=f"wl_next_area_{iso2}",
-                label_visibility="collapsed",
-                height=90,
-            )
-            st.markdown(
-                "<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>"
-                "특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>",
-                unsafe_allow_html=True,
-            )
-            st.text_area(
-                "특이사항",
-                key=f"wl_notes_area_{iso2}",
-                label_visibility="collapsed",
-                height=90,
-            )
-
-            if st.button(
-                "저장",
-                type="primary",
-                width="stretch",
-                key=f"wl_save_btn_{iso2}",
-            ):
-                try:
-                    # 방금 마운트된 칸 값을 우선 반영
-                    entries_now = _read_editor_entries(d)
-                    usage_now = _content_row_usage(entries_now)
-                    if usage_now.get("overflow"):
-                        st.error(
-                            f"내용칸 용량 초과: {usage_now['used']}/{usage_now['total']}행. "
-                            "칸을 줄이거나 항목 사이 빈 칸 수를 낮춘 뒤 다시 저장하세요."
-                        )
-                    else:
-                        cells = _pack_entries_to_cells(
-                            d,
-                            entries_now,
-                            [
-                                x.strip()
-                                for x in str(
-                                    st.session_state.get(f"wl_next_area_{iso2}", "") or ""
-                                ).splitlines()
-                                if x.strip()
-                            ],
-                            [
-                                x.strip()
-                                for x in str(
-                                    st.session_state.get(f"wl_notes_area_{iso2}", "") or ""
-                                ).splitlines()
-                                if x.strip()
-                            ],
-                        )
-                        path = save_worklog_cells(d, cells)
-                        packed_entries = _grouped_entries_from_cells(cells)
-                        if not packed_entries:
-                            packed_entries = [{"client": "", "content": "", "lines": []}]
-                        _, nd, nt = _entries_from_cells(cells)
-                        st.session_state[_entries_key(d)] = packed_entries
-                        st.session_state[_next_key(d)] = "\n".join(nd)
-                        st.session_state[_notes_key(d)] = "\n".join(nt)
-                        st.session_state[f"wl_pending_sync_{iso2}"] = {
-                            "entries": packed_entries,
-                            "next": "\n".join(nd),
-                            "notes": "\n".join(nt),
-                            "msg": f"저장 완료: {os.path.basename(path)}",
-                        }
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"저장 실패: {e}")
-
-        _wl_entry_editor()
-
-
-    if do_print:
-        cells_now = _cells_from_widgets(selected)
-        try:
-            xlsx_abs = prepare_print_xlsx(selected, cells_now)
-            # iPad/Cloud: Excel 앱 연동 불가 → 브라우저 원본 양식 인쇄만
-            if touch:
-                print_html = render_worklog_view_html(
-                    xlsx_abs, print_mode=True, auto_print=True
+            # 저장 후 pending → 위젯 생성 전에 적용
+            pending = st.session_state.pop(f"wl_pending_sync_{iso}", None)
+            if isinstance(pending, dict):
+                ents = pending.get("entries") or [{"client": "", "content": ""}]
+                _seed_entry_widgets(
+                    ents,
+                    pending.get("next") or "",
+                    pending.get("notes") or "",
                 )
-                components.html(print_html, height=900, scrolling=True)
+                if pending.get("msg"):
+                    st.success(pending["msg"])
+
+            # 추가/삭제 전: 위젯에 있던 최신 값 반영
+            add_clicked = st.session_state.pop(f"wl_do_add_{iso}", False)
+            del_idx = st.session_state.pop(f"wl_do_del_{iso}", None)
+            if add_clicked or isinstance(del_idx, int):
+                entries = _read_editor_entries(selected)
+                if isinstance(del_idx, int) and 0 <= del_idx < len(entries):
+                    entries.pop(del_idx)
+                if add_clicked:
+                    entries.append(
+                        {"client": "", "content": "", "lines": [""], "blank_after": 1}
+                    )
+                if not entries:
+                    entries = [{"client": "", "content": "", "blank_after": 1}]
+                next_txt = str(
+                    st.session_state.get(f"wl_next_area_{iso}")
+                    or st.session_state.get(_next_key(selected), "")
+                    or ""
+                )
+                notes_txt = str(
+                    st.session_state.get(f"wl_notes_area_{iso}")
+                    or st.session_state.get(_notes_key(selected), "")
+                    or ""
+                )
+                _seed_entry_widgets(entries, next_txt, notes_txt)
+                if add_clicked:
+                    # 새로 추가한 항목만 펼침
+                    for _i in range(len(entries)):
+                        st.session_state[f"wl_exp_{iso}_{_i}"] = _i == len(entries) - 1
+                    st.session_state[f"wl_force_expand_{iso}"] = len(entries) - 1
             else:
-                ok, msg = open_excel_print_preview(xlsx_abs)
-                if ok:
-                    st.success(msg)
-                    st.caption(f"파일: `{xlsx_abs}`")
-                else:
-                    st.warning(msg + " → 브라우저 원본 양식 인쇄로 대체합니다.")
-                    print_html = render_worklog_view_html(
-                        xlsx_abs, print_mode=True, auto_print=True
-                    )
-                    components.html(print_html, height=900, scrolling=True)
-        except Exception as e:
-            st.error(f"원본 인쇄 오류: {e}")
-            try:
-                preview = _build_preview_file(selected, cells_now)
-                print_html = render_worklog_view_html(
-                    preview, print_mode=True, auto_print=True
-                )
-                components.html(print_html, height=900, scrolling=True)
-            except Exception as e2:
-                st.error(f"대체 인쇄도 실패: {e2}")
+                entries = list(st.session_state[ek])
+                for i, ent in enumerate(entries):
+                    ck = f"wl_ent_c_{iso}_{i}"
+                    gk = f"wl_ent_gap_{iso}_{i}"
+                    if ck not in st.session_state:
+                        st.session_state[ck] = ent.get("client") or ""
+                    if gk not in st.session_state:
+                        st.session_state[gk] = _entry_blank_after(ent, 1)
+                    if int(
+                        st.session_state.get(_entry_client_count_key(iso, i), 0) or 0
+                    ) <= 0:
+                        cl0 = ent.get("client_lines")
+                        if isinstance(cl0, list) and cl0:
+                            _seed_entry_clients(iso, i, cl0)
+                        else:
+                            _seed_entry_clients(iso, i, ent.get("client") or "")
+                    if int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0) <= 0:
+                        lines0 = ent.get("lines")
+                        if isinstance(lines0, list):
+                            _apply_entry_lines(iso, i, [str(x or "") for x in lines0])
+                        else:
+                            _seed_entry_lines(iso, i, ent.get("content") or "")
+                st.session_state[f"wl_entry_count_{iso}"] = len(entries)
+                nk = f"wl_next_area_{iso}"
+                ok = f"wl_notes_area_{iso}"
+                if nk not in st.session_state:
+                    st.session_state[nk] = st.session_state.get(_next_key(selected), "")
+                if ok not in st.session_state:
+                    st.session_state[ok] = st.session_state.get(_notes_key(selected), "")
 
-    if touch:
-        st.markdown("</div>", unsafe_allow_html=True)
+            def _wl_entry_editor():
+                d = st.session_state.get("worklog_selected") or selected
+                iso2 = d.isoformat()
+                n = int(st.session_state.get(f"wl_entry_count_{iso2}", 1) or 1)
+                max_u = _content_line_units()
+
+                _force_open = st.session_state.pop(f"wl_force_expand_{iso2}", None)
+                if isinstance(_force_open, int):
+                    st.session_state[f"wl_exp_{iso2}_{_force_open}"] = True
+
+                # 칸 삭제/추가 (위젯 생성 전)
+                del_ln = st.session_state.pop(f"wl_do_del_ln_{iso2}", None)
+                if isinstance(del_ln, (list, tuple)) and len(del_ln) == 2:
+                    dei, dlj = int(del_ln[0]), int(del_ln[1])
+                    cur = _lines_from_entry_widgets(iso2, dei, keep_trailing_empty=False)
+                    if 0 <= dlj < len(cur):
+                        cur.pop(dlj)
+                    if not cur:
+                        cur = [""]
+                    _apply_entry_lines(
+                        iso2, dei, cur, focus_j=min(dlj, max(len(cur) - 1, 0))
+                    )
+
+                ins_ln = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
+                if isinstance(ins_ln, (list, tuple)) and len(ins_ln) == 2:
+                    _insert_line_after(iso2, int(ins_ln[0]), int(ins_ln[1]))
+
+                del_cl = st.session_state.pop(f"wl_do_del_cl_{iso2}", None)
+                if isinstance(del_cl, (list, tuple)) and len(del_cl) == 2:
+                    dei, dlj = int(del_cl[0]), int(del_cl[1])
+                    cur = _clients_from_widgets(iso2, dei, keep_trailing_empty=False)
+                    if 0 <= dlj < len(cur):
+                        cur.pop(dlj)
+                    if not cur:
+                        cur = [""]
+                    _apply_entry_clients(
+                        iso2, dei, cur, focus_j=min(dlj, max(len(cur) - 1, 0))
+                    )
+
+                ins_cl = st.session_state.pop(f"wl_do_insert_cl_{iso2}", None)
+                if isinstance(ins_cl, (list, tuple)) and len(ins_cl) == 2:
+                    _insert_client_after(iso2, int(ins_cl[0]), int(ins_cl[1]))
+
+                # Enter 커밋(입력값 반영 + 칸 분할) — 반드시 위젯 생성 전
+                ent_req = st.session_state.pop(f"wl_do_enter_cell_{iso2}", None)
+                if isinstance(ent_req, dict):
+                    _commit_enter_on_cell(
+                        str(ent_req.get("kind") or ""),
+                        iso2,
+                        int(ent_req.get("ei") or 0),
+                        int(ent_req.get("lj") or 0),
+                        str(ent_req.get("v") or ""),
+                    )
+
+                def _on_enter_trigger():
+                    hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
+                    payload = ""
+                    if isinstance(hook, dict):
+                        payload = str(hook.get("enter") or "")
+                    if not payload:
+                        return
+                    done_k = f"wl_enter_done_{iso2}"
+                    if st.session_state.get(done_k) == payload:
+                        return
+                    st.session_state[done_k] = payload
+                    key = ""
+                    val = ""
+                    try:
+                        obj = json.loads(payload)
+                        key = str(obj.get("key") or "")
+                        val = str(obj.get("v") or "")
+                    except Exception:
+                        key = payload.split(":", 1)[0]
+                        val = ""
+                    m = re.match(
+                        r"^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)$",
+                        key,
+                    )
+                    if not m or m.group(2) != iso2:
+                        return
+                    st.session_state[f"wl_do_enter_cell_{iso2}"] = {
+                        "kind": m.group(1),
+                        "ei": int(m.group(3)),
+                        "lj": int(m.group(4)),
+                        "v": val,
+                    }
+
+                focus_key = st.session_state.pop(f"wl_focus_ln_{iso2}", None)
+                if isinstance(focus_key, str) and (
+                    focus_key.startswith("wl_ent_ln_")
+                    or focus_key.startswith("wl_ent_cl_")
+                ):
+                    try:
+                        _ei = int(focus_key.split("_")[-2])
+                        st.session_state[f"wl_exp_{iso2}_{_ei}"] = True
+                    except Exception:
+                        pass
+
+                # 전체 내용칸 잔여 (입력 반영) — 가운데 게이지로 표시, 배너는 숨김
+                _live_entries = _read_editor_entries(d)
+                _usage = _content_row_usage(_live_entries)
+                _rem = _usage["remaining"]
+
+                for i in range(n):
+                    if int(
+                        st.session_state.get(_entry_client_count_key(iso2, i), 0) or 0
+                    ) > 0:
+                        _cl0 = _clients_from_widgets(
+                            iso2, i, keep_trailing_empty=False
+                        )
+                        client_now = (_cl0[0] if _cl0 else "").strip()
+                    else:
+                        client_now = str(
+                            st.session_state.get(f"wl_ent_c_{iso2}_{i}", "") or ""
+                        ).strip()
+                        if client_now:
+                            client_now = client_now.splitlines()[0].strip()
+                    body_now = _content_from_entry_lines(iso2, i).strip().replace(
+                        "\n", " "
+                    )
+                    if len(body_now) > 24:
+                        body_now = body_now[:24] + "…"
+                    label = f"항목 {i + 1}"
+                    if client_now:
+                        label += f" · {client_now}"
+                    elif body_now:
+                        label += f" · {body_now}"
+                    else:
+                        label += " · (비어 있음)"
+
+                    exp_key = f"wl_exp_{iso2}_{i}"
+                    # 기본: 마지막 항목만 펼침 (키로 이후 사용자 토글 유지)
+                    default_open = i == n - 1
+                    if exp_key not in st.session_state:
+                        st.session_state[exp_key] = default_open
+
+                    with st.expander(
+                        label, expanded=bool(st.session_state.get(exp_key)), key=exp_key
+                    ):
+                        if st.button(
+                            "이 항목 삭제",
+                            key=f"wl_del_btn_{iso2}_{i}",
+                            width="stretch",
+                        ):
+                            st.session_state[f"wl_do_del_{iso2}"] = i
+                            _wl_rerun()
+                        _cu = _client_line_units()
+                        st.markdown(
+                            "<div style='font-size:11px;color:#64748B;margin:0 0 2px;'>"
+                            f"거래처 (한 칸 ≈ 반각 {_cu}자 · <b>Enter/＋ = 다음 칸</b> · "
+                            "칸 초과 시 자동)</div>",
+                            unsafe_allow_html=True,
+                        )
+                        if int(
+                            st.session_state.get(_entry_client_count_key(iso2, i), 0)
+                            or 0
+                        ) <= 0:
+                            stored_e = st.session_state.get(_entries_key(d)) or []
+                            if i < len(stored_e) and isinstance(
+                                stored_e[i].get("client_lines"), list
+                            ):
+                                _seed_entry_clients(
+                                    iso2, i, stored_e[i].get("client_lines") or [""]
+                                )
+                            else:
+                                _seed_entry_clients(
+                                    iso2,
+                                    i,
+                                    str(
+                                        st.session_state.get(f"wl_ent_c_{iso2}_{i}", "")
+                                        or ""
+                                    ),
+                                )
+                        _mount_entry_client_editor(iso2, i, _cu)
+                        st.markdown(
+                            "<div style='font-size:11px;color:#64748B;margin:4px 0 2px;'>내용 "
+                            f"(한 칸 ≈ 반각 {max_u}자 · <b>Enter/＋ = 다음 칸</b> · 가득 차면 자동 분할)</div>",
+                            unsafe_allow_html=True,
+                        )
+                        if int(st.session_state.get(_entry_line_count_key(iso2, i), 0) or 0) <= 0:
+                            lines0 = None
+                            # stored entries may have lines
+                            stored_e = st.session_state.get(_entries_key(d)) or []
+                            if i < len(stored_e) and isinstance(stored_e[i].get("lines"), list):
+                                lines0 = stored_e[i].get("lines")
+                            if isinstance(lines0, list):
+                                _apply_entry_lines(iso2, i, [str(x or "") for x in lines0])
+                            else:
+                                _seed_entry_lines(
+                                    iso2,
+                                    i,
+                                    str(st.session_state.get(f"wl_ent_t_{iso2}_{i}", "") or ""),
+                                )
+                        _mount_entry_lines_editor(iso2, i, max_u)
+                        _filled = len(
+                            _lines_from_entry_widgets(iso2, i, keep_trailing_empty=False)
+                        )
+                        gap_key = f"wl_ent_gap_{iso2}_{i}"
+                        if gap_key not in st.session_state:
+                            st.session_state[gap_key] = _entry_blank_after(
+                                (_live_entries[i] if i < len(_live_entries) else None),
+                                1,
+                            )
+                        st.number_input(
+                            "다음 항목 전 빈 칸 수",
+                            min_value=0,
+                            max_value=10,
+                            step=1,
+                            key=gap_key,
+                            help="이 항목 다음에 원본 엑셀에서 비워 둘 행 수. "
+                            "다른 거래처 항목과 구분하려면 1 이상 권장 "
+                            "(0이면 거래처 줄바꿈과 구분이 어려울 수 있음)",
+                        )
+                        _ent_rows = (
+                            _usage["per_entry"][i]
+                            if i < len(_usage["per_entry"])
+                            else max(_filled, 1)
+                        )
+                        st.caption(
+                            f"이 항목 약 {_ent_rows}행 사용 · "
+                            f"전체 남은 {_rem}행 (마지막 칸 G{_usage['last_row']})"
+                        )
+
+                # Enter 훅 + 다음 칸 포커스 (입력칸 생성 후)
+                _WL_ENTER_HOOK(
+                    key=f"wl_enter_hook_{iso2}",
+                    data={
+                        "iso": iso2,
+                        "focus_key": focus_key if isinstance(focus_key, str) else "",
+                        "client_max_u": _client_line_units(),
+                        "content_max_u": _content_line_units(),
+                    },
+                    on_enter_change=_on_enter_trigger,
+                    width="stretch",
+                    height=1,
+                )
+                # Enter 콜백은 훅 마운트 시점에 옴 → 다음 런 위젯 생성 전에 반영
+                if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
+                    _wl_rerun()
+                ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
+                if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
+                    _insert_line_after(iso2, int(ins_after[0]), int(ins_after[1]))
+                    _wl_rerun()
+                ins_cl_after = st.session_state.pop(f"wl_do_insert_cl_{iso2}", None)
+                if isinstance(ins_cl_after, (list, tuple)) and len(ins_cl_after) == 2:
+                    _insert_client_after(
+                        iso2, int(ins_cl_after[0]), int(ins_cl_after[1])
+                    )
+                    _wl_rerun()
+
+                if st.button("＋ 항목 추가", key=f"wl_add_btn_{iso2}", width="stretch"):
+                    st.session_state[f"wl_do_add_{iso2}"] = True
+                    _wl_rerun()
+
+                st.markdown(
+                    "<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>"
+                    "익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>",
+                    unsafe_allow_html=True,
+                )
+                st.text_area(
+                    "익일업무",
+                    key=f"wl_next_area_{iso2}",
+                    label_visibility="collapsed",
+                    height=90,
+                )
+                st.markdown(
+                    "<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>"
+                    "특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>",
+                    unsafe_allow_html=True,
+                )
+                st.text_area(
+                    "특이사항",
+                    key=f"wl_notes_area_{iso2}",
+                    label_visibility="collapsed",
+                    height=90,
+                )
+
+                if st.button(
+                    "저장",
+                    type="primary",
+                    width="stretch",
+                    key=f"wl_save_btn_{iso2}",
+                ):
+                    try:
+                        # 방금 마운트된 칸 값을 우선 반영
+                        entries_now = _read_editor_entries(d)
+                        usage_now = _content_row_usage(entries_now)
+                        if usage_now.get("overflow"):
+                            st.error(
+                                f"내용칸 용량 초과: {usage_now['used']}/{usage_now['total']}행. "
+                                "칸을 줄이거나 항목 사이 빈 칸 수를 낮춘 뒤 다시 저장하세요."
+                            )
+                        else:
+                            cells = _pack_entries_to_cells(
+                                d,
+                                entries_now,
+                                [
+                                    x.strip()
+                                    for x in str(
+                                        st.session_state.get(f"wl_next_area_{iso2}", "") or ""
+                                    ).splitlines()
+                                    if x.strip()
+                                ],
+                                [
+                                    x.strip()
+                                    for x in str(
+                                        st.session_state.get(f"wl_notes_area_{iso2}", "") or ""
+                                    ).splitlines()
+                                    if x.strip()
+                                ],
+                            )
+                            path = save_worklog_cells(d, cells)
+                            packed_entries = _grouped_entries_from_cells(cells)
+                            if not packed_entries:
+                                packed_entries = [{"client": "", "content": "", "lines": []}]
+                            _, nd, nt = _entries_from_cells(cells)
+                            st.session_state[_entries_key(d)] = packed_entries
+                            st.session_state[_next_key(d)] = "\n".join(nd)
+                            st.session_state[_notes_key(d)] = "\n".join(nt)
+                            st.session_state[f"wl_pending_sync_{iso2}"] = {
+                                "entries": packed_entries,
+                                "next": "\n".join(nd),
+                                "notes": "\n".join(nt),
+                                "msg": f"저장 완료: {os.path.basename(path)}",
+                            }
+                            _wl_rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+
+            _wl_entry_editor()
+
+        # 하단 고정: 원본 엑셀 양식 (화면 약 1/4) — 저장 반영 확인용
+        st.markdown("---")
+        st.markdown("##### 원본 엑셀 양식")
+        st.caption(
+            "저장하면 아래 양식에 바로 반영됩니다 · 스크롤해서 전체 확인 · "
+            "크게 보려면 위 「미리보기」"
+        )
+        try:
+            # draft는 위젯 기준. 저장 직후엔 pending sync로 위젯이 맞춰져 다시 그림.
+            form_cells = _cells_from_widgets(selected)
+            form_sig = json.dumps(form_cells, ensure_ascii=False, sort_keys=True)
+            sig_key = f"wl_form_sig_v2_{selected.isoformat()}"
+            html_key = f"wl_form_html_v2_{selected.isoformat()}"
+            if st.session_state.get(sig_key) != form_sig:
+                form_path = _build_preview_file(selected, form_cells)
+                st.session_state[html_key] = render_worklog_view_html(
+                    form_path,
+                    print_mode=False,
+                    scale=0.42,
+                    wrap_height="100%",
+                )
+                st.session_state[sig_key] = form_sig
+            components.html(
+                st.session_state.get(html_key) or "",
+                height=280,
+                scrolling=True,
+            )
+        except Exception as e:
+            st.caption(f"원본 양식 표시 실패: {e}")
+
+    _worklog_main()

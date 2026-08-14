@@ -10432,10 +10432,21 @@ with tab9:
 
 with tab10:
     # 업무일지 탭 전용 — 다른 탭과 공유 상태/헬퍼를 쓰지 않음.
-    # iPad/Cloud: 모듈 누락·로드 실패 시에도 다른 탭은 유지 (매 실행 reload 금지).
+    # 파일 mtime 변경 시에만 reload (매번 reload 금지 → 달력/저장 로딩 감소).
+    # 로드 실패 시에도 다른 탭은 유지.
     try:
+        import importlib
+        import os
+        import sys
+
         import worklog_tab as _worklog_tab
 
+        _wl_path = getattr(_worklog_tab, "__file__", None) or ""
+        _wl_mtime = os.path.getmtime(_wl_path) if _wl_path and os.path.exists(_wl_path) else 0
+        if st.session_state.get("_wl_mod_mtime") != _wl_mtime:
+            _worklog_tab = importlib.reload(_worklog_tab)
+            st.session_state["_wl_mod_mtime"] = _wl_mtime
+            sys.modules["worklog_tab"] = _worklog_tab
         _worklog_tab.render_worklog_tab(latest_update_str)
     except ModuleNotFoundError:
         st.error(
