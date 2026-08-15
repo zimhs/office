@@ -64,49 +64,10 @@ st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide"
 CACHE_DIR = "./uploaded_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-
-def _is_streamlit_cloud() -> bool:
-    """Streamlit Community Cloud 등 원격 런타임 여부. 맥 로컬 Desktop은 False."""
-    try:
-        env = (os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT") or "").strip().lower()
-        if env == "cloud":
-            return True
-    except Exception:
-        pass
-    try:
-        cwd = os.path.abspath(os.getcwd())
-        if cwd.startswith("/mount/src"):
-            return True
-    except Exception:
-        pass
-    return False
-
-
-# 클라우드 프로세스(재부팅)당 1회: 옛 매출 캐시 자동복원 제거 → 수동 업로드만
-_CLOUD_SALES_CACHE_PURGED = False
-
-
-def _purge_cloud_sales_cache_once(sales_dir: str) -> None:
-    """아이패드(클라우드) 재부팅 후 불안정한 자동복원 방지. 맥 로컬은 no-op."""
-    global _CLOUD_SALES_CACHE_PURGED
-    if _CLOUD_SALES_CACHE_PURGED:
-        return
-    _CLOUD_SALES_CACHE_PURGED = True
-    if not _is_streamlit_cloud():
-        return
-    try:
-        if not os.path.isdir(sales_dir):
-            return
-        for name in os.listdir(sales_dir):
-            path = os.path.join(sales_dir, name)
-            try:
-                if os.path.isfile(path):
-                    os.remove(path)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
+try:
+    from drive_autoload import sync_drive_copy_into_cache
+except Exception:  # pragma: no cover
+    sync_drive_copy_into_cache = None  # type: ignore
 
 # ==========================================
 # 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
@@ -7373,6 +7334,26 @@ def render_frozen_styler_html(
 # ==========================================
 inject_custom_css()
 st.sidebar.header("📁 데이터 업로드 및 유지")
+# Drive「dashboard 복사본」→ uploaded_cache (맥: Drive 마운트 / 클라우드: 배포 시드)
+_drive_autoload_res = None
+if sync_drive_copy_into_cache is not None:
+    try:
+        _drive_autoload_res = sync_drive_copy_into_cache(CACHE_DIR)
+    except Exception as _dae:
+        _drive_autoload_res = {"ok": False, "error": str(_dae)}
+if isinstance(_drive_autoload_res, dict):
+    if _drive_autoload_res.get("ok") and _drive_autoload_res.get("source"):
+        _n = len(_drive_autoload_res.get("copied") or [])
+        st.sidebar.caption(
+            f"Drive 복사본 자동로드"
+            + (f" · 갱신 {_n}개" if _n else " · 캐시 유지")
+        )
+    elif _drive_autoload_res.get("ok") and _drive_autoload_res.get("skipped"):
+        st.sidebar.caption("캐시/시드 자동로드 (Drive 경로 없음)")
+    elif not _drive_autoload_res.get("ok"):
+        st.sidebar.warning(
+            f"Drive 자동로드 실패: {_drive_autoload_res.get('error') or '알 수 없음'}"
+        )
 address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
 industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)", type=["csv"])
 debt_file_up = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
@@ -7587,8 +7568,6 @@ vaporizer_cache_path = os.path.join(CACHE_DIR, "vaporizer_cache.dat")
 integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
 sales_cache_dir = os.path.join(CACHE_DIR, "sales")
 os.makedirs(sales_cache_dir, exist_ok=True)
-# 클라우드 재부팅: 매출 자동복원 캐시 삭제(수동 업로드). 맥 로컬 무변경.
-_purge_cloud_sales_cache_once(sales_cache_dir)
 if address_file_up is not None:
     addr_bytes = address_file_up.getvalue()
     with open(addr_cache_path, "wb") as f: f.write(addr_bytes)
@@ -7727,7 +7706,6 @@ else:
     int_bytes = None
     int_name = ""
 sales_file_meta = []
-_cloud_manual_sales = _is_streamlit_cloud()
 if uploaded_files_up and len(uploaded_files_up) > 0:
     for f_name in os.listdir(sales_cache_dir):
         os.remove(os.path.join(sales_cache_dir, f_name))
@@ -7744,8 +7722,7 @@ if uploaded_files_up and len(uploaded_files_up) > 0:
         except Exception:
             sales_file_meta.append((f.name, f_path, 0, len(f_bytes)))
 else:
-    # 맥: 캐시·루트 CSV 자동 로드 유지
-    # 클라우드(아이패드): 루트 자동로드 금지. 같은 프로세스 내 수동업로드 캐시만 사용
+    # Drive 자동로드·시드 캐시 우선, 없으면 루트 20xx.csv
     if os.path.exists(sales_cache_dir):
         for f_name in sorted(os.listdir(sales_cache_dir)):
             if f_name.endswith(".csv"):
@@ -7757,7 +7734,7 @@ else:
                     )
                 except Exception:
                     continue
-    if (not sales_file_meta) and (not _cloud_manual_sales):
+    if not sales_file_meta:
         for f_name in sorted(os.listdir(".")):
             if re.match(r"^20\d{2}.*\.csv$", f_name):
                 f_path = os.path.abspath(f_name)
@@ -7773,11 +7750,6 @@ sales_file_meta = tuple(sales_file_meta)
 if sales_file_meta:
     st.sidebar.caption(
         "매출 파일: " + ", ".join(x[0] for x in sales_file_meta)
-    )
-elif _cloud_manual_sales:
-    st.sidebar.info(
-        "클라우드(아이패드): 재부팅 후 매출 자동복원 없음. "
-        "사이드바에서 CSV를 수동 업로드하세요."
     )
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
