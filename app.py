@@ -8141,15 +8141,18 @@ with tab1:
     else:
         y_suf, y_fmt, _fmt_kind, _cmap = " 만원", ",.0f", "amt", "Blues"
 
-    # iPad: 표·그래프 세로 스택(표 전체 폭). 맥: 기존 1:1 가로 배치 유지
-    if is_touch_ui():
+    # 상단「연도별 월 매출 추이」와 동일: 좌 표 / 우 그래프 1:1
+    # iPad 표는 render_month_expandable_week_table 내부에서 가로 스크롤로 숫자 표시
+    i_col_left, i_col_right = st.columns([1, 1])
+    with i_col_left:
         render_month_expandable_week_table(
             item_pivot,
             week_year_pivot,
             fmt_kind=_fmt_kind,
             cmap_name=_cmap,
-            height=520,
+            height=460,
         )
+    with i_col_right:
         render_plotly_chart(
             create_stacked_bar_chart(
                 item_pivot,
@@ -8160,27 +8163,6 @@ with tab1:
             use_container_width=True,
             key="tab1_item_chart",
         )
-    else:
-        i_col_left, i_col_right = st.columns([1, 1])
-        with i_col_left:
-            render_month_expandable_week_table(
-                item_pivot,
-                week_year_pivot,
-                fmt_kind=_fmt_kind,
-                cmap_name=_cmap,
-                height=460,
-            )
-        with i_col_right:
-            render_plotly_chart(
-                create_stacked_bar_chart(
-                    item_pivot,
-                    title_text="",
-                    y_suffix=y_suf,
-                    y_format=y_fmt,
-                ),
-                use_container_width=True,
-                key="tab1_item_chart",
-            )
 
     st.markdown("---")
     st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
