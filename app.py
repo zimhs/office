@@ -65,9 +65,10 @@ CACHE_DIR = "./uploaded_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 try:
-    from drive_autoload import sync_drive_copy_into_cache
+    from drive_autoload import sync_drive_copy_into_cache, sync_cache_to_drive_copy
 except Exception:  # pragma: no cover
     sync_drive_copy_into_cache = None  # type: ignore
+    sync_cache_to_drive_copy = None  # type: ignore
 
 # ==========================================
 # 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
@@ -7751,6 +7752,57 @@ if sales_file_meta:
     st.sidebar.caption(
         "매출 파일: " + ", ".join(x[0] for x in sales_file_meta)
     )
+
+# 맥 사이드바 업로드 → Drive「dashboard 복사본」반영 (아이패드 Drive 폴더용)
+_integrated_up = None
+try:
+    _integrated_up = integrated_file_up
+except NameError:
+    _integrated_up = None
+_drive_upload_hit = bool(
+    address_file_up
+    or industry_file_up
+    or debt_file_up
+    or (uploaded_files_up and len(uploaded_files_up) > 0)
+    or tank_file_up
+    or vaporizer_file_up
+    or _integrated_up
+)
+
+def _run_cache_to_drive_sync(*, force: bool = False):
+    if sync_cache_to_drive_copy is None:
+        return None
+    if not force and st.session_state.get("_drive_synced_this_upload"):
+        return None
+    try:
+        res = sync_cache_to_drive_copy(CACHE_DIR)
+    except Exception as e:
+        res = {"ok": False, "error": str(e)}
+    st.session_state["_drive_synced_this_upload"] = True
+    st.session_state["_drive_sync_out_msg"] = res
+    return res
+
+if _drive_upload_hit and sync_cache_to_drive_copy is not None:
+    if not st.session_state.get("_drive_synced_this_upload"):
+        _run_cache_to_drive_sync(force=False)
+elif not _drive_upload_hit:
+    st.session_state.pop("_drive_synced_this_upload", None)
+
+if st.sidebar.button("☁️ Drive 복사본으로 동기화", help="맥 캐시 → Google Drive dashboard 복사본"):
+    st.session_state.pop("_drive_synced_this_upload", None)
+    _run_cache_to_drive_sync(force=True)
+    st.rerun()
+
+_drive_out = st.session_state.pop("_drive_sync_out_msg", None)
+if isinstance(_drive_out, dict):
+    if _drive_out.get("ok") and not _drive_out.get("skipped"):
+        _nc = len([x for x in (_drive_out.get("copied") or []) if not str(x).startswith("-")])
+        st.sidebar.success(f"Drive 복사본 반영 완료 · {_nc}개")
+    elif _drive_out.get("skipped"):
+        st.sidebar.caption("Drive 경로 없음 — 맥에서 Google Drive 앱 확인")
+    elif not _drive_out.get("ok"):
+        st.sidebar.warning(f"Drive 동기화 실패: {_drive_out.get('error') or '알 수 없음'}")
+
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
               tank_cache_path, tank_cache_path + "_name.txt", 

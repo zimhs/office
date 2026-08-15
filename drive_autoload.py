@@ -191,3 +191,98 @@ def sync_drive_copy_into_cache(cache_dir: str = "./uploaded_cache") -> dict:
             "source": drive_root,
             "error": str(e),
         }
+
+
+def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache") -> dict:
+    """맥 uploaded_cache → Drive「dashboard 복사본」(업로드 반영).
+
+    Google Drive 데스크톱이 클라우드로 올리면 아이패드 Drive 폴더에도 보임.
+    Streamlit Cloud 시드는 별도 git push가 필요.
+    """
+    drive_root = resolve_drive_dashboard_copy()
+    if not drive_root:
+        return {
+            "ok": False,
+            "skipped": True,
+            "copied": [],
+            "source": None,
+            "error": "Drive「dashboard 복사본」경로 없음",
+        }
+
+    copied: List[str] = []
+    try:
+        sales_dir = os.path.join(cache_dir, "sales")
+
+        for drive_name, rel, _name_txt in _CACHE_MAP:
+            src = os.path.join(cache_dir, rel)
+            dst = os.path.join(drive_root, drive_name)
+            if not os.path.isfile(src):
+                continue
+            if os.path.isfile(dst):
+                try:
+                    if (
+                        os.path.getsize(src) == os.path.getsize(dst)
+                        and abs(os.path.getmtime(src) - os.path.getmtime(dst)) < 1.0
+                    ):
+                        continue
+                except OSError:
+                    pass
+            if _atomic_copy(src, dst):
+                copied.append(drive_name)
+
+        if os.path.isdir(sales_dir):
+            cache_sales = []
+            try:
+                cache_sales = [
+                    n
+                    for n in os.listdir(sales_dir)
+                    if n.endswith(".csv") and _SALES_NAME_RE.match(n)
+                ]
+            except OSError:
+                cache_sales = []
+            cache_set = set(cache_sales)
+            for sn in sorted(cache_sales):
+                src = os.path.join(sales_dir, sn)
+                dst = os.path.join(drive_root, sn)
+                if not os.path.isfile(src):
+                    continue
+                if os.path.isfile(dst):
+                    try:
+                        if (
+                            os.path.getsize(src) == os.path.getsize(dst)
+                            and abs(os.path.getmtime(src) - os.path.getmtime(dst)) < 1.0
+                        ):
+                            continue
+                    except OSError:
+                        pass
+                if _atomic_copy(src, dst):
+                    copied.append(sn)
+            # Drive에만 남은 옛 매출(예: 2026.csv) 제거 — 캐시에 있는 목록만 유지
+            try:
+                for n in os.listdir(drive_root):
+                    if not _SALES_NAME_RE.match(n):
+                        continue
+                    if n in cache_set:
+                        continue
+                    try:
+                        os.remove(os.path.join(drive_root, n))
+                        copied.append(f"-{n}")
+                    except Exception:
+                        pass
+            except OSError:
+                pass
+
+        return {
+            "ok": True,
+            "skipped": False,
+            "copied": copied,
+            "source": drive_root,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "skipped": False,
+            "copied": copied,
+            "source": drive_root,
+            "error": str(e),
+        }
