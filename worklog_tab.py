@@ -33,6 +33,24 @@ def _wl_rerun() -> None:
         st.rerun()
 
 
+def _wl_quiet_ui() -> bool:
+    """아이패드·클라우드·비 macOS — 맥 전용 경로/Excel 경고를 숨긴다."""
+    try:
+        if st.session_state.get("force_touch_ui") is True:
+            return True
+        v = st.query_params.get("touch_ui", "")
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else ""
+        if str(v).strip() in ("1", "true", "True"):
+            return True
+    except Exception:
+        pass
+    try:
+        return platform.system() != "Darwin"
+    except Exception:
+        return True
+
+
 def _invalidate_saved_dates_cache() -> None:
     st.session_state.pop("wl_saved_dates_cache", None)
 
@@ -107,7 +125,7 @@ export default function (component) {
   const root = parentElement.querySelector(".wl-lines");
   if (!root) return;
 
-  const maxU = Number((data && data.max_u) || 69);
+  const maxU = Number((data && data.max_u) || 70);
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
   const incoming = Array.isArray(data && data.lines)
@@ -369,8 +387,7 @@ def _excel_col_width(ws, col_idx: int) -> float:
 def _excel_width_to_px(width: float) -> int:
     """엑셀 열 폭 → CSS px.
 
-    공식 mdw=7 은 내용칸이 너무 좁아 14pt 한글이 잘림.
-    원본 스크린샷 채움(~92%)에 맞춘 계수.
+    원본 스크린샷 대비 내용칸 채움(~92%)에 맞춘 계수.
     """
     try:
         w = float(width)
@@ -379,17 +396,34 @@ def _excel_width_to_px(width: float) -> int:
     return max(10, int(w * 7 + 5))
 
 
+# 아이패드/브라우저에서 엑셀 14pt보다 좁게 렌더되는 보정 (원본 채움 실측)
+_WL_FONT_PX_SCALE = 1.08
+# 원본 양식 본문 글꼴 (엑셀·하단 미리보기)
+_WL_BODY_FONT_NAME = "바탕체"
+_WL_BODY_FONT_PT = 14.0
+
+
+def _set_body_font(cell) -> None:
+    """거래처·내용 등 본문 칸에 바탕체 적용."""
+    try:
+        cell.font = cell.font.copy(
+            name=_WL_BODY_FONT_NAME, size=float(_WL_BODY_FONT_PT)
+        )
+    except Exception:
+        pass
+
+
 @lru_cache(maxsize=1)
 def _content_line_units() -> int:
-    """원본 G:X 병합 폭 기준 — 엑셀 바탕체 14pt 한 줄에 가깝게 채운 뒤 다음 행.
+    """원본 G:X 병합 폭 기준 — 칸을 거의 채우되 우측이 넘치지 않게 여유를 둔다.
 
-    반각=1, 한글 음절/호환자모=2. 원본 스크린샷 기준 긴 줄이 칸의 ~92%를 채움.
+    반각=1, 한글=2. 장문이 원본 테두리를 살짝 넘기던 것을 막아
+    약 70단위(~한글 35자)에서 다음 칸으로 넘긴다.
     """
     fallback = 70
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
-        # read_only 시트는 column_dimensions 가 없어 폭 계산 불가
         wb = load_workbook(WORKLOG_TEMPLATE, data_only=False)
         ws = wb.active
         total = sum(
@@ -397,9 +431,8 @@ def _content_line_units() -> int:
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        # 열폭(기본글꼴 문자수) → 바탕 14pt 실측 채움에 맞춤
-        units = int(total * (11 / 14) * 1.05)
-        return max(60, min(units, 72))
+        units = int(total * (11 / 14) * 1.06)
+        return max(66, min(units, 71))
     except Exception:
         return fallback
 
@@ -654,10 +687,13 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, blank_base: bool = F
         _clear_content_cells(ws)
     ws["C5"] = cells.get("date") or format_worklog_date(d)
     for r in WL_CLIENT_ROWS:
-        ws.cell(r, 3).value = (cells.get(f"C{r}", "") or None)
+        cell = ws.cell(r, 3)
+        cell.value = (cells.get(f"C{r}", "") or None)
+        _set_body_font(cell)
     for r in WL_CONTENT_ROWS:
         cell = ws.cell(r, 7)
         cell.value = (cells.get(f"G{r}", "") or None)
+        _set_body_font(cell)
         # 칸 안에서 줄바꿈·넘침으로 다음 행을 가리지 않도록
         try:
             cell.alignment = cell.alignment.copy(wrapText=False, shrinkToFit=False)
@@ -666,6 +702,7 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, blank_base: bool = F
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
         cell = ws.cell(r, 4)
         cell.value = (cells.get(f"D{r}", "") or None)
+        _set_body_font(cell)
         try:
             cell.alignment = cell.alignment.copy(wrapText=False, shrinkToFit=False)
         except Exception:
@@ -932,17 +969,33 @@ def workbook_to_html(path: str) -> str:
             else:
                 text = "" if val is None else str(val)
             font = cell.font
-            fname = font.name or "Batang"
-            # 엑셀 한글 폰트명 정규화
+            fname = font.name or _WL_BODY_FONT_NAME
+            # 엑셀 한글 폰트명 정규화 — 본문은 바탕(바탕글) 계열
             if fname in ("맑은 고딕", "Malgun Gothic"):
                 fname_css = "Malgun Gothic"
-            elif fname in ("바탕", "바탕체", "Batang", "BatangChe"):
+            elif fname in (
+                "바탕",
+                "바탕체",
+                "바탕글",
+                "Batang",
+                "BatangChe",
+            ):
                 fname_css = "Batang"
             else:
                 fname_css = fname
-            # 엑셀 pt → CSS px (96dpi). pt 단위가 iframe에서 작게 먹히는 경우 대비.
-            fsize_pt = float(font.size or 12)
-            fsize_px = fsize_pt * 96.0 / 72.0
+            # 엑셀 셀 글꼴 그대로 → CSS px + 브라우저 보정
+            is_content = c == 7 and 9 <= r <= 39
+            is_client = c == 3 and 9 <= r <= 39
+            is_body_d = c == 4 and (
+                r in WL_NEXT_ROWS or r in WL_NOTE_ROWS
+            )
+            fsize_pt = float(font.size or _WL_BODY_FONT_PT)
+            # 본문 칸은 항상 바탕체로 표시 (원본 적용)
+            if is_content or is_client or is_body_d:
+                fname_css = "Batang"
+                fsize_pt = float(font.size or _WL_BODY_FONT_PT)
+            fsize_px = fsize_pt * 96.0 / 72.0 * _WL_FONT_PX_SCALE
+            line_h_px = max(fsize_px * 1.12, fsize_px + 1.0)
             bold = "bold" if font.bold else "normal"
             align = cell.alignment
             ha = align.horizontal or "left"
@@ -959,28 +1012,50 @@ def workbook_to_html(path: str) -> str:
             # 소프트 빈 줄(항목 안 빈 칸)은 화면에서도 비어 보이게
             if text in (_WL_SOFT_BLANK, "\u00a0"):
                 text = ""
-            esc = html.escape(text).replace("\n", "<br>")
-            # 내용칸은 한 행=한 줄 (원본 엑셀과 동일하게 칸 밖으로 줄바꿈하지 않음)
-            is_content = c == 7 and 9 <= r <= 39
-            is_client = c == 3 and 9 <= r <= 39
-            white = "nowrap" if (is_content or is_client) else "pre-wrap"
-            overflow = "hidden" if (is_content or is_client) else "visible"
+            elif is_content and text.strip() == "" and text != "":
+                text = ""
+            # 연속 공백·선행 공백이 HTML에서 사라지지 않게
+            esc = (
+                html.escape(text)
+                .replace(" ", "&nbsp;")
+                .replace("\n", "<br>")
+            )
+            # 내용칸: 엑셀처럼 한 줄 + 옆 빈 칸으로 넘침 표시 (clip 금지)
+            if is_content or is_client:
+                white = "nowrap"
+                overflow = "visible"
+                text_overflow = "clip"
+                zidx = "position:relative;z-index:1;"
+            else:
+                white = "pre-wrap"
+                overflow = "visible"
+                text_overflow = "clip"
+                zidx = ""
             # 병합 셀 폭 = 포함 열 합 (고정 레이아웃에서 원본과 같은 채움감)
             c0 = c - WL_MIN_COL
             span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
             width_css = f"width:{span_w}px;min-width:{span_w}px;max-width:{span_w}px;" if span_w else ""
-            # macOS에 Batang 없을 때 명조 계열로 폭이 비슷하게
+            # 바탕글(바탕체) 우선 — Nanum/고딕으로 대체되지 않게
+            if is_content or is_client or is_body_d:
+                font_stack = (
+                    "'Batang','BatangChe','바탕','바탕체','바탕글',"
+                    "'Apple Myungjo','AppleMyungjo','Nanum Myeongjo',serif"
+                )
+            else:
+                font_stack = (
+                    f"'{html.escape(fname_css)}','Batang','BatangChe',"
+                    f"'Apple Myungjo','Malgun Gothic',serif"
+                )
             style = (
-                f"box-sizing:border-box;{width_css}"
-                f"font-family:'{html.escape(fname_css)}','Batang','BatangChe',"
-                f"'Apple Myungjo','AppleMyungjo','Nanum Myeongjo','Malgun Gothic',serif;"
+                f"box-sizing:border-box;{width_css}{zidx}"
+                f"font-family:{font_stack};"
                 f"font-size:{fsize_px:.4f}px;font-weight:{bold};"
                 f"text-align:{ha};vertical-align:{va};"
                 f"background:{fill};{border}"
                 f"padding:0 2px;white-space:{white};overflow:{overflow};"
-                f"text-overflow:clip;word-break:keep-all;"
-                f"height:{height_px}px;min-height:{height_px}px;max-height:{height_px}px;"
-                f"line-height:{height_px}px;"
+                f"text-overflow:{text_overflow};word-break:keep-all;"
+                f"height:{height_px}px;min-height:{height_px}px;"
+                f"line-height:{line_h_px:.2f}px;"
             )
             tds.append(f'<td{span} style="{style}">{esc}</td>')
         rows_html.append(
@@ -1124,8 +1199,8 @@ _WL_SOFT_BLANK = " "
 def _grouped_entries_from_cells(cells: dict) -> list[dict]:
     """엑셀 행 → 논리 항목.
 
-    - 완전 빈 행(C·G 둘 다 비움) 뒤에 오면 새 항목 (앞 빈 행 수 = 이전 blank_after)
-    - 내용칸만 공백 한 칸(SOFT_BLANK)이면 같은 항목의 빈 줄
+    - C·G 모두 완전 빈 행 뒤에 오면 새 항목 (앞 빈 행 수 = 이전 blank_after)
+    - G만 공백(소프트 빈 줄·여러 칸 공백)이면 같은 항목의 빈 줄
     - 빈 행 없이 이어지면 같은 항목: 거래처·내용 칸을 각각 이어 붙임
     """
     entries: list[dict] = []
@@ -1134,13 +1209,34 @@ def _grouped_entries_from_cells(cells: dict) -> list[dict]:
         raw_c = str(cells.get(f"C{r}", "") or "")
         raw_g = str(cells.get(f"G{r}", "") or "")
         client = _scrub_dummy_label(raw_c).strip()
-        # 소프트 빈 줄은 strip 하지 않은 채 판별
         soft_blank = raw_g == _WL_SOFT_BLANK or raw_g == "\u00a0"
-        content = "" if soft_blank else _scrub_dummy_label(raw_g)
-        empty = not client and not soft_blank and not (content or "").strip()
-        if empty:
+        # G만 공백(1칸 이상) = 항목 안 빈 줄. C·G 모두 비어 있으면 항목 구분.
+        g_whitespace_only = (
+            not client
+            and not soft_blank
+            and raw_g != ""
+            and raw_g.strip() == ""
+        )
+        fully_empty = (
+            not client
+            and not soft_blank
+            and not g_whitespace_only
+            and raw_c.strip() == ""
+            and raw_g.strip() == ""
+        )
+        content = "" if (soft_blank or g_whitespace_only) else _scrub_dummy_label(raw_g)
+
+        if fully_empty:
             blank_run += 1
             continue
+
+        if g_whitespace_only or soft_blank:
+            blank_run = 0
+            if entries:
+                entries[-1].setdefault("lines", []).append("")
+                entries[-1]["content"] = "\n".join(entries[-1].get("lines") or [])
+            continue
+
         if not entries or blank_run > 0:
             if entries:
                 entries[-1]["blank_after"] = max(0, min(10, blank_run))
@@ -1157,7 +1253,6 @@ def _grouped_entries_from_cells(cells: dict) -> list[dict]:
                 }
             )
         else:
-            # 같은 항목 연속 칸 (거래처 줄바꿈 / 내용 추가 / 항목 안 빈 줄)
             if blank_run > 0:
                 for _ in range(blank_run):
                     entries[-1].setdefault("lines", []).append("")
@@ -1167,7 +1262,6 @@ def _grouped_entries_from_cells(cells: dict) -> list[dict]:
             cl = ent.setdefault("client_lines", [])
             if not cl and str(ent.get("client") or "").strip():
                 cl[:] = [str(ent.get("client") or "").strip()]
-            # 내용만 이어지는 행·소프트 빈 줄은 거래처 칸을 늘리지 않음
             if client:
                 cl.append(client)
             ent["client"] = "\n".join(x for x in cl if (x or "").strip())
@@ -1583,8 +1677,24 @@ def _entry_line_count_key(iso: str, entry_i: int) -> str:
     return f"wl_ent_lc_{iso}_{entry_i}"
 
 
+def _entry_line_gen_key(iso: str, entry_i: int) -> str:
+    return f"wl_ent_gen_{iso}_{entry_i}"
+
+
 def _entry_line_key(iso: str, entry_i: int, line_j: int) -> str:
-    return f"wl_ent_ln_{iso}_{entry_i}_{line_j}"
+    """세대(gN)를 넣어 칸 분할 후 Streamlit이 이전 긴 값을 복원하지 않게 함."""
+    g = int(st.session_state.get(_entry_line_gen_key(iso, entry_i), 0) or 0)
+    return f"wl_ent_ln_{iso}_{entry_i}_{line_j}_g{g}"
+
+
+def _bump_entry_line_gen(iso: str, entry_i: int) -> None:
+    k = _entry_line_gen_key(iso, entry_i)
+    old_g = int(st.session_state.get(k, 0) or 0)
+    old_n = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
+    for j in range(max(old_n, 0) + 8):
+        st.session_state.pop(f"wl_ent_ln_{iso}_{entry_i}_{j}_g{old_g}", None)
+        st.session_state.pop(f"wl_ent_ln_{iso}_{entry_i}_{j}", None)
+    st.session_state[k] = old_g + 1
 
 
 def _lines_from_entry_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bool = True) -> list[str]:
@@ -1633,8 +1743,17 @@ def _set_comp_lines_state(
     st.session_state[_entry_lines_live_key(iso, entry_i)] = list(chunks)
 
 
-def _apply_entry_lines(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None) -> None:
+def _apply_entry_lines(
+    iso: str,
+    entry_i: int,
+    lines: list[str],
+    *,
+    focus_j: int | None = None,
+    bump_gen: bool = False,
+) -> None:
     """줄 목록을 text_input 키에 반영. 끝에 편집용 빈 칸 1개 유지."""
+    if bump_gen:
+        _bump_entry_line_gen(iso, entry_i)
     chunks = [str(x or "") for x in (lines or [])]
     if not chunks or chunks[-1] != "":
         chunks.append("")
@@ -1753,6 +1872,48 @@ def _insert_client_after(iso: str, entry_i: int, line_j: int) -> None:
     _apply_entry_clients(iso, entry_i, cur, focus_j=line_j + 1)
 
 
+def _split_overflow_parts(parts: list[str], max_u: int) -> list[str]:
+    """칸 경계를 유지한 채, 폭 초과인 칸만 잘라 다음 칸으로 넘긴다.
+
+    이미 다음에 같은 넘침 조각이 있으면 중복 삽입하지 않는다.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(parts)
+    while i < n:
+        s = str(parts[i] or "")
+        if _display_units(s) > max_u:
+            pieces = _chunk_text(s, max_u) or [s]
+            out.append(pieces[0])
+            j = i + 1
+            for ov in pieces[1:]:
+                if j < n and str(parts[j] or "") == ov:
+                    out.append(str(parts[j] or ""))
+                    j += 1
+                else:
+                    out.append(ov)
+            i = j
+        else:
+            out.append(s)
+            i += 1
+    if not out:
+        out = [""]
+    return out
+
+
+def _dedupe_overflow_tail(pieces: list[str], tail: list[str]) -> list[str]:
+    """분할 결과의 넘침 조각이 tail 앞에 이미 있으면 건너뛴다."""
+    if len(pieces) <= 1:
+        return list(tail)
+    rest = list(tail)
+    for ov in pieces[1:]:
+        if rest and str(rest[0] or "") == ov:
+            rest.pop(0)
+        else:
+            break
+    return rest
+
+
 def _commit_enter_on_cell(
     kind: str, iso: str, entry_i: int, line_j: int, value: str
 ) -> None:
@@ -1770,11 +1931,12 @@ def _commit_enter_on_cell(
             pieces = _chunk_text(value, max_u) or [value]
         else:
             pieces = [value]
-        focus = line_j + 1
         if len(pieces) == 1:
             new = head + pieces + [""] + list(tail)
+            focus = line_j + 1
         else:
-            new = head + pieces + list(tail)
+            new = head + pieces + _dedupe_overflow_tail(pieces, list(tail))
+            focus = line_j + 1
             if focus >= len(new):
                 new.append("")
         _apply_entry_clients(iso, entry_i, new, focus_j=min(focus, len(new) - 1))
@@ -1786,19 +1948,26 @@ def _commit_enter_on_cell(
         cur.append("")
     if cur and cur[-1] == "":
         cur = cur[:-1]
+    # 현재 칸은 emit 값만 사용 (위젯에 남은 긴 값과 이중 분할 방지)
     head, tail = cur[:line_j], cur[line_j + 1 :]
     if _display_units(value) > max_u:
         pieces = _chunk_text(value, max_u) or [value]
     else:
         pieces = [value]
-    focus = line_j + 1
     if len(pieces) == 1:
         new = head + pieces + [""] + list(tail)
-    else:
-        new = head + pieces + list(tail)
-        if focus >= len(new):
-            new.append("")
-    _apply_entry_lines(iso, entry_i, new, focus_j=min(focus, len(new) - 1))
+        focus = line_j + 1
+        _apply_entry_lines(
+            iso, entry_i, new, focus_j=min(focus, len(new) - 1), bump_gen=False
+        )
+        return
+    new = head + pieces + _dedupe_overflow_tail(pieces, list(tail))
+    focus = line_j + 1
+    if focus >= len(new):
+        new.append("")
+    _apply_entry_lines(
+        iso, entry_i, new, focus_j=min(focus, len(new) - 1), bump_gen=True
+    )
 
 
 def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
@@ -1820,6 +1989,37 @@ div[class*="st-key-wl_ent_cl_"] input:focus {
   background-color: #DFF3EE !important;
   border-color: #7CBCAD !important;
 }
+/* 삭제 / ＋ 버튼 글자 가운데 정렬 */
+div[class*="st-key-wl_cl_del_"] button,
+div[class*="st-key-wl_cl_add_"] button,
+div[class*="st-key-wl_ln_del_"] button,
+div[class*="st-key-wl_ln_add_"] button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  padding: 0 !important;
+  line-height: 1.15 !important;
+  min-height: 2.4rem !important;
+  height: 2.4rem !important;
+}
+div[class*="st-key-wl_cl_del_"] button p,
+div[class*="st-key-wl_cl_add_"] button p,
+div[class*="st-key-wl_ln_del_"] button p,
+div[class*="st-key-wl_ln_add_"] button p,
+div[class*="st-key-wl_cl_del_"] button span,
+div[class*="st-key-wl_cl_add_"] button span,
+div[class*="st-key-wl_ln_del_"] button span,
+div[class*="st-key-wl_ln_add_"] button span {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1.15 !important;
+  width: 100%;
+  text-align: center !important;
+}
 </style>
             """,
             unsafe_allow_html=True,
@@ -1835,8 +2035,12 @@ div[class*="st-key-wl_ent_cl_"] input:focus {
         for j in range(lc)
     ]
     if any(_display_units(p) > max_u for p in parts):
-        full = "".join(parts)
-        _seed_entry_clients(iso, entry_i, full)
+        fixed = _split_overflow_parts(parts, max_u)
+        focus = 0
+        for j, line in enumerate(fixed):
+            if _display_units(line) >= max_u:
+                focus = min(j + 1, len(fixed))
+        _apply_entry_clients(iso, entry_i, fixed, focus_j=focus)
         lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 1) or 1)
 
     for j in range(lc):
@@ -1897,8 +2101,14 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
         for j in range(lc)
     ]
     if any(_display_units(p) > max_u for p in parts):
-        full = "".join(parts)
-        _seed_entry_lines(iso, entry_i, full)
+        fixed = _split_overflow_parts(parts, max_u)
+        focus = 0
+        for j, line in enumerate(fixed):
+            if _display_units(line) >= max_u:
+                focus = min(j + 1, len(fixed))
+        _apply_entry_lines(
+            iso, entry_i, fixed, focus_j=focus, bump_gen=True
+        )
         lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 1) or 1)
 
     for j in range(lc):
@@ -1943,15 +2153,22 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     return out
 
 
-# Enter / 칸초과 → 다음 칸 (document 키 훅)
+# Enter / 칸초과 / 방향키 이동 (document 키 훅)
 _WL_ENTER_HOOK_JS = r"""
 export default function (component) {
   const { data, setTriggerValue } = component;
   const iso = (data && data.iso) || "";
   const focusKey = (data && data.focus_key) || "";
+  const focusCaret =
+    data && data.focus_caret != null && data.focus_caret !== ""
+      ? Number(data.focus_caret)
+      : null;
   const clientMax = Number((data && data.client_max_u) || 15);
-  const contentMax = Number((data && data.content_max_u) || 72);
+  const contentMax = Number((data && data.content_max_u) || 70);
   let lastSent = "";
+  let lastSig = "";
+  let lastAt = 0;
+  let lastFocusKey = "";
 
   function charUnits(ch) {
     const o = ch.charCodeAt(0);
@@ -2000,29 +2217,176 @@ export default function (component) {
     });
     if (!cls) return null;
     const key = String(cls).replace(/^st-key-/, "");
-    const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)$/.exec(key);
+    const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(key);
     if (!m || m[2] !== iso) return null;
-    return { key: key, kind: m[1], maxU: m[1] === "wl_ent_cl" ? clientMax : contentMax };
+    return {
+      key: key,
+      kind: m[1],
+      ei: Number(m[3]),
+      lj: Number(m[4]),
+      maxU: m[1] === "wl_ent_cl" ? clientMax : contentMax,
+    };
+  }
+  function listKindInputs(kind) {
+    const needle =
+      kind === "wl_ent_cl" ? "st-key-wl_ent_cl_" : "st-key-wl_ent_ln_";
+    const nodes = document.querySelectorAll(
+      'div[class*="' + needle + '"] input'
+    );
+    const out = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const info = resolveKey(nodes[i]);
+      if (info) out.push(nodes[i]);
+    }
+    return out;
+  }
+  function focusInput(el, caret) {
+    if (!el) return false;
+    try {
+      el.focus({ preventScroll: false });
+      const n = (el.value || "").length;
+      let pos = n;
+      if (caret === "start") pos = 0;
+      else if (caret === "end") pos = n;
+      else if (typeof caret === "number" && Number.isFinite(caret)) {
+        pos = Math.max(0, Math.min(n, Math.floor(caret)));
+      }
+      el.setSelectionRange(pos, pos);
+    } catch (e1) {
+      try {
+        el.focus();
+      } catch (e2) {}
+    }
+    return true;
+  }
+  function isComposingTarget(t) {
+    return !!(t && (t.isComposing || t.composing));
+  }
+  function findPeer(info, targetKind) {
+    const list = listKindInputs(targetKind);
+    let best = null;
+    let bestScore = 1e9;
+    for (let i = 0; i < list.length; i++) {
+      const p = resolveKey(list[i]);
+      if (!p) continue;
+      // 같은 항목 우선, 줄 번호 가까운 칸
+      const score =
+        Math.abs(p.ei - info.ei) * 1000 + Math.abs(p.lj - info.lj);
+      if (score < bestScore) {
+        bestScore = score;
+        best = list[i];
+      }
+    }
+    return best;
   }
   function emit(key, value) {
-    const payload = JSON.stringify({
-      key: key,
-      t: Date.now(),
-      v: String(value || ""),
-    });
+    const now = Date.now();
+    const v = String(value || "");
+    const sig = key + "\\0" + v;
+    // input + compositionend 이중 발행 / 같은 넘침 반복 차단
+    if (sig === lastSig && now - lastAt < 700) return;
+    lastSig = sig;
+    lastAt = now;
+    const payload = JSON.stringify({ key: key, t: now, v: v });
     if (payload === lastSent) return;
     lastSent = payload;
     setTriggerValue("enter", payload);
   }
 
   const onKey = (e) => {
-    if (e.key !== "Enter") return;
-    if (e.isComposing) return;
+    if (e.isComposing || e.keyCode === 229) return;
     const info = resolveKey(e.target);
     if (!info) return;
-    e.preventDefault();
-    e.stopPropagation();
-    emit(info.key, e.target.value || "");
+    const t = e.target;
+    const start = typeof t.selectionStart === "number" ? t.selectionStart : 0;
+    const end = typeof t.selectionEnd === "number" ? t.selectionEnd : start;
+    const len = String(t.value || "").length;
+    const caretAll = start === end;
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      emit(info.key, t.value || "");
+      return;
+    }
+
+    // 방향키: 한 줄 입력이므로 위/아래는 항상 칸 이동
+    // 좌/우는 커서 끝·앞에서 거래처↔내용 이동
+    if (e.key === "ArrowUp") {
+      const list = listKindInputs(info.kind);
+      const idx = list.indexOf(t);
+      if (idx > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        focusInput(list[idx - 1], "end");
+      } else {
+        // 맨 위면 반대편 열의 같은 위치(또는 직전)로
+        const peerKind =
+          info.kind === "wl_ent_cl" ? "wl_ent_ln" : "wl_ent_cl";
+        const peer = findPeer(info, peerKind);
+        if (peer && peer !== t) {
+          e.preventDefault();
+          e.stopPropagation();
+          focusInput(peer, "end");
+        }
+      }
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      const list = listKindInputs(info.kind);
+      const idx = list.indexOf(t);
+      if (idx >= 0 && idx < list.length - 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        focusInput(list[idx + 1], "end");
+      } else {
+        const peerKind =
+          info.kind === "wl_ent_cl" ? "wl_ent_ln" : "wl_ent_cl";
+        const peer = findPeer(
+          { ...info, lj: info.lj + 1 },
+          peerKind
+        );
+        if (peer && peer !== t) {
+          e.preventDefault();
+          e.stopPropagation();
+          focusInput(peer, "start");
+        }
+      }
+      return;
+    }
+    if (e.key === "ArrowLeft" && caretAll && start === 0) {
+      const peer =
+        info.kind === "wl_ent_ln"
+          ? findPeer(info, "wl_ent_cl")
+          : (() => {
+              const list = listKindInputs("wl_ent_cl");
+              const idx = list.indexOf(t);
+              // 거래처 칸에서 왼쪽: 이전 거래처 칸
+              return idx > 0 ? list[idx - 1] : null;
+            })();
+      if (peer) {
+        e.preventDefault();
+        e.stopPropagation();
+        focusInput(peer, "end");
+      }
+      return;
+    }
+    if (e.key === "ArrowRight" && caretAll && start === len) {
+      const peer =
+        info.kind === "wl_ent_cl"
+          ? findPeer(info, "wl_ent_ln")
+          : (() => {
+              const list = listKindInputs("wl_ent_ln");
+              const idx = list.indexOf(t);
+              return idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null;
+            })();
+      if (peer) {
+        e.preventDefault();
+        e.stopPropagation();
+        focusInput(peer, "start");
+      }
+      return;
+    }
   };
 
   // 원본 칸 폭을 넘는 순간 → 다음 칸으로 (입력 중 자동)
@@ -2057,8 +2421,11 @@ export default function (component) {
   document.addEventListener("input", onInput, true);
   document.addEventListener("compositionend", onCompEnd, true);
   const onFocusIn = (e) => {
+    if (isComposingTarget(e.target)) return;
     const info = resolveKey(e.target);
     if (!info) return;
+    if (info.key === lastFocusKey) return;
+    lastFocusKey = info.key;
     try {
       setTriggerValue("focus", info.key);
     } catch (err) {}
@@ -2071,15 +2438,9 @@ export default function (component) {
         'div[class*="st-key-' + focusKey + '"] input'
       );
       if (!el) return false;
-      try {
-        el.focus({ preventScroll: false });
-        const n = (el.value || "").length;
-        el.setSelectionRange(n, n);
-      } catch (e1) {
-        try {
-          el.focus();
-        } catch (e2) {}
-      }
+      const caret =
+        focusCaret != null && Number.isFinite(focusCaret) ? focusCaret : "end";
+      focusInput(el, caret);
       return true;
     };
     go();
@@ -2099,7 +2460,7 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v4",
+    "worklog_cell_nav_hook_v10",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -2133,62 +2494,241 @@ _WL_SPECIAL_CHARS = [
 ]
 
 
-def _render_worklog_special_chars() -> None:
-    """자주 쓰는 특수문자 — 한 줄·작은 버튼, 클릭 시 활성 칸에 삽입."""
-    st.markdown(
-        """
-<style>
-div[class*="st-key-wl_sp_"] button {
-  font-size: 0.78rem !important;
-  padding: 0 !important;
-  min-height: 1.35rem !important;
-  height: 1.35rem !important;
-  line-height: 1.35rem !important;
-  border-radius: 0.35rem !important;
+_WL_SPECIAL_BAR_HTML = """
+<div class="wl-sp"></div>
+"""
+
+_WL_SPECIAL_BAR_CSS = """
+.wl-sp {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  width: 100%;
+  overflow-x: auto;
+  padding: 2px 0;
+  box-sizing: border-box;
 }
-div[class*="st-key-wl_sp_"] {
-  min-width: 0 !important;
+.wl-sp button {
+  flex: 1 0 auto;
+  min-width: 1.35rem;
+  height: 1.55rem;
+  margin: 0;
+  padding: 0 2px;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.35rem;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 0.85rem;
+  line-height: 1.55rem;
+  cursor: pointer;
 }
-</style>
-        """,
-        unsafe_allow_html=True,
+.wl-sp button:hover {
+  background: #e2e8f0;
+}
+"""
+
+_WL_SPECIAL_BAR_JS = r"""
+export default function (component) {
+  const { data, parentElement, setTriggerValue } = component;
+  const iso = (data && data.iso) || "";
+  const chars = (data && data.chars) || [];
+  let last = null;
+
+  function resolveKey(t) {
+    if (!t || String(t.tagName || "").toUpperCase() !== "INPUT") return null;
+    const wrap = t.closest
+      ? t.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]')
+      : null;
+    if (!wrap) return null;
+    const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
+      const s = String(c);
+      return (
+        s.indexOf("st-key-wl_ent_ln_") !== -1 ||
+        s.indexOf("st-key-wl_ent_cl_") !== -1
+      );
+    });
+    if (!cls) return null;
+    const key = String(cls).replace(/^st-key-/, "");
+    const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(key);
+    if (!m || m[2] !== iso) return null;
+    return { key: key, el: t };
+  }
+
+  function remember(t) {
+    const info = resolveKey(t);
+    if (!info) return;
+    let s = 0;
+    let e = 0;
+    try {
+      s = typeof info.el.selectionStart === "number" ? info.el.selectionStart : 0;
+      e = typeof info.el.selectionEnd === "number" ? info.el.selectionEnd : s;
+    } catch (err) {}
+    last = { key: info.key, el: info.el, s: s, e: e };
+  }
+
+  function insertChar(ch) {
+    const t = document.activeElement;
+    const live = resolveKey(t);
+    const src = live || last;
+    if (!src || !src.key) {
+      try {
+        setTriggerValue("insert", JSON.stringify({ miss: true, ch: ch, t: Date.now() }));
+      } catch (err) {}
+      return;
+    }
+    const el = live ? live.el : src.el;
+    let s = 0;
+    let e = 0;
+    try {
+      if (el && typeof el.selectionStart === "number") {
+        s = el.selectionStart;
+        e = typeof el.selectionEnd === "number" ? el.selectionEnd : s;
+      } else if (last && last.key === src.key) {
+        s = last.s;
+        e = last.e;
+      } else {
+        s = e = String((el && el.value) || "").length;
+      }
+    } catch (err2) {
+      s = e = String((el && el.value) || "").length;
+    }
+    const cur = String((el && el.value) || "");
+    const next = cur.slice(0, s) + ch + cur.slice(e);
+    const pos = s + ch.length;
+    try {
+      if (el) {
+        el.value = next;
+        el.setSelectionRange(pos, pos);
+      }
+    } catch (err3) {}
+    try {
+      setTriggerValue(
+        "insert",
+        JSON.stringify({ key: src.key, v: next, s: pos, ch: ch, t: Date.now() })
+      );
+    } catch (err4) {}
+  }
+
+  let root = parentElement.querySelector(".wl-sp");
+  if (!root) {
+    root = document.createElement("div");
+    root.className = "wl-sp";
+    parentElement.appendChild(root);
+  }
+  if (root.childElementCount !== chars.length) {
+    root.innerHTML = "";
+    for (let i = 0; i < chars.length; i++) {
+      const ch = String(chars[i] || "");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = ch;
+      btn.title = ch + " 삽입";
+      btn.addEventListener("pointerdown", function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        insertChar(ch);
+      });
+      root.appendChild(btn);
+    }
+  }
+
+  const onFocusIn = (e) => remember(e.target);
+  const onSel = (e) => {
+    if (e && (e.isComposing || e.keyCode === 229)) return;
+    remember(e.target || document.activeElement);
+  };
+  document.addEventListener("focusin", onFocusIn, true);
+  document.addEventListener("keyup", onSel, true);
+  document.addEventListener("mouseup", onSel, true);
+
+  return () => {
+    document.removeEventListener("focusin", onFocusIn, true);
+    document.removeEventListener("keyup", onSel, true);
+    document.removeEventListener("mouseup", onSel, true);
+  };
+}
+"""
+
+_WL_SPECIAL_BAR = st.components.v2.component(
+    "worklog_special_bar_v1",
+    html=_WL_SPECIAL_BAR_HTML,
+    css=_WL_SPECIAL_BAR_CSS,
+    js=_WL_SPECIAL_BAR_JS,
+)
+
+
+def _render_worklog_special_chars(iso: str) -> None:
+    """자주 쓰는 특수문자 — HTML 버튼, 커서 위치에 삽입."""
+
+    def _on_insert():
+        stt = st.session_state.get(f"wl_sp_bar_{iso}") or {}
+        if isinstance(stt, dict):
+            raw = stt.get("insert")
+        else:
+            raw = getattr(stt, "insert", None)
+        if not raw:
+            return
+        try:
+            obj = json.loads(str(raw))
+            fk = str(obj.get("key") or "")
+            pos = int(obj.get("s") or 0)
+        except Exception:
+            return
+        if obj.get("miss"):
+            st.session_state["wl_special_msg"] = "칸을 먼저 클릭한 뒤 특수문자를 누르세요"
+            return
+        if not (fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_")):
+            return
+        sig = f"{fk}\0{obj.get('v')}\0{pos}\0{obj.get('t')}"
+        done_k = f"wl_special_done_{iso}"
+        if st.session_state.get(done_k) == sig:
+            return
+        st.session_state[done_k] = sig
+        st.session_state[f"wl_do_special_{iso}"] = {
+            "key": fk,
+            "v": str(obj.get("v") if obj.get("v") is not None else ""),
+            "s": pos,
+            "ch": str(obj.get("ch") or ""),
+        }
+
+    _WL_SPECIAL_BAR(
+        key=f"wl_sp_bar_{iso}",
+        data={"iso": iso, "chars": list(_WL_SPECIAL_CHARS)},
+        on_insert_change=_on_insert,
+        width="stretch",
+        height=36,
     )
-    cols = st.columns(len(_WL_SPECIAL_CHARS), gap="small")
-    for i, ch in enumerate(_WL_SPECIAL_CHARS):
-        with cols[i]:
-            if st.button(
-                ch,
-                key=f"wl_sp_{i}",
-                width="stretch",
-                help=f"「{ch}」삽입 (칸을 먼저 클릭)",
-            ):
-                st.session_state["wl_pending_special"] = ch
 
 
-def _apply_pending_special_char() -> None:
-    """대기 중인 특수문자를 활성 칸에 붙이거나 클립보드로 복사."""
-    ch = st.session_state.pop("wl_pending_special", None)
-    if not ch:
+def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
+    """위젯 생성 전: 특수문자가 반영된 칸 값을 심고 포커스를 되돌린다."""
+    val = str(val or "")
+    pos = max(0, min(int(pos or 0), len(val)))
+    m = re.match(
+        r"^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)",
+        fk,
+    )
+    if not m or m.group(2) != iso:
         return
-    ak = st.session_state.get("wl_active_cell_key")
-    if isinstance(ak, str) and (
-        ak.startswith("wl_ent_ln_") or ak.startswith("wl_ent_cl_")
-    ):
-        st.session_state[ak] = str(st.session_state.get(ak) or "") + str(ch)
-        st.session_state["wl_special_msg"] = f"「{ch}」삽입"
-        return
-    # 포커스된 칸이 없으면 클립보드 복사
-    try:
-        components.html(
-            f"""<!DOCTYPE html><html><body><script>
-try {{ navigator.clipboard.writeText({json.dumps(ch)}); }} catch (e) {{}}
-</script></body></html>""",
-            height=0,
-            scrolling=False,
-        )
-    except Exception:
-        pass
-    st.session_state["wl_special_msg"] = f"「{ch}」복사됨 · 칸 클릭 후 ⌘V"
+    kind, ei, lj = m.group(1), int(m.group(3)), int(m.group(4))
+    if kind == "wl_ent_ln":
+        cur = _lines_from_entry_widgets(iso, ei, keep_trailing_empty=True)
+        while len(cur) <= lj:
+            cur.append("")
+        cur[lj] = val
+        _apply_entry_lines(iso, ei, cur, focus_j=lj, bump_gen=True)
+    else:
+        cur = _clients_from_widgets(iso, ei, keep_trailing_empty=True)
+        while len(cur) <= lj:
+            cur.append("")
+        cur[lj] = val
+        _apply_entry_clients(iso, ei, cur, focus_j=lj)
+    st.session_state["wl_active_cell_key"] = st.session_state.get(
+        f"wl_focus_ln_{iso}"
+    ) or fk
+    st.session_state["wl_active_cell_sel"] = (pos, pos)
+    st.session_state[f"wl_focus_caret_{iso}"] = pos
+    st.session_state["wl_special_msg"] = f"「{ch}」삽입" if ch else "특수문자 삽입"
 
 
 def _seed_entry_lines(
@@ -2297,6 +2837,7 @@ def _clear_date_widget_state(d: date) -> None:
         f"wl_ent_gap_{iso}_",
         f"wl_ent_ln_{iso}_",
         f"wl_ent_lc_{iso}_",
+        f"wl_ent_gen_{iso}_",
         f"wl_ent_cl_{iso}_",
         f"wl_ent_clc_{iso}_",
         f"wl_ent_rev_{iso}_",
@@ -2483,13 +3024,24 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     try:
         _ensure_dirs()
         if not os.path.exists(WORKLOG_TEMPLATE):
-            st.error(
-                "업무일지 템플릿을 찾을 수 없습니다. "
-                "`Desktop/업무일지.xlsx` 또는 `uploaded_cache/worklog/template.xlsx` 를 준비하세요."
-            )
+            if _wl_quiet_ui():
+                st.error(
+                    "업무일지 템플릿이 없습니다. "
+                    "사이드바에서 자료를 올린 뒤 "
+                    "`uploaded_cache/worklog/template.xlsx` 를 준비하세요."
+                )
+            else:
+                st.error(
+                    "업무일지 템플릿을 찾을 수 없습니다. "
+                    "`Desktop/업무일지.xlsx` 또는 "
+                    "`uploaded_cache/worklog/template.xlsx` 를 준비하세요."
+                )
             return
     except Exception as e:
-        st.error(f"템플릿 준비 실패: {e}")
+        if _wl_quiet_ui():
+            st.error("업무일지 템플릿을 준비하지 못했습니다. 파일을 다시 확인해 주세요.")
+        else:
+            st.error(f"템플릿 준비 실패: {e}")
         return
 
     @st.fragment
@@ -2539,7 +3091,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 view_html = render_readable_preview_html(selected, draft)
                 components.html(view_html, height=900, scrolling=True)
             except Exception as e:
-                st.error(f"미리보기 오류: {e}")
+                if _wl_quiet_ui():
+                    st.info("업무일지 미리보기를 표시하지 못했습니다. 입력 후 다시 확인해 주세요.")
+                else:
+                    st.error(f"미리보기 오류: {e}")
 
             p1, p2 = st.columns(2)
             with p1:
@@ -2572,26 +3127,38 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 cells_now = _cells_from_widgets(selected)
                 try:
                     xlsx_abs = prepare_print_xlsx(selected, cells_now)
-                    ok, msg = open_excel_print_preview(xlsx_abs)
-                    if ok:
-                        st.success(msg)
-                        st.caption(f"파일: `{xlsx_abs}`")
-                    else:
-                        st.warning(msg + " → 화면 원본 양식으로 대체합니다.")
+                    # 아이패드/클라우드는 Excel 앱이 없으므로 HTML만 (경고 없음)
+                    if _wl_quiet_ui():
                         print_html = render_worklog_view_html(
                             xlsx_abs, print_mode=False, auto_print=False, scale=0.7
                         )
                         components.html(print_html, height=700, scrolling=True)
+                    else:
+                        ok, msg = open_excel_print_preview(xlsx_abs)
+                        if ok:
+                            st.success(msg)
+                            st.caption(f"파일: `{xlsx_abs}`")
+                        else:
+                            st.warning(msg + " → 화면 원본 양식으로 대체합니다.")
+                            print_html = render_worklog_view_html(
+                                xlsx_abs, print_mode=False, auto_print=False, scale=0.7
+                            )
+                            components.html(print_html, height=700, scrolling=True)
                 except Exception as e:
-                    st.error(f"원본 미리보기 오류: {e}")
                     try:
                         preview = _build_preview_file(selected, cells_now)
                         print_html = render_worklog_view_html(
                             preview, print_mode=False, auto_print=False, scale=0.7
                         )
                         components.html(print_html, height=700, scrolling=True)
+                        if not _wl_quiet_ui():
+                            st.caption(f"화면 미리보기로 대체함: {e}")
                     except Exception as e2:
-                        st.error(f"대체 미리보기도 실패: {e2}")
+                        if _wl_quiet_ui():
+                            st.info("미리보기를 열지 못했습니다. 엑셀 저장본 다운로드를 이용해 주세요.")
+                        else:
+                            st.error(f"원본 미리보기 오류: {e}")
+                            st.error(f"대체 미리보기도 실패: {e2}")
 
         with col_gauge:
             # 오른쪽 「저장」버튼 근처까지 세로로 맞춤 (폭 26px 유지)
@@ -2611,7 +3178,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     key="wl_date_pick",
                     help="저장 후에도 날짜를 바꿀 수 있습니다. 빈 날짜로 바꾸면 이 일지가 그 날짜로 옮겨집니다.",
                 )
-                _render_worklog_special_chars()
+                _render_worklog_special_chars(selected.isoformat())
                 msg = st.session_state.pop("wl_special_msg", None)
                 if msg:
                     st.caption(msg)
@@ -2659,8 +3226,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         st.error(str(e))
                         st.session_state["wl_date_sync"] = ""
                         _wl_rerun()
-
-            _apply_pending_special_char()
 
             iso = selected.isoformat()
             ek = _entries_key(selected)
@@ -2835,6 +3400,20 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         str(ent_req.get("v") or ""),
                     )
 
+                sp_req = st.session_state.pop(f"wl_do_special_{iso2}", None)
+                if isinstance(sp_req, dict):
+                    try:
+                        _sp_pos = int(sp_req.get("s") or 0)
+                    except (TypeError, ValueError):
+                        _sp_pos = 0
+                    _apply_special_insert(
+                        iso2,
+                        str(sp_req.get("key") or ""),
+                        str(sp_req.get("v") if sp_req.get("v") is not None else ""),
+                        _sp_pos,
+                        str(sp_req.get("ch") or ""),
+                    )
+
                 def _on_enter_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
                     payload = ""
@@ -2843,9 +3422,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     if not payload:
                         return
                     done_k = f"wl_enter_done_{iso2}"
-                    if st.session_state.get(done_k) == payload:
-                        return
-                    st.session_state[done_k] = payload
                     key = ""
                     val = ""
                     try:
@@ -2855,8 +3431,13 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     except Exception:
                         key = payload.split(":", 1)[0]
                         val = ""
+                    # timestamp 달라도 같은 칸·같은 값이면 1회만 처리
+                    sig = f"{key}\0{val}"
+                    if st.session_state.get(done_k) == sig:
+                        return
+                    st.session_state[done_k] = sig
                     m = re.match(
-                        r"^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)$",
+                        r"^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$",
                         key,
                     )
                     if not m or m.group(2) != iso2:
@@ -2876,14 +3457,37 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
                         st.session_state["wl_active_cell_key"] = fk
 
+                def _on_caret_trigger():
+                    hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
+                    if not isinstance(hook, dict):
+                        return
+                    raw = hook.get("caret")
+                    if not raw:
+                        return
+                    try:
+                        obj = json.loads(str(raw))
+                        fk = str(obj.get("key") or "")
+                        s = int(obj.get("s") or 0)
+                        e = int(obj.get("e") or s)
+                    except Exception:
+                        return
+                    if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
+                        st.session_state["wl_active_cell_key"] = fk
+                        st.session_state["wl_active_cell_sel"] = (s, e)
+
                 focus_key = st.session_state.pop(f"wl_focus_ln_{iso2}", None)
+                focus_caret = st.session_state.pop(f"wl_focus_caret_{iso2}", None)
                 if isinstance(focus_key, str) and (
                     focus_key.startswith("wl_ent_ln_")
                     or focus_key.startswith("wl_ent_cl_")
                 ):
                     try:
-                        _ei = int(focus_key.split("_")[-2])
-                        st.session_state[f"wl_exp_{iso2}_{_ei}"] = True
+                        _m = re.match(
+                            r"^wl_ent_(?:ln|cl)_\d{4}-\d{2}-\d{2}_(\d+)_",
+                            focus_key,
+                        )
+                        if _m:
+                            st.session_state[f"wl_exp_{iso2}_{int(_m.group(1))}"] = True
                     except Exception:
                         pass
 
@@ -2956,7 +3560,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                         or ""
                                     ),
                                 )
-                        _mount_entry_client_editor(iso2, i, _cu)
                         if int(st.session_state.get(_entry_line_count_key(iso2, i), 0) or 0) <= 0:
                             lines0 = None
                             # stored entries may have lines
@@ -2971,7 +3574,12 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                     i,
                                     str(st.session_state.get(f"wl_ent_t_{iso2}_{i}", "") or ""),
                                 )
-                        _mount_entry_lines_editor(iso2, i, max_u)
+                        # 원본 양식처럼 거래처(좌) · 내용(우) 나란히
+                        col_client, col_content = st.columns([1, 3.2], gap="small")
+                        with col_client:
+                            _mount_entry_client_editor(iso2, i, _cu)
+                        with col_content:
+                            _mount_entry_lines_editor(iso2, i, max_u)
                         _filled = len(
                             _lines_from_entry_widgets(iso2, i, keep_trailing_empty=False)
                         )
@@ -3007,11 +3615,17 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     data={
                         "iso": iso2,
                         "focus_key": focus_key if isinstance(focus_key, str) else "",
+                        "focus_caret": (
+                            int(focus_caret)
+                            if isinstance(focus_caret, (int, float))
+                            else ""
+                        ),
                         "client_max_u": _client_line_units(),
                         "content_max_u": _content_line_units(),
                     },
                     on_enter_change=_on_enter_trigger,
                     on_focus_change=_on_focus_trigger,
+                    on_caret_change=_on_caret_trigger,
                     width="stretch",
                     height=1,
                 )
@@ -3100,9 +3714,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             st.session_state[_notes_key(d)] = "\n".join(nt)
                             arch = st.session_state.get("wl_last_archive_path") or ""
                             msg = f"저장 완료: {os.path.basename(path)}"
-                            if arch:
+                            if arch and not _wl_quiet_ui():
                                 msg += f" · 일지/{d.year}/{os.path.basename(arch)}"
-                            # iPad/Cloud는 일지 폴더가 없어도 달력 저장만으로 성공 처리
+                            # iPad/Cloud는 달력 캐시 저장만으로 성공 처리
                             st.session_state[f"wl_pending_sync_{iso2}"] = {
                                 "entries": packed_entries,
                                 "next": "\n".join(nd),
@@ -3111,7 +3725,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             }
                             _wl_rerun()
                     except Exception as e:
-                        st.error(f"저장 실패: {e}")
+                        if _wl_quiet_ui():
+                            st.error("저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요.")
+                        else:
+                            st.error(f"저장 실패: {e}")
 
             _wl_entry_editor()
 
@@ -3122,9 +3739,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             form_cells = _cells_from_widgets(selected)
             form_sig = json.dumps(form_cells, ensure_ascii=False, sort_keys=True)
             form_scale = 0.42
-            sig_key = f"wl_form_sig_v8_{selected.isoformat()}"
-            html_key = f"wl_form_html_v8_{selected.isoformat()}"
-            h_key = f"wl_form_h_v8_{selected.isoformat()}"
+            sig_key = f"wl_form_sig_v14_{selected.isoformat()}"
+            html_key = f"wl_form_html_v14_{selected.isoformat()}"
+            h_key = f"wl_form_h_v14_{selected.isoformat()}"
             if st.session_state.get(sig_key) != form_sig:
                 form_path = _build_preview_file(selected, form_cells)
                 _, frame_h = _scaled_view_frame_size(form_path, form_scale)
@@ -3143,9 +3760,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     or k.startswith("wl_form_h_v")
                 ):
                     if not (
-                        k.startswith("wl_form_html_v8_")
-                        or k.startswith("wl_form_sig_v8_")
-                        or k.startswith("wl_form_h_v8_")
+                        k.startswith("wl_form_html_v14_")
+                        or k.startswith("wl_form_sig_v14_")
+                        or k.startswith("wl_form_h_v14_")
                     ):
                         st.session_state.pop(k, None)
             components.html(
@@ -3154,5 +3771,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 scrolling=False,
             )
         except Exception as e:
-            st.caption(f"원본 양식 표시 실패: {e}")
+            if _wl_quiet_ui():
+                pass
+            else:
+                st.caption(f"원본 양식 표시 실패: {e}")
     _worklog_main()
