@@ -7395,6 +7395,98 @@ elif dart_api_key:
     st.sidebar.caption("✓ DART 연동 준비됨 (거래처 분석 → 기업 재무정보)")
 else:
     st.sidebar.caption("API 키 입력 시 매출액·영업이익 조회 가능")
+# --- 업로드 영구 유지: 프로젝트 캐시 + Desktop 미러 (맥/iPad 재부팅 자동 복원) ---
+DESKTOP_CACHE_DIR = os.path.expanduser("~/Desktop/uploaded_cache")
+_upload_autoload_status = []  # (라벨, 출처) — 사이드바 안내용
+
+
+def _cache_read_bytes(path):
+    try:
+        if path and os.path.exists(path):
+            with open(path, "rb") as f:
+                return f.read()
+    except Exception:
+        return None
+    return None
+
+
+def _cache_write_bytes(path, data):
+    if not path or data is None:
+        return False
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = path + ".uploading"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            with open(path, "wb") as f:
+                f.write(data)
+            return True
+        except Exception:
+            return False
+
+
+def _desktop_cache_path(*parts):
+    return os.path.join(DESKTOP_CACHE_DIR, *parts)
+
+
+def _mirror_upload_bytes(rel_name, data):
+    """프로젝트 캐시 + Desktop 미러 동시 저장 (재부팅·기기 전환 대비)."""
+    if data is None:
+        return
+    proj = os.path.join(CACHE_DIR, rel_name)
+    _cache_write_bytes(proj, data)
+    try:
+        _cache_write_bytes(_desktop_cache_path(rel_name), data)
+    except Exception:
+        pass
+
+
+def _restore_upload_bytes(rel_name, folder_names=None):
+    """업로드 없음 → 프로젝트 캐시 → Desktop 미러 → 작업폴더 파일 순 복원.
+    returns (bytes|None, source_label|None)
+    """
+    proj = os.path.join(CACHE_DIR, rel_name)
+    data = _cache_read_bytes(proj)
+    if data:
+        return data, "캐시"
+    desk = _desktop_cache_path(rel_name)
+    data = _cache_read_bytes(desk)
+    if data:
+        _cache_write_bytes(proj, data)
+        return data, "Desktop"
+    for name in folder_names or ():
+        data = _cache_read_bytes(name)
+        if data:
+            _mirror_upload_bytes(rel_name, data)
+            return data, f"폴더:{name}"
+    return None, None
+
+
+def _write_name_sidecar(base_path, name):
+    try:
+        with open(base_path + "_name.txt", "w", encoding="utf-8") as f:
+            f.write(name or "")
+    except Exception:
+        pass
+
+
+def _read_name_sidecar(base_path, default=""):
+    try:
+        p = base_path + "_name.txt"
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return f.read().strip() or default
+    except Exception:
+        pass
+    return default
+
+
 addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
 industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
 debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
@@ -7402,49 +7494,30 @@ tank_cache_path = os.path.join(CACHE_DIR, "tank_cache.dat")
 vaporizer_cache_path = os.path.join(CACHE_DIR, "vaporizer_cache.dat")
 integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
 sales_cache_dir = os.path.join(CACHE_DIR, "sales")
+desktop_sales_dir = _desktop_cache_path("sales")
 os.makedirs(sales_cache_dir, exist_ok=True)
+
 if address_file_up is not None:
     addr_bytes = address_file_up.getvalue()
-    with open(addr_cache_path, "wb") as f: f.write(addr_bytes)
-elif os.path.exists(addr_cache_path):
-    with open(addr_cache_path, "rb") as f: addr_bytes = f.read()
-elif os.path.exists("주소.csv"):
-    with open("주소.csv", "rb") as f: addr_bytes = f.read()
+    _mirror_upload_bytes("address.csv", addr_bytes)
+    _upload_autoload_status.append(("주소록", "업로드"))
 else:
-    # Desktop 쪽 예전 캐시 경로 자동 복구
-    _desktop_addr = os.path.expanduser("~/Desktop/uploaded_cache/address.csv")
-    if os.path.exists(_desktop_addr):
-        with open(_desktop_addr, "rb") as f:
-            addr_bytes = f.read()
-        with open(addr_cache_path, "wb") as f:
-            f.write(addr_bytes)
-    else:
-        addr_bytes = None
+    addr_bytes, _src = _restore_upload_bytes("address.csv", ("주소.csv",))
+    if addr_bytes:
+        _upload_autoload_status.append(("주소록", _src or "캐시"))
+
 if industry_file_up is not None:
     ind_bytes = industry_file_up.getvalue()
-    with open(industry_cache_path, "wb") as f: f.write(ind_bytes)
-elif os.path.exists(industry_cache_path):
-    with open(industry_cache_path, "rb") as f: ind_bytes = f.read()
-elif os.path.exists("업체대분류.csv"):
-    with open("업체대분류.csv", "rb") as f: ind_bytes = f.read()
+    _mirror_upload_bytes("industry.csv", ind_bytes)
+    _upload_autoload_status.append(("업종분류", "업로드"))
 else:
-    ind_bytes = None
+    ind_bytes, _src = _restore_upload_bytes("industry.csv", ("업체대분류.csv",))
+    if ind_bytes:
+        _upload_autoload_status.append(("업종분류", _src or "캐시"))
+
 if debt_file_up is not None:
     debt_bytes = debt_file_up.getvalue()
-    # Google Drive 동기화 중 부분쓰기/충돌 완화: tmp → replace
-    _debt_tmp = debt_cache_path + ".uploading"
-    try:
-        with open(_debt_tmp, "wb") as f:
-            f.write(debt_bytes)
-        os.replace(_debt_tmp, debt_cache_path)
-    except Exception:
-        with open(debt_cache_path, "wb") as f:
-            f.write(debt_bytes)
-        try:
-            if os.path.exists(_debt_tmp):
-                os.remove(_debt_tmp)
-        except Exception:
-            pass
+    _mirror_upload_bytes("debt.csv", debt_bytes)
     # 폴더의 채권.csv와도 맞춰 두면 Finder에서 바꾼 것과 사이드바 업로드가 어긋나지 않음
     try:
         with open("채권.csv", "wb") as f:
@@ -7456,27 +7529,35 @@ if debt_file_up is not None:
     except Exception:
         pass
     st.session_state["_debt_source"] = f"업로드:{getattr(debt_file_up, 'name', '채권.csv')}"
+    _upload_autoload_status.append(("채권", "업로드"))
 else:
     # ★ 핵심: uploaded_cache/debt.csv 가 있으면 예전엔 폴더 채권.csv를 영원히 무시했음
-    # → mtime이 더 최신인 쪽을 사용 (폴더 파일 교체 반영)
+    # → mtime이 더 최신인 쪽을 사용 (폴더 파일 교체 반영) + Desktop 미러 포함
     _debt_candidates = []
-    if os.path.exists(debt_cache_path):
-        try:
-            st_ = os.stat(debt_cache_path)
-            _debt_candidates.append(
-                (st_.st_mtime, st_.st_size, debt_cache_path, "캐시")
-            )
-        except Exception:
-            pass
-    for f_name in os.listdir("."):
-        if f_name.startswith("채권") and f_name.endswith(".csv"):
+    for _path, _label in (
+        (debt_cache_path, "캐시"),
+        (_desktop_cache_path("debt.csv"), "Desktop"),
+    ):
+        if os.path.exists(_path):
             try:
-                st_ = os.stat(f_name)
+                st_ = os.stat(_path)
                 _debt_candidates.append(
-                    (st_.st_mtime, st_.st_size, f_name, f"폴더:{f_name}")
+                    (st_.st_mtime, st_.st_size, _path, _label)
                 )
             except Exception:
                 pass
+    try:
+        for f_name in os.listdir("."):
+            if f_name.startswith("채권") and f_name.endswith(".csv"):
+                try:
+                    st_ = os.stat(f_name)
+                    _debt_candidates.append(
+                        (st_.st_mtime, st_.st_size, f_name, f"폴더:{f_name}")
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        pass
     debt_bytes = None
     if _debt_candidates:
         _debt_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -7486,69 +7567,127 @@ else:
         st.session_state["_debt_source"] = (
             f"{_label} · {int(_size):,}B"
         )
-        # 캐시가 오래됐으면 최신 폴더 파일로 캐시 갱신
-        if _path != debt_cache_path and debt_bytes:
+        _upload_autoload_status.append(("채권", _label))
+        # 최신본을 프로젝트·Desktop 캐시에 동기화
+        if debt_bytes:
             try:
-                _debt_tmp = debt_cache_path + ".uploading"
-                with open(_debt_tmp, "wb") as f:
-                    f.write(debt_bytes)
-                os.replace(_debt_tmp, debt_cache_path)
-                load_debt_file.clear()
-            except Exception:
-                try:
-                    with open(debt_cache_path, "wb") as f:
-                        f.write(debt_bytes)
+                _mirror_upload_bytes("debt.csv", debt_bytes)
+                if _path != debt_cache_path:
                     load_debt_file.clear()
-                except Exception:
-                    pass
+            except Exception:
+                pass
     else:
         st.session_state["_debt_source"] = "없음"
+
 if tank_file_up is not None:
     tank_bytes = tank_file_up.getvalue()
     tank_name = tank_file_up.name
-    with open(tank_cache_path, "wb") as f: f.write(tank_bytes)
-    with open(tank_cache_path + "_name.txt", "w", encoding="utf-8") as f: f.write(tank_name)
-elif os.path.exists(tank_cache_path) and os.path.exists(tank_cache_path + "_name.txt"):
-    with open(tank_cache_path, "rb") as f: tank_bytes = f.read()
-    with open(tank_cache_path + "_name.txt", "r", encoding="utf-8") as f: tank_name = f.read().strip()
-elif os.path.exists("탱크.csv"):
-    with open("탱크.csv", "rb") as f: tank_bytes = f.read()
-    tank_name = "탱크.csv"
+    _mirror_upload_bytes("tank_cache.dat", tank_bytes)
+    _write_name_sidecar(tank_cache_path, tank_name)
+    try:
+        _write_name_sidecar(_desktop_cache_path("tank_cache.dat"), tank_name)
+    except Exception:
+        pass
+    _upload_autoload_status.append(("탱크재고", "업로드"))
 else:
-    tank_bytes = None
-    tank_name = ""
+    tank_bytes, _src = _restore_upload_bytes("tank_cache.dat", ("탱크.csv",))
+    if tank_bytes:
+        tank_name = _read_name_sidecar(
+            tank_cache_path,
+            _read_name_sidecar(_desktop_cache_path("tank_cache.dat"), "탱크.csv"),
+        )
+        if _src and _src.startswith("폴더:"):
+            tank_name = _src.split(":", 1)[-1]
+        _upload_autoload_status.append(("탱크재고", _src or "캐시"))
+    else:
+        tank_bytes = None
+        tank_name = ""
+
 if vaporizer_file_up is not None:
     vaporizer_bytes = vaporizer_file_up.getvalue()
     vaporizer_name = vaporizer_file_up.name
-    with open(vaporizer_cache_path, "wb") as f: f.write(vaporizer_bytes)
-    with open(vaporizer_cache_path + "_name.txt", "w", encoding="utf-8") as f: f.write(vaporizer_name)
-elif os.path.exists(vaporizer_cache_path) and os.path.exists(vaporizer_cache_path + "_name.txt"):
-    with open(vaporizer_cache_path, "rb") as f: vaporizer_bytes = f.read()
-    with open(vaporizer_cache_path + "_name.txt", "r", encoding="utf-8") as f: vaporizer_name = f.read().strip()
-elif os.path.exists("기화기.csv"):
-    with open("기화기.csv", "rb") as f: vaporizer_bytes = f.read()
-    vaporizer_name = "기화기.csv"
+    _mirror_upload_bytes("vaporizer_cache.dat", vaporizer_bytes)
+    _write_name_sidecar(vaporizer_cache_path, vaporizer_name)
+    try:
+        _write_name_sidecar(_desktop_cache_path("vaporizer_cache.dat"), vaporizer_name)
+    except Exception:
+        pass
+    _upload_autoload_status.append(("기화기재고", "업로드"))
 else:
-    vaporizer_bytes = None
-    vaporizer_name = ""
+    vaporizer_bytes, _src = _restore_upload_bytes(
+        "vaporizer_cache.dat", ("기화기.csv",)
+    )
+    if vaporizer_bytes:
+        vaporizer_name = _read_name_sidecar(
+            vaporizer_cache_path,
+            _read_name_sidecar(
+                _desktop_cache_path("vaporizer_cache.dat"), "기화기.csv"
+            ),
+        )
+        if _src and _src.startswith("폴더:"):
+            vaporizer_name = _src.split(":", 1)[-1]
+        _upload_autoload_status.append(("기화기재고", _src or "캐시"))
+    else:
+        vaporizer_bytes = None
+        vaporizer_name = ""
+
 if int_bytes is not None:
-    with open(integrated_cache_path, "wb") as f: f.write(int_bytes)
-    with open(integrated_cache_path + "_name.txt", "w", encoding="utf-8") as f: f.write(int_name)
-elif os.path.exists(integrated_cache_path) and os.path.exists(integrated_cache_path + "_name.txt"):
-    with open(integrated_cache_path, "rb") as f: int_bytes = f.read()
-    with open(integrated_cache_path + "_name.txt", "r", encoding="utf-8") as f: int_name = f.read().strip()
+    _mirror_upload_bytes("integrated_cache.dat", int_bytes)
+    _write_name_sidecar(integrated_cache_path, int_name)
+    try:
+        _write_name_sidecar(_desktop_cache_path("integrated_cache.dat"), int_name)
+    except Exception:
+        pass
+    if not any(x[0] == "통합탱크" for x in _upload_autoload_status):
+        _upload_autoload_status.append(
+            ("통합탱크", "폴더" if int_name == local_int_path else "업로드")
+        )
+elif os.path.exists(integrated_cache_path) and os.path.exists(
+    integrated_cache_path + "_name.txt"
+):
+    int_bytes = _cache_read_bytes(integrated_cache_path)
+    int_name = _read_name_sidecar(integrated_cache_path)
+    if int_bytes:
+        _upload_autoload_status.append(("통합탱크", "캐시"))
 else:
-    int_bytes = None
-    int_name = ""
+    desk_int = _desktop_cache_path("integrated_cache.dat")
+    if os.path.exists(desk_int):
+        int_bytes = _cache_read_bytes(desk_int)
+        int_name = _read_name_sidecar(
+            desk_int, _read_name_sidecar(integrated_cache_path, "통합탱크재고.csv")
+        )
+        if int_bytes:
+            _mirror_upload_bytes("integrated_cache.dat", int_bytes)
+            _write_name_sidecar(integrated_cache_path, int_name)
+            _upload_autoload_status.append(("통합탱크", "Desktop"))
+    else:
+        int_bytes = None
+        int_name = ""
+
 sales_file_meta = []
 if uploaded_files_up and len(uploaded_files_up) > 0:
     for f_name in os.listdir(sales_cache_dir):
-        os.remove(os.path.join(sales_cache_dir, f_name))
+        try:
+            os.remove(os.path.join(sales_cache_dir, f_name))
+        except Exception:
+            pass
+    try:
+        if os.path.isdir(desktop_sales_dir):
+            for f_name in os.listdir(desktop_sales_dir):
+                try:
+                    os.remove(os.path.join(desktop_sales_dir, f_name))
+                except Exception:
+                    pass
+    except Exception:
+        pass
     for f in uploaded_files_up:
         f_bytes = f.getvalue()
         f_path = os.path.join(sales_cache_dir, f.name)
-        with open(f_path, "wb") as sf:
-            sf.write(f_bytes)
+        _cache_write_bytes(f_path, f_bytes)
+        try:
+            _cache_write_bytes(os.path.join(desktop_sales_dir, f.name), f_bytes)
+        except Exception:
+            pass
         try:
             st_info = os.stat(f_path)
             sales_file_meta.append(
@@ -7556,6 +7695,7 @@ if uploaded_files_up and len(uploaded_files_up) > 0:
             )
         except Exception:
             sales_file_meta.append((f.name, f_path, 0, len(f_bytes)))
+    _upload_autoload_status.append((f"매출 {len(sales_file_meta)}개", "업로드"))
 else:
     if os.path.exists(sales_cache_dir):
         for f_name in sorted(os.listdir(sales_cache_dir)):
@@ -7568,28 +7708,105 @@ else:
                     )
                 except Exception:
                     continue
-    if not sales_file_meta:
-        for f_name in sorted(os.listdir(".")):
-            if re.match(r"^20\d{2}.*\.csv$", f_name):
-                f_path = os.path.abspath(f_name)
+    _sales_src = "캐시" if sales_file_meta else None
+    if not sales_file_meta and os.path.isdir(desktop_sales_dir):
+        try:
+            for f_name in sorted(os.listdir(desktop_sales_dir)):
+                if not f_name.endswith(".csv"):
+                    continue
+                src = os.path.join(desktop_sales_dir, f_name)
+                data = _cache_read_bytes(src)
+                if not data:
+                    continue
+                f_path = os.path.join(sales_cache_dir, f_name)
+                _cache_write_bytes(f_path, data)
                 try:
                     st_info = os.stat(f_path)
                     sales_file_meta.append(
                         (f_name, f_path, int(st_info.st_mtime), int(st_info.st_size))
                     )
                 except Exception:
-                    continue
+                    sales_file_meta.append((f_name, f_path, 0, len(data)))
+            if sales_file_meta:
+                _sales_src = "Desktop"
+        except Exception:
+            pass
+    if not sales_file_meta:
+        try:
+            for f_name in sorted(os.listdir(".")):
+                if re.match(r"^20\d{2}.*\.csv$", f_name):
+                    f_path = os.path.abspath(f_name)
+                    try:
+                        st_info = os.stat(f_path)
+                        sales_file_meta.append(
+                            (f_name, f_path, int(st_info.st_mtime), int(st_info.st_size))
+                        )
+                    except Exception:
+                        continue
+            if sales_file_meta:
+                _sales_src = "폴더"
+        except Exception:
+            pass
+    if sales_file_meta:
+        _upload_autoload_status.append(
+            (f"매출 {len(sales_file_meta)}개", _sales_src or "캐시")
+        )
 sales_file_meta = tuple(sales_file_meta)
+
+# iPad/맥 재부팅 후: 업로더가 비어도 캐시에서 자동 복원됐음을 안내
+_restored = [f"· {lab} ({src})" for lab, src in _upload_autoload_status if src != "업로드"]
+_uploaded_now = [f"· {lab}" for lab, src in _upload_autoload_status if src == "업로드"]
+if _restored:
+    st.sidebar.success(
+        "♻️ 재부팅 후에도 자동 유지 중\n" + "\n".join(_restored)
+    )
+elif _uploaded_now:
+    st.sidebar.info(
+        "💾 업로드본을 캐시에 저장했습니다. Reboot 후에도 다시 올릴 필요 없습니다."
+    )
+else:
+    st.sidebar.caption(
+        "한번 업로드하면 `uploaded_cache`(및 Mac Desktop 미러)에 남아 "
+        "iPad·맥 Reboot 후에도 자동으로 불러옵니다."
+    )
+
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
-    for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
-              tank_cache_path, tank_cache_path + "_name.txt", 
-              vaporizer_cache_path, vaporizer_cache_path + "_name.txt",
-              integrated_cache_path, integrated_cache_path + "_name.txt",
-              TAB7_DATE_FILE, TAB8_DATE_FILE]:
-        if os.path.exists(p): os.remove(p)
+    for p in [
+        addr_cache_path,
+        industry_cache_path,
+        debt_cache_path,
+        tank_cache_path,
+        tank_cache_path + "_name.txt",
+        vaporizer_cache_path,
+        vaporizer_cache_path + "_name.txt",
+        integrated_cache_path,
+        integrated_cache_path + "_name.txt",
+        TAB7_DATE_FILE,
+        TAB8_DATE_FILE,
+        _desktop_cache_path("address.csv"),
+        _desktop_cache_path("industry.csv"),
+        _desktop_cache_path("debt.csv"),
+        _desktop_cache_path("tank_cache.dat"),
+        _desktop_cache_path("tank_cache.dat_name.txt"),
+        _desktop_cache_path("vaporizer_cache.dat"),
+        _desktop_cache_path("vaporizer_cache.dat_name.txt"),
+        _desktop_cache_path("integrated_cache.dat"),
+        _desktop_cache_path("integrated_cache.dat_name.txt"),
+    ]:
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
     # DART API 키는 캐시 초기화에서 제외 (맥/iPad 재입력 방지)
-    for f_name in os.listdir(sales_cache_dir):
-        os.remove(os.path.join(sales_cache_dir, f_name))
+    for _sales_dir in (sales_cache_dir, desktop_sales_dir):
+        if not os.path.isdir(_sales_dir):
+            continue
+        for f_name in os.listdir(_sales_dir):
+            try:
+                os.remove(os.path.join(_sales_dir, f_name))
+            except Exception:
+                pass
     try:
         load_uploaded_files_from_meta.clear()
         load_uploaded_files_from_bytes.clear()
