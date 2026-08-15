@@ -6,6 +6,7 @@ import html
 import json
 import glob
 import time
+import base64
 import subprocess
 import shutil
 import urllib.parse
@@ -61,8 +62,41 @@ st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide"
 # ==========================================
 # 0. 로컬 파일 자동 저장을 위한 디렉토리 설정
 # ==========================================
-CACHE_DIR = "./uploaded_cache"
+# cwd가 달라도 항상 app.py 기준 폴더에 저장 (상대경로 ./uploaded_cache 유실 방지)
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_DIR = os.path.join(_APP_DIR, "uploaded_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
+# 예전 cwd 상대 캐시가 있으면 프로젝트 캐시로 이전
+_LEGACY_CACHE_DIR = os.path.abspath("./uploaded_cache")
+if os.path.isdir(_LEGACY_CACHE_DIR) and os.path.abspath(_LEGACY_CACHE_DIR) != os.path.abspath(
+    CACHE_DIR
+):
+    try:
+        for _root, _dirs, _files in os.walk(_LEGACY_CACHE_DIR):
+            for _fn in _files:
+                _src = os.path.join(_root, _fn)
+                _rel = os.path.relpath(_src, _LEGACY_CACHE_DIR)
+                _dst = os.path.join(CACHE_DIR, _rel)
+                if os.path.exists(_dst):
+                    continue
+                os.makedirs(os.path.dirname(_dst), exist_ok=True)
+                try:
+                    shutil.copy2(_src, _dst)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+# iPad/Cloud Reboot 대비: 브라우저 IndexedDB 백업 컴포넌트
+try:
+    _upload_persist_component = components.declare_component(
+        "upload_persist",
+        path=os.path.join(_APP_DIR, "upload_persist"),
+    )
+except Exception:
+    _upload_persist_component = None
+
+_UPLOAD_IDB_MAX_BYTES = 8_000_000  # 파일당 IndexedDB 백업 한도 (대용량 매출 CSV 포함)
 # ==========================================
 # 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
 # ==========================================
@@ -7487,6 +7521,81 @@ def _read_name_sidecar(base_path, default=""):
     return default
 
 
+def _cache_has_any_uploads():
+    """서버/Desktop 캐시에 복원 가능한 업로드가 있는지."""
+    keys = (
+        "address.csv",
+        "industry.csv",
+        "debt.csv",
+        "tank_cache.dat",
+        "vaporizer_cache.dat",
+        "integrated_cache.dat",
+    )
+    for rel in keys:
+        for base in (CACHE_DIR, DESKTOP_CACHE_DIR):
+            p = os.path.join(base, rel)
+            try:
+                if os.path.exists(p) and os.path.getsize(p) > 0:
+                    return True
+            except Exception:
+                pass
+    for base in (os.path.join(CACHE_DIR, "sales"), os.path.join(DESKTOP_CACHE_DIR, "sales")):
+        if not os.path.isdir(base):
+            continue
+        try:
+            for n in os.listdir(base):
+                if n.endswith(".csv"):
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def _queue_idb_save(bucket, name, data):
+    """브라우저 IndexedDB 백업 대기열 (파일당 크기 제한)."""
+    if not name or data is None:
+        return
+    try:
+        raw = data if isinstance(data, (bytes, bytearray)) else bytes(data)
+    except Exception:
+        return
+    if len(raw) == 0 or len(raw) > _UPLOAD_IDB_MAX_BYTES:
+        return
+    bucket.append({"name": str(name), "b64": base64.b64encode(raw).decode("ascii")})
+
+
+def _apply_idb_restored_files(files):
+    """브라우저에서 받은 파일을 서버 캐시에 기록. 복원 개수 반환."""
+    n = 0
+    for item in files or []:
+        name = str((item or {}).get("name") or "").strip()
+        b64 = (item or {}).get("b64")
+        if not name or not b64:
+            continue
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            continue
+        if not raw:
+            continue
+        if name.startswith("sales/"):
+            rel = name
+            path = os.path.join(CACHE_DIR, rel)
+        elif re.match(r"^20\d{2}.*\.csv$", name):
+            rel = os.path.join("sales", name)
+            path = os.path.join(CACHE_DIR, rel)
+        else:
+            rel = name
+            path = os.path.join(CACHE_DIR, rel)
+        if _cache_write_bytes(path, raw):
+            try:
+                _cache_write_bytes(_desktop_cache_path(*rel.split("/")), raw)
+            except Exception:
+                pass
+            n += 1
+    return n
+
+
 addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
 industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
 debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
@@ -7496,10 +7605,37 @@ integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
 sales_cache_dir = os.path.join(CACHE_DIR, "sales")
 desktop_sales_dir = _desktop_cache_path("sales")
 os.makedirs(sales_cache_dir, exist_ok=True)
+_idb_pending_save = []
+
+# iPad/Cloud: 서버 디스크가 비었으면 브라우저 IndexedDB에서 1회 복원
+if _upload_persist_component is not None and not st.session_state.get("_idb_restore_tried"):
+    if not _cache_has_any_uploads():
+        _idb_payload = _upload_persist_component(
+            action="load",
+            nonce="boot_load",
+            default=None,
+            key="upload_idb_load",
+        )
+        if _idb_payload is None:
+            st.sidebar.info("📱 브라우저에 저장된 업로드 자료를 확인하는 중…")
+        else:
+            st.session_state["_idb_restore_tried"] = True
+            _files = []
+            if isinstance(_idb_payload, dict):
+                _files = _idb_payload.get("files") or []
+            _n = _apply_idb_restored_files(_files)
+            if _n > 0:
+                st.session_state["_idb_restored_count"] = _n
+                st.rerun()
+            else:
+                st.session_state["_idb_restored_count"] = 0
+    else:
+        st.session_state["_idb_restore_tried"] = True
 
 if address_file_up is not None:
     addr_bytes = address_file_up.getvalue()
     _mirror_upload_bytes("address.csv", addr_bytes)
+    _queue_idb_save(_idb_pending_save, "address.csv", addr_bytes)
     _upload_autoload_status.append(("주소록", "업로드"))
 else:
     addr_bytes, _src = _restore_upload_bytes("address.csv", ("주소.csv",))
@@ -7509,6 +7645,7 @@ else:
 if industry_file_up is not None:
     ind_bytes = industry_file_up.getvalue()
     _mirror_upload_bytes("industry.csv", ind_bytes)
+    _queue_idb_save(_idb_pending_save, "industry.csv", ind_bytes)
     _upload_autoload_status.append(("업종분류", "업로드"))
 else:
     ind_bytes, _src = _restore_upload_bytes("industry.csv", ("업체대분류.csv",))
@@ -7518,6 +7655,7 @@ else:
 if debt_file_up is not None:
     debt_bytes = debt_file_up.getvalue()
     _mirror_upload_bytes("debt.csv", debt_bytes)
+    _queue_idb_save(_idb_pending_save, "debt.csv", debt_bytes)
     # 폴더의 채권.csv와도 맞춰 두면 Finder에서 바꾼 것과 사이드바 업로드가 어긋나지 않음
     try:
         with open("채권.csv", "wb") as f:
@@ -7588,6 +7726,10 @@ if tank_file_up is not None:
         _write_name_sidecar(_desktop_cache_path("tank_cache.dat"), tank_name)
     except Exception:
         pass
+    _queue_idb_save(_idb_pending_save, "tank_cache.dat", tank_bytes)
+    _queue_idb_save(
+        _idb_pending_save, "tank_cache.dat_name.txt", tank_name.encode("utf-8")
+    )
     _upload_autoload_status.append(("탱크재고", "업로드"))
 else:
     tank_bytes, _src = _restore_upload_bytes("tank_cache.dat", ("탱크.csv",))
@@ -7612,6 +7754,12 @@ if vaporizer_file_up is not None:
         _write_name_sidecar(_desktop_cache_path("vaporizer_cache.dat"), vaporizer_name)
     except Exception:
         pass
+    _queue_idb_save(_idb_pending_save, "vaporizer_cache.dat", vaporizer_bytes)
+    _queue_idb_save(
+        _idb_pending_save,
+        "vaporizer_cache.dat_name.txt",
+        vaporizer_name.encode("utf-8"),
+    )
     _upload_autoload_status.append(("기화기재고", "업로드"))
 else:
     vaporizer_bytes, _src = _restore_upload_bytes(
@@ -7638,6 +7786,12 @@ if int_bytes is not None:
         _write_name_sidecar(_desktop_cache_path("integrated_cache.dat"), int_name)
     except Exception:
         pass
+    _queue_idb_save(_idb_pending_save, "integrated_cache.dat", int_bytes)
+    _queue_idb_save(
+        _idb_pending_save,
+        "integrated_cache.dat_name.txt",
+        (int_name or "").encode("utf-8"),
+    )
     if not any(x[0] == "통합탱크" for x in _upload_autoload_status):
         _upload_autoload_status.append(
             ("통합탱크", "폴더" if int_name == local_int_path else "업로드")
@@ -7683,11 +7837,14 @@ if uploaded_files_up and len(uploaded_files_up) > 0:
     for f in uploaded_files_up:
         f_bytes = f.getvalue()
         f_path = os.path.join(sales_cache_dir, f.name)
-        _cache_write_bytes(f_path, f_bytes)
+        ok = _cache_write_bytes(f_path, f_bytes)
+        if not ok:
+            st.sidebar.error(f"매출 캐시 저장 실패: {f.name}")
         try:
             _cache_write_bytes(os.path.join(desktop_sales_dir, f.name), f_bytes)
         except Exception:
             pass
+        _queue_idb_save(_idb_pending_save, f"sales/{f.name}", f_bytes)
         try:
             st_info = os.stat(f_path)
             sales_file_meta.append(
@@ -7753,21 +7910,93 @@ else:
         )
 sales_file_meta = tuple(sales_file_meta)
 
+# 브라우저 IndexedDB에 백업 (Reboot 후에도 iPad에서 자동 복원)
+if _idb_pending_save and _upload_persist_component is not None:
+    _save_sig = "|".join(sorted(x["name"] for x in _idb_pending_save))
+    _idb_save_res = _upload_persist_component(
+        action="save",
+        files=_idb_pending_save,
+        nonce=_save_sig,
+        default=None,
+        key=f"upload_idb_save_{abs(hash(_save_sig)) % 10_000_000}",
+    )
+    if isinstance(_idb_save_res, dict) and _idb_save_res.get("ok"):
+        st.session_state["_idb_last_save"] = _save_sig
+        st.session_state["_idb_backfill_done"] = True
+    elif isinstance(_idb_save_res, dict) and _idb_save_res.get("error"):
+        st.sidebar.warning(f"브라우저 백업 실패: {_idb_save_res.get('error')}")
+elif (
+    _upload_persist_component is not None
+    and not st.session_state.get("_idb_backfill_done")
+    and _cache_has_any_uploads()
+):
+    # 이미 서버 캐시에만 있던 파일을 브라우저로 1회 백필 (다음 Cloud Reboot 대비)
+    _backfill = []
+    for _rel in (
+        "address.csv",
+        "industry.csv",
+        "debt.csv",
+        "tank_cache.dat",
+        "tank_cache.dat_name.txt",
+        "vaporizer_cache.dat",
+        "vaporizer_cache.dat_name.txt",
+        "integrated_cache.dat",
+        "integrated_cache.dat_name.txt",
+    ):
+        _queue_idb_save(_backfill, _rel, _cache_read_bytes(os.path.join(CACHE_DIR, _rel)))
+    if os.path.isdir(sales_cache_dir):
+        try:
+            for _fn in os.listdir(sales_cache_dir):
+                if _fn.endswith(".csv"):
+                    _queue_idb_save(
+                        _backfill,
+                        f"sales/{_fn}",
+                        _cache_read_bytes(os.path.join(sales_cache_dir, _fn)),
+                    )
+        except Exception:
+            pass
+    if _backfill:
+        _bf_sig = "|".join(sorted(x["name"] for x in _backfill))
+        _bf_res = _upload_persist_component(
+            action="save",
+            files=_backfill,
+            nonce=f"backfill_{_bf_sig}",
+            default=None,
+            key="upload_idb_backfill",
+        )
+        if _bf_res is not None:
+            st.session_state["_idb_backfill_done"] = True
+    else:
+        st.session_state["_idb_backfill_done"] = True
+
 # iPad/맥 재부팅 후: 업로더가 비어도 캐시에서 자동 복원됐음을 안내
 _restored = [f"· {lab} ({src})" for lab, src in _upload_autoload_status if src != "업로드"]
 _uploaded_now = [f"· {lab}" for lab, src in _upload_autoload_status if src == "업로드"]
+_idb_n = int(st.session_state.get("_idb_restored_count") or 0)
+_waiting_idb = (
+    _upload_persist_component is not None
+    and not st.session_state.get("_idb_restore_tried")
+    and not _cache_has_any_uploads()
+)
 if _restored:
     st.sidebar.success(
         "♻️ 재부팅 후에도 자동 유지 중\n" + "\n".join(_restored)
     )
 elif _uploaded_now:
     st.sidebar.info(
-        "💾 업로드본을 캐시에 저장했습니다. Reboot 후에도 다시 올릴 필요 없습니다."
+        "💾 서버 캐시 + 브라우저에 저장했습니다. Reboot 후 다시 올릴 필요 없습니다."
     )
+elif _idb_n > 0:
+    st.sidebar.success(f"📱 브라우저에서 {_idb_n}개 파일 자동 복원됨")
+elif _waiting_idb:
+    pass  # 상단 ‘확인 중’ 메시지 유지
 else:
     st.sidebar.caption(
-        "한번 업로드하면 `uploaded_cache`(및 Mac Desktop 미러)에 남아 "
-        "iPad·맥 Reboot 후에도 자동으로 불러옵니다."
+        f"캐시 폴더: `{CACHE_DIR}` — 한번 업로드하면 서버·브라우저에 남아 "
+        "iPad Reboot 후에도 자동으로 불러옵니다."
+    )
+    st.sidebar.caption(
+        "아직 복원된 파일이 없습니다. 사이드바에서 자료를 다시 한 번 업로드해 주세요."
     )
 
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
@@ -7812,6 +8041,20 @@ if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
         load_uploaded_files_from_bytes.clear()
     except Exception:
         pass
+    for k in (
+        "_idb_restore_tried",
+        "_idb_restored_count",
+        "_idb_last_save",
+        "_idb_backfill_done",
+    ):
+        st.session_state.pop(k, None)
+    if _upload_persist_component is not None:
+        try:
+            _upload_persist_component(
+                action="clear", nonce="clear", default=None, key="upload_idb_clear"
+            )
+        except Exception:
+            pass
     st.rerun()
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}

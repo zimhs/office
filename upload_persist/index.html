@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script>
+      // Minimal Streamlit component bridge (no external lib)
+      function sendMessage(type, data) {
+        var payload = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
+        window.parent.postMessage(payload, "*");
+      }
+      function setFrameHeight(h) {
+        sendMessage("streamlit:setFrameHeight", { height: h });
+      }
+      function setComponentValue(value) {
+        sendMessage("streamlit:setComponentValue", { value: value });
+      }
+      function componentReady() {
+        sendMessage("streamlit:componentReady", { apiVersion: 1 });
+      }
+
+      var DB_NAME = "dashboard_upload_persist_v1";
+      var STORE = "files";
+
+      function openDb() {
+        return new Promise(function (resolve, reject) {
+          try {
+            var req = indexedDB.open(DB_NAME, 1);
+            req.onupgradeneeded = function () {
+              var db = req.result;
+              if (!db.objectStoreNames.contains(STORE)) {
+                db.createObjectStore(STORE, { keyPath: "name" });
+              }
+            };
+            req.onsuccess = function () {
+              resolve(req.result);
+            };
+            req.onerror = function () {
+              reject(req.error || new Error("idb open failed"));
+            };
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }
+
+      function idbPutAll(files) {
+        return openDb().then(function (db) {
+          return new Promise(function (resolve, reject) {
+            var tx = db.transaction(STORE, "readwrite");
+            var store = tx.objectStore(STORE);
+            (files || []).forEach(function (f) {
+              if (!f || !f.name || !f.b64) return;
+              store.put({
+                name: String(f.name),
+                b64: String(f.b64),
+                updatedAt: Date.now(),
+              });
+            });
+            tx.oncomplete = function () {
+              resolve({ ok: true, saved: (files || []).length });
+            };
+            tx.onerror = function () {
+              reject(tx.error || new Error("idb put failed"));
+            };
+          });
+        });
+      }
+
+      function idbLoadAll() {
+        return openDb().then(function (db) {
+          return new Promise(function (resolve, reject) {
+            var tx = db.transaction(STORE, "readonly");
+            var store = tx.objectStore(STORE);
+            var req = store.getAll();
+            req.onsuccess = function () {
+              var rows = req.result || [];
+              var files = rows
+                .filter(function (r) {
+                  return r && r.name && r.b64;
+                })
+                .map(function (r) {
+                  return { name: r.name, b64: r.b64 };
+                });
+              resolve({ ok: true, files: files });
+            };
+            req.onerror = function () {
+              reject(req.error || new Error("idb getAll failed"));
+            };
+          });
+        });
+      }
+
+      function idbClear() {
+        return openDb().then(function (db) {
+          return new Promise(function (resolve, reject) {
+            var tx = db.transaction(STORE, "readwrite");
+            tx.objectStore(STORE).clear();
+            tx.oncomplete = function () {
+              resolve({ ok: true, cleared: true });
+            };
+            tx.onerror = function () {
+              reject(tx.error || new Error("idb clear failed"));
+            };
+          });
+        });
+      }
+
+      var lastSig = null;
+      window.addEventListener("message", function (event) {
+        var data = event.data;
+        if (!data || data.type !== "streamlit:render") return;
+        var args = data.args || {};
+        var action = args.action || "noop";
+        var sig = action + "::" + String(args.nonce || "");
+        // Avoid re-sending identical value loops
+        if (sig === lastSig && action !== "load") return;
+        lastSig = sig;
+
+        if (action === "save") {
+          idbPutAll(args.files || [])
+            .then(function (res) {
+              setComponentValue(res);
+            })
+            .catch(function (e) {
+              setComponentValue({ ok: false, error: String(e) });
+            });
+          return;
+        }
+        if (action === "load") {
+          idbLoadAll()
+            .then(function (res) {
+              setComponentValue(res);
+            })
+            .catch(function (e) {
+              setComponentValue({ ok: false, error: String(e), files: [] });
+            });
+          return;
+        }
+        if (action === "clear") {
+          idbClear()
+            .then(function (res) {
+              setComponentValue(res);
+            })
+            .catch(function (e) {
+              setComponentValue({ ok: false, error: String(e) });
+            });
+          return;
+        }
+        setComponentValue({ ok: true, noop: true });
+      });
+
+      componentReady();
+      setFrameHeight(0);
+    </script>
+  </head>
+  <body></body>
+</html>
