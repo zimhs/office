@@ -6,7 +6,6 @@ import html
 import json
 import glob
 import time
-import base64
 import subprocess
 import shutil
 import urllib.parse
@@ -62,41 +61,53 @@ st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide"
 # ==========================================
 # 0. 로컬 파일 자동 저장을 위한 디렉토리 설정
 # ==========================================
-# cwd가 달라도 항상 app.py 기준 폴더에 저장 (상대경로 ./uploaded_cache 유실 방지)
-_APP_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(_APP_DIR, "uploaded_cache")
+CACHE_DIR = "./uploaded_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
-# 예전 cwd 상대 캐시가 있으면 프로젝트 캐시로 이전
-_LEGACY_CACHE_DIR = os.path.abspath("./uploaded_cache")
-if os.path.isdir(_LEGACY_CACHE_DIR) and os.path.abspath(_LEGACY_CACHE_DIR) != os.path.abspath(
-    CACHE_DIR
-):
+
+
+def _is_streamlit_cloud() -> bool:
+    """Streamlit Community Cloud 등 원격 런타임 여부. 맥 로컬 Desktop은 False."""
     try:
-        for _root, _dirs, _files in os.walk(_LEGACY_CACHE_DIR):
-            for _fn in _files:
-                _src = os.path.join(_root, _fn)
-                _rel = os.path.relpath(_src, _LEGACY_CACHE_DIR)
-                _dst = os.path.join(CACHE_DIR, _rel)
-                if os.path.exists(_dst):
-                    continue
-                os.makedirs(os.path.dirname(_dst), exist_ok=True)
-                try:
-                    shutil.copy2(_src, _dst)
-                except Exception:
-                    pass
+        env = (os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT") or "").strip().lower()
+        if env == "cloud":
+            return True
+    except Exception:
+        pass
+    try:
+        cwd = os.path.abspath(os.getcwd())
+        if cwd.startswith("/mount/src"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# 클라우드 프로세스(재부팅)당 1회: 옛 매출 캐시 자동복원 제거 → 수동 업로드만
+_CLOUD_SALES_CACHE_PURGED = False
+
+
+def _purge_cloud_sales_cache_once(sales_dir: str) -> None:
+    """아이패드(클라우드) 재부팅 후 불안정한 자동복원 방지. 맥 로컬은 no-op."""
+    global _CLOUD_SALES_CACHE_PURGED
+    if _CLOUD_SALES_CACHE_PURGED:
+        return
+    _CLOUD_SALES_CACHE_PURGED = True
+    if not _is_streamlit_cloud():
+        return
+    try:
+        if not os.path.isdir(sales_dir):
+            return
+        for name in os.listdir(sales_dir):
+            path = os.path.join(sales_dir, name)
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except Exception:
+                pass
     except Exception:
         pass
 
-# iPad/Cloud Reboot 대비: 브라우저 IndexedDB 백업 컴포넌트
-try:
-    _upload_persist_component = components.declare_component(
-        "upload_persist",
-        path=os.path.join(_APP_DIR, "upload_persist"),
-    )
-except Exception:
-    _upload_persist_component = None
 
-_UPLOAD_IDB_MAX_BYTES = 8_000_000  # 파일당 IndexedDB 백업 한도 (대용량 매출 CSV 포함)
 # ==========================================
 # 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
 # ==========================================
@@ -3585,6 +3596,86 @@ def load_debt_file(debt_bytes):
     except Exception:
         pass
     return pd.DataFrame()
+def _parse_sales_filename_year_month(file_name: str):
+    """파일명에서 (연도YYYY, 월MM|None) 추출. 2026.csv / 202608.csv / 202607.csv."""
+    base = os.path.basename(str(file_name or ""))
+    m = re.match(r"^(20\d{2})(\d{2})?(?:\.csv)?$", base, flags=re.IGNORECASE)
+    if m:
+        return m.group(1), m.group(2)
+    m2 = re.search(r"(20\d{2})(\d{2})?", base)
+    if m2:
+        return m2.group(1), m2.group(2)
+    return None, None
+
+
+def _dedupe_sales_file_meta(file_meta):
+    """매출 CSV 중복 제거.
+
+    - 같은 연도·같은 용량(복사본: 2026.csv + 202607.csv) → 하나만
+    - 같은 연도에 월별(YYYYMM)이 있으면 연간(YYYY.csv) 제외
+    """
+    if not file_meta:
+        return file_meta
+    rows = []
+    for item in file_meta:
+        try:
+            name, path = item[0], item[1]
+        except Exception:
+            continue
+        y, mm = _parse_sales_filename_year_month(name)
+        try:
+            sz = int(item[3]) if len(item) > 3 else int(os.path.getsize(path))
+        except Exception:
+            sz = 0
+        try:
+            mt = int(item[2]) if len(item) > 2 else 0
+        except Exception:
+            mt = 0
+        rows.append(
+            {"name": name, "item": item, "y": y, "mm": mm, "sz": sz, "mt": mt}
+        )
+
+    drop = set()
+    # 1) 동일 연도+용량 → 월별명·최신 mtime 우선 1개
+    winners = {}
+    for r in rows:
+        if not r["y"] or r["sz"] <= 0:
+            continue
+        key = (r["y"], r["sz"])
+        prev = winners.get(key)
+        if prev is None:
+            winners[key] = r
+            continue
+        score = (1 if r["mm"] else 0, r["mt"], len(r["name"]))
+        pscore = (1 if prev["mm"] else 0, prev["mt"], len(prev["name"]))
+        if score >= pscore:
+            winners[key] = r
+    for r in rows:
+        if not r["y"] or r["sz"] <= 0:
+            continue
+        key = (r["y"], r["sz"])
+        w = winners.get(key)
+        if w is not None and r["name"] != w["name"]:
+            drop.add(r["name"])
+
+    # 2) 같은 연도에 월별(YYYYMM)이 있으면 연간(YYYY.csv) 제외 — 용량 달라도 2배 집계 방지
+    by_y = {}
+    for r in rows:
+        if r["name"] in drop or not r["y"]:
+            continue
+        by_y.setdefault(r["y"], []).append(r)
+    for y, grp in by_y.items():
+        annuals = [r for r in grp if not r["mm"]]
+        monthlies = [r for r in grp if r["mm"]]
+        if not annuals or not monthlies:
+            continue
+        for a in annuals:
+            drop.add(a["name"])
+
+    out = [r["item"] for r in rows if r["name"] not in drop]
+    return out
+
+
 def _parse_sales_uploaded_tuples(file_tuples):
     """매출 CSV 바이트 튜플 → DataFrame (캐시 없음, 순수 파싱)."""
     if not file_tuples:
@@ -3658,10 +3749,7 @@ def _parse_sales_uploaded_tuples(file_tuples):
             for req in ["거래처", "품목명", "담당자"]:
                 if req not in df.columns:
                     df[req] = "미지정"
-            file_year = next(
-                (y for y in ["2020", "2021", "2022", "2023", "2024", "2025", "2026"] if y in file_name),
-                "2026"
-            )
+            file_year = _parse_sales_filename_year_month(file_name)[0] or "2026"
             date_col = "매출일자_raw" if "매출일자_raw" in df.columns else df.columns[0]
             df["매출일_dt"] = parse_date_series_robust(df[date_col], default_year=file_year)
             df["매출액"] = pd.to_numeric(
@@ -3689,6 +3777,15 @@ def _parse_sales_uploaded_tuples(file_tuples):
         except Exception as e:
             st.sidebar.error(f"파일 읽기 오류 ({file_name}): {e}")
     result_df = pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
+    # 동일 행 중복(연간+월별 복사본 등) 제거 — 매출 2배 집계 방지
+    if not result_df.empty:
+        subset = [
+            c
+            for c in ("거래처", "품목명", "매출일_dt", "매출액", "출고량", "단가", "담당자")
+            if c in result_df.columns
+        ]
+        if len(subset) >= 4:
+            result_df = result_df.drop_duplicates(subset=subset, keep="last")
     
     # ★ '미지정' 및 '담당자없음' 데이터 통합 및 최신 담당자 자동 추론 로직
     if not result_df.empty and "거래처" in result_df.columns and "담당자" in result_df.columns:
@@ -3754,7 +3851,7 @@ def _apply_manual_staff_mapping(df):
 
 
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=4):
+def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=5):
     return _parse_sales_uploaded_tuples(file_tuples)
 
 
@@ -3769,7 +3866,7 @@ def _manual_staff_map_cache_token():
 
 
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=4):
+def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=5):
     """파일명·경로·mtime·size만 캐시 키로 사용.
     새로고침마다 ~10MB CSV를 읽어 해싱하던 비용을 제거(파싱 결과는 동일).
     manual_map_token / parse_version: 매핑·파서 변경 시 캐시 무효화."""
@@ -4803,6 +4900,8 @@ def render_interactive_html_table(
             </div>
         """
     freeze_css = ""
+    left_freeze_px = 0
+    right_freeze_px = 0
     parts = [
         """
         thead th {
@@ -4842,11 +4941,13 @@ def render_interactive_html_table(
                 """
             )
             left += w
+        left_freeze_px = int(left)
     if freeze_right_header:
         # 우측 2열: r0=연체(right:0), r1=결제(right:r0폭)
         rw = freeze_right_widths or [64, 72]
         r0_w = int(rw[0]) if len(rw) > 0 else 64
         r1_w = int(rw[1]) if len(rw) > 1 else 72
+        right_freeze_px = r0_w + r1_w
         parts.append(
             f"""
         th.dash-freeze-r0, td.dash-freeze-r0 {{
@@ -5069,6 +5170,35 @@ def render_interactive_html_table(
         const opAddBtn = document.getElementById('dashOpAdd');
         const opSubBtn = document.getElementById('dashOpSub');
         const opResetBtn = document.getElementById('dashOpReset');
+        // sticky 고정열 폭 — scrollIntoView(nearest)는 가려진 칸을 보이도록 스크롤하지 않음
+        const LEFT_FREEZE_PX = {int(left_freeze_px)};
+        const RIGHT_FREEZE_PX = {int(right_freeze_px)};
+        const HEADER_STICKY_PX = 34;
+        function scrollCellIntoView(td) {{
+            if (!wrap || !td) return;
+            try {{
+                const wr = wrap.getBoundingClientRect();
+                const tr = td.getBoundingClientRect();
+                const padL = LEFT_FREEZE_PX + 6;
+                const padR = RIGHT_FREEZE_PX + 6;
+                let dx = 0;
+                if (tr.left < wr.left + padL) {{
+                    dx = tr.left - (wr.left + padL);
+                }} else if (tr.right > wr.right - padR) {{
+                    dx = tr.right - (wr.right - padR);
+                }}
+                if (dx) wrap.scrollLeft += dx;
+                let dy = 0;
+                if (tr.top < wr.top + HEADER_STICKY_PX) {{
+                    dy = tr.top - (wr.top + HEADER_STICKY_PX);
+                }} else if (tr.bottom > wr.bottom - 4) {{
+                    dy = tr.bottom - (wr.bottom - 4);
+                }}
+                if (dy) wrap.scrollTop += dy;
+            }} catch (e) {{
+                try {{ td.scrollIntoView({{ block: 'nearest', inline: 'nearest' }}); }} catch (e2) {{}}
+            }}
+        }}
         function fmt(n) {{
             return Math.round(n).toLocaleString('ko-KR');
         }}
@@ -5156,7 +5286,7 @@ def render_interactive_html_table(
                 }}
             }}
             try {{
-                td.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
+                scrollCellIntoView(td);
             }} catch (e) {{}}
             updateSumUI();
         }}
@@ -6203,15 +6333,22 @@ def inject_sticky_tabs_script():
             }
             if (touchMode) {
                 parentDoc.documentElement.classList.add('dashboard-touch-mode');
-                /* iPad UI 분기 플래그 — 맥 분기에는 진입하지 않음 */
+                /* iPad UI 분기 — 세션당 1회만 reload (무한 로딩 방지). 맥 분기 미진입 */
                 try {
+                    try { parentDoc.cookie = 'dashboard_touch=1; path=/; max-age=31536000; SameSite=Lax'; } catch (eCk) {}
                     if (!parentWin.__dashboardTouchUiSynced) {
                         parentWin.__dashboardTouchUiSynced = true;
                         var tu = new URL(parentWin.location.href);
                         if (tu.searchParams.get('touch_ui') !== '1') {
                             tu.searchParams.set('touch_ui', '1');
-                            parentWin.location.replace(tu.toString());
-                            return;
+                            try { parentWin.history.replaceState(null, '', tu.toString()); } catch (eHs) {}
+                            try {
+                                if (parentWin.sessionStorage.getItem('__dash_touch_boot') !== '1') {
+                                    parentWin.sessionStorage.setItem('__dash_touch_boot', '1');
+                                    parentWin.location.replace(tu.toString());
+                                    return;
+                                }
+                            } catch (eSs) {}
                         }
                     }
                 } catch (eTu) {}
@@ -6755,22 +6892,26 @@ def inject_top30_month_bridge():
                     return ios || ipadOs || parentDoc.documentElement.classList.contains("dashboard-touch-mode");
                 } catch (e) { return false; }
             }
-            /* iPad ↔ 맥 UI 분기용 query (한 번만). 맥에는 touch_ui 안 붙음 */
+            /* iPad touch_ui: 세션당 1회 reload만. 맥에서 touch_ui 삭제 reload 금지(루프 방지) */
             try {
+                var touch = isTouchPad();
+                if (touch) {
+                    try { parentDoc.cookie = "dashboard_touch=1; path=/; max-age=31536000; SameSite=Lax"; } catch (eCk2) {}
+                }
                 if (!parentWin.__dashboardTouchUiSynced) {
                     parentWin.__dashboardTouchUiSynced = true;
                     var url = new URL(parentWin.location.href);
                     var cur = url.searchParams.get("touch_ui");
-                    var touch = isTouchPad();
                     if (touch && cur !== "1") {
                         url.searchParams.set("touch_ui", "1");
-                        parentWin.location.replace(url.toString());
-                        return;
-                    }
-                    if (!touch && cur === "1") {
-                        url.searchParams.delete("touch_ui");
-                        parentWin.location.replace(url.toString());
-                        return;
+                        try { parentWin.history.replaceState(null, "", url.toString()); } catch (eHs2) {}
+                        try {
+                            if (parentWin.sessionStorage.getItem("__dash_touch_boot") !== "1") {
+                                parentWin.sessionStorage.setItem("__dash_touch_boot", "1");
+                                parentWin.location.replace(url.toString());
+                                return;
+                            }
+                        } catch (eSs2) {}
                     }
                 }
             } catch (eSync) {}
@@ -7038,8 +7179,14 @@ def inject_ipad_plotly_controls():
                     var url = new URL(parentWin.location.href);
                     if (url.searchParams.get("touch_ui") !== "1") {
                         url.searchParams.set("touch_ui", "1");
-                        parentWin.location.replace(url.toString());
-                        return;
+                        try { parentWin.history.replaceState(null, "", url.toString()); } catch (eHs3) {}
+                        try {
+                            if (parentWin.sessionStorage.getItem("__dash_touch_boot") !== "1") {
+                                parentWin.sessionStorage.setItem("__dash_touch_boot", "1");
+                                parentWin.location.replace(url.toString());
+                                return;
+                            }
+                        } catch (eSs3) {}
                     }
                 }
             } catch (e2) {}
@@ -7276,232 +7423,10 @@ def load_equipment_file(file_bytes, file_name):
         st.sidebar.error(f"파일 읽기 오류 ({file_name}): {e}")
         return pd.DataFrame()
 st.sidebar.markdown("---")
-# --- 업로드/DART 영구 유지 헬퍼 (DART 로드보다 먼저 IndexedDB 복원) ---
-DESKTOP_CACHE_DIR = os.path.expanduser("~/Desktop/uploaded_cache")
-API_KEY_FILE = os.path.join(CACHE_DIR, "dart_api_key.txt")
-API_KEY_DESKTOP = os.path.join(DESKTOP_CACHE_DIR, "dart_api_key.txt")
-DART_KEY_COOKIE = "dashboard_dart_api_key"
-_upload_autoload_status = []
-
-
-def _cache_read_bytes(path):
-    try:
-        if path and os.path.exists(path):
-            with open(path, "rb") as f:
-                return f.read()
-    except Exception:
-        return None
-    return None
-
-
-def _cache_write_bytes(path, data):
-    if not path or data is None:
-        return False
-    try:
-        parent = os.path.dirname(path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = path + ".uploading"
-        with open(tmp, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-        return True
-    except Exception:
-        try:
-            with open(path, "wb") as f:
-                f.write(data)
-            return True
-        except Exception:
-            return False
-
-
-def _desktop_cache_path(*parts):
-    return os.path.join(DESKTOP_CACHE_DIR, *parts)
-
-
-def _mirror_upload_bytes(rel_name, data):
-    """프로젝트 캐시 + Desktop 미러 동시 저장 (재부팅·기기 전환 대비)."""
-    if data is None:
-        return
-    proj = os.path.join(CACHE_DIR, rel_name)
-    _cache_write_bytes(proj, data)
-    try:
-        _cache_write_bytes(_desktop_cache_path(rel_name), data)
-    except Exception:
-        pass
-
-
-def _restore_upload_bytes(rel_name, folder_names=None):
-    """업로드 없음 → 프로젝트 캐시 → Desktop 미러 → 작업폴더 파일 순 복원."""
-    proj = os.path.join(CACHE_DIR, rel_name)
-    data = _cache_read_bytes(proj)
-    if data:
-        return data, "캐시"
-    desk = _desktop_cache_path(rel_name)
-    data = _cache_read_bytes(desk)
-    if data:
-        _cache_write_bytes(proj, data)
-        return data, "Desktop"
-    for name in folder_names or ():
-        data = _cache_read_bytes(name)
-        if data:
-            _mirror_upload_bytes(rel_name, data)
-            return data, f"폴더:{name}"
-    return None, None
-
-
-def _write_name_sidecar(base_path, name):
-    try:
-        with open(base_path + "_name.txt", "w", encoding="utf-8") as f:
-            f.write(name or "")
-    except Exception:
-        pass
-
-
-def _read_name_sidecar(base_path, default=""):
-    try:
-        p = base_path + "_name.txt"
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                return f.read().strip() or default
-    except Exception:
-        pass
-    return default
-
-
-def _cache_has_any_uploads():
-    """서버/Desktop 캐시에 복원 가능한 업로드가 있는지."""
-    keys = (
-        "address.csv",
-        "industry.csv",
-        "debt.csv",
-        "tank_cache.dat",
-        "vaporizer_cache.dat",
-        "integrated_cache.dat",
-        "dart_api_key.txt",
-    )
-    for rel in keys:
-        for base in (CACHE_DIR, DESKTOP_CACHE_DIR):
-            p = os.path.join(base, rel)
-            try:
-                if os.path.exists(p) and os.path.getsize(p) > 0:
-                    return True
-            except Exception:
-                pass
-    for base in (os.path.join(CACHE_DIR, "sales"), os.path.join(DESKTOP_CACHE_DIR, "sales")):
-        if not os.path.isdir(base):
-            continue
-        try:
-            for n in os.listdir(base):
-                if n.endswith(".csv"):
-                    return True
-        except Exception:
-            pass
-    return False
-
-
-def _queue_idb_save(bucket, name, data):
-    """브라우저 IndexedDB 백업 대기열 (파일당 크기 제한)."""
-    if not name or data is None:
-        return
-    try:
-        raw = data if isinstance(data, (bytes, bytearray)) else bytes(data)
-    except Exception:
-        return
-    if len(raw) == 0 or len(raw) > _UPLOAD_IDB_MAX_BYTES:
-        return
-    bucket.append({"name": str(name), "b64": base64.b64encode(raw).decode("ascii")})
-
-
-def _apply_idb_restored_files(files, only_missing=True):
-    """브라우저에서 받은 파일을 서버 캐시에 기록. 복원 개수 반환."""
-    n = 0
-    for item in files or []:
-        name = str((item or {}).get("name") or "").strip()
-        b64 = (item or {}).get("b64")
-        if not name or not b64:
-            continue
-        try:
-            raw = base64.b64decode(b64)
-        except Exception:
-            continue
-        if not raw:
-            continue
-        if name.startswith("sales/"):
-            rel = name
-            path = os.path.join(CACHE_DIR, rel)
-        elif re.match(r"^20\d{2}.*\.csv$", name):
-            rel = os.path.join("sales", name)
-            path = os.path.join(CACHE_DIR, rel)
-        else:
-            rel = name
-            path = os.path.join(CACHE_DIR, rel)
-        if only_missing and os.path.exists(path) and os.path.getsize(path) > 0:
-            continue
-        if _cache_write_bytes(path, raw):
-            try:
-                _cache_write_bytes(_desktop_cache_path(*rel.split("/")), raw)
-            except Exception:
-                pass
-            n += 1
-    return n
-
-
-addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
-industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
-debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
-tank_cache_path = os.path.join(CACHE_DIR, "tank_cache.dat")
-vaporizer_cache_path = os.path.join(CACHE_DIR, "vaporizer_cache.dat")
-integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
-sales_cache_dir = os.path.join(CACHE_DIR, "sales")
-desktop_sales_dir = _desktop_cache_path("sales")
-os.makedirs(sales_cache_dir, exist_ok=True)
-_idb_pending_save = []
-
-# iPad/Cloud: DART·업로드를 브라우저 IndexedDB에서 먼저 복원 (키 입력란보다 선행)
-if _upload_persist_component is not None and not st.session_state.get("_idb_restore_tried"):
-    _idb_payload = _upload_persist_component(
-        action="load",
-        nonce="boot_load",
-        default=None,
-        key="upload_idb_load",
-    )
-    if _idb_payload is None:
-        st.sidebar.info("📱 브라우저에 저장된 업로드/DART 키 확인 중…")
-    else:
-        st.session_state["_idb_restore_tried"] = True
-        _files = []
-        _dart_from_browser = ""
-        if isinstance(_idb_payload, dict):
-            _files = _idb_payload.get("files") or []
-            _dart_from_browser = str(_idb_payload.get("dart_key") or "").strip()
-        _n = _apply_idb_restored_files(_files, only_missing=True)
-        if _dart_from_browser:
-            _existing_dart = ""
-            try:
-                if os.path.exists(API_KEY_FILE):
-                    with open(API_KEY_FILE, "r", encoding="utf-8") as _df:
-                        _existing_dart = _df.read().strip()
-            except Exception:
-                _existing_dart = ""
-            if not _existing_dart:
-                try:
-                    os.makedirs(os.path.dirname(API_KEY_FILE), exist_ok=True)
-                    with open(API_KEY_FILE, "w", encoding="utf-8") as _df:
-                        _df.write(_dart_from_browser)
-                    os.makedirs(os.path.dirname(API_KEY_DESKTOP), exist_ok=True)
-                    with open(API_KEY_DESKTOP, "w", encoding="utf-8") as _df:
-                        _df.write(_dart_from_browser)
-                    _n += 1
-                except Exception:
-                    pass
-        if _n > 0:
-            st.session_state["_idb_restored_count"] = _n
-            st.rerun()
-        else:
-            st.session_state["_idb_restored_count"] = 0
-
 st.sidebar.subheader("🔑 Open DART API 설정")
+API_KEY_FILE = os.path.join(CACHE_DIR, "dart_api_key.txt")
+API_KEY_DESKTOP = os.path.expanduser("~/Desktop/uploaded_cache/dart_api_key.txt")
+DART_KEY_COOKIE = "dashboard_dart_api_key"
 
 
 def _read_dart_key_file(path):
@@ -7585,21 +7510,13 @@ def _persist_dart_api_key(key):
     _write_dart_key_file(API_KEY_FILE, key)
     _write_dart_key_file(API_KEY_DESKTOP, key)
     _sync_dart_key_cookie(key)
-    # IndexedDB에도 백업 (Cloud Reboot 대비)
-    try:
-        st.session_state["_idb_need_dart_save"] = True
-        st.session_state["_idb_dart_key_bytes"] = key.encode("utf-8")
-    except Exception:
-        pass
 
 
 saved_api_key = _load_saved_dart_api_key()
 # 쿠키/데스크톱에서만 온 키면 서버 파일에도 동기화
 if saved_api_key and not _read_dart_key_file(API_KEY_FILE):
     _write_dart_key_file(API_KEY_FILE, saved_api_key)
-    st.session_state["_idb_need_dart_save"] = True
-    st.session_state["_idb_dart_key_bytes"] = saved_api_key.encode("utf-8")
-# localStorage → 쿠키 동기화 후 1회 rerun (같은 세션에서 키 반영)
+# localStorage → 쿠키만 세팅 (reload 금지). iframe은 세션당 1회만 (iPad 새로고침 부담 완화)
 if not saved_api_key and not st.session_state.get("_dart_ls_cookie_tried"):
     st.session_state["_dart_ls_cookie_tried"] = True
     components.html(
@@ -7613,6 +7530,8 @@ if not saved_api_key and not st.session_state.get("_dart_ls_cookie_tried"):
                 var fromLs = "";
                 try {{ fromLs = parentWin.localStorage.getItem(name) || ""; }} catch (e) {{}}
                 if (!fromLs) return;
+                var hasCookie = (parentDoc.cookie || "").indexOf(name + "=") >= 0;
+                if (hasCookie) return;
                 parentDoc.cookie = name + "=" + encodeURIComponent(fromLs)
                     + "; path=/; max-age=31536000; SameSite=Lax";
             }} catch (e) {{}}
@@ -7621,17 +7540,6 @@ if not saved_api_key and not st.session_state.get("_dart_ls_cookie_tried"):
         """,
         height=0,
     )
-    st.session_state["_dart_ls_rerun_once"] = True
-    # IndexedDB 부트 복원이 끝난 뒤에만 즉시 rerun (충돌 방지)
-    if st.session_state.get("_idb_restore_tried"):
-        st.rerun()
-elif not saved_api_key and st.session_state.pop("_dart_ls_rerun_once", False):
-    # JS가 쿠키를 쓴 뒤 한 번 더 읽어 반영
-    saved_api_key = _read_dart_key_cookie()
-    if saved_api_key:
-        _write_dart_key_file(API_KEY_FILE, saved_api_key)
-        st.session_state["_idb_need_dart_save"] = True
-        st.session_state["_idb_dart_key_bytes"] = saved_api_key.encode("utf-8")
 # text_input key 세션과 저장된 키 동기화 (재시작 자동 입력)
 if "sidebar_dart_api_key" not in st.session_state:
     st.session_state["sidebar_dart_api_key"] = saved_api_key
@@ -7648,54 +7556,81 @@ if dart_api_key and dart_api_key != saved_api_key:
     _persist_dart_api_key(dart_api_key)
 elif dart_api_key and not _read_dart_key_file(API_KEY_FILE):
     _write_dart_key_file(API_KEY_FILE, dart_api_key)
-    st.session_state["_idb_need_dart_save"] = True
-    st.session_state["_idb_dart_key_bytes"] = dart_api_key.encode("utf-8")
 if OpenDartReader is None:
-    st.sidebar.warning(
-        "opendartreader 미연결 — requirements.txt 배포 후 Reboot 하세요. "
-        "필요 시 아래 버튼으로만 설치를 시도합니다."
-    )
-    if st.sidebar.button("📦 opendartreader 지금 설치 시도", key="btn_install_opendart"):
-        try:
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "opendartreader>=0.3.2"],
-                timeout=120,
-            )
-            st.sidebar.success("설치 완료 — 상단 메뉴에서 Reboot/새로고침 하세요.")
-        except Exception as _ie:
-            st.sidebar.error(f"설치 실패: {_ie}")
-    if _OPENDART_IMPORT_ERROR:
-        st.sidebar.caption(f"원인: `{_OPENDART_IMPORT_ERROR[:220]}`")
+    if is_touch_ui():
+        st.sidebar.caption("DART 재무연동은 선택 사항입니다. (미연결 시 해당 기능만 비활성)")
+    else:
+        st.sidebar.warning(
+            "opendartreader 미연결 — requirements.txt 배포 후 Reboot 하세요. "
+            "필요 시 아래 버튼으로만 설치를 시도합니다."
+        )
+        if st.sidebar.button("📦 opendartreader 지금 설치 시도", key="btn_install_opendart"):
+            try:
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "opendartreader>=0.3.2"],
+                    timeout=120,
+                )
+                st.sidebar.success("설치 완료 — 상단 메뉴에서 Reboot/새로고침 하세요.")
+            except Exception as _ie:
+                st.sidebar.error(f"설치 실패: {_ie}")
+        if _OPENDART_IMPORT_ERROR:
+            st.sidebar.caption(f"원인: `{_OPENDART_IMPORT_ERROR[:220]}`")
 elif dart_api_key:
     st.sidebar.caption("✓ DART 연동 준비됨 (거래처 분석 → 기업 재무정보)")
-    _upload_autoload_status.append(("DART API 키", "캐시" if saved_api_key else "입력"))
 else:
     st.sidebar.caption("API 키 입력 시 매출액·영업이익 조회 가능")
-# --- 사이드바 업로드 → 캐시/브라우저 저장·복원 ---
+addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
+industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
+debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
+tank_cache_path = os.path.join(CACHE_DIR, "tank_cache.dat")
+vaporizer_cache_path = os.path.join(CACHE_DIR, "vaporizer_cache.dat")
+integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
+sales_cache_dir = os.path.join(CACHE_DIR, "sales")
+os.makedirs(sales_cache_dir, exist_ok=True)
+# 클라우드 재부팅: 매출 자동복원 캐시 삭제(수동 업로드). 맥 로컬 무변경.
+_purge_cloud_sales_cache_once(sales_cache_dir)
 if address_file_up is not None:
     addr_bytes = address_file_up.getvalue()
-    _mirror_upload_bytes("address.csv", addr_bytes)
-    _queue_idb_save(_idb_pending_save, "address.csv", addr_bytes)
-    _upload_autoload_status.append(("주소록", "업로드"))
+    with open(addr_cache_path, "wb") as f: f.write(addr_bytes)
+elif os.path.exists(addr_cache_path):
+    with open(addr_cache_path, "rb") as f: addr_bytes = f.read()
+elif os.path.exists("주소.csv"):
+    with open("주소.csv", "rb") as f: addr_bytes = f.read()
 else:
-    addr_bytes, _src = _restore_upload_bytes("address.csv", ("주소.csv",))
-    if addr_bytes:
-        _upload_autoload_status.append(("주소록", _src or "캐시"))
-
+    # Desktop 쪽 예전 캐시 경로 자동 복구
+    _desktop_addr = os.path.expanduser("~/Desktop/uploaded_cache/address.csv")
+    if os.path.exists(_desktop_addr):
+        with open(_desktop_addr, "rb") as f:
+            addr_bytes = f.read()
+        with open(addr_cache_path, "wb") as f:
+            f.write(addr_bytes)
+    else:
+        addr_bytes = None
 if industry_file_up is not None:
     ind_bytes = industry_file_up.getvalue()
-    _mirror_upload_bytes("industry.csv", ind_bytes)
-    _queue_idb_save(_idb_pending_save, "industry.csv", ind_bytes)
-    _upload_autoload_status.append(("업종분류", "업로드"))
+    with open(industry_cache_path, "wb") as f: f.write(ind_bytes)
+elif os.path.exists(industry_cache_path):
+    with open(industry_cache_path, "rb") as f: ind_bytes = f.read()
+elif os.path.exists("업체대분류.csv"):
+    with open("업체대분류.csv", "rb") as f: ind_bytes = f.read()
 else:
-    ind_bytes, _src = _restore_upload_bytes("industry.csv", ("업체대분류.csv",))
-    if ind_bytes:
-        _upload_autoload_status.append(("업종분류", _src or "캐시"))
-
+    ind_bytes = None
 if debt_file_up is not None:
     debt_bytes = debt_file_up.getvalue()
-    _mirror_upload_bytes("debt.csv", debt_bytes)
-    _queue_idb_save(_idb_pending_save, "debt.csv", debt_bytes)
+    # Google Drive 동기화 중 부분쓰기/충돌 완화: tmp → replace
+    _debt_tmp = debt_cache_path + ".uploading"
+    try:
+        with open(_debt_tmp, "wb") as f:
+            f.write(debt_bytes)
+        os.replace(_debt_tmp, debt_cache_path)
+    except Exception:
+        with open(debt_cache_path, "wb") as f:
+            f.write(debt_bytes)
+        try:
+            if os.path.exists(_debt_tmp):
+                os.remove(_debt_tmp)
+        except Exception:
+            pass
     # 폴더의 채권.csv와도 맞춰 두면 Finder에서 바꾼 것과 사이드바 업로드가 어긋나지 않음
     try:
         with open("채권.csv", "wb") as f:
@@ -7707,35 +7642,27 @@ if debt_file_up is not None:
     except Exception:
         pass
     st.session_state["_debt_source"] = f"업로드:{getattr(debt_file_up, 'name', '채권.csv')}"
-    _upload_autoload_status.append(("채권", "업로드"))
 else:
     # ★ 핵심: uploaded_cache/debt.csv 가 있으면 예전엔 폴더 채권.csv를 영원히 무시했음
-    # → mtime이 더 최신인 쪽을 사용 (폴더 파일 교체 반영) + Desktop 미러 포함
+    # → mtime이 더 최신인 쪽을 사용 (폴더 파일 교체 반영)
     _debt_candidates = []
-    for _path, _label in (
-        (debt_cache_path, "캐시"),
-        (_desktop_cache_path("debt.csv"), "Desktop"),
-    ):
-        if os.path.exists(_path):
+    if os.path.exists(debt_cache_path):
+        try:
+            st_ = os.stat(debt_cache_path)
+            _debt_candidates.append(
+                (st_.st_mtime, st_.st_size, debt_cache_path, "캐시")
+            )
+        except Exception:
+            pass
+    for f_name in os.listdir("."):
+        if f_name.startswith("채권") and f_name.endswith(".csv"):
             try:
-                st_ = os.stat(_path)
+                st_ = os.stat(f_name)
                 _debt_candidates.append(
-                    (st_.st_mtime, st_.st_size, _path, _label)
+                    (st_.st_mtime, st_.st_size, f_name, f"폴더:{f_name}")
                 )
             except Exception:
                 pass
-    try:
-        for f_name in os.listdir("."):
-            if f_name.startswith("채권") and f_name.endswith(".csv"):
-                try:
-                    st_ = os.stat(f_name)
-                    _debt_candidates.append(
-                        (st_.st_mtime, st_.st_size, f_name, f"폴더:{f_name}")
-                    )
-                except Exception:
-                    pass
-    except Exception:
-        pass
     debt_bytes = None
     if _debt_candidates:
         _debt_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -7745,146 +7672,70 @@ else:
         st.session_state["_debt_source"] = (
             f"{_label} · {int(_size):,}B"
         )
-        _upload_autoload_status.append(("채권", _label))
-        # 최신본을 프로젝트·Desktop 캐시에 동기화
-        if debt_bytes:
+        # 캐시가 오래됐으면 최신 폴더 파일로 캐시 갱신
+        if _path != debt_cache_path and debt_bytes:
             try:
-                _mirror_upload_bytes("debt.csv", debt_bytes)
-                if _path != debt_cache_path:
-                    load_debt_file.clear()
+                _debt_tmp = debt_cache_path + ".uploading"
+                with open(_debt_tmp, "wb") as f:
+                    f.write(debt_bytes)
+                os.replace(_debt_tmp, debt_cache_path)
+                load_debt_file.clear()
             except Exception:
-                pass
+                try:
+                    with open(debt_cache_path, "wb") as f:
+                        f.write(debt_bytes)
+                    load_debt_file.clear()
+                except Exception:
+                    pass
     else:
         st.session_state["_debt_source"] = "없음"
-
 if tank_file_up is not None:
     tank_bytes = tank_file_up.getvalue()
     tank_name = tank_file_up.name
-    _mirror_upload_bytes("tank_cache.dat", tank_bytes)
-    _write_name_sidecar(tank_cache_path, tank_name)
-    try:
-        _write_name_sidecar(_desktop_cache_path("tank_cache.dat"), tank_name)
-    except Exception:
-        pass
-    _queue_idb_save(_idb_pending_save, "tank_cache.dat", tank_bytes)
-    _queue_idb_save(
-        _idb_pending_save, "tank_cache.dat_name.txt", tank_name.encode("utf-8")
-    )
-    _upload_autoload_status.append(("탱크재고", "업로드"))
+    with open(tank_cache_path, "wb") as f: f.write(tank_bytes)
+    with open(tank_cache_path + "_name.txt", "w", encoding="utf-8") as f: f.write(tank_name)
+elif os.path.exists(tank_cache_path) and os.path.exists(tank_cache_path + "_name.txt"):
+    with open(tank_cache_path, "rb") as f: tank_bytes = f.read()
+    with open(tank_cache_path + "_name.txt", "r", encoding="utf-8") as f: tank_name = f.read().strip()
+elif os.path.exists("탱크.csv"):
+    with open("탱크.csv", "rb") as f: tank_bytes = f.read()
+    tank_name = "탱크.csv"
 else:
-    tank_bytes, _src = _restore_upload_bytes("tank_cache.dat", ("탱크.csv",))
-    if tank_bytes:
-        tank_name = _read_name_sidecar(
-            tank_cache_path,
-            _read_name_sidecar(_desktop_cache_path("tank_cache.dat"), "탱크.csv"),
-        )
-        if _src and _src.startswith("폴더:"):
-            tank_name = _src.split(":", 1)[-1]
-        _upload_autoload_status.append(("탱크재고", _src or "캐시"))
-    else:
-        tank_bytes = None
-        tank_name = ""
-
+    tank_bytes = None
+    tank_name = ""
 if vaporizer_file_up is not None:
     vaporizer_bytes = vaporizer_file_up.getvalue()
     vaporizer_name = vaporizer_file_up.name
-    _mirror_upload_bytes("vaporizer_cache.dat", vaporizer_bytes)
-    _write_name_sidecar(vaporizer_cache_path, vaporizer_name)
-    try:
-        _write_name_sidecar(_desktop_cache_path("vaporizer_cache.dat"), vaporizer_name)
-    except Exception:
-        pass
-    _queue_idb_save(_idb_pending_save, "vaporizer_cache.dat", vaporizer_bytes)
-    _queue_idb_save(
-        _idb_pending_save,
-        "vaporizer_cache.dat_name.txt",
-        vaporizer_name.encode("utf-8"),
-    )
-    _upload_autoload_status.append(("기화기재고", "업로드"))
+    with open(vaporizer_cache_path, "wb") as f: f.write(vaporizer_bytes)
+    with open(vaporizer_cache_path + "_name.txt", "w", encoding="utf-8") as f: f.write(vaporizer_name)
+elif os.path.exists(vaporizer_cache_path) and os.path.exists(vaporizer_cache_path + "_name.txt"):
+    with open(vaporizer_cache_path, "rb") as f: vaporizer_bytes = f.read()
+    with open(vaporizer_cache_path + "_name.txt", "r", encoding="utf-8") as f: vaporizer_name = f.read().strip()
+elif os.path.exists("기화기.csv"):
+    with open("기화기.csv", "rb") as f: vaporizer_bytes = f.read()
+    vaporizer_name = "기화기.csv"
 else:
-    vaporizer_bytes, _src = _restore_upload_bytes(
-        "vaporizer_cache.dat", ("기화기.csv",)
-    )
-    if vaporizer_bytes:
-        vaporizer_name = _read_name_sidecar(
-            vaporizer_cache_path,
-            _read_name_sidecar(
-                _desktop_cache_path("vaporizer_cache.dat"), "기화기.csv"
-            ),
-        )
-        if _src and _src.startswith("폴더:"):
-            vaporizer_name = _src.split(":", 1)[-1]
-        _upload_autoload_status.append(("기화기재고", _src or "캐시"))
-    else:
-        vaporizer_bytes = None
-        vaporizer_name = ""
-
+    vaporizer_bytes = None
+    vaporizer_name = ""
 if int_bytes is not None:
-    _mirror_upload_bytes("integrated_cache.dat", int_bytes)
-    _write_name_sidecar(integrated_cache_path, int_name)
-    try:
-        _write_name_sidecar(_desktop_cache_path("integrated_cache.dat"), int_name)
-    except Exception:
-        pass
-    _queue_idb_save(_idb_pending_save, "integrated_cache.dat", int_bytes)
-    _queue_idb_save(
-        _idb_pending_save,
-        "integrated_cache.dat_name.txt",
-        (int_name or "").encode("utf-8"),
-    )
-    if not any(x[0] == "통합탱크" for x in _upload_autoload_status):
-        _upload_autoload_status.append(
-            ("통합탱크", "폴더" if int_name == local_int_path else "업로드")
-        )
-elif os.path.exists(integrated_cache_path) and os.path.exists(
-    integrated_cache_path + "_name.txt"
-):
-    int_bytes = _cache_read_bytes(integrated_cache_path)
-    int_name = _read_name_sidecar(integrated_cache_path)
-    if int_bytes:
-        _upload_autoload_status.append(("통합탱크", "캐시"))
+    with open(integrated_cache_path, "wb") as f: f.write(int_bytes)
+    with open(integrated_cache_path + "_name.txt", "w", encoding="utf-8") as f: f.write(int_name)
+elif os.path.exists(integrated_cache_path) and os.path.exists(integrated_cache_path + "_name.txt"):
+    with open(integrated_cache_path, "rb") as f: int_bytes = f.read()
+    with open(integrated_cache_path + "_name.txt", "r", encoding="utf-8") as f: int_name = f.read().strip()
 else:
-    desk_int = _desktop_cache_path("integrated_cache.dat")
-    if os.path.exists(desk_int):
-        int_bytes = _cache_read_bytes(desk_int)
-        int_name = _read_name_sidecar(
-            desk_int, _read_name_sidecar(integrated_cache_path, "통합탱크재고.csv")
-        )
-        if int_bytes:
-            _mirror_upload_bytes("integrated_cache.dat", int_bytes)
-            _write_name_sidecar(integrated_cache_path, int_name)
-            _upload_autoload_status.append(("통합탱크", "Desktop"))
-    else:
-        int_bytes = None
-        int_name = ""
-
+    int_bytes = None
+    int_name = ""
 sales_file_meta = []
+_cloud_manual_sales = _is_streamlit_cloud()
 if uploaded_files_up and len(uploaded_files_up) > 0:
     for f_name in os.listdir(sales_cache_dir):
-        try:
-            os.remove(os.path.join(sales_cache_dir, f_name))
-        except Exception:
-            pass
-    try:
-        if os.path.isdir(desktop_sales_dir):
-            for f_name in os.listdir(desktop_sales_dir):
-                try:
-                    os.remove(os.path.join(desktop_sales_dir, f_name))
-                except Exception:
-                    pass
-    except Exception:
-        pass
+        os.remove(os.path.join(sales_cache_dir, f_name))
     for f in uploaded_files_up:
         f_bytes = f.getvalue()
         f_path = os.path.join(sales_cache_dir, f.name)
-        ok = _cache_write_bytes(f_path, f_bytes)
-        if not ok:
-            st.sidebar.error(f"매출 캐시 저장 실패: {f.name}")
-        try:
-            _cache_write_bytes(os.path.join(desktop_sales_dir, f.name), f_bytes)
-        except Exception:
-            pass
-        _queue_idb_save(_idb_pending_save, f"sales/{f.name}", f_bytes)
+        with open(f_path, "wb") as sf:
+            sf.write(f_bytes)
         try:
             st_info = os.stat(f_path)
             sales_file_meta.append(
@@ -7892,8 +7743,9 @@ if uploaded_files_up and len(uploaded_files_up) > 0:
             )
         except Exception:
             sales_file_meta.append((f.name, f_path, 0, len(f_bytes)))
-    _upload_autoload_status.append((f"매출 {len(sales_file_meta)}개", "업로드"))
 else:
+    # 맥: 캐시·루트 CSV 자동 로드 유지
+    # 클라우드(아이패드): 루트 자동로드 금지. 같은 프로세스 내 수동업로드 캐시만 사용
     if os.path.exists(sales_cache_dir):
         for f_name in sorted(os.listdir(sales_cache_dir)):
             if f_name.endswith(".csv"):
@@ -7905,211 +7757,43 @@ else:
                     )
                 except Exception:
                     continue
-    _sales_src = "캐시" if sales_file_meta else None
-    if not sales_file_meta and os.path.isdir(desktop_sales_dir):
-        try:
-            for f_name in sorted(os.listdir(desktop_sales_dir)):
-                if not f_name.endswith(".csv"):
-                    continue
-                src = os.path.join(desktop_sales_dir, f_name)
-                data = _cache_read_bytes(src)
-                if not data:
-                    continue
-                f_path = os.path.join(sales_cache_dir, f_name)
-                _cache_write_bytes(f_path, data)
+    if (not sales_file_meta) and (not _cloud_manual_sales):
+        for f_name in sorted(os.listdir(".")):
+            if re.match(r"^20\d{2}.*\.csv$", f_name):
+                f_path = os.path.abspath(f_name)
                 try:
                     st_info = os.stat(f_path)
                     sales_file_meta.append(
                         (f_name, f_path, int(st_info.st_mtime), int(st_info.st_size))
                     )
                 except Exception:
-                    sales_file_meta.append((f_name, f_path, 0, len(data)))
-            if sales_file_meta:
-                _sales_src = "Desktop"
-        except Exception:
-            pass
-    if not sales_file_meta:
-        try:
-            for f_name in sorted(os.listdir(".")):
-                if re.match(r"^20\d{2}.*\.csv$", f_name):
-                    f_path = os.path.abspath(f_name)
-                    try:
-                        st_info = os.stat(f_path)
-                        sales_file_meta.append(
-                            (f_name, f_path, int(st_info.st_mtime), int(st_info.st_size))
-                        )
-                    except Exception:
-                        continue
-            if sales_file_meta:
-                _sales_src = "폴더"
-        except Exception:
-            pass
-    if sales_file_meta:
-        _upload_autoload_status.append(
-            (f"매출 {len(sales_file_meta)}개", _sales_src or "캐시")
-        )
+                    continue
+sales_file_meta = _dedupe_sales_file_meta(sales_file_meta)
 sales_file_meta = tuple(sales_file_meta)
-
-# DART 키 IndexedDB 백업 대기 (변경 시 또는 최초 백필 전)
-if st.session_state.get("_idb_need_dart_save") and st.session_state.get("_idb_dart_key_bytes"):
-    _queue_idb_save(
-        _idb_pending_save,
-        "dart_api_key.txt",
-        st.session_state.get("_idb_dart_key_bytes"),
+if sales_file_meta:
+    st.sidebar.caption(
+        "매출 파일: " + ", ".join(x[0] for x in sales_file_meta)
     )
-elif dart_api_key and not st.session_state.get("_idb_backfill_done"):
-    _queue_idb_save(
-        _idb_pending_save,
-        "dart_api_key.txt",
-        str(dart_api_key).encode("utf-8"),
-    )
-
-# 브라우저 IndexedDB에 백업 (Reboot 후에도 iPad에서 자동 복원)
-if _idb_pending_save and _upload_persist_component is not None:
-    _save_sig = "|".join(sorted(x["name"] for x in _idb_pending_save))
-    _idb_save_res = _upload_persist_component(
-        action="save",
-        files=_idb_pending_save,
-        nonce=_save_sig,
-        default=None,
-        key=f"upload_idb_save_{abs(hash(_save_sig)) % 10_000_000}",
-    )
-    if isinstance(_idb_save_res, dict) and _idb_save_res.get("ok"):
-        st.session_state["_idb_last_save"] = _save_sig
-        st.session_state["_idb_backfill_done"] = True
-        st.session_state.pop("_idb_need_dart_save", None)
-    elif isinstance(_idb_save_res, dict) and _idb_save_res.get("error"):
-        st.sidebar.warning(f"브라우저 백업 실패: {_idb_save_res.get('error')}")
-elif (
-    _upload_persist_component is not None
-    and not st.session_state.get("_idb_backfill_done")
-    and (_cache_has_any_uploads() or bool(dart_api_key))
-):
-    # 이미 서버 캐시에만 있던 파일을 브라우저로 1회 백필 (다음 Cloud Reboot 대비)
-    _backfill = []
-    for _rel in (
-        "dart_api_key.txt",
-        "address.csv",
-        "industry.csv",
-        "debt.csv",
-        "tank_cache.dat",
-        "tank_cache.dat_name.txt",
-        "vaporizer_cache.dat",
-        "vaporizer_cache.dat_name.txt",
-        "integrated_cache.dat",
-        "integrated_cache.dat_name.txt",
-    ):
-        _queue_idb_save(_backfill, _rel, _cache_read_bytes(os.path.join(CACHE_DIR, _rel)))
-    if os.path.isdir(sales_cache_dir):
-        try:
-            for _fn in os.listdir(sales_cache_dir):
-                if _fn.endswith(".csv"):
-                    _queue_idb_save(
-                        _backfill,
-                        f"sales/{_fn}",
-                        _cache_read_bytes(os.path.join(sales_cache_dir, _fn)),
-                    )
-        except Exception:
-            pass
-    if _backfill:
-        _bf_sig = "|".join(sorted(x["name"] for x in _backfill))
-        _bf_res = _upload_persist_component(
-            action="save",
-            files=_backfill,
-            nonce=f"backfill_{_bf_sig}",
-            default=None,
-            key="upload_idb_backfill",
-        )
-        if _bf_res is not None:
-            st.session_state["_idb_backfill_done"] = True
-    else:
-        st.session_state["_idb_backfill_done"] = True
-
-# iPad/맥 재부팅 후: 업로더가 비어도 캐시에서 자동 복원됐음을 안내
-_restored = [f"· {lab} ({src})" for lab, src in _upload_autoload_status if src != "업로드"]
-_uploaded_now = [f"· {lab}" for lab, src in _upload_autoload_status if src == "업로드"]
-_idb_n = int(st.session_state.get("_idb_restored_count") or 0)
-_waiting_idb = (
-    _upload_persist_component is not None
-    and not st.session_state.get("_idb_restore_tried")
-)
-if _restored:
-    st.sidebar.success(
-        "♻️ 재부팅 후에도 자동 유지 중\n" + "\n".join(_restored)
-    )
-elif _uploaded_now:
+elif _cloud_manual_sales:
     st.sidebar.info(
-        "💾 서버 캐시 + 브라우저에 저장했습니다. Reboot 후 다시 올릴 필요 없습니다."
+        "클라우드(아이패드): 재부팅 후 매출 자동복원 없음. "
+        "사이드바에서 CSV를 수동 업로드하세요."
     )
-elif _idb_n > 0:
-    st.sidebar.success(f"📱 브라우저에서 {_idb_n}개 파일 자동 복원됨")
-elif _waiting_idb:
-    pass  # 상단 ‘확인 중’ 메시지 유지
-else:
-    st.sidebar.caption(
-        f"캐시 폴더: `{CACHE_DIR}` — 한번 업로드하면 서버·브라우저에 남아 "
-        "iPad Reboot 후에도 자동으로 불러옵니다."
-    )
-    st.sidebar.caption(
-        "아직 복원된 파일이 없습니다. 사이드바에서 자료를 다시 한 번 업로드해 주세요."
-    )
-
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
-    for p in [
-        addr_cache_path,
-        industry_cache_path,
-        debt_cache_path,
-        tank_cache_path,
-        tank_cache_path + "_name.txt",
-        vaporizer_cache_path,
-        vaporizer_cache_path + "_name.txt",
-        integrated_cache_path,
-        integrated_cache_path + "_name.txt",
-        TAB7_DATE_FILE,
-        TAB8_DATE_FILE,
-        _desktop_cache_path("address.csv"),
-        _desktop_cache_path("industry.csv"),
-        _desktop_cache_path("debt.csv"),
-        _desktop_cache_path("tank_cache.dat"),
-        _desktop_cache_path("tank_cache.dat_name.txt"),
-        _desktop_cache_path("vaporizer_cache.dat"),
-        _desktop_cache_path("vaporizer_cache.dat_name.txt"),
-        _desktop_cache_path("integrated_cache.dat"),
-        _desktop_cache_path("integrated_cache.dat_name.txt"),
-    ]:
-        if os.path.exists(p):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
+    for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
+              tank_cache_path, tank_cache_path + "_name.txt", 
+              vaporizer_cache_path, vaporizer_cache_path + "_name.txt",
+              integrated_cache_path, integrated_cache_path + "_name.txt",
+              TAB7_DATE_FILE, TAB8_DATE_FILE]:
+        if os.path.exists(p): os.remove(p)
     # DART API 키는 캐시 초기화에서 제외 (맥/iPad 재입력 방지)
-    for _sales_dir in (sales_cache_dir, desktop_sales_dir):
-        if not os.path.isdir(_sales_dir):
-            continue
-        for f_name in os.listdir(_sales_dir):
-            try:
-                os.remove(os.path.join(_sales_dir, f_name))
-            except Exception:
-                pass
+    for f_name in os.listdir(sales_cache_dir):
+        os.remove(os.path.join(sales_cache_dir, f_name))
     try:
         load_uploaded_files_from_meta.clear()
         load_uploaded_files_from_bytes.clear()
     except Exception:
         pass
-    for k in (
-        "_idb_restore_tried",
-        "_idb_restored_count",
-        "_idb_last_save",
-        "_idb_backfill_done",
-    ):
-        st.session_state.pop(k, None)
-    if _upload_persist_component is not None:
-        try:
-            _upload_persist_component(
-                action="clear", nonce="clear", default=None, key="upload_idb_clear"
-            )
-        except Exception:
-            pass
     st.rerun()
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
@@ -8133,7 +7817,7 @@ full_df = (
     load_uploaded_files_from_meta(
         sales_file_meta,
         _manual_staff_map_cache_token(),
-        4,
+        5,
     )
     if sales_file_meta
     else pd.DataFrame()
@@ -10970,5 +10654,9 @@ with tab10:
         )
         st.info("다른 탭은 정상 이용 가능합니다.")
     except Exception as _wl_err:
-        st.error(f"일일업무일지 탭 오류: {_wl_err}")
-        st.info("다른 탭은 정상 이용 가능합니다.")
+        if is_touch_ui():
+            st.error("일일업무일지 탭을 표시하지 못했습니다. 잠시 후 새로고침해 주세요.")
+            st.info("다른 탭은 정상 이용 가능합니다.")
+        else:
+            st.error(f"일일업무일지 탭 오류: {_wl_err}")
+            st.info("다른 탭은 정상 이용 가능합니다.")
