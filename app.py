@@ -4101,7 +4101,8 @@ def render_month_expandable_week_table(
     height=460,
 ):
     """월 행 클릭 → 1~4주 펼침/접힘. tab1 4대품목 전용.
-    그라데이션=상단 Blues와 동일, 글씨 크기는 고정(부모 복사 금지·레이아웃 안정)."""
+    그라데이션=상단 Blues와 동일, 글씨 크기는 고정(부모 복사 금지·레이아웃 안정).
+    iPad: table-layout auto + 가로 스크롤로 연도·숫자 잘림 방지. 맥 레이아웃 무손실."""
     if month_pivot is None or month_pivot.empty:
         st.info("표시할 품목 데이터가 없습니다.")
         return
@@ -4113,6 +4114,11 @@ def render_month_expandable_week_table(
         week_year_pivot.columns = week_year_pivot.columns.astype(str)
     year_cols = sorted(list(month_pivot.columns), reverse=True)
     months = [m for m in month_pivot.index if str(m) != "연간 합계"]
+    touch = False
+    try:
+        touch = bool(is_touch_ui())
+    except Exception:
+        touch = False
 
     def _fmt(v):
         try:
@@ -4156,11 +4162,16 @@ def render_month_expandable_week_table(
             fg = _heatmap_text_color(bg)
         pad = "6px 8px" if not week else "5px 8px"
         fsz = "13px" if not week else "12px"
+        # iPad: ellipsis 금지 · 최소폭 확보. 맥: 기존과 동일
+        overflow = "visible" if touch else "hidden"
+        ellipsis = "" if touch else "text-overflow:ellipsis;"
+        minw = "min-width:3.4rem;" if touch else ""
         return (
             f"padding:{pad};text-align:right;vertical-align:middle;"
             f"background:{bg};color:{fg};font-size:{fsz};font-weight:400;"
             f"line-height:1.35;border-bottom:1px solid #E6EAF0;"
             f"border-right:1px solid #EEF2F6;white-space:nowrap;"
+            f"overflow:{overflow};{ellipsis}{minw}"
         )
 
     sum_cells = []
@@ -4171,11 +4182,12 @@ def render_month_expandable_week_table(
             s = 0.0
         sum_cells.append(s)
 
+    th_min = "min-width:3.4rem;" if touch else ""
     th = "".join(
         f'<th style="position:sticky;top:0;z-index:2;background:#F0F2F6;padding:6px 8px;'
         f'border-bottom:1px solid #D0D7DE;border-right:1px solid #E6EAF0;'
         f'text-align:right;vertical-align:middle;font-weight:600;font-size:13px;'
-        f'color:#31333F;line-height:1.35;white-space:nowrap;">{html.escape(y)}</th>'
+        f'color:#31333F;line-height:1.35;white-space:nowrap;{th_min}">{html.escape(y)}</th>'
         for y in year_cols
     )
     body_parts = []
@@ -4229,6 +4241,22 @@ def render_month_expandable_week_table(
         f'연간 합계</td>{"".join(sum_tds)}</tr>'
     )
 
+    # 맥: fixed+ellipsis 유지 / iPad: auto + 가로스크롤로 숫자·연도 전부 표시
+    if touch:
+        table_css = (
+            "border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;"
+            "table-layout:auto;font-family:inherit;font-size:13px;"
+        )
+        cell_overflow_css = "th,td{overflow:visible;text-overflow:clip;}"
+        wrap_overflow = "overflow:auto;-webkit-overflow-scrolling:touch;"
+    else:
+        table_css = (
+            "border-collapse:separate;border-spacing:0;width:100%;"
+            "table-layout:fixed;font-family:inherit;font-size:13px;"
+        )
+        cell_overflow_css = "th,td{overflow:hidden;text-overflow:ellipsis;}"
+        wrap_overflow = "overflow:auto;-webkit-overflow-scrolling:touch;"
+
     page_html = f"""
     <!DOCTYPE html>
     <html><head><meta charset="utf-8">
@@ -4246,14 +4274,11 @@ def render_month_expandable_week_table(
         font-family:inherit;
       }}
       .wrap{{
-        height:calc(100% - 34px);overflow:auto;-webkit-overflow-scrolling:touch;
+        height:calc(100% - 34px);{wrap_overflow}
         border:1px solid #E2E8F0;border-radius:0 0 0.5rem 0.5rem;background:#fff;
       }}
-      table{{
-        border-collapse:separate;border-spacing:0;width:100%;
-        table-layout:fixed;font-family:inherit;font-size:13px;
-      }}
-      th,td{{overflow:hidden;text-overflow:ellipsis;}}
+      table{{{table_css}}}
+      {cell_overflow_css}
       .mrow:hover td{{filter:brightness(0.97);}}
       .mrow.open .chev{{display:inline-block;transform:rotate(90deg);}}
       .chev{{display:inline-block;width:1em;transition:transform .12s ease;color:#64748B;}}
@@ -8116,16 +8141,15 @@ with tab1:
     else:
         y_suf, y_fmt, _fmt_kind, _cmap = " 만원", ",.0f", "amt", "Blues"
 
-    i_col_left, i_col_right = st.columns([1, 1])
-    with i_col_left:
+    # iPad: 표·그래프 세로 스택(표 전체 폭). 맥: 기존 1:1 가로 배치 유지
+    if is_touch_ui():
         render_month_expandable_week_table(
             item_pivot,
             week_year_pivot,
             fmt_kind=_fmt_kind,
             cmap_name=_cmap,
-            height=460,
+            height=520,
         )
-    with i_col_right:
         render_plotly_chart(
             create_stacked_bar_chart(
                 item_pivot,
@@ -8136,6 +8160,27 @@ with tab1:
             use_container_width=True,
             key="tab1_item_chart",
         )
+    else:
+        i_col_left, i_col_right = st.columns([1, 1])
+        with i_col_left:
+            render_month_expandable_week_table(
+                item_pivot,
+                week_year_pivot,
+                fmt_kind=_fmt_kind,
+                cmap_name=_cmap,
+                height=460,
+            )
+        with i_col_right:
+            render_plotly_chart(
+                create_stacked_bar_chart(
+                    item_pivot,
+                    title_text="",
+                    y_suffix=y_suf,
+                    y_format=y_fmt,
+                ),
+                use_container_width=True,
+                key="tab1_item_chart",
+            )
 
     st.markdown("---")
     st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
