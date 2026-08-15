@@ -129,10 +129,36 @@
         if (action === "load") {
           idbLoadAll()
             .then(function (res) {
+              // DART API 키: IndexedDB 파일 + localStorage 병행 복원
+              var dartKey = "";
+              try {
+                dartKey =
+                  window.parent.localStorage.getItem("dashboard_dart_api_key") ||
+                  "";
+              } catch (e) {}
+              if (!dartKey) {
+                try {
+                  var rows = res.files || [];
+                  for (var i = 0; i < rows.length; i++) {
+                    if (rows[i] && rows[i].name === "dart_api_key.txt" && rows[i].b64) {
+                      try {
+                        dartKey = atob(rows[i].b64);
+                      } catch (e2) {}
+                      break;
+                    }
+                  }
+                } catch (e3) {}
+              }
+              res.dart_key = dartKey || "";
               setComponentValue(res);
             })
             .catch(function (e) {
-              setComponentValue({ ok: false, error: String(e), files: [] });
+              setComponentValue({
+                ok: false,
+                error: String(e),
+                files: [],
+                dart_key: "",
+              });
             });
           return;
         }

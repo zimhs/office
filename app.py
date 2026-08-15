@@ -7276,10 +7276,232 @@ def load_equipment_file(file_bytes, file_name):
         st.sidebar.error(f"파일 읽기 오류 ({file_name}): {e}")
         return pd.DataFrame()
 st.sidebar.markdown("---")
-st.sidebar.subheader("🔑 Open DART API 설정")
+# --- 업로드/DART 영구 유지 헬퍼 (DART 로드보다 먼저 IndexedDB 복원) ---
+DESKTOP_CACHE_DIR = os.path.expanduser("~/Desktop/uploaded_cache")
 API_KEY_FILE = os.path.join(CACHE_DIR, "dart_api_key.txt")
-API_KEY_DESKTOP = os.path.expanduser("~/Desktop/uploaded_cache/dart_api_key.txt")
+API_KEY_DESKTOP = os.path.join(DESKTOP_CACHE_DIR, "dart_api_key.txt")
 DART_KEY_COOKIE = "dashboard_dart_api_key"
+_upload_autoload_status = []
+
+
+def _cache_read_bytes(path):
+    try:
+        if path and os.path.exists(path):
+            with open(path, "rb") as f:
+                return f.read()
+    except Exception:
+        return None
+    return None
+
+
+def _cache_write_bytes(path, data):
+    if not path or data is None:
+        return False
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = path + ".uploading"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            with open(path, "wb") as f:
+                f.write(data)
+            return True
+        except Exception:
+            return False
+
+
+def _desktop_cache_path(*parts):
+    return os.path.join(DESKTOP_CACHE_DIR, *parts)
+
+
+def _mirror_upload_bytes(rel_name, data):
+    """프로젝트 캐시 + Desktop 미러 동시 저장 (재부팅·기기 전환 대비)."""
+    if data is None:
+        return
+    proj = os.path.join(CACHE_DIR, rel_name)
+    _cache_write_bytes(proj, data)
+    try:
+        _cache_write_bytes(_desktop_cache_path(rel_name), data)
+    except Exception:
+        pass
+
+
+def _restore_upload_bytes(rel_name, folder_names=None):
+    """업로드 없음 → 프로젝트 캐시 → Desktop 미러 → 작업폴더 파일 순 복원."""
+    proj = os.path.join(CACHE_DIR, rel_name)
+    data = _cache_read_bytes(proj)
+    if data:
+        return data, "캐시"
+    desk = _desktop_cache_path(rel_name)
+    data = _cache_read_bytes(desk)
+    if data:
+        _cache_write_bytes(proj, data)
+        return data, "Desktop"
+    for name in folder_names or ():
+        data = _cache_read_bytes(name)
+        if data:
+            _mirror_upload_bytes(rel_name, data)
+            return data, f"폴더:{name}"
+    return None, None
+
+
+def _write_name_sidecar(base_path, name):
+    try:
+        with open(base_path + "_name.txt", "w", encoding="utf-8") as f:
+            f.write(name or "")
+    except Exception:
+        pass
+
+
+def _read_name_sidecar(base_path, default=""):
+    try:
+        p = base_path + "_name.txt"
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return f.read().strip() or default
+    except Exception:
+        pass
+    return default
+
+
+def _cache_has_any_uploads():
+    """서버/Desktop 캐시에 복원 가능한 업로드가 있는지."""
+    keys = (
+        "address.csv",
+        "industry.csv",
+        "debt.csv",
+        "tank_cache.dat",
+        "vaporizer_cache.dat",
+        "integrated_cache.dat",
+        "dart_api_key.txt",
+    )
+    for rel in keys:
+        for base in (CACHE_DIR, DESKTOP_CACHE_DIR):
+            p = os.path.join(base, rel)
+            try:
+                if os.path.exists(p) and os.path.getsize(p) > 0:
+                    return True
+            except Exception:
+                pass
+    for base in (os.path.join(CACHE_DIR, "sales"), os.path.join(DESKTOP_CACHE_DIR, "sales")):
+        if not os.path.isdir(base):
+            continue
+        try:
+            for n in os.listdir(base):
+                if n.endswith(".csv"):
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def _queue_idb_save(bucket, name, data):
+    """브라우저 IndexedDB 백업 대기열 (파일당 크기 제한)."""
+    if not name or data is None:
+        return
+    try:
+        raw = data if isinstance(data, (bytes, bytearray)) else bytes(data)
+    except Exception:
+        return
+    if len(raw) == 0 or len(raw) > _UPLOAD_IDB_MAX_BYTES:
+        return
+    bucket.append({"name": str(name), "b64": base64.b64encode(raw).decode("ascii")})
+
+
+def _apply_idb_restored_files(files, only_missing=True):
+    """브라우저에서 받은 파일을 서버 캐시에 기록. 복원 개수 반환."""
+    n = 0
+    for item in files or []:
+        name = str((item or {}).get("name") or "").strip()
+        b64 = (item or {}).get("b64")
+        if not name or not b64:
+            continue
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            continue
+        if not raw:
+            continue
+        if name.startswith("sales/"):
+            rel = name
+            path = os.path.join(CACHE_DIR, rel)
+        elif re.match(r"^20\d{2}.*\.csv$", name):
+            rel = os.path.join("sales", name)
+            path = os.path.join(CACHE_DIR, rel)
+        else:
+            rel = name
+            path = os.path.join(CACHE_DIR, rel)
+        if only_missing and os.path.exists(path) and os.path.getsize(path) > 0:
+            continue
+        if _cache_write_bytes(path, raw):
+            try:
+                _cache_write_bytes(_desktop_cache_path(*rel.split("/")), raw)
+            except Exception:
+                pass
+            n += 1
+    return n
+
+
+addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
+industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
+debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
+tank_cache_path = os.path.join(CACHE_DIR, "tank_cache.dat")
+vaporizer_cache_path = os.path.join(CACHE_DIR, "vaporizer_cache.dat")
+integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
+sales_cache_dir = os.path.join(CACHE_DIR, "sales")
+desktop_sales_dir = _desktop_cache_path("sales")
+os.makedirs(sales_cache_dir, exist_ok=True)
+_idb_pending_save = []
+
+# iPad/Cloud: DART·업로드를 브라우저 IndexedDB에서 먼저 복원 (키 입력란보다 선행)
+if _upload_persist_component is not None and not st.session_state.get("_idb_restore_tried"):
+    _idb_payload = _upload_persist_component(
+        action="load",
+        nonce="boot_load",
+        default=None,
+        key="upload_idb_load",
+    )
+    if _idb_payload is None:
+        st.sidebar.info("📱 브라우저에 저장된 업로드/DART 키 확인 중…")
+    else:
+        st.session_state["_idb_restore_tried"] = True
+        _files = []
+        _dart_from_browser = ""
+        if isinstance(_idb_payload, dict):
+            _files = _idb_payload.get("files") or []
+            _dart_from_browser = str(_idb_payload.get("dart_key") or "").strip()
+        _n = _apply_idb_restored_files(_files, only_missing=True)
+        if _dart_from_browser:
+            _existing_dart = ""
+            try:
+                if os.path.exists(API_KEY_FILE):
+                    with open(API_KEY_FILE, "r", encoding="utf-8") as _df:
+                        _existing_dart = _df.read().strip()
+            except Exception:
+                _existing_dart = ""
+            if not _existing_dart:
+                try:
+                    os.makedirs(os.path.dirname(API_KEY_FILE), exist_ok=True)
+                    with open(API_KEY_FILE, "w", encoding="utf-8") as _df:
+                        _df.write(_dart_from_browser)
+                    os.makedirs(os.path.dirname(API_KEY_DESKTOP), exist_ok=True)
+                    with open(API_KEY_DESKTOP, "w", encoding="utf-8") as _df:
+                        _df.write(_dart_from_browser)
+                    _n += 1
+                except Exception:
+                    pass
+        if _n > 0:
+            st.session_state["_idb_restored_count"] = _n
+            st.rerun()
+        else:
+            st.session_state["_idb_restored_count"] = 0
+
+st.sidebar.subheader("🔑 Open DART API 설정")
 
 
 def _read_dart_key_file(path):
@@ -7363,13 +7585,21 @@ def _persist_dart_api_key(key):
     _write_dart_key_file(API_KEY_FILE, key)
     _write_dart_key_file(API_KEY_DESKTOP, key)
     _sync_dart_key_cookie(key)
+    # IndexedDB에도 백업 (Cloud Reboot 대비)
+    try:
+        st.session_state["_idb_need_dart_save"] = True
+        st.session_state["_idb_dart_key_bytes"] = key.encode("utf-8")
+    except Exception:
+        pass
 
 
 saved_api_key = _load_saved_dart_api_key()
 # 쿠키/데스크톱에서만 온 키면 서버 파일에도 동기화
 if saved_api_key and not _read_dart_key_file(API_KEY_FILE):
     _write_dart_key_file(API_KEY_FILE, saved_api_key)
-# localStorage → 쿠키만 세팅 (reload 금지). iframe은 세션당 1회만 (iPad 새로고침 부담 완화)
+    st.session_state["_idb_need_dart_save"] = True
+    st.session_state["_idb_dart_key_bytes"] = saved_api_key.encode("utf-8")
+# localStorage → 쿠키 동기화 후 1회 rerun (같은 세션에서 키 반영)
 if not saved_api_key and not st.session_state.get("_dart_ls_cookie_tried"):
     st.session_state["_dart_ls_cookie_tried"] = True
     components.html(
@@ -7383,8 +7613,6 @@ if not saved_api_key and not st.session_state.get("_dart_ls_cookie_tried"):
                 var fromLs = "";
                 try {{ fromLs = parentWin.localStorage.getItem(name) || ""; }} catch (e) {{}}
                 if (!fromLs) return;
-                var hasCookie = (parentDoc.cookie || "").indexOf(name + "=") >= 0;
-                if (hasCookie) return;
                 parentDoc.cookie = name + "=" + encodeURIComponent(fromLs)
                     + "; path=/; max-age=31536000; SameSite=Lax";
             }} catch (e) {{}}
@@ -7393,6 +7621,17 @@ if not saved_api_key and not st.session_state.get("_dart_ls_cookie_tried"):
         """,
         height=0,
     )
+    st.session_state["_dart_ls_rerun_once"] = True
+    # IndexedDB 부트 복원이 끝난 뒤에만 즉시 rerun (충돌 방지)
+    if st.session_state.get("_idb_restore_tried"):
+        st.rerun()
+elif not saved_api_key and st.session_state.pop("_dart_ls_rerun_once", False):
+    # JS가 쿠키를 쓴 뒤 한 번 더 읽어 반영
+    saved_api_key = _read_dart_key_cookie()
+    if saved_api_key:
+        _write_dart_key_file(API_KEY_FILE, saved_api_key)
+        st.session_state["_idb_need_dart_save"] = True
+        st.session_state["_idb_dart_key_bytes"] = saved_api_key.encode("utf-8")
 # text_input key 세션과 저장된 키 동기화 (재시작 자동 입력)
 if "sidebar_dart_api_key" not in st.session_state:
     st.session_state["sidebar_dart_api_key"] = saved_api_key
@@ -7409,6 +7648,8 @@ if dart_api_key and dart_api_key != saved_api_key:
     _persist_dart_api_key(dart_api_key)
 elif dart_api_key and not _read_dart_key_file(API_KEY_FILE):
     _write_dart_key_file(API_KEY_FILE, dart_api_key)
+    st.session_state["_idb_need_dart_save"] = True
+    st.session_state["_idb_dart_key_bytes"] = dart_api_key.encode("utf-8")
 if OpenDartReader is None:
     st.sidebar.warning(
         "opendartreader 미연결 — requirements.txt 배포 후 Reboot 하세요. "
@@ -7427,211 +7668,10 @@ if OpenDartReader is None:
         st.sidebar.caption(f"원인: `{_OPENDART_IMPORT_ERROR[:220]}`")
 elif dart_api_key:
     st.sidebar.caption("✓ DART 연동 준비됨 (거래처 분석 → 기업 재무정보)")
+    _upload_autoload_status.append(("DART API 키", "캐시" if saved_api_key else "입력"))
 else:
     st.sidebar.caption("API 키 입력 시 매출액·영업이익 조회 가능")
-# --- 업로드 영구 유지: 프로젝트 캐시 + Desktop 미러 (맥/iPad 재부팅 자동 복원) ---
-DESKTOP_CACHE_DIR = os.path.expanduser("~/Desktop/uploaded_cache")
-_upload_autoload_status = []  # (라벨, 출처) — 사이드바 안내용
-
-
-def _cache_read_bytes(path):
-    try:
-        if path and os.path.exists(path):
-            with open(path, "rb") as f:
-                return f.read()
-    except Exception:
-        return None
-    return None
-
-
-def _cache_write_bytes(path, data):
-    if not path or data is None:
-        return False
-    try:
-        parent = os.path.dirname(path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = path + ".uploading"
-        with open(tmp, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-        return True
-    except Exception:
-        try:
-            with open(path, "wb") as f:
-                f.write(data)
-            return True
-        except Exception:
-            return False
-
-
-def _desktop_cache_path(*parts):
-    return os.path.join(DESKTOP_CACHE_DIR, *parts)
-
-
-def _mirror_upload_bytes(rel_name, data):
-    """프로젝트 캐시 + Desktop 미러 동시 저장 (재부팅·기기 전환 대비)."""
-    if data is None:
-        return
-    proj = os.path.join(CACHE_DIR, rel_name)
-    _cache_write_bytes(proj, data)
-    try:
-        _cache_write_bytes(_desktop_cache_path(rel_name), data)
-    except Exception:
-        pass
-
-
-def _restore_upload_bytes(rel_name, folder_names=None):
-    """업로드 없음 → 프로젝트 캐시 → Desktop 미러 → 작업폴더 파일 순 복원.
-    returns (bytes|None, source_label|None)
-    """
-    proj = os.path.join(CACHE_DIR, rel_name)
-    data = _cache_read_bytes(proj)
-    if data:
-        return data, "캐시"
-    desk = _desktop_cache_path(rel_name)
-    data = _cache_read_bytes(desk)
-    if data:
-        _cache_write_bytes(proj, data)
-        return data, "Desktop"
-    for name in folder_names or ():
-        data = _cache_read_bytes(name)
-        if data:
-            _mirror_upload_bytes(rel_name, data)
-            return data, f"폴더:{name}"
-    return None, None
-
-
-def _write_name_sidecar(base_path, name):
-    try:
-        with open(base_path + "_name.txt", "w", encoding="utf-8") as f:
-            f.write(name or "")
-    except Exception:
-        pass
-
-
-def _read_name_sidecar(base_path, default=""):
-    try:
-        p = base_path + "_name.txt"
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                return f.read().strip() or default
-    except Exception:
-        pass
-    return default
-
-
-def _cache_has_any_uploads():
-    """서버/Desktop 캐시에 복원 가능한 업로드가 있는지."""
-    keys = (
-        "address.csv",
-        "industry.csv",
-        "debt.csv",
-        "tank_cache.dat",
-        "vaporizer_cache.dat",
-        "integrated_cache.dat",
-    )
-    for rel in keys:
-        for base in (CACHE_DIR, DESKTOP_CACHE_DIR):
-            p = os.path.join(base, rel)
-            try:
-                if os.path.exists(p) and os.path.getsize(p) > 0:
-                    return True
-            except Exception:
-                pass
-    for base in (os.path.join(CACHE_DIR, "sales"), os.path.join(DESKTOP_CACHE_DIR, "sales")):
-        if not os.path.isdir(base):
-            continue
-        try:
-            for n in os.listdir(base):
-                if n.endswith(".csv"):
-                    return True
-        except Exception:
-            pass
-    return False
-
-
-def _queue_idb_save(bucket, name, data):
-    """브라우저 IndexedDB 백업 대기열 (파일당 크기 제한)."""
-    if not name or data is None:
-        return
-    try:
-        raw = data if isinstance(data, (bytes, bytearray)) else bytes(data)
-    except Exception:
-        return
-    if len(raw) == 0 or len(raw) > _UPLOAD_IDB_MAX_BYTES:
-        return
-    bucket.append({"name": str(name), "b64": base64.b64encode(raw).decode("ascii")})
-
-
-def _apply_idb_restored_files(files):
-    """브라우저에서 받은 파일을 서버 캐시에 기록. 복원 개수 반환."""
-    n = 0
-    for item in files or []:
-        name = str((item or {}).get("name") or "").strip()
-        b64 = (item or {}).get("b64")
-        if not name or not b64:
-            continue
-        try:
-            raw = base64.b64decode(b64)
-        except Exception:
-            continue
-        if not raw:
-            continue
-        if name.startswith("sales/"):
-            rel = name
-            path = os.path.join(CACHE_DIR, rel)
-        elif re.match(r"^20\d{2}.*\.csv$", name):
-            rel = os.path.join("sales", name)
-            path = os.path.join(CACHE_DIR, rel)
-        else:
-            rel = name
-            path = os.path.join(CACHE_DIR, rel)
-        if _cache_write_bytes(path, raw):
-            try:
-                _cache_write_bytes(_desktop_cache_path(*rel.split("/")), raw)
-            except Exception:
-                pass
-            n += 1
-    return n
-
-
-addr_cache_path = os.path.join(CACHE_DIR, "address.csv")
-industry_cache_path = os.path.join(CACHE_DIR, "industry.csv")
-debt_cache_path = os.path.join(CACHE_DIR, "debt.csv")
-tank_cache_path = os.path.join(CACHE_DIR, "tank_cache.dat")
-vaporizer_cache_path = os.path.join(CACHE_DIR, "vaporizer_cache.dat")
-integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
-sales_cache_dir = os.path.join(CACHE_DIR, "sales")
-desktop_sales_dir = _desktop_cache_path("sales")
-os.makedirs(sales_cache_dir, exist_ok=True)
-_idb_pending_save = []
-
-# iPad/Cloud: 서버 디스크가 비었으면 브라우저 IndexedDB에서 1회 복원
-if _upload_persist_component is not None and not st.session_state.get("_idb_restore_tried"):
-    if not _cache_has_any_uploads():
-        _idb_payload = _upload_persist_component(
-            action="load",
-            nonce="boot_load",
-            default=None,
-            key="upload_idb_load",
-        )
-        if _idb_payload is None:
-            st.sidebar.info("📱 브라우저에 저장된 업로드 자료를 확인하는 중…")
-        else:
-            st.session_state["_idb_restore_tried"] = True
-            _files = []
-            if isinstance(_idb_payload, dict):
-                _files = _idb_payload.get("files") or []
-            _n = _apply_idb_restored_files(_files)
-            if _n > 0:
-                st.session_state["_idb_restored_count"] = _n
-                st.rerun()
-            else:
-                st.session_state["_idb_restored_count"] = 0
-    else:
-        st.session_state["_idb_restore_tried"] = True
-
+# --- 사이드바 업로드 → 캐시/브라우저 저장·복원 ---
 if address_file_up is not None:
     addr_bytes = address_file_up.getvalue()
     _mirror_upload_bytes("address.csv", addr_bytes)
@@ -7910,6 +7950,20 @@ else:
         )
 sales_file_meta = tuple(sales_file_meta)
 
+# DART 키 IndexedDB 백업 대기 (변경 시 또는 최초 백필 전)
+if st.session_state.get("_idb_need_dart_save") and st.session_state.get("_idb_dart_key_bytes"):
+    _queue_idb_save(
+        _idb_pending_save,
+        "dart_api_key.txt",
+        st.session_state.get("_idb_dart_key_bytes"),
+    )
+elif dart_api_key and not st.session_state.get("_idb_backfill_done"):
+    _queue_idb_save(
+        _idb_pending_save,
+        "dart_api_key.txt",
+        str(dart_api_key).encode("utf-8"),
+    )
+
 # 브라우저 IndexedDB에 백업 (Reboot 후에도 iPad에서 자동 복원)
 if _idb_pending_save and _upload_persist_component is not None:
     _save_sig = "|".join(sorted(x["name"] for x in _idb_pending_save))
@@ -7923,16 +7977,18 @@ if _idb_pending_save and _upload_persist_component is not None:
     if isinstance(_idb_save_res, dict) and _idb_save_res.get("ok"):
         st.session_state["_idb_last_save"] = _save_sig
         st.session_state["_idb_backfill_done"] = True
+        st.session_state.pop("_idb_need_dart_save", None)
     elif isinstance(_idb_save_res, dict) and _idb_save_res.get("error"):
         st.sidebar.warning(f"브라우저 백업 실패: {_idb_save_res.get('error')}")
 elif (
     _upload_persist_component is not None
     and not st.session_state.get("_idb_backfill_done")
-    and _cache_has_any_uploads()
+    and (_cache_has_any_uploads() or bool(dart_api_key))
 ):
     # 이미 서버 캐시에만 있던 파일을 브라우저로 1회 백필 (다음 Cloud Reboot 대비)
     _backfill = []
     for _rel in (
+        "dart_api_key.txt",
         "address.csv",
         "industry.csv",
         "debt.csv",
@@ -7976,7 +8032,6 @@ _idb_n = int(st.session_state.get("_idb_restored_count") or 0)
 _waiting_idb = (
     _upload_persist_component is not None
     and not st.session_state.get("_idb_restore_tried")
-    and not _cache_has_any_uploads()
 )
 if _restored:
     st.sidebar.success(
