@@ -44,3 +44,4 @@ uploaded_cache/**
 !uploaded_cache/sales/*.csv
 !uploaded_cache/worklog/
 !uploaded_cache/worklog/template.xlsx
+worklog_tab.py.final_*
