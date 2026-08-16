@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import subprocess
+import time
 import unicodedata
 from datetime import date
 from functools import lru_cache
@@ -1018,6 +1019,13 @@ def workbook_to_html(path: str) -> str:
             va = align.vertical or "middle"
             if ha == "general":
                 ha = "left"
+            # 익일업무·특이사항 라벨(C열 병합): 원본처럼 세로 글자
+            is_side_label = c == 3 and (
+                (r == 40 and rs >= 3) or (r == 44 and rs >= 3)
+            )
+            if is_side_label:
+                ha = "center"
+                va = "middle"
             fill = _cell_fill_color(cell) or "#FFFFFF"
             border = _border_css(cell)
             span = ""
@@ -1031,17 +1039,27 @@ def workbook_to_html(path: str) -> str:
             elif is_content and text.strip() == "" and text != "":
                 text = ""
             # 연속 공백·선행 공백이 HTML에서 사라지지 않게
-            esc = (
-                html.escape(text)
-                .replace(" ", "&nbsp;")
-                .replace("\n", "<br>")
-            )
+            if is_side_label and text.strip():
+                # 공백 제거 후 글자마다 세로 배치 (익일업무 / 특이사항)
+                chars = [ch for ch in text.replace(" ", "").replace("\u3000", "") if ch]
+                esc = "<br>".join(html.escape(ch) for ch in chars)
+            else:
+                esc = (
+                    html.escape(text)
+                    .replace(" ", "&nbsp;")
+                    .replace("\n", "<br>")
+                )
             # 내용칸: 엑셀처럼 한 줄 + 옆 빈 칸으로 넘침 표시 (clip 금지)
             if is_content or is_client:
                 white = "nowrap"
                 overflow = "visible"
                 text_overflow = "clip"
                 zidx = "position:relative;z-index:1;"
+            elif is_side_label:
+                white = "normal"
+                overflow = "hidden"
+                text_overflow = "clip"
+                zidx = ""
             else:
                 white = "pre-wrap"
                 overflow = "visible"
@@ -1052,7 +1070,7 @@ def workbook_to_html(path: str) -> str:
             span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
             width_css = f"width:{span_w}px;min-width:{span_w}px;max-width:{span_w}px;" if span_w else ""
             # 바탕글(바탕체) 우선 — Nanum/고딕으로 대체되지 않게
-            if is_content or is_client or is_body_d:
+            if is_content or is_client or is_body_d or is_side_label:
                 font_stack = (
                     "'Batang','BatangChe','바탕','바탕체','바탕글',"
                     "'Apple Myungjo','AppleMyungjo','Nanum Myeongjo',serif"
@@ -1062,16 +1080,22 @@ def workbook_to_html(path: str) -> str:
                     f"'{html.escape(fname_css)}','Batang','BatangChe',"
                     f"'Apple Myungjo','Malgun Gothic',serif"
                 )
+            pad_css = "padding:4px 1px;" if is_side_label else "padding:0 2px;"
+            line_css = (
+                f"line-height:{max(fsize_px * 1.35, fsize_px + 2):.2f}px;"
+                if is_side_label
+                else f"line-height:{line_h_px:.2f}px;"
+            )
             style = (
                 f"box-sizing:border-box;{width_css}{zidx}"
                 f"font-family:{font_stack};"
                 f"font-size:{fsize_px:.4f}px;font-weight:{bold};"
                 f"text-align:{ha};vertical-align:{va};"
                 f"background:{fill};{border}"
-                f"padding:0 2px;white-space:{white};overflow:{overflow};"
+                f"{pad_css}white-space:{white};overflow:{overflow};"
                 f"text-overflow:{text_overflow};word-break:keep-all;"
                 f"height:{height_px}px;min-height:{height_px}px;"
-                f"line-height:{line_h_px:.2f}px;"
+                f"{line_css}"
             )
             tds.append(f'<td{span} style="{style}">{esc}</td>')
         rows_html.append(
@@ -1089,6 +1113,16 @@ def workbook_to_html(path: str) -> str:
     """
 
 
+def _a4_print_fit(raw_w: int, raw_h: int) -> float:
+    """A4 인쇄 가능 영역에 양식 전체가 들어가도록 축소 비율 (여유 포함)."""
+    # 프린터/브라우저 여백을 넉넉히 보고 보수적으로 맞춤
+    # A4 210×297mm, 실사용 ~185×270mm ≈ 700×1020px @96dpi
+    if raw_w <= 0 or raw_h <= 0:
+        return 1.0
+    fit = min(1.0, 640.0 / float(raw_w), 960.0 / float(raw_h))
+    return max(0.2, min(1.0, fit * 0.88))
+
+
 def render_worklog_view_html(
     path: str,
     *,
@@ -1099,28 +1133,49 @@ def render_worklog_view_html(
 ) -> str:
     """원본 엑셀 양식 HTML (인쇄/보고용)."""
     sheet = workbook_to_html(path)
+    raw_w, raw_h = _worklog_sheet_pixel_size(path)
+    print_fit = _a4_print_fit(raw_w, raw_h)
+    scaled_w = max(1, int(round(raw_w * print_fit)))
+    scaled_h = max(1, int(round(raw_h * print_fit)))
+
     toolbar = ""
     if print_mode:
+        scale = 1.0
         toolbar = """
-        <div class="toolbar">
-          <button onclick="window.print()">다시 인쇄 / PDF 저장</button>
-          <span class="hint">인쇄창이 안 뜨면 이 버튼을 누르세요.</span>
+        <div class="toolbar no-print">
+          <button type="button" id="wl-fit-btn">맞춤(줄여서)</button>
+          <button type="button" id="wl-zoom-out" class="secondary">축소</button>
+          <button type="button" id="wl-zoom-in" class="secondary">확대</button>
+          <button type="button" id="wl-print-btn">인쇄하기</button>
+          <span class="hint">맞춤으로 A4에 맞춘 뒤 축소/확대로 조절하세요.</span>
         </div>
         """
-        scale = 1.0
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
-    # zoom은 레이아웃까지 축소. wrap은 auto로 두어 하단이 clip 되지 않게 함.
-    if print_mode or scale >= 1:
-        scale_css = ""
-        scale_css_fallback = ""
+    # print_mode: 화면용 초기 스케일. 인쇄 직전 JS가 실제 DOM 크기로 다시 맞춤.
+    if print_mode:
+        # zoom이 인쇄 레이아웃 폭을 줄여 선(테두리) 잘림을 줄임
+        scale_css = f"zoom:{print_fit:.4f};width:{raw_w}px;max-width:none;"
+        scale_css_fallback = (
+            f"transform:scale({print_fit:.4f});transform-origin:top left;"
+            f"width:{raw_w}px;"
+        )
+        wrap_h = f"{scaled_h}px"
+        wrap_w = f"{scaled_w}px"
+        wrap_overflow = "hidden"
+        body_overflow = "auto"
+        body_h = "auto"
+    elif scale >= 1:
+        scale_css = "zoom:1;width:fit-content;"
+        scale_css_fallback = (
+            "transform:scale(1);transform-origin:top left;width:fit-content;"
+        )
         wrap_h = "auto"
-        wrap_w = "auto"
+        wrap_w = "100%"
         wrap_overflow = "visible"
         body_overflow = "visible"
         body_h = "auto"
     else:
         s = float(scale)
-        raw_w, raw_h = _worklog_sheet_pixel_size(path)
         scale_css = f"zoom:{s};width:fit-content;"
         scale_css_fallback = (
             f"transform:scale({s});transform-origin:top left;"
@@ -1133,24 +1188,102 @@ def render_worklog_view_html(
         body_h = f"{frame_h}px"
     if wrap_height is not None:
         wrap_h = wrap_height
+
+    # 인쇄 직전: 실제 렌더 크기를 재서 A4에 맞춤 + 축소/확대
+    fit_print_js = f"""
+        var wlZoom = 1;
+        function wlApplyZoom(s) {{
+          var sheet = document.querySelector('.sheet-scale');
+          var wrap = document.querySelector('.wrap');
+          var table = document.querySelector('.wl-sheet');
+          if (!sheet || !wrap || !table) return;
+          wlZoom = s;
+          sheet.style.transform = 'none';
+          sheet.style.zoom = String(s);
+          var w = Math.max(table.scrollWidth, table.offsetWidth, {raw_w}, 1);
+          var h = Math.max(table.scrollHeight, table.offsetHeight, {raw_h}, 1);
+          wrap.style.maxWidth = 'none';
+          wrap.style.width = Math.ceil(w * s) + 'px';
+          wrap.style.height = Math.ceil(h * s) + 'px';
+          wrap.style.overflow = 'hidden';
+          wrap.style.margin = '0 auto';
+        }}
+        function wlFitToA4() {{
+          var sheet = document.querySelector('.sheet-scale');
+          var wrap = document.querySelector('.wrap');
+          var table = document.querySelector('.wl-sheet');
+          if (!sheet || !wrap || !table) return;
+          sheet.style.transform = 'none';
+          sheet.style.zoom = '1';
+          wrap.style.maxWidth = 'none';
+          wrap.style.overflow = 'visible';
+          wrap.style.width = 'auto';
+          wrap.style.height = 'auto';
+          table.style.width = '{raw_w}px';
+          var w = Math.max(table.scrollWidth, table.offsetWidth, 1);
+          var h = Math.max(table.scrollHeight, table.offsetHeight, 1);
+          var maxW = 620;
+          var maxH = 920;
+          var s = Math.min(1, maxW / w, maxH / h) * 0.92;
+          if (s < 0.25) s = 0.25;
+          wlApplyZoom(s);
+        }}
+        function wlZoomBy(factor) {{
+          var next = wlZoom * factor;
+          if (next < 0.25) next = 0.25;
+          if (next > 1.6) next = 1.6;
+          wlApplyZoom(next);
+        }}
+        try {{ window.wlFitToA4 = wlFitToA4; }} catch (e0) {{}}
+    """
+
     auto_script = ""
-    if auto_print:
-        auto_script = """
+    if print_mode:
+        auto_script = f"""
         <script>
-          (function() {
-            var tries = 0;
-            function go() {
-              tries += 1;
-              try { window.focus(); window.print(); } catch (e) {}
-              if (tries < 3) setTimeout(go, 400 * tries);
-            }
-            if (document.readyState === 'complete') setTimeout(go, 200);
-            else window.addEventListener('load', function() { setTimeout(go, 200); });
-          })();
+          (function() {{
+            {fit_print_js}
+            function goPrint() {{
+              try {{ wlFitToA4(); }} catch (e0) {{}}
+              setTimeout(function() {{
+                try {{ window.focus(); window.print(); }} catch (e) {{}}
+              }}, 50);
+            }}
+            var btn = document.getElementById('wl-print-btn');
+            if (btn) btn.addEventListener('click', function(ev) {{
+              ev.preventDefault();
+              goPrint();
+            }});
+            var fitBtn = document.getElementById('wl-fit-btn');
+            if (fitBtn) fitBtn.addEventListener('click', function(ev) {{
+              ev.preventDefault();
+              try {{ wlFitToA4(); }} catch (e1) {{}}
+            }});
+            var zo = document.getElementById('wl-zoom-out');
+            if (zo) zo.addEventListener('click', function(ev) {{
+              ev.preventDefault();
+              wlZoomBy(0.9);
+            }});
+            var zi = document.getElementById('wl-zoom-in');
+            if (zi) zi.addEventListener('click', function(ev) {{
+              ev.preventDefault();
+              wlZoomBy(1.1);
+            }});
+            window.addEventListener('beforeprint', function() {{
+              try {{ wlFitToA4(); }} catch (e2) {{}}
+            }});
+            // 미리보기 진입 시 바로 맞춤(줄여서)
+            function boot() {{
+              try {{ wlFitToA4(); }} catch (e3) {{}}
+              {"setTimeout(goPrint, 450);" if auto_print else ""}
+            }}
+            if (document.readyState === 'complete') setTimeout(boot, 200);
+            else window.addEventListener('load', function() {{ setTimeout(boot, 200); }});
+          }})();
         </script>
         """
     fallback_block = ""
-    if not print_mode and scale < 1:
+    if scale_css_fallback:
         fallback_block = f"""
   @supports not (zoom: 1) {{
     .sheet-scale {{ {scale_css_fallback} }}
@@ -1159,37 +1292,51 @@ def render_worklog_view_html(
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>일일업무일지</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  @page {{ size: A4 portrait; margin: 10mm; }}
+  @page {{ size: A4 portrait; margin: 12mm; }}
   html, body {{
     margin:0; padding:0; background:#fff;
     overflow:{body_overflow} !important;
     height:{body_h};
   }}
-  body {{ padding:6px; box-sizing:border-box; }}
+  body {{ padding:{"0" if print_mode else "6px"}; box-sizing:border-box; }}
   .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }}
   .toolbar button {{
     padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px;
     background:#1E293B; color:#fff; cursor:pointer;
   }}
-  .toolbar .hint {{ font:12px/1.4 sans-serif; color:#64748B; }}
+  .toolbar button.secondary {{
+    background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default;
+  }}
+  .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }}
   .wrap {{
     overflow:{wrap_overflow} !important; height:{wrap_h};
-    width:{wrap_w}; max-width:100%;
-    border:1px solid #94A3B8; background:#fff;
+    width:{wrap_w}; max-width:{"none" if print_mode else "100%"};
+    border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff;
     box-sizing:border-box;
   }}
   .sheet-scale {{ {scale_css} }}
+  .wl-sheet {{ border-collapse:collapse; table-layout:fixed; }}
   .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }}
   {fallback_block}
   @media print {{
-    html, body {{ overflow:visible !important; height:auto; }}
-    .toolbar {{ display:none !important; }}
-    .wrap {{ overflow:visible !important; height:auto; width:auto; border:none; }}
-    .sheet-scale {{
-      zoom:1 !important; transform:none !important; margin-bottom:0 !important;
+    html, body {{
+      overflow:visible !important; height:auto !important; width:auto !important;
+      margin:0 !important; padding:0 !important;
+      -webkit-print-color-adjust:exact; print-color-adjust:exact;
     }}
-    body {{ padding:0; }}
+    .no-print, .toolbar {{ display:none !important; }}
+    .wrap {{
+      overflow:hidden !important;
+      max-width:none !important;
+      border:none !important;
+      margin:0 auto !important;
+    }}
+    .sheet-scale {{
+      transform:none !important;
+      margin:0 !important;
+    }}
   }}
 </style></head>
 <body>
@@ -1197,7 +1344,6 @@ def render_worklog_view_html(
   <div class="wrap"><div class="sheet-scale">{sheet}</div></div>
   {auto_script}
 </body></html>"""
-
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     """항목 뒤에 띄울 빈 칸 수 (0~10)."""
@@ -1649,7 +1795,7 @@ def render_readable_preview_html(d: date, cells: dict) -> str:
       <h3>특 이 사 항</h3>
       {note_html}
     </div>
-    <div class="foot">보고용 원본 양식이 필요하면 아래 「원본양식 인쇄」를 사용하세요.</div>
+    <div class="foot">인쇄는 상단 「인쇄창열기」를 사용하세요.</div>
   </div>
 </body></html>"""
 
@@ -2005,6 +2151,33 @@ div[class*="st-key-wl_ent_cl_"] input:focus {
   background-color: #DFF3EE !important;
   border-color: #7CBCAD !important;
 }
+/* 업무입력칸: 세로 가운데 · 글자는 왼쪽부터 */
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"],
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="input"],
+div[class*="st-key-wl_ent_ln_"] [data-baseweb="base-input"],
+div[class*="st-key-wl_ent_ln_"] [data-baseweb="input"] {
+  min-height: 2.35rem !important;
+}
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"] > div,
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="input"] > div,
+div[class*="st-key-wl_ent_ln_"] [data-baseweb="base-input"] > div,
+div[class*="st-key-wl_ent_ln_"] [data-baseweb="input"] > div {
+  display: flex !important;
+  align-items: center !important;
+  min-height: 2.35rem !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+div[class*="st-key-wl_ent_cl_"] input,
+div[class*="st-key-wl_ent_ln_"] input {
+  text-align: left !important;
+  line-height: 1.25 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  padding-left: 0.5rem !important;
+  height: 2.1rem !important;
+  min-height: 2.1rem !important;
+}
 /* 삭제 / ＋ 버튼 글자 가운데 정렬 */
 div[class*="st-key-wl_cl_del_"] button,
 div[class*="st-key-wl_cl_add_"] button,
@@ -2322,6 +2495,7 @@ export default function (component) {
     if (e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
+      // 서버로 보내 다음 칸 생성/이동 (원본 엑셀 칸 동작)
       emit(info.key, t.value || "");
       return;
     }
@@ -2405,7 +2579,7 @@ export default function (component) {
     }
   };
 
-  // 원본 칸 폭을 넘는 순간 → 다음 칸으로 (입력 중 자동)
+  // 칸 폭 초과 → 다음 칸으로 넘김 (원본 엑셀 칸 반영)
   const onInput = (e) => {
     if (e.isComposing) return;
     const t = e.target;
@@ -2436,17 +2610,7 @@ export default function (component) {
   document.addEventListener("keydown", onKey, true);
   document.addEventListener("input", onInput, true);
   document.addEventListener("compositionend", onCompEnd, true);
-  const onFocusIn = (e) => {
-    if (isComposingTarget(e.target)) return;
-    const info = resolveKey(e.target);
-    if (!info) return;
-    if (info.key === lastFocusKey) return;
-    lastFocusKey = info.key;
-    try {
-      setTriggerValue("focus", info.key);
-    } catch (err) {}
-  };
-  document.addEventListener("focusin", onFocusIn, true);
+  // focus → setTriggerValue 제거: 칸 이동만으로 fragment 로딩이 나던 원인
 
   if (focusKey) {
     const go = () => {
@@ -2470,13 +2634,12 @@ export default function (component) {
     document.removeEventListener("keydown", onKey, true);
     document.removeEventListener("input", onInput, true);
     document.removeEventListener("compositionend", onCompEnd, true);
-    document.removeEventListener("focusin", onFocusIn, true);
   };
 }
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v10",
+    "worklog_cell_nav_hook_v12",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -2935,29 +3098,302 @@ def prepare_print_xlsx(d: date, cells: dict) -> str:
     return os.path.abspath(dst)
 
 
-def open_excel_print_preview(xlsx_path: str) -> tuple[bool, str]:
+def open_excel_print_preview(
+    xlsx_path: str, *, prefer_print_dialog: bool = True
+) -> tuple[bool, str]:
     """
-    macOS + Microsoft Excel 에서 원본 파일을 **열기만** 한다.
-    인쇄·인쇄 미리보기·⌘P 는 실행하지 않음 (사용자가 직접 확인 후 인쇄).
+    macOS + Microsoft Excel:
+    1) 원본 xlsx 열기
+    2) prefer_print_dialog=True → ⌘P 인쇄(미리보기) 대화상자 (요청 화면)
+       prefer_print_dialog=False → Excel 인쇄 미리보기 메뉴 우선
     """
     abs_path = os.path.abspath(xlsx_path)
     if not os.path.exists(abs_path):
         return False, "미리보기용 엑셀 파일이 없습니다."
     if platform.system() != "Darwin":
-        return False, "Excel 미리보기는 macOS 로컬 실행에서만 지원됩니다."
+        return False, (
+            "Excel 인쇄 화면은 맥에서 로컬 대시보드 실행 시에만 자동 연결됩니다. "
+            "Cloud에서는 「엑셀 저장본」다운로드 후 Excel에서 ⌘P 로 여세요."
+        )
 
-    excel = _excel_app_path()
+    if not _excel_app_path():
+        try:
+            subprocess.Popen(["open", abs_path], start_new_session=True)
+            return True, "파일을 열었습니다. Excel이 없다면 설치 후 다시 시도해 주세요."
+        except Exception as e:
+            return False, f"파일 열기 실패: {e}"
+
+    ap = abs_path.replace("\\", "\\\\").replace('"', '\\"')
+    if prefer_print_dialog:
+        # 사용자가 원하는 macOS「프린트」대화상자(미리보기+Excel 옵션)
+        script = f'''
+set targetFile to POSIX file "{ap}"
+tell application "Microsoft Excel"
+    activate
+    open targetFile
+    delay 1.2
+end tell
+tell application "System Events"
+    if exists process "Microsoft Excel" then
+        tell process "Microsoft Excel"
+            set frontmost to true
+            delay 0.4
+            keystroke "p" using {{command down}}
+        end tell
+    end if
+end tell
+return true
+'''
+        ok_msg = "Excel에서 열어 인쇄(미리보기) 화면까지 연결했습니다."
+    else:
+        script = f'''
+set targetFile to POSIX file "{ap}"
+set previewDone to false
+tell application "Microsoft Excel"
+    activate
+    open targetFile
+    delay 1.3
+    try
+        print preview active sheet
+        set previewDone to true
+    end try
+    if previewDone is false then
+        try
+            print preview
+            set previewDone to true
+        end try
+    end if
+end tell
+if previewDone is false then
+    tell application "System Events"
+        if exists process "Microsoft Excel" then
+            tell process "Microsoft Excel"
+                set frontmost to true
+                delay 0.35
+                try
+                    click menu item "인쇄 미리 보기" of menu "파일" of menu bar 1
+                    set previewDone to true
+                end try
+                if previewDone is false then
+                    keystroke "p" using {{command down}}
+                    set previewDone to true
+                end if
+            end tell
+        end if
+    end tell
+end if
+return previewDone
+'''
+        ok_msg = "Excel에서 열어 인쇄 미리보기까지 연결했습니다."
+
     try:
-        if excel:
+        r = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=50,
+        )
+        if r.returncode == 0:
+            return True, ok_msg
+        subprocess.Popen(
+            ["open", "-a", "Microsoft Excel", abs_path],
+            start_new_session=True,
+        )
+        err = (r.stderr or r.stdout or "").strip()
+        hint = ""
+        if "Not authorized" in err or "assistive" in err.lower() or "1002" in err:
+            hint = (
+                " (시스템 설정 → 개인정보 보호 → 손쉬운 사용에서 "
+                "Terminal/Cursor 제어를 허용하면 ⌘P 화면까지 자동으로 열립니다)"
+            )
+        return True, (
+            "Excel에서 파일을 열었습니다. 인쇄 화면은 Excel에서 ⌘P 로 열어 주세요."
+            + hint
+        )
+    except subprocess.TimeoutExpired:
+        return False, "Excel 응답 시간 초과. Excel에서 파일을 직접 열어 주세요."
+    except Exception as e:
+        try:
             subprocess.Popen(
                 ["open", "-a", "Microsoft Excel", abs_path],
                 start_new_session=True,
             )
-        else:
-            subprocess.Popen(["open", abs_path], start_new_session=True)
-        return True, "Excel에서 원본 양식을 열었습니다. (인쇄는 실행하지 않음)"
+            return True, f"Excel에서 파일을 열었습니다. (인쇄 화면 자동화 실패: {e})"
+        except Exception as e2:
+            return False, f"Excel 실행 실패: {e2}"
+
+
+def _launch_browser_print_dialog(xlsx_path: str) -> None:
+    """본화면을 유지한 채, 인쇄 미리보기(맞춤/축소/확대) + 인쇄 대화상자를 연다."""
+    st.session_state["wl_print_panel"] = False
+    abs_path = os.path.abspath(xlsx_path)
+    if not os.path.exists(abs_path):
+        st.error("인쇄용 파일이 없습니다.")
+        return
+    try:
+        doc_html = render_worklog_view_html(
+            abs_path, print_mode=True, auto_print=True, scale=1.0
+        )
+        _, raw_h = _worklog_sheet_pixel_size(abs_path)
+        fit = _a4_print_fit(*_worklog_sheet_pixel_size(abs_path))
+        preview_h = min(920, max(420, int(raw_h * fit) + 72))
     except Exception as e:
-        return False, f"Excel 실행 실패: {e}"
+        st.error(f"인쇄 문서 준비 실패: {e}")
+        return
+    nonce = int(st.session_state.get("wl_print_n", 0)) + 1
+    st.session_state["wl_print_n"] = nonce
+    stamped = doc_html.replace(
+        "<body>",
+        f'<body data-wl-print="{nonce}">',
+        1,
+    )
+    # 맞춤·축소·확대 버튼이 보이도록 미리보기 높이 확보
+    components.html(stamped, height=preview_h, scrolling=True)
+    st.caption("맞춤(줄여서)·축소·확대로 조절한 뒤 인쇄하세요.")
+
+
+
+def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = False) -> None:
+    """인쇄 미리보기 패널(폴백). 가능하면 _launch_browser_print_dialog 사용."""
+    st.session_state["wl_print_panel"] = True
+    st.session_state["wl_dialog_preview_path"] = os.path.abspath(xlsx_path)
+    st.session_state["wl_print_auto_once"] = False
+    _ = auto
+
+
+def _render_worklog_print_panel() -> bool:
+    """인쇄 미리보기만 표시 (자동 window.print 팝업 없음)."""
+    if not st.session_state.get("wl_print_panel"):
+        return False
+    path = st.session_state.get("wl_dialog_preview_path")
+    st.markdown(
+        """
+        <style>
+        /* 인쇄 패널일 때 상단 고정 필터/탭 숨김 — 미리보기만 */
+        .dashboard-filter-sticky,
+        #dashboard-top-shield,
+        #dashboard-sticky-spacer { display: none !important; }
+        section.main .block-container { padding-top: 0.4rem !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    top1, top2 = st.columns([1.1, 3])
+    with top1:
+        if st.button(
+            "← 본화면으로",
+            type="primary",
+            width="stretch",
+            key="wl_print_back_home",
+        ):
+            st.session_state["wl_print_panel"] = False
+            st.session_state["wl_print_auto_once"] = False
+            _wl_rerun()
+    with top2:
+        st.markdown("##### 인쇄 미리보기")
+        st.caption("자동 팝업 없음 · 「인쇄하기」만 누르면 인쇄 창이 열립니다.")
+    if not path or not os.path.exists(str(path)):
+        st.error("인쇄용 파일이 없습니다. 본화면으로 돌아가 다시 시도해 주세요.")
+        return True
+    path = str(path)
+    try:
+        print_html = render_worklog_view_html(
+            path, print_mode=True, auto_print=False, scale=1.0
+        )
+        _, raw_h = _worklog_sheet_pixel_size(path)
+        fit = _a4_print_fit(*_worklog_sheet_pixel_size(path))
+        components.html(
+            print_html,
+            height=min(920, max(480, int(raw_h * fit) + 72)),
+            scrolling=True,
+        )
+    except Exception as e:
+        st.error(f"인쇄 미리보기 표시 실패: {e}")
+    b1, b2 = st.columns(2)
+    with b1:
+        try:
+            with open(path, "rb") as f:
+                xbytes = f.read()
+            st.download_button(
+                "엑셀 다운로드",
+                data=xbytes,
+                file_name=os.path.basename(path) or "일일업무일지.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+                key="wl_print_panel_dl",
+            )
+        except Exception:
+            pass
+    with b2:
+        if platform.system() == "Darwin":
+            if st.button("Excel로 인쇄", width="stretch", key="wl_print_panel_excel"):
+                ok, msg = open_excel_print_preview(path, prefer_print_dialog=True)
+                (st.success if ok else st.warning)(msg)
+    return True
+
+
+@st.dialog("원본 엑셀 양식 미리보기", width="large")
+def _worklog_form_preview_dialog() -> None:
+    """큰 화면용 엑셀 양식 미리보기 (보조)."""
+    path = st.session_state.get("wl_dialog_preview_path")
+    if not path or not os.path.exists(str(path)):
+        st.error("미리보기 파일을 만들 수 없습니다. 템플릿·입력을 확인해 주세요.")
+        return
+    path = str(path)
+    try:
+        scale = 0.62
+        print_html = render_worklog_view_html(
+            path, print_mode=False, auto_print=False, scale=scale
+        )
+        _, frame_h = _scaled_view_frame_size(path, scale)
+        components.html(
+            print_html,
+            height=min(760, max(420, int(frame_h))),
+            scrolling=True,
+        )
+    except Exception as e:
+        st.error(f"미리보기 표시 실패: {e}")
+        return
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        try:
+            with open(path, "rb") as f:
+                xbytes = f.read()
+            st.download_button(
+                "엑셀 다운로드",
+                data=xbytes,
+                file_name=os.path.basename(path) or "일일업무일지_미리보기.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+                key="wl_dialog_dl_xlsx",
+            )
+        except Exception:
+            st.caption("엑셀 다운로드를 준비하지 못했습니다.")
+    with b2:
+        if st.button("인쇄창열기", width="stretch", key="wl_dialog_browser_print"):
+            _launch_browser_print_dialog(path)
+    with b3:
+        if platform.system() == "Darwin":
+            if st.button(
+                "Excel 인쇄 화면",
+                width="stretch",
+                key="wl_dialog_open_excel",
+            ):
+                ok, msg = open_excel_print_preview(path, prefer_print_dialog=True)
+                if ok:
+                    st.success(msg)
+                else:
+                    st.warning(msg)
+        else:
+            st.caption("Excel 앱 인쇄는 맥 로컬에서 가능합니다.")
+
+
+def _prepare_excel_preview(d: date, cells: dict) -> str:
+    """현재 입력 → 엑셀 미리보기 파일 경로."""
+    try:
+        return prepare_print_xlsx(d, cells)
+    except Exception:
+        return _build_preview_file(d, cells)
 
 
 def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
@@ -3101,11 +3537,18 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             st.session_state["worklog_selected"] = date.today()
         selected: date = st.session_state["worklog_selected"]
 
-        # Drive「dashboard 복사본/worklog」↔ 로컬 캐시 동기화 (맥에서 양방향)
+        # Drive 동기화는 잦은 버튼/입력 rerun마다 돌리면 로딩이 심해짐 → 90초마다
         try:
             from drive_autoload import sync_worklog_bidirectional
 
-            _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR)
+            _now = time.time()
+            _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
+            _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
+            if _force or (_now - _prev >= 90):
+                st.session_state["_wl_drive_sync_ts"] = _now
+                _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR)
+            else:
+                _wl_sync = {"ok": True, "skipped": True, "copied": []}
             if (
                 isinstance(_wl_sync, dict)
                 and _wl_sync.get("ok")
@@ -3150,6 +3593,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         _init_widget_state(selected)
         draft = _cells_from_widgets(selected)
 
+        # 인쇄 패널이 열려 있으면 본화면 대신 인쇄 UI만 (팝업 중첩·취소 반복 방지)
+        if st.session_state.get("wl_print_panel"):
+            _render_worklog_print_panel()
+            return
+
         # 날짜 선택(저장 후에도 변경 가능) · 달력 · 작은 삭제
         if st.session_state.get("wl_date_sync") != selected.isoformat():
             st.session_state["wl_date_pick"] = selected
@@ -3179,78 +3627,140 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         with col_preview:
             st.markdown("##### 업무일지 보기")
-            try:
-                view_html = render_readable_preview_html(selected, draft)
-                components.html(view_html, height=900, scrolling=True)
-            except Exception as e:
-                if _wl_quiet_ui():
-                    st.info("업무일지 미리보기를 표시하지 못했습니다. 입력 후 다시 확인해 주세요.")
-                else:
-                    st.error(f"미리보기 오류: {e}")
-
+            # 버튼은 큰 iframe 위에 둠 (클릭 가로채기 방지)
             p1, p2 = st.columns(2)
             with p1:
-                do_print = st.button("미리보기", width="stretch", key="wl_print_btn")
-            with p2:
-                path_saved = worklog_path(selected)
-                xbytes = b""
-                src = path_saved if os.path.exists(path_saved) else None
-                if src and os.path.exists(src):
-                    with open(src, "rb") as f:
-                        xbytes = f.read()
-                else:
-                    try:
-                        tmp = _build_preview_file(selected, draft)
-                        with open(tmp, "rb") as f:
-                            xbytes = f.read()
-                    except Exception:
-                        xbytes = b""
-                st.download_button(
-                    "엑셀 저장본",
-                    data=xbytes,
-                    file_name=f"일일업무일지_{selected.isoformat()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                do_print = st.button(
+                    "엑셀 미리보기",
                     width="stretch",
-                    key="wl_dl_btn",
-                    disabled=not xbytes,
+                    key="wl_print_btn",
+                    help="왼쪽 칸에 원본 엑셀 양식을 적용합니다.",
+                )
+            with p2:
+                do_open_print = st.button(
+                    "인쇄창열기",
+                    width="stretch",
+                    key="wl_open_print_btn",
+                    help="브라우저 인쇄 창을 엽니다.",
+                    type="primary",
                 )
 
+            def _resolve_print_xlsx() -> str:
+                cells_dl = _cells_from_widgets(selected)
+                path_saved = worklog_path(selected)
+                if os.path.exists(path_saved):
+                    write_cells_to_path(
+                        path_saved, selected, cells_dl, blank_base=False
+                    )
+                    return os.path.abspath(path_saved)
+                return _prepare_excel_preview(selected, cells_dl)
+
+            if do_open_print:
+                try:
+                    with st.spinner("인쇄 창 준비 중…"):
+                        xlsx_abs = _resolve_print_xlsx()
+                        _launch_browser_print_dialog(xlsx_abs)
+                except Exception as e:
+                    st.error(f"인쇄 창을 열지 못했습니다: {e}")
+
+            _left_excel_key = f"wl_left_excel_on_{selected.isoformat()}"
+            _left_path_key = f"wl_left_excel_path_{selected.isoformat()}"
             if do_print:
                 cells_now = _cells_from_widgets(selected)
                 try:
-                    xlsx_abs = prepare_print_xlsx(selected, cells_now)
-                    # 아이패드/클라우드는 Excel 앱이 없으므로 HTML만 (경고 없음)
-                    if _wl_quiet_ui():
-                        print_html = render_worklog_view_html(
-                            xlsx_abs, print_mode=False, auto_print=False, scale=0.7
+                    xlsx_abs = _prepare_excel_preview(selected, cells_now)
+                    st.session_state[_left_excel_key] = True
+                    st.session_state[_left_path_key] = xlsx_abs
+                    st.session_state["wl_dialog_preview_path"] = xlsx_abs
+                    # 하단 원본 양식 캐시도 즉시 갱신
+                    form_sig = json.dumps(cells_now, ensure_ascii=False, sort_keys=True)
+                    st.session_state[f"wl_form_sig_v14_{selected.isoformat()}"] = None
+                    st.session_state["_wl_force_form_sig"] = form_sig
+                    # 맥 로컬: Excel 실행 + 인쇄 미리보기까지. Cloud는 화면 양식만.
+                    if platform.system() == "Darwin":
+                        ok, msg = open_excel_print_preview(
+                            xlsx_abs, prefer_print_dialog=True
                         )
-                        components.html(print_html, height=700, scrolling=True)
-                    else:
-                        ok, msg = open_excel_print_preview(xlsx_abs)
                         if ok:
                             st.success(msg)
-                            st.caption(f"파일: `{xlsx_abs}`")
                         else:
-                            st.warning(msg + " → 화면 원본 양식으로 대체합니다.")
-                            print_html = render_worklog_view_html(
-                                xlsx_abs, print_mode=False, auto_print=False, scale=0.7
-                            )
-                            components.html(print_html, height=700, scrolling=True)
-                except Exception as e:
-                    try:
-                        preview = _build_preview_file(selected, cells_now)
-                        print_html = render_worklog_view_html(
-                            preview, print_mode=False, auto_print=False, scale=0.7
+                            st.warning(msg)
+                    elif _wl_quiet_ui():
+                        st.caption(
+                            "Cloud에서는 왼쪽 미리보기와 「인쇄창열기」로 확인하세요."
                         )
-                        components.html(print_html, height=700, scrolling=True)
-                        if not _wl_quiet_ui():
-                            st.caption(f"화면 미리보기로 대체함: {e}")
-                    except Exception as e2:
-                        if _wl_quiet_ui():
-                            st.info("미리보기를 열지 못했습니다. 엑셀 저장본 다운로드를 이용해 주세요.")
-                        else:
-                            st.error(f"원본 미리보기 오류: {e}")
-                            st.error(f"대체 미리보기도 실패: {e2}")
+                except Exception as e:
+                    st.session_state[_left_excel_key] = False
+                    if _wl_quiet_ui():
+                        st.error(
+                            "엑셀 미리보기를 적용하지 못했습니다. "
+                            "「인쇄창열기」로 출력해 주세요."
+                        )
+                    else:
+                        st.error(f"엑셀 미리보기 오류: {e}")
+
+            _show_excel_left = bool(st.session_state.get(_left_excel_key))
+            if _show_excel_left:
+                sw1, sw2 = st.columns([1, 1])
+                with sw1:
+                    st.caption("원본 엑셀 양식 적용 중")
+                with sw2:
+                    if st.button(
+                        "요약 보기로",
+                        width="stretch",
+                        key=f"wl_left_to_summary_{selected.isoformat()}",
+                    ):
+                        st.session_state[_left_excel_key] = False
+                        _wl_rerun()
+                xlsx_left = st.session_state.get(_left_path_key) or ""
+                if xlsx_left and os.path.exists(str(xlsx_left)):
+                    try:
+                        # 입력 바뀌면 미리보기 파일 다시 생성
+                        cells_live = _cells_from_widgets(selected)
+                        live_sig = json.dumps(
+                            cells_live, ensure_ascii=False, sort_keys=True
+                        )
+                        sig_k = f"wl_left_excel_sig_{selected.isoformat()}"
+                        if st.session_state.get(sig_k) != live_sig:
+                            xlsx_left = _prepare_excel_preview(selected, cells_live)
+                            st.session_state[_left_path_key] = xlsx_left
+                            st.session_state[sig_k] = live_sig
+                        scale_l = 0.48
+                        excel_html = render_worklog_view_html(
+                            str(xlsx_left),
+                            print_mode=False,
+                            auto_print=False,
+                            scale=scale_l,
+                        )
+                        _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
+                        components.html(
+                            excel_html,
+                            height=min(820, max(480, int(fh))),
+                            scrolling=True,
+                        )
+                        if st.button(
+                            "크게 보기",
+                            width="stretch",
+                            key=f"wl_left_excel_big_{selected.isoformat()}",
+                        ):
+                            st.session_state["wl_dialog_preview_path"] = str(xlsx_left)
+                            _worklog_form_preview_dialog()
+                    except Exception as e:
+                        st.warning(f"엑셀 양식 표시 실패: {e}")
+                        st.session_state[_left_excel_key] = False
+                else:
+                    st.info("엑셀 미리보기 파일이 없습니다. 다시 「엑셀 미리보기」를 눌러 주세요.")
+            else:
+                try:
+                    view_html = render_readable_preview_html(selected, draft)
+                    components.html(view_html, height=820, scrolling=True)
+                except Exception as e:
+                    if _wl_quiet_ui():
+                        st.info(
+                            "업무일지 요약을 표시하지 못했습니다. 입력 후 다시 확인해 주세요."
+                        )
+                    else:
+                        st.error(f"요약 보기 오류: {e}")
 
         with col_gauge:
             # 오른쪽 「저장」버튼 근처까지 세로로 맞춤 (폭 26px 유지)
@@ -3583,7 +4093,12 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     except Exception:
                         pass
 
-                # 전체 내용칸 잔여 (입력 반영) — 가운데 게이지로 표시, 배너는 숨김
+                # 입력값은 칸 확정(포커스 이동) 시 요약/미리보기에 바로 반영.
+                # 입력 중 서버 호출은 Enter훅에서 막아서 로딩을 줄임. 「저장」은 파일 기록용.
+                st.caption(
+                    "입력하면 왼쪽 요약·미리보기에 바로 반영됩니다. "
+                    "「저장」은 파일로 기록할 때 누르세요."
+                )
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
                 _rem = _usage["remaining"]
@@ -3622,7 +4137,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         st.session_state[exp_key] = default_open
 
                     with st.expander(
-                        label, expanded=bool(st.session_state.get(exp_key)), key=exp_key
+                        label,
+                        expanded=bool(st.session_state.get(exp_key)),
+                        key=exp_key,
                     ):
                         if st.button(
                             "이 항목 삭제",
@@ -3633,7 +4150,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             _wl_rerun()
                         _cu = _client_line_units()
                         if int(
-                            st.session_state.get(_entry_client_count_key(iso2, i), 0)
+                            st.session_state.get(
+                                _entry_client_count_key(iso2, i), 0
+                            )
                             or 0
                         ) <= 0:
                             stored_e = st.session_state.get(_entries_key(d)) or []
@@ -3641,44 +4160,71 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 stored_e[i].get("client_lines"), list
                             ):
                                 _seed_entry_clients(
-                                    iso2, i, stored_e[i].get("client_lines") or [""]
+                                    iso2,
+                                    i,
+                                    stored_e[i].get("client_lines") or [""],
                                 )
                             else:
                                 _seed_entry_clients(
                                     iso2,
                                     i,
                                     str(
-                                        st.session_state.get(f"wl_ent_c_{iso2}_{i}", "")
+                                        st.session_state.get(
+                                            f"wl_ent_c_{iso2}_{i}", ""
+                                        )
                                         or ""
                                     ),
                                 )
-                        if int(st.session_state.get(_entry_line_count_key(iso2, i), 0) or 0) <= 0:
+                        if (
+                            int(
+                                st.session_state.get(
+                                    _entry_line_count_key(iso2, i), 0
+                                )
+                                or 0
+                            )
+                            <= 0
+                        ):
                             lines0 = None
-                            # stored entries may have lines
                             stored_e = st.session_state.get(_entries_key(d)) or []
-                            if i < len(stored_e) and isinstance(stored_e[i].get("lines"), list):
+                            if i < len(stored_e) and isinstance(
+                                stored_e[i].get("lines"), list
+                            ):
                                 lines0 = stored_e[i].get("lines")
                             if isinstance(lines0, list):
-                                _apply_entry_lines(iso2, i, [str(x or "") for x in lines0])
+                                _apply_entry_lines(
+                                    iso2, i, [str(x or "") for x in lines0]
+                                )
                             else:
                                 _seed_entry_lines(
                                     iso2,
                                     i,
-                                    str(st.session_state.get(f"wl_ent_t_{iso2}_{i}", "") or ""),
+                                    str(
+                                        st.session_state.get(
+                                            f"wl_ent_t_{iso2}_{i}", ""
+                                        )
+                                        or ""
+                                    ),
                                 )
-                        # 원본 양식처럼 거래처(좌) · 내용(우) 나란히
-                        col_client, col_content = st.columns([1, 3.2], gap="small")
+                        col_client, col_content = st.columns(
+                            [1, 3.2], gap="small"
+                        )
                         with col_client:
                             _mount_entry_client_editor(iso2, i, _cu)
                         with col_content:
                             _mount_entry_lines_editor(iso2, i, max_u)
                         _filled = len(
-                            _lines_from_entry_widgets(iso2, i, keep_trailing_empty=False)
+                            _lines_from_entry_widgets(
+                                iso2, i, keep_trailing_empty=False
+                            )
                         )
                         gap_key = f"wl_ent_gap_{iso2}_{i}"
                         if gap_key not in st.session_state:
                             st.session_state[gap_key] = _entry_blank_after(
-                                (_live_entries[i] if i < len(_live_entries) else None),
+                                (
+                                    _live_entries[i]
+                                    if i < len(_live_entries)
+                                    else None
+                                ),
                                 1,
                             )
                         st.number_input(
@@ -3701,41 +4247,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             f"전체 남은 {_rem}행 (마지막 칸 G{_usage['last_row']})"
                         )
 
-                # Enter 훅 + 다음 칸 포커스 (입력칸 생성 후)
-                _WL_ENTER_HOOK(
-                    key=f"wl_enter_hook_{iso2}",
-                    data={
-                        "iso": iso2,
-                        "focus_key": focus_key if isinstance(focus_key, str) else "",
-                        "focus_caret": (
-                            int(focus_caret)
-                            if isinstance(focus_caret, (int, float))
-                            else ""
-                        ),
-                        "client_max_u": _client_line_units(),
-                        "content_max_u": _content_line_units(),
-                    },
-                    on_enter_change=_on_enter_trigger,
-                    on_focus_change=_on_focus_trigger,
-                    on_caret_change=_on_caret_trigger,
-                    width="stretch",
-                    height=1,
-                )
-                # Enter 콜백은 훅 마운트 시점에 옴 → 다음 런 위젯 생성 전에 반영
-                if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
-                    _wl_rerun()
-                ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
-                if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
-                    _insert_line_after(iso2, int(ins_after[0]), int(ins_after[1]))
-                    _wl_rerun()
-                ins_cl_after = st.session_state.pop(f"wl_do_insert_cl_{iso2}", None)
-                if isinstance(ins_cl_after, (list, tuple)) and len(ins_cl_after) == 2:
-                    _insert_client_after(
-                        iso2, int(ins_cl_after[0]), int(ins_cl_after[1])
-                    )
-                    _wl_rerun()
-
-                if st.button("＋ 항목 추가", key=f"wl_add_btn_{iso2}", width="stretch"):
+                if st.button(
+                    "＋ 항목 추가", key=f"wl_add_btn_{iso2}", width="stretch"
+                ):
                     st.session_state[f"wl_do_add_{iso2}"] = True
                     _wl_rerun()
 
@@ -3769,7 +4283,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     key=f"wl_save_btn_{iso2}",
                 ):
                     try:
-                        # 방금 마운트된 칸 값을 우선 반영
                         entries_now = _read_editor_entries(d)
                         usage_now = _content_row_usage(entries_now)
                         if usage_now.get("overflow"):
@@ -3784,14 +4297,20 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 [
                                     x.strip()
                                     for x in str(
-                                        st.session_state.get(f"wl_next_area_{iso2}", "") or ""
+                                        st.session_state.get(
+                                            f"wl_next_area_{iso2}", ""
+                                        )
+                                        or ""
                                     ).splitlines()
                                     if x.strip()
                                 ],
                                 [
                                     x.strip()
                                     for x in str(
-                                        st.session_state.get(f"wl_notes_area_{iso2}", "") or ""
+                                        st.session_state.get(
+                                            f"wl_notes_area_{iso2}", ""
+                                        )
+                                        or ""
                                     ).splitlines()
                                     if x.strip()
                                 ],
@@ -3799,16 +4318,22 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             path = save_worklog_cells(d, cells)
                             packed_entries = _grouped_entries_from_cells(cells)
                             if not packed_entries:
-                                packed_entries = [{"client": "", "content": "", "lines": []}]
+                                packed_entries = [
+                                    {"client": "", "content": "", "lines": []}
+                                ]
                             _, nd, nt = _entries_from_cells(cells)
                             st.session_state[_entries_key(d)] = packed_entries
                             st.session_state[_next_key(d)] = "\n".join(nd)
                             st.session_state[_notes_key(d)] = "\n".join(nt)
-                            arch = st.session_state.get("wl_last_archive_path") or ""
+                            arch = (
+                                st.session_state.get("wl_last_archive_path") or ""
+                            )
                             drv = st.session_state.get("wl_last_drive_path") or ""
                             msg = f"저장 완료: {os.path.basename(path)}"
                             if arch and not _wl_quiet_ui():
-                                msg += f" · 일지/{d.year}/{os.path.basename(arch)}"
+                                msg += (
+                                    f" · 일지/{d.year}/{os.path.basename(arch)}"
+                                )
                             if drv:
                                 msg += " · Drive 복사본/worklog"
                             st.session_state[f"wl_pending_sync_{iso2}"] = {
@@ -3820,53 +4345,42 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             _wl_rerun()
                     except Exception as e:
                         if _wl_quiet_ui():
-                            st.error("저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요.")
+                            st.error(
+                                "저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요."
+                            )
                         else:
                             st.error(f"저장 실패: {e}")
 
-            _wl_entry_editor()
-
-        # 하단: 원본 엑셀 양식 — 배율 유지, iframe 스크롤 없이 전체 표시
-        st.markdown("---")
-        st.markdown("##### 원본 엑셀 양식")
-        try:
-            form_cells = _cells_from_widgets(selected)
-            form_sig = json.dumps(form_cells, ensure_ascii=False, sort_keys=True)
-            form_scale = 0.42
-            sig_key = f"wl_form_sig_v14_{selected.isoformat()}"
-            html_key = f"wl_form_html_v14_{selected.isoformat()}"
-            h_key = f"wl_form_h_v14_{selected.isoformat()}"
-            if st.session_state.get(sig_key) != form_sig:
-                form_path = _build_preview_file(selected, form_cells)
-                _, frame_h = _scaled_view_frame_size(form_path, form_scale)
-                st.session_state[html_key] = render_worklog_view_html(
-                    form_path,
-                    print_mode=False,
-                    scale=form_scale,
+                # Enter / 칸폭 초과 → 다음 칸 생성·이동
+                _WL_ENTER_HOOK(
+                    key=f"wl_enter_hook_{iso2}",
+                    data={
+                        "iso": iso2,
+                        "focus_key": focus_key if isinstance(focus_key, str) else "",
+                        "focus_caret": (
+                            int(focus_caret)
+                            if isinstance(focus_caret, (int, float))
+                            else ""
+                        ),
+                        "client_max_u": _client_line_units(),
+                        "content_max_u": _content_line_units(),
+                    },
+                    on_enter_change=_on_enter_trigger,
+                    width="stretch",
+                    height=1,
                 )
-                st.session_state[h_key] = int(frame_h)
-                st.session_state[sig_key] = form_sig
-            # 이전 세션 캐시 제거
-            for k in list(st.session_state.keys()):
-                if isinstance(k, str) and (
-                    k.startswith("wl_form_html_v")
-                    or k.startswith("wl_form_sig_v")
-                    or k.startswith("wl_form_h_v")
-                ):
-                    if not (
-                        k.startswith("wl_form_html_v14_")
-                        or k.startswith("wl_form_sig_v14_")
-                        or k.startswith("wl_form_h_v14_")
-                    ):
-                        st.session_state.pop(k, None)
-            components.html(
-                st.session_state.get(html_key) or "",
-                height=max(240, int(st.session_state.get(h_key) or 640)),
-                scrolling=False,
-            )
-        except Exception as e:
-            if _wl_quiet_ui():
-                pass
-            else:
-                st.caption(f"원본 양식 표시 실패: {e}")
+                if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
+                    _wl_rerun()
+                ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
+                if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
+                    _insert_line_after(iso2, int(ins_after[0]), int(ins_after[1]))
+                    _wl_rerun()
+                ins_cl_after = st.session_state.pop(f"wl_do_insert_cl_{iso2}", None)
+                if isinstance(ins_cl_after, (list, tuple)) and len(ins_cl_after) == 2:
+                    _insert_client_after(
+                        iso2, int(ins_cl_after[0]), int(ins_cl_after[1])
+                    )
+                    _wl_rerun()
+
+            _wl_entry_editor()
     _worklog_main()
