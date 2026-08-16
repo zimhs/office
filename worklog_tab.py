@@ -1018,6 +1018,13 @@ def workbook_to_html(path: str) -> str:
             va = align.vertical or "middle"
             if ha == "general":
                 ha = "left"
+            # 익일업무·특이사항 라벨(C열 병합): 원본처럼 세로 글자
+            is_side_label = c == 3 and (
+                (r == 40 and rs >= 3) or (r == 44 and rs >= 3)
+            )
+            if is_side_label:
+                ha = "center"
+                va = "middle"
             fill = _cell_fill_color(cell) or "#FFFFFF"
             border = _border_css(cell)
             span = ""
@@ -1031,17 +1038,27 @@ def workbook_to_html(path: str) -> str:
             elif is_content and text.strip() == "" and text != "":
                 text = ""
             # 연속 공백·선행 공백이 HTML에서 사라지지 않게
-            esc = (
-                html.escape(text)
-                .replace(" ", "&nbsp;")
-                .replace("\n", "<br>")
-            )
+            if is_side_label and text.strip():
+                # 공백 제거 후 글자마다 세로 배치 (익일업무 / 특이사항)
+                chars = [ch for ch in text.replace(" ", "").replace("\u3000", "") if ch]
+                esc = "<br>".join(html.escape(ch) for ch in chars)
+            else:
+                esc = (
+                    html.escape(text)
+                    .replace(" ", "&nbsp;")
+                    .replace("\n", "<br>")
+                )
             # 내용칸: 엑셀처럼 한 줄 + 옆 빈 칸으로 넘침 표시 (clip 금지)
             if is_content or is_client:
                 white = "nowrap"
                 overflow = "visible"
                 text_overflow = "clip"
                 zidx = "position:relative;z-index:1;"
+            elif is_side_label:
+                white = "normal"
+                overflow = "hidden"
+                text_overflow = "clip"
+                zidx = ""
             else:
                 white = "pre-wrap"
                 overflow = "visible"
@@ -1052,7 +1069,7 @@ def workbook_to_html(path: str) -> str:
             span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
             width_css = f"width:{span_w}px;min-width:{span_w}px;max-width:{span_w}px;" if span_w else ""
             # 바탕글(바탕체) 우선 — Nanum/고딕으로 대체되지 않게
-            if is_content or is_client or is_body_d:
+            if is_content or is_client or is_body_d or is_side_label:
                 font_stack = (
                     "'Batang','BatangChe','바탕','바탕체','바탕글',"
                     "'Apple Myungjo','AppleMyungjo','Nanum Myeongjo',serif"
@@ -1062,16 +1079,22 @@ def workbook_to_html(path: str) -> str:
                     f"'{html.escape(fname_css)}','Batang','BatangChe',"
                     f"'Apple Myungjo','Malgun Gothic',serif"
                 )
+            pad_css = "padding:4px 1px;" if is_side_label else "padding:0 2px;"
+            line_css = (
+                f"line-height:{max(fsize_px * 1.35, fsize_px + 2):.2f}px;"
+                if is_side_label
+                else f"line-height:{line_h_px:.2f}px;"
+            )
             style = (
                 f"box-sizing:border-box;{width_css}{zidx}"
                 f"font-family:{font_stack};"
                 f"font-size:{fsize_px:.4f}px;font-weight:{bold};"
                 f"text-align:{ha};vertical-align:{va};"
                 f"background:{fill};{border}"
-                f"padding:0 2px;white-space:{white};overflow:{overflow};"
+                f"{pad_css}white-space:{white};overflow:{overflow};"
                 f"text-overflow:{text_overflow};word-break:keep-all;"
                 f"height:{height_px}px;min-height:{height_px}px;"
-                f"line-height:{line_h_px:.2f}px;"
+                f"{line_css}"
             )
             tds.append(f'<td{span} style="{style}">{esc}</td>')
         rows_html.append(
@@ -2004,6 +2027,32 @@ div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"] > div:focus-within,
 div[class*="st-key-wl_ent_cl_"] input:focus {
   background-color: #DFF3EE !important;
   border-color: #7CBCAD !important;
+}
+/* 업무입력칸 글자 위치 = 원본 엑셀 칸 (가로·세로 가운데) */
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"],
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="input"],
+div[class*="st-key-wl_ent_ln_"] [data-baseweb="base-input"],
+div[class*="st-key-wl_ent_ln_"] [data-baseweb="input"] {
+  min-height: 2.35rem !important;
+}
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"] > div,
+div[class*="st-key-wl_ent_cl_"] [data-baseweb="input"] > div,
+div[class*="st-key-wl_ent_ln_"] [data-baseweb="base-input"] > div,
+div[class*="st-key-wl_ent_ln_"] [data-baseweb="input"] > div {
+  display: flex !important;
+  align-items: center !important;
+  min-height: 2.35rem !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+div[class*="st-key-wl_ent_cl_"] input,
+div[class*="st-key-wl_ent_ln_"] input {
+  text-align: center !important;
+  line-height: 1.25 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  height: 2.1rem !important;
+  min-height: 2.1rem !important;
 }
 /* 삭제 / ＋ 버튼 글자 가운데 정렬 */
 div[class*="st-key-wl_cl_del_"] button,
