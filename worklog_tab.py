@@ -95,7 +95,8 @@ _WL_LINES_CSS = """
   border-radius: 4px;
   background: #fff;
   color: #0F172A;
-  font-size: 0.85rem;
+  font-family: 'Batang','BatangChe','바탕','바탕체','바탕글','Apple Myungjo','Nanum Myeongjo',serif;
+  font-size: 14px;
   line-height: 1.25;
   outline: none;
 }
@@ -126,7 +127,7 @@ export default function (component) {
   const root = parentElement.querySelector(".wl-lines");
   if (!root) return;
 
-  const maxU = Number((data && data.max_u) || 70);
+  const maxU = Number((data && data.max_u) || 66);
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
   const incoming = Array.isArray(data && data.lines)
@@ -324,7 +325,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v2",
+    "worklog_entry_lines_v3",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -424,9 +425,10 @@ def _set_body_font(cell) -> None:
 def _content_line_units() -> int:
     """원본 엑셀 내용칸(G:X 병합) 폭 — 반각=1, 한글=2.
 
-    양식 열폭 합을 기준으로 약 70단위(~한글 35자)를 넘기면 다음 칸으로 분할한다.
+    양식 열폭 합 기준에서 한글 약 2자(4단위) 여유를 두고 다음 칸으로 넘긴다.
+    미리보기·업무입력·저장이 같은 max_u 를 쓴다.
     """
-    fallback = 70
+    fallback = 66
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -437,9 +439,9 @@ def _content_line_units() -> int:
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        # 본문 14pt 대비 기본폭 11pt 보정 + 우측 여유
-        units = int(total * (11 / 14) * 1.06)
-        return max(66, min(units, 71))
+        # 본문 14pt 보정 후 한글 2자(4단위) 여유
+        units = int(total * (11 / 14) * 1.06) - 4
+        return max(62, min(units, 67))
     except Exception:
         return fallback
 
@@ -447,7 +449,7 @@ def _content_line_units() -> int:
 @lru_cache(maxsize=1)
 def _client_line_units() -> int:
     """원본 엑셀 거래처칸(C:F 병합) 폭 — 반각=1, 한글=2."""
-    fallback = 18
+    fallback = 16
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -458,8 +460,8 @@ def _client_line_units() -> int:
             for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 1.05)
-        return max(14, min(units, 20))
+        units = int(total * (11 / 14) * 1.05) - 2
+        return max(12, min(units, 18))
     except Exception:
         return fallback
 
@@ -2194,6 +2196,8 @@ div[class*="st-key-wl_ent_ln_"] input {
   padding-left: 0.5rem !important;
   height: 2.1rem !important;
   min-height: 2.1rem !important;
+  font-family: 'Batang','BatangChe','바탕','바탕체','바탕글','Apple Myungjo','Nanum Myeongjo',serif !important;
+  font-size: 14px !important;
 }
 /* 삭제 / ＋ 버튼 글자 가운데 정렬 */
 div[class*="st-key-wl_cl_del_"] button,
