@@ -96,12 +96,20 @@ _WL_LINES_CSS = """
   background: #fff;
   color: #0F172A;
   font-family: 'Batang','BatangChe','바탕','바탕체','바탕글','Apple Myungjo','Nanum Myeongjo',serif;
-  /* 원본 미리보기 칸에 보이는 글자수와 맞추기 위해 작게 */
   font-size: 11px;
   letter-spacing: 0;
   line-height: 1.2;
   outline: none;
   box-sizing: border-box;
+}
+.wl-lines.client .wl-row input {
+  background: #E7F5F2;
+  border-color: #B7DDD4;
+}
+.wl-lines.client .wl-row input:focus {
+  background: #DFF3EE;
+  border-color: #7CBCAD;
+  box-shadow: 0 0 0 1px #7CBCAD;
 }
 .wl-row input:focus {
   border-color: #0F766E;
@@ -117,6 +125,9 @@ _WL_LINES_CSS = """
   font-size: 0.7rem;
   padding: 0;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .wl-row button:hover { background: #F1F5F9; }
 .wl-row button.hidden { visibility: hidden; pointer-events: none; }
@@ -132,6 +143,7 @@ export default function (component) {
 
   const maxU = Number((data && data.max_u) || 64);
   const cellW = Number((data && data.cell_w) || 666);
+  const variant = String((data && data.variant) || "content");
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
   const incoming = Array.isArray(data && data.lines)
@@ -139,6 +151,7 @@ export default function (component) {
     : [""];
 
   try {
+    root.className = "wl-lines" + (variant === "client" ? " client" : "");
     root.style.maxWidth = cellW + "px";
     root.style.width = "100%";
   } catch (e0) {}
@@ -243,7 +256,10 @@ export default function (component) {
       const input = document.createElement("input");
       input.type = "text";
       input.value = line;
-      input.placeholder = j + 1 + "칸 (빈 칸도 저장 · Enter=다음 칸)";
+      input.placeholder =
+        variant === "client"
+          ? j + 1 + "칸 거래처 (Enter=다음)"
+          : j + 1 + "칸 (빈 칸도 저장 · Enter=다음 칸)";
       input.dataset.idx = String(j);
       const commitValue = () => {
         if (inst.rebuilding) return;
@@ -334,7 +350,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v5",
+    "worklog_entry_lines_v6",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -351,6 +367,18 @@ def _entry_lines_rev_key(iso: str, entry_i: int) -> str:
 
 def _entry_lines_live_key(iso: str, entry_i: int) -> str:
     return f"wl_lines_live_{iso}_{entry_i}"
+
+
+def _entry_clients_comp_key(iso: str, entry_i: int) -> str:
+    return f"wl_clients_comp_{iso}_{entry_i}"
+
+
+def _entry_clients_rev_key(iso: str, entry_i: int) -> str:
+    return f"wl_clients_rev_{iso}_{entry_i}"
+
+
+def _entry_clients_live_key(iso: str, entry_i: int) -> str:
+    return f"wl_clients_live_{iso}_{entry_i}"
 
 
 def _scrub_dummy_label(val: str) -> str:
@@ -468,8 +496,8 @@ def _client_line_units() -> int:
             for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 1.05) - 4
-        return max(11, min(units, 16))
+        units = int(total * (11 / 14) * 1.05) - 2
+        return max(12, min(units, 16))
     except Exception:
         return fallback
 
@@ -489,6 +517,26 @@ def _content_input_width_px() -> int:
         )
         wb.close()
         return max(480, min(int(total), 720))
+    except Exception:
+        return fallback
+
+
+@lru_cache(maxsize=1)
+def _client_input_width_px() -> int:
+    """원본 거래처칸(C:F) 픽셀 폭 — 업무입력 거래처칸 가로를 원본과 같게."""
+    fallback = 148
+    if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
+        return fallback
+    try:
+        wb = load_workbook(WORKLOG_TEMPLATE, data_only=False)
+        ws = wb.active
+        total = sum(
+            _excel_width_to_px(_excel_col_width(ws, c))
+            for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
+        )
+        wb.close()
+        # 삭제 버튼 여유를 살짝 포함
+        return max(120, min(int(total) + 48, 220))
     except Exception:
         return fallback
 
@@ -1997,16 +2045,24 @@ def _entry_client_key(iso: str, entry_i: int, line_j: int) -> str:
 
 
 def _clients_from_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bool = False) -> list[str]:
-    """거래처 칸 위젯 → 목록."""
-    lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
-    if lc > 0:
-        parts = [
-            str(st.session_state.get(_entry_client_key(iso, entry_i, j), "") or "")
-            for j in range(lc)
-        ]
+    """거래처 칸 위젯/컴포넌트 → 목록."""
+    live = st.session_state.get(_entry_clients_live_key(iso, entry_i))
+    ck = _entry_clients_comp_key(iso, entry_i)
+    cs = st.session_state.get(ck)
+    if isinstance(live, list):
+        parts = [str(x or "") for x in live]
+    elif isinstance(cs, dict) and isinstance(cs.get("lines"), list):
+        parts = [str(x or "") for x in cs.get("lines") or []]
     else:
-        raw = str(st.session_state.get(f"wl_ent_c_{iso}_{entry_i}", "") or "")
-        parts = raw.splitlines() if raw else ([""] if keep_trailing_empty else [])
+        lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
+        if lc > 0:
+            parts = [
+                str(st.session_state.get(_entry_client_key(iso, entry_i, j), "") or "")
+                for j in range(lc)
+            ]
+        else:
+            raw = str(st.session_state.get(f"wl_ent_c_{iso}_{entry_i}", "") or "")
+            parts = raw.splitlines() if raw else ([""] if keep_trailing_empty else [])
     if not keep_trailing_empty:
         while parts and not str(parts[-1]).strip():
             parts.pop()
@@ -2017,10 +2073,25 @@ def _clients_from_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bool =
     return parts
 
 
+def _set_comp_clients_state(
+    iso: str, entry_i: int, chunks: list[str], *, focus_j: int | None = None
+) -> None:
+    ck = _entry_clients_comp_key(iso, entry_i)
+    if ck not in st.session_state or not isinstance(st.session_state.get(ck), dict):
+        st.session_state[ck] = {"lines": chunks, "focus": -1}
+    else:
+        st.session_state[ck]["lines"] = chunks
+    if focus_j is not None:
+        fj = max(0, min(int(focus_j), max(len(chunks) - 1, 0)))
+        st.session_state[ck]["focus"] = fj
+        st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, fj)
+    st.session_state[_entry_clients_live_key(iso, entry_i)] = list(chunks)
+
+
 def _apply_entry_clients(
     iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None
 ) -> None:
-    """거래처 칸 text_input 키에 반영. 끝에 편집용 빈 칸 1개 유지."""
+    """거래처 칸 CCv2/레거시 키에 반영. 끝에 편집용 빈 칸 1개 유지."""
     chunks = [str(x or "") for x in (lines or [])]
     if not chunks or chunks[-1] != "":
         chunks.append("")
@@ -2034,6 +2105,9 @@ def _apply_entry_clients(
     while filled and filled[-1] == "":
         filled.pop()
     st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(filled)
+    _set_comp_clients_state(iso, entry_i, chunks, focus_j=focus_j)
+    rk = _entry_clients_rev_key(iso, entry_i)
+    st.session_state[rk] = int(st.session_state.get(rk, 0) or 0) + 1
     if focus_j is not None:
         fj = max(0, min(int(focus_j), len(chunks) - 1))
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, fj)
@@ -2179,147 +2253,102 @@ def _commit_enter_on_cell(
 
 
 def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
-    """거래처 칸: text_input + Enter/＋ 다음 칸 · 폭 초과 시 자동 분할."""
-    # 거래처 칸만 옅은 민트 (내용 칸과 구분). 첫 칸 마운트 시에만 스타일 1회 출력.
-    if entry_i == 0:
-        st.markdown(
-            """
-<style>
-/* 일일업무일지 — 거래처 text_input 배경 */
-div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"] > div,
-div[class*="st-key-wl_ent_cl_"] [data-baseweb="input"] > div,
-div[class*="st-key-wl_ent_cl_"] input {
-  background-color: #E7F5F2 !important;
-  border-color: #B7DDD4 !important;
-}
-div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"] > div:focus-within,
-div[class*="st-key-wl_ent_cl_"] input:focus {
-  background-color: #DFF3EE !important;
-  border-color: #7CBCAD !important;
-}
-/* 업무입력칸: 세로 가운데 · 글자는 왼쪽부터 */
-div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"],
-div[class*="st-key-wl_ent_cl_"] [data-baseweb="input"],
-div[class*="st-key-wl_ent_ln_"] [data-baseweb="base-input"],
-div[class*="st-key-wl_ent_ln_"] [data-baseweb="input"] {
-  min-height: 2.35rem !important;
-}
-div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"] > div,
-div[class*="st-key-wl_ent_cl_"] [data-baseweb="input"] > div,
-div[class*="st-key-wl_ent_ln_"] [data-baseweb="base-input"] > div,
-div[class*="st-key-wl_ent_ln_"] [data-baseweb="input"] > div {
-  display: flex !important;
-  align-items: center !important;
-  min-height: 2.35rem !important;
-  padding-top: 0 !important;
-  padding-bottom: 0 !important;
-}
-div[class*="st-key-wl_ent_cl_"] input,
-div[class*="st-key-wl_ent_ln_"] input {
-  text-align: left !important;
-  line-height: 1.25 !important;
-  padding-top: 0 !important;
-  padding-bottom: 0 !important;
-  padding-left: 0.5rem !important;
-  height: 2.1rem !important;
-  min-height: 2.1rem !important;
-  font-family: 'Batang','BatangChe','바탕','바탕체','바탕글','Apple Myungjo','Nanum Myeongjo',serif !important;
-  font-size: 14px !important;
-}
-/* 삭제 / ＋ 버튼 글자 가운데 정렬 */
-div[class*="st-key-wl_cl_del_"] button,
-div[class*="st-key-wl_cl_add_"] button,
-div[class*="st-key-wl_ln_del_"] button,
-div[class*="st-key-wl_ln_add_"] button {
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  text-align: center !important;
-  padding: 0 !important;
-  line-height: 1.15 !important;
-  min-height: 2.4rem !important;
-  height: 2.4rem !important;
-}
-div[class*="st-key-wl_cl_del_"] button p,
-div[class*="st-key-wl_cl_add_"] button p,
-div[class*="st-key-wl_ln_del_"] button p,
-div[class*="st-key-wl_ln_add_"] button p,
-div[class*="st-key-wl_cl_del_"] button span,
-div[class*="st-key-wl_cl_add_"] button span,
-div[class*="st-key-wl_ln_del_"] button span,
-div[class*="st-key-wl_ln_add_"] button span {
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  line-height: 1.15 !important;
-  width: 100%;
-  text-align: center !important;
-}
-</style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    if int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0) <= 0:
+    """거래처 칸 CCv2 편집터 — 내용칸과 동일(칸폭 초과 시 다음 칸·같은 높이/글꼴)."""
+    ck = _entry_clients_comp_key(iso, entry_i)
+    live_key = _entry_clients_live_key(iso, entry_i)
+    cs = st.session_state.get(ck)
+    if isinstance(cs, dict) and isinstance(cs.get("lines"), list):
+        lines = [str(x or "") for x in cs.get("lines") or []]
+        focus = cs.get("focus", -1)
+    elif isinstance(st.session_state.get(live_key), list):
+        lines = [str(x or "") for x in st.session_state.get(live_key) or []]
+        focus = -1
+    elif int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0) > 0:
+        lines = [
+            str(st.session_state.get(_entry_client_key(iso, entry_i, j), "") or "")
+            for j in range(int(st.session_state.get(_entry_client_count_key(iso, entry_i), 1) or 1))
+        ]
+        focus = -1
+    else:
         raw = str(st.session_state.get(f"wl_ent_c_{iso}_{entry_i}", "") or "")
-        _seed_entry_clients(iso, entry_i, raw)
-
-    lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 1) or 1)
-    parts = [
-        str(st.session_state.get(_entry_client_key(iso, entry_i, j), "") or "")
-        for j in range(lc)
-    ]
-    if any(_display_units(p) > max_u for p in parts):
-        fixed = _split_overflow_parts(parts, max_u)
+        if raw:
+            _seed_entry_clients(iso, entry_i, raw)
+            cs = st.session_state.get(ck)
+            if isinstance(cs, dict) and isinstance(cs.get("lines"), list):
+                lines = [str(x or "") for x in cs.get("lines") or []]
+                focus = cs.get("focus", -1)
+            else:
+                lines = [""]
+                focus = -1
+        else:
+            lines = [""]
+            focus = -1
+    if any(_display_units(p) > max_u for p in lines):
+        fixed = _split_overflow_parts(lines, max_u)
         focus = 0
         for j, line in enumerate(fixed):
             if _display_units(line) >= max_u:
                 focus = min(j + 1, len(fixed))
-        _apply_entry_clients(iso, entry_i, fixed, focus_j=focus)
-        lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 1) or 1)
+        if fixed != lines:
+            _apply_entry_clients(iso, entry_i, fixed, focus_j=focus)
+            cs = st.session_state.get(ck)
+            if isinstance(cs, dict) and isinstance(cs.get("lines"), list):
+                lines = [str(x or "") for x in cs.get("lines") or []]
+                focus = cs.get("focus", focus)
+            else:
+                lines = fixed
+    if not lines or lines[-1] != "":
+        lines = list(lines) + [""]
+    rev = int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0)
+    try:
+        focus_n = int(focus)
+    except (TypeError, ValueError):
+        focus_n = -1
 
-    for j in range(lc):
-        row_l, row_r = st.columns([8, 1], gap="small")
-        with row_l:
-            st.text_input(
-                f"거래처 {entry_i + 1}-{j + 1}",
-                key=_entry_client_key(iso, entry_i, j),
-                label_visibility="collapsed",
-                placeholder="",
-                autocomplete="off",
-            )
-        with row_r:
-            is_last_empty = (
-                j == lc - 1
-                and str(
-                    st.session_state.get(_entry_client_key(iso, entry_i, j), "") or ""
-                )
-                == ""
-            )
-            if is_last_empty:
-                if st.button(
-                    "＋",
-                    key=f"wl_cl_add_{iso}_{entry_i}_{j}",
-                    width="stretch",
-                    help="아래 거래처 칸 추가",
-                ):
-                    st.session_state[f"wl_do_insert_cl_{iso}"] = (entry_i, j)
-                    _wl_rerun()
-            elif st.button(
-                "삭제",
-                key=f"wl_cl_del_{iso}_{entry_i}_{j}",
-                width="stretch",
-                help=f"거래처 {j + 1}칸 삭제",
-            ):
-                st.session_state[f"wl_do_del_cl_{iso}"] = (entry_i, j)
-                _wl_rerun()
+    def _on_clients_change() -> None:
+        cur = st.session_state.get(ck)
+        if isinstance(cur, dict) and isinstance(cur.get("lines"), list):
+            synced = [str(x or "") for x in cur.get("lines") or []]
+            st.session_state[live_key] = synced
+            st.session_state[_entry_client_count_key(iso, entry_i)] = len(synced)
+            for j, line in enumerate(synced):
+                st.session_state[_entry_client_key(iso, entry_i, j)] = line
+            filled = list(synced)
+            while filled and filled[-1] == "":
+                filled.pop()
+            st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(filled)
 
-    out = _clients_from_widgets(iso, entry_i, keep_trailing_empty=True)
-    st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(
-        _clients_from_widgets(iso, entry_i, keep_trailing_empty=False)
+    result = _WL_LINES_EDITOR(
+        key=ck,
+        data={
+            "lines": lines,
+            "focus": focus_n,
+            "max_u": int(max_u),
+            "cell_w": int(_client_input_width_px()),
+            "variant": "client",
+            "rev": rev,
+        },
+        default={"lines": lines, "focus": focus_n},
+        on_lines_change=_on_clients_change,
+        on_focus_change=lambda: None,
+        width="stretch",
+        height="content",
     )
+    out = result.lines if isinstance(getattr(result, "lines", None), list) else lines
+    out = [str(x or "") for x in out]
+    if not out or out[-1] != "":
+        out = list(out) + [""]
+    st.session_state[live_key] = out
+    old = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
+    for j in range(max(old, len(out)) + 3):
+        st.session_state.pop(_entry_client_key(iso, entry_i, j), None)
+    st.session_state[_entry_client_count_key(iso, entry_i)] = len(out)
+    for j, line in enumerate(out):
+        st.session_state[_entry_client_key(iso, entry_i, j)] = line
+    filled = list(out)
+    while filled and filled[-1] == "":
+        filled.pop()
+    st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(filled)
     return out
 
 
@@ -2380,6 +2409,7 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             "focus": focus_n,
             "max_u": int(max_u),
             "cell_w": int(_content_input_width_px()),
+            "variant": "content",
             "rev": rev,
         },
         default={"lines": lines, "focus": focus_n},
@@ -3008,6 +3038,9 @@ def _clear_date_widget_state(d: date) -> None:
         f"wl_ent_rev_{iso}_",
         f"wl_lines_comp_{iso}_",
         f"wl_lines_live_{iso}_",
+        f"wl_clients_comp_{iso}_",
+        f"wl_clients_live_{iso}_",
+        f"wl_clients_rev_{iso}_",
         f"wl_exp_{iso}_",
         f"wl_entries_{iso}",
         f"wl_next_{iso}",
@@ -4175,6 +4208,26 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                         or ""
                                     ),
                                 )
+                        if i == 0:
+                            st.markdown(
+                                """
+<style>
+/* 거래처·내용 CCv2 입력칸 좌우·높이 정렬 */
+div[class*="st-key-wl_clients_comp_"],
+div[class*="st-key-wl_lines_comp_"] {
+  width: 100%;
+}
+div[class*="st-key-wl_clients_comp_"] .wl-lines,
+div[class*="st-key-wl_lines_comp_"] .wl-lines {
+  margin: 0;
+}
+div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) {
+  align-items: flex-start !important;
+}
+</style>
+                                """,
+                                unsafe_allow_html=True,
+                            )
                         col_client, col_content = st.columns(
                             [1, 3.2], gap="small"
                         )
