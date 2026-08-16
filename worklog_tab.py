@@ -2990,21 +2990,59 @@ export default function (component) {
 
   function resolveKey(t) {
     if (!t || String(t.tagName || "").toUpperCase() !== "INPUT") return null;
+
+    // CCv2 내용/거래처 편집기 (wl_lines_comp / wl_clients_comp)
+    const comp = t.closest
+      ? t.closest(
+          '[class*="st-key-wl_lines_comp_"],[class*="st-key-wl_clients_comp_"]'
+        )
+      : null;
+    if (comp) {
+      const cls = Array.prototype.find.call(comp.classList || [], (c) => {
+        const s = String(c);
+        return (
+          s.indexOf("st-key-wl_lines_comp_") !== -1 ||
+          s.indexOf("st-key-wl_clients_comp_") !== -1
+        );
+      });
+      if (cls) {
+        const s = String(cls);
+        const isClient = s.indexOf("wl_clients_comp_") !== -1;
+        const m = /wl_(?:lines|clients)_comp_(\d{4}-\d{2}-\d{2})_(\d+)/.exec(s);
+        if (m && m[1] === iso) {
+          let lj = 0;
+          try {
+            lj = parseInt(t.getAttribute("data-idx") || "0", 10) || 0;
+          } catch (e0) {
+            lj = 0;
+          }
+          const kind = isClient ? "wl_ent_cl" : "wl_ent_ln";
+          return {
+            key: kind + "_" + m[1] + "_" + m[2] + "_" + lj,
+            el: t,
+          };
+        }
+      }
+    }
+
+    // 레거시 text_input 래퍼
     const wrap = t.closest
       ? t.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]')
       : null;
     if (!wrap) return null;
-    const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
+    const cls2 = Array.prototype.find.call(wrap.classList || [], (c) => {
       const s = String(c);
       return (
         s.indexOf("st-key-wl_ent_ln_") !== -1 ||
         s.indexOf("st-key-wl_ent_cl_") !== -1
       );
     });
-    if (!cls) return null;
-    const key = String(cls).replace(/^st-key-/, "");
-    const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(key);
-    if (!m || m[2] !== iso) return null;
+    if (!cls2) return null;
+    const key = String(cls2).replace(/^st-key-/, "");
+    const m2 = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(
+      key
+    );
+    if (!m2 || m2[2] !== iso) return null;
     return { key: key, el: t };
   }
 
@@ -3094,6 +3132,11 @@ export default function (component) {
   document.addEventListener("focusin", onFocusIn, true);
   document.addEventListener("keyup", onSel, true);
   document.addEventListener("mouseup", onSel, true);
+  document.addEventListener("selectionchange", function () {
+    try {
+      remember(document.activeElement);
+    } catch (e1) {}
+  });
 
   return () => {
     document.removeEventListener("focusin", onFocusIn, true);
@@ -3104,7 +3147,7 @@ export default function (component) {
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v2",
+    "worklog_special_bar_v3",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -4291,6 +4334,25 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
             # 특수문자: 날짜칸이 아닌 입력열 전체 폭에 한 줄로 표시 (버튼 크기 유지)
             _render_worklog_special_chars(selected.isoformat())
+            # 콜백이 이번 런에서 세팅한 삽입을 항목 위젯 생성 전에 반영
+            _sp_early = st.session_state.pop(
+                f"wl_do_special_{selected.isoformat()}", None
+            )
+            if isinstance(_sp_early, dict):
+                try:
+                    _apply_special_insert(
+                        selected.isoformat(),
+                        str(_sp_early.get("key") or ""),
+                        str(
+                            _sp_early.get("v")
+                            if _sp_early.get("v") is not None
+                            else ""
+                        ),
+                        int(_sp_early.get("s") or 0),
+                        str(_sp_early.get("ch") or ""),
+                    )
+                except Exception:
+                    pass
             msg = st.session_state.pop("wl_special_msg", None)
             if msg:
                 st.caption(msg)
