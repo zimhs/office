@@ -1219,6 +1219,19 @@ def render_worklog_view_html(
 
     local_zoom=True: 미리보기 −/+ 는 iframe 안 JS만 (서버 재실행 없음).
     """
+    try:
+        _mtime = os.path.getmtime(path)
+    except OSError:
+        _mtime = 0.0
+    _ck = (
+        f"wl_rvhtml_{os.path.abspath(path)}_{_mtime:.6f}_"
+        f"{int(print_mode)}_{float(scale):.4f}_{int(auto_print)}_"
+        f"{int(hide_on_screen)}_{int(local_zoom)}_{wrap_height or ''}"
+    )
+    _cached_html = st.session_state.get(_ck)
+    if isinstance(_cached_html, str) and _cached_html.startswith("<!DOCTYPE html>"):
+        return _cached_html
+
     sheet = workbook_to_html(path)
     raw_w, raw_h = _worklog_sheet_pixel_size(path)
     print_fit = _a4_print_fit(raw_w, raw_h)
@@ -1463,7 +1476,7 @@ def render_worklog_view_html(
     box-shadow:0 1px 2px rgba(15,23,42,.06);
   }
 """
-    return f"""<!DOCTYPE html>
+    _html_out = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>일일업무일지</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1535,6 +1548,14 @@ def render_worklog_view_html(
   {auto_script}
   {local_zoom_js}
 </body></html>"""
+    # 동일 파일·옵션이면 openpyxl 재파싱 생략
+    st.session_state[_ck] = _html_out
+    # 오래된 렌더 캐시 정리 (세션 비대화 방지)
+    _keys = [k for k in st.session_state.keys() if str(k).startswith("wl_rvhtml_")]
+    if len(_keys) > 24:
+        for k in sorted(_keys)[: len(_keys) - 24]:
+            st.session_state.pop(k, None)
+    return _html_out
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     """항목 뒤에 띄울 빈 칸 수 (0~10)."""
@@ -3137,12 +3158,25 @@ def _view_cells_key(d: date) -> str:
 
 
 def _publish_view_cells(d: date, cells: dict) -> None:
-    """저장(또는 「엑셀 미리보기」) 시에만 왼쪽 요약/양식에 반영."""
+    """저장(또는 「엑셀 미리보기」) 시에만 왼쪽 요약/양식에 반영.
+
+    칸 내용이 같으면 왼쪽 엑셀 HTML 캐시는 유지해 재클릭 로딩을 줄인다.
+    """
     iso = d.isoformat()
+    new_sig = json.dumps(cells or {}, ensure_ascii=False, sort_keys=True)
+    old = st.session_state.get(_view_cells_key(d))
+    old_sig = (
+        json.dumps(old, ensure_ascii=False, sort_keys=True)
+        if isinstance(old, dict)
+        else None
+    )
     st.session_state[_view_cells_key(d)] = dict(cells or {})
+    # 요약은 항상 새 스냅샷 기준으로
+    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}"):
+        st.session_state.pop(k, None)
+    if old_sig == new_sig:
+        return
     for k in (
-        f"wl_sum_sig_{iso}",
-        f"wl_sum_html_{iso}",
         f"wl_left_excel_sig_{iso}",
         f"wl_left_excel_html_{iso}",
         f"wl_left_excel_h_{iso}",
@@ -3582,11 +3616,25 @@ def _worklog_form_preview_dialog() -> None:
 
 
 def _prepare_excel_preview(d: date, cells: dict) -> str:
-    """현재 입력 → 엑셀 미리보기 파일 경로."""
+    """현재 입력 → 엑셀 미리보기 파일 경로 (동일 칸이면 기존 파일 재사용)."""
+    iso = d.isoformat()
+    sig = json.dumps(cells or {}, ensure_ascii=False, sort_keys=True)
+    sig_k = f"wl_prep_xlsx_sig_{iso}"
+    path_k = f"wl_prep_xlsx_path_{iso}"
+    cached = st.session_state.get(path_k) or ""
+    if (
+        st.session_state.get(sig_k) == sig
+        and cached
+        and os.path.exists(str(cached))
+    ):
+        return os.path.abspath(str(cached))
     try:
-        return prepare_print_xlsx(d, cells)
+        out = prepare_print_xlsx(d, cells)
     except Exception:
-        return _build_preview_file(d, cells)
+        out = _build_preview_file(d, cells)
+    st.session_state[sig_k] = sig
+    st.session_state[path_k] = out
+    return out
 
 
 def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
@@ -3922,8 +3970,30 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             if do_print:
                 cells_now = _cells_from_widgets(selected)
                 try:
+                    iso_p = selected.isoformat()
+                    cells_sig = json.dumps(
+                        cells_now, ensure_ascii=False, sort_keys=True
+                    )
+                    html_k = f"wl_left_excel_html_v5_{iso_p}"
+                    path_k = _left_path_key
+                    # 칸 동일 + HTML·xlsx 캐시 있으면 파일/렌더 생략 (로딩 최소화)
+                    reuse = (
+                        st.session_state.get(_view_cells_key(selected)) is not None
+                        and json.dumps(
+                            st.session_state.get(_view_cells_key(selected)) or {},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                        == cells_sig
+                        and st.session_state.get(html_k)
+                        and st.session_state.get(path_k)
+                        and os.path.exists(str(st.session_state.get(path_k) or ""))
+                    )
                     _publish_view_cells(selected, cells_now)
-                    xlsx_abs = _prepare_excel_preview(selected, cells_now)
+                    if reuse:
+                        xlsx_abs = os.path.abspath(str(st.session_state[path_k]))
+                    else:
+                        xlsx_abs = _prepare_excel_preview(selected, cells_now)
                     st.session_state[_left_excel_key] = True
                     st.session_state[_left_path_key] = xlsx_abs
                     st.session_state["wl_dialog_preview_path"] = xlsx_abs
@@ -3932,16 +4002,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         f"wl_form_sig_v14_{selected.isoformat()}", None
                     )
                     st.session_state.pop("_wl_force_form_sig", None)
-                    # 맥 로컬: Excel 실행 + 인쇄 미리보기까지. Cloud는 화면 양식만.
-                    if platform.system() == "Darwin":
-                        ok, msg = open_excel_print_preview(
-                            xlsx_abs, prefer_print_dialog=True
-                        )
-                        if ok:
-                            st.success(msg)
-                        else:
-                            st.warning(msg)
-                    elif _wl_quiet_ui():
+                    # Excel 앱 자동 실행은 「인쇄창열기」/크게보기에서 — 미리보기 클릭 로딩 방지
+                    if _wl_quiet_ui():
                         st.caption(
                             "Cloud에서는 왼쪽 미리보기와 「인쇄창열기」로 확인하세요."
                         )
