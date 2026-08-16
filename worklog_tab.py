@@ -2953,13 +2953,17 @@ _WL_SPECIAL_BAR_CSS = """
   flex-wrap: nowrap;
   gap: 4px;
   width: 100%;
+  max-width: 100%;
   overflow-x: auto;
+  overflow-y: hidden;
   padding: 2px 0;
   box-sizing: border-box;
+  -webkit-overflow-scrolling: touch;
 }
 .wl-sp button {
-  flex: 1 0 auto;
+  flex: 0 0 auto;
   min-width: 1.35rem;
+  width: 1.35rem;
   height: 1.55rem;
   margin: 0;
   padding: 0 2px;
@@ -2970,6 +2974,7 @@ _WL_SPECIAL_BAR_CSS = """
   font-size: 0.85rem;
   line-height: 1.55rem;
   cursor: pointer;
+  box-sizing: border-box;
 }
 .wl-sp button:hover {
   background: #e2e8f0;
@@ -3099,7 +3104,7 @@ export default function (component) {
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v1",
+    "worklog_special_bar_v2",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -4258,10 +4263,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     key="wl_date_pick",
                     help="저장 후에도 날짜를 바꿀 수 있습니다. 빈 날짜로 바꾸면 이 일지가 그 날짜로 옮겨집니다.",
                 )
-                _render_worklog_special_chars(selected.isoformat())
-                msg = st.session_state.pop("wl_special_msg", None)
-                if msg:
-                    st.caption(msg)
             with bar_cal:
                 st.markdown(
                     "<div style='height:1.55rem'></div>", unsafe_allow_html=True
@@ -4287,6 +4288,12 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     ):
                         st.session_state["wl_do_delete_day"] = selected.isoformat()
                         _wl_rerun()
+
+            # 특수문자: 날짜칸이 아닌 입력열 전체 폭에 한 줄로 표시 (버튼 크기 유지)
+            _render_worklog_special_chars(selected.isoformat())
+            msg = st.session_state.pop("wl_special_msg", None)
+            if msg:
+                st.caption(msg)
 
             if isinstance(picked, date) and picked != selected:
                 if os.path.exists(worklog_path(picked)):
