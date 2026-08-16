@@ -126,7 +126,7 @@ export default function (component) {
   const root = parentElement.querySelector(".wl-lines");
   if (!root) return;
 
-  const maxU = Number((data && data.max_u) || 42);
+  const maxU = Number((data && data.max_u) || 70);
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
   const incoming = Array.isArray(data && data.lines)
@@ -141,10 +141,10 @@ export default function (component) {
 
   function charUnits(ch) {
     const o = ch.charCodeAt(0);
-    if (o >= 0x3130 && o <= 0x318f) return 1;
     if (
       (o >= 0xac00 && o <= 0xd7a3) ||
       (o >= 0x1100 && o <= 0x11ff) ||
+      (o >= 0x3130 && o <= 0x318f) ||
       (o >= 0x2e80 && o <= 0x9fff) ||
       (o >= 0xff00 && o <= 0xffef)
     )
@@ -346,17 +346,15 @@ def _scrub_dummy_label(val: str) -> str:
 
 
 def _char_units(ch: str) -> int:
-    """표시 폭 단위: 한글 완성형·전각=2, 호환 자모(ㄴㄷ…)=1, 그 외=1."""
-    o = ord(ch)
-    # 호환 자모는 엑셀 W폭이어도 미리보기·입력칸에서 훨씬 좁게 보임
-    if 0x3130 <= o <= 0x318F:
-        return 1
+    """엑셀 동아시아 폭: 전각·한글·호환자모=2, 그 외=1."""
     ea = unicodedata.east_asian_width(ch)
     if ea in ("F", "W", "A"):
         return 2
+    o = ord(ch)
     if (
         0xAC00 <= o <= 0xD7A3
         or 0x1100 <= o <= 0x11FF
+        or 0x3130 <= o <= 0x318F
         or 0x2E80 <= o <= 0x9FFF
         or 0xF900 <= o <= 0xFAFF
         or 0xFF00 <= o <= 0xFFEF
@@ -418,12 +416,11 @@ def _set_body_font(cell) -> None:
 
 @lru_cache(maxsize=1)
 def _content_line_units() -> int:
-    """원본 G:X 병합 폭 기준 — 칸을 채운 뒤 다음 칸으로 넘긴다.
+    """원본 엑셀 내용칸(G:X 병합) 폭 — 반각=1, 한글=2.
 
-    반각=1, 한글 완성형=2. 입력칸 커서 실측 기준으로 약 42단위에서
-    다음 칸으로 넘긴다.
+    양식 열폭 합을 기준으로 약 70단위(~한글 35자)를 넘기면 다음 칸으로 분할한다.
     """
-    fallback = 42
+    fallback = 70
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -434,17 +431,17 @@ def _content_line_units() -> int:
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        # 사용자 커서 위치(~42)에 맞춤
-        units = int(total * (11 / 14) * 0.63)
-        return max(40, min(units, 44))
+        # 본문 14pt 대비 기본폭 11pt 보정 + 우측 여유
+        units = int(total * (11 / 14) * 1.06)
+        return max(66, min(units, 71))
     except Exception:
         return fallback
 
 
 @lru_cache(maxsize=1)
 def _client_line_units() -> int:
-    """원본 C:F 거래처 병합 폭 기준 — 칸을 넘기면 다음 행으로(반각=1)."""
-    fallback = 12
+    """원본 엑셀 거래처칸(C:F 병합) 폭 — 반각=1, 한글=2."""
+    fallback = 18
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -455,8 +452,8 @@ def _client_line_units() -> int:
             for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 0.72)
-        return max(11, min(units, 14))
+        units = int(total * (11 / 14) * 1.05)
+        return max(14, min(units, 20))
     except Exception:
         return fallback
 
@@ -2105,6 +2102,7 @@ def _commit_enter_on_cell(
             if focus >= len(new):
                 new.append("")
         _apply_entry_clients(iso, entry_i, new, focus_j=min(focus, len(new) - 1))
+        st.session_state.pop(f"wl_enter_done_{iso}", None)
         return
 
     max_u = _content_line_units()
@@ -2123,8 +2121,9 @@ def _commit_enter_on_cell(
         new = head + pieces + [""] + list(tail)
         focus = line_j + 1
         _apply_entry_lines(
-            iso, entry_i, new, focus_j=min(focus, len(new) - 1), bump_gen=False
+            iso, entry_i, new, focus_j=min(focus, len(new) - 1), bump_gen=True
         )
+        st.session_state.pop(f"wl_enter_done_{iso}", None)
         return
     new = head + pieces + _dedupe_overflow_tail(pieces, list(tail))
     focus = line_j + 1
@@ -2133,6 +2132,7 @@ def _commit_enter_on_cell(
     _apply_entry_lines(
         iso, entry_i, new, focus_j=min(focus, len(new) - 1), bump_gen=True
     )
+    st.session_state.pop(f"wl_enter_done_{iso}", None)
 
 
 def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
@@ -2235,15 +2235,29 @@ div[class*="st-key-wl_ln_add_"] button span {
         _apply_entry_clients(iso, entry_i, fixed, focus_j=focus)
         lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 1) or 1)
 
+    def _on_client_change(k: str, ei: int, lj: int) -> None:
+        val = str(st.session_state.get(k) or "")
+        if _display_units(val) <= max_u:
+            return
+        st.session_state[f"wl_do_enter_cell_{iso}"] = {
+            "kind": "wl_ent_cl",
+            "ei": ei,
+            "lj": lj,
+            "v": val,
+        }
+
     for j in range(lc):
         row_l, row_r = st.columns([8, 1], gap="small")
         with row_l:
+            wk = _entry_client_key(iso, entry_i, j)
             st.text_input(
                 f"거래처 {entry_i + 1}-{j + 1}",
-                key=_entry_client_key(iso, entry_i, j),
+                key=wk,
                 label_visibility="collapsed",
                 placeholder="",
                 autocomplete="off",
+                on_change=_on_client_change,
+                args=(wk, entry_i, j),
             )
         with row_r:
             is_last_empty = (
@@ -2279,7 +2293,10 @@ div[class*="st-key-wl_ln_add_"] button span {
 
 
 def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
-    """내용 칸: Streamlit text_input (입력 안정) + 칸 추가/삭제."""
+    """내용 칸: Streamlit text_input (입력 안정) + 칸 추가/삭제.
+
+    장문이 원본 내용칸 폭(max_u)을 넘기면 위젯 생성 전에 다음 칸으로 분할한다.
+    """
     if int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0) <= 0:
         live = st.session_state.get(_entry_lines_live_key(iso, entry_i))
         if isinstance(live, list) and live:
@@ -2303,15 +2320,29 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
         )
         lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 1) or 1)
 
+    def _on_line_change(k: str, ei: int, lj: int) -> None:
+        val = str(st.session_state.get(k) or "")
+        if _display_units(val) <= max_u:
+            return
+        st.session_state[f"wl_do_enter_cell_{iso}"] = {
+            "kind": "wl_ent_ln",
+            "ei": ei,
+            "lj": lj,
+            "v": val,
+        }
+
     for j in range(lc):
         row_l, row_r = st.columns([8, 1], gap="small")
         with row_l:
+            wk = _entry_line_key(iso, entry_i, j)
             st.text_input(
                 f"내용 {entry_i + 1}-{j + 1}",
-                key=_entry_line_key(iso, entry_i, j),
+                key=wk,
                 label_visibility="collapsed",
                 placeholder="",
                 autocomplete="off",
+                on_change=_on_line_change,
+                args=(wk, entry_i, j),
             )
         with row_r:
             is_last_empty = (
@@ -2345,7 +2376,8 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     return out
 
 
-# Enter / 칸초과 / 방향키 이동 (document 키 훅)
+# Enter / 방향키 이동 (document 키 훅)
+# 장문 칸분할은 서버(mount/on_change)만 담당 — JS에서 value를 자르면 Streamlit과 충돌함
 _WL_ENTER_HOOK_JS = r"""
 export default function (component) {
   const { data, setTriggerValue } = component;
@@ -2355,44 +2387,10 @@ export default function (component) {
     data && data.focus_caret != null && data.focus_caret !== ""
       ? Number(data.focus_caret)
       : null;
-  const clientMax = Number((data && data.client_max_u) || 12);
-  const contentMax = Number((data && data.content_max_u) || 42);
   let lastSent = "";
   let lastSig = "";
   let lastAt = 0;
 
-  function charUnits(ch) {
-    const o = ch.charCodeAt(0);
-    if (o >= 0x3130 && o <= 0x318f) return 1;
-    if (
-      (o >= 0xac00 && o <= 0xd7a3) ||
-      (o >= 0x1100 && o <= 0x11ff) ||
-      (o >= 0x2e80 && o <= 0x9fff) ||
-      (o >= 0xff00 && o <= 0xffef)
-    )
-      return 2;
-    return 1;
-  }
-  function displayUnits(s) {
-    let w = 0;
-    s = String(s || "");
-    for (let i = 0; i < s.length; i++) w += charUnits(s.charAt(i));
-    return w;
-  }
-  function fitByUnits(s, max) {
-    s = String(s || "");
-    if (displayUnits(s) <= max) return { head: s, tail: "" };
-    let acc = 0;
-    for (let i = 0; i < s.length; i++) {
-      const cu = charUnits(s.charAt(i));
-      if (acc + cu > max) {
-        if (i === 0) return { head: s.slice(0, 1), tail: s.slice(1) };
-        return { head: s.slice(0, i), tail: s.slice(i) };
-      }
-      acc += cu;
-    }
-    return { head: s, tail: "" };
-  }
   function resolveKey(t) {
     if (!t || String(t.tagName || "").toUpperCase() !== "INPUT") return null;
     const wrap = t.closest
@@ -2415,7 +2413,6 @@ export default function (component) {
       kind: m[1],
       ei: Number(m[3]),
       lj: Number(m[4]),
-      maxU: m[1] === "wl_ent_cl" ? clientMax : contentMax,
     };
   }
   function listKindInputs(kind) {
@@ -2478,16 +2475,6 @@ export default function (component) {
     lastSent = payload;
     setTriggerValue("enter", payload);
   }
-  function clipOverflow(t, info, full) {
-    const v = String(full != null ? full : t.value || "");
-    if (displayUnits(v) <= info.maxU) return false;
-    const { head } = fitByUnits(v, info.maxU);
-    try {
-      t.value = head;
-    } catch (err) {}
-    emit(info.key, v);
-    return true;
-  }
 
   const onKey = (e) => {
     if (e.isComposing || e.keyCode === 229) return;
@@ -2503,22 +2490,6 @@ export default function (component) {
       e.preventDefault();
       e.stopPropagation();
       emit(info.key, t.value || "");
-      return;
-    }
-
-    if (
-      caretAll &&
-      start === len &&
-      displayUnits(t.value || "") >= info.maxU &&
-      e.key &&
-      e.key.length === 1 &&
-      !e.ctrlKey &&
-      !e.metaKey &&
-      !e.altKey
-    ) {
-      e.preventDefault();
-      e.stopPropagation();
-      emit(info.key, String(t.value || "") + e.key);
       return;
     }
 
@@ -2597,23 +2568,7 @@ export default function (component) {
     }
   };
 
-  const onInput = (e) => {
-    const t = e.target;
-    const info = resolveKey(t);
-    if (!info) return;
-    clipOverflow(t, info, t.value || "");
-  };
-
-  const onCompEnd = (e) => {
-    const t = e.target;
-    const info = resolveKey(t);
-    if (!info) return;
-    clipOverflow(t, info, t.value || "");
-  };
-
   document.addEventListener("keydown", onKey, true);
-  document.addEventListener("input", onInput, true);
-  document.addEventListener("compositionend", onCompEnd, true);
 
   if (focusKey) {
     const go = () => {
@@ -2635,14 +2590,12 @@ export default function (component) {
 
   return () => {
     document.removeEventListener("keydown", onKey, true);
-    document.removeEventListener("input", onInput, true);
-    document.removeEventListener("compositionend", onCompEnd, true);
   };
 }
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v15",
+    "worklog_cell_nav_hook_v16",
     js=_WL_ENTER_HOOK_JS,
 )
 
