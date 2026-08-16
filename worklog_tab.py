@@ -126,7 +126,7 @@ export default function (component) {
   const root = parentElement.querySelector(".wl-lines");
   if (!root) return;
 
-  const maxU = Number((data && data.max_u) || 70);
+  const maxU = Number((data && data.max_u) || 42);
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
   const incoming = Array.isArray(data && data.lines)
@@ -418,12 +418,12 @@ def _set_body_font(cell) -> None:
 
 @lru_cache(maxsize=1)
 def _content_line_units() -> int:
-    """원본 G:X 병합 폭 기준 — 칸을 거의 채운 뒤 다음 칸으로 넘긴다.
+    """원본 G:X 병합 폭 기준 — 칸을 채운 뒤 다음 칸으로 넘긴다.
 
-    반각=1, 한글 완성형=2. 약 70단위(~한글 35자)까지 채운다.
-    미리보기는 overflow:hidden 으로 테두리 밖 넘침을 막는다.
+    반각=1, 한글 완성형=2. 입력칸 커서 실측 기준으로 약 42단위에서
+    다음 칸으로 넘긴다.
     """
-    fallback = 70
+    fallback = 42
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -434,8 +434,9 @@ def _content_line_units() -> int:
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 1.05)
-        return max(66, min(units, 72))
+        # 사용자 커서 위치(~42)에 맞춤
+        units = int(total * (11 / 14) * 0.63)
+        return max(40, min(units, 44))
     except Exception:
         return fallback
 
@@ -443,7 +444,7 @@ def _content_line_units() -> int:
 @lru_cache(maxsize=1)
 def _client_line_units() -> int:
     """원본 C:F 거래처 병합 폭 기준 — 칸을 넘기면 다음 행으로(반각=1)."""
-    fallback = 16
+    fallback = 12
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -454,8 +455,8 @@ def _client_line_units() -> int:
             for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 1.05)
-        return max(14, min(units, 18))
+        units = int(total * (11 / 14) * 0.72)
+        return max(11, min(units, 14))
     except Exception:
         return fallback
 
@@ -2354,8 +2355,8 @@ export default function (component) {
     data && data.focus_caret != null && data.focus_caret !== ""
       ? Number(data.focus_caret)
       : null;
-  const clientMax = Number((data && data.client_max_u) || 16);
-  const contentMax = Number((data && data.content_max_u) || 70);
+  const clientMax = Number((data && data.client_max_u) || 12);
+  const contentMax = Number((data && data.content_max_u) || 42);
   let lastSent = "";
   let lastSig = "";
   let lastAt = 0;
@@ -2641,7 +2642,7 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v14",
+    "worklog_cell_nav_hook_v15",
     js=_WL_ENTER_HOOK_JS,
 )
 
