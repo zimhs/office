@@ -3110,6 +3110,51 @@ return previewDone
             return False, f"Excel 실행 실패: {e2}"
 
 
+@st.dialog("프린터 / 인쇄 미리보기", width="large")
+def _worklog_browser_print_dialog() -> None:
+    """Cloud·맥 공통: 브라우저 인쇄(프린터) 창을 연다."""
+    path = st.session_state.get("wl_dialog_preview_path")
+    if not path or not os.path.exists(str(path)):
+        st.error("인쇄용 파일을 만들 수 없습니다.")
+        return
+    path = str(path)
+    st.caption(
+        "브라우저 인쇄(프린터) 창이 곧 열립니다. "
+        "안 보이면 아래 「인쇄 창 다시 열기」를 누르세요."
+    )
+    try:
+        print_html = render_worklog_view_html(
+            path, print_mode=True, auto_print=True, scale=1.0
+        )
+        components.html(print_html, height=720, scrolling=True)
+    except Exception as e:
+        st.error(f"인쇄 미리보기 표시 실패: {e}")
+        return
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("인쇄 창 다시 열기", width="stretch", key="wl_browser_reprint"):
+            st.rerun()
+    with c2:
+        try:
+            with open(path, "rb") as f:
+                xbytes = f.read()
+            st.download_button(
+                "엑셀 다운로드",
+                data=xbytes,
+                file_name=os.path.basename(path) or "일일업무일지.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+                key="wl_browser_print_dl",
+            )
+        except Exception:
+            pass
+    with c3:
+        if platform.system() == "Darwin":
+            if st.button("Excel로 인쇄", width="stretch", key="wl_browser_to_excel"):
+                ok, msg = open_excel_print_preview(path, prefer_print_dialog=True)
+                (st.success if ok else st.warning)(msg)
+
+
 @st.dialog("원본 엑셀 양식 미리보기", width="large")
 def _worklog_form_preview_dialog() -> None:
     """큰 화면용 엑셀 양식 미리보기 (보조)."""
@@ -3132,7 +3177,7 @@ def _worklog_form_preview_dialog() -> None:
     except Exception as e:
         st.error(f"미리보기 표시 실패: {e}")
         return
-    b1, b2 = st.columns(2)
+    b1, b2, b3 = st.columns(3)
     with b1:
         try:
             with open(path, "rb") as f:
@@ -3148,22 +3193,23 @@ def _worklog_form_preview_dialog() -> None:
         except Exception:
             st.caption("엑셀 다운로드를 준비하지 못했습니다.")
     with b2:
+        if st.button("프린터 화면", width="stretch", key="wl_dialog_browser_print"):
+            st.session_state["wl_dialog_preview_path"] = path
+            _worklog_browser_print_dialog()
+    with b3:
         if platform.system() == "Darwin":
             if st.button(
-                "Excel 인쇄 미리보기",
+                "Excel 인쇄 화면",
                 width="stretch",
                 key="wl_dialog_open_excel",
             ):
-                ok, msg = open_excel_print_preview(path)
+                ok, msg = open_excel_print_preview(path, prefer_print_dialog=True)
                 if ok:
                     st.success(msg)
                 else:
                     st.warning(msg)
         else:
-            st.caption(
-                "Excel 앱 인쇄 미리보기는 맥 로컬 대시보드에서 자동 연결됩니다. "
-                "Cloud에서는 위 양식 또는 엑셀 다운로드를 사용하세요."
-            )
+            st.caption("Excel 앱 인쇄는 맥 로컬에서 가능합니다.")
 
 
 def _prepare_excel_preview(d: date, cells: dict) -> str:
@@ -3394,69 +3440,70 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         with col_preview:
             st.markdown("##### 업무일지 보기")
             # 버튼은 큰 iframe 위에 둠 (클릭 가로채기 방지)
-            p1, p2 = st.columns(2)
+            p1, p2, p3 = st.columns(3)
             with p1:
                 do_print = st.button(
                     "엑셀 미리보기",
                     width="stretch",
                     key="wl_print_btn",
-                    help="원본 양식을 왼쪽에 적용하고, 맥에서는 Excel을 열어 인쇄 미리보기까지 연결합니다.",
+                    help="왼쪽 칸에 원본 엑셀 양식을 적용합니다.",
                 )
             with p2:
-                # 맥 로컬: 저장본 버튼 → Excel 인쇄(미리보기) 화면까지 바로 연결
-                # Cloud: 파일 다운로드만 가능
-                if platform.system() == "Darwin":
-                    do_saved_excel = st.button(
-                        "엑셀 저장본",
-                        width="stretch",
-                        key="wl_dl_btn",
-                        help="현재 일지를 Excel로 열고 macOS 인쇄(미리보기) 화면까지 연결합니다.",
+                # 맥 로컬: Excel ⌘P / Cloud·공통: 브라우저 프린터 화면
+                do_saved_excel = st.button(
+                    "엑셀 저장본",
+                    width="stretch",
+                    key="wl_dl_btn",
+                    help="맥 로컬은 Excel 인쇄 화면, Cloud는 브라우저 프린터 화면을 엽니다.",
+                )
+            with p3:
+                do_browser_print = st.button(
+                    "프린터 화면",
+                    width="stretch",
+                    key="wl_browser_print_btn",
+                    help="브라우저 인쇄(프린터) 창을 바로 엽니다. Cloud에서도 됩니다.",
+                    type="primary",
+                )
+
+            def _resolve_print_xlsx() -> str:
+                cells_dl = _cells_from_widgets(selected)
+                path_saved = worklog_path(selected)
+                if os.path.exists(path_saved):
+                    write_cells_to_path(
+                        path_saved, selected, cells_dl, blank_base=False
                     )
-                    if do_saved_excel:
-                        cells_dl = _cells_from_widgets(selected)
-                        try:
-                            # 저장본이 있으면 최신 입력으로 갱신 후 그 파일을 연다
-                            path_saved = worklog_path(selected)
-                            if os.path.exists(path_saved):
-                                write_cells_to_path(
-                                    path_saved, selected, cells_dl, blank_base=False
-                                )
-                                xlsx_abs = os.path.abspath(path_saved)
-                            else:
-                                xlsx_abs = _prepare_excel_preview(selected, cells_dl)
-                            ok, msg = open_excel_print_preview(
-                                xlsx_abs, prefer_print_dialog=True
-                            )
-                            if ok:
-                                st.success(msg)
-                            else:
-                                st.warning(msg)
-                        except Exception as e:
-                            st.error(f"엑셀 저장본 연결 실패: {e}")
-                else:
-                    path_saved = worklog_path(selected)
-                    xbytes = b""
-                    src = path_saved if os.path.exists(path_saved) else None
-                    if src and os.path.exists(src):
-                        with open(src, "rb") as f:
-                            xbytes = f.read()
+                    return os.path.abspath(path_saved)
+                return _prepare_excel_preview(selected, cells_dl)
+
+            if do_browser_print or (
+                do_saved_excel and platform.system() != "Darwin"
+            ):
+                try:
+                    xlsx_abs = _resolve_print_xlsx()
+                    st.session_state["wl_dialog_preview_path"] = xlsx_abs
+                    _worklog_browser_print_dialog()
+                except Exception as e:
+                    st.error(f"프린터 화면을 열지 못했습니다: {e}")
+
+            if do_saved_excel and platform.system() == "Darwin":
+                try:
+                    xlsx_abs = _resolve_print_xlsx()
+                    ok, msg = open_excel_print_preview(
+                        xlsx_abs, prefer_print_dialog=True
+                    )
+                    if ok:
+                        st.success(msg)
                     else:
-                        try:
-                            tmp = _build_preview_file(selected, draft)
-                            with open(tmp, "rb") as f:
-                                xbytes = f.read()
-                        except Exception:
-                            xbytes = b""
-                    st.download_button(
-                        "엑셀 저장본",
-                        data=xbytes,
-                        file_name=f"일일업무일지_{selected.isoformat()}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        width="stretch",
-                        key="wl_dl_btn",
-                        disabled=not xbytes,
-                        help="Cloud에서는 파일 다운로드만 됩니다. Excel 인쇄 화면 자동 연결은 맥 로컬에서 가능합니다.",
-                    )
+                        st.warning(msg)
+                        st.session_state["wl_dialog_preview_path"] = xlsx_abs
+                        _worklog_browser_print_dialog()
+                except Exception as e:
+                    st.error(f"엑셀 저장본 연결 실패: {e}")
+                    try:
+                        st.session_state["wl_dialog_preview_path"] = _resolve_print_xlsx()
+                        _worklog_browser_print_dialog()
+                    except Exception:
+                        pass
 
             _left_excel_key = f"wl_left_excel_on_{selected.isoformat()}"
             _left_path_key = f"wl_left_excel_path_{selected.isoformat()}"
