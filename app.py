@@ -6393,20 +6393,18 @@ def inject_sticky_tabs_script():
                 var filterBox = findFilterBox();
                 var tabList = findMainTabList();
                 if (!filterBox || !tabList) {
-                    /* 담당자 지정 직후 탭 DOM이 늦게 뜨면 재시도 */
-                    scheduleSync(200);
+                    /* 담당자 지정 직후 탭 DOM이 늦게 뜨면 재시도 (상한) */
+                    parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
+                    if (parentWin.__dashTabRetry < 25) scheduleSync(200);
                     return;
                 }
                 var mounted = mountTabs(filterBox, tabList);
-                if (!mounted) {
-                    /* 드롭다운 닫힌 뒤 탭 복구 */
-                    scheduleSync(180);
+                if (!mounted || !filterBox.contains(tabList)) {
+                    parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
+                    if (parentWin.__dashTabRetry < 25) scheduleSync(180);
                     return;
                 }
-                if (!filterBox.contains(tabList)) {
-                    scheduleSync(120);
-                    return;
-                }
+                parentWin.__dashTabRetry = 0;
                 var rectMac = getMainRect();
                 if (!rectMac) return;
                 var topMac = getTopOffsetMac();
