@@ -2961,12 +2961,47 @@ def open_excel_print_preview(xlsx_path: str) -> tuple[bool, str]:
 
 
 def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
-    """팝업 내부용 월 달력."""
+    """팝업 내부용 월 달력 (컴팩트)."""
     if "worklog_month" not in st.session_state:
         st.session_state["worklog_month"] = date(selected.year, selected.month, 1)
     month_anchor: date = st.session_state["worklog_month"]
 
-    nav = st.columns([1, 1, 3, 1.4], gap="small")
+    st.markdown(
+        """
+        <style>
+        /* 달력 팝업 폭·날짜 칸 축소 */
+        div[data-testid="stPopoverBody"] {
+          max-width: 268px !important;
+          width: 268px !important;
+          padding: 0.35rem 0.45rem 0.5rem !important;
+        }
+        div[data-testid="stPopoverBody"] div[class*="st-key-wl_day_"] button,
+        div[data-testid="stPopoverBody"] div[class*="st-key-wl_prev_month"] button,
+        div[data-testid="stPopoverBody"] div[class*="st-key-wl_next_month"] button,
+        div[data-testid="stPopoverBody"] div[class*="st-key-wl_today"] button {
+          min-height: 1.55rem !important;
+          height: 1.55rem !important;
+          padding: 0 0.15rem !important;
+          font-size: 0.7rem !important;
+          line-height: 1.1 !important;
+          border-radius: 5px !important;
+        }
+        div[data-testid="stPopoverBody"] [data-testid="stCaptionContainer"] {
+          font-size: 0.65rem !important;
+          margin-bottom: 0.15rem !important;
+        }
+        div[data-testid="stPopoverBody"] [data-testid="stHorizontalBlock"] {
+          gap: 0.2rem !important;
+        }
+        div[data-testid="stPopoverBody"] [data-testid="column"] {
+          padding: 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    nav = st.columns([0.85, 0.85, 2.6, 1.2], gap="small")
     with nav[0]:
         if st.button("◀", key="wl_prev_month", width="stretch"):
             y, m = month_anchor.year, month_anchor.month - 1
@@ -2983,7 +3018,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
             _wl_rerun()
     with nav[2]:
         st.markdown(
-            f"<div style='text-align:center;font-weight:700;font-size:14px;padding:4px 0;'>"
+            f"<div style='text-align:center;font-weight:700;font-size:12px;padding:2px 0;line-height:1.2;'>"
             f"{month_anchor.year}년 {month_anchor.month}월</div>",
             unsafe_allow_html=True,
         )
@@ -2996,14 +3031,14 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
             st.session_state["wl_date_sync"] = ""
             _wl_rerun()
 
-    st.caption("• = 저장됨 · 날짜를 누르면 해당일 일지로 전환")
+    st.caption("• = 저장됨 · 날짜 탭 → 해당일")
     weeks = ["월", "화", "수", "목", "금", "토", "일"]
     head = st.columns(7, gap="small")
     for i, w in enumerate(weeks):
         color = "#DC2626" if i == 6 else ("#2563EB" if i == 5 else "#64748B")
         head[i].markdown(
-            f"<div style='text-align:center;font-size:11px;font-weight:600;color:{color};"
-            f"line-height:1.1;padding:0 0 2px 0;'>{w}</div>",
+            f"<div style='text-align:center;font-size:10px;font-weight:600;color:{color};"
+            f"line-height:1;padding:0 0 1px 0;'>{w}</div>",
             unsafe_allow_html=True,
         )
 
@@ -3014,7 +3049,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
         for i, day in enumerate(week):
             with cols[i]:
                 if day == 0:
-                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
                     continue
                 d = date(month_anchor.year, month_anchor.month, day)
                 is_sel = d == selected
@@ -3243,7 +3278,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 st.markdown(
                     "<div style='height:1.55rem'></div>", unsafe_allow_html=True
                 )
-                with st.popover("📅 달력", width="stretch"):
+                with st.popover("📅 달력", width="content"):
                     clicked = _render_month_calendar(selected, saved)
                     if clicked is not None and clicked != selected:
                         _clear_date_widget_state(selected)
