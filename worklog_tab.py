@@ -207,7 +207,6 @@ export default function (component) {
     inputs.forEach((inp) => out.push(inp.value || ""));
     return normalize(out);
   }
-  let softTimer = null;
   function emit(next, focusIdx) {
     const out = normalize(next);
     inst.lines = out;
@@ -218,15 +217,6 @@ export default function (component) {
   function localOnly(next) {
     inst.lines = normalize(next);
     return inst.lines;
-  }
-  function softEmit(next) {
-    localOnly(next);
-    if (softTimer) clearTimeout(softTimer);
-    softTimer = setTimeout(function () {
-      softTimer = null;
-      const cur = normalize(inst.lines || readDomLines());
-      setStateValue("lines", cur);
-    }, 480);
   }
   function focusAt(idx) {
     requestAnimationFrame(() => {
@@ -281,9 +271,9 @@ export default function (component) {
         let j0 = j;
         let v = cur[j0] || "";
         if (displayUnits(v) <= maxU) {
-          // 입력 중에는 로컬만 갱신(디바운스 동기화) — 빠른 타이핑 로딩 방지
+          // 입력 중에는 로컬만 — blur/강제 시에만 서버 동기화 (요약·미리보기 로딩 방지)
           if (mode === "blur" || mode === "force") emit(cur, null);
-          else softEmit(cur);
+          else localOnly(cur);
           return;
         }
         // 장문/붙여넣기: 원본 칸 폭으로 모두 나눈 뒤 다음 칸에 포커스
@@ -355,7 +345,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v7",
+    "worklog_entry_lines_v8",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -884,6 +874,10 @@ def delete_worklog_day(d: date) -> list[str]:
             + (f": {', '.join(removed)}" if removed else " (저장본 없음, 입력만 초기화)")
         ),
     }
+    try:
+        _publish_view_cells(d, _empty_cells(d))
+    except Exception:
+        st.session_state.pop(_view_cells_key(d), None)
     return removed
 
 
@@ -3029,6 +3023,42 @@ def _cells_from_widgets(d: date) -> dict:
     return _pack_entries_to_cells(d, entries, next_day, notes)
 
 
+def _view_cells_key(d: date) -> str:
+    return f"wl_view_cells_{d.isoformat()}"
+
+
+def _publish_view_cells(d: date, cells: dict) -> None:
+    """저장(또는 「엑셀 미리보기」) 시에만 왼쪽 요약/양식에 반영."""
+    iso = d.isoformat()
+    st.session_state[_view_cells_key(d)] = dict(cells or {})
+    for k in (
+        f"wl_sum_sig_{iso}",
+        f"wl_sum_html_{iso}",
+        f"wl_left_excel_sig_{iso}",
+        f"wl_left_excel_html_{iso}",
+        f"wl_left_excel_h_{iso}",
+    ):
+        st.session_state.pop(k, None)
+
+
+def _view_cells_for_preview(d: date) -> dict:
+    """왼쪽 보기용 칸 — 마지막 저장(또는 명시적 미리보기) 스냅샷."""
+    key = _view_cells_key(d)
+    cur = st.session_state.get(key)
+    if isinstance(cur, dict) and cur:
+        return cur
+    try:
+        if os.path.exists(worklog_path(d)):
+            cells = read_worklog_cells(d)
+            st.session_state[key] = cells
+            return cells
+    except Exception:
+        pass
+    cells = _empty_cells(d)
+    st.session_state[key] = cells
+    return cells
+
+
 def _clear_date_widget_state(d: date) -> None:
     iso = d.isoformat()
     prefixes = (
@@ -3637,7 +3667,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         saved = list_saved_worklog_dates()
         _init_widget_state(selected)
-        draft = _cells_from_widgets(selected)
+        draft = _view_cells_for_preview(selected)
 
         # 인쇄 패널이 열려 있으면 본화면 대신 인쇄 UI만 (팝업 중첩·취소 반복 방지)
         if st.session_state.get("wl_print_panel"):
@@ -3730,6 +3760,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             if do_print:
                 cells_now = _cells_from_widgets(selected)
                 try:
+                    _publish_view_cells(selected, cells_now)
                     xlsx_abs = _prepare_excel_preview(selected, cells_now)
                     st.session_state[_left_excel_key] = True
                     st.session_state[_left_path_key] = xlsx_abs
@@ -3777,17 +3808,17 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 xlsx_left = st.session_state.get(_left_path_key) or ""
                 if xlsx_left and os.path.exists(str(xlsx_left)):
                     try:
-                        # 입력 바뀌면 미리보기 파일 다시 생성
-                        cells_live = _cells_from_widgets(selected)
+                        # 저장(또는 「엑셀 미리보기」) 스냅샷만 표시 — 입력 중 재생성 안 함
+                        cells_view = _view_cells_for_preview(selected)
                         live_sig = json.dumps(
-                            cells_live, ensure_ascii=False, sort_keys=True
+                            cells_view, ensure_ascii=False, sort_keys=True
                         )
                         sig_k = f"wl_left_excel_sig_{selected.isoformat()}"
                         html_k = f"wl_left_excel_html_{selected.isoformat()}"
                         h_k = f"wl_left_excel_h_{selected.isoformat()}"
                         scale_l = 0.48
                         if st.session_state.get(sig_k) != live_sig:
-                            xlsx_left = _prepare_excel_preview(selected, cells_live)
+                            xlsx_left = _prepare_excel_preview(selected, cells_view)
                             st.session_state[_left_path_key] = xlsx_left
                             st.session_state[sig_k] = live_sig
                             excel_html = render_worklog_view_html(
@@ -4169,11 +4200,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state["wl_active_cell_sel"] = (s, e)
 
-                # 입력값은 칸 확정(포커스 이동) 시 요약/미리보기에 바로 반영.
-                # 입력 중 서버 호출은 Enter훅에서 막아서 로딩을 줄임. 「저장」은 파일 기록용.
+                # 왼쪽 요약·양식은 「저장」 또는 「엑셀 미리보기」 시에만 갱신 (입력 중 로딩 방지)
                 st.caption(
-                    "입력하면 왼쪽 요약·미리보기에 바로 반영됩니다. "
-                    "「저장」은 파일로 기록할 때 누르세요."
+                    "「저장」하면 왼쪽 요약·미리보기에 반영됩니다. "
+                    "「엑셀 미리보기」로도 현재 입력을 바로 확인할 수 있습니다."
                 )
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
@@ -4412,6 +4442,7 @@ div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) 
                                 ],
                             )
                             path = save_worklog_cells(d, cells)
+                            _publish_view_cells(d, cells)
                             packed_entries = _grouped_entries_from_cells(cells)
                             if not packed_entries:
                                 packed_entries = [
