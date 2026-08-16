@@ -3797,6 +3797,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 # 인쇄 HTML 캐시 무효화(파일 갱신됨)
                 st.session_state.pop(f"wl_print_html_cache_{out}", None)
                 st.session_state.pop(f"wl_print_html_meta_{out}", None)
+                st.session_state.pop(f"wl_print_html_cache_v2_{out}", None)
+                st.session_state.pop(f"wl_print_html_meta_v2_{out}", None)
                 return out
 
             if do_open_print:
