@@ -712,10 +712,10 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, blank_base: bool = F
 
 
 def save_worklog_cells(d: date, cells: dict) -> str:
-    """달력용 캐시에 저장하고, Desktop/업무/일지/{년도}에도 복사(맥 로컬).
+    """달력용 캐시 저장 + Desktop/업무/일지 복사(맥) + Drive「dashboard 복사본/worklog」공유.
 
-    iPad/Cloud에는 Google Drive「다른 컴퓨터」경로가 없으므로 달력 저장만 하고
-    보조 복사는 조용히 건너뛴다.
+    Drive 폴더가 있으면 맥·아이패드(Drive) 공통 저장. Streamlit Cloud만 쓰면
+    서버 디스크라 Drive와 즉시 공유되지 않음(맥에서 Drive 동기화 시 반영).
     """
     path = worklog_path(d)
     is_new = not os.path.exists(path)
@@ -724,14 +724,22 @@ def save_worklog_cells(d: date, cells: dict) -> str:
     _invalidate_saved_dates_cache()
     st.session_state.pop("wl_last_archive_path", None)
     st.session_state.pop("wl_last_archive_err", None)
+    st.session_state.pop("wl_last_drive_path", None)
     try:
         archive = worklog_archive_path(d)
         if archive:
             shutil.copy2(path, archive)
             st.session_state["wl_last_archive_path"] = archive
     except Exception as e:
-        # 달력 저장은 이미 성공 — 보조 경로 실패는 맥에서만 안내
         st.session_state["wl_last_archive_err"] = str(e)
+    try:
+        from drive_autoload import push_worklog_day_to_drive
+
+        drv = push_worklog_day_to_drive(path, WORKLOG_DIR)
+        if drv:
+            st.session_state["wl_last_drive_path"] = drv
+    except Exception:
+        pass
     return path
 
 
@@ -746,6 +754,14 @@ def delete_worklog_day(d: date) -> list[str]:
         os.path.join(WORKLOG_DIR, f"_preview_{iso}.xlsx"),
         os.path.join(WORKLOG_DIR, f"일일업무일지_{iso}_인쇄.xlsx"),
     ]
+    try:
+        from drive_autoload import resolve_drive_worklog_dir
+
+        _ddr = resolve_drive_worklog_dir()
+        if _ddr:
+            targets.append(os.path.join(_ddr, f"{iso}.xlsx"))
+    except Exception:
+        pass
     for name in os.listdir(WORKLOG_DIR):
         if iso in name and name.endswith(".xlsx") and name != "template.xlsx":
             targets.append(os.path.join(WORKLOG_DIR, name))
@@ -3050,6 +3066,32 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             st.session_state["worklog_selected"] = date.today()
         selected: date = st.session_state["worklog_selected"]
 
+        # Drive「dashboard 복사본/worklog」↔ 로컬 캐시 동기화 (맥에서 양방향)
+        try:
+            from drive_autoload import sync_worklog_bidirectional
+
+            _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR)
+            if (
+                isinstance(_wl_sync, dict)
+                and _wl_sync.get("ok")
+                and not _wl_sync.get("skipped")
+                and _wl_sync.get("copied")
+            ):
+                _invalidate_saved_dates_cache()
+                if not _wl_quiet_ui():
+                    st.caption(
+                        f"Drive 업무일지 동기화 · {len(_wl_sync.get('copied') or [])}개"
+                    )
+            elif isinstance(_wl_sync, dict) and _wl_sync.get("skipped") and _wl_quiet_ui():
+                if not st.session_state.get("_wl_cloud_sync_hint"):
+                    st.session_state["_wl_cloud_sync_hint"] = True
+                    st.caption(
+                        "클라우드 저장(이 기기). 맥과 공유는 Drive「dashboard 복사본/worklog」"
+                        " — 맥에서 일지 탭을 열면 동기화됩니다."
+                    )
+        except Exception:
+            pass
+
         # 삭제 요청은 위젯 생성 전에 처리
         if st.session_state.pop("wl_do_delete_day", None) == selected.isoformat():
             delete_worklog_day(selected)
@@ -3713,10 +3755,12 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             st.session_state[_next_key(d)] = "\n".join(nd)
                             st.session_state[_notes_key(d)] = "\n".join(nt)
                             arch = st.session_state.get("wl_last_archive_path") or ""
+                            drv = st.session_state.get("wl_last_drive_path") or ""
                             msg = f"저장 완료: {os.path.basename(path)}"
                             if arch and not _wl_quiet_ui():
                                 msg += f" · 일지/{d.year}/{os.path.basename(arch)}"
-                            # iPad/Cloud는 달력 캐시 저장만으로 성공 처리
+                            if drv:
+                                msg += " · Drive 복사본/worklog"
                             st.session_state[f"wl_pending_sync_{iso2}"] = {
                                 "entries": packed_entries,
                                 "next": "\n".join(nd),

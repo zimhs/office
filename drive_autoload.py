@@ -286,3 +286,128 @@ def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache") -> dict:
             "source": drive_root,
             "error": str(e),
         }
+
+
+_WORKLOG_DAY_RE = re.compile(r"^20\d{2}-\d{2}-\d{2}\.xlsx$")
+_WL_SYNC_DONE = False
+
+
+def resolve_drive_worklog_dir() -> Optional[str]:
+    """Drive「dashboard 복사본/worklog」— 맥·아이패드 공통 업무일지 폴더."""
+    root = resolve_drive_dashboard_copy()
+    if not root:
+        return None
+    path = os.path.join(root, "worklog")
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError:
+        return None
+
+
+def _is_worklog_day_file(name: str) -> bool:
+    if not name or not name.endswith(".xlsx"):
+        return False
+    if name == "template.xlsx" or name.startswith("_preview_") or "_인쇄" in name:
+        return False
+    return bool(_WORKLOG_DAY_RE.match(name))
+
+
+def sync_worklog_bidirectional(
+    local_dir: str = "./uploaded_cache/worklog",
+    *,
+    force: bool = False,
+) -> dict:
+    """로컬 uploaded_cache/worklog ↔ Drive dashboard 복사본/worklog (mtime 최신 우선).
+
+    맥: Drive 마운트로 양방향. 클라우드: Drive 경로 없으면 skipped.
+    """
+    global _WL_SYNC_DONE
+    if _WL_SYNC_DONE and not force:
+        return {"ok": True, "skipped": True, "copied": [], "source": None}
+    drive_dir = resolve_drive_worklog_dir()
+    if not drive_dir:
+        _WL_SYNC_DONE = True
+        return {
+            "ok": True,
+            "skipped": True,
+            "copied": [],
+            "source": None,
+            "note": "Drive worklog 없음(클라우드·로컬만)",
+        }
+    copied: List[str] = []
+    try:
+        os.makedirs(local_dir, exist_ok=True)
+        names = set()
+        try:
+            names.update(n for n in os.listdir(local_dir) if _is_worklog_day_file(n))
+        except OSError:
+            pass
+        try:
+            names.update(n for n in os.listdir(drive_dir) if _is_worklog_day_file(n))
+        except OSError:
+            pass
+        for name in sorted(names):
+            loc = os.path.join(local_dir, name)
+            drv = os.path.join(drive_dir, name)
+            loc_ok = os.path.isfile(loc)
+            drv_ok = os.path.isfile(drv)
+            if loc_ok and not drv_ok:
+                if _atomic_copy(loc, drv):
+                    copied.append(f"→Drive:{name}")
+                continue
+            if drv_ok and not loc_ok:
+                if _atomic_copy(drv, loc):
+                    copied.append(f"←Drive:{name}")
+                continue
+            if not (loc_ok and drv_ok):
+                continue
+            try:
+                lm, dm = os.path.getmtime(loc), os.path.getmtime(drv)
+                ls, ds = os.path.getsize(loc), os.path.getsize(drv)
+            except OSError:
+                continue
+            if abs(lm - dm) < 1.0 and ls == ds:
+                continue
+            if lm >= dm:
+                if _atomic_copy(loc, drv):
+                    copied.append(f"→Drive:{name}")
+            else:
+                if _atomic_copy(drv, loc):
+                    copied.append(f"←Drive:{name}")
+        loc_t = os.path.join(local_dir, "template.xlsx")
+        drv_t = os.path.join(drive_dir, "template.xlsx")
+        if os.path.isfile(loc_t) and not os.path.isfile(drv_t):
+            if _atomic_copy(loc_t, drv_t):
+                copied.append("→Drive:template.xlsx")
+        elif os.path.isfile(drv_t) and not os.path.isfile(loc_t):
+            if _atomic_copy(drv_t, loc_t):
+                copied.append("←Drive:template.xlsx")
+        _WL_SYNC_DONE = True
+        return {"ok": True, "skipped": False, "copied": copied, "source": drive_dir}
+    except Exception as e:
+        _WL_SYNC_DONE = True
+        return {
+            "ok": False,
+            "skipped": False,
+            "copied": copied,
+            "source": drive_dir,
+            "error": str(e),
+        }
+
+
+def push_worklog_day_to_drive(
+    local_path: str,
+    local_dir: str = "./uploaded_cache/worklog",
+) -> Optional[str]:
+    """저장 직후 해당일 xlsx를 Drive worklog에 복사. 실패 시 None."""
+    drive_dir = resolve_drive_worklog_dir()
+    if not drive_dir or not local_path or not os.path.isfile(local_path):
+        return None
+    name = os.path.basename(local_path)
+    if not _is_worklog_day_file(name):
+        return None
+    dst = os.path.join(drive_dir, name)
+    if _atomic_copy(local_path, dst):
+        return dst
+    return None
