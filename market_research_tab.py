@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import unicodedata
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -229,9 +230,15 @@ def _pick(d: dict[str, str], *cands: str) -> str:
     return ""
 
 
-def ensure_market_research_cache() -> str:
-    """Drive 원본이 있으면 캐시로 동기화. 없으면 배포 시드 사용."""
+def ensure_market_research_cache(*, force: bool = False) -> str:
+    """Drive 원본이 있으면 캐시로 동기화. 세션당 1회만 시도(검색 시 재동기화 금지)."""
     os.makedirs(MR_CACHE_DIR, exist_ok=True)
+    if not force:
+        try:
+            if st.session_state.get("_mr_cache_synced"):
+                return MR_CACHE_DIR
+        except Exception:
+            pass
     for cand in MR_DRIVE_CANDIDATES:
         if cand and os.path.isdir(cand):
             try:
@@ -255,9 +262,17 @@ def ensure_market_research_cache() -> str:
                                 shutil.copy2(src, dst)
                         except Exception:
                             pass
+                try:
+                    st.session_state["_mr_cache_synced"] = True
+                except Exception:
+                    pass
                 return MR_CACHE_DIR
             except Exception:
                 continue
+    try:
+        st.session_state["_mr_cache_synced"] = True
+    except Exception:
+        pass
     return MR_CACHE_DIR
 
 
@@ -636,18 +651,112 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
     df = df[df["업체명"].map(lambda x: len(_s(x)) >= 2)].copy()
     raw_n = len(df)
     merged, removed = merge_duplicate_rows(df)
+    # 검색·필터 가속용 사전계산 컬럼
+    for c in (
+        "업체명",
+        "주소",
+        "업종",
+        "사용가스",
+        "공급사",
+        "담당자",
+        "연락처",
+        "비고",
+        "출처",
+        "시트",
+        "지역",
+    ):
+        if c not in merged.columns:
+            merged[c] = ""
+        else:
+            merged[c] = merged[c].fillna("").astype(str)
+    merged["_search"] = (
+        merged["업체명"]
+        + " "
+        + merged["주소"]
+        + " "
+        + merged["업종"]
+        + " "
+        + merged["사용가스"]
+        + " "
+        + merged["공급사"]
+        + " "
+        + merged["담당자"]
+        + " "
+        + merged["비고"]
+        + " "
+        + merged["출처"]
+    ).str.casefold()
+    merged["_factory_only"] = merged["출처"].eq("화성공장등록")
+    merged["_has_factory"] = merged["출처"].str.contains(
+        "화성공장등록", regex=False, na=False
+    )
     return merged, raw_n, removed
 
 
 def _cache_signature() -> str:
-    root = ensure_market_research_cache()
+    """로컬 캐시 mtime만 본다(Drive walk 없음)."""
+    root = MR_CACHE_DIR
+    if not os.path.isdir(root):
+        return "empty"
     parts = []
     for p in _list_xlsx(root):
         try:
-            parts.append(f"{p}:{os.path.getmtime(p):.0f}:{os.path.getsize(p)}")
+            parts.append(f"{p.name}:{os.path.getmtime(p):.0f}:{os.path.getsize(p)}")
         except OSError:
-            parts.append(str(p))
+            parts.append(p.name)
     return "|".join(parts) or "empty"
+
+
+_MR_SHOW_COLS = [
+    "지역",
+    "업체명",
+    "주소",
+    "업종",
+    "사용가스",
+    "공급사",
+    "담당자",
+    "연락처",
+    "비고",
+    "출처",
+    "시트",
+    "병합건수",
+]
+_MR_DISPLAY_LIMIT = 400
+
+
+def _filter_frame(
+    df: pd.DataFrame,
+    *,
+    regions: list[str],
+    sources: list[str],
+    suppliers: list[str],
+    query: str,
+    include_factory: bool,
+) -> pd.DataFrame:
+    """가벼운 필터 — 사전계산 _search / _factory_only 사용."""
+    view = df
+    if not include_factory:
+        view = view[~view["_factory_only"]]
+    if regions:
+        view = view[view["지역"].isin(regions)]
+    if sources:
+        src_mask = False
+        for s in sources:
+            src_mask = src_mask | view["출처"].str.contains(
+                re.escape(s), case=False, regex=True, na=False
+            )
+        view = view[src_mask]
+    if suppliers:
+        sup_mask = False
+        for s in suppliers:
+            sup_mask = sup_mask | view["공급사"].str.contains(
+                re.escape(s), case=False, regex=True, na=False
+            )
+        view = view[sup_mask]
+    q = (query or "").strip()
+    if q:
+        view = view[view["_search"].str.contains(q.casefold(), regex=False, na=False)]
+    return view
 
 
 def _metric_box(label: str, value: str) -> str:
@@ -655,6 +764,244 @@ def _metric_box(label: str, value: str) -> str:
         f"<div class='metric-box'><div class='metric-label'>{label}</div>"
         f"<div class='metric-value'>{value}</div></div>"
     )
+
+
+@st.fragment
+def _mr_filter_results_fragment(
+    df: pd.DataFrame,
+    regions: list[str],
+    sources: list[str],
+    suppliers: list[str],
+    latest_update_str: str,
+) -> None:
+    """필터·검색·표만 fragment 재실행 (엑셀 재파싱 없음)."""
+    with st.form("mr_filter_form", clear_on_submit=False):
+        f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.4, 1.6])
+        with f1:
+            sel_region = st.multiselect(
+                "지역",
+                options=regions,
+                default=st.session_state.get("mr_region_applied") or [],
+                key="mr_region_form",
+                placeholder="전체 지역",
+            )
+        with f2:
+            sel_src = st.multiselect(
+                "출처",
+                options=sources,
+                default=st.session_state.get("mr_src_applied") or [],
+                key="mr_src_form",
+                placeholder="전체 출처",
+            )
+        with f3:
+            sel_sup = st.multiselect(
+                "공급사",
+                options=suppliers,
+                default=st.session_state.get("mr_sup_applied") or [],
+                key="mr_sup_form",
+                placeholder="전체 공급사",
+            )
+        with f4:
+            q = st.text_input(
+                "검색 (업체·주소·가스·비고)",
+                value=st.session_state.get("mr_q_applied") or "",
+                key="mr_q_form",
+                placeholder="입력 후 「적용」",
+            )
+        b1, b2, b3 = st.columns([1.2, 1.4, 2])
+        with b1:
+            applied = st.form_submit_button("🔍 적용", type="primary", width="stretch")
+        with b2:
+            include_factory = st.checkbox(
+                "화성공장 DB(단독) 포함",
+                value=bool(st.session_state.get("mr_incl_factory", False)),
+                key="mr_incl_factory_form",
+                help="기본은 시장조사·경쟁사·방문조사만. 공장등록 1만건+는 필요할 때만 포함.",
+            )
+        with b3:
+            st.caption("글자마다 재검색하지 않습니다. **적용**을 눌러 주세요.")
+
+    if applied:
+        st.session_state["mr_region_applied"] = sel_region
+        st.session_state["mr_src_applied"] = sel_src
+        st.session_state["mr_sup_applied"] = sel_sup
+        st.session_state["mr_q_applied"] = q
+        st.session_state["mr_incl_factory"] = include_factory
+        st.session_state["mr_filter_ready"] = True
+    elif "mr_filter_ready" not in st.session_state:
+        st.session_state["mr_region_applied"] = []
+        st.session_state["mr_src_applied"] = []
+        st.session_state["mr_sup_applied"] = []
+        st.session_state["mr_q_applied"] = ""
+        st.session_state["mr_incl_factory"] = False
+        st.session_state["mr_filter_ready"] = True
+
+    sel_region = st.session_state.get("mr_region_applied") or []
+    sel_src = st.session_state.get("mr_src_applied") or []
+    sel_sup = st.session_state.get("mr_sup_applied") or []
+    q = st.session_state.get("mr_q_applied") or ""
+    include_factory = bool(st.session_state.get("mr_incl_factory", False))
+
+    view = _filter_frame(
+        df,
+        regions=sel_region,
+        sources=sel_src,
+        suppliers=sel_sup,
+        query=q,
+        include_factory=include_factory,
+    )
+
+    tab_overview, tab_region, tab_supplier, tab_factory, tab_files = st.tabs(
+        ["📋 통합 목록", "🗺️ 지역별", "🏭 공급사별", "🏗️ 화성공장 DB", "📁 원본 파일"]
+    )
+    show_cols = [c for c in _MR_SHOW_COLS if c in view.columns]
+    limit = _MR_DISPLAY_LIMIT
+
+    with tab_overview:
+        n_view = len(view)
+        st.caption(
+            f"결과 **{n_view:,}**건"
+            + (
+                f" · 화면에는 상위 **{min(limit, n_view):,}**건만 표시 (전체는 CSV)"
+                if n_view > limit
+                else ""
+            )
+        )
+        st.dataframe(
+            view[show_cols].head(limit),
+            width="stretch",
+            hide_index=True,
+            height=480,
+        )
+        # 대용량 CSV는 잘라서 부담 완화 (전체는 화성공장 포함 시 무거움)
+        csv_n = min(n_view, 5000)
+        csv = view[show_cols].head(csv_n).to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            f"CSV 다운로드 (최대 {csv_n:,}건)",
+            data=csv,
+            file_name="시장조사_필터결과.csv",
+            mime="text/csv",
+            key="mr_dl_csv",
+        )
+
+    with tab_region:
+        left, right = st.columns([1, 1.4])
+        region_counts = (
+            view.groupby("지역", dropna=False)
+            .size()
+            .rename("건수")
+            .sort_values(ascending=False)
+            .reset_index()
+        )
+        with left:
+            st.markdown("**지역별 건수**")
+            st.dataframe(region_counts, width="stretch", hide_index=True, height=400)
+        with right:
+            opts = region_counts["지역"].tolist() or ["미분류"]
+            pick = st.selectbox("지역 상세", options=opts, key="mr_region_pick")
+            sub = view[view["지역"] == pick][show_cols]
+            st.caption(f"{pick} · {len(sub):,}건")
+            st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
+
+    with tab_supplier:
+        # 공급사 문자열을 · 단위로 풀어 집계 (간단·빠름)
+        cnt: Counter[str] = Counter()
+        for s in view["공급사"]:
+            s = str(s or "").strip()
+            if not s:
+                continue
+            for p in re.split(r"\s*[·|/]\s*", s):
+                p = p.strip()
+                if p:
+                    cnt[p] += 1
+        if not cnt:
+            st.info("공급사 정보가 있는 행이 없습니다.")
+        else:
+            sc = (
+                pd.DataFrame({"공급사": list(cnt.keys()), "건수": list(cnt.values())})
+                .sort_values("건수", ascending=False)
+                .head(50)
+                .reset_index(drop=True)
+            )
+            a, b = st.columns([1, 1.4])
+            with a:
+                st.markdown("**공급사 TOP**")
+                st.dataframe(sc, width="stretch", hide_index=True, height=400)
+            with b:
+                pick_s = st.selectbox(
+                    "공급사 상세", options=sc["공급사"].tolist(), key="mr_sup_pick"
+                )
+                sub = view[
+                    view["공급사"].str.contains(
+                        re.escape(pick_s), regex=True, na=False
+                    )
+                ][show_cols]
+                st.caption(f"{pick_s} · {len(sub):,}건")
+                st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
+
+    with tab_factory:
+        fac = df[df["_has_factory"]]
+        st.caption(
+            f"화성공장 관련 **{len(fac):,}**건 (단독 등록 + 다른 출처와 병합된 건). "
+            "이 탭에서만 공장 DB를 봅니다."
+        )
+        with st.form("mr_fac_form"):
+            q2 = st.text_input(
+                "공장 DB 검색",
+                value=st.session_state.get("mr_fac_q_applied") or "",
+                key="mr_fac_q_form",
+                placeholder="업종·주소·회사명 → 적용",
+            )
+            fac_go = st.form_submit_button("공장 검색 적용", type="primary")
+        if fac_go or "mr_fac_q_applied" in st.session_state:
+            if fac_go:
+                st.session_state["mr_fac_q_applied"] = q2
+            qq = (st.session_state.get("mr_fac_q_applied") or "").strip()
+            fac2 = fac
+            if qq:
+                fac2 = fac[fac["_search"].str.contains(qq.casefold(), regex=False, na=False)]
+            st.caption(f"결과 {len(fac2):,}건 · 표시 {min(limit, len(fac2)):,}건")
+            st.dataframe(
+                fac2[show_cols].head(limit),
+                width="stretch",
+                hide_index=True,
+                height=440,
+            )
+        else:
+            st.info("검색어를 넣고 **공장 검색 적용**을 누르면 목록이 표시됩니다.")
+
+    with tab_files:
+        root = MR_CACHE_DIR
+        files = _list_xlsx(root)
+        st.markdown(f"**캐시 폴더:** `{root}`")
+        rows = []
+        for p in files:
+            try:
+                sz = os.path.getsize(p)
+            except OSError:
+                sz = 0
+            try:
+                rel = str(p.relative_to(root))
+            except Exception:
+                rel = p.name
+            rows.append({"파일": rel, "크기(KB)": round(sz / 1024, 1)})
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        # 출처 토큰별 대략 건수
+        src_cnt: Counter[str] = Counter()
+        for v in df["출처"].astype(str):
+            for p in re.split(r"\s*[·|/]\s*", v):
+                p = p.strip()
+                if p:
+                    src_cnt[p] += 1
+        by_src = (
+            pd.DataFrame({"출처": list(src_cnt.keys()), "건수": list(src_cnt.values())})
+            .sort_values("건수", ascending=False)
+            .reset_index(drop=True)
+        )
+        st.markdown("**출처별 적재량(병합 후)**")
+        st.dataframe(by_src, width="stretch", hide_index=True)
+        if latest_update_str:
+            st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
 
 def render_market_research_tab(latest_update_str: str = "") -> None:
@@ -665,12 +1012,24 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
     )
     st.caption(
         "경로: Google Drive › 다른 컴퓨터 › Desktop › 업무 › 시장조사  "
-        "· 지역·공급사·출처별로 정리한 통합 조회"
+        "· 지역·공급사·출처별 통합 조회 (검색은 「적용」버튼)"
     )
 
+    # Drive 동기화는 세션당 1회
+    ensure_market_research_cache()
     sig = _cache_signature()
-    with st.spinner("시장조사 자료 정리·중복 병합 중…"):
+    if not st.session_state.get("_mr_data_warm"):
+        with st.spinner("시장조사 자료 최초 정리·병합 중… (이후 검색은 빠릅니다)"):
+            df, raw_n, removed_n = load_market_research_frame(sig)
+        st.session_state["_mr_data_warm"] = True
+        st.session_state["_mr_data_sig"] = sig
+    else:
         df, raw_n, removed_n = load_market_research_frame(sig)
+        if st.session_state.get("_mr_data_sig") != sig:
+            with st.spinner("시장조사 자료 파일 변경 감지 — 갱신 중…"):
+                load_market_research_frame.clear()
+                df, raw_n, removed_n = load_market_research_frame(sig)
+            st.session_state["_mr_data_sig"] = sig
 
     if df.empty:
         st.warning(
@@ -679,16 +1038,13 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         )
         return
 
-    # —— 상단 KPI
     n_all = len(df)
+    n_survey = int((~df["_factory_only"]).sum())
     n_merged_rows = int((df["병합건수"] > 1).sum()) if "병합건수" in df.columns else 0
     n_region = df.loc[df["지역"] != "미분류", "지역"].nunique()
     c1, c2, c3, c4 = st.columns(4)
     c1.markdown(_metric_box("병합 후 업체", f"{n_all:,}"), unsafe_allow_html=True)
-    c2.markdown(
-        _metric_box("중복 병합", f"{removed_n:,}건↓"),
-        unsafe_allow_html=True,
-    )
+    c2.markdown(_metric_box("조사·경쟁사", f"{n_survey:,}"), unsafe_allow_html=True)
     c3.markdown(_metric_box("지역 수", f"{n_region:,}"), unsafe_allow_html=True)
     c4.markdown(
         _metric_box("원본→병합", f"{raw_n:,}→{n_all:,}"),
@@ -696,11 +1052,10 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
     )
     if removed_n:
         st.caption(
-            f"같은 업체명(㈜/주식회사·공백 무시)은 1건으로 합쳤습니다. "
-            f"병합된 업체 {n_merged_rows:,}곳 · 공급사·비고·출처는 · 로 합쳐 표시합니다."
+            f"중복 {removed_n:,}건 병합 · 병합 업체 {n_merged_rows:,}곳. "
+            "기본 검색은 화성공장 단독 DB를 빼서 빠르게 동작합니다."
         )
 
-    # —— 필터
     regions = sorted(
         [r for r in df["지역"].dropna().unique().tolist() if r],
         key=lambda x: (x == "미분류", x),
@@ -712,200 +1067,18 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
             if p:
                 _src_set.add(p)
     sources = sorted(_src_set)
-    suppliers = sorted(
-        [s for s in df["공급사"].dropna().unique().tolist() if str(s).strip()],
-        key=lambda x: str(x),
-    )[:400]
+    # 공급사 옵션: 공장단독 제외 표본에서만 (옵션 목록 축소 → 위젯 가벼움)
+    _sup_base = df.loc[~df["_factory_only"], "공급사"]
+    _sup_set: set[str] = set()
+    for v in _sup_base.astype(str):
+        for p in re.split(r"\s*[·|/]\s*", v):
+            p = p.strip()
+            if p:
+                _sup_set.add(p)
+            if len(_sup_set) >= 300:
+                break
+        if len(_sup_set) >= 300:
+            break
+    suppliers = sorted(_sup_set)
 
-    f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.4, 1.6])
-    with f1:
-        sel_region = st.multiselect(
-            "지역",
-            options=regions,
-            default=[],
-            key="mr_region",
-            placeholder="전체 지역",
-        )
-    with f2:
-        sel_src = st.multiselect(
-            "출처",
-            options=sources,
-            default=[],
-            key="mr_src",
-            placeholder="전체 출처",
-        )
-    with f3:
-        sel_sup = st.multiselect(
-            "공급사",
-            options=suppliers,
-            default=[],
-            key="mr_sup",
-            placeholder="전체 공급사",
-        )
-    with f4:
-        q = st.text_input(
-            "검색 (업체·주소·가스·비고)",
-            key="mr_q",
-            placeholder="예: 화성, LCO2, 린데…",
-        )
-
-    view = df
-    if sel_region:
-        view = view[view["지역"].isin(sel_region)]
-    if sel_src:
-        src_mask = False
-        for s in sel_src:
-            src_mask = src_mask | view["출처"].fillna("").astype(str).str.contains(
-                re.escape(s), case=False, regex=True, na=False
-            )
-        view = view[src_mask]
-    if sel_sup:
-        sup_mask = False
-        for s in sel_sup:
-            sup_mask = sup_mask | view["공급사"].fillna("").astype(str).str.contains(
-                re.escape(s), case=False, regex=True, na=False
-            )
-        view = view[sup_mask]
-    if q.strip():
-        qq = q.strip()
-        mask = False
-        for col in ("업체명", "주소", "업종", "사용가스", "공급사", "비고", "담당자"):
-            mask = mask | view[col].fillna("").astype(str).str.contains(
-                qq, case=False, regex=False, na=False
-            )
-        view = view[mask]
-
-    tab_overview, tab_region, tab_supplier, tab_factory, tab_files = st.tabs(
-        ["📋 통합 목록", "🗺️ 지역별", "🏭 공급사별", "🏗️ 화성공장 DB", "📁 원본 파일"]
-    )
-
-    show_cols = [
-        "지역",
-        "업체명",
-        "주소",
-        "업종",
-        "사용가스",
-        "공급사",
-        "담당자",
-        "연락처",
-        "비고",
-        "출처",
-        "시트",
-        "병합건수",
-    ]
-
-    with tab_overview:
-        st.caption(f"필터 결과 **{len(view):,}**건 / 고유 업체 **{view['업체키'].nunique():,}**")
-        st.dataframe(
-            view[show_cols],
-            width="stretch",
-            hide_index=True,
-            height=520,
-        )
-        csv = view[show_cols].to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "필터 결과 CSV 다운로드",
-            data=csv,
-            file_name="시장조사_필터결과.csv",
-            mime="text/csv",
-            key="mr_dl_csv",
-        )
-
-    with tab_region:
-        left, right = st.columns([1, 1.4])
-        region_counts = (
-            view.groupby("지역", dropna=False)
-            .agg(레코드=("업체명", "count"), 고유업체=("업체키", "nunique"))
-            .sort_values("레코드", ascending=False)
-            .reset_index()
-        )
-        with left:
-            st.markdown("**지역별 건수**")
-            st.dataframe(region_counts, width="stretch", hide_index=True, height=420)
-        with right:
-            pick = st.selectbox(
-                "지역 상세",
-                options=region_counts["지역"].tolist() or ["미분류"],
-                key="mr_region_pick",
-            )
-            sub = view[view["지역"] == pick][show_cols]
-            st.caption(f"{pick} · {len(sub):,}건")
-            st.dataframe(sub, width="stretch", hide_index=True, height=420)
-
-    with tab_supplier:
-        # 공급사 비어있으면 제외하고 상위
-        sup = view[view["공급사"].fillna("").astype(str).str.strip() != ""].copy()
-        if sup.empty:
-            st.info("공급사 정보가 있는 행이 없습니다. 다른 출처를 선택해 보세요.")
-        else:
-            sc = (
-                sup.groupby("공급사")
-                .agg(레코드=("업체명", "count"), 고유업체=("업체키", "nunique"))
-                .sort_values("레코드", ascending=False)
-                .head(50)
-                .reset_index()
-            )
-            a, b = st.columns([1, 1.4])
-            with a:
-                st.markdown("**공급사 TOP**")
-                st.dataframe(sc, width="stretch", hide_index=True, height=420)
-            with b:
-                pick_s = st.selectbox(
-                    "공급사 상세",
-                    options=sc["공급사"].tolist(),
-                    key="mr_sup_pick",
-                )
-                sub = view[view["공급사"] == pick_s][show_cols]
-                st.caption(f"{pick_s} · {len(sub):,}건")
-                st.dataframe(sub, width="stretch", hide_index=True, height=420)
-
-    with tab_factory:
-        fac = view[view["출처"].fillna("").astype(str).str.contains("화성공장등록", regex=False, na=False)]
-        st.caption(
-            "화성공장 등록 검색 DB — 가스 공급 여부와 무관한 **등록 공장 전체**. "
-            f"현재 필터 기준 {len(fac):,}건"
-        )
-        q2 = st.text_input("공장 DB 추가 검색", key="mr_fac_q", placeholder="업종·주소·회사명")
-        fac2 = fac
-        if q2.strip():
-            qq = q2.strip()
-            m = False
-            for col in ("업체명", "주소", "업종", "비고"):
-                m = m | fac2[col].fillna("").astype(str).str.contains(
-                    qq, case=False, regex=False, na=False
-                )
-            fac2 = fac2[m]
-        st.dataframe(
-            fac2[show_cols],
-            width="stretch",
-            hide_index=True,
-            height=480,
-        )
-
-    with tab_files:
-        root = ensure_market_research_cache()
-        files = _list_xlsx(root)
-        st.markdown(f"**캐시 폴더:** `{root}`")
-        rows = []
-        for p in files:
-            try:
-                sz = os.path.getsize(p)
-            except OSError:
-                sz = 0
-            rows.append(
-                {
-                    "파일": str(p.relative_to(root)) if root in str(p) else p.name,
-                    "크기(KB)": round(sz / 1024, 1),
-                }
-            )
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-        by_src = (
-            df.groupby("출처")
-            .agg(레코드=("업체명", "count"), 고유업체=("업체키", "nunique"))
-            .sort_values("레코드", ascending=False)
-            .reset_index()
-        )
-        st.markdown("**출처별 적재량**")
-        st.dataframe(by_src, width="stretch", hide_index=True)
-        if latest_update_str:
-            st.caption(f"대시보드 기준 시각: {latest_update_str}")
+    _mr_filter_results_fragment(df, regions, sources, suppliers, latest_update_str)
