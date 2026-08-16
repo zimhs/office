@@ -3473,7 +3473,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     st.session_state["_wl_force_form_sig"] = form_sig
                     # 맥 로컬: Excel 실행 + 인쇄 미리보기까지. Cloud는 화면 양식만.
                     if platform.system() == "Darwin":
-                        ok, msg = open_excel_print_preview(xlsx_abs)
+                        ok, msg = open_excel_print_preview(
+                            xlsx_abs, prefer_print_dialog=True
+                        )
                         if ok:
                             st.success(msg)
                         else:
