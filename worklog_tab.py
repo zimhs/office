@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import subprocess
+import time
 import unicodedata
 from datetime import date
 from functools import lru_cache
@@ -2198,7 +2199,7 @@ div[class*="st-key-wl_ln_add_"] button span {
                 == ""
             )
             if is_last_empty:
-                if st.button(
+                if st.form_submit_button(
                     "＋",
                     key=f"wl_cl_add_{iso}_{entry_i}_{j}",
                     width="stretch",
@@ -2206,7 +2207,7 @@ div[class*="st-key-wl_ln_add_"] button span {
                 ):
                     st.session_state[f"wl_do_insert_cl_{iso}"] = (entry_i, j)
                     _wl_rerun()
-            elif st.button(
+            elif st.form_submit_button(
                 "삭제",
                 key=f"wl_cl_del_{iso}_{entry_i}_{j}",
                 width="stretch",
@@ -2264,7 +2265,7 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
                 == ""
             )
             if is_last_empty:
-                if st.button(
+                if st.form_submit_button(
                     "＋",
                     key=f"wl_ln_add_{iso}_{entry_i}_{j}",
                     width="stretch",
@@ -2272,7 +2273,7 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
                 ):
                     st.session_state[f"wl_do_insert_ln_{iso}"] = (entry_i, j)
                     _wl_rerun()
-            elif st.button(
+            elif st.form_submit_button(
                 "삭제",
                 key=f"wl_ln_del_{iso}_{entry_i}_{j}",
                 width="stretch",
@@ -2442,7 +2443,13 @@ export default function (component) {
     if (e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
-      emit(info.key, t.value || "");
+      // 서버 rerun 없이 다음 칸으로만 이동 (form 입력 중 로딩·값 유실 방지)
+      // 칸 추가는 「＋」/저장 시 서버에서 처리
+      const list = listKindInputs(info.kind);
+      const idx = list.indexOf(t);
+      if (idx >= 0 && idx < list.length - 1) {
+        focusInput(list[idx + 1], "end");
+      }
       return;
     }
 
@@ -2525,7 +2532,8 @@ export default function (component) {
     }
   };
 
-  // 원본 칸 폭을 넘는 순간 → 다음 칸으로 (입력 중 자동)
+  // 칸 폭 초과 시 DOM만 자르고 서버로는 보내지 않음 (입력 중 로딩 방지)
+  // Enter 시에만 emit → 서버에서 다음 칸 분할
   const onInput = (e) => {
     if (e.isComposing) return;
     const t = e.target;
@@ -2537,7 +2545,6 @@ export default function (component) {
     try {
       t.value = head;
     } catch (err) {}
-    emit(info.key, v);
   };
 
   const onCompEnd = (e) => {
@@ -2550,23 +2557,12 @@ export default function (component) {
     try {
       t.value = head;
     } catch (err) {}
-    emit(info.key, v);
   };
 
   document.addEventListener("keydown", onKey, true);
   document.addEventListener("input", onInput, true);
   document.addEventListener("compositionend", onCompEnd, true);
-  const onFocusIn = (e) => {
-    if (isComposingTarget(e.target)) return;
-    const info = resolveKey(e.target);
-    if (!info) return;
-    if (info.key === lastFocusKey) return;
-    lastFocusKey = info.key;
-    try {
-      setTriggerValue("focus", info.key);
-    } catch (err) {}
-  };
-  document.addEventListener("focusin", onFocusIn, true);
+  // focus → setTriggerValue 제거: 칸 이동만으로 fragment 로딩이 나던 원인
 
   if (focusKey) {
     const go = () => {
@@ -2590,13 +2586,12 @@ export default function (component) {
     document.removeEventListener("keydown", onKey, true);
     document.removeEventListener("input", onInput, true);
     document.removeEventListener("compositionend", onCompEnd, true);
-    document.removeEventListener("focusin", onFocusIn, true);
   };
 }
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v10",
+    "worklog_cell_nav_hook_v11",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -3486,11 +3481,18 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             st.session_state["worklog_selected"] = date.today()
         selected: date = st.session_state["worklog_selected"]
 
-        # Drive「dashboard 복사본/worklog」↔ 로컬 캐시 동기화 (맥에서 양방향)
+        # Drive 동기화는 잦은 버튼/입력 rerun마다 돌리면 로딩이 심해짐 → 90초마다
         try:
             from drive_autoload import sync_worklog_bidirectional
 
-            _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR)
+            _now = time.time()
+            _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
+            _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
+            if _force or (_now - _prev >= 90):
+                st.session_state["_wl_drive_sync_ts"] = _now
+                _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR)
+            else:
+                _wl_sync = {"ok": True, "skipped": True, "copied": []}
             if (
                 isinstance(_wl_sync, dict)
                 and _wl_sync.get("ok")
@@ -4064,125 +4066,270 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     except Exception:
                         pass
 
-                # 전체 내용칸 잔여 (입력 반영) — 가운데 게이지로 표시, 배너는 숨김
-                _live_entries = _read_editor_entries(d)
-                _usage = _content_row_usage(_live_entries)
-                _rem = _usage["remaining"]
+                # 전체 내용칸 잔여 — form 제출 전 값은 직전 커밋 기준
+                st.caption(
+                    "칸에 입력하는 동안 화면이 다시 로딩되지 않습니다. "
+                    "「저장」을 눌러야 미리보기·파일에 반영됩니다."
+                )
+                with st.form(
+                    f"wl_entry_form_{iso2}",
+                    clear_on_submit=False,
+                    enter_to_submit=False,
+                    border=False,
+                ):
+                    _live_entries = _read_editor_entries(d)
+                    _usage = _content_row_usage(_live_entries)
+                    _rem = _usage["remaining"]
 
-                for i in range(n):
-                    if int(
-                        st.session_state.get(_entry_client_count_key(iso2, i), 0) or 0
-                    ) > 0:
-                        _cl0 = _clients_from_widgets(
-                            iso2, i, keep_trailing_empty=False
-                        )
-                        client_now = (_cl0[0] if _cl0 else "").strip()
-                    else:
-                        client_now = str(
-                            st.session_state.get(f"wl_ent_c_{iso2}_{i}", "") or ""
-                        ).strip()
-                        if client_now:
-                            client_now = client_now.splitlines()[0].strip()
-                    body_now = _content_from_entry_lines(iso2, i).strip().replace(
-                        "\n", " "
-                    )
-                    if len(body_now) > 24:
-                        body_now = body_now[:24] + "…"
-                    label = f"항목 {i + 1}"
-                    if client_now:
-                        label += f" · {client_now}"
-                    elif body_now:
-                        label += f" · {body_now}"
-                    else:
-                        label += " · (비어 있음)"
-
-                    exp_key = f"wl_exp_{iso2}_{i}"
-                    # 기본: 마지막 항목만 펼침 (키로 이후 사용자 토글 유지)
-                    default_open = i == n - 1
-                    if exp_key not in st.session_state:
-                        st.session_state[exp_key] = default_open
-
-                    with st.expander(
-                        label, expanded=bool(st.session_state.get(exp_key)), key=exp_key
-                    ):
-                        if st.button(
-                            "이 항목 삭제",
-                            key=f"wl_del_btn_{iso2}_{i}",
-                            width="stretch",
-                        ):
-                            st.session_state[f"wl_do_del_{iso2}"] = i
-                            _wl_rerun()
-                        _cu = _client_line_units()
+                    for i in range(n):
                         if int(
-                            st.session_state.get(_entry_client_count_key(iso2, i), 0)
-                            or 0
-                        ) <= 0:
-                            stored_e = st.session_state.get(_entries_key(d)) or []
-                            if i < len(stored_e) and isinstance(
-                                stored_e[i].get("client_lines"), list
-                            ):
-                                _seed_entry_clients(
-                                    iso2, i, stored_e[i].get("client_lines") or [""]
-                                )
-                            else:
-                                _seed_entry_clients(
-                                    iso2,
-                                    i,
-                                    str(
-                                        st.session_state.get(f"wl_ent_c_{iso2}_{i}", "")
-                                        or ""
-                                    ),
-                                )
-                        if int(st.session_state.get(_entry_line_count_key(iso2, i), 0) or 0) <= 0:
-                            lines0 = None
-                            # stored entries may have lines
-                            stored_e = st.session_state.get(_entries_key(d)) or []
-                            if i < len(stored_e) and isinstance(stored_e[i].get("lines"), list):
-                                lines0 = stored_e[i].get("lines")
-                            if isinstance(lines0, list):
-                                _apply_entry_lines(iso2, i, [str(x or "") for x in lines0])
-                            else:
-                                _seed_entry_lines(
-                                    iso2,
-                                    i,
-                                    str(st.session_state.get(f"wl_ent_t_{iso2}_{i}", "") or ""),
-                                )
-                        # 원본 양식처럼 거래처(좌) · 내용(우) 나란히
-                        col_client, col_content = st.columns([1, 3.2], gap="small")
-                        with col_client:
-                            _mount_entry_client_editor(iso2, i, _cu)
-                        with col_content:
-                            _mount_entry_lines_editor(iso2, i, max_u)
-                        _filled = len(
-                            _lines_from_entry_widgets(iso2, i, keep_trailing_empty=False)
-                        )
-                        gap_key = f"wl_ent_gap_{iso2}_{i}"
-                        if gap_key not in st.session_state:
-                            st.session_state[gap_key] = _entry_blank_after(
-                                (_live_entries[i] if i < len(_live_entries) else None),
-                                1,
+                            st.session_state.get(_entry_client_count_key(iso2, i), 0) or 0
+                        ) > 0:
+                            _cl0 = _clients_from_widgets(
+                                iso2, i, keep_trailing_empty=False
                             )
-                        st.number_input(
-                            "다음 항목 전 빈 칸 수",
-                            min_value=0,
-                            max_value=10,
-                            step=1,
-                            key=gap_key,
-                            help="이 항목 다음에 원본 엑셀에서 비워 둘 행 수. "
-                            "다른 거래처 항목과 구분하려면 1 이상 권장 "
-                            "(0이면 거래처 줄바꿈과 구분이 어려울 수 있음)",
+                            client_now = (_cl0[0] if _cl0 else "").strip()
+                        else:
+                            client_now = str(
+                                st.session_state.get(f"wl_ent_c_{iso2}_{i}", "") or ""
+                            ).strip()
+                            if client_now:
+                                client_now = client_now.splitlines()[0].strip()
+                        body_now = _content_from_entry_lines(iso2, i).strip().replace(
+                            "\n", " "
                         )
-                        _ent_rows = (
-                            _usage["per_entry"][i]
-                            if i < len(_usage["per_entry"])
-                            else max(_filled, 1)
-                        )
-                        st.caption(
-                            f"이 항목 약 {_ent_rows}행 사용 · "
-                            f"전체 남은 {_rem}행 (마지막 칸 G{_usage['last_row']})"
-                        )
+                        if len(body_now) > 24:
+                            body_now = body_now[:24] + "…"
+                        label = f"항목 {i + 1}"
+                        if client_now:
+                            label += f" · {client_now}"
+                        elif body_now:
+                            label += f" · {body_now}"
+                        else:
+                            label += " · (비어 있음)"
 
-                # Enter 훅 + 다음 칸 포커스 (입력칸 생성 후)
+                        exp_key = f"wl_exp_{iso2}_{i}"
+                        # 기본: 마지막 항목만 펼침 (키로 이후 사용자 토글 유지)
+                        default_open = i == n - 1
+                        if exp_key not in st.session_state:
+                            st.session_state[exp_key] = default_open
+
+                        with st.expander(
+                            label,
+                            expanded=bool(st.session_state.get(exp_key)),
+                            key=exp_key,
+                        ):
+                            if st.form_submit_button(
+                                "이 항목 삭제",
+                                key=f"wl_del_btn_{iso2}_{i}",
+                                width="stretch",
+                            ):
+                                st.session_state[f"wl_do_del_{iso2}"] = i
+                                _wl_rerun()
+                            _cu = _client_line_units()
+                            if int(
+                                st.session_state.get(
+                                    _entry_client_count_key(iso2, i), 0
+                                )
+                                or 0
+                            ) <= 0:
+                                stored_e = st.session_state.get(_entries_key(d)) or []
+                                if i < len(stored_e) and isinstance(
+                                    stored_e[i].get("client_lines"), list
+                                ):
+                                    _seed_entry_clients(
+                                        iso2,
+                                        i,
+                                        stored_e[i].get("client_lines") or [""],
+                                    )
+                                else:
+                                    _seed_entry_clients(
+                                        iso2,
+                                        i,
+                                        str(
+                                            st.session_state.get(
+                                                f"wl_ent_c_{iso2}_{i}", ""
+                                            )
+                                            or ""
+                                        ),
+                                    )
+                            if (
+                                int(
+                                    st.session_state.get(
+                                        _entry_line_count_key(iso2, i), 0
+                                    )
+                                    or 0
+                                )
+                                <= 0
+                            ):
+                                lines0 = None
+                                stored_e = st.session_state.get(_entries_key(d)) or []
+                                if i < len(stored_e) and isinstance(
+                                    stored_e[i].get("lines"), list
+                                ):
+                                    lines0 = stored_e[i].get("lines")
+                                if isinstance(lines0, list):
+                                    _apply_entry_lines(
+                                        iso2, i, [str(x or "") for x in lines0]
+                                    )
+                                else:
+                                    _seed_entry_lines(
+                                        iso2,
+                                        i,
+                                        str(
+                                            st.session_state.get(
+                                                f"wl_ent_t_{iso2}_{i}", ""
+                                            )
+                                            or ""
+                                        ),
+                                    )
+                            col_client, col_content = st.columns(
+                                [1, 3.2], gap="small"
+                            )
+                            with col_client:
+                                _mount_entry_client_editor(iso2, i, _cu)
+                            with col_content:
+                                _mount_entry_lines_editor(iso2, i, max_u)
+                            _filled = len(
+                                _lines_from_entry_widgets(
+                                    iso2, i, keep_trailing_empty=False
+                                )
+                            )
+                            gap_key = f"wl_ent_gap_{iso2}_{i}"
+                            if gap_key not in st.session_state:
+                                st.session_state[gap_key] = _entry_blank_after(
+                                    (
+                                        _live_entries[i]
+                                        if i < len(_live_entries)
+                                        else None
+                                    ),
+                                    1,
+                                )
+                            st.number_input(
+                                "다음 항목 전 빈 칸 수",
+                                min_value=0,
+                                max_value=10,
+                                step=1,
+                                key=gap_key,
+                                help="이 항목 다음에 원본 엑셀에서 비워 둘 행 수. "
+                                "다른 거래처 항목과 구분하려면 1 이상 권장 "
+                                "(0이면 거래처 줄바꿈과 구분이 어려울 수 있음)",
+                            )
+                            _ent_rows = (
+                                _usage["per_entry"][i]
+                                if i < len(_usage["per_entry"])
+                                else max(_filled, 1)
+                            )
+                            st.caption(
+                                f"이 항목 약 {_ent_rows}행 사용 · "
+                                f"전체 남은 {_rem}행 (마지막 칸 G{_usage['last_row']})"
+                            )
+
+                    if st.form_submit_button(
+                        "＋ 항목 추가", key=f"wl_add_btn_{iso2}", width="stretch"
+                    ):
+                        st.session_state[f"wl_do_add_{iso2}"] = True
+                        _wl_rerun()
+
+                    st.markdown(
+                        "<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>"
+                        "익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.text_area(
+                        "익일업무",
+                        key=f"wl_next_area_{iso2}",
+                        label_visibility="collapsed",
+                        height=90,
+                    )
+                    st.markdown(
+                        "<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>"
+                        "특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.text_area(
+                        "특이사항",
+                        key=f"wl_notes_area_{iso2}",
+                        label_visibility="collapsed",
+                        height=90,
+                    )
+
+                    if st.form_submit_button(
+                        "저장",
+                        type="primary",
+                        width="stretch",
+                        key=f"wl_save_btn_{iso2}",
+                    ):
+                        try:
+                            entries_now = _read_editor_entries(d)
+                            usage_now = _content_row_usage(entries_now)
+                            if usage_now.get("overflow"):
+                                st.error(
+                                    f"내용칸 용량 초과: {usage_now['used']}/{usage_now['total']}행. "
+                                    "칸을 줄이거나 항목 사이 빈 칸 수를 낮춘 뒤 다시 저장하세요."
+                                )
+                            else:
+                                cells = _pack_entries_to_cells(
+                                    d,
+                                    entries_now,
+                                    [
+                                        x.strip()
+                                        for x in str(
+                                            st.session_state.get(
+                                                f"wl_next_area_{iso2}", ""
+                                            )
+                                            or ""
+                                        ).splitlines()
+                                        if x.strip()
+                                    ],
+                                    [
+                                        x.strip()
+                                        for x in str(
+                                            st.session_state.get(
+                                                f"wl_notes_area_{iso2}", ""
+                                            )
+                                            or ""
+                                        ).splitlines()
+                                        if x.strip()
+                                    ],
+                                )
+                                path = save_worklog_cells(d, cells)
+                                packed_entries = _grouped_entries_from_cells(cells)
+                                if not packed_entries:
+                                    packed_entries = [
+                                        {"client": "", "content": "", "lines": []}
+                                    ]
+                                _, nd, nt = _entries_from_cells(cells)
+                                st.session_state[_entries_key(d)] = packed_entries
+                                st.session_state[_next_key(d)] = "\n".join(nd)
+                                st.session_state[_notes_key(d)] = "\n".join(nt)
+                                arch = (
+                                    st.session_state.get("wl_last_archive_path") or ""
+                                )
+                                drv = st.session_state.get("wl_last_drive_path") or ""
+                                msg = f"저장 완료: {os.path.basename(path)}"
+                                if arch and not _wl_quiet_ui():
+                                    msg += (
+                                        f" · 일지/{d.year}/{os.path.basename(arch)}"
+                                    )
+                                if drv:
+                                    msg += " · Drive 복사본/worklog"
+                                st.session_state[f"wl_pending_sync_{iso2}"] = {
+                                    "entries": packed_entries,
+                                    "next": "\n".join(nd),
+                                    "notes": "\n".join(nt),
+                                    "msg": msg,
+                                }
+                                _wl_rerun()
+                        except Exception as e:
+                            if _wl_quiet_ui():
+                                st.error(
+                                    "저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요."
+                                )
+                            else:
+                                st.error(f"저장 실패: {e}")
+
+                # Enter 훅: 방향키·칸 이동만 (입력 중 서버 호출 없음)
                 _WL_ENTER_HOOK(
                     key=f"wl_enter_hook_{iso2}",
                     data={
@@ -4196,15 +4343,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         "client_max_u": _client_line_units(),
                         "content_max_u": _content_line_units(),
                     },
-                    on_enter_change=_on_enter_trigger,
-                    on_focus_change=_on_focus_trigger,
-                    on_caret_change=_on_caret_trigger,
                     width="stretch",
                     height=1,
                 )
-                # Enter 콜백은 훅 마운트 시점에 옴 → 다음 런 위젯 생성 전에 반영
-                if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
-                    _wl_rerun()
                 ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
                 if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
                     _insert_line_after(iso2, int(ins_after[0]), int(ins_after[1]))
@@ -4215,95 +4356,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         iso2, int(ins_cl_after[0]), int(ins_cl_after[1])
                     )
                     _wl_rerun()
-
-                if st.button("＋ 항목 추가", key=f"wl_add_btn_{iso2}", width="stretch"):
-                    st.session_state[f"wl_do_add_{iso2}"] = True
-                    _wl_rerun()
-
-                st.markdown(
-                    "<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>"
-                    "익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>",
-                    unsafe_allow_html=True,
-                )
-                st.text_area(
-                    "익일업무",
-                    key=f"wl_next_area_{iso2}",
-                    label_visibility="collapsed",
-                    height=90,
-                )
-                st.markdown(
-                    "<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>"
-                    "특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>",
-                    unsafe_allow_html=True,
-                )
-                st.text_area(
-                    "특이사항",
-                    key=f"wl_notes_area_{iso2}",
-                    label_visibility="collapsed",
-                    height=90,
-                )
-
-                if st.button(
-                    "저장",
-                    type="primary",
-                    width="stretch",
-                    key=f"wl_save_btn_{iso2}",
-                ):
-                    try:
-                        # 방금 마운트된 칸 값을 우선 반영
-                        entries_now = _read_editor_entries(d)
-                        usage_now = _content_row_usage(entries_now)
-                        if usage_now.get("overflow"):
-                            st.error(
-                                f"내용칸 용량 초과: {usage_now['used']}/{usage_now['total']}행. "
-                                "칸을 줄이거나 항목 사이 빈 칸 수를 낮춘 뒤 다시 저장하세요."
-                            )
-                        else:
-                            cells = _pack_entries_to_cells(
-                                d,
-                                entries_now,
-                                [
-                                    x.strip()
-                                    for x in str(
-                                        st.session_state.get(f"wl_next_area_{iso2}", "") or ""
-                                    ).splitlines()
-                                    if x.strip()
-                                ],
-                                [
-                                    x.strip()
-                                    for x in str(
-                                        st.session_state.get(f"wl_notes_area_{iso2}", "") or ""
-                                    ).splitlines()
-                                    if x.strip()
-                                ],
-                            )
-                            path = save_worklog_cells(d, cells)
-                            packed_entries = _grouped_entries_from_cells(cells)
-                            if not packed_entries:
-                                packed_entries = [{"client": "", "content": "", "lines": []}]
-                            _, nd, nt = _entries_from_cells(cells)
-                            st.session_state[_entries_key(d)] = packed_entries
-                            st.session_state[_next_key(d)] = "\n".join(nd)
-                            st.session_state[_notes_key(d)] = "\n".join(nt)
-                            arch = st.session_state.get("wl_last_archive_path") or ""
-                            drv = st.session_state.get("wl_last_drive_path") or ""
-                            msg = f"저장 완료: {os.path.basename(path)}"
-                            if arch and not _wl_quiet_ui():
-                                msg += f" · 일지/{d.year}/{os.path.basename(arch)}"
-                            if drv:
-                                msg += " · Drive 복사본/worklog"
-                            st.session_state[f"wl_pending_sync_{iso2}"] = {
-                                "entries": packed_entries,
-                                "next": "\n".join(nd),
-                                "notes": "\n".join(nt),
-                                "msg": msg,
-                            }
-                            _wl_rerun()
-                    except Exception as e:
-                        if _wl_quiet_ui():
-                            st.error("저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요.")
-                        else:
-                            st.error(f"저장 실패: {e}")
 
             _wl_entry_editor()
     _worklog_main()
