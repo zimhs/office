@@ -1122,28 +1122,41 @@ def render_worklog_view_html(
 ) -> str:
     """원본 엑셀 양식 HTML (인쇄/보고용)."""
     sheet = workbook_to_html(path)
+    raw_w, raw_h = _worklog_sheet_pixel_size(path)
+    # A4 인쇄 가능 영역(약 190×270mm ≈ 718×1020px @96dpi)에 맞춤
+    print_fit = 1.0
+    if raw_w > 0 and raw_h > 0:
+        print_fit = float(min(1.0, 700.0 / float(raw_w), 980.0 / float(raw_h)))
+        print_fit = max(0.35, min(1.0, print_fit))
+
     toolbar = ""
     if print_mode:
-        toolbar = """
-        <div class="toolbar">
-          <button onclick="window.print()">다시 인쇄 / PDF 저장</button>
-          <span class="hint">인쇄창이 안 뜨면 이 버튼을 누르세요.</span>
+        toolbar = f"""
+        <div class="toolbar no-print">
+          <button type="button" id="wl-print-btn">인쇄하기</button>
+          <button type="button" id="wl-close-hint" class="secondary">인쇄 후 상단 「본화면으로」를 누르세요</button>
+          <span class="hint">인쇄 창의 「대상」에서 <b>실제 프린터</b>를 고르세요. (PDF로 저장이 보이면 드롭다운에서 변경)
+          · 「머리글과 바닥글」은 끄면 URL이 안 나옵니다.</span>
         </div>
         """
         scale = 1.0
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
     # zoom은 레이아웃까지 축소. wrap은 auto로 두어 하단이 clip 되지 않게 함.
     if print_mode or scale >= 1:
-        scale_css = ""
-        scale_css_fallback = ""
+        # 화면에서도 전체 양식이 보이게 인쇄용 fit 스케일 적용
+        s_view = print_fit if print_mode else 1.0
+        scale_css = f"zoom:{s_view};width:fit-content;"
+        scale_css_fallback = (
+            f"transform:scale({s_view});transform-origin:top left;"
+            f"margin-bottom:{(s_view - 1) * raw_h:.1f}px;width:fit-content;"
+        )
         wrap_h = "auto"
-        wrap_w = "auto"
+        wrap_w = "100%"
         wrap_overflow = "visible"
         body_overflow = "visible"
         body_h = "auto"
     else:
         s = float(scale)
-        raw_w, raw_h = _worklog_sheet_pixel_size(path)
         scale_css = f"zoom:{s};width:fit-content;"
         scale_css_fallback = (
             f"transform:scale({s});transform-origin:top left;"
@@ -1156,24 +1169,40 @@ def render_worklog_view_html(
         body_h = f"{frame_h}px"
     if wrap_height is not None:
         wrap_h = wrap_height
+    # 자동 인쇄는 1회만 (3회 호출 → 취소 3번 필요하던 문제 수정)
     auto_script = ""
     if auto_print:
         auto_script = """
         <script>
           (function() {
-            var tries = 0;
+            var done = false;
             function go() {
-              tries += 1;
+              if (done) return;
+              done = true;
               try { window.focus(); window.print(); } catch (e) {}
-              if (tries < 3) setTimeout(go, 400 * tries);
             }
-            if (document.readyState === 'complete') setTimeout(go, 200);
-            else window.addEventListener('load', function() { setTimeout(go, 200); });
+            if (document.readyState === 'complete') setTimeout(go, 350);
+            else window.addEventListener('load', function() { setTimeout(go, 350); });
+            var btn = document.getElementById('wl-print-btn');
+            if (btn) btn.addEventListener('click', function() {
+              done = false; go();
+            });
+          })();
+        </script>
+        """
+    elif print_mode:
+        auto_script = """
+        <script>
+          (function() {
+            var btn = document.getElementById('wl-print-btn');
+            if (btn) btn.addEventListener('click', function() {
+              try { window.focus(); window.print(); } catch (e) {}
+            });
           })();
         </script>
         """
     fallback_block = ""
-    if not print_mode and scale < 1:
+    if scale_css_fallback:
         fallback_block = f"""
   @supports not (zoom: 1) {{
     .sheet-scale {{ {scale_css_fallback} }}
@@ -1183,7 +1212,7 @@ def render_worklog_view_html(
 <html><head><meta charset="utf-8">
 <title>일일업무일지</title>
 <style>
-  @page {{ size: A4 portrait; margin: 10mm; }}
+  @page {{ size: A4 portrait; margin: 8mm; }}
   html, body {{
     margin:0; padding:0; background:#fff;
     overflow:{body_overflow} !important;
@@ -1195,7 +1224,10 @@ def render_worklog_view_html(
     padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px;
     background:#1E293B; color:#fff; cursor:pointer;
   }}
-  .toolbar .hint {{ font:12px/1.4 sans-serif; color:#64748B; }}
+  .toolbar button.secondary {{
+    background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default;
+  }}
+  .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }}
   .wrap {{
     overflow:{wrap_overflow} !important; height:{wrap_h};
     width:{wrap_w}; max-width:100%;
@@ -1206,11 +1238,23 @@ def render_worklog_view_html(
   .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }}
   {fallback_block}
   @media print {{
-    html, body {{ overflow:visible !important; height:auto; }}
-    .toolbar {{ display:none !important; }}
-    .wrap {{ overflow:visible !important; height:auto; width:auto; border:none; }}
+    html, body {{ overflow:visible !important; height:auto !important; width:auto !important; }}
+    .no-print, .toolbar {{ display:none !important; }}
+    .wrap {{
+      overflow:visible !important; height:auto !important; width:auto !important;
+      max-width:none !important; border:none !important;
+    }}
     .sheet-scale {{
-      zoom:1 !important; transform:none !important; margin-bottom:0 !important;
+      zoom:{print_fit:.4f} !important;
+      transform:none !important;
+      margin-bottom:0 !important;
+      width:fit-content !important;
+    }}
+    @supports not (zoom: 1) {{
+      .sheet-scale {{
+        transform:scale({print_fit:.4f}) !important;
+        transform-origin:top left !important;
+      }}
     }}
     body {{ padding:0; }}
   }}
@@ -3110,31 +3154,54 @@ return previewDone
             return False, f"Excel 실행 실패: {e2}"
 
 
-@st.dialog("프린터 / 인쇄 미리보기", width="large")
-def _worklog_browser_print_dialog() -> None:
-    """Cloud·맥 공통: 브라우저 인쇄(프린터) 창을 연다."""
+def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = True) -> None:
+    """프린터 패널 상태를 연다 (dialog 대신 → 취소 다중 팝업 방지)."""
+    st.session_state["wl_print_panel"] = True
+    st.session_state["wl_dialog_preview_path"] = os.path.abspath(xlsx_path)
+    st.session_state["wl_print_auto_once"] = bool(auto)
+
+
+def _render_worklog_print_panel() -> bool:
+    """인쇄 패널 표시. True면 본화면 본문을 건너뛴다."""
+    if not st.session_state.get("wl_print_panel"):
+        return False
     path = st.session_state.get("wl_dialog_preview_path")
+    st.markdown("### 🖨️ 인쇄 미리보기")
+    top1, top2 = st.columns([1, 3])
+    with top1:
+        if st.button(
+            "← 본화면으로",
+            type="primary",
+            width="stretch",
+            key="wl_print_back_home",
+        ):
+            st.session_state["wl_print_panel"] = False
+            st.session_state["wl_print_auto_once"] = False
+            _wl_rerun()
+    with top2:
+        st.caption(
+            "인쇄 창 「대상」에서 **실제 프린터**를 선택하세요. "
+            "PDF로 저장이 보이면 드롭다운에서 프린터로 바꾸면 됩니다. "
+            "「머리글과 바닥글」을 끄면 주소가 인쇄되지 않습니다."
+        )
     if not path or not os.path.exists(str(path)):
-        st.error("인쇄용 파일을 만들 수 없습니다.")
-        return
+        st.error("인쇄용 파일이 없습니다. 본화면으로 돌아가 다시 시도해 주세요.")
+        return True
     path = str(path)
-    st.caption(
-        "브라우저 인쇄(프린터) 창이 곧 열립니다. "
-        "안 보이면 아래 「인쇄 창 다시 열기」를 누르세요."
-    )
+    do_auto = bool(st.session_state.pop("wl_print_auto_once", False))
     try:
         print_html = render_worklog_view_html(
-            path, print_mode=True, auto_print=True, scale=1.0
+            path, print_mode=True, auto_print=do_auto, scale=1.0
         )
-        components.html(print_html, height=720, scrolling=True)
+        components.html(print_html, height=920, scrolling=True)
     except Exception as e:
         st.error(f"인쇄 미리보기 표시 실패: {e}")
-        return
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("인쇄 창 다시 열기", width="stretch", key="wl_browser_reprint"):
-            st.rerun()
-    with c2:
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if st.button("인쇄 창 다시 열기", width="stretch", key="wl_print_again"):
+            st.session_state["wl_print_auto_once"] = True
+            _wl_rerun()
+    with b2:
         try:
             with open(path, "rb") as f:
                 xbytes = f.read()
@@ -3144,15 +3211,16 @@ def _worklog_browser_print_dialog() -> None:
                 file_name=os.path.basename(path) or "일일업무일지.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
-                key="wl_browser_print_dl",
+                key="wl_print_panel_dl",
             )
         except Exception:
             pass
-    with c3:
+    with b3:
         if platform.system() == "Darwin":
-            if st.button("Excel로 인쇄", width="stretch", key="wl_browser_to_excel"):
+            if st.button("Excel로 인쇄", width="stretch", key="wl_print_panel_excel"):
                 ok, msg = open_excel_print_preview(path, prefer_print_dialog=True)
                 (st.success if ok else st.warning)(msg)
+    return True
 
 
 @st.dialog("원본 엑셀 양식 미리보기", width="large")
@@ -3194,8 +3262,8 @@ def _worklog_form_preview_dialog() -> None:
             st.caption("엑셀 다운로드를 준비하지 못했습니다.")
     with b2:
         if st.button("프린터 화면", width="stretch", key="wl_dialog_browser_print"):
-            st.session_state["wl_dialog_preview_path"] = path
-            _worklog_browser_print_dialog()
+            _open_worklog_print_panel(path, auto=True)
+            st.rerun()
     with b3:
         if platform.system() == "Darwin":
             if st.button(
@@ -3410,6 +3478,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         _init_widget_state(selected)
         draft = _cells_from_widgets(selected)
 
+        # 인쇄 패널이 열려 있으면 본화면 대신 인쇄 UI만 (팝업 중첩·취소 반복 방지)
+        if st.session_state.get("wl_print_panel"):
+            _render_worklog_print_panel()
+            return
+
         # 날짜 선택(저장 후에도 변경 가능) · 달력 · 작은 삭제
         if st.session_state.get("wl_date_sync") != selected.isoformat():
             st.session_state["wl_date_pick"] = selected
@@ -3480,8 +3553,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             ):
                 try:
                     xlsx_abs = _resolve_print_xlsx()
-                    st.session_state["wl_dialog_preview_path"] = xlsx_abs
-                    _worklog_browser_print_dialog()
+                    _open_worklog_print_panel(xlsx_abs, auto=True)
+                    _wl_rerun()
                 except Exception as e:
                     st.error(f"프린터 화면을 열지 못했습니다: {e}")
 
@@ -3495,13 +3568,13 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         st.success(msg)
                     else:
                         st.warning(msg)
-                        st.session_state["wl_dialog_preview_path"] = xlsx_abs
-                        _worklog_browser_print_dialog()
+                        _open_worklog_print_panel(xlsx_abs, auto=True)
+                        _wl_rerun()
                 except Exception as e:
                     st.error(f"엑셀 저장본 연결 실패: {e}")
                     try:
-                        st.session_state["wl_dialog_preview_path"] = _resolve_print_xlsx()
-                        _worklog_browser_print_dialog()
+                        _open_worklog_print_panel(_resolve_print_xlsx(), auto=True)
+                        _wl_rerun()
                     except Exception:
                         pass
 
