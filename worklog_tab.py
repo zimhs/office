@@ -2987,27 +2987,117 @@ def prepare_print_xlsx(d: date, cells: dict) -> str:
 
 def open_excel_print_preview(xlsx_path: str) -> tuple[bool, str]:
     """
-    macOS + Microsoft Excel 에서 원본 파일을 **열기만** 한다.
-    인쇄·인쇄 미리보기·⌘P 는 실행하지 않음 (사용자가 직접 확인 후 인쇄).
+    macOS + Microsoft Excel:
+    1) 원본 xlsx 열기
+    2) Excel 안의 인쇄 미리보기까지 실행
+    (Cloud/원격 서버에서는 사용자 Mac Excel을 직접 제어할 수 없음)
     """
     abs_path = os.path.abspath(xlsx_path)
     if not os.path.exists(abs_path):
         return False, "미리보기용 엑셀 파일이 없습니다."
     if platform.system() != "Darwin":
-        return False, "Excel 미리보기는 macOS 로컬 실행에서만 지원됩니다."
+        return False, (
+            "Excel 인쇄 미리보기는 맥에서 로컬 대시보드 실행 시에만 자동 연결됩니다. "
+            "Cloud에서는 「엑셀 저장본」다운로드 후 Excel에서 ⌘P 로 미리보세요."
+        )
 
-    excel = _excel_app_path()
+    if not _excel_app_path():
+        # Excel 미설치여도 기본 앱으로라도 연다
+        try:
+            subprocess.Popen(["open", abs_path], start_new_session=True)
+            return True, "파일을 열었습니다. Excel이 없다면 설치 후 다시 시도해 주세요."
+        except Exception as e:
+            return False, f"파일 열기 실패: {e}"
+
+    # AppleScript용 경로 이스케이프
+    ap = abs_path.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'''
+set targetFile to POSIX file "{ap}"
+set previewDone to false
+tell application "Microsoft Excel"
+    activate
+    open targetFile
+    delay 1.3
+    try
+        print preview active sheet
+        set previewDone to true
+    end try
+    if previewDone is false then
+        try
+            print preview
+            set previewDone to true
+        end try
+    end if
+    if previewDone is false then
+        try
+            print preview active workbook
+            set previewDone to true
+        end try
+    end if
+end tell
+if previewDone is false then
+    tell application "System Events"
+        if exists process "Microsoft Excel" then
+            tell process "Microsoft Excel"
+                set frontmost to true
+                delay 0.35
+                try
+                    click menu item "인쇄 미리 보기" of menu "파일" of menu bar 1
+                    set previewDone to true
+                end try
+                if previewDone is false then
+                    try
+                        click menu item "Print Preview" of menu "File" of menu bar 1
+                        set previewDone to true
+                    end try
+                end if
+                if previewDone is false then
+                    -- macOS 인쇄 대화상자(미리보기 포함)
+                    keystroke "p" using {{command down}}
+                    set previewDone to true
+                end if
+            end tell
+        end if
+    end tell
+end if
+return previewDone
+'''
     try:
-        if excel:
+        r = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=50,
+        )
+        if r.returncode == 0:
+            return True, "Excel에서 열어 인쇄 미리보기까지 연결했습니다."
+        # 접근성 권한 등으로 메뉴/미리보기 실패 시: 파일만이라도 연다
+        subprocess.Popen(
+            ["open", "-a", "Microsoft Excel", abs_path],
+            start_new_session=True,
+        )
+        err = (r.stderr or r.stdout or "").strip()
+        hint = ""
+        if "Not authorized" in err or "assistive" in err.lower() or "1002" in err:
+            hint = (
+                " (시스템 설정 → 개인정보 보호 → 손쉬운 사용에서 "
+                "Terminal/Cursor/Excel 제어를 허용하면 인쇄 미리보기까지 자동 실행됩니다)"
+            )
+        return True, (
+            "Excel에서 파일을 열었습니다. 인쇄 미리보기는 Excel에서 ⌘P 로 확인하세요."
+            + hint
+        )
+    except subprocess.TimeoutExpired:
+        return False, "Excel 응답 시간 초과. Excel에서 파일을 직접 열어 주세요."
+    except Exception as e:
+        try:
             subprocess.Popen(
                 ["open", "-a", "Microsoft Excel", abs_path],
                 start_new_session=True,
             )
-        else:
-            subprocess.Popen(["open", abs_path], start_new_session=True)
-        return True, "Excel에서 원본 양식을 열었습니다. (인쇄는 실행하지 않음)"
-    except Exception as e:
-        return False, f"Excel 실행 실패: {e}"
+            return True, f"Excel에서 파일을 열었습니다. (미리보기 자동화 실패: {e})"
+        except Exception as e2:
+            return False, f"Excel 실행 실패: {e2}"
 
 
 @st.dialog("원본 엑셀 양식 미리보기", width="large")
@@ -3048,15 +3138,22 @@ def _worklog_form_preview_dialog() -> None:
         except Exception:
             st.caption("엑셀 다운로드를 준비하지 못했습니다.")
     with b2:
-        if not _wl_quiet_ui():
-            if st.button("Excel에서 열기", width="stretch", key="wl_dialog_open_excel"):
+        if platform.system() == "Darwin":
+            if st.button(
+                "Excel 인쇄 미리보기",
+                width="stretch",
+                key="wl_dialog_open_excel",
+            ):
                 ok, msg = open_excel_print_preview(path)
                 if ok:
                     st.success(msg)
                 else:
                     st.warning(msg)
         else:
-            st.caption("Cloud에서는 위 엑셀 양식 미리보기·다운로드를 사용하세요.")
+            st.caption(
+                "Excel 앱 인쇄 미리보기는 맥 로컬 대시보드에서 자동 연결됩니다. "
+                "Cloud에서는 위 양식 또는 엑셀 다운로드를 사용하세요."
+            )
 
 
 def _prepare_excel_preview(d: date, cells: dict) -> str:
@@ -3293,7 +3390,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     "엑셀 미리보기",
                     width="stretch",
                     key="wl_print_btn",
-                    help="왼쪽 칸에 원본 엑셀 양식을 바로 적용합니다. 맥에서는 Excel도 함께 엽니다.",
+                    help="원본 양식을 왼쪽에 적용하고, 맥에서는 Excel을 열어 인쇄 미리보기까지 연결합니다.",
                 )
             with p2:
                 path_saved = worklog_path(selected)
@@ -3332,12 +3429,19 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     form_sig = json.dumps(cells_now, ensure_ascii=False, sort_keys=True)
                     st.session_state[f"wl_form_sig_v14_{selected.isoformat()}"] = None
                     st.session_state["_wl_force_form_sig"] = form_sig
-                    if not _wl_quiet_ui():
+                    # 맥 로컬: Excel 실행 + 인쇄 미리보기까지. Cloud는 화면 양식만.
+                    if platform.system() == "Darwin":
                         ok, msg = open_excel_print_preview(xlsx_abs)
                         if ok:
                             st.success(msg)
                         else:
-                            st.caption(msg)
+                            st.warning(msg)
+                    elif _wl_quiet_ui():
+                        st.caption(
+                            "Cloud에서는 왼쪽·하단 원본 양식으로 미리보고, "
+                            "「엑셀 저장본」다운로드 후 맥 Excel에서 ⌘P 로 인쇄 미리보세요. "
+                            "Excel 앱 자동 연결은 맥 로컬 대시보드에서 됩니다."
+                        )
                 except Exception as e:
                     st.session_state[_left_excel_key] = False
                     if _wl_quiet_ui():
