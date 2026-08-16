@@ -207,12 +207,26 @@ export default function (component) {
     inputs.forEach((inp) => out.push(inp.value || ""));
     return normalize(out);
   }
+  let softTimer = null;
   function emit(next, focusIdx) {
     const out = normalize(next);
     inst.lines = out;
     setStateValue("lines", out);
     if (typeof focusIdx === "number") setStateValue("focus", focusIdx);
     return out;
+  }
+  function localOnly(next) {
+    inst.lines = normalize(next);
+    return inst.lines;
+  }
+  function softEmit(next) {
+    localOnly(next);
+    if (softTimer) clearTimeout(softTimer);
+    softTimer = setTimeout(function () {
+      softTimer = null;
+      const cur = normalize(inst.lines || readDomLines());
+      setStateValue("lines", cur);
+    }, 480);
   }
   function focusAt(idx) {
     requestAnimationFrame(() => {
@@ -261,13 +275,15 @@ export default function (component) {
           ? j + 1 + "칸 거래처 (Enter=다음)"
           : j + 1 + "칸 (빈 칸도 저장 · Enter=다음 칸)";
       input.dataset.idx = String(j);
-      const commitValue = () => {
+      const commitValue = (mode) => {
         if (inst.rebuilding) return;
         const cur = readDomLines();
         let j0 = j;
         let v = cur[j0] || "";
         if (displayUnits(v) <= maxU) {
-          emit(cur, null);
+          // 입력 중에는 로컬만 갱신(디바운스 동기화) — 빠른 타이핑 로딩 방지
+          if (mode === "blur" || mode === "force") emit(cur, null);
+          else softEmit(cur);
           return;
         }
         // 장문/붙여넣기: 원본 칸 폭으로 모두 나눈 뒤 다음 칸에 포커스
@@ -284,13 +300,13 @@ export default function (component) {
       };
       input.addEventListener("input", (e) => {
         if (e.isComposing) return;
-        commitValue();
+        commitValue("type");
       });
       input.addEventListener("compositionend", () => {
-        commitValue();
+        commitValue("type");
       });
       input.addEventListener("blur", () => {
-        commitValue();
+        commitValue("blur");
       });
       input.addEventListener("keydown", (e) => {
         // 빈 칸 Enter도 동작: IME keyCode 229는 값이 있을 때만 무시
@@ -331,26 +347,15 @@ export default function (component) {
     if (!inst.lines) inst.lines = normalize(incoming);
     rebuild(Number.isFinite(focusReq) ? focusReq : -1);
   } else {
-    // DOM이 Python 상태보다 앞선 경우에만 반영 (저장 유실 방지, 무한 rerun 방지)
+    // 로컬 DOM을 유지 — 매 렌더마다 setStateValue 하면 빠른 입력 시 로딩이 난다
     const dom = readDomLines();
-    const base = normalize(incoming);
-    let same = dom.length === base.length;
-    if (same) {
-      for (let i = 0; i < dom.length; i++) {
-        if (dom[i] !== base[i]) {
-          same = false;
-          break;
-        }
-      }
-    }
-    if (!same) emit(dom, null);
-    else inst.lines = dom;
+    inst.lines = normalize(dom);
   }
 }
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v6",
+    "worklog_entry_lines_v7",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -3249,24 +3254,46 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     if not os.path.exists(abs_path):
         st.error("인쇄용 파일이 없습니다.")
         return
+    cache_k = f"wl_print_html_cache_{abs_path}"
+    meta_k = f"wl_print_html_meta_{abs_path}"
     try:
-        doc_html = render_worklog_view_html(
-            abs_path, print_mode=True, auto_print=True, scale=1.0
+        mtime = os.path.getmtime(abs_path)
+    except OSError:
+        mtime = 0.0
+    cached = st.session_state.get(cache_k)
+    meta = st.session_state.get(meta_k) or {}
+    if (
+        isinstance(cached, str)
+        and cached
+        and meta.get("mtime") == mtime
+        and meta.get("path") == abs_path
+    ):
+        stamped = cached
+        preview_h = int(meta.get("h") or 720)
+    else:
+        try:
+            doc_html = render_worklog_view_html(
+                abs_path, print_mode=True, auto_print=True, scale=1.0
+            )
+            _, raw_h = _worklog_sheet_pixel_size(abs_path)
+            fit = _a4_print_fit(*_worklog_sheet_pixel_size(abs_path))
+            preview_h = min(920, max(420, int(raw_h * fit) + 72))
+        except Exception as e:
+            st.error(f"인쇄 문서 준비 실패: {e}")
+            return
+        nonce = int(st.session_state.get("wl_print_n", 0)) + 1
+        st.session_state["wl_print_n"] = nonce
+        stamped = doc_html.replace(
+            "<body>",
+            f'<body data-wl-print="{nonce}">',
+            1,
         )
-        _, raw_h = _worklog_sheet_pixel_size(abs_path)
-        fit = _a4_print_fit(*_worklog_sheet_pixel_size(abs_path))
-        preview_h = min(920, max(420, int(raw_h * fit) + 72))
-    except Exception as e:
-        st.error(f"인쇄 문서 준비 실패: {e}")
-        return
-    nonce = int(st.session_state.get("wl_print_n", 0)) + 1
-    st.session_state["wl_print_n"] = nonce
-    stamped = doc_html.replace(
-        "<body>",
-        f'<body data-wl-print="{nonce}">',
-        1,
-    )
-    # 맞춤·축소·확대 버튼이 보이도록 미리보기 높이 확보
+        st.session_state[cache_k] = stamped
+        st.session_state[meta_k] = {
+            "mtime": mtime,
+            "path": abs_path,
+            "h": preview_h,
+        }
     components.html(stamped, height=preview_h, scrolling=True)
     st.caption("맞춤(줄여서)·축소·확대로 조절한 뒤 인쇄하세요.")
 
@@ -3666,19 +3693,35 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
             def _resolve_print_xlsx() -> str:
                 cells_dl = _cells_from_widgets(selected)
+                sig = json.dumps(cells_dl, ensure_ascii=False, sort_keys=True)
+                sig_k = f"wl_print_cells_sig_{selected.isoformat()}"
+                path_k = f"wl_print_cells_path_{selected.isoformat()}"
+                cached_path = st.session_state.get(path_k) or ""
+                if (
+                    st.session_state.get(sig_k) == sig
+                    and cached_path
+                    and os.path.exists(str(cached_path))
+                ):
+                    return os.path.abspath(str(cached_path))
                 path_saved = worklog_path(selected)
                 if os.path.exists(path_saved):
                     write_cells_to_path(
                         path_saved, selected, cells_dl, blank_base=False
                     )
-                    return os.path.abspath(path_saved)
-                return _prepare_excel_preview(selected, cells_dl)
+                    out = os.path.abspath(path_saved)
+                else:
+                    out = _prepare_excel_preview(selected, cells_dl)
+                st.session_state[sig_k] = sig
+                st.session_state[path_k] = out
+                # 인쇄 HTML 캐시 무효화(파일 갱신됨)
+                st.session_state.pop(f"wl_print_html_cache_{out}", None)
+                st.session_state.pop(f"wl_print_html_meta_{out}", None)
+                return out
 
             if do_open_print:
                 try:
-                    with st.spinner("인쇄 창 준비 중…"):
-                        xlsx_abs = _resolve_print_xlsx()
-                        _launch_browser_print_dialog(xlsx_abs)
+                    xlsx_abs = _resolve_print_xlsx()
+                    _launch_browser_print_dialog(xlsx_abs)
                 except Exception as e:
                     st.error(f"인쇄 창을 열지 못했습니다: {e}")
 
@@ -3740,21 +3783,40 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             cells_live, ensure_ascii=False, sort_keys=True
                         )
                         sig_k = f"wl_left_excel_sig_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_{selected.isoformat()}"
+                        scale_l = 0.48
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_live)
                             st.session_state[_left_path_key] = xlsx_left
                             st.session_state[sig_k] = live_sig
-                        scale_l = 0.48
-                        excel_html = render_worklog_view_html(
-                            str(xlsx_left),
-                            print_mode=False,
-                            auto_print=False,
-                            scale=scale_l,
-                        )
-                        _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
+                            excel_html = render_worklog_view_html(
+                                str(xlsx_left),
+                                print_mode=False,
+                                auto_print=False,
+                                scale=scale_l,
+                            )
+                            _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
+                            st.session_state[html_k] = excel_html
+                            st.session_state[h_k] = fh
+                        else:
+                            excel_html = st.session_state.get(html_k)
+                            fh = st.session_state.get(h_k)
+                            if not excel_html:
+                                excel_html = render_worklog_view_html(
+                                    str(xlsx_left),
+                                    print_mode=False,
+                                    auto_print=False,
+                                    scale=scale_l,
+                                )
+                                _, fh = _scaled_view_frame_size(
+                                    str(xlsx_left), scale_l
+                                )
+                                st.session_state[html_k] = excel_html
+                                st.session_state[h_k] = fh
                         components.html(
                             excel_html,
-                            height=min(820, max(480, int(fh))),
+                            height=min(820, max(480, int(fh or 600))),
                             scrolling=True,
                         )
                         if st.button(
@@ -3771,7 +3833,18 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     st.info("엑셀 미리보기 파일이 없습니다. 다시 「엑셀 미리보기」를 눌러 주세요.")
             else:
                 try:
-                    view_html = render_readable_preview_html(selected, draft)
+                    draft_sig = json.dumps(draft, ensure_ascii=False, sort_keys=True)
+                    sum_sig_k = f"wl_sum_sig_{selected.isoformat()}"
+                    sum_html_k = f"wl_sum_html_{selected.isoformat()}"
+                    if st.session_state.get(sum_sig_k) != draft_sig:
+                        view_html = render_readable_preview_html(selected, draft)
+                        st.session_state[sum_sig_k] = draft_sig
+                        st.session_state[sum_html_k] = view_html
+                    else:
+                        view_html = st.session_state.get(sum_html_k)
+                        if not view_html:
+                            view_html = render_readable_preview_html(selected, draft)
+                            st.session_state[sum_html_k] = view_html
                     components.html(view_html, height=820, scrolling=True)
                 except Exception as e:
                     if _wl_quiet_ui():
