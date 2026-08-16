@@ -53,6 +53,42 @@ def _wl_quiet_ui() -> bool:
         return True
 
 
+def _wl_is_touch_ui() -> bool:
+    """iPad/터치 UI만 True. 맥 데스크톱(Cloud 포함)은 False — 레이아웃 분기용."""
+    try:
+        if st.session_state.get("force_touch_ui") is True:
+            return True
+        v = st.query_params.get("touch_ui", "")
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else ""
+        if str(v).strip() in ("1", "true", "True"):
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    try:
+        cookies = getattr(st.context, "cookies", None)
+        if cookies is not None and str(cookies.get("dashboard_touch", "")) == "1":
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    try:
+        headers = getattr(st.context, "headers", None)
+        ua = ""
+        if headers is not None:
+            ua = str(headers.get("User-Agent") or headers.get("user-agent") or "")
+        if ua and (
+            re.search(r"iPad|iPhone|iPod", ua)
+            or ("Macintosh" in ua and "Mobile" in ua)
+        ):
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    return bool(st.session_state.get("force_touch_ui"))
+
+
 def _invalidate_saved_dates_cache() -> None:
     st.session_state.pop("wl_saved_dates_cache", None)
 
@@ -2765,7 +2801,11 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             "lines": lines,
             "focus": focus_n,
             "max_u": int(max_u),
-            "cell_w": int(_client_input_width_px()),
+            "cell_w": int(
+                max(_client_input_width_px(), 420)
+                if _wl_is_touch_ui()
+                else _client_input_width_px()
+            ),
             "variant": "client",
             "rev": rev,
             "iso": iso,
@@ -5125,32 +5165,63 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                     ),
                                 )
                         if i == 0:
+                            _touch_css = ""
+                            if _wl_is_touch_ui():
+                                # iPad만: 거래처 입력 폭·터치 타깃 확보 (맥 무손실)
+                                _touch_css = """
+div[class*="st-key-wl_clients_comp_"] {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+div[class*="st-key-wl_clients_comp_"] .wl-lines {
+  max-width: 100% !important;
+  width: 100% !important;
+}
+div[class*="st-key-wl_clients_comp_"] .wl-row input {
+  min-width: 12rem !important;
+  font-size: 14px !important;
+  height: 2.15rem !important;
+}
+div[class*="st-key-wl_clients_comp_"] .wl-row button {
+  flex: 0 0 2.6rem !important;
+  height: 2.15rem !important;
+  font-size: 0.75rem !important;
+}
+"""
                             st.markdown(
-                                """
+                                f"""
 <style>
 /* 거래처·내용 CCv2 입력칸 좌우·높이 정렬 */
 div[class*="st-key-wl_clients_comp_"],
-div[class*="st-key-wl_lines_comp_"] {
+div[class*="st-key-wl_lines_comp_"] {{
   width: 100%;
-}
+}}
 div[class*="st-key-wl_clients_comp_"] .wl-lines,
-div[class*="st-key-wl_lines_comp_"] .wl-lines {
+div[class*="st-key-wl_lines_comp_"] .wl-lines {{
   margin: 0;
-}
-div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) {
+}}
+div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) {{
   align-items: flex-start !important;
-}
+}}
+{_touch_css}
 </style>
                                 """,
                                 unsafe_allow_html=True,
                             )
-                        col_client, col_content = st.columns(
-                            [1, 3.2], gap="small"
-                        )
-                        with col_client:
+                        if _wl_is_touch_ui():
+                            # iPad: 거래처 전폭 → 내용 (가로 압축으로 칸이 사라지지 않게)
+                            st.caption("거래처")
                             _mount_entry_client_editor(iso2, i, _cu)
-                        with col_content:
+                            st.caption("내용")
                             _mount_entry_lines_editor(iso2, i, max_u)
+                        else:
+                            col_client, col_content = st.columns(
+                                [1, 3.2], gap="small"
+                            )
+                            with col_client:
+                                _mount_entry_client_editor(iso2, i, _cu)
+                            with col_content:
+                                _mount_entry_lines_editor(iso2, i, max_u)
                         with st.expander(
                             "표 넣기 (칸수·넓이·높이)",
                             expanded=False,
