@@ -1,6 +1,7 @@
 """일일업무일지 탭 — 엑셀 양식 그대로 표시/편집/날짜별 저장/출력."""
 from __future__ import annotations
 
+import base64
 import calendar
 import html
 import json
@@ -63,6 +64,10 @@ WORKLOG_ARCHIVE_REL = os.path.join("Desktop", "업무", "일지")
 
 WL_MIN_ROW, WL_MAX_ROW = 1, 47
 WL_MIN_COL, WL_MAX_COL = 3, 28  # C ~ AB
+# 엑셀 EMU → CSS px (@96dpi). 신일가스 로고 앵커 오프셋용.
+_WL_EMU_PER_PX = 914400.0 / 96.0
+# HTML 미리보기 캐시 버전 (로고 오버레이 등 렌더 변경 시 올린다)
+_WL_HTML_CACHE_VER = "logo3"
 
 # 작성 칸 (라벨 C40/C44 등은 건드리지 않음)
 WL_CLIENT_ROWS = list(range(9, 40))  # C
@@ -1022,23 +1027,153 @@ def _border_css(cell) -> str:
     return "".join(parts)
 
 
+def _wl_row_height_px(ws, r: int) -> int:
+    h = ws.row_dimensions[r].height
+    return int(round(float(h) * 96 / 72)) if h else 28
+
+
+def _wl_col_left_px(col_widths: list[int], col_1based: int) -> int:
+    """표시 범위 왼쪽(WL_MIN_COL) 기준, 1-based 열의 왼쪽 오프셋."""
+    idx = int(col_1based) - WL_MIN_COL
+    if idx <= 0:
+        return 0
+    return int(sum(col_widths[:idx]))
+
+
+def _wl_row_top_px(ws, row_1based: int) -> int:
+    total = 0
+    for r in range(WL_MIN_ROW, max(WL_MIN_ROW, int(row_1based))):
+        total += _wl_row_height_px(ws, r)
+    return total
+
+
+@lru_cache(maxsize=4)
+def _template_logo_jpeg_bytes() -> bytes | None:
+    """템플릿(참고 양식과 동일)에 들어 있는 신일가스 로고 JPEG."""
+    if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
+        return None
+    try:
+        wb = load_workbook(WORKLOG_TEMPLATE, data_only=False)
+        for sn in wb.sheetnames:
+            ws = wb[sn]
+            for img in list(getattr(ws, "_images", []) or []):
+                try:
+                    data = img._data()
+                except Exception:
+                    data = None
+                if data and len(data) > 100:
+                    wb.close()
+                    return bytes(data)
+        wb.close()
+    except Exception:
+        return None
+    return None
+
+
+def _wl_collect_sheet_images(ws) -> list[dict]:
+    """시트의 플로팅 이미지(로고 등) 위치·바이트 수집."""
+    out: list[dict] = []
+    imgs = list(getattr(ws, "_images", []) or [])
+    for img in imgs:
+        try:
+            data = img._data()
+        except Exception:
+            data = None
+        if not data:
+            continue
+        a = getattr(img, "anchor", None)
+        if a is None:
+            continue
+        try:
+            fr = a._from
+            col0 = int(fr.col)
+            row0 = int(fr.row)
+            col_off = int(getattr(fr, "colOff", 0) or 0)
+            row_off = int(getattr(fr, "rowOff", 0) or 0)
+        except Exception:
+            continue
+        w = int(getattr(img, "width", 0) or 0) or 320
+        h = int(getattr(img, "height", 0) or 0) or 61
+        fmt = str(getattr(img, "format", None) or "jpeg").lower()
+        mime = "image/png" if fmt == "png" else "image/jpeg"
+        out.append(
+            {
+                "data": bytes(data),
+                "mime": mime,
+                "col0": col0,
+                "row0": row0,
+                "col_off": col_off,
+                "row_off": row_off,
+                "w": w,
+                "h": h,
+            }
+        )
+    return out
+
+
+def _wl_images_overlay_html(ws, col_widths: list[int], table_h: int) -> tuple[str, int]:
+    """테이블 위 absolute 로고 오버레이 HTML과 하단 추가 높이(px)."""
+    items = _wl_collect_sheet_images(ws)
+    if not items:
+        logo = _template_logo_jpeg_bytes()
+        if logo:
+            # 참고본(2026-08-14) 활성시트와 동일: I48 근처
+            items = [
+                {
+                    "data": logo,
+                    "mime": "image/jpeg",
+                    "col0": 8,
+                    "row0": 47,
+                    "col_off": 237433,
+                    "row_off": 169891,
+                    "w": 320,
+                    "h": 61,
+                }
+            ]
+    if not items:
+        return "", 0
+    parts: list[str] = []
+    extra_bottom = 0
+    for it in items:
+        left = _wl_col_left_px(col_widths, it["col0"] + 1) + int(
+            round(it["col_off"] / _WL_EMU_PER_PX)
+        )
+        top = _wl_row_top_px(ws, it["row0"] + 1) + int(
+            round(it["row_off"] / _WL_EMU_PER_PX)
+        )
+        w, h = int(it["w"]), int(it["h"])
+        b64 = base64.b64encode(it["data"]).decode("ascii")
+        parts.append(
+            f'<img class="wl-float-img" alt="신일가스 로고" '
+            f'src="data:{it["mime"]};base64,{b64}" '
+            f'style="position:absolute;left:{left}px;top:{top}px;'
+            f'width:{w}px;height:{h}px;max-width:none;border:0;'
+            f'pointer-events:none;z-index:3;" />'
+        )
+        extra_bottom = max(extra_bottom, max(0, top + h - table_h + 8))
+    return "".join(parts), extra_bottom
+
+
 def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
-    """표시 범위(C~AB, 1~47)의 비스케일 픽셀 폭·높이."""
+    """표시 범위(C~AB, 1~47)의 비스케일 픽셀 폭·높이 (+로고 여유)."""
     if load_workbook is None or not path or not os.path.exists(path):
         return 900, 1312
     try:
         wb = load_workbook(path, data_only=False)
         ws = wb.active
         total_w = 0
+        col_widths: list[int] = []
         for c in range(WL_MIN_COL, WL_MAX_COL + 1):
-            total_w += _excel_width_to_px(_excel_col_width(ws, c))
+            px = _excel_width_to_px(_excel_col_width(ws, c))
+            col_widths.append(px)
+            total_w += px
         total_h = 0
         for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
-            h = ws.row_dimensions[r].height
             # Excel pt → CSS px (96dpi). 행 테두리 1px 여유.
-            total_h += (int(round(float(h) * 96 / 72)) if h else 28) + 1
+            total_h += _wl_row_height_px(ws, r) + 1
+        _, logo_extra = _wl_images_overlay_html(ws, col_widths, total_h)
         wb.close()
-        return max(1, total_w), max(1, total_h)
+        return max(1, total_w), max(1, total_h + int(logo_extra))
     except Exception:
         return 900, 1312
 
@@ -1052,7 +1187,7 @@ def _scaled_view_frame_size(path: str, scale: float) -> tuple[int, int]:
 
 
 def workbook_to_html(path: str) -> str:
-    """원본 엑셀 양식 범위를 HTML 테이블로 변환 (병합·테두리·폰트 유지)."""
+    """원본 엑셀 양식 범위를 HTML 테이블로 변환 (병합·테두리·폰트·로고 유지)."""
     if load_workbook is None:
         return "<p>openpyxl 필요</p>"
     wb = load_workbook(path, data_only=False)
@@ -1093,10 +1228,10 @@ def workbook_to_html(path: str) -> str:
         total_w += px
 
     rows_html = []
+    table_h = 0
     for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
-        h = ws.row_dimensions[r].height
-        # 행 높이도 pt→px 동일 공식 (표시·측정 일치)
-        height_px = int(round(float(h) * 96 / 72)) if h else 28
+        height_px = _wl_row_height_px(ws, r)
+        table_h += height_px
         tds = []
         for c in range(WL_MIN_COL, WL_MAX_COL + 1):
             if (r, c) in skip:
@@ -1227,12 +1362,17 @@ def workbook_to_html(path: str) -> str:
         )
 
     colgroup = "".join(f'<col style="width:{w}px">' for w in col_widths)
+    overlay, logo_extra = _wl_images_overlay_html(ws, col_widths, table_h)
     wb.close()
+    wrap_h = int(table_h + logo_extra)
     return f"""
+    <div class="wl-sheet-box" style="position:relative;width:{int(total_w)}px;min-height:{wrap_h}px;background:#fff;box-sizing:border-box;">
     <table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;box-sizing:border-box;">
       <colgroup>{colgroup}</colgroup>
       <tbody>{"".join(rows_html)}</tbody>
     </table>
+    {overlay}
+    </div>
     """
 
 
@@ -1265,7 +1405,7 @@ def render_worklog_view_html(
     except OSError:
         _mtime = 0.0
     _ck = (
-        f"wl_rvhtml_{os.path.abspath(path)}_{_mtime:.6f}_"
+        f"wl_rvhtml_{_WL_HTML_CACHE_VER}_{os.path.abspath(path)}_{_mtime:.6f}_"
         f"{int(print_mode)}_{float(scale):.4f}_{int(auto_print)}_"
         f"{int(hide_on_screen)}_{int(local_zoom)}_{wrap_height or ''}"
     )
@@ -1557,6 +1697,8 @@ def render_worklog_view_html(
   .sheet-scale {{ {scale_css} }}
   .wl-sheet {{ border-collapse:collapse; table-layout:fixed; }}
   .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }}
+  .wl-sheet-box {{ position:relative; }}
+  .wl-float-img {{ image-rendering:auto; }}
   {fallback_block}
   {clarity_css}
   {"@media screen { html, body, .toolbar, .wrap, .sheet-scale { visibility:hidden !important; height:0 !important; overflow:hidden !important; margin:0 !important; padding:0 !important; border:none !important; } }" if hide_on_screen else ""}
