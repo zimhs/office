@@ -43,28 +43,37 @@ _SKIP_SHEET = re.compile(
 _COMPLEX_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"동탄\s*도시\s*첨단|동탄도시첨단"), "화성동탄도시첨단산업단지"),
     (re.compile(r"동탄\s*일반|동탄산단|동탄\s*산업단지"), "화성동탄일반산업단지"),
-    (re.compile(r"발안|팔탄.*발안|화성발안"), "화성발안일반산업단지"),
+    (re.compile(r"발안|팔탄.*발안|화성발안|발안리"), "화성발안일반산업단지"),
     (re.compile(r"바이오\s*밸리|바이오밸리"), "화성바이오밸리일반산업단지"),
-    (re.compile(r"전곡|전곡해양|우정.*전곡"), "화성전곡해양일반산업단지"),
-    (re.compile(r"마도\s*(일반|공단|산업)|화성마도|마도공단"), "화성마도일반산업단지"),
+    (re.compile(r"전곡|전곡해양|우정.*전곡|전곡리"), "화성전곡해양일반산업단지"),
+    (re.compile(r"마도\s*(일반|공단|산업|면)|화성마도|마도공단|마도안길"), "화성마도일반산업단지"),
     (re.compile(r"송산\s*테크노|테크노\s*파크|송산테크노"), "화성송산테크노파크일반산업단지"),
     (re.compile(r"송산\s*그린|그린\s*시티|송산그린"), "송산그린시티 국가산업단지"),
-    (re.compile(r"정남\s*(일반|산단|산업)|화성정남"), "화성정남일반산업단지"),
+    (re.compile(r"정남\s*(일반|산단|산업|면)|화성정남"), "화성정남일반산업단지"),
     (re.compile(r"향남\s*제약|제약\s*일반"), "화성향남제약일반산업단지"),
-    (re.compile(r"향남\s*(지방|산단|산업|공단)|화성향남"), "화성향남지방산업단지"),
+    (re.compile(r"향남\s*(지방|산단|산업|공단|읍)|화성향남"), "화성향남지방산업단지"),
     (re.compile(r"주곡|화성주곡"), "화성주곡일반산업단지"),
     (re.compile(r"화남|화성화남"), "화성화남일반산업단지"),
     (re.compile(r"장안\s*제?\s*2|장안2"), "장안제2첨단일반산업단지"),
     (re.compile(r"장안\s*제?\s*1|장안1|장안\s*첨단"), "장안제1첨단일반산업단지"),
     (re.compile(r"반월|반월국가"), "반월국가산업단지"),
-    (re.compile(r"시화|시화공단|시화MTV"), "시화국가산업단지"),
+    (re.compile(r"시화|시화공단|시화MTV|정왕동"), "시화국가산업단지"),
     (re.compile(r"남동\s*(공단|산단|국가)|남동국가"), "남동국가산업단지"),
     (re.compile(r"포승|포승국가|평택.*포승"), "포승국가산업단지"),
     (re.compile(r"아산\s*국가|아산국가"), "아산국가산업단지"),
     (re.compile(r"평택\s*(산단|공단|일반)|평택공단"), "평택일반산업단지"),
     (re.compile(r"안성\s*(산단|공단|테크노)|안성공단"), "안성일반산업단지"),
     (re.compile(r"용인\s*(테크노|산단)|용인테크노"), "용인테크노밸리일반산업단지"),
+    (re.compile(r"미음\s*산단|미음산단|과학산단"), "부산미음일반산업단지"),
+    (re.compile(r"고덕\s*(산단|일반)|상몽산단|예산.*고덕"), "예산고덕일반산업단지"),
+    (re.compile(r"증평\s*.*산단|증평2산단"), "증평일반산업단지"),
+    (re.compile(r"메가폴리스|대소원"), "충주메가폴리스일반산업단지"),
+    (re.compile(r"명지\s*(산단|국제)|녹산"), "부산명지녹산국가산업단지"),
 ]
+# 주소에 「○○산단」만 있고 위 규칙에 안 걸릴 때 쓰는 보조 패턴
+_COMPLEX_ADDR_TOKEN = re.compile(
+    r"([가-힣A-Za-z0-9]{2,16})\s*산단(?:로|길|단지|공단)?"
+)
 
 _REGION_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"화성|동탄|향남|팔탄|마도|봉담|우정|장안|비봉|양감|정남|서신"), "화성"),
@@ -255,6 +264,12 @@ def infer_complex(*texts: str, explicit: str = "") -> str:
     for pat, name in _COMPLEX_RULES:
         if pat.search(blob):
             return name
+    # 「○○산단로/길」 형태만 있으면 토큰으로 표기 (검색·필터용)
+    m = _COMPLEX_ADDR_TOKEN.search(blob)
+    if m:
+        token = m.group(1).strip()
+        if token and token not in {"일반", "지방", "국가", "도시", "첨단"}:
+            return f"{token}산업단지"
     return "미분류"
 
 
@@ -264,6 +279,12 @@ def _complex_choices() -> list[str]:
         if name not in seen:
             seen.append(name)
     return seen
+
+
+def _ms_default(prev, options: list[str]) -> list[str]:
+    """Multiselect default는 options 부분집합이어야 Streamlit 오류가 안 남."""
+    opts = set(options or [])
+    return [x for x in (prev or []) if x in opts]
 
 
 def _find_header_row(rows: list[tuple], keywords: list[str], scan: int = 12) -> int | None:
@@ -970,11 +991,14 @@ def _filter_frame(
     suppliers: list[str],
     query: str,
     include_factory: bool,
+    hide_unclassified: bool = False,
 ) -> pd.DataFrame:
     """가벼운 필터 — 사전계산 _search / _factory_only 사용."""
     view = df
     if not include_factory:
         view = view[~view["_factory_only"]]
+    if hide_unclassified and "산업단지" in view.columns:
+        view = view[view["산업단지"] != "미분류"]
     if regions:
         view = view[view["지역"].isin(regions)]
     if complexes:
@@ -1014,7 +1038,9 @@ def _mr_filter_results_fragment(
             sel_region = st.multiselect(
                 "지역",
                 options=regions,
-                default=st.session_state.get("mr_region_applied") or [],
+                default=_ms_default(
+                    st.session_state.get("mr_region_applied"), regions
+                ),
                 key="mr_region_form",
                 placeholder="전체 지역",
             )
@@ -1022,7 +1048,9 @@ def _mr_filter_results_fragment(
             sel_cx = st.multiselect(
                 "산업단지",
                 options=complexes,
-                default=st.session_state.get("mr_complex_applied") or [],
+                default=_ms_default(
+                    st.session_state.get("mr_complex_applied"), complexes
+                ),
                 key="mr_complex_form",
                 placeholder="전체 산업단지",
             )
@@ -1030,7 +1058,7 @@ def _mr_filter_results_fragment(
             sel_sup = st.multiselect(
                 "공급사",
                 options=suppliers,
-                default=st.session_state.get("mr_sup_applied") or [],
+                default=_ms_default(st.session_state.get("mr_sup_applied"), suppliers),
                 key="mr_sup_form",
                 placeholder="전체 공급사",
             )
@@ -1041,7 +1069,7 @@ def _mr_filter_results_fragment(
                 key="mr_q_form",
                 placeholder="입력 후 「적용」",
             )
-        b1, b2, b3 = st.columns([1.2, 1.4, 2])
+        b1, b2, b3, b4 = st.columns([1.1, 1.35, 1.25, 1.5])
         with b1:
             applied = st.form_submit_button("🔍 적용", type="primary", width="stretch")
         with b2:
@@ -1052,6 +1080,13 @@ def _mr_filter_results_fragment(
                 help="기본은 시장조사·경쟁사·방문조사만. 공장등록 1만건+는 필요할 때만 포함.",
             )
         with b3:
+            hide_unclassified = st.checkbox(
+                "산업단지 미분류 제외",
+                value=bool(st.session_state.get("mr_hide_unclassified", False)),
+                key="mr_hide_unclassified_form",
+                help="단지가 붙은 업체만 봅니다.",
+            )
+        with b4:
             st.caption("글자마다 재검색하지 않습니다. **적용**을 눌러 주세요.")
 
     if applied:
@@ -1060,6 +1095,7 @@ def _mr_filter_results_fragment(
         st.session_state["mr_sup_applied"] = sel_sup
         st.session_state["mr_q_applied"] = q
         st.session_state["mr_incl_factory"] = include_factory
+        st.session_state["mr_hide_unclassified"] = hide_unclassified
         st.session_state["mr_filter_ready"] = True
     elif "mr_filter_ready" not in st.session_state:
         st.session_state["mr_region_applied"] = []
@@ -1067,6 +1103,7 @@ def _mr_filter_results_fragment(
         st.session_state["mr_sup_applied"] = []
         st.session_state["mr_q_applied"] = ""
         st.session_state["mr_incl_factory"] = False
+        st.session_state["mr_hide_unclassified"] = False
         st.session_state["mr_filter_ready"] = True
 
     sel_region = st.session_state.get("mr_region_applied") or []
@@ -1074,6 +1111,7 @@ def _mr_filter_results_fragment(
     sel_sup = st.session_state.get("mr_sup_applied") or []
     q = st.session_state.get("mr_q_applied") or ""
     include_factory = bool(st.session_state.get("mr_incl_factory", False))
+    hide_unclassified = bool(st.session_state.get("mr_hide_unclassified", False))
 
     view = _filter_frame(
         df,
@@ -1082,6 +1120,7 @@ def _mr_filter_results_fragment(
         suppliers=sel_sup,
         query=q,
         include_factory=include_factory,
+        hide_unclassified=hide_unclassified,
     )
 
     tab_overview, tab_region, tab_supplier, tab_factory, tab_complex = st.tabs(
@@ -1354,11 +1393,11 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
     n_all = len(df)
     n_survey = int((~df["_factory_only"]).sum())
     n_merged_rows = int((df["병합건수"] > 1).sum()) if "병합건수" in df.columns else 0
-    n_region = df.loc[df["지역"] != "미분류", "지역"].nunique()
+    n_complex = int((df["산업단지"] != "미분류").sum()) if "산업단지" in df.columns else 0
     c1, c2, c3, c4 = st.columns(4)
     c1.markdown(_metric_box("병합 후 업체", f"{n_all:,}"), unsafe_allow_html=True)
     c2.markdown(_metric_box("조사·경쟁사", f"{n_survey:,}"), unsafe_allow_html=True)
-    c3.markdown(_metric_box("지역 수", f"{n_region:,}"), unsafe_allow_html=True)
+    c3.markdown(_metric_box("산업단지 분류", f"{n_complex:,}"), unsafe_allow_html=True)
     c4.markdown(
         _metric_box("원본→병합", f"{raw_n:,}→{n_all:,}"),
         unsafe_allow_html=True,
@@ -1366,7 +1405,7 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
     if removed_n:
         st.caption(
             f"중복 {removed_n:,}건 병합 · 병합 업체 {n_merged_rows:,}곳. "
-            "기본 검색은 화성공장 단독 DB를 빼서 빠르게 동작합니다."
+            "단지명은 공장등록 DB + 주소 키워드로 붙입니다 (웹검색 없음)."
         )
 
     regions = sorted(
