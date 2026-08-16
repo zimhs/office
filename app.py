@@ -110,23 +110,27 @@ def _cloud_app_url() -> str:
 
 def _render_cloud_sync_banner() -> None:
     """로컬(localhost)에서만: 맥·아이패드는 같은 Cloud URL 쓰도록 안내."""
-    if _is_streamlit_cloud():
-        st.sidebar.success("Cloud 공용 서버 · 맥·아이패드 동일 저장소")
-        return
     url = _cloud_app_url()
-    st.sidebar.warning(
-        "지금은 **맥 로컬**입니다. 아이패드와 업무일지·자료를 맞추려면 "
-        "**같은 Cloud 주소**로 여세요."
+    if _is_streamlit_cloud():
+        st.sidebar.success("Cloud 공용 · 맥·아이패드 동일 저장소 (여기에 업로드)")
+        st.sidebar.caption("새 파일은 이 사이드바에만 올리면 양쪽에서 같이 보입니다.")
+        return
+    st.sidebar.error(
+        "로컬 실행 중입니다. 아이패드와 맞추려면 **Cloud**를 쓰세요."
     )
     try:
         st.sidebar.link_button(
-            "Cloud에서 열기 (맥·아이패드 공용)",
+            "▶ Cloud에서 열기 (권장)",
             url,
             use_container_width=True,
+            type="primary",
         )
     except TypeError:
-        st.sidebar.markdown(f"[Cloud에서 열기]({url})")
+        st.sidebar.markdown(f"**[▶ Cloud에서 열기]({url})**")
     st.sidebar.caption(url)
+    st.sidebar.caption(
+        "로컬 업로드는 이 맥에만 남습니다. Drive 복사는 백업용입니다."
+    )
 
 # ==========================================
 # 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
