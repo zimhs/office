@@ -1777,7 +1777,7 @@ def render_readable_preview_html(d: date, cells: dict) -> str:
       <h3>특 이 사 항</h3>
       {note_html}
     </div>
-    <div class="foot">인쇄는 상단 「프린터 화면」을 사용하세요.</div>
+    <div class="foot">인쇄는 상단 「인쇄창열기」를 사용하세요.</div>
   </div>
 </body></html>"""
 
@@ -3348,7 +3348,7 @@ def _worklog_form_preview_dialog() -> None:
         except Exception:
             st.caption("엑셀 다운로드를 준비하지 못했습니다.")
     with b2:
-        if st.button("프린터 화면", width="stretch", key="wl_dialog_browser_print"):
+        if st.button("인쇄창열기", width="stretch", key="wl_dialog_browser_print"):
             _launch_browser_print_dialog(path)
     with b3:
         if platform.system() == "Darwin":
@@ -3606,7 +3606,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         with col_preview:
             st.markdown("##### 업무일지 보기")
             # 버튼은 큰 iframe 위에 둠 (클릭 가로채기 방지)
-            p1, p2, p3 = st.columns(3)
+            p1, p2 = st.columns(2)
             with p1:
                 do_print = st.button(
                     "엑셀 미리보기",
@@ -3615,19 +3615,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     help="왼쪽 칸에 원본 엑셀 양식을 적용합니다.",
                 )
             with p2:
-                # 맥 로컬: Excel ⌘P / Cloud·공통: 브라우저 프린터 화면
-                do_saved_excel = st.button(
-                    "엑셀 저장본",
+                do_open_print = st.button(
+                    "인쇄창열기",
                     width="stretch",
-                    key="wl_dl_btn",
-                    help="맥 로컬은 Excel 인쇄 화면, Cloud는 브라우저 프린터 화면을 엽니다.",
-                )
-            with p3:
-                do_browser_print = st.button(
-                    "프린터 화면",
-                    width="stretch",
-                    key="wl_browser_print_btn",
-                    help="브라우저 인쇄(프린터) 창을 바로 엽니다. Cloud에서도 됩니다.",
+                    key="wl_open_print_btn",
+                    help="브라우저 인쇄 창을 엽니다.",
                     type="primary",
                 )
 
@@ -3641,33 +3633,13 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     return os.path.abspath(path_saved)
                 return _prepare_excel_preview(selected, cells_dl)
 
-            if do_browser_print or (
-                do_saved_excel and platform.system() != "Darwin"
-            ):
+            if do_open_print:
                 try:
                     with st.spinner("인쇄 창 준비 중…"):
                         xlsx_abs = _resolve_print_xlsx()
                         _launch_browser_print_dialog(xlsx_abs)
                 except Exception as e:
-                    st.error(f"프린터 화면을 열지 못했습니다: {e}")
-
-            if do_saved_excel and platform.system() == "Darwin":
-                try:
-                    xlsx_abs = _resolve_print_xlsx()
-                    ok, msg = open_excel_print_preview(
-                        xlsx_abs, prefer_print_dialog=True
-                    )
-                    if ok:
-                        st.success(msg)
-                    else:
-                        st.warning(msg)
-                        _launch_browser_print_dialog(xlsx_abs)
-                except Exception as e:
-                    st.error(f"엑셀 저장본 연결 실패: {e}")
-                    try:
-                        _launch_browser_print_dialog(_resolve_print_xlsx())
-                    except Exception:
-                        pass
+                    st.error(f"인쇄 창을 열지 못했습니다: {e}")
 
             _left_excel_key = f"wl_left_excel_on_{selected.isoformat()}"
             _left_path_key = f"wl_left_excel_path_{selected.isoformat()}"
@@ -3693,15 +3665,14 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             st.warning(msg)
                     elif _wl_quiet_ui():
                         st.caption(
-                            "Cloud에서는 왼쪽 미리보기와 「프린터 화면」으로 확인하세요. "
-                            "「엑셀 저장본」다운로드 후 맥 Excel에서 ⌘P 로 인쇄할 수도 있습니다."
+                            "Cloud에서는 왼쪽 미리보기와 「인쇄창열기」로 확인하세요."
                         )
                 except Exception as e:
                     st.session_state[_left_excel_key] = False
                     if _wl_quiet_ui():
                         st.error(
                             "엑셀 미리보기를 적용하지 못했습니다. "
-                            "「엑셀 저장본」다운로드를 이용해 주세요."
+                            "「인쇄창열기」로 출력해 주세요."
                         )
                     else:
                         st.error(f"엑셀 미리보기 오류: {e}")
