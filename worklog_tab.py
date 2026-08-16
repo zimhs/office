@@ -1140,13 +1140,19 @@ def render_worklog_view_html(
     toolbar = ""
     if print_mode:
         scale = 1.0
-        # auto_print: 바로 인쇄 대화상자만 — 중간 툴바 없음
-        if not auto_print:
-            toolbar = f"""
+        if auto_print:
+            # 자동 print가 막힐 때 사용자가 직접 누를 수 있는 버튼
+            toolbar = """
+        <div class="toolbar no-print">
+          <button type="button" id="wl-print-btn">인쇄 창 열기</button>
+          <span class="hint">인쇄 대화상자가 안 뜨면 이 버튼을 누르세요.</span>
+        </div>
+        """
+        else:
+            toolbar = """
         <div class="toolbar no-print">
           <button type="button" id="wl-print-btn">인쇄하기</button>
-          <span class="hint">「인쇄하기」를 누르면 인쇄 창이 열립니다. 대상에서 <b>프린터</b>를 선택하세요.
-          취소하면 상단 「본화면으로」로 돌아갑니다.</span>
+          <span class="hint">「인쇄하기」를 누르면 인쇄 창이 열립니다. 대상에서 <b>프린터</b>를 선택하세요.</span>
         </div>
         """
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
@@ -1187,26 +1193,22 @@ def render_worklog_view_html(
         body_h = f"{frame_h}px"
     if wrap_height is not None:
         wrap_h = wrap_height
-    # auto_print: 인쇄 대화상자 1회 → 취소/완료 시 창 닫기(팝업인 경우)
+    # auto_print: 자동 1회 시도 + 버튼으로 재시도 (먹통 방지)
     auto_script = ""
     if auto_print:
         auto_script = """
         <script>
           (function() {
-            var done = false;
             function goPrint() {
-              if (done) return;
-              done = true;
               try { window.focus(); window.print(); } catch (e) {}
             }
-            function maybeClose() {
-              try { window.close(); } catch (e2) {}
-            }
-            window.addEventListener('afterprint', function() {
-              setTimeout(maybeClose, 120);
+            var btn = document.getElementById('wl-print-btn');
+            if (btn) btn.addEventListener('click', function(ev) {
+              ev.preventDefault();
+              goPrint();
             });
-            if (document.readyState === 'complete') setTimeout(goPrint, 320);
-            else window.addEventListener('load', function() { setTimeout(goPrint, 320); });
+            if (document.readyState === 'complete') setTimeout(goPrint, 250);
+            else window.addEventListener('load', function() { setTimeout(goPrint, 250); });
           })();
         </script>
         """
@@ -1215,7 +1217,8 @@ def render_worklog_view_html(
         <script>
           (function() {
             var btn = document.getElementById('wl-print-btn');
-            if (btn) btn.addEventListener('click', function() {
+            if (btn) btn.addEventListener('click', function(ev) {
+              ev.preventDefault();
               try { window.focus(); window.print(); } catch (e) {}
             });
           })();
@@ -3178,10 +3181,11 @@ return previewDone
 
 
 def _launch_browser_print_dialog(xlsx_path: str) -> None:
-    """본화면을 유지한 채, 브라우저 인쇄 대화상자를 1회만 바로 연다.
+    """본화면을 유지한 채, 브라우저 인쇄 대화상자를 연다.
 
-    window.open 팝업은 Streamlit 재실행 후 차단되는 경우가 많아,
-    화면 밖 풀사이즈 iframe에서 window.print()를 호출한다.
+    Streamlit 버튼 클릭 → 재실행 후에는 window.open이 막히므로,
+    components.html에 문서를 직접 넣고 window.print()를 호출한다.
+    (JSON을 <script>에 넣으면 </script> 때문에 스크립트가 깨져 버튼이 먹통처럼 보였음)
     """
     st.session_state["wl_print_panel"] = False
     abs_path = os.path.abspath(xlsx_path)
@@ -3195,28 +3199,13 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     except Exception as e:
         st.error(f"인쇄 문서 준비 실패: {e}")
         return
-    payload = json.dumps(doc_html, ensure_ascii=False)
-    # 860×1200 iframe(화면 밖) — 잘림 없음 + 팝업 차단 없음
-    bridge = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;overflow:hidden;background:transparent;">
-<iframe id="wlpf" title="worklog-print" style="
-  position:fixed;left:-12000px;top:0;width:860px;height:1200px;
-  border:0;opacity:0;pointer-events:none;"></iframe>
-<script>
-(function() {{
-  var html = {payload};
-  var f = document.getElementById('wlpf');
-  if (!f) return;
-  var doc = f.contentDocument || (f.contentWindow && f.contentWindow.document);
-  if (!doc) return;
-  doc.open();
-  doc.write(html);
-  doc.close();
-}})();
-</script>
-</body></html>"""
-    components.html(bridge, height=1, scrolling=False)
+    # 클릭마다 iframe을 다시 마운트해야 print가 다시 실행됨
+    nonce = int(st.session_state.get("wl_print_n", 0)) + 1
+    st.session_state["wl_print_n"] = nonce
+    stamped = doc_html.replace("<title>", f"<title><!--wl-print-{nonce}-->", 1)
+    # 상단 「인쇄 창 열기」버튼이 보이도록 높이 확보 (본문은 print CSS로 출력)
+    components.html(stamped, height=56, scrolling=False)
+    st.caption("인쇄 창이 열립니다. 안 뜨면 위 「인쇄 창 열기」를 눌러 주세요.")
 
 
 def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = False) -> None:
@@ -3620,8 +3609,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 do_saved_excel and platform.system() != "Darwin"
             ):
                 try:
-                    xlsx_abs = _resolve_print_xlsx()
-                    _launch_browser_print_dialog(xlsx_abs)
+                    with st.spinner("인쇄 창 준비 중…"):
+                        xlsx_abs = _resolve_print_xlsx()
+                        _launch_browser_print_dialog(xlsx_abs)
                 except Exception as e:
                     st.error(f"프린터 화면을 열지 못했습니다: {e}")
 
