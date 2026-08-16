@@ -21,7 +21,17 @@ except Exception:  # pragma: no cover
 
 MR_CACHE_DIR = os.path.join("uploaded_cache", "market_research")
 MR_MANUAL_FILE = os.path.join(MR_CACHE_DIR, "manual_entries.json")
+MR_UPLOAD_DIR = os.path.join(MR_CACHE_DIR, "uploads")
+MR_UPLOAD_MANIFEST = os.path.join(MR_UPLOAD_DIR, "manifest.json")
 MR_MANUAL_SOURCE = "직접입력"
+MR_UPLOAD_KINDS = [
+    ("자동", "파일명·양식으로 자동 감지"),
+    ("지역시장조사", "시장조사(67) 스타일 — 상호/위치/현공급처"),
+    ("방문조사", "김진혁·mail 스타일 — 업체명/공급처/사용가스"),
+    ("LCO2경쟁사", "LCO2 경쟁사 취합본"),
+    ("화성공장등록", "공장등록검색 (회사명·산업단지명)"),
+    ("서진산업가스", "서진 거래처 시트"),
+]
 MR_DRIVE_CANDIDATES = [
     os.path.expanduser(
         "~/Library/CloudStorage/GoogleDrive-3023526@gmail.com/"
@@ -514,6 +524,134 @@ def _list_xlsx(root: str) -> list[Path]:
     return out
 
 
+def _load_upload_manifest() -> list[dict]:
+    if not os.path.exists(MR_UPLOAD_MANIFEST):
+        return []
+    try:
+        with open(MR_UPLOAD_MANIFEST, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+    except Exception:
+        return []
+    return []
+
+
+def _save_upload_manifest(entries: list[dict]) -> None:
+    os.makedirs(MR_UPLOAD_DIR, exist_ok=True)
+    with open(MR_UPLOAD_MANIFEST, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+
+
+def _guess_parse_kind(filename: str) -> str:
+    nfc = unicodedata.normalize("NFC", filename or "")
+    n = nfc.lower()
+    if "lco2" in n or "경쟁사" in nfc:
+        return "LCO2경쟁사"
+    if "시장조사 (67)" in nfc or nfc.startswith("시장조사 (67)"):
+        return "지역시장조사"
+    if "화성" in nfc and "공장" in nfc:
+        return "화성공장등록"
+    if "김진혁" in nfc:
+        return "방문조사"
+    if "mail" in n or "시장조사ㅡ" in nfc or "시장조사-" in nfc:
+        return "방문조사"
+    if "서진" in nfc:
+        return "서진산업가스"
+    return "자동"
+
+
+def _parse_by_kind(path: Path, kind: str) -> list[dict]:
+    """업로드·기존 파일을 종류별로 파싱."""
+    k = (kind or "자동").strip()
+    if k == "자동":
+        k = _guess_parse_kind(path.name)
+        if k == "자동":
+            # 양식 추정: 지역조사 → 방문조사 순
+            rec = _parse_region_survey(path)
+            if rec:
+                return rec
+            return _parse_visit_notes(path, "업로드조사")
+    if k == "LCO2경쟁사":
+        return _parse_lco2(path)
+    if k == "지역시장조사":
+        return _parse_region_survey(path)
+    if k in {"방문조사", "방문조사(mail)", "방문조사(김진혁)"}:
+        label = "업로드조사" if k == "방문조사" else k
+        return _parse_visit_notes(path, label)
+    if k == "화성공장등록":
+        return _parse_factory_registry(path)
+    if k == "서진산업가스":
+        return _parse_seojin(path)
+    return []
+
+
+def _safe_upload_filename(original: str) -> str:
+    base = unicodedata.normalize("NFC", Path(original or "upload.xlsx").name)
+    base = re.sub(r"[^\w.\-가-힣()\[\] ]+", "_", base, flags=re.UNICODE)
+    stem = Path(base).stem[:80] or "upload"
+    suf = Path(base).suffix.lower()
+    if suf not in {".xlsx", ".xls"}:
+        suf = ".xlsx"
+    stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+    return f"{stamp}_{stem}{suf}"
+
+
+def save_uploaded_excel(file_obj, *, kind: str) -> dict:
+    """탭에서 올린 엑셀을 uploads/에 저장하고 manifest에 기록."""
+    os.makedirs(MR_UPLOAD_DIR, exist_ok=True)
+    original = getattr(file_obj, "name", None) or "upload.xlsx"
+    stored = _safe_upload_filename(original)
+    dest = os.path.join(MR_UPLOAD_DIR, stored)
+    data = file_obj.getbuffer() if hasattr(file_obj, "getbuffer") else file_obj.read()
+    with open(dest, "wb") as f:
+        f.write(data)
+    # Drive에도 복사 (가능하면)
+    for cand in MR_DRIVE_CANDIDATES:
+        if cand and os.path.isdir(cand):
+            try:
+                drive_up = os.path.join(cand, "uploads")
+                os.makedirs(drive_up, exist_ok=True)
+                shutil.copy2(dest, os.path.join(drive_up, stored))
+            except Exception:
+                pass
+            break
+    entry = {
+        "id": uuid.uuid4().hex[:12],
+        "filename": stored,
+        "original_name": unicodedata.normalize("NFC", Path(original).name),
+        "kind": (kind or "자동").strip() or "자동",
+        "uploaded_at": datetime.now(timezone.utc)
+        .astimezone()
+        .strftime("%Y-%m-%d %H:%M:%S"),
+        "size": os.path.getsize(dest),
+    }
+    man = _load_upload_manifest()
+    man.insert(0, entry)
+    _save_upload_manifest(man)
+    return entry
+
+
+def delete_uploaded_excel(entry_id: str) -> bool:
+    man = _load_upload_manifest()
+    hit = None
+    for e in man:
+        if str(e.get("id")) == str(entry_id):
+            hit = e
+            break
+    if not hit:
+        return False
+    path = os.path.join(MR_UPLOAD_DIR, hit.get("filename") or "")
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+    man = [e for e in man if str(e.get("id")) != str(entry_id)]
+    _save_upload_manifest(man)
+    return True
+
+
 def _read_sheet_rows(path: Path, sheet: str, max_rows: int = 20000) -> list[tuple]:
     if load_workbook is None:
         return []
@@ -847,12 +985,32 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
     (merged_df, raw_count, removed_dup_count)
     """
     root = ensure_market_research_cache()
-    files = {p.name: p for p in _list_xlsx(root)}
+    files = list(_list_xlsx(root))
+    kind_map = {
+        str(e.get("filename")): str(e.get("kind") or "자동")
+        for e in _load_upload_manifest()
+        if e.get("filename")
+    }
     records: list[dict] = []
+    seen_paths: set[str] = set()
 
-    for name, p in files.items():
+    for p in files:
+        try:
+            key = str(p.resolve())
+        except Exception:
+            key = str(p)
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        name = p.name
         nfc = unicodedata.normalize("NFC", name)
+        # uploads/ 는 manifest 종류 우선
+        if "uploads" in {x.casefold() for x in p.parts} and name in kind_map:
+            records.extend(_parse_by_kind(p, kind_map[name]))
+            continue
         n = nfc.lower()
+        if "스페셜" in nfc or "스폐셜" in nfc:
+            continue
         if "lco2" in n or "경쟁사" in nfc:
             records.extend(_parse_lco2(p))
         elif "시장조사 (67)" in nfc or nfc.startswith("시장조사 (67)"):
@@ -865,8 +1023,9 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
             records.extend(_parse_visit_notes(p, "방문조사(김진혁)"))
         elif "서진" in nfc:
             records.extend(_parse_seojin(p))
-        elif "스페셜" in nfc or "스폐셜" in nfc:
-            continue
+        elif name in kind_map:
+            records.extend(_parse_by_kind(p, kind_map[name]))
+        # 그 외 이름 미매칭 파일은 무시 (업로드는 manifest로만)
 
     for ent in load_manual_entries():
         rec = _manual_to_record(ent)
@@ -944,7 +1103,7 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
 
 
 def _cache_signature() -> str:
-    """로컬 캐시 mtime만 본다(Drive walk 없음). 직접입력 JSON 포함."""
+    """로컬 캐시 mtime만 본다(Drive walk 없음). 직접입력·업로드 JSON 포함."""
     root = MR_CACHE_DIR
     if not os.path.isdir(root):
         return "empty"
@@ -954,14 +1113,14 @@ def _cache_signature() -> str:
             parts.append(f"{p.name}:{os.path.getmtime(p):.0f}:{os.path.getsize(p)}")
         except OSError:
             parts.append(p.name)
-    man = _manual_entries_path()
-    try:
-        if os.path.exists(man):
-            parts.append(
-                f"manual:{os.path.getmtime(man):.0f}:{os.path.getsize(man)}"
-            )
-    except OSError:
-        parts.append("manual:0")
+    for extra in (_manual_entries_path(), MR_UPLOAD_MANIFEST):
+        try:
+            if os.path.exists(extra):
+                parts.append(
+                    f"{Path(extra).name}:{os.path.getmtime(extra):.0f}:{os.path.getsize(extra)}"
+                )
+        except OSError:
+            parts.append(f"{Path(extra).name}:0")
     return "|".join(parts) or "empty"
 
 
@@ -1275,8 +1434,91 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
     )
     st.caption(
         "경로: Google Drive › Desktop › 업무 › 시장조사  ·  "
-        "새 조사는 아래에서 바로 입력 · 검색은 「적용」"
+        "엑셀 업로드·직접입력 가능 · 검색은 「적용」"
     )
+
+    with st.expander("📁 엑셀 업로드", expanded=False):
+        st.caption(
+            "파일을 `uploaded_cache/market_research/uploads/`에 저장한 뒤 목록에 합칩니다. "
+            "양식이 다르면 아래 **파싱 형식**을 지정하세요."
+        )
+        with st.form("mr_upload_form", clear_on_submit=True):
+            up_files = st.file_uploader(
+                "엑셀 파일 (.xlsx)",
+                type=["xlsx", "xls"],
+                accept_multiple_files=True,
+                key="mr_upload_files",
+                help="여러 개 선택 가능. Cloud에서도 업로드한 파일은 앱 캐시에 남습니다.",
+            )
+            kind_labels = [f"{k} — {d}" for k, d in MR_UPLOAD_KINDS]
+            kind_pick = st.selectbox(
+                "파싱 형식",
+                options=list(range(len(MR_UPLOAD_KINDS))),
+                format_func=lambda i: kind_labels[i],
+                key="mr_upload_kind_form",
+            )
+            up_go = st.form_submit_button(
+                "저장하고 목록에 반영", type="primary", width="stretch"
+            )
+        if up_go:
+            if not up_files:
+                st.warning("파일을 선택한 뒤 다시 눌러 주세요.")
+            else:
+                kind = MR_UPLOAD_KINDS[int(kind_pick)][0]
+                saved_n = 0
+                errors: list[str] = []
+                for uf in up_files:
+                    try:
+                        ent = save_uploaded_excel(uf, kind=kind)
+                        # 바로 파싱 스모크 (실패해도 파일은 저장됨)
+                        path = Path(MR_UPLOAD_DIR) / ent["filename"]
+                        n_rec = len(_parse_by_kind(path, ent["kind"]))
+                        saved_n += 1
+                        if n_rec == 0:
+                            errors.append(
+                                f"{ent['original_name']}: 저장됨 · 파싱 0건 "
+                                f"(형식을 바꿔 다시 올려 보세요)"
+                            )
+                        else:
+                            st.success(
+                                f"업로드: **{ent['original_name']}** → "
+                                f"{ent['kind']} · {n_rec:,}건"
+                            )
+                    except Exception as e:
+                        errors.append(f"{getattr(uf, 'name', '?')}: {e}")
+                if saved_n:
+                    _invalidate_mr_loaded()
+                    if errors:
+                        for msg in errors:
+                            st.warning(msg)
+                    st.rerun()
+                elif errors:
+                    for msg in errors:
+                        st.error(msg)
+
+        uploads = _load_upload_manifest()
+        if uploads:
+            st.markdown(f"**업로드된 파일** ({len(uploads)}건)")
+            for ent in uploads[:12]:
+                c_a, c_b = st.columns([5, 1])
+                with c_a:
+                    sz = ent.get("size") or 0
+                    st.caption(
+                        f"`{ent.get('uploaded_at', '')}` · "
+                        f"**{ent.get('original_name', ent.get('filename'))}** · "
+                        f"{ent.get('kind', '자동')} · "
+                        f"{round(sz / 1024, 1)} KB"
+                    )
+                with c_b:
+                    if st.button(
+                        "삭제",
+                        key=f"mr_up_del_{ent.get('id')}",
+                        width="stretch",
+                    ):
+                        delete_uploaded_excel(str(ent.get("id")))
+                        _invalidate_mr_loaded()
+                        st.rerun()
+            st.caption(f"저장 폴더: `{MR_UPLOAD_DIR}`")
 
     with st.expander("✍️ 새 시장조사 입력", expanded=False):
         with st.form("mr_new_entry_form", clear_on_submit=True):

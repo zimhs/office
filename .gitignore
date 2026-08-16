@@ -48,4 +48,7 @@ uploaded_cache/**
 !uploaded_cache/market_research/**
 !uploaded_cache/market_research/개별/
 !uploaded_cache/market_research/개별/**
+# 탭에서 올린 사용자 엑셀은 커밋하지 않음
+uploaded_cache/market_research/uploads/
+uploaded_cache/market_research/uploads/**
 worklog_tab.py.final_*
