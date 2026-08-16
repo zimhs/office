@@ -83,20 +83,20 @@ _WL_LINES_HTML = """
 """
 
 _WL_LINES_CSS = """
-.wl-lines { display: flex; flex-direction: column; gap: 4px; width: 100%; max-width: 420px; }
+.wl-lines { display: flex; flex-direction: column; gap: 4px; width: 100%; }
 .wl-row { display: flex; gap: 4px; align-items: center; width: 100%; }
 .wl-row input {
   flex: 1 1 auto;
   min-width: 0;
   width: 100%;
-  height: 1.55rem;
-  padding: 0.1rem 0.35rem;
+  height: 2.1rem;
+  padding: 0.1rem 0.5rem;
   border: 1px solid #94A3B8;
   border-radius: 4px;
   background: #fff;
   color: #0F172A;
-  font-size: 0.75rem;
-  line-height: 1.2;
+  font-size: 0.85rem;
+  line-height: 1.25;
   outline: none;
 }
 .wl-row input:focus {
@@ -104,13 +104,13 @@ _WL_LINES_CSS = """
   box-shadow: 0 0 0 1px #0F766E;
 }
 .wl-row button {
-  flex: 0 0 40px;
-  height: 1.55rem;
+  flex: 0 0 3.2rem;
+  height: 2.1rem;
   border: 1px solid #CBD5E1;
   border-radius: 4px;
   background: #F8FAFC;
   color: #334155;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   padding: 0;
   cursor: pointer;
 }
@@ -238,17 +238,23 @@ export default function (component) {
       const commitValue = () => {
         if (inst.rebuilding) return;
         const cur = readDomLines();
-        let v = cur[j] || "";
-        if (displayUnits(v) > maxU) {
-          const ft = fitByUnits(v, maxU);
-          cur[j] = ft.head;
-          if (j + 1 < cur.length) cur[j + 1] = ft.tail + (cur[j + 1] || "");
-          else cur.splice(j + 1, 0, ft.tail);
-          emit(cur, j + 1);
-          rebuild(j + 1);
+        let j0 = j;
+        let v = cur[j0] || "";
+        if (displayUnits(v) <= maxU) {
+          emit(cur, null);
           return;
         }
-        emit(cur, null);
+        // 장문/붙여넣기: 원본 칸 폭으로 모두 나눈 뒤 다음 칸에 포커스
+        while (j0 < cur.length && displayUnits(cur[j0] || "") > maxU) {
+          const ft = fitByUnits(cur[j0] || "", maxU);
+          cur[j0] = ft.head;
+          if (j0 + 1 < cur.length) cur[j0 + 1] = ft.tail + (cur[j0 + 1] || "");
+          else cur.splice(j0 + 1, 0, ft.tail);
+          j0 += 1;
+        }
+        const focusIdx = Math.min(j0, Math.max(cur.length - 1, 0));
+        emit(cur, focusIdx);
+        rebuild(focusIdx);
       };
       input.addEventListener("input", (e) => {
         if (e.isComposing) return;
@@ -318,7 +324,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines",
+    "worklog_entry_lines_v2",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -1860,20 +1866,24 @@ def _bump_entry_line_gen(iso: str, entry_i: int) -> None:
 
 
 def _lines_from_entry_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bool = True) -> list[str]:
-    """칸 위젯 → 줄 목록. 중간 빈 칸은 유지. 끝의 편집용 빈 칸 1개는 선택적 유지."""
-    lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
-    if lc > 0:
-        parts = [
-            str(st.session_state.get(_entry_line_key(iso, entry_i, j), "") or "")
-            for j in range(lc)
-        ]
+    """칸 위젯/컴포넌트 → 줄 목록. 중간 빈 칸은 유지. 끝의 편집용 빈 칸 1개는 선택적 유지."""
+    live = st.session_state.get(_entry_lines_live_key(iso, entry_i))
+    ck = _entry_lines_comp_key(iso, entry_i)
+    cs = st.session_state.get(ck)
+    if isinstance(live, list):
+        parts = [str(x or "") for x in live]
+    elif isinstance(cs, dict) and isinstance(cs.get("lines"), list):
+        parts = [str(x or "") for x in cs.get("lines") or []]
     else:
-        live = st.session_state.get(_entry_lines_live_key(iso, entry_i))
-        if isinstance(live, list):
-            parts = [str(x or "") for x in live]
-        else:
+        lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
+        if lc <= 0:
             raw = str(st.session_state.get(f"wl_ent_t_{iso}_{entry_i}", "") or "")
             parts = [raw] if raw else ([""] if keep_trailing_empty else [])
+        else:
+            parts = [
+                str(st.session_state.get(_entry_line_key(iso, entry_i, j), "") or "")
+                for j in range(lc)
+            ]
     if not keep_trailing_empty:
         while parts and parts[-1] == "":
             parts.pop()
@@ -1913,7 +1923,7 @@ def _apply_entry_lines(
     focus_j: int | None = None,
     bump_gen: bool = False,
 ) -> None:
-    """줄 목록을 text_input 키에 반영. 끝에 편집용 빈 칸 1개 유지."""
+    """줄 목록을 CCv2/레거시 키에 반영. 끝에 편집용 빈 칸 1개 유지."""
     if bump_gen:
         _bump_entry_line_gen(iso, entry_i)
     chunks = [str(x or "") for x in (lines or [])]
@@ -1926,7 +1936,9 @@ def _apply_entry_lines(
     for j, line in enumerate(chunks):
         st.session_state[_entry_line_key(iso, entry_i, j)] = line
     st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(chunks)
-    st.session_state[_entry_lines_live_key(iso, entry_i)] = list(chunks)
+    _set_comp_lines_state(iso, entry_i, chunks, focus_j=focus_j)
+    rk = _entry_lines_rev_key(iso, entry_i)
+    st.session_state[rk] = int(st.session_state.get(rk, 0) or 0) + 1
     if focus_j is not None:
         fj = max(0, min(int(focus_j), len(chunks) - 1))
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, fj)
@@ -2237,29 +2249,15 @@ div[class*="st-key-wl_ln_add_"] button span {
         _apply_entry_clients(iso, entry_i, fixed, focus_j=focus)
         lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 1) or 1)
 
-    def _on_client_change(k: str, ei: int, lj: int) -> None:
-        val = str(st.session_state.get(k) or "")
-        if _display_units(val) <= max_u:
-            return
-        st.session_state[f"wl_do_enter_cell_{iso}"] = {
-            "kind": "wl_ent_cl",
-            "ei": ei,
-            "lj": lj,
-            "v": val,
-        }
-
     for j in range(lc):
         row_l, row_r = st.columns([8, 1], gap="small")
         with row_l:
-            wk = _entry_client_key(iso, entry_i, j)
             st.text_input(
                 f"거래처 {entry_i + 1}-{j + 1}",
-                key=wk,
+                key=_entry_client_key(iso, entry_i, j),
                 label_visibility="collapsed",
                 placeholder="",
                 autocomplete="off",
-                on_change=_on_client_change,
-                args=(wk, entry_i, j),
             )
         with row_r:
             is_last_empty = (
@@ -2295,91 +2293,83 @@ div[class*="st-key-wl_ln_add_"] button span {
 
 
 def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
-    """내용 칸: Streamlit text_input (입력 안정) + 칸 추가/삭제.
-
-    장문이 원본 내용칸 폭(max_u)을 넘기면 위젯 생성 전에 다음 칸으로 분할한다.
-    """
-    if int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0) <= 0:
-        live = st.session_state.get(_entry_lines_live_key(iso, entry_i))
-        if isinstance(live, list) and live:
-            _apply_entry_lines(iso, entry_i, [str(x or "") for x in live])
-        else:
-            _apply_entry_lines(iso, entry_i, [""])
-
-    lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 1) or 1)
-    parts = [
-        str(st.session_state.get(_entry_line_key(iso, entry_i, j), "") or "")
-        for j in range(lc)
-    ]
-    if any(_display_units(p) > max_u for p in parts):
-        fixed = _split_overflow_parts(parts, max_u)
+    """내용 칸 CCv2 편집터 — 입력 중 원본 칸 폭 초과 시 즉시 다음 칸으로 분할·포커스."""
+    ck = _entry_lines_comp_key(iso, entry_i)
+    live_key = _entry_lines_live_key(iso, entry_i)
+    cs = st.session_state.get(ck)
+    if isinstance(cs, dict) and isinstance(cs.get("lines"), list):
+        lines = [str(x or "") for x in cs.get("lines") or []]
+        focus = cs.get("focus", -1)
+    elif isinstance(st.session_state.get(live_key), list):
+        lines = [str(x or "") for x in st.session_state.get(live_key) or []]
+        focus = -1
+    else:
+        lines = [""]
+        focus = -1
+    # 서버에 남은 장문은 한 번만 정규화 (칸 폭 넘침 정리)
+    if any(_display_units(p) > max_u for p in lines):
+        fixed = _split_overflow_parts(lines, max_u)
         focus = 0
         for j, line in enumerate(fixed):
             if _display_units(line) >= max_u:
                 focus = min(j + 1, len(fixed))
-        _apply_entry_lines(
-            iso, entry_i, fixed, focus_j=focus, bump_gen=True
-        )
-        lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 1) or 1)
+        if fixed != lines:
+            _apply_entry_lines(iso, entry_i, fixed, focus_j=focus)
+            cs = st.session_state.get(ck)
+            if isinstance(cs, dict) and isinstance(cs.get("lines"), list):
+                lines = [str(x or "") for x in cs.get("lines") or []]
+                focus = cs.get("focus", focus)
+            else:
+                lines = fixed
+    if not lines or lines[-1] != "":
+        lines = list(lines) + [""]
+    rev = int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0)
+    try:
+        focus_n = int(focus)
+    except (TypeError, ValueError):
+        focus_n = -1
 
-    def _on_line_change(k: str, ei: int, lj: int) -> None:
-        val = str(st.session_state.get(k) or "")
-        if _display_units(val) <= max_u:
-            return
-        st.session_state[f"wl_do_enter_cell_{iso}"] = {
-            "kind": "wl_ent_ln",
-            "ei": ei,
-            "lj": lj,
-            "v": val,
-        }
+    def _on_lines_change() -> None:
+        cur = st.session_state.get(ck)
+        if isinstance(cur, dict) and isinstance(cur.get("lines"), list):
+            synced = [str(x or "") for x in cur.get("lines") or []]
+            st.session_state[live_key] = synced
+            st.session_state[_entry_line_count_key(iso, entry_i)] = len(synced)
+            for j, line in enumerate(synced):
+                st.session_state[_entry_line_key(iso, entry_i, j)] = line
+            filled = list(synced)
+            while filled and filled[-1] == "":
+                filled.pop()
+            st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(filled)
 
-    for j in range(lc):
-        row_l, row_r = st.columns([8, 1], gap="small")
-        with row_l:
-            wk = _entry_line_key(iso, entry_i, j)
-            st.text_input(
-                f"내용 {entry_i + 1}-{j + 1}",
-                key=wk,
-                label_visibility="collapsed",
-                placeholder="",
-                autocomplete="off",
-                on_change=_on_line_change,
-                args=(wk, entry_i, j),
-            )
-        with row_r:
-            is_last_empty = (
-                j == lc - 1
-                and str(st.session_state.get(_entry_line_key(iso, entry_i, j), "") or "")
-                == ""
-            )
-            if is_last_empty:
-                if st.button(
-                    "＋",
-                    key=f"wl_ln_add_{iso}_{entry_i}_{j}",
-                    width="stretch",
-                    help="아래 칸 추가",
-                ):
-                    st.session_state[f"wl_do_insert_ln_{iso}"] = (entry_i, j)
-                    _wl_rerun()
-            elif st.button(
-                "삭제",
-                key=f"wl_ln_del_{iso}_{entry_i}_{j}",
-                width="stretch",
-                help=f"{j + 1}칸 삭제",
-            ):
-                st.session_state[f"wl_do_del_ln_{iso}"] = (entry_i, j)
-                _wl_rerun()
-
-    out = _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)
-    st.session_state[_entry_lines_live_key(iso, entry_i)] = out
-    st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(
-        _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=False)
+    result = _WL_LINES_EDITOR(
+        key=ck,
+        data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "rev": rev},
+        default={"lines": lines, "focus": focus_n},
+        on_lines_change=_on_lines_change,
+        on_focus_change=lambda: None,
+        width="stretch",
+        height="content",
     )
+    out = result.lines if isinstance(getattr(result, "lines", None), list) else lines
+    out = [str(x or "") for x in out]
+    if not out or out[-1] != "":
+        out = list(out) + [""]
+    st.session_state[live_key] = out
+    old = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
+    for j in range(max(old, len(out)) + 3):
+        st.session_state.pop(_entry_line_key(iso, entry_i, j), None)
+    st.session_state[_entry_line_count_key(iso, entry_i)] = len(out)
+    for j, line in enumerate(out):
+        st.session_state[_entry_line_key(iso, entry_i, j)] = line
+    filled = list(out)
+    while filled and filled[-1] == "":
+        filled.pop()
+    st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(filled)
     return out
 
 
-# Enter / 칸초과 / 방향키 이동 (document 키 훅)
-# 칸초과 시 value는 건드리지 않고 서버로만 emit → 다음 입력칸 포커스
+# Enter / 방향키 이동 (거래처 text_input용). 내용칸은 CCv2가 로컬 분할.
 _WL_ENTER_HOOK_JS = r"""
 export default function (component) {
   const { data, setTriggerValue } = component;
@@ -2389,30 +2379,10 @@ export default function (component) {
     data && data.focus_caret != null && data.focus_caret !== ""
       ? Number(data.focus_caret)
       : null;
-  const clientMax = Number((data && data.client_max_u) || 18);
-  const contentMax = Number((data && data.content_max_u) || 70);
   let lastSent = "";
   let lastSig = "";
   let lastAt = 0;
 
-  function charUnits(ch) {
-    const o = ch.charCodeAt(0);
-    if (
-      (o >= 0xac00 && o <= 0xd7a3) ||
-      (o >= 0x1100 && o <= 0x11ff) ||
-      (o >= 0x3130 && o <= 0x318f) ||
-      (o >= 0x2e80 && o <= 0x9fff) ||
-      (o >= 0xff00 && o <= 0xffef)
-    )
-      return 2;
-    return 1;
-  }
-  function displayUnits(s) {
-    let w = 0;
-    s = String(s || "");
-    for (let i = 0; i < s.length; i++) w += charUnits(s.charAt(i));
-    return w;
-  }
   function resolveKey(t) {
     if (!t || String(t.tagName || "").toUpperCase() !== "INPUT") return null;
     const wrap = t.closest
@@ -2435,7 +2405,6 @@ export default function (component) {
       kind: m[1],
       ei: Number(m[3]),
       lj: Number(m[4]),
-      maxU: m[1] === "wl_ent_cl" ? clientMax : contentMax,
     };
   }
   function listKindInputs(kind) {
@@ -2591,29 +2560,7 @@ export default function (component) {
     }
   };
 
-  // 칸 폭 초과 → 서버로만 알림 (입력값 DOM 수정 금지)
-  const onOverflow = (e) => {
-    if (e.isComposing) return;
-    const t = e.target;
-    const info = resolveKey(t);
-    if (!info) return;
-    const v = String(t.value || "");
-    if (displayUnits(v) <= info.maxU) return;
-    emit(info.key, v);
-  };
-
-  const onCompEnd = (e) => {
-    const t = e.target;
-    const info = resolveKey(t);
-    if (!info) return;
-    const v = String(t.value || "");
-    if (displayUnits(v) <= info.maxU) return;
-    emit(info.key, v);
-  };
-
   document.addEventListener("keydown", onKey, true);
-  document.addEventListener("input", onOverflow, true);
-  document.addEventListener("compositionend", onCompEnd, true);
 
   if (focusKey) {
     const go = () => {
@@ -2635,14 +2582,12 @@ export default function (component) {
 
   return () => {
     document.removeEventListener("keydown", onKey, true);
-    document.removeEventListener("input", onOverflow, true);
-    document.removeEventListener("compositionend", onCompEnd, true);
   };
 }
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v17",
+    "worklog_cell_nav_hook_v18",
     js=_WL_ENTER_HOOK_JS,
 )
 
