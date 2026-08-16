@@ -83,35 +83,38 @@ _WL_LINES_HTML = """
 """
 
 _WL_LINES_CSS = """
-.wl-lines { display: flex; flex-direction: column; gap: 4px; width: 100%; }
-.wl-row { display: flex; gap: 4px; align-items: center; width: 100%; }
+.wl-lines { display: flex; flex-direction: column; gap: 4px; width: 100%; max-width: 100%; box-sizing: border-box; }
+.wl-row { display: flex; gap: 4px; align-items: center; width: 100%; box-sizing: border-box; }
 .wl-row input {
   flex: 1 1 auto;
   min-width: 0;
   width: 100%;
-  height: 2.1rem;
-  padding: 0.1rem 0.5rem;
+  height: 1.85rem;
+  padding: 0.05rem 0.35rem;
   border: 1px solid #94A3B8;
   border-radius: 4px;
   background: #fff;
   color: #0F172A;
   font-family: 'Batang','BatangChe','바탕','바탕체','바탕글','Apple Myungjo','Nanum Myeongjo',serif;
-  font-size: 14px;
-  line-height: 1.25;
+  /* 원본 미리보기 칸에 보이는 글자수와 맞추기 위해 작게 */
+  font-size: 11px;
+  letter-spacing: 0;
+  line-height: 1.2;
   outline: none;
+  box-sizing: border-box;
 }
 .wl-row input:focus {
   border-color: #0F766E;
   box-shadow: 0 0 0 1px #0F766E;
 }
 .wl-row button {
-  flex: 0 0 3.2rem;
-  height: 2.1rem;
+  flex: 0 0 2.8rem;
+  height: 1.85rem;
   border: 1px solid #CBD5E1;
   border-radius: 4px;
   background: #F8FAFC;
   color: #334155;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   padding: 0;
   cursor: pointer;
 }
@@ -127,12 +130,18 @@ export default function (component) {
   const root = parentElement.querySelector(".wl-lines");
   if (!root) return;
 
-  const maxU = Number((data && data.max_u) || 62);
+  const maxU = Number((data && data.max_u) || 64);
+  const cellW = Number((data && data.cell_w) || 666);
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
   const incoming = Array.isArray(data && data.lines)
     ? data.lines.map((x) => String(x ?? ""))
     : [""];
+
+  try {
+    root.style.maxWidth = cellW + "px";
+    root.style.width = "100%";
+  } catch (e0) {}
 
   let inst = __wlLinesInst.get(root);
   if (!inst) {
@@ -325,7 +334,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v4",
+    "worklog_entry_lines_v5",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -425,10 +434,9 @@ def _set_body_font(cell) -> None:
 def _content_line_units() -> int:
     """원본 엑셀 내용칸(G:X 병합) 폭 — 반각=1, 한글=2.
 
-    미리보기에 보이는 채움과 업무입력이 같도록, 원본 열폭보다
-    한글 약 4자(8단위) 여유를 두고 다음 칸으로 넘긴다.
+    미리보기와 같은 칸 넘김. 한글 약 1자 여유만 두고 다음 칸으로 넘긴다.
     """
-    fallback = 62
+    fallback = 64
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -439,9 +447,9 @@ def _content_line_units() -> int:
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        # 본문 14pt 보정 후 미리보기와 맞추기 위해 여유를 둠
-        units = int(total * (11 / 14) * 1.06) - 8
-        return max(58, min(units, 63))
+        # 본문 14pt 보정 후 한글 1자(2단위) 여유
+        units = int(total * (11 / 14) * 1.06) - 6
+        return max(60, min(units, 65))
     except Exception:
         return fallback
 
@@ -462,6 +470,25 @@ def _client_line_units() -> int:
         wb.close()
         units = int(total * (11 / 14) * 1.05) - 4
         return max(11, min(units, 16))
+    except Exception:
+        return fallback
+
+
+@lru_cache(maxsize=1)
+def _content_input_width_px() -> int:
+    """원본 내용칸(G:X) 픽셀 폭 — 업무입력칸 가로를 원본과 같게."""
+    fallback = 666
+    if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
+        return fallback
+    try:
+        wb = load_workbook(WORKLOG_TEMPLATE, data_only=False)
+        ws = wb.active
+        total = sum(
+            _excel_width_to_px(_excel_col_width(ws, c))
+            for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
+        )
+        wb.close()
+        return max(480, min(int(total), 720))
     except Exception:
         return fallback
 
@@ -2348,7 +2375,13 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
 
     result = _WL_LINES_EDITOR(
         key=ck,
-        data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "rev": rev},
+        data={
+            "lines": lines,
+            "focus": focus_n,
+            "max_u": int(max_u),
+            "cell_w": int(_content_input_width_px()),
+            "rev": rev,
+        },
         default={"lines": lines, "focus": focus_n},
         on_lines_change=_on_lines_change,
         on_focus_change=lambda: None,
