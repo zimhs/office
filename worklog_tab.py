@@ -3055,6 +3055,12 @@ def _publish_view_cells(d: date, cells: dict) -> None:
         f"wl_left_excel_sig_{iso}",
         f"wl_left_excel_html_{iso}",
         f"wl_left_excel_h_{iso}",
+        f"wl_left_excel_sig_v2_{iso}",
+        f"wl_left_excel_html_v2_{iso}",
+        f"wl_left_excel_h_v2_{iso}",
+        f"wl_left_excel_sig_v3_{iso}",
+        f"wl_left_excel_html_v3_{iso}",
+        f"wl_left_excel_h_v3_{iso}",
     ):
         st.session_state.pop(k, None)
 
