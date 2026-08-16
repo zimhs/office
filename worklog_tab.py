@@ -126,7 +126,7 @@ export default function (component) {
   const root = parentElement.querySelector(".wl-lines");
   if (!root) return;
 
-  const maxU = Number((data && data.max_u) || 52);
+  const maxU = Number((data && data.max_u) || 70);
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
   const incoming = Array.isArray(data && data.lines)
@@ -141,10 +141,10 @@ export default function (component) {
 
   function charUnits(ch) {
     const o = ch.charCodeAt(0);
+    if (o >= 0x3130 && o <= 0x318f) return 1;
     if (
       (o >= 0xac00 && o <= 0xd7a3) ||
       (o >= 0x1100 && o <= 0x11ff) ||
-      (o >= 0x3130 && o <= 0x318f) ||
       (o >= 0x2e80 && o <= 0x9fff) ||
       (o >= 0xff00 && o <= 0xffef)
     )
@@ -346,15 +346,17 @@ def _scrub_dummy_label(val: str) -> str:
 
 
 def _char_units(ch: str) -> int:
-    """엑셀 동아시아 폭: 전각·한글·호환자모=2, 그 외=1."""
+    """표시 폭 단위: 한글 완성형·전각=2, 호환 자모(ㄴㄷ…)=1, 그 외=1."""
+    o = ord(ch)
+    # 호환 자모는 엑셀 W폭이어도 미리보기·입력칸에서 훨씬 좁게 보임
+    if 0x3130 <= o <= 0x318F:
+        return 1
     ea = unicodedata.east_asian_width(ch)
     if ea in ("F", "W", "A"):
         return 2
-    o = ord(ch)
     if (
         0xAC00 <= o <= 0xD7A3
         or 0x1100 <= o <= 0x11FF
-        or 0x3130 <= o <= 0x318F
         or 0x2E80 <= o <= 0x9FFF
         or 0xF900 <= o <= 0xFAFF
         or 0xFF00 <= o <= 0xFFEF
@@ -416,12 +418,12 @@ def _set_body_font(cell) -> None:
 
 @lru_cache(maxsize=1)
 def _content_line_units() -> int:
-    """원본 G:X 병합 폭 기준 — 칸을 넘기지 않게 여유를 더 둔다.
+    """원본 G:X 병합 폭 기준 — 칸을 거의 채운 뒤 다음 칸으로 넘긴다.
 
-    반각=1, 한글=2. 바탕체 미리보기 기준으로 약 52단위(~한글 26자)에서
-    다음 칸으로 넘긴다.
+    반각=1, 한글 완성형=2. 약 70단위(~한글 35자)까지 채운다.
+    미리보기는 overflow:hidden 으로 테두리 밖 넘침을 막는다.
     """
-    fallback = 52
+    fallback = 70
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -432,9 +434,8 @@ def _content_line_units() -> int:
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        # 바탕체 실측이 추정보다 넓어 보이므로 여유를 크게
-        units = int(total * (11 / 14) * 0.78)
-        return max(48, min(units, 54))
+        units = int(total * (11 / 14) * 1.05)
+        return max(66, min(units, 72))
     except Exception:
         return fallback
 
@@ -442,7 +443,7 @@ def _content_line_units() -> int:
 @lru_cache(maxsize=1)
 def _client_line_units() -> int:
     """원본 C:F 거래처 병합 폭 기준 — 칸을 넘기면 다음 행으로(반각=1)."""
-    fallback = 12
+    fallback = 16
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -453,8 +454,8 @@ def _client_line_units() -> int:
             for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 0.78)
-        return max(10, min(units, 13))
+        units = int(total * (11 / 14) * 1.05)
+        return max(14, min(units, 18))
     except Exception:
         return fallback
 
@@ -2353,18 +2354,18 @@ export default function (component) {
     data && data.focus_caret != null && data.focus_caret !== ""
       ? Number(data.focus_caret)
       : null;
-  const clientMax = Number((data && data.client_max_u) || 12);
-  const contentMax = Number((data && data.content_max_u) || 52);
+  const clientMax = Number((data && data.client_max_u) || 16);
+  const contentMax = Number((data && data.content_max_u) || 70);
   let lastSent = "";
   let lastSig = "";
   let lastAt = 0;
 
   function charUnits(ch) {
     const o = ch.charCodeAt(0);
+    if (o >= 0x3130 && o <= 0x318f) return 1;
     if (
       (o >= 0xac00 && o <= 0xd7a3) ||
       (o >= 0x1100 && o <= 0x11ff) ||
-      (o >= 0x3130 && o <= 0x318f) ||
       (o >= 0x2e80 && o <= 0x9fff) ||
       (o >= 0xff00 && o <= 0xffef)
     )
@@ -2640,7 +2641,7 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v13",
+    "worklog_cell_nav_hook_v14",
     js=_WL_ENTER_HOOK_JS,
 )
 
