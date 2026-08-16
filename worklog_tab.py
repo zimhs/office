@@ -3012,7 +3012,7 @@ def open_excel_print_preview(xlsx_path: str) -> tuple[bool, str]:
 
 @st.dialog("원본 엑셀 양식 미리보기", width="large")
 def _worklog_form_preview_dialog() -> None:
-    """Cloud/맥 공통 — 버튼 클릭 시 모달로 원본 양식을 확실히 보여 준다."""
+    """큰 화면용 엑셀 양식 미리보기 (보조)."""
     path = st.session_state.get("wl_dialog_preview_path")
     if not path or not os.path.exists(str(path)):
         st.error("미리보기 파일을 만들 수 없습니다. 템플릿·입력을 확인해 주세요.")
@@ -3056,7 +3056,15 @@ def _worklog_form_preview_dialog() -> None:
                 else:
                     st.warning(msg)
         else:
-            st.caption("Cloud에서는 위 화면 미리보기·엑셀 다운로드를 사용하세요.")
+            st.caption("Cloud에서는 위 엑셀 양식 미리보기·다운로드를 사용하세요.")
+
+
+def _prepare_excel_preview(d: date, cells: dict) -> str:
+    """현재 입력 → 엑셀 미리보기 파일 경로."""
+    try:
+        return prepare_print_xlsx(d, cells)
+    except Exception:
+        return _build_preview_file(d, cells)
 
 
 def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
@@ -3278,10 +3286,15 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         with col_preview:
             st.markdown("##### 업무일지 보기")
-            # 버튼은 큰 iframe 위에 둠 (iframe이 클릭을 가로채 미리보기가 안 눌리던 문제 방지)
+            # 버튼은 큰 iframe 위에 둠 (클릭 가로채기 방지)
             p1, p2 = st.columns(2)
             with p1:
-                do_print = st.button("미리보기", width="stretch", key="wl_print_btn")
+                do_print = st.button(
+                    "엑셀 미리보기",
+                    width="stretch",
+                    key="wl_print_btn",
+                    help="왼쪽 칸에 원본 엑셀 양식을 바로 적용합니다. 맥에서는 Excel도 함께 엽니다.",
+                )
             with p2:
                 path_saved = worklog_path(selected)
                 xbytes = b""
@@ -3306,37 +3319,97 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     disabled=not xbytes,
                 )
 
+            _left_excel_key = f"wl_left_excel_on_{selected.isoformat()}"
+            _left_path_key = f"wl_left_excel_path_{selected.isoformat()}"
             if do_print:
                 cells_now = _cells_from_widgets(selected)
                 try:
-                    xlsx_abs = prepare_print_xlsx(selected, cells_now)
+                    xlsx_abs = _prepare_excel_preview(selected, cells_now)
+                    st.session_state[_left_excel_key] = True
+                    st.session_state[_left_path_key] = xlsx_abs
                     st.session_state["wl_dialog_preview_path"] = xlsx_abs
-                    _worklog_form_preview_dialog()
-                except Exception as e:
-                    try:
-                        preview = _build_preview_file(selected, cells_now)
-                        st.session_state["wl_dialog_preview_path"] = preview
-                        _worklog_form_preview_dialog()
-                        if not _wl_quiet_ui():
-                            st.caption(f"대체 미리보기 사용: {e}")
-                    except Exception as e2:
-                        if _wl_quiet_ui():
-                            st.error(
-                                "미리보기를 열지 못했습니다. "
-                                "「엑셀 저장본」다운로드를 이용해 주세요."
-                            )
+                    # 하단 원본 양식 캐시도 즉시 갱신
+                    form_sig = json.dumps(cells_now, ensure_ascii=False, sort_keys=True)
+                    st.session_state[f"wl_form_sig_v14_{selected.isoformat()}"] = None
+                    st.session_state["_wl_force_form_sig"] = form_sig
+                    if not _wl_quiet_ui():
+                        ok, msg = open_excel_print_preview(xlsx_abs)
+                        if ok:
+                            st.success(msg)
                         else:
-                            st.error(f"원본 미리보기 오류: {e}")
-                            st.error(f"대체 미리보기도 실패: {e2}")
+                            st.caption(msg)
+                except Exception as e:
+                    st.session_state[_left_excel_key] = False
+                    if _wl_quiet_ui():
+                        st.error(
+                            "엑셀 미리보기를 적용하지 못했습니다. "
+                            "「엑셀 저장본」다운로드를 이용해 주세요."
+                        )
+                    else:
+                        st.error(f"엑셀 미리보기 오류: {e}")
 
-            try:
-                view_html = render_readable_preview_html(selected, draft)
-                components.html(view_html, height=820, scrolling=True)
-            except Exception as e:
-                if _wl_quiet_ui():
-                    st.info("업무일지 요약을 표시하지 못했습니다. 입력 후 다시 확인해 주세요.")
+            _show_excel_left = bool(st.session_state.get(_left_excel_key))
+            if _show_excel_left:
+                sw1, sw2 = st.columns([1, 1])
+                with sw1:
+                    st.caption("원본 엑셀 양식 적용 중")
+                with sw2:
+                    if st.button(
+                        "요약 보기로",
+                        width="stretch",
+                        key=f"wl_left_to_summary_{selected.isoformat()}",
+                    ):
+                        st.session_state[_left_excel_key] = False
+                        _wl_rerun()
+                xlsx_left = st.session_state.get(_left_path_key) or ""
+                if xlsx_left and os.path.exists(str(xlsx_left)):
+                    try:
+                        # 입력 바뀌면 미리보기 파일 다시 생성
+                        cells_live = _cells_from_widgets(selected)
+                        live_sig = json.dumps(
+                            cells_live, ensure_ascii=False, sort_keys=True
+                        )
+                        sig_k = f"wl_left_excel_sig_{selected.isoformat()}"
+                        if st.session_state.get(sig_k) != live_sig:
+                            xlsx_left = _prepare_excel_preview(selected, cells_live)
+                            st.session_state[_left_path_key] = xlsx_left
+                            st.session_state[sig_k] = live_sig
+                        scale_l = 0.48
+                        excel_html = render_worklog_view_html(
+                            str(xlsx_left),
+                            print_mode=False,
+                            auto_print=False,
+                            scale=scale_l,
+                        )
+                        _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
+                        components.html(
+                            excel_html,
+                            height=min(820, max(480, int(fh))),
+                            scrolling=True,
+                        )
+                        if st.button(
+                            "크게 보기",
+                            width="stretch",
+                            key=f"wl_left_excel_big_{selected.isoformat()}",
+                        ):
+                            st.session_state["wl_dialog_preview_path"] = str(xlsx_left)
+                            _worklog_form_preview_dialog()
+                    except Exception as e:
+                        st.warning(f"엑셀 양식 표시 실패: {e}")
+                        st.session_state[_left_excel_key] = False
                 else:
-                    st.error(f"요약 보기 오류: {e}")
+                    st.info("엑셀 미리보기 파일이 없습니다. 다시 「엑셀 미리보기」를 눌러 주세요.")
+            else:
+                try:
+                    view_html = render_readable_preview_html(selected, draft)
+                    components.html(view_html, height=820, scrolling=True)
+                except Exception as e:
+                    if _wl_quiet_ui():
+                        st.info(
+                            "업무일지 요약을 표시하지 못했습니다. 입력 후 다시 확인해 주세요."
+                        )
+                    else:
+                        st.error(f"요약 보기 오류: {e}")
 
         with col_gauge:
             # 오른쪽 「저장」버튼 근처까지 세로로 맞춤 (폭 26px 유지)
