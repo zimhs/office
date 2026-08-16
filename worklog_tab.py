@@ -127,7 +127,7 @@ export default function (component) {
   const root = parentElement.querySelector(".wl-lines");
   if (!root) return;
 
-  const maxU = Number((data && data.max_u) || 66);
+  const maxU = Number((data && data.max_u) || 62);
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
   const incoming = Array.isArray(data && data.lines)
@@ -325,7 +325,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v3",
+    "worklog_entry_lines_v4",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -425,10 +425,10 @@ def _set_body_font(cell) -> None:
 def _content_line_units() -> int:
     """원본 엑셀 내용칸(G:X 병합) 폭 — 반각=1, 한글=2.
 
-    양식 열폭 합 기준에서 한글 약 2자(4단위) 여유를 두고 다음 칸으로 넘긴다.
-    미리보기·업무입력·저장이 같은 max_u 를 쓴다.
+    미리보기에 보이는 채움과 업무입력이 같도록, 원본 열폭보다
+    한글 약 4자(8단위) 여유를 두고 다음 칸으로 넘긴다.
     """
-    fallback = 66
+    fallback = 62
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -439,9 +439,9 @@ def _content_line_units() -> int:
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        # 본문 14pt 보정 후 한글 2자(4단위) 여유
-        units = int(total * (11 / 14) * 1.06) - 4
-        return max(62, min(units, 67))
+        # 본문 14pt 보정 후 미리보기와 맞추기 위해 여유를 둠
+        units = int(total * (11 / 14) * 1.06) - 8
+        return max(58, min(units, 63))
     except Exception:
         return fallback
 
@@ -449,7 +449,7 @@ def _content_line_units() -> int:
 @lru_cache(maxsize=1)
 def _client_line_units() -> int:
     """원본 엑셀 거래처칸(C:F 병합) 폭 — 반각=1, 한글=2."""
-    fallback = 16
+    fallback = 14
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -460,8 +460,8 @@ def _client_line_units() -> int:
             for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 1.05) - 2
-        return max(12, min(units, 18))
+        units = int(total * (11 / 14) * 1.05) - 4
+        return max(11, min(units, 16))
     except Exception:
         return fallback
 
