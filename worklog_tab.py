@@ -2495,13 +2495,8 @@ export default function (component) {
     if (e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
-      // 서버 rerun 없이 다음 칸으로만 이동 (form 입력 중 로딩·값 유실 방지)
-      // 칸 추가는 「＋」/저장 시 서버에서 처리
-      const list = listKindInputs(info.kind);
-      const idx = list.indexOf(t);
-      if (idx >= 0 && idx < list.length - 1) {
-        focusInput(list[idx + 1], "end");
-      }
+      // 서버로 보내 다음 칸 생성/이동 (원본 엑셀 칸 동작)
+      emit(info.key, t.value || "");
       return;
     }
 
@@ -2584,8 +2579,7 @@ export default function (component) {
     }
   };
 
-  // 칸 폭 초과 시 DOM만 자르고 서버로는 보내지 않음 (입력 중 로딩 방지)
-  // Enter 시에만 emit → 서버에서 다음 칸 분할
+  // 칸 폭 초과 → 다음 칸으로 넘김 (원본 엑셀 칸 반영)
   const onInput = (e) => {
     if (e.isComposing) return;
     const t = e.target;
@@ -2597,6 +2591,7 @@ export default function (component) {
     try {
       t.value = head;
     } catch (err) {}
+    emit(info.key, v);
   };
 
   const onCompEnd = (e) => {
@@ -2609,6 +2604,7 @@ export default function (component) {
     try {
       t.value = head;
     } catch (err) {}
+    emit(info.key, v);
   };
 
   document.addEventListener("keydown", onKey, true);
@@ -2643,7 +2639,7 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v11",
+    "worklog_cell_nav_hook_v12",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -4355,7 +4351,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         else:
                             st.error(f"저장 실패: {e}")
 
-                # Enter 훅: 방향키·칸 이동만 (입력 중 서버 호출 없음)
+                # Enter / 칸폭 초과 → 다음 칸 생성·이동
                 _WL_ENTER_HOOK(
                     key=f"wl_enter_hook_{iso2}",
                     data={
@@ -4369,9 +4365,12 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         "client_max_u": _client_line_units(),
                         "content_max_u": _content_line_units(),
                     },
+                    on_enter_change=_on_enter_trigger,
                     width="stretch",
                     height=1,
                 )
+                if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
+                    _wl_rerun()
                 ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
                 if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
                     _insert_line_after(iso2, int(ins_after[0]), int(ins_after[1]))
