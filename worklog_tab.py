@@ -2226,6 +2226,70 @@ def _insert_text_table_into_entry(
     _apply_entry_lines(iso, entry_i, cur, focus_j=focus_j, bump_gen=True)
 
 
+def _is_text_table_hline(s: str) -> bool:
+    t = str(s or "").strip()
+    return bool(t) and t.startswith("+") and t.endswith("+") and set(t) <= {"+", "-"}
+
+
+def _is_text_table_row(s: str) -> bool:
+    t = str(s or "").rstrip("\n")
+    if not t.startswith("|") or not t.endswith("|"):
+        return False
+    return "|" in t[1:-1] or len(t) >= 2
+
+
+def _find_last_text_table_span(lines: list[str]) -> tuple[int, int] | None:
+    """마지막 텍스트 표 구간 [start, end) 인덱스. 없으면 None."""
+    parts = [str(x or "") for x in (lines or [])]
+    # 끝 빈 줄 무시
+    end = len(parts)
+    while end > 0 and not str(parts[end - 1]).strip():
+        end -= 1
+    if end <= 0:
+        return None
+    # 아래에서 표 하단선(+) 찾기
+    bot = None
+    for i in range(end - 1, -1, -1):
+        if _is_text_table_hline(parts[i]):
+            bot = i
+            break
+        if str(parts[i]).strip() and not _is_text_table_row(parts[i]):
+            return None
+    if bot is None:
+        return None
+    top = None
+    for i in range(bot, -1, -1):
+        if _is_text_table_hline(parts[i]):
+            top = i
+        elif _is_text_table_row(parts[i]):
+            continue
+        else:
+            break
+    if top is None or top >= bot:
+        return None
+    # 표 앞 구분용 빈 줄도 같이 제거
+    start = top
+    if start > 0 and not str(parts[start - 1]).strip():
+        start -= 1
+    return start, bot + 1
+
+
+def _remove_last_text_table_from_entry(iso: str, entry_i: int) -> bool:
+    """항목 내용에서 마지막 텍스트 표를 삭제. 성공 시 True."""
+    cur = _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)
+    span = _find_last_text_table_span(cur)
+    if not span:
+        return False
+    a, b = span
+    new_lines = list(cur[:a]) + list(cur[b:])
+    while new_lines and new_lines[-1] == "":
+        new_lines.pop()
+    new_lines.append("")
+    focus = max(0, len(new_lines) - 1)
+    _apply_entry_lines(iso, entry_i, new_lines, focus_j=focus, bump_gen=True)
+    return True
+
+
 def _entry_client_count_key(iso: str, entry_i: int) -> str:
     return f"wl_ent_clc_{iso}_{entry_i}"
 
@@ -4423,6 +4487,20 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     except Exception:
                         pass
 
+                del_tbl = st.session_state.pop(f"wl_do_delete_table_{iso2}", None)
+                if isinstance(del_tbl, dict):
+                    try:
+                        ei = int(del_tbl.get("ei") or 0)
+                        ok = _remove_last_text_table_from_entry(iso2, ei)
+                        st.session_state[f"wl_exp_{iso2}_{ei}"] = True
+                        st.session_state[f"wl_tbl_del_msg_{iso2}_{ei}"] = (
+                            "마지막 표를 삭제했습니다."
+                            if ok
+                            else "삭제할 표가 없습니다."
+                        )
+                    except Exception:
+                        pass
+
                 # Enter 커밋(입력값 반영 + 칸 분할) — 반드시 위젯 생성 전
                 ent_req = st.session_state.pop(f"wl_do_enter_cell_{iso2}", None)
                 if isinstance(ent_req, dict):
@@ -4660,8 +4738,8 @@ div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) 
                             ):
                                 if _tk not in st.session_state:
                                     st.session_state[_tk] = _tv
-                            tr, tc, tw, th, tb = st.columns(
-                                [1, 1, 1.1, 1.1, 1.2], gap="small"
+                            tr, tc, tw, th = st.columns(
+                                [1, 1, 1.1, 1.1], gap="small"
                             )
                             with tr:
                                 st.number_input(
@@ -4699,11 +4777,8 @@ div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) 
                                     key=f"wl_tbl_rh_{iso2}_{i}",
                                     help="칸 안 세로 줄 수",
                                 )
-                            with tb:
-                                st.markdown(
-                                    "<div style='height:1.55rem'></div>",
-                                    unsafe_allow_html=True,
-                                )
+                            b_ins, b_del = st.columns([1, 1], gap="small")
+                            with b_ins:
                                 if st.button(
                                     "표 삽입",
                                     width="stretch",
@@ -4738,6 +4813,22 @@ div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) 
                                         ),
                                     }
                                     _wl_rerun()
+                            with b_del:
+                                if st.button(
+                                    "표 삭제",
+                                    width="stretch",
+                                    key=f"wl_tbl_del_{iso2}_{i}",
+                                    help="이 항목에서 마지막 텍스트 표를 삭제합니다.",
+                                ):
+                                    st.session_state[f"wl_do_delete_table_{iso2}"] = {
+                                        "ei": i
+                                    }
+                                    _wl_rerun()
+                            _del_msg = st.session_state.pop(
+                                f"wl_tbl_del_msg_{iso2}_{i}", None
+                            )
+                            if _del_msg:
+                                st.caption(str(_del_msg))
                             st.caption(
                                 "글자 표입니다. 칸 안에 직접 입력하고 「저장」하세요."
                             )
