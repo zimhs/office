@@ -1,11 +1,14 @@
 """시장조사 탭 — Drive「Desktop/업무/시장조사」자료를 지역·공급사·소스로 정리해 조회."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import unicodedata
+import uuid
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +20,8 @@ except Exception:  # pragma: no cover
     load_workbook = None
 
 MR_CACHE_DIR = os.path.join("uploaded_cache", "market_research")
+MR_MANUAL_FILE = os.path.join(MR_CACHE_DIR, "manual_entries.json")
+MR_MANUAL_SOURCE = "직접입력"
 MR_DRIVE_CANDIDATES = [
     os.path.expanduser(
         "~/Library/CloudStorage/GoogleDrive-3023526@gmail.com/"
@@ -274,6 +279,115 @@ def ensure_market_research_cache(*, force: bool = False) -> str:
     except Exception:
         pass
     return MR_CACHE_DIR
+
+
+def _manual_entries_path() -> str:
+    os.makedirs(MR_CACHE_DIR, exist_ok=True)
+    return MR_MANUAL_FILE
+
+
+def load_manual_entries() -> list[dict]:
+    path = _manual_entries_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+    except Exception:
+        return []
+    return []
+
+
+def save_manual_entries(entries: list[dict]) -> None:
+    path = _manual_entries_path()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+    for cand in MR_DRIVE_CANDIDATES:
+        if cand and os.path.isdir(cand):
+            try:
+                shutil.copy2(path, os.path.join(cand, "직접입력_시장조사.json"))
+            except Exception:
+                pass
+            break
+
+
+def _manual_to_record(entry: dict) -> dict:
+    name = _s(entry.get("업체명"))
+    addr = _s(entry.get("주소"))
+    region = _s(entry.get("지역")) or infer_region(addr, name)
+    return {
+        "출처": MR_MANUAL_SOURCE,
+        "파일": "manual_entries.json",
+        "시트": "직접입력",
+        "지역": region or "미분류",
+        "업체명": name,
+        "주소": addr,
+        "업종": _s(entry.get("업종")),
+        "사용가스": _s(entry.get("사용가스")),
+        "공급사": _s(entry.get("공급사")),
+        "담당자": _s(entry.get("담당자")),
+        "연락처": _s(entry.get("연락처")),
+        "비고": _s(entry.get("비고")),
+    }
+
+
+def add_manual_entry(fields: dict) -> dict:
+    name = _s(fields.get("업체명"))
+    if len(name) < 2:
+        raise ValueError("업체명을 2글자 이상 입력하세요.")
+    entry = {
+        "id": uuid.uuid4().hex[:12],
+        "saved_at": datetime.now(timezone.utc)
+        .astimezone()
+        .strftime("%Y-%m-%d %H:%M:%S"),
+        "업체명": name,
+        "지역": _s(fields.get("지역")),
+        "주소": _s(fields.get("주소")),
+        "업종": _s(fields.get("업종")),
+        "사용가스": _s(fields.get("사용가스")),
+        "공급사": _s(fields.get("공급사")),
+        "담당자": _s(fields.get("담당자")),
+        "연락처": _s(fields.get("연락처")),
+        "비고": _s(fields.get("비고")),
+    }
+    if not entry["지역"]:
+        entry["지역"] = infer_region(entry["주소"], entry["업체명"])
+    entries = load_manual_entries()
+    entries.insert(0, entry)
+    save_manual_entries(entries)
+    return entry
+
+
+def delete_manual_entry(entry_id: str) -> bool:
+    entries = load_manual_entries()
+    n0 = len(entries)
+    entries = [e for e in entries if str(e.get("id")) != str(entry_id)]
+    if len(entries) == n0:
+        return False
+    save_manual_entries(entries)
+    return True
+
+
+def _invalidate_mr_loaded() -> None:
+    try:
+        load_market_research_frame.clear()
+    except Exception:
+        pass
+    for k in ("_mr_data_warm", "_mr_data_sig"):
+        st.session_state.pop(k, None)
+
+
+def _region_choices() -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for _pat, name in _REGION_RULES:
+        if name not in seen and name != "경기기타":
+            seen.add(name)
+            names.append(name)
+    names.append("미분류")
+    return names
 
 
 def _list_xlsx(root: str) -> list[Path]:
@@ -628,6 +742,11 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         elif "스페셜" in nfc or "스폐셜" in nfc:
             continue
 
+    for ent in load_manual_entries():
+        rec = _manual_to_record(ent)
+        if len(rec["업체명"]) >= 2:
+            records.append(rec)
+
     empty_cols = [
         "출처",
         "파일",
@@ -694,7 +813,7 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
 
 
 def _cache_signature() -> str:
-    """로컬 캐시 mtime만 본다(Drive walk 없음)."""
+    """로컬 캐시 mtime만 본다(Drive walk 없음). 직접입력 JSON 포함."""
     root = MR_CACHE_DIR
     if not os.path.isdir(root):
         return "empty"
@@ -704,6 +823,14 @@ def _cache_signature() -> str:
             parts.append(f"{p.name}:{os.path.getmtime(p):.0f}:{os.path.getsize(p)}")
         except OSError:
             parts.append(p.name)
+    man = _manual_entries_path()
+    try:
+        if os.path.exists(man):
+            parts.append(
+                f"manual:{os.path.getmtime(man):.0f}:{os.path.getsize(man)}"
+            )
+    except OSError:
+        parts.append("manual:0")
     return "|".join(parts) or "empty"
 
 
@@ -1011,9 +1138,91 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         unsafe_allow_html=True,
     )
     st.caption(
-        "경로: Google Drive › 다른 컴퓨터 › Desktop › 업무 › 시장조사  "
-        "· 지역·공급사·출처별 통합 조회 (검색은 「적용」버튼)"
+        "경로: Google Drive › Desktop › 업무 › 시장조사  ·  "
+        "새 조사는 아래에서 바로 입력 · 검색은 「적용」"
     )
+
+    with st.expander("✍️ 새 시장조사 입력", expanded=False):
+        with st.form("mr_new_entry_form", clear_on_submit=True):
+            r1c1, r1c2 = st.columns([1.4, 1])
+            with r1c1:
+                name_in = st.text_input("업체명 *", placeholder="예: ○○엔지니어링")
+            with r1c2:
+                region_in = st.selectbox(
+                    "지역",
+                    options=[""] + _region_choices(),
+                    format_func=lambda x: "(주소로 자동)" if x == "" else x,
+                )
+            addr_in = st.text_input(
+                "주소 / 위치",
+                placeholder="예: 경기도 화성시 팔탄면 …",
+            )
+            r2c1, r2c2, r2c3 = st.columns(3)
+            with r2c1:
+                industry_in = st.text_input("업종 / 생산품목")
+            with r2c2:
+                gas_in = st.text_input("사용가스", placeholder="예: LCO2, LN2")
+            with r2c3:
+                supplier_in = st.text_input("현 공급사")
+            r3c1, r3c2 = st.columns(2)
+            with r3c1:
+                person_in = st.text_input("담당자")
+            with r3c2:
+                phone_in = st.text_input("연락처")
+            note_in = st.text_area("비고", height=70)
+            saved = st.form_submit_button("💾 저장하고 목록에 반영", type="primary")
+        if saved:
+            try:
+                ent = add_manual_entry(
+                    {
+                        "업체명": name_in,
+                        "지역": region_in,
+                        "주소": addr_in,
+                        "업종": industry_in,
+                        "사용가스": gas_in,
+                        "공급사": supplier_in,
+                        "담당자": person_in,
+                        "연락처": phone_in,
+                        "비고": note_in,
+                    }
+                )
+                _invalidate_mr_loaded()
+                st.success(
+                    f"저장됨: **{ent['업체명']}** ({ent.get('지역') or '미분류'})  "
+                    f"· 출처「{MR_MANUAL_SOURCE}」"
+                )
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"저장 실패: {e}")
+
+        manual = load_manual_entries()
+        if manual:
+            st.markdown(f"**최근 직접입력** ({len(manual)}건)")
+            show_n = min(8, len(manual))
+            for ent in manual[:show_n]:
+                c_a, c_b = st.columns([5, 1])
+                with c_a:
+                    st.caption(
+                        f"`{ent.get('saved_at', '')}` · "
+                        f"**{ent.get('업체명', '')}** · "
+                        f"{ent.get('지역', '')} · "
+                        f"{ent.get('공급사', '') or '-'}"
+                    )
+                with c_b:
+                    if st.button(
+                        "삭제",
+                        key=f"mr_del_{ent.get('id')}",
+                        width="stretch",
+                    ):
+                        delete_manual_entry(str(ent.get("id")))
+                        _invalidate_mr_loaded()
+                        st.rerun()
+            st.caption(
+                f"저장 위치: `{MR_MANUAL_FILE}` "
+                "(맥이면 Drive「시장조사/직접입력_시장조사.json」에도 복사)"
+            )
 
     # Drive 동기화는 세션당 1회
     ensure_market_research_cache()
@@ -1026,15 +1235,15 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
     else:
         df, raw_n, removed_n = load_market_research_frame(sig)
         if st.session_state.get("_mr_data_sig") != sig:
-            with st.spinner("시장조사 자료 파일 변경 감지 — 갱신 중…"):
+            with st.spinner("시장조사 자료 변경 감지 — 갱신 중…"):
                 load_market_research_frame.clear()
                 df, raw_n, removed_n = load_market_research_frame(sig)
             st.session_state["_mr_data_sig"] = sig
 
     if df.empty:
-        st.warning(
-            f"`{MR_CACHE_DIR}` 에 엑셀이 없습니다. "
-            "맥에서 Drive「업무/시장조사」동기화 후 새로고침하세요."
+        st.info(
+            "아직 목록이 비어 있습니다. 위에서 **새 시장조사 입력**으로 첫 건을 넣거나, "
+            "Drive「업무/시장조사」엑셀을 동기화하세요."
         )
         return
 
