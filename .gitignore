@@ -44,4 +44,8 @@ uploaded_cache/**
 !uploaded_cache/sales/*.csv
 !uploaded_cache/worklog/
 !uploaded_cache/worklog/template.xlsx
+!uploaded_cache/market_research/
+!uploaded_cache/market_research/**
+!uploaded_cache/market_research/개별/
+!uploaded_cache/market_research/개별/**
 worklog_tab.py.final_*

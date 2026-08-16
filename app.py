@@ -8225,7 +8225,7 @@ except ImportError:
 except Exception as exc:
     st.sidebar.error(f"PPT 생성 오류: {exc}")
 # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
     [
         "📌 영업 종합 요약",
         "🏢 거래처 분석",
@@ -8237,6 +8237,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
         "🛢️ 통합 탱크 재고",
         "📈 수익성 분석",
         "📝 일일업무일지",
+        "🔎 시장조사",
     ]
 )
 inject_sticky_tabs_script()
@@ -10857,4 +10858,34 @@ with tab10:
             st.info("다른 탭은 정상 이용 가능합니다.")
         else:
             st.error(f"일일업무일지 탭 오류: {_wl_err}")
+            st.info("다른 탭은 정상 이용 가능합니다.")
+
+with tab11:
+    # 시장조사 탭 전용 — 다른 탭과 공유 상태/헬퍼를 쓰지 않음.
+    try:
+        import importlib
+        import os
+        import sys
+
+        import market_research_tab as _mr_tab
+
+        _mr_path = getattr(_mr_tab, "__file__", None) or ""
+        _mr_mtime = os.path.getmtime(_mr_path) if _mr_path and os.path.exists(_mr_path) else 0
+        if st.session_state.get("_mr_mod_mtime") != _mr_mtime:
+            _mr_tab = importlib.reload(_mr_tab)
+            st.session_state["_mr_mod_mtime"] = _mr_mtime
+            sys.modules["market_research_tab"] = _mr_tab
+        _mr_tab.render_market_research_tab(latest_update_str)
+    except ModuleNotFoundError:
+        st.error(
+            "시장조사 모듈(`market_research_tab.py`)을 찾을 수 없습니다. "
+            "배포 파일에 포함되었는지 확인해 주세요."
+        )
+        st.info("다른 탭은 정상 이용 가능합니다.")
+    except Exception as _mr_err:
+        if is_touch_ui():
+            st.error("시장조사 탭을 표시하지 못했습니다. 잠시 후 새로고침해 주세요.")
+            st.info("다른 탭은 정상 이용 가능합니다.")
+        else:
+            st.error(f"시장조사 탭 오류: {_mr_err}")
             st.info("다른 탭은 정상 이용 가능합니다.")
