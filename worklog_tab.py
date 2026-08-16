@@ -67,7 +67,7 @@ WL_MIN_COL, WL_MAX_COL = 3, 28  # C ~ AB
 # 엑셀 EMU → CSS px (@96dpi). 신일가스 로고 앵커 오프셋용.
 _WL_EMU_PER_PX = 914400.0 / 96.0
 # HTML 미리보기 캐시 버전 (로고 오버레이 등 렌더 변경 시 올린다)
-_WL_HTML_CACHE_VER = "logo3"
+_WL_HTML_CACHE_VER = "logo4"
 
 # 작성 칸 (라벨 C40/C44 등은 건드리지 않음)
 WL_CLIENT_ROWS = list(range(9, 40))  # C
@@ -1112,45 +1112,49 @@ def _wl_collect_sheet_images(ws) -> list[dict]:
 
 
 def _wl_images_overlay_html(ws, col_widths: list[int], table_h: int) -> tuple[str, int]:
-    """테이블 위 absolute 로고 오버레이 HTML과 하단 추가 높이(px)."""
+    """특이사항 아래·양식 가로 중앙에 신일가스 로고 (원본 엑셀 미리보기와 동일 느낌)."""
     items = _wl_collect_sheet_images(ws)
     if not items:
         logo = _template_logo_jpeg_bytes()
         if logo:
-            # 참고본(2026-08-14) 활성시트와 동일: I48 근처
             items = [
                 {
                     "data": logo,
                     "mime": "image/jpeg",
                     "col0": 8,
                     "row0": 47,
-                    "col_off": 237433,
-                    "row_off": 169891,
+                    "col_off": 0,
+                    "row_off": 0,
                     "w": 320,
                     "h": 61,
                 }
             ]
     if not items:
         return "", 0
+
+    total_w = int(sum(col_widths)) if col_widths else 900
+    # 원본 스크린샷: 로고 폭 ≈ 표 폭의 45%, 표 하단~로고 ≈ 표 폭의 3.2%, 가로 중앙
+    gap = max(22, int(round(total_w * 0.032)))
     parts: list[str] = []
     extra_bottom = 0
     for it in items:
-        left = _wl_col_left_px(col_widths, it["col0"] + 1) + int(
-            round(it["col_off"] / _WL_EMU_PER_PX)
-        )
-        top = _wl_row_top_px(ws, it["row0"] + 1) + int(
-            round(it["row_off"] / _WL_EMU_PER_PX)
-        )
-        w, h = int(it["w"]), int(it["h"])
+        nat_w = max(1, int(it["w"]) or 320)
+        nat_h = max(1, int(it["h"]) or 61)
+        # 원본처럼 표 대비 더 크게 (앵커 셀 폭이 아니라 시각 비율)
+        target_w = int(round(total_w * 0.45))
+        target_w = max(300, min(520, target_w))
+        target_h = int(round(nat_h * (target_w / float(nat_w))))
+        left = max(0, (total_w - target_w) // 2)
+        top = int(table_h) + gap
         b64 = base64.b64encode(it["data"]).decode("ascii")
         parts.append(
             f'<img class="wl-float-img" alt="신일가스 로고" '
             f'src="data:{it["mime"]};base64,{b64}" '
             f'style="position:absolute;left:{left}px;top:{top}px;'
-            f'width:{w}px;height:{h}px;max-width:none;border:0;'
+            f'width:{target_w}px;height:{target_h}px;max-width:none;border:0;'
             f'pointer-events:none;z-index:3;" />'
         )
-        extra_bottom = max(extra_bottom, max(0, top + h - table_h + 8))
+        extra_bottom = max(extra_bottom, gap + target_h + 12)
     return "".join(parts), extra_bottom
 
 
