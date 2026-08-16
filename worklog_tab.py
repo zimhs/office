@@ -3055,12 +3055,6 @@ def _publish_view_cells(d: date, cells: dict) -> None:
         f"wl_left_excel_sig_{iso}",
         f"wl_left_excel_html_{iso}",
         f"wl_left_excel_h_{iso}",
-        f"wl_left_excel_sig_v2_{iso}",
-        f"wl_left_excel_html_v2_{iso}",
-        f"wl_left_excel_h_v2_{iso}",
-        f"wl_left_excel_sig_v3_{iso}",
-        f"wl_left_excel_html_v3_{iso}",
-        f"wl_left_excel_h_v3_{iso}",
     ):
         st.session_state.pop(k, None)
 
@@ -3347,9 +3341,8 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
             "mtime": mtime,
             "path": abs_path,
         }
-    # 화면에는 보이지 않게 — 인쇄 대화상자만
     components.html(stamped, height=1, scrolling=False)
-    st.caption("인쇄 창을 열었습니다. 미리보기는 「엑셀 미리보기」를 사용하세요.")
+    st.caption("인쇄 창을 열었습니다. 화면 미리보기는 「엑셀 미리보기」를 사용하세요.")
 
 
 
@@ -3441,7 +3434,7 @@ def _worklog_form_preview_dialog() -> None:
         return
     path = str(path)
     try:
-        scale = 1.0
+        scale = 0.62
         print_html = render_worklog_view_html(
             path, print_mode=False, auto_print=False, scale=scale
         )
@@ -3813,8 +3806,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 st.session_state.pop(f"wl_print_html_meta_{out}", None)
                 st.session_state.pop(f"wl_print_html_cache_v2_{out}", None)
                 st.session_state.pop(f"wl_print_html_meta_v2_{out}", None)
-                st.session_state.pop(f"wl_print_html_cache_v3_{out}", None)
-                st.session_state.pop(f"wl_print_html_meta_v3_{out}", None)
                 return out
 
             if do_open_print:
@@ -3834,7 +3825,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     st.session_state[_left_excel_key] = True
                     st.session_state[_left_path_key] = xlsx_abs
                     st.session_state["wl_dialog_preview_path"] = xlsx_abs
-                    # 하단 원본 양식은 더 이상 표시하지 않음 (왼쪽 미리보기만)
+                    # 하단 원본 양식은 표시하지 않음
                     st.session_state.pop(
                         f"wl_form_sig_v14_{selected.isoformat()}", None
                     )
@@ -3880,16 +3871,15 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     try:
                         # 저장(또는 「엑셀 미리보기」) 스냅샷만 표시 — 입력 중 재생성 안 함
                         cells_view = _view_cells_for_preview(selected)
-                        # 화면에서 확인한 실제 크기(원본 1.0)로 항상 표시
-                        scale_l = 1.0
+                        scale_l = 0.62  # 클릭 후 왼쪽 양식 가독성
                         live_sig = json.dumps(
                             {"cells": cells_view, "scale": scale_l},
                             ensure_ascii=False,
                             sort_keys=True,
                         )
-                        sig_k = f"wl_left_excel_sig_v3_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_v3_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_v3_{selected.isoformat()}"
+                        sig_k = f"wl_left_excel_sig_v2_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_v2_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_v2_{selected.isoformat()}"
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
                             st.session_state[_left_path_key] = xlsx_left
@@ -3920,7 +3910,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 st.session_state[h_k] = fh
                         components.html(
                             excel_html,
-                            height=min(980, max(560, int(fh or 720))),
+                            height=min(900, max(520, int(fh or 640))),
                             scrolling=True,
                         )
                         if st.button(
