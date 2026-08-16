@@ -30,7 +30,7 @@ def _wl_rerun() -> None:
     """업무일지 fragment 안이면 fragment만 다시 실행 (전체 앱 로딩 방지)."""
     try:
         st.rerun(scope="fragment")
-    except StreamlitAPIException:
+    except (StreamlitAPIException, RuntimeError):
         st.rerun()
 
 
@@ -4052,8 +4052,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         "lj": int(m.group(4)),
                         "v": val,
                     }
-                    # 콜백 직후 바로 반영(다음 칸 생성·포커스)
-                    _wl_rerun()
 
                 def _on_focus_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
