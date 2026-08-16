@@ -1114,13 +1114,13 @@ def workbook_to_html(path: str) -> str:
 
 
 def _a4_print_fit(raw_w: int, raw_h: int) -> float:
-    """A4 인쇄 가능 영역에 양식 전체가 들어가도록 축소 비율."""
-    # A4 210×297mm, 여백 5mm → 약 200×287mm ≈ 756×1085px @96dpi
+    """A4 인쇄 가능 영역에 양식 전체가 들어가도록 축소 비율 (여유 포함)."""
+    # 프린터/브라우저 여백을 넉넉히 보고 보수적으로 맞춤
+    # A4 210×297mm, 실사용 ~185×270mm ≈ 700×1020px @96dpi
     if raw_w <= 0 or raw_h <= 0:
         return 1.0
-    fit = min(1.0, 756.0 / float(raw_w), 1085.0 / float(raw_h))
-    # 테두리·서브픽셀 잘림 방지
-    return max(0.25, min(1.0, fit * 0.97))
+    fit = min(1.0, 700.0 / float(raw_w), 1020.0 / float(raw_h))
+    return max(0.2, min(1.0, fit * 0.92))
 
 
 def render_worklog_view_html(
@@ -1142,7 +1142,6 @@ def render_worklog_view_html(
     if print_mode:
         scale = 1.0
         if auto_print:
-            # 자동 print가 막힐 때 사용자가 직접 누를 수 있는 버튼
             toolbar = """
         <div class="toolbar no-print">
           <button type="button" id="wl-print-btn">인쇄 창 열기</button>
@@ -1157,7 +1156,7 @@ def render_worklog_view_html(
         </div>
         """
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
-    # print_mode: transform+고정 wrap으로 전체가 한 장에 보이게 (zoom만 쓰면 잘리는 경우 있음)
+    # print_mode: 화면용 초기 스케일. 인쇄 직전 JS가 실제 DOM 크기로 다시 맞춤.
     if print_mode:
         s_view = print_fit
         scale_css = (
@@ -1194,35 +1193,74 @@ def render_worklog_view_html(
         body_h = f"{frame_h}px"
     if wrap_height is not None:
         wrap_h = wrap_height
-    # auto_print: 자동 1회 시도 + 버튼으로 재시도 (먹통 방지)
+
+    # 인쇄 직전: 실제 렌더 크기를 재서 A4에 맞춤 (추정값보다 HTML이 클 때 잘림 방지)
+    fit_print_js = """
+        function wlFitToA4() {
+          var sheet = document.querySelector('.sheet-scale');
+          var wrap = document.querySelector('.wrap');
+          if (!sheet || !wrap) return;
+          sheet.style.zoom = 'normal';
+          sheet.style.transform = 'none';
+          sheet.style.width = 'max-content';
+          sheet.style.maxWidth = 'none';
+          wrap.style.overflow = 'visible';
+          wrap.style.width = 'auto';
+          wrap.style.height = 'auto';
+          wrap.style.maxWidth = 'none';
+          var w = Math.max(sheet.scrollWidth, sheet.offsetWidth, 1);
+          var h = Math.max(sheet.scrollHeight, sheet.offsetHeight, 1);
+          // @page 여백 6mm 기준 실사용 영역 (96dpi)
+          var maxW = 700;
+          var maxH = 1000;
+          var s = Math.min(1, maxW / w, maxH / h) * 0.96;
+          if (s < 0.2) s = 0.2;
+          sheet.style.transformOrigin = 'top left';
+          sheet.style.transform = 'scale(' + s + ')';
+          wrap.style.width = Math.ceil(w * s) + 'px';
+          wrap.style.height = Math.ceil(h * s) + 'px';
+          wrap.style.overflow = 'hidden';
+        }
+    """
+
     auto_script = ""
     if auto_print:
-        auto_script = """
+        auto_script = f"""
         <script>
-          (function() {
-            function goPrint() {
-              try { window.focus(); window.print(); } catch (e) {}
-            }
+          (function() {{
+            {fit_print_js}
+            function goPrint() {{
+              try {{ wlFitToA4(); }} catch (e0) {{}}
+              try {{ window.focus(); window.print(); }} catch (e) {{}}
+            }}
             var btn = document.getElementById('wl-print-btn');
-            if (btn) btn.addEventListener('click', function(ev) {
+            if (btn) btn.addEventListener('click', function(ev) {{
               ev.preventDefault();
               goPrint();
-            });
-            if (document.readyState === 'complete') setTimeout(goPrint, 250);
-            else window.addEventListener('load', function() { setTimeout(goPrint, 250); });
-          })();
+            }});
+            window.addEventListener('beforeprint', function() {{
+              try {{ wlFitToA4(); }} catch (e1) {{}}
+            }});
+            if (document.readyState === 'complete') setTimeout(goPrint, 350);
+            else window.addEventListener('load', function() {{ setTimeout(goPrint, 350); }});
+          }})();
         </script>
         """
     elif print_mode:
-        auto_script = """
+        auto_script = f"""
         <script>
-          (function() {
+          (function() {{
+            {fit_print_js}
             var btn = document.getElementById('wl-print-btn');
-            if (btn) btn.addEventListener('click', function(ev) {
+            if (btn) btn.addEventListener('click', function(ev) {{
               ev.preventDefault();
-              try { window.focus(); window.print(); } catch (e) {}
-            });
-          })();
+              try {{ wlFitToA4(); }} catch (e0) {{}}
+              try {{ window.focus(); window.print(); }} catch (e) {{}}
+            }});
+            window.addEventListener('beforeprint', function() {{
+              try {{ wlFitToA4(); }} catch (e1) {{}}
+            }});
+          }})();
         </script>
         """
     fallback_block = ""
@@ -1237,7 +1275,7 @@ def render_worklog_view_html(
 <title>일일업무일지</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  @page {{ size: A4 portrait; margin: 5mm; }}
+  @page {{ size: A4 portrait; margin: 6mm; }}
   html, body {{
     margin:0; padding:0; background:#fff;
     overflow:{body_overflow} !important;
@@ -1265,25 +1303,21 @@ def render_worklog_view_html(
   {fallback_block}
   @media print {{
     html, body {{
-      overflow:hidden !important; height:auto !important; width:auto !important;
+      overflow:visible !important; height:auto !important; width:auto !important;
       margin:0 !important; padding:0 !important;
       -webkit-print-color-adjust:exact; print-color-adjust:exact;
     }}
     .no-print, .toolbar {{ display:none !important; }}
     .wrap {{
       overflow:hidden !important;
-      width:{scaled_w}px !important;
-      height:{scaled_h}px !important;
       max-width:none !important;
       border:none !important;
-      margin:0 !important;
+      margin:0 auto !important;
     }}
     .sheet-scale {{
-      transform:scale({print_fit:.4f}) !important;
       transform-origin:top left !important;
       zoom:normal !important;
       margin:0 !important;
-      width:{raw_w}px !important;
     }}
   }}
 </style></head>
