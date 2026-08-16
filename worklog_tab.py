@@ -1134,9 +1134,8 @@ def render_worklog_view_html(
         toolbar = f"""
         <div class="toolbar no-print">
           <button type="button" id="wl-print-btn">인쇄하기</button>
-          <button type="button" id="wl-close-hint" class="secondary">인쇄 후 상단 「본화면으로」를 누르세요</button>
-          <span class="hint">인쇄 창의 「대상」에서 <b>실제 프린터</b>를 고르세요. (PDF로 저장이 보이면 드롭다운에서 변경)
-          · 「머리글과 바닥글」은 끄면 URL이 안 나옵니다.</span>
+          <span class="hint">「인쇄하기」를 누르면 인쇄 창이 열립니다. 대상에서 <b>프린터</b>를 선택하세요.
+          취소하면 상단 「본화면으로」로 돌아갑니다.</span>
         </div>
         """
         scale = 1.0
@@ -1169,38 +1168,44 @@ def render_worklog_view_html(
         body_h = f"{frame_h}px"
     if wrap_height is not None:
         wrap_h = wrap_height
-    # 자동 인쇄는 1회만 (3회 호출 → 취소 3번 필요하던 문제 수정)
+    # 자동 인쇄 없음 — 사용자가 「인쇄하기」를 누를 때만 인쇄 창
     auto_script = ""
-    if auto_print:
+    if print_mode:
         auto_script = """
         <script>
           (function() {
-            var done = false;
-            function go() {
-              if (done) return;
-              done = true;
+            var printing = false;
+            function goPrint() {
+              if (printing) return;
+              printing = true;
               try { window.focus(); window.print(); } catch (e) {}
+              setTimeout(function() { printing = false; }, 800);
             }
-            if (document.readyState === 'complete') setTimeout(go, 350);
-            else window.addEventListener('load', function() { setTimeout(go, 350); });
             var btn = document.getElementById('wl-print-btn');
-            if (btn) btn.addEventListener('click', function() {
-              done = false; go();
+            if (btn) btn.addEventListener('click', goPrint);
+            // 인쇄 창에서 취소/완료 → 부모의 「본화면으로」 자동 클릭
+            function backHome() {
+              try {
+                var doc = window.parent && window.parent.document;
+                if (!doc) return;
+                var nodes = doc.querySelectorAll('button, [kind="primary"]');
+                for (var i = 0; i < nodes.length; i++) {
+                  var t = (nodes[i].innerText || nodes[i].textContent || '').replace(/\\s+/g, '');
+                  if (t.indexOf('본화면으로') !== -1) {
+                    nodes[i].click();
+                    return;
+                  }
+                }
+              } catch (e2) {}
+            }
+            window.addEventListener('afterprint', function() {
+              setTimeout(backHome, 120);
             });
           })();
         </script>
         """
-    elif print_mode:
-        auto_script = """
-        <script>
-          (function() {
-            var btn = document.getElementById('wl-print-btn');
-            if (btn) btn.addEventListener('click', function() {
-              try { window.focus(); window.print(); } catch (e) {}
-            });
-          })();
-        </script>
-        """
+    # auto_print 인자는 호환용으로만 유지 (더 이상 자동 window.print 하지 않음)
+    _ = auto_print
     fallback_block = ""
     if scale_css_fallback:
         fallback_block = f"""
@@ -3154,20 +3159,31 @@ return previewDone
             return False, f"Excel 실행 실패: {e2}"
 
 
-def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = True) -> None:
-    """프린터 패널 상태를 연다 (dialog 대신 → 취소 다중 팝업 방지)."""
+def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = False) -> None:
+    """인쇄 미리보기 패널만 연다 (자동 인쇄 팝업 없음)."""
     st.session_state["wl_print_panel"] = True
     st.session_state["wl_dialog_preview_path"] = os.path.abspath(xlsx_path)
-    st.session_state["wl_print_auto_once"] = bool(auto)
+    st.session_state["wl_print_auto_once"] = False
 
 
 def _render_worklog_print_panel() -> bool:
-    """인쇄 패널 표시. True면 본화면 본문을 건너뛴다."""
+    """인쇄 미리보기만 표시 (자동 window.print 팝업 없음)."""
     if not st.session_state.get("wl_print_panel"):
         return False
     path = st.session_state.get("wl_dialog_preview_path")
-    st.markdown("### 🖨️ 인쇄 미리보기")
-    top1, top2 = st.columns([1, 3])
+    st.markdown(
+        """
+        <style>
+        /* 인쇄 패널일 때 상단 고정 필터/탭 숨김 — 미리보기만 */
+        .dashboard-filter-sticky,
+        #dashboard-top-shield,
+        #dashboard-sticky-spacer { display: none !important; }
+        section.main .block-container { padding-top: 0.4rem !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    top1, top2 = st.columns([1.1, 3])
     with top1:
         if st.button(
             "← 본화면으로",
@@ -3179,29 +3195,21 @@ def _render_worklog_print_panel() -> bool:
             st.session_state["wl_print_auto_once"] = False
             _wl_rerun()
     with top2:
-        st.caption(
-            "인쇄 창 「대상」에서 **실제 프린터**를 선택하세요. "
-            "PDF로 저장이 보이면 드롭다운에서 프린터로 바꾸면 됩니다. "
-            "「머리글과 바닥글」을 끄면 주소가 인쇄되지 않습니다."
-        )
+        st.markdown("##### 인쇄 미리보기")
+        st.caption("자동 팝업 없음 · 「인쇄하기」만 누르면 인쇄 창이 열립니다.")
     if not path or not os.path.exists(str(path)):
         st.error("인쇄용 파일이 없습니다. 본화면으로 돌아가 다시 시도해 주세요.")
         return True
     path = str(path)
-    do_auto = bool(st.session_state.pop("wl_print_auto_once", False))
     try:
         print_html = render_worklog_view_html(
-            path, print_mode=True, auto_print=do_auto, scale=1.0
+            path, print_mode=True, auto_print=False, scale=1.0
         )
-        components.html(print_html, height=920, scrolling=True)
+        components.html(print_html, height=900, scrolling=True)
     except Exception as e:
         st.error(f"인쇄 미리보기 표시 실패: {e}")
-    b1, b2, b3 = st.columns(3)
+    b1, b2 = st.columns(2)
     with b1:
-        if st.button("인쇄 창 다시 열기", width="stretch", key="wl_print_again"):
-            st.session_state["wl_print_auto_once"] = True
-            _wl_rerun()
-    with b2:
         try:
             with open(path, "rb") as f:
                 xbytes = f.read()
@@ -3215,7 +3223,7 @@ def _render_worklog_print_panel() -> bool:
             )
         except Exception:
             pass
-    with b3:
+    with b2:
         if platform.system() == "Darwin":
             if st.button("Excel로 인쇄", width="stretch", key="wl_print_panel_excel"):
                 ok, msg = open_excel_print_preview(path, prefer_print_dialog=True)
