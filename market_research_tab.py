@@ -1,4 +1,4 @@
-"""시장조사 탭 — Drive「Desktop/업무/시장조사」자료를 지역·공급사·소스로 정리해 조회."""
+"""시장조사 탭 — Drive「Desktop/업무/시장조사」자료를 지역·산업단지·공급사로 정리해 조회."""
 from __future__ import annotations
 
 import json
@@ -38,6 +38,33 @@ _SKIP_SHEET = re.compile(
     r"스케줄|원장|용기재고|재고현황|Sheet1\s*\(|^\d+$",
     re.I,
 )
+
+# 산업단지 분류 — 공장등록 DB 공식명 + 주소/비고 키워드(로컬 규칙, 실시간 웹검색 없음)
+_COMPLEX_RULES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"동탄\s*도시\s*첨단|동탄도시첨단"), "화성동탄도시첨단산업단지"),
+    (re.compile(r"동탄\s*일반|동탄산단|동탄\s*산업단지"), "화성동탄일반산업단지"),
+    (re.compile(r"발안|팔탄.*발안|화성발안"), "화성발안일반산업단지"),
+    (re.compile(r"바이오\s*밸리|바이오밸리"), "화성바이오밸리일반산업단지"),
+    (re.compile(r"전곡|전곡해양|우정.*전곡"), "화성전곡해양일반산업단지"),
+    (re.compile(r"마도\s*(일반|공단|산업)|화성마도|마도공단"), "화성마도일반산업단지"),
+    (re.compile(r"송산\s*테크노|테크노\s*파크|송산테크노"), "화성송산테크노파크일반산업단지"),
+    (re.compile(r"송산\s*그린|그린\s*시티|송산그린"), "송산그린시티 국가산업단지"),
+    (re.compile(r"정남\s*(일반|산단|산업)|화성정남"), "화성정남일반산업단지"),
+    (re.compile(r"향남\s*제약|제약\s*일반"), "화성향남제약일반산업단지"),
+    (re.compile(r"향남\s*(지방|산단|산업|공단)|화성향남"), "화성향남지방산업단지"),
+    (re.compile(r"주곡|화성주곡"), "화성주곡일반산업단지"),
+    (re.compile(r"화남|화성화남"), "화성화남일반산업단지"),
+    (re.compile(r"장안\s*제?\s*2|장안2"), "장안제2첨단일반산업단지"),
+    (re.compile(r"장안\s*제?\s*1|장안1|장안\s*첨단"), "장안제1첨단일반산업단지"),
+    (re.compile(r"반월|반월국가"), "반월국가산업단지"),
+    (re.compile(r"시화|시화공단|시화MTV"), "시화국가산업단지"),
+    (re.compile(r"남동\s*(공단|산단|국가)|남동국가"), "남동국가산업단지"),
+    (re.compile(r"포승|포승국가|평택.*포승"), "포승국가산업단지"),
+    (re.compile(r"아산\s*국가|아산국가"), "아산국가산업단지"),
+    (re.compile(r"평택\s*(산단|공단|일반)|평택공단"), "평택일반산업단지"),
+    (re.compile(r"안성\s*(산단|공단|테크노)|안성공단"), "안성일반산업단지"),
+    (re.compile(r"용인\s*(테크노|산단)|용인테크노"), "용인테크노밸리일반산업단지"),
+]
 
 _REGION_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"화성|동탄|향남|팔탄|마도|봉담|우정|장안|비봉|양감|정남|서신"), "화성"),
@@ -148,11 +175,25 @@ def _best_region(values) -> str:
     return ranked[0] if ranked else "미분류"
 
 
+def _best_complex(values) -> str:
+    """병합 시 산업단지 — 미분류가 아닌 값 중 가장 긴(공식명에 가까운) 것."""
+    ranked = []
+    for v in values:
+        s = _s(v)
+        if s and s != "미분류":
+            ranked.append(s)
+    if not ranked:
+        return "미분류"
+    return max(ranked, key=len)
+
+
 def merge_duplicate_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     """같은 업체키 행을 1건으로 병합. (병합 DF, 제거된 중복 건수)."""
     if df.empty:
         return df, 0
     work = df.copy()
+    if "산업단지" not in work.columns:
+        work["산업단지"] = "미분류"
     work["업체키"] = work["업체명"].map(_company_key)
     work = work[work["업체키"].astype(str).str.len() >= 2]
     before = len(work)
@@ -167,6 +208,7 @@ def merge_duplicate_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
             "업체키": key,
             "업체명": _best_text(g["업체명"]),
             "지역": _best_region(g["지역"]),
+            "산업단지": _best_complex(g["산업단지"]),
             "주소": _best_text(g["주소"]),
             "업종": _merge_unique_text(g["업종"], max_parts=6),
             "사용가스": _merge_unique_text(g["사용가스"], max_parts=8),
@@ -199,6 +241,29 @@ def infer_region(*texts: str, sheet_hint: str = "") -> str:
         if pat.search(blob):
             return name
     return "미분류"
+
+
+def infer_complex(*texts: str, explicit: str = "") -> str:
+    """주소·비고·시트·공장등록 산업단지명으로 단지 추정."""
+    ex = _s(explicit)
+    if ex and ex not in {"-", "없음", "해당없음", "해당 없음"}:
+        # 등록 DB 값이 이미 공식명이면 그대로
+        return ex
+    blob = " ".join(t for t in texts if t)
+    if not blob.strip():
+        return "미분류"
+    for pat, name in _COMPLEX_RULES:
+        if pat.search(blob):
+            return name
+    return "미분류"
+
+
+def _complex_choices() -> list[str]:
+    seen: list[str] = []
+    for _, name in _COMPLEX_RULES:
+        if name not in seen:
+            seen.append(name)
+    return seen
 
 
 def _find_header_row(rows: list[tuple], keywords: list[str], scan: int = 12) -> int | None:
@@ -313,24 +378,43 @@ def save_manual_entries(entries: list[dict]) -> None:
             break
 
 
+def _attach_complex(rec: dict, *, explicit: str = "") -> dict:
+    """레코드에 산업단지 필드 보정."""
+    ex = _s(explicit) or _s(rec.get("산업단지"))
+    rec["산업단지"] = infer_complex(
+        rec.get("주소", ""),
+        rec.get("업체명", ""),
+        rec.get("비고", ""),
+        rec.get("시트", ""),
+        explicit=ex,
+    )
+    return rec
+
+
 def _manual_to_record(entry: dict) -> dict:
     name = _s(entry.get("업체명"))
     addr = _s(entry.get("주소"))
     region = _s(entry.get("지역")) or infer_region(addr, name)
-    return {
-        "출처": MR_MANUAL_SOURCE,
-        "파일": "manual_entries.json",
-        "시트": "직접입력",
-        "지역": region or "미분류",
-        "업체명": name,
-        "주소": addr,
-        "업종": _s(entry.get("업종")),
-        "사용가스": _s(entry.get("사용가스")),
-        "공급사": _s(entry.get("공급사")),
-        "담당자": _s(entry.get("담당자")),
-        "연락처": _s(entry.get("연락처")),
-        "비고": _s(entry.get("비고")),
-    }
+    note = _s(entry.get("비고"))
+    park = _s(entry.get("산업단지"))
+    return _attach_complex(
+        {
+            "출처": MR_MANUAL_SOURCE,
+            "파일": "manual_entries.json",
+            "시트": "직접입력",
+            "지역": region or "미분류",
+            "업체명": name,
+            "주소": addr,
+            "업종": _s(entry.get("업종")),
+            "사용가스": _s(entry.get("사용가스")),
+            "공급사": _s(entry.get("공급사")),
+            "담당자": _s(entry.get("담당자")),
+            "연락처": _s(entry.get("연락처")),
+            "비고": note,
+            "산업단지": park,
+        },
+        explicit=park,
+    )
 
 
 def add_manual_entry(fields: dict) -> dict:
@@ -344,6 +428,7 @@ def add_manual_entry(fields: dict) -> dict:
         .strftime("%Y-%m-%d %H:%M:%S"),
         "업체명": name,
         "지역": _s(fields.get("지역")),
+        "산업단지": _s(fields.get("산업단지")),
         "주소": _s(fields.get("주소")),
         "업종": _s(fields.get("업종")),
         "사용가스": _s(fields.get("사용가스")),
@@ -354,6 +439,12 @@ def add_manual_entry(fields: dict) -> dict:
     }
     if not entry["지역"]:
         entry["지역"] = infer_region(entry["주소"], entry["업체명"])
+    if not entry["산업단지"]:
+        entry["산업단지"] = infer_complex(
+            entry["주소"], entry["업체명"], entry["비고"]
+        )
+        if entry["산업단지"] == "미분류":
+            entry["산업단지"] = ""
     entries = load_manual_entries()
     entries.insert(0, entry)
     save_manual_entries(entries)
@@ -450,21 +541,24 @@ def _parse_lco2(path: Path) -> list[dict]:
                 if _pick(d, "지역") and len(_pick(d, "지역")) <= 6:
                     last_region = _pick(d, "지역")
                 region = infer_region(loc, addr, name, sheet_hint=last_region)
+                note = _pick(d, "비고", "대납업체", "월사용량")
                 records.append(
-                    {
-                        "출처": "LCO2경쟁사",
-                        "파일": path.name,
-                        "시트": sn.strip(),
-                        "지역": region,
-                        "업체명": name,
-                        "주소": addr or loc,
-                        "업종": _pick(d, "고압가스종류", "업종"),
-                        "사용가스": _pick(d, "제품명", "사용가스"),
-                        "공급사": _pick(d, "공급사", "현공급처"),
-                        "담당자": _pick(d, "담당", "담당자"),
-                        "연락처": _pick(d, "연락처", "전화"),
-                        "비고": _pick(d, "비고", "대납업체", "월사용량"),
-                    }
+                    _attach_complex(
+                        {
+                            "출처": "LCO2경쟁사",
+                            "파일": path.name,
+                            "시트": sn.strip(),
+                            "지역": region,
+                            "업체명": name,
+                            "주소": addr or loc,
+                            "업종": _pick(d, "고압가스종류", "업종"),
+                            "사용가스": _pick(d, "제품명", "사용가스"),
+                            "공급사": _pick(d, "공급사", "현공급처"),
+                            "담당자": _pick(d, "담당", "담당자"),
+                            "연락처": _pick(d, "연락처", "전화"),
+                            "비고": note,
+                        }
+                    )
                 )
     finally:
         wb.close()
@@ -507,21 +601,24 @@ def _parse_region_survey(path: Path) -> list[dict]:
                         continue
                     addr = vals[2]
                     region = infer_region(addr, sn, sheet_hint=sn)
+                    note = vals[8] if len(vals) > 8 else ""
                     records.append(
-                        {
-                            "출처": "지역시장조사",
-                            "파일": path.name,
-                            "시트": sn,
-                            "지역": region,
-                            "업체명": vals[1],
-                            "주소": addr,
-                            "업종": vals[5] if len(vals) > 5 else "",
-                            "사용가스": vals[6] if len(vals) > 6 else "",
-                            "공급사": vals[7] if len(vals) > 7 else "",
-                            "담당자": vals[4] if len(vals) > 4 else "",
-                            "연락처": vals[3] if len(vals) > 3 else "",
-                            "비고": vals[8] if len(vals) > 8 else "",
-                        }
+                        _attach_complex(
+                            {
+                                "출처": "지역시장조사",
+                                "파일": path.name,
+                                "시트": sn,
+                                "지역": region,
+                                "업체명": vals[1],
+                                "주소": addr,
+                                "업종": vals[5] if len(vals) > 5 else "",
+                                "사용가스": vals[6] if len(vals) > 6 else "",
+                                "공급사": vals[7] if len(vals) > 7 else "",
+                                "담당자": vals[4] if len(vals) > 4 else "",
+                                "연락처": vals[3] if len(vals) > 3 else "",
+                                "비고": note,
+                            }
+                        )
                     )
                 continue
             for row in rows[start:]:
@@ -531,21 +628,24 @@ def _parse_region_survey(path: Path) -> list[dict]:
                     continue
                 addr = _pick(d, "위치", "주소", "소재지", "지역")
                 region = infer_region(addr, sn, sheet_hint=sn)
+                note = _pick(d, "비고", "비 고")
                 records.append(
-                    {
-                        "출처": "지역시장조사",
-                        "파일": path.name,
-                        "시트": sn,
-                        "지역": region,
-                        "업체명": name,
-                        "주소": addr,
-                        "업종": _pick(d, "업종", "생산품목"),
-                        "사용가스": _pick(d, "용기보유현황", "사용가스", "용기"),
-                        "공급사": _pick(d, "현공급처", "공급처", "공급사"),
-                        "담당자": _pick(d, "담당", "담당자"),
-                        "연락처": _pick(d, "연락처", "전화", "전화번호"),
-                        "비고": _pick(d, "비고", "비 고"),
-                    }
+                    _attach_complex(
+                        {
+                            "출처": "지역시장조사",
+                            "파일": path.name,
+                            "시트": sn,
+                            "지역": region,
+                            "업체명": name,
+                            "주소": addr,
+                            "업종": _pick(d, "업종", "생산품목"),
+                            "사용가스": _pick(d, "용기보유현황", "사용가스", "용기"),
+                            "공급사": _pick(d, "현공급처", "공급처", "공급사"),
+                            "담당자": _pick(d, "담당", "담당자"),
+                            "연락처": _pick(d, "연락처", "전화", "전화번호"),
+                            "비고": note,
+                        }
+                    )
                 )
     finally:
         wb.close()
@@ -586,21 +686,24 @@ def _parse_visit_notes(path: Path, source_label: str) -> list[dict]:
                     continue
                 addr = _pick(d, "지역", "주소", "위치", "회사위치")
                 region = infer_region(addr, sn, sheet_hint=sn)
+                note = _pick(d, "비고", "특이사항", "세부사항")
                 records.append(
-                    {
-                        "출처": source_label,
-                        "파일": path.name,
-                        "시트": sn,
-                        "지역": region,
-                        "업체명": name.rstrip("x").strip() or name,
-                        "주소": addr,
-                        "업종": _pick(d, "생산품목", "업종", "종목"),
-                        "사용가스": _pick(d, "사용가스", "가스"),
-                        "공급사": _pick(d, "공급처", "현공급처", "공급사"),
-                        "담당자": _pick(d, "담당자", "담당"),
-                        "연락처": "",
-                        "비고": _pick(d, "비고", "특이사항", "세부사항"),
-                    }
+                    _attach_complex(
+                        {
+                            "출처": source_label,
+                            "파일": path.name,
+                            "시트": sn,
+                            "지역": region,
+                            "업체명": name.rstrip("x").strip() or name,
+                            "주소": addr,
+                            "업종": _pick(d, "생산품목", "업종", "종목"),
+                            "사용가스": _pick(d, "사용가스", "가스"),
+                            "공급사": _pick(d, "공급처", "현공급처", "공급사"),
+                            "담당자": _pick(d, "담당자", "담당"),
+                            "연락처": "",
+                            "비고": note,
+                        }
+                    )
                 )
     finally:
         wb.close()
@@ -638,28 +741,27 @@ def _parse_factory_registry(path: Path) -> list[dict]:
             continue
         addr = _s(r.get(c_addr)) if c_addr is not None else ""
         region = infer_region(addr, sheet_hint="화성")
+        park = _s(r.get(c_park)) if c_park is not None else ""
+        prod = _s(r.get(c_prod)) if c_prod is not None else ""
         records.append(
-            {
-                "출처": "화성공장등록",
-                "파일": path.name,
-                "시트": "등록공장",
-                "지역": region if region != "미분류" else "화성",
-                "업체명": name,
-                "주소": addr,
-                "업종": _s(r.get(c_ind)) if c_ind is not None else "",
-                "사용가스": "",
-                "공급사": "",
-                "담당자": "",
-                "연락처": _s(r.get(c_tel)) if c_tel is not None else "",
-                "비고": " / ".join(
-                    x
-                    for x in [
-                        _s(r.get(c_prod)) if c_prod is not None else "",
-                        _s(r.get(c_park)) if c_park is not None else "",
-                    ]
-                    if x
-                ),
-            }
+            _attach_complex(
+                {
+                    "출처": "화성공장등록",
+                    "파일": path.name,
+                    "시트": "등록공장",
+                    "지역": region if region != "미분류" else "화성",
+                    "업체명": name,
+                    "주소": addr,
+                    "업종": _s(r.get(c_ind)) if c_ind is not None else "",
+                    "사용가스": "",
+                    "공급사": "",
+                    "담당자": "",
+                    "연락처": _s(r.get(c_tel)) if c_tel is not None else "",
+                    "비고": prod,
+                    "산업단지": park,
+                },
+                explicit=park,
+            )
         )
     return records
 
@@ -691,21 +793,24 @@ def _parse_seojin(path: Path) -> list[dict]:
                 if not name:
                     continue
                 addr = _pick(d, "주소", "지역", "위치")
+                note = _pick(d, "특이사항", "비고")
                 records.append(
-                    {
-                        "출처": "서진산업가스",
-                        "파일": path.name,
-                        "시트": sn,
-                        "지역": infer_region(addr, sn, sheet_hint=sn),
-                        "업체명": name,
-                        "주소": addr,
-                        "업종": _pick(d, "종목", "업종", "생산품목"),
-                        "사용가스": "",
-                        "공급사": "서진산업가스",
-                        "담당자": _pick(d, "담당자"),
-                        "연락처": _pick(d, "전화번호", "연락처"),
-                        "비고": _pick(d, "특이사항", "비고"),
-                    }
+                    _attach_complex(
+                        {
+                            "출처": "서진산업가스",
+                            "파일": path.name,
+                            "시트": sn,
+                            "지역": infer_region(addr, sn, sheet_hint=sn),
+                            "업체명": name,
+                            "주소": addr,
+                            "업종": _pick(d, "종목", "업종", "생산품목"),
+                            "사용가스": "",
+                            "공급사": "서진산업가스",
+                            "담당자": _pick(d, "담당자"),
+                            "연락처": _pick(d, "전화번호", "연락처"),
+                            "비고": note,
+                        }
+                    )
                 )
     finally:
         wb.close()
@@ -752,6 +857,7 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         "파일",
         "시트",
         "지역",
+        "산업단지",
         "업체명",
         "주소",
         "업종",
@@ -783,11 +889,13 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         "출처",
         "시트",
         "지역",
+        "산업단지",
     ):
         if c not in merged.columns:
             merged[c] = ""
         else:
             merged[c] = merged[c].fillna("").astype(str)
+    merged.loc[merged["산업단지"].isin(["", "nan"]), "산업단지"] = "미분류"
     merged["_search"] = (
         merged["업체명"]
         + " "
@@ -804,6 +912,8 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         + merged["비고"]
         + " "
         + merged["출처"]
+        + " "
+        + merged["산업단지"]
     ).str.casefold()
     merged["_factory_only"] = merged["출처"].eq("화성공장등록")
     merged["_has_factory"] = merged["출처"].str.contains(
@@ -836,6 +946,7 @@ def _cache_signature() -> str:
 
 _MR_SHOW_COLS = [
     "지역",
+    "산업단지",
     "업체명",
     "주소",
     "업종",
@@ -855,7 +966,7 @@ def _filter_frame(
     df: pd.DataFrame,
     *,
     regions: list[str],
-    sources: list[str],
+    complexes: list[str],
     suppliers: list[str],
     query: str,
     include_factory: bool,
@@ -866,13 +977,8 @@ def _filter_frame(
         view = view[~view["_factory_only"]]
     if regions:
         view = view[view["지역"].isin(regions)]
-    if sources:
-        src_mask = False
-        for s in sources:
-            src_mask = src_mask | view["출처"].str.contains(
-                re.escape(s), case=False, regex=True, na=False
-            )
-        view = view[src_mask]
+    if complexes:
+        view = view[view["산업단지"].isin(complexes)]
     if suppliers:
         sup_mask = False
         for s in suppliers:
@@ -897,13 +1003,13 @@ def _metric_box(label: str, value: str) -> str:
 def _mr_filter_results_fragment(
     df: pd.DataFrame,
     regions: list[str],
-    sources: list[str],
+    complexes: list[str],
     suppliers: list[str],
     latest_update_str: str,
 ) -> None:
     """필터·검색·표만 fragment 재실행 (엑셀 재파싱 없음)."""
     with st.form("mr_filter_form", clear_on_submit=False):
-        f1, f2, f3, f4 = st.columns([1.2, 1.2, 1.4, 1.6])
+        f1, f2, f3, f4 = st.columns([1.2, 1.4, 1.2, 1.6])
         with f1:
             sel_region = st.multiselect(
                 "지역",
@@ -913,12 +1019,12 @@ def _mr_filter_results_fragment(
                 placeholder="전체 지역",
             )
         with f2:
-            sel_src = st.multiselect(
-                "출처",
-                options=sources,
-                default=st.session_state.get("mr_src_applied") or [],
-                key="mr_src_form",
-                placeholder="전체 출처",
+            sel_cx = st.multiselect(
+                "산업단지",
+                options=complexes,
+                default=st.session_state.get("mr_complex_applied") or [],
+                key="mr_complex_form",
+                placeholder="전체 산업단지",
             )
         with f3:
             sel_sup = st.multiselect(
@@ -930,7 +1036,7 @@ def _mr_filter_results_fragment(
             )
         with f4:
             q = st.text_input(
-                "검색 (업체·주소·가스·비고)",
+                "검색 (업체·주소·단지·가스·비고)",
                 value=st.session_state.get("mr_q_applied") or "",
                 key="mr_q_form",
                 placeholder="입력 후 「적용」",
@@ -950,21 +1056,21 @@ def _mr_filter_results_fragment(
 
     if applied:
         st.session_state["mr_region_applied"] = sel_region
-        st.session_state["mr_src_applied"] = sel_src
+        st.session_state["mr_complex_applied"] = sel_cx
         st.session_state["mr_sup_applied"] = sel_sup
         st.session_state["mr_q_applied"] = q
         st.session_state["mr_incl_factory"] = include_factory
         st.session_state["mr_filter_ready"] = True
     elif "mr_filter_ready" not in st.session_state:
         st.session_state["mr_region_applied"] = []
-        st.session_state["mr_src_applied"] = []
+        st.session_state["mr_complex_applied"] = []
         st.session_state["mr_sup_applied"] = []
         st.session_state["mr_q_applied"] = ""
         st.session_state["mr_incl_factory"] = False
         st.session_state["mr_filter_ready"] = True
 
     sel_region = st.session_state.get("mr_region_applied") or []
-    sel_src = st.session_state.get("mr_src_applied") or []
+    sel_cx = st.session_state.get("mr_complex_applied") or []
     sel_sup = st.session_state.get("mr_sup_applied") or []
     q = st.session_state.get("mr_q_applied") or ""
     include_factory = bool(st.session_state.get("mr_incl_factory", False))
@@ -972,14 +1078,14 @@ def _mr_filter_results_fragment(
     view = _filter_frame(
         df,
         regions=sel_region,
-        sources=sel_src,
+        complexes=sel_cx,
         suppliers=sel_sup,
         query=q,
         include_factory=include_factory,
     )
 
-    tab_overview, tab_region, tab_supplier, tab_factory, tab_files = st.tabs(
-        ["📋 통합 목록", "🗺️ 지역별", "🏭 공급사별", "🏗️ 화성공장 DB", "📁 원본 파일"]
+    tab_overview, tab_region, tab_supplier, tab_factory, tab_complex = st.tabs(
+        ["📋 통합 목록", "🗺️ 지역별", "🏭 공급사별", "🏗️ 화성공장 DB", "🧱 산업단지별"]
     )
     show_cols = [c for c in _MR_SHOW_COLS if c in view.columns]
     limit = _MR_DISPLAY_LIMIT
@@ -1097,39 +1203,30 @@ def _mr_filter_results_fragment(
         else:
             st.info("검색어를 넣고 **공장 검색 적용**을 누르면 목록이 표시됩니다.")
 
-    with tab_files:
-        root = MR_CACHE_DIR
-        files = _list_xlsx(root)
-        st.markdown(f"**캐시 폴더:** `{root}`")
-        rows = []
-        for p in files:
-            try:
-                sz = os.path.getsize(p)
-            except OSError:
-                sz = 0
-            try:
-                rel = str(p.relative_to(root))
-            except Exception:
-                rel = p.name
-            rows.append({"파일": rel, "크기(KB)": round(sz / 1024, 1)})
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-        # 출처 토큰별 대략 건수
-        src_cnt: Counter[str] = Counter()
-        for v in df["출처"].astype(str):
-            for p in re.split(r"\s*[·|/]\s*", v):
-                p = p.strip()
-                if p:
-                    src_cnt[p] += 1
-        by_src = (
-            pd.DataFrame({"출처": list(src_cnt.keys()), "건수": list(src_cnt.values())})
-            .sort_values("건수", ascending=False)
-            .reset_index(drop=True)
+    with tab_complex:
+        st.caption(
+            "공장등록「산업단지명」+ 주소 키워드(마도·발안·동탄 등)로 분류. "
+            "실시간 웹검색은 쓰지 않습니다."
         )
-        st.markdown("**출처별 적재량(병합 후)**")
-        st.dataframe(by_src, width="stretch", hide_index=True)
+        left, right = st.columns([1, 1.4])
+        cx_counts = (
+            view.groupby("산업단지", dropna=False)
+            .size()
+            .rename("건수")
+            .sort_values(ascending=False)
+            .reset_index()
+        )
+        with left:
+            st.markdown("**산업단지별 건수**")
+            st.dataframe(cx_counts, width="stretch", hide_index=True, height=400)
+        with right:
+            opts_cx = cx_counts["산업단지"].tolist() or ["미분류"]
+            pick_cx = st.selectbox("산업단지 상세", options=opts_cx, key="mr_complex_pick")
+            sub = view[view["산업단지"] == pick_cx][show_cols]
+            st.caption(f"{pick_cx} · {len(sub):,}건")
+            st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
         if latest_update_str:
             st.caption(f"대시보드 기준 시각: {latest_update_str}")
-
 
 def render_market_research_tab(latest_update_str: str = "") -> None:
     """시장조사 탭 UI."""
@@ -1144,13 +1241,19 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
 
     with st.expander("✍️ 새 시장조사 입력", expanded=False):
         with st.form("mr_new_entry_form", clear_on_submit=True):
-            r1c1, r1c2 = st.columns([1.4, 1])
+            r1c1, r1c2, r1c3 = st.columns([1.3, 0.9, 1.2])
             with r1c1:
                 name_in = st.text_input("업체명 *", placeholder="예: ○○엔지니어링")
             with r1c2:
                 region_in = st.selectbox(
                     "지역",
                     options=[""] + _region_choices(),
+                    format_func=lambda x: "(주소로 자동)" if x == "" else x,
+                )
+            with r1c3:
+                complex_in = st.selectbox(
+                    "산업단지",
+                    options=[""] + _complex_choices(),
                     format_func=lambda x: "(주소로 자동)" if x == "" else x,
                 )
             addr_in = st.text_input(
@@ -1177,6 +1280,7 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                     {
                         "업체명": name_in,
                         "지역": region_in,
+                        "산업단지": complex_in,
                         "주소": addr_in,
                         "업종": industry_in,
                         "사용가스": gas_in,
@@ -1189,7 +1293,7 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                 _invalidate_mr_loaded()
                 st.success(
                     f"저장됨: **{ent['업체명']}** ({ent.get('지역') or '미분류'})  "
-                    f"· 출처「{MR_MANUAL_SOURCE}」"
+                    f"· {ent.get('산업단지') or '단지미분류'} · 출처「{MR_MANUAL_SOURCE}」"
                 )
                 st.rerun()
             except ValueError as e:
@@ -1269,13 +1373,10 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         [r for r in df["지역"].dropna().unique().tolist() if r],
         key=lambda x: (x == "미분류", x),
     )
-    _src_set: set[str] = set()
-    for v in df["출처"].dropna().astype(str):
-        for p in re.split(r"\s*[·|/]\s*", v):
-            p = p.strip()
-            if p:
-                _src_set.add(p)
-    sources = sorted(_src_set)
+    complexes = sorted(
+        [c for c in df["산업단지"].dropna().unique().tolist() if c],
+        key=lambda x: (x == "미분류", x),
+    )
     # 공급사 옵션: 공장단독 제외 표본에서만 (옵션 목록 축소 → 위젯 가벼움)
     _sup_base = df.loc[~df["_factory_only"], "공급사"]
     _sup_set: set[str] = set()
@@ -1290,4 +1391,4 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
             break
     suppliers = sorted(_sup_set)
 
-    _mr_filter_results_fragment(df, regions, sources, suppliers, latest_update_str)
+    _mr_filter_results_fragment(df, regions, complexes, suppliers, latest_update_str)
