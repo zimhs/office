@@ -1739,7 +1739,7 @@ def render_readable_preview_html(d: date, cells: dict) -> str:
       <h3>특 이 사 항</h3>
       {note_html}
     </div>
-    <div class="foot">보고용 원본 양식이 필요하면 아래 「원본양식 인쇄」를 사용하세요.</div>
+    <div class="foot">인쇄는 상단 「프린터 화면」을 사용하세요.</div>
   </div>
 </body></html>"""
 
