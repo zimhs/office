@@ -1213,8 +1213,12 @@ def render_worklog_view_html(
     auto_print: bool = False,
     wrap_height: str | None = None,
     hide_on_screen: bool = False,
+    local_zoom: bool = False,
 ) -> str:
-    """원본 엑셀 양식 HTML (인쇄/보고용)."""
+    """원본 엑셀 양식 HTML (인쇄/보고용).
+
+    local_zoom=True: 미리보기 −/+ 는 iframe 안 JS만 (서버 재실행 없음).
+    """
     sheet = workbook_to_html(path)
     raw_w, raw_h = _worklog_sheet_pixel_size(path)
     print_fit = _a4_print_fit(raw_w, raw_h)
@@ -1235,6 +1239,16 @@ def render_worklog_view_html(
         """
     elif print_mode:
         scale = 1.0
+    elif local_zoom:
+        scale = max(0.28, min(0.95, float(scale) if scale else 0.5))
+        pct0 = int(round(scale * 100))
+        toolbar = f"""
+        <div class="zoombar no-print">
+          <button type="button" id="wl-z-out" aria-label="축소">−</button>
+          <span id="wl-zoom-pct">{pct0}%</span>
+          <button type="button" id="wl-z-in" aria-label="확대">+</button>
+        </div>
+        """
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
     # print_mode: 화면용 초기 스케일. 인쇄 직전 JS가 실제 DOM 크기로 다시 맞춤.
     if print_mode:
@@ -1269,7 +1283,7 @@ def render_worklog_view_html(
         wrap_h = "auto"
         wrap_w = f"{frame_w}px"
         wrap_overflow = "visible"
-        body_overflow = "hidden"
+        body_overflow = "auto" if local_zoom else "hidden"
         body_h = f"{frame_h}px"
     if wrap_height is not None:
         wrap_h = wrap_height
@@ -1367,12 +1381,87 @@ def render_worklog_view_html(
           }})();
         </script>
         """
+    local_zoom_js = ""
+    if local_zoom and not print_mode:
+        init_z = max(0.28, min(0.95, float(scale) if scale else 0.5))
+        local_zoom_js = f"""
+        <script>
+          (function() {{
+            var wlZoom = {init_z:.4f};
+            var rawW = {raw_w};
+            var rawH = {raw_h};
+            function wlApplyZoom(s) {{
+              var sheet = document.querySelector('.sheet-scale');
+              var wrap = document.querySelector('.wrap');
+              var table = document.querySelector('.wl-sheet');
+              var pct = document.getElementById('wl-zoom-pct');
+              if (!sheet || !wrap || !table) return;
+              if (s < 0.28) s = 0.28;
+              if (s > 0.95) s = 0.95;
+              wlZoom = s;
+              sheet.style.transform = 'none';
+              sheet.style.zoom = String(s);
+              var w = Math.max(table.scrollWidth, table.offsetWidth, rawW, 1);
+              var h = Math.max(table.scrollHeight, table.offsetHeight, rawH, 1);
+              wrap.style.width = Math.ceil(w * s) + 'px';
+              wrap.style.height = Math.ceil(h * s) + 'px';
+              if (pct) pct.textContent = Math.round(s * 100) + '%';
+            }}
+            function bind() {{
+              var zo = document.getElementById('wl-z-out');
+              var zi = document.getElementById('wl-z-in');
+              if (zo) zo.addEventListener('click', function(ev) {{
+                ev.preventDefault();
+                wlApplyZoom(Math.round((wlZoom - 0.08) * 100) / 100);
+              }});
+              if (zi) zi.addEventListener('click', function(ev) {{
+                ev.preventDefault();
+                wlApplyZoom(Math.round((wlZoom + 0.08) * 100) / 100);
+              }});
+              wlApplyZoom(wlZoom);
+            }}
+            if (document.readyState === 'complete') bind();
+            else window.addEventListener('load', bind);
+          }})();
+        </script>
+        """
     fallback_block = ""
     if scale_css_fallback:
         fallback_block = f"""
   @supports not (zoom: 1) {{
     .sheet-scale {{ {scale_css_fallback} }}
   }}
+"""
+    clarity_css = ""
+    if local_zoom and not print_mode:
+        clarity_css = """
+  .zoombar {
+    display:inline-flex; align-items:center; gap:4px;
+    margin:0 0 6px; padding:2px 4px;
+    background:#F8FAFC; border:1px solid #CBD5E1; border-radius:6px;
+  }
+  .zoombar button {
+    width:1.45rem; height:1.45rem; padding:0; margin:0;
+    font:700 13px/1 system-ui,sans-serif; color:#0F172A;
+    background:#fff; border:1px solid #94A3B8; border-radius:4px; cursor:pointer;
+  }
+  .zoombar button:hover, .zoombar button:active {
+    background:#E2E8F0; color:#0F172A; opacity:1;
+  }
+  .zoombar #wl-zoom-pct {
+    min-width:2.4rem; text-align:center;
+    font:700 11px/1.2 system-ui,sans-serif; color:#334155;
+  }
+  .wl-sheet, .wl-sheet td {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  .wl-sheet td { color:#0F172A !important; }
+  .wrap {
+    border:1px solid #64748B !important;
+    box-shadow:0 1px 2px rgba(15,23,42,.06);
+  }
 """
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -1415,6 +1504,7 @@ def render_worklog_view_html(
   .wl-sheet {{ border-collapse:collapse; table-layout:fixed; }}
   .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }}
   {fallback_block}
+  {clarity_css}
   {"@media screen { html, body, .toolbar, .wrap, .sheet-scale { visibility:hidden !important; height:0 !important; overflow:hidden !important; margin:0 !important; padding:0 !important; border:none !important; } }" if hide_on_screen else ""}
   @media print {{
     html, body {{
@@ -1423,7 +1513,7 @@ def render_worklog_view_html(
       -webkit-print-color-adjust:exact; print-color-adjust:exact;
       visibility:visible !important;
     }}
-    .no-print, .toolbar {{ display:none !important; }}
+    .no-print, .toolbar, .zoombar {{ display:none !important; }}
     .wrap, .sheet-scale {{
       visibility:visible !important; height:auto !important; overflow:visible !important;
     }}
@@ -1443,6 +1533,7 @@ def render_worklog_view_html(
   {toolbar}
   <div class="wrap"><div class="sheet-scale">{sheet}</div></div>
   {auto_script}
+  {local_zoom_js}
 </body></html>"""
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
@@ -3061,6 +3152,9 @@ def _publish_view_cells(d: date, cells: dict) -> None:
         f"wl_left_excel_sig_v4_{iso}",
         f"wl_left_excel_html_v4_{iso}",
         f"wl_left_excel_h_v4_{iso}",
+        f"wl_left_excel_sig_v5_{iso}",
+        f"wl_left_excel_html_v5_{iso}",
+        f"wl_left_excel_h_v5_{iso}",
     ):
         st.session_state.pop(k, None)
 
@@ -3863,71 +3957,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
             _show_excel_left = bool(st.session_state.get(_left_excel_key))
             if _show_excel_left:
-                _zoom_key = f"wl_left_excel_zoom_{selected.isoformat()}"
-                if _zoom_key not in st.session_state:
-                    # 왼쪽 칸에 양식이 한눈에 들어오도록 기본 축소
-                    st.session_state[_zoom_key] = 0.42
-                st.markdown(
-                    """
-                    <style>
-                    div[class*="st-key-wl_left_zoom_out"] button,
-                    div[class*="st-key-wl_left_zoom_in"] button {
-                      min-height: 1.55rem !important;
-                      height: 1.55rem !important;
-                      padding: 0 0.35rem !important;
-                      font-size: 0.78rem !important;
-                      font-weight: 700 !important;
-                      line-height: 1 !important;
-                    }
-                    div[class*="st-key-wl_left_to_summary"] button {
-                      min-height: 1.55rem !important;
-                      height: 1.55rem !important;
-                      padding: 0 0.4rem !important;
-                      font-size: 0.72rem !important;
-                    }
-                    </style>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                sw1, zw1, zw2, zw3, sw2 = st.columns(
-                    [1.35, 0.38, 0.55, 0.38, 1.1], gap="small"
-                )
+                sw1, sw2 = st.columns([1, 1])
                 with sw1:
                     st.caption("원본 엑셀 양식 적용 중")
-                with zw1:
-                    if st.button(
-                        "−",
-                        width="stretch",
-                        key=f"wl_left_zoom_out_{selected.isoformat()}",
-                        help="축소",
-                    ):
-                        cur = float(st.session_state.get(_zoom_key) or 0.42)
-                        st.session_state[_zoom_key] = round(
-                            max(0.28, cur - 0.08), 2
-                        )
-                        _wl_rerun()
-                with zw2:
-                    _z_pct = int(
-                        round(float(st.session_state.get(_zoom_key) or 0.42) * 100)
-                    )
-                    st.markdown(
-                        f"<div style='text-align:center;font-size:0.72rem;"
-                        f"font-weight:700;color:#475569;padding-top:0.35rem;'>"
-                        f"{_z_pct}%</div>",
-                        unsafe_allow_html=True,
-                    )
-                with zw3:
-                    if st.button(
-                        "+",
-                        width="stretch",
-                        key=f"wl_left_zoom_in_{selected.isoformat()}",
-                        help="확대",
-                    ):
-                        cur = float(st.session_state.get(_zoom_key) or 0.42)
-                        st.session_state[_zoom_key] = round(
-                            min(0.95, cur + 0.08), 2
-                        )
-                        _wl_rerun()
                 with sw2:
                     if st.button(
                         "요약 보기로",
@@ -3940,17 +3972,17 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 if xlsx_left and os.path.exists(str(xlsx_left)):
                     try:
                         # 저장(또는 「엑셀 미리보기」) 스냅샷만 표시 — 입력 중 재생성 안 함
+                        # 확대/축소는 iframe 안 JS (서버 로딩 없음), 기본 50%
                         cells_view = _view_cells_for_preview(selected)
-                        scale_l = float(st.session_state.get(_zoom_key) or 0.42)
-                        scale_l = max(0.28, min(0.95, scale_l))
+                        scale_l = 0.50
                         live_sig = json.dumps(
-                            {"cells": cells_view, "scale": scale_l},
+                            {"cells": cells_view, "scale": scale_l, "lz": 1},
                             ensure_ascii=False,
                             sort_keys=True,
                         )
-                        sig_k = f"wl_left_excel_sig_v4_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_v4_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_v4_{selected.isoformat()}"
+                        sig_k = f"wl_left_excel_sig_v5_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_v5_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_v5_{selected.isoformat()}"
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
                             st.session_state[_left_path_key] = xlsx_left
@@ -3960,6 +3992,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 print_mode=False,
                                 auto_print=False,
                                 scale=scale_l,
+                                local_zoom=True,
                             )
                             _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
                             st.session_state[html_k] = excel_html
@@ -3973,6 +4006,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                     print_mode=False,
                                     auto_print=False,
                                     scale=scale_l,
+                                    local_zoom=True,
                                 )
                                 _, fh = _scaled_view_frame_size(
                                     str(xlsx_left), scale_l
@@ -3981,7 +4015,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 st.session_state[h_k] = fh
                         components.html(
                             excel_html,
-                            height=min(920, max(480, int(fh or 560))),
+                            height=min(920, max(520, int(fh or 560) + 36)),
                             scrolling=True,
                         )
                         if st.button(
