@@ -1212,6 +1212,7 @@ def render_worklog_view_html(
     scale: float = 0.55,
     auto_print: bool = False,
     wrap_height: str | None = None,
+    hide_on_screen: bool = False,
 ) -> str:
     """원본 엑셀 양식 HTML (인쇄/보고용)."""
     sheet = workbook_to_html(path)
@@ -1221,7 +1222,7 @@ def render_worklog_view_html(
     scaled_h = max(1, int(round(raw_h * print_fit)))
 
     toolbar = ""
-    if print_mode:
+    if print_mode and not hide_on_screen:
         scale = 1.0
         toolbar = """
         <div class="toolbar no-print">
@@ -1232,6 +1233,8 @@ def render_worklog_view_html(
           <span class="hint">맞춤으로 A4에 맞춘 뒤 축소/확대로 조절하세요.</span>
         </div>
         """
+    elif print_mode:
+        scale = 1.0
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
     # print_mode: 화면용 초기 스케일. 인쇄 직전 JS가 실제 DOM 크기로 다시 맞춤.
     if print_mode:
@@ -1412,13 +1415,18 @@ def render_worklog_view_html(
   .wl-sheet {{ border-collapse:collapse; table-layout:fixed; }}
   .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }}
   {fallback_block}
+  {"@media screen { html, body, .toolbar, .wrap, .sheet-scale { visibility:hidden !important; height:0 !important; overflow:hidden !important; margin:0 !important; padding:0 !important; border:none !important; } }" if hide_on_screen else ""}
   @media print {{
     html, body {{
       overflow:visible !important; height:auto !important; width:auto !important;
       margin:0 !important; padding:0 !important;
       -webkit-print-color-adjust:exact; print-color-adjust:exact;
+      visibility:visible !important;
     }}
     .no-print, .toolbar {{ display:none !important; }}
+    .wrap, .sheet-scale {{
+      visibility:visible !important; height:auto !important; overflow:visible !important;
+    }}
     .wrap {{
       overflow:hidden !important;
       max-width:none !important;
@@ -3288,14 +3296,14 @@ return previewDone
 
 
 def _launch_browser_print_dialog(xlsx_path: str) -> None:
-    """본화면을 유지한 채, 인쇄 미리보기(맞춤/축소/확대) + 인쇄 대화상자를 연다."""
+    """본화면에는 양식을 숨기고, 브라우저 인쇄 대화상자만 연다."""
     st.session_state["wl_print_panel"] = False
     abs_path = os.path.abspath(xlsx_path)
     if not os.path.exists(abs_path):
         st.error("인쇄용 파일이 없습니다.")
         return
-    cache_k = f"wl_print_html_cache_v2_{abs_path}"
-    meta_k = f"wl_print_html_meta_v2_{abs_path}"
+    cache_k = f"wl_print_html_cache_v3_{abs_path}"
+    meta_k = f"wl_print_html_meta_v3_{abs_path}"
     try:
         mtime = os.path.getmtime(abs_path)
     except OSError:
@@ -3309,15 +3317,15 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
         and meta.get("path") == abs_path
     ):
         stamped = cached
-        preview_h = int(meta.get("h") or 720)
     else:
         try:
             doc_html = render_worklog_view_html(
-                abs_path, print_mode=True, auto_print=True, scale=1.0
+                abs_path,
+                print_mode=True,
+                auto_print=True,
+                scale=1.0,
+                hide_on_screen=True,
             )
-            _, raw_h = _worklog_sheet_pixel_size(abs_path)
-            fit = _a4_print_fit(*_worklog_sheet_pixel_size(abs_path))
-            preview_h = min(920, max(420, int(raw_h * fit) + 72))
         except Exception as e:
             st.error(f"인쇄 문서 준비 실패: {e}")
             return
@@ -3332,10 +3340,10 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
         st.session_state[meta_k] = {
             "mtime": mtime,
             "path": abs_path,
-            "h": preview_h,
         }
-    components.html(stamped, height=preview_h, scrolling=True)
-    st.caption("맞춤(줄여서)·축소·확대로 조절한 뒤 인쇄하세요.")
+    # 화면에는 보이지 않게 — 인쇄 대화상자만
+    components.html(stamped, height=1, scrolling=False)
+    st.caption("인쇄 창을 열었습니다. 미리보기는 「엑셀 미리보기」를 사용하세요.")
 
 
 
@@ -3427,7 +3435,7 @@ def _worklog_form_preview_dialog() -> None:
         return
     path = str(path)
     try:
-        scale = 0.62
+        scale = 1.0
         print_html = render_worklog_view_html(
             path, print_mode=False, auto_print=False, scale=scale
         )
@@ -3799,6 +3807,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 st.session_state.pop(f"wl_print_html_meta_{out}", None)
                 st.session_state.pop(f"wl_print_html_cache_v2_{out}", None)
                 st.session_state.pop(f"wl_print_html_meta_v2_{out}", None)
+                st.session_state.pop(f"wl_print_html_cache_v3_{out}", None)
+                st.session_state.pop(f"wl_print_html_meta_v3_{out}", None)
                 return out
 
             if do_open_print:
@@ -3818,10 +3828,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     st.session_state[_left_excel_key] = True
                     st.session_state[_left_path_key] = xlsx_abs
                     st.session_state["wl_dialog_preview_path"] = xlsx_abs
-                    # 하단 원본 양식 캐시도 즉시 갱신
-                    form_sig = json.dumps(cells_now, ensure_ascii=False, sort_keys=True)
-                    st.session_state[f"wl_form_sig_v14_{selected.isoformat()}"] = None
-                    st.session_state["_wl_force_form_sig"] = form_sig
+                    # 하단 원본 양식은 더 이상 표시하지 않음 (왼쪽 미리보기만)
+                    st.session_state.pop(
+                        f"wl_form_sig_v14_{selected.isoformat()}", None
+                    )
+                    st.session_state.pop("_wl_force_form_sig", None)
                     # 맥 로컬: Excel 실행 + 인쇄 미리보기까지. Cloud는 화면 양식만.
                     if platform.system() == "Darwin":
                         ok, msg = open_excel_print_preview(
@@ -3863,15 +3874,16 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     try:
                         # 저장(또는 「엑셀 미리보기」) 스냅샷만 표시 — 입력 중 재생성 안 함
                         cells_view = _view_cells_for_preview(selected)
-                        scale_l = 0.62  # 클릭 후 왼쪽 양식 가독성
+                        # 화면에서 확인한 실제 크기(원본 1.0)로 항상 표시
+                        scale_l = 1.0
                         live_sig = json.dumps(
                             {"cells": cells_view, "scale": scale_l},
                             ensure_ascii=False,
                             sort_keys=True,
                         )
-                        sig_k = f"wl_left_excel_sig_v2_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_v2_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_v2_{selected.isoformat()}"
+                        sig_k = f"wl_left_excel_sig_v3_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_v3_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_v3_{selected.isoformat()}"
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
                             st.session_state[_left_path_key] = xlsx_left
@@ -3902,7 +3914,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 st.session_state[h_k] = fh
                         components.html(
                             excel_html,
-                            height=min(900, max(520, int(fh or 640))),
+                            height=min(980, max(560, int(fh or 720))),
                             scrolling=True,
                         )
                         if st.button(
