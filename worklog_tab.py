@@ -1304,10 +1304,10 @@ def render_worklog_view_html(
           table.style.width = '{raw_w}px';
           var w = Math.max(table.scrollWidth, table.offsetWidth, 1);
           var h = Math.max(table.scrollHeight, table.offsetHeight, 1);
-          var maxW = 620;
-          var maxH = 920;
-          var s = Math.min(1, maxW / w, maxH / h) * 0.92;
-          if (s < 0.25) s = 0.25;
+          var maxW = 720;
+          var maxH = 980;
+          var s = Math.min(1, maxW / w, maxH / h) * 0.98;
+          if (s < 0.32) s = 0.32;
           wlApplyZoom(s);
         }}
         function wlZoomBy(factor) {{
@@ -1385,13 +1385,23 @@ def render_worklog_view_html(
   body {{ padding:{"0" if print_mode else "6px"}; box-sizing:border-box; }}
   .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }}
   .toolbar button {{
-    padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px;
-    background:#1E293B; color:#fff; cursor:pointer;
+    padding:9px 16px; font-size:15px; font-weight:700; border:1px solid #334155;
+    border-radius:6px; background:#1E293B; color:#fff; cursor:pointer;
+  }}
+  .toolbar button:hover,
+  .toolbar button:focus-visible,
+  .toolbar button:active {{
+    background:#0F172A; color:#fff; opacity:1;
   }}
   .toolbar button.secondary {{
-    background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default;
+    background:#F8FAFC; color:#0F172A; border-color:#64748B; cursor:pointer;
   }}
-  .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }}
+  .toolbar button.secondary:hover,
+  .toolbar button.secondary:focus-visible,
+  .toolbar button.secondary:active {{
+    background:#E2E8F0; color:#0F172A; border-color:#334155; opacity:1;
+  }}
+  .toolbar .hint {{ font:13px/1.45 sans-serif; color:#475569; max-width:42rem; }}
   .wrap {{
     overflow:{wrap_overflow} !important; height:{wrap_h};
     width:{wrap_w}; max-width:{"none" if print_mode else "100%"};
@@ -3284,8 +3294,8 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     if not os.path.exists(abs_path):
         st.error("인쇄용 파일이 없습니다.")
         return
-    cache_k = f"wl_print_html_cache_{abs_path}"
-    meta_k = f"wl_print_html_meta_{abs_path}"
+    cache_k = f"wl_print_html_cache_v2_{abs_path}"
+    meta_k = f"wl_print_html_meta_v2_{abs_path}"
     try:
         mtime = os.path.getmtime(abs_path)
     except OSError:
@@ -3703,6 +3713,47 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         with col_preview:
             st.markdown("##### 업무일지 보기")
+            # 클릭·포커스 시에도 글자가 읽히도록 (이 두 버튼만)
+            st.markdown(
+                """
+                <style>
+                div[class*="st-key-wl_print_btn"] button,
+                div[class*="st-key-wl_open_print_btn"] button {
+                  font-size: 0.95rem !important;
+                  font-weight: 700 !important;
+                  min-height: 2.45rem !important;
+                  letter-spacing: -0.01em !important;
+                }
+                div[class*="st-key-wl_print_btn"] button {
+                  color: #0F172A !important;
+                  background-color: #FFFFFF !important;
+                  border: 1.5px solid #94A3B8 !important;
+                }
+                div[class*="st-key-wl_print_btn"] button:hover,
+                div[class*="st-key-wl_print_btn"] button:focus-visible,
+                div[class*="st-key-wl_print_btn"] button:active {
+                  color: #0F172A !important;
+                  background-color: #E2E8F0 !important;
+                  border-color: #475569 !important;
+                  opacity: 1 !important;
+                }
+                div[class*="st-key-wl_open_print_btn"] button {
+                  color: #FFFFFF !important;
+                  background-color: #E11D48 !important;
+                  border: 1.5px solid #BE123C !important;
+                }
+                div[class*="st-key-wl_open_print_btn"] button:hover,
+                div[class*="st-key-wl_open_print_btn"] button:focus-visible,
+                div[class*="st-key-wl_open_print_btn"] button:active {
+                  color: #FFFFFF !important;
+                  background-color: #BE123C !important;
+                  border-color: #9F1239 !important;
+                  opacity: 1 !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
             # 버튼은 큰 iframe 위에 둠 (클릭 가로채기 방지)
             p1, p2 = st.columns(2)
             with p1:
@@ -3810,13 +3861,15 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     try:
                         # 저장(또는 「엑셀 미리보기」) 스냅샷만 표시 — 입력 중 재생성 안 함
                         cells_view = _view_cells_for_preview(selected)
+                        scale_l = 0.62  # 클릭 후 왼쪽 양식 가독성
                         live_sig = json.dumps(
-                            cells_view, ensure_ascii=False, sort_keys=True
+                            {"cells": cells_view, "scale": scale_l},
+                            ensure_ascii=False,
+                            sort_keys=True,
                         )
-                        sig_k = f"wl_left_excel_sig_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_{selected.isoformat()}"
-                        scale_l = 0.48
+                        sig_k = f"wl_left_excel_sig_v2_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_v2_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_v2_{selected.isoformat()}"
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
                             st.session_state[_left_path_key] = xlsx_left
@@ -3847,7 +3900,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 st.session_state[h_k] = fh
                         components.html(
                             excel_html,
-                            height=min(820, max(480, int(fh or 600))),
+                            height=min(900, max(520, int(fh or 640))),
                             scrolling=True,
                         )
                         if st.button(
