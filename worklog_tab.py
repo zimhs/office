@@ -2985,33 +2985,55 @@ def prepare_print_xlsx(d: date, cells: dict) -> str:
     return os.path.abspath(dst)
 
 
-def open_excel_print_preview(xlsx_path: str) -> tuple[bool, str]:
+def open_excel_print_preview(
+    xlsx_path: str, *, prefer_print_dialog: bool = True
+) -> tuple[bool, str]:
     """
     macOS + Microsoft Excel:
     1) 원본 xlsx 열기
-    2) Excel 안의 인쇄 미리보기까지 실행
-    (Cloud/원격 서버에서는 사용자 Mac Excel을 직접 제어할 수 없음)
+    2) prefer_print_dialog=True → ⌘P 인쇄(미리보기) 대화상자 (요청 화면)
+       prefer_print_dialog=False → Excel 인쇄 미리보기 메뉴 우선
     """
     abs_path = os.path.abspath(xlsx_path)
     if not os.path.exists(abs_path):
         return False, "미리보기용 엑셀 파일이 없습니다."
     if platform.system() != "Darwin":
         return False, (
-            "Excel 인쇄 미리보기는 맥에서 로컬 대시보드 실행 시에만 자동 연결됩니다. "
-            "Cloud에서는 「엑셀 저장본」다운로드 후 Excel에서 ⌘P 로 미리보세요."
+            "Excel 인쇄 화면은 맥에서 로컬 대시보드 실행 시에만 자동 연결됩니다. "
+            "Cloud에서는 「엑셀 저장본」다운로드 후 Excel에서 ⌘P 로 여세요."
         )
 
     if not _excel_app_path():
-        # Excel 미설치여도 기본 앱으로라도 연다
         try:
             subprocess.Popen(["open", abs_path], start_new_session=True)
             return True, "파일을 열었습니다. Excel이 없다면 설치 후 다시 시도해 주세요."
         except Exception as e:
             return False, f"파일 열기 실패: {e}"
 
-    # AppleScript용 경로 이스케이프
     ap = abs_path.replace("\\", "\\\\").replace('"', '\\"')
-    script = f'''
+    if prefer_print_dialog:
+        # 사용자가 원하는 macOS「프린트」대화상자(미리보기+Excel 옵션)
+        script = f'''
+set targetFile to POSIX file "{ap}"
+tell application "Microsoft Excel"
+    activate
+    open targetFile
+    delay 1.2
+end tell
+tell application "System Events"
+    if exists process "Microsoft Excel" then
+        tell process "Microsoft Excel"
+            set frontmost to true
+            delay 0.4
+            keystroke "p" using {{command down}}
+        end tell
+    end if
+end tell
+return true
+'''
+        ok_msg = "Excel에서 열어 인쇄(미리보기) 화면까지 연결했습니다."
+    else:
+        script = f'''
 set targetFile to POSIX file "{ap}"
 set previewDone to false
 tell application "Microsoft Excel"
@@ -3028,12 +3050,6 @@ tell application "Microsoft Excel"
             set previewDone to true
         end try
     end if
-    if previewDone is false then
-        try
-            print preview active workbook
-            set previewDone to true
-        end try
-    end if
 end tell
 if previewDone is false then
     tell application "System Events"
@@ -3046,13 +3062,6 @@ if previewDone is false then
                     set previewDone to true
                 end try
                 if previewDone is false then
-                    try
-                        click menu item "Print Preview" of menu "File" of menu bar 1
-                        set previewDone to true
-                    end try
-                end if
-                if previewDone is false then
-                    -- macOS 인쇄 대화상자(미리보기 포함)
                     keystroke "p" using {{command down}}
                     set previewDone to true
                 end if
@@ -3062,6 +3071,8 @@ if previewDone is false then
 end if
 return previewDone
 '''
+        ok_msg = "Excel에서 열어 인쇄 미리보기까지 연결했습니다."
+
     try:
         r = subprocess.run(
             ["osascript", "-e", script],
@@ -3070,8 +3081,7 @@ return previewDone
             timeout=50,
         )
         if r.returncode == 0:
-            return True, "Excel에서 열어 인쇄 미리보기까지 연결했습니다."
-        # 접근성 권한 등으로 메뉴/미리보기 실패 시: 파일만이라도 연다
+            return True, ok_msg
         subprocess.Popen(
             ["open", "-a", "Microsoft Excel", abs_path],
             start_new_session=True,
@@ -3081,10 +3091,10 @@ return previewDone
         if "Not authorized" in err or "assistive" in err.lower() or "1002" in err:
             hint = (
                 " (시스템 설정 → 개인정보 보호 → 손쉬운 사용에서 "
-                "Terminal/Cursor/Excel 제어를 허용하면 인쇄 미리보기까지 자동 실행됩니다)"
+                "Terminal/Cursor 제어를 허용하면 ⌘P 화면까지 자동으로 열립니다)"
             )
         return True, (
-            "Excel에서 파일을 열었습니다. 인쇄 미리보기는 Excel에서 ⌘P 로 확인하세요."
+            "Excel에서 파일을 열었습니다. 인쇄 화면은 Excel에서 ⌘P 로 열어 주세요."
             + hint
         )
     except subprocess.TimeoutExpired:
@@ -3095,7 +3105,7 @@ return previewDone
                 ["open", "-a", "Microsoft Excel", abs_path],
                 start_new_session=True,
             )
-            return True, f"Excel에서 파일을 열었습니다. (미리보기 자동화 실패: {e})"
+            return True, f"Excel에서 파일을 열었습니다. (인쇄 화면 자동화 실패: {e})"
         except Exception as e2:
             return False, f"Excel 실행 실패: {e2}"
 
@@ -3393,28 +3403,60 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     help="원본 양식을 왼쪽에 적용하고, 맥에서는 Excel을 열어 인쇄 미리보기까지 연결합니다.",
                 )
             with p2:
-                path_saved = worklog_path(selected)
-                xbytes = b""
-                src = path_saved if os.path.exists(path_saved) else None
-                if src and os.path.exists(src):
-                    with open(src, "rb") as f:
-                        xbytes = f.read()
+                # 맥 로컬: 저장본 버튼 → Excel 인쇄(미리보기) 화면까지 바로 연결
+                # Cloud: 파일 다운로드만 가능
+                if platform.system() == "Darwin":
+                    do_saved_excel = st.button(
+                        "엑셀 저장본",
+                        width="stretch",
+                        key="wl_dl_btn",
+                        help="현재 일지를 Excel로 열고 macOS 인쇄(미리보기) 화면까지 연결합니다.",
+                    )
+                    if do_saved_excel:
+                        cells_dl = _cells_from_widgets(selected)
+                        try:
+                            # 저장본이 있으면 최신 입력으로 갱신 후 그 파일을 연다
+                            path_saved = worklog_path(selected)
+                            if os.path.exists(path_saved):
+                                write_cells_to_path(
+                                    path_saved, selected, cells_dl, blank_base=False
+                                )
+                                xlsx_abs = os.path.abspath(path_saved)
+                            else:
+                                xlsx_abs = _prepare_excel_preview(selected, cells_dl)
+                            ok, msg = open_excel_print_preview(
+                                xlsx_abs, prefer_print_dialog=True
+                            )
+                            if ok:
+                                st.success(msg)
+                            else:
+                                st.warning(msg)
+                        except Exception as e:
+                            st.error(f"엑셀 저장본 연결 실패: {e}")
                 else:
-                    try:
-                        tmp = _build_preview_file(selected, draft)
-                        with open(tmp, "rb") as f:
+                    path_saved = worklog_path(selected)
+                    xbytes = b""
+                    src = path_saved if os.path.exists(path_saved) else None
+                    if src and os.path.exists(src):
+                        with open(src, "rb") as f:
                             xbytes = f.read()
-                    except Exception:
-                        xbytes = b""
-                st.download_button(
-                    "엑셀 저장본",
-                    data=xbytes,
-                    file_name=f"일일업무일지_{selected.isoformat()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    width="stretch",
-                    key="wl_dl_btn",
-                    disabled=not xbytes,
-                )
+                    else:
+                        try:
+                            tmp = _build_preview_file(selected, draft)
+                            with open(tmp, "rb") as f:
+                                xbytes = f.read()
+                        except Exception:
+                            xbytes = b""
+                    st.download_button(
+                        "엑셀 저장본",
+                        data=xbytes,
+                        file_name=f"일일업무일지_{selected.isoformat()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width="stretch",
+                        key="wl_dl_btn",
+                        disabled=not xbytes,
+                        help="Cloud에서는 파일 다운로드만 됩니다. Excel 인쇄 화면 자동 연결은 맥 로컬에서 가능합니다.",
+                    )
 
             _left_excel_key = f"wl_left_excel_on_{selected.isoformat()}"
             _left_path_key = f"wl_left_excel_path_{selected.isoformat()}"
