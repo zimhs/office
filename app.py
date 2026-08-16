@@ -6116,7 +6116,9 @@ def inject_sticky_tabs_script():
             if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady) {
                 try {
                     if (typeof parentWin.__dashboardIpadScheduleSync === 'function') {
-                        parentWin.__dashboardIpadScheduleSync(120);
+                        parentWin.__dashboardIpadScheduleSync(80);
+                        parentWin.__dashboardIpadScheduleSync(250);
+                        parentWin.__dashboardIpadScheduleSync(600);
                     }
                 } catch (eSkip) {}
                 return;
@@ -6176,7 +6178,9 @@ def inject_sticky_tabs_script():
             function findMainTabsHost() {
                 var hosts = parentDoc.querySelectorAll('div[data-testid="stTabs"]');
                 for (var i = 0; i < hosts.length; i++) {
+                    /* lazy tabs: 패널이 아직 없어도 메인 탭호스트 인식 */
                     if (hosts[i].querySelector('[role="tabpanel"]')) return hosts[i];
+                    if (hosts[i].textContent.indexOf('📌 영업 종합 요약') !== -1) return hosts[i];
                 }
                 return null;
             }
@@ -6184,6 +6188,26 @@ def inject_sticky_tabs_script():
                 if (!el || el.nodeType !== 1) return false;
                 if (el.getAttribute && el.getAttribute('role') === 'tabpanel') return true;
                 return !!(el.querySelector && el.querySelector('[role="tabpanel"]'));
+            }
+            /* 닫힌 BaseWeb 포털·숨은 listbox는 무시 (담당자 지정 후 탭 미복구 원인) */
+            function isFilterDropdownOpen() {
+                function visible(el) {
+                    if (!el) return false;
+                    var r = el.getBoundingClientRect();
+                    if (r.width < 2 || r.height < 2) return false;
+                    var st = parentWin.getComputedStyle(el);
+                    if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+                    return true;
+                }
+                try {
+                    var nodes = parentDoc.querySelectorAll(
+                        '[data-baseweb="popover"], [data-baseweb="menu"], [data-baseweb="select"] [role="listbox"], ul[role="listbox"]'
+                    );
+                    for (var i = 0; i < nodes.length; i++) {
+                        if (visible(nodes[i])) return true;
+                    }
+                } catch (eVis) {}
+                return false;
             }
             function ensureSpacer(filterBox) {
                 var spacer = parentDoc.getElementById(SPACER_ID);
@@ -6215,27 +6239,34 @@ def inject_sticky_tabs_script():
             }
             function mountTabs(filterBox, tabList) {
                 if (!filterBox || !tabList) return false;
-                /* 상단 검색(담당자/거래처) 드롭다운 열린 동안 DOM 이동 금지 → 선택 중 로딩/끊김 완화 */
-                try {
-                    if (parentDoc.querySelector('[data-baseweb="popover"], [data-baseweb="menu"], [role="listbox"]')) {
-                        return false;
-                    }
-                } catch (ePopMac) {}
+                /* 드롭다운이 실제로 열려 있을 때만 보류 — 숨은 listbox 때문에 영구 스킵 금지 */
+                if (isFilterDropdownOpen()) return false;
                 filterBox.classList.add('dashboard-filter-sticky');
                 if (touchMode) {
                     filterBox.classList.add('dashboard-filter-sticky-touch');
                 } else {
                     filterBox.classList.remove('dashboard-filter-sticky-touch');
                 }
+                /* rerun 후 탭리스트가 display:none 셸에 갇히면 먼저 풀어 준 뒤 필터바로 이동 */
+                try {
+                    var stuck = tabList.closest('.dashboard-tabs-list-shell');
+                    if (stuck && !filterBox.contains(tabList)) {
+                        stuck.style.removeProperty('display');
+                        stuck.style.setProperty('display', '', 'important');
+                        stuck.style.display = '';
+                    }
+                } catch (eUnhide) {}
                 if (!filterBox.contains(tabList)) {
                     filterBox.appendChild(tabList);
                 }
                 tabList.classList.add('dashboard-tabs-in-filter');
+                tabList.style.removeProperty('display');
+                tabList.style.setProperty('display', '', 'important');
                 var tabsHost = findMainTabsHost();
                 if (tabsHost) {
                     tabsHost.classList.add('dashboard-tabs-host-compact');
                     Array.from(tabsHost.children).forEach(function(child) {
-                        if (!containsTabPanel(child)) {
+                        if (!containsTabPanel(child) && !child.contains(tabList) && child !== tabList) {
                             child.classList.add('dashboard-tabs-list-shell');
                             child.style.setProperty('display', 'none', 'important');
                             child.style.setProperty('height', '0', 'important');
@@ -6267,12 +6298,7 @@ def inject_sticky_tabs_script():
             }
             function applyIpad0804Hack() {
                 cleanupIpadPortal();
-                /* 담당자/거래처 드롭다운 열려 있으면 DOM 이동 금지 → 선택 중 무한 rerun·로딩 방지 */
-                try {
-                    if (parentDoc.querySelector('[data-baseweb="popover"], [data-baseweb="menu"], [role="listbox"]')) {
-                        return;
-                    }
-                } catch (ePop) {}
+                if (isFilterDropdownOpen()) return;
                 var marker = parentDoc.getElementById('sticky-marker');
                 if (!marker) return;
                 var targetBox = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') ||
@@ -6282,16 +6308,24 @@ def inject_sticky_tabs_script():
                 var stTabs = findMainTabsHost();
                 var tabHeader = tabList || (stTabs ? stTabs.querySelector('div:first-child') : null);
                 if (!tabHeader) return;
+                try {
+                    var stuckI = tabHeader.closest('.dashboard-tabs-list-shell');
+                    if (stuckI && !targetBox.contains(tabHeader)) {
+                        stuckI.style.removeProperty('display');
+                        stuckI.style.display = '';
+                    }
+                } catch (eUh) {}
                 if (!targetBox.contains(tabHeader)) {
                     targetBox.appendChild(tabHeader);
                 }
                 targetBox.classList.add('dashboard-filter-sticky');
                 targetBox.classList.add('dashboard-filter-sticky-touch');
                 tabHeader.classList.add('dashboard-tabs-in-filter');
+                tabHeader.style.removeProperty('display');
                 if (stTabs) {
                     stTabs.classList.add('dashboard-tabs-host-compact');
                     Array.from(stTabs.children).forEach(function(child) {
-                        if (!containsTabPanel(child)) {
+                        if (!containsTabPanel(child) && !child.contains(tabHeader) && child !== tabHeader) {
                             child.classList.add('dashboard-tabs-list-shell');
                             child.style.setProperty('display', 'none', 'important');
                             child.style.setProperty('height', '0', 'important');
@@ -6358,8 +6392,21 @@ def inject_sticky_tabs_script():
                 /* ===== Mac 무손실 분기 (변경 금지) ===== */
                 var filterBox = findFilterBox();
                 var tabList = findMainTabList();
-                if (!filterBox || !tabList) return;
-                mountTabs(filterBox, tabList);
+                if (!filterBox || !tabList) {
+                    /* 담당자 지정 직후 탭 DOM이 늦게 뜨면 재시도 */
+                    scheduleSync(200);
+                    return;
+                }
+                var mounted = mountTabs(filterBox, tabList);
+                if (!mounted) {
+                    /* 드롭다운 닫힌 뒤 탭 복구 */
+                    scheduleSync(180);
+                    return;
+                }
+                if (!filterBox.contains(tabList)) {
+                    scheduleSync(120);
+                    return;
+                }
                 var rectMac = getMainRect();
                 if (!rectMac) return;
                 var topMac = getTopOffsetMac();
