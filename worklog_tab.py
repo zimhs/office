@@ -1930,6 +1930,7 @@ def _apply_entry_lines(
     if focus_j is not None:
         fj = max(0, min(int(focus_j), len(chunks) - 1))
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, fj)
+        st.session_state[f"wl_focus_caret_{iso}"] = len(str(chunks[fj] or ""))
 
 
 def _insert_line_after(iso: str, entry_i: int, line_j: int) -> None:
@@ -1995,6 +1996,7 @@ def _apply_entry_clients(
     if focus_j is not None:
         fj = max(0, min(int(focus_j), len(chunks) - 1))
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, fj)
+        st.session_state[f"wl_focus_caret_{iso}"] = len(str(chunks[fj] or ""))
 
 
 def _seed_entry_clients(iso: str, entry_i: int, client: str | list[str]) -> None:
@@ -2376,8 +2378,8 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     return out
 
 
-# Enter / 방향키 이동 (document 키 훅)
-# 장문 칸분할은 서버(mount/on_change)만 담당 — JS에서 value를 자르면 Streamlit과 충돌함
+# Enter / 칸초과 / 방향키 이동 (document 키 훅)
+# 칸초과 시 value는 건드리지 않고 서버로만 emit → 다음 입력칸 포커스
 _WL_ENTER_HOOK_JS = r"""
 export default function (component) {
   const { data, setTriggerValue } = component;
@@ -2387,10 +2389,30 @@ export default function (component) {
     data && data.focus_caret != null && data.focus_caret !== ""
       ? Number(data.focus_caret)
       : null;
+  const clientMax = Number((data && data.client_max_u) || 18);
+  const contentMax = Number((data && data.content_max_u) || 70);
   let lastSent = "";
   let lastSig = "";
   let lastAt = 0;
 
+  function charUnits(ch) {
+    const o = ch.charCodeAt(0);
+    if (
+      (o >= 0xac00 && o <= 0xd7a3) ||
+      (o >= 0x1100 && o <= 0x11ff) ||
+      (o >= 0x3130 && o <= 0x318f) ||
+      (o >= 0x2e80 && o <= 0x9fff) ||
+      (o >= 0xff00 && o <= 0xffef)
+    )
+      return 2;
+    return 1;
+  }
+  function displayUnits(s) {
+    let w = 0;
+    s = String(s || "");
+    for (let i = 0; i < s.length; i++) w += charUnits(s.charAt(i));
+    return w;
+  }
   function resolveKey(t) {
     if (!t || String(t.tagName || "").toUpperCase() !== "INPUT") return null;
     const wrap = t.closest
@@ -2413,6 +2435,7 @@ export default function (component) {
       kind: m[1],
       ei: Number(m[3]),
       lj: Number(m[4]),
+      maxU: m[1] === "wl_ent_cl" ? clientMax : contentMax,
     };
   }
   function listKindInputs(kind) {
@@ -2467,7 +2490,7 @@ export default function (component) {
     const now = Date.now();
     const v = String(value || "");
     const sig = key + "\\0" + v;
-    if (sig === lastSig && now - lastAt < 280) return;
+    if (sig === lastSig && now - lastAt < 320) return;
     lastSig = sig;
     lastAt = now;
     const payload = JSON.stringify({ key: key, t: now, v: v });
@@ -2568,7 +2591,29 @@ export default function (component) {
     }
   };
 
+  // 칸 폭 초과 → 서버로만 알림 (입력값 DOM 수정 금지)
+  const onOverflow = (e) => {
+    if (e.isComposing) return;
+    const t = e.target;
+    const info = resolveKey(t);
+    if (!info) return;
+    const v = String(t.value || "");
+    if (displayUnits(v) <= info.maxU) return;
+    emit(info.key, v);
+  };
+
+  const onCompEnd = (e) => {
+    const t = e.target;
+    const info = resolveKey(t);
+    if (!info) return;
+    const v = String(t.value || "");
+    if (displayUnits(v) <= info.maxU) return;
+    emit(info.key, v);
+  };
+
   document.addEventListener("keydown", onKey, true);
+  document.addEventListener("input", onOverflow, true);
+  document.addEventListener("compositionend", onCompEnd, true);
 
   if (focusKey) {
     const go = () => {
@@ -2590,12 +2635,14 @@ export default function (component) {
 
   return () => {
     document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("input", onOverflow, true);
+    document.removeEventListener("compositionend", onCompEnd, true);
   };
 }
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v16",
+    "worklog_cell_nav_hook_v17",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -4034,22 +4081,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state["wl_active_cell_sel"] = (s, e)
 
-                focus_key = st.session_state.pop(f"wl_focus_ln_{iso2}", None)
-                focus_caret = st.session_state.pop(f"wl_focus_caret_{iso2}", None)
-                if isinstance(focus_key, str) and (
-                    focus_key.startswith("wl_ent_ln_")
-                    or focus_key.startswith("wl_ent_cl_")
-                ):
-                    try:
-                        _m = re.match(
-                            r"^wl_ent_(?:ln|cl)_\d{4}-\d{2}-\d{2}_(\d+)_",
-                            focus_key,
-                        )
-                        if _m:
-                            st.session_state[f"wl_exp_{iso2}_{int(_m.group(1))}"] = True
-                    except Exception:
-                        pass
-
                 # 입력값은 칸 확정(포커스 이동) 시 요약/미리보기에 바로 반영.
                 # 입력 중 서버 호출은 Enter훅에서 막아서 로딩을 줄임. 「저장」은 파일 기록용.
                 st.caption(
@@ -4307,6 +4338,23 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             )
                         else:
                             st.error(f"저장 실패: {e}")
+
+                # 위젯 생성(칸 분할) 이후에 포커스 키를 읽어 입력칸으로 이동
+                focus_key = st.session_state.pop(f"wl_focus_ln_{iso2}", None)
+                focus_caret = st.session_state.pop(f"wl_focus_caret_{iso2}", None)
+                if isinstance(focus_key, str) and (
+                    focus_key.startswith("wl_ent_ln_")
+                    or focus_key.startswith("wl_ent_cl_")
+                ):
+                    try:
+                        _m = re.match(
+                            r"^wl_ent_(?:ln|cl)_\d{4}-\d{2}-\d{2}_(\d+)_",
+                            focus_key,
+                        )
+                        if _m:
+                            st.session_state[f"wl_exp_{iso2}_{int(_m.group(1))}"] = True
+                    except Exception:
+                        pass
 
                 # Enter / 칸폭 초과 → 다음 칸 생성·이동
                 _WL_ENTER_HOOK(
