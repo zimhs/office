@@ -1112,6 +1112,16 @@ def workbook_to_html(path: str) -> str:
     """
 
 
+def _a4_print_fit(raw_w: int, raw_h: int) -> float:
+    """A4 인쇄 가능 영역에 양식 전체가 들어가도록 축소 비율."""
+    # A4 210×297mm, 여백 5mm → 약 200×287mm ≈ 756×1085px @96dpi
+    if raw_w <= 0 or raw_h <= 0:
+        return 1.0
+    fit = min(1.0, 756.0 / float(raw_w), 1085.0 / float(raw_h))
+    # 테두리·서브픽셀 잘림 방지
+    return max(0.25, min(1.0, fit * 0.97))
+
+
 def render_worklog_view_html(
     path: str,
     *,
@@ -1123,11 +1133,9 @@ def render_worklog_view_html(
     """원본 엑셀 양식 HTML (인쇄/보고용)."""
     sheet = workbook_to_html(path)
     raw_w, raw_h = _worklog_sheet_pixel_size(path)
-    # A4 인쇄 가능 영역(약 190×270mm ≈ 718×1020px @96dpi)에 맞춤
-    print_fit = 1.0
-    if raw_w > 0 and raw_h > 0:
-        print_fit = float(min(1.0, 700.0 / float(raw_w), 980.0 / float(raw_h)))
-        print_fit = max(0.35, min(1.0, print_fit))
+    print_fit = _a4_print_fit(raw_w, raw_h)
+    scaled_w = max(1, int(round(raw_w * print_fit)))
+    scaled_h = max(1, int(round(raw_h * print_fit)))
 
     toolbar = ""
     if print_mode:
@@ -1142,14 +1150,23 @@ def render_worklog_view_html(
         </div>
         """
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
-    # zoom은 레이아웃까지 축소. wrap은 auto로 두어 하단이 clip 되지 않게 함.
-    if print_mode or scale >= 1:
-        # 화면에서도 전체 양식이 보이게 인쇄용 fit 스케일 적용
-        s_view = print_fit if print_mode else 1.0
-        scale_css = f"zoom:{s_view};width:fit-content;"
-        scale_css_fallback = (
+    # print_mode: transform+고정 wrap으로 전체가 한 장에 보이게 (zoom만 쓰면 잘리는 경우 있음)
+    if print_mode:
+        s_view = print_fit
+        scale_css = (
             f"transform:scale({s_view});transform-origin:top left;"
-            f"margin-bottom:{(s_view - 1) * raw_h:.1f}px;width:fit-content;"
+            f"width:{raw_w}px;"
+        )
+        scale_css_fallback = ""
+        wrap_h = f"{scaled_h}px"
+        wrap_w = f"{scaled_w}px"
+        wrap_overflow = "hidden"
+        body_overflow = "auto"
+        body_h = "auto"
+    elif scale >= 1:
+        scale_css = "zoom:1;width:fit-content;"
+        scale_css_fallback = (
+            "transform:scale(1);transform-origin:top left;width:fit-content;"
         )
         wrap_h = "auto"
         wrap_w = "100%"
@@ -1170,7 +1187,7 @@ def render_worklog_view_html(
         body_h = f"{frame_h}px"
     if wrap_height is not None:
         wrap_h = wrap_height
-    # auto_print: 새 창/iframe에서 인쇄 대화상자를 1회만 연다 (취소 → 본화면)
+    # auto_print: 인쇄 대화상자 1회 → 취소/완료 시 창 닫기(팝업인 경우)
     auto_script = ""
     if auto_print:
         auto_script = """
@@ -1182,8 +1199,14 @@ def render_worklog_view_html(
               done = true;
               try { window.focus(); window.print(); } catch (e) {}
             }
-            if (document.readyState === 'complete') setTimeout(goPrint, 200);
-            else window.addEventListener('load', function() { setTimeout(goPrint, 200); });
+            function maybeClose() {
+              try { window.close(); } catch (e2) {}
+            }
+            window.addEventListener('afterprint', function() {
+              setTimeout(maybeClose, 120);
+            });
+            if (document.readyState === 'complete') setTimeout(goPrint, 320);
+            else window.addEventListener('load', function() { setTimeout(goPrint, 320); });
           })();
         </script>
         """
@@ -1208,14 +1231,15 @@ def render_worklog_view_html(
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>일일업무일지</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  @page {{ size: A4 portrait; margin: 8mm; }}
+  @page {{ size: A4 portrait; margin: 5mm; }}
   html, body {{
     margin:0; padding:0; background:#fff;
     overflow:{body_overflow} !important;
     height:{body_h};
   }}
-  body {{ padding:6px; box-sizing:border-box; }}
+  body {{ padding:{"0" if print_mode else "6px"}; box-sizing:border-box; }}
   .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }}
   .toolbar button {{
     padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px;
@@ -1228,32 +1252,35 @@ def render_worklog_view_html(
   .wrap {{
     overflow:{wrap_overflow} !important; height:{wrap_h};
     width:{wrap_w}; max-width:100%;
-    border:1px solid #94A3B8; background:#fff;
+    border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff;
     box-sizing:border-box;
   }}
   .sheet-scale {{ {scale_css} }}
+  .wl-sheet {{ border-collapse:collapse; table-layout:fixed; }}
   .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }}
   {fallback_block}
   @media print {{
-    html, body {{ overflow:visible !important; height:auto !important; width:auto !important; }}
+    html, body {{
+      overflow:hidden !important; height:auto !important; width:auto !important;
+      margin:0 !important; padding:0 !important;
+      -webkit-print-color-adjust:exact; print-color-adjust:exact;
+    }}
     .no-print, .toolbar {{ display:none !important; }}
     .wrap {{
-      overflow:visible !important; height:auto !important; width:auto !important;
-      max-width:none !important; border:none !important;
+      overflow:hidden !important;
+      width:{scaled_w}px !important;
+      height:{scaled_h}px !important;
+      max-width:none !important;
+      border:none !important;
+      margin:0 !important;
     }}
     .sheet-scale {{
-      zoom:{print_fit:.4f} !important;
-      transform:none !important;
-      margin-bottom:0 !important;
-      width:fit-content !important;
+      transform:scale({print_fit:.4f}) !important;
+      transform-origin:top left !important;
+      zoom:normal !important;
+      margin:0 !important;
+      width:{raw_w}px !important;
     }}
-    @supports not (zoom: 1) {{
-      .sheet-scale {{
-        transform:scale({print_fit:.4f}) !important;
-        transform-origin:top left !important;
-      }}
-    }}
-    body {{ padding:0; }}
   }}
 </style></head>
 <body>
@@ -1261,7 +1288,6 @@ def render_worklog_view_html(
   <div class="wrap"><div class="sheet-scale">{sheet}</div></div>
   {auto_script}
 </body></html>"""
-
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     """항목 뒤에 띄울 빈 칸 수 (0~10)."""
@@ -3154,8 +3180,8 @@ return previewDone
 def _launch_browser_print_dialog(xlsx_path: str) -> None:
     """본화면을 유지한 채, 브라우저 인쇄 대화상자를 1회만 바로 연다.
 
-    Streamlit 중간 미리보기 패널 없이, 숨은 iframe 문서에 대해 window.print()를
-    호출한다. 취소하면 본화면으로 바로 돌아온다.
+    양식이 잘리지 않도록 충분한 크기의 팝업 창에서 인쇄한다.
+    취소/완료 시 팝업이 닫혀 본화면만 남는다.
     """
     st.session_state["wl_print_panel"] = False
     abs_path = os.path.abspath(xlsx_path)
@@ -3169,9 +3195,42 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     except Exception as e:
         st.error(f"인쇄 문서 준비 실패: {e}")
         return
-    # height=1: 화면은 거의 안 보이지만 인쇄 미리보기에는 전체 양식이 표시됨
-    components.html(doc_html, height=1, scrolling=False)
-    st.caption("인쇄 창이 열렸습니다. 취소하면 본화면으로 돌아옵니다.")
+    payload = json.dumps(doc_html, ensure_ascii=False)
+    # height=1 iframe에서 print 하면 미리보기가 잘리므로, A4 크기 팝업에서 인쇄
+    bridge = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:4px 8px;font:12px/1.4 -apple-system,sans-serif;color:#64748B;background:transparent;">
+<div id="m">인쇄 창을 여는 중…</div>
+<script>
+(function() {{
+  var html = {payload};
+  var w = null;
+  try {{
+    w = window.open(
+      '',
+      'worklog_print',
+      'width=860,height=1200,menubar=no,toolbar=no,location=no,status=no,scrollbars=yes,resizable=yes'
+    );
+  }} catch (e0) {{ w = null; }}
+  if (!w) {{
+    document.getElementById('m').innerHTML =
+      '팝업이 차단되었습니다. 주소창에서 팝업을 허용한 뒤 다시 「프린터 화면」을 눌러 주세요.';
+    return;
+  }}
+  try {{
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    try {{ w.focus(); }} catch (e1) {{}}
+    document.getElementById('m').textContent =
+      '인쇄 창이 열렸습니다. 취소하면 본화면으로 돌아옵니다.';
+  }} catch (e2) {{
+    document.getElementById('m').textContent = '인쇄 창을 열지 못했습니다.';
+  }}
+}})();
+</script>
+</body></html>"""
+    components.html(bridge, height=32, scrolling=False)
 
 
 def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = False) -> None:
