@@ -2151,18 +2151,79 @@ def _apply_entry_lines(
         st.session_state[f"wl_focus_caret_{iso}"] = len(str(chunks[fj] or ""))
 
 
-def _insert_line_after(iso: str, entry_i: int, line_j: int) -> None:
-    """현재 칸 바로 아래 빈 칸을 만들고 포커스 이동."""
+def _build_text_table(
+    n_rows: int,
+    n_cols: int,
+    *,
+    col_width: int = 6,
+    row_height: int = 1,
+    max_line_units: int | None = None,
+) -> list[str]:
+    """내용칸에 넣을 텍스트 표(행·열·칸넓이·칸높이).
+
+    엑셀 표 객체가 아니라 글자 표. 한 줄이 내용칸 폭을 넘지 않게 칸넓이를 줄인다.
+    """
+    n_rows = max(1, min(12, int(n_rows)))
+    n_cols = max(1, min(6, int(n_cols)))
+    col_width = max(2, min(16, int(col_width)))
+    row_height = max(1, min(4, int(row_height)))
+
+    def _hline(sep: str) -> str:
+        return "+" + sep.join("-" * col_width for _ in range(n_cols)) + "+"
+
+    def _empty_row() -> str:
+        return "|" + "|".join(" " * col_width for _ in range(n_cols)) + "|"
+
+    if max_line_units is not None:
+        limit = max(8, int(max_line_units))
+        while col_width > 2 and _display_units(_hline("-")) > limit:
+            col_width -= 1
+
+    top = _hline("-")
+    mid = _hline("-")
+    bot = _hline("-")
+    empty = _empty_row()
+    out: list[str] = [top]
+    for r in range(n_rows):
+        for _ in range(row_height):
+            out.append(empty)
+        if r < n_rows - 1:
+            out.append(mid)
+    out.append(bot)
+    return out
+
+
+def _insert_text_table_into_entry(
+    iso: str,
+    entry_i: int,
+    *,
+    n_rows: int,
+    n_cols: int,
+    col_width: int,
+    row_height: int,
+    max_u: int,
+) -> None:
+    """현재 항목 내용 끝에 텍스트 표를 넣고 포커스를 표 첫 칸으로."""
+    table = _build_text_table(
+        n_rows,
+        n_cols,
+        col_width=col_width,
+        row_height=row_height,
+        max_line_units=max_u,
+    )
     cur = _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)
-    if not cur:
-        cur = [""]
-    while len(cur) <= line_j:
+    while cur and cur[-1] == "":
+        cur.pop()
+    if cur and str(cur[-1]).strip():
         cur.append("")
-    key = _entry_line_key(iso, entry_i, line_j)
-    if key in st.session_state:
-        cur[line_j] = str(st.session_state.get(key) or "")
-    cur.insert(line_j + 1, "")
-    _apply_entry_lines(iso, entry_i, cur, focus_j=line_j + 1)
+    start = len(cur)
+    # 표 첫 데이터 칸(첫 테두리 다음 줄)에 포커스
+    focus_j = start + 1 if table else start
+    cur.extend(table)
+    cur.append("")
+    cur = _split_overflow_parts(cur, max_u)
+    focus_j = min(focus_j, max(len(cur) - 1, 0))
+    _apply_entry_lines(iso, entry_i, cur, focus_j=focus_j, bump_gen=True)
 
 
 def _entry_client_count_key(iso: str, entry_i: int) -> str:
@@ -4344,6 +4405,24 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 if isinstance(ins_cl, (list, tuple)) and len(ins_cl) == 2:
                     _insert_client_after(iso2, int(ins_cl[0]), int(ins_cl[1]))
 
+                ins_tbl = st.session_state.pop(f"wl_do_insert_table_{iso2}", None)
+                if isinstance(ins_tbl, dict):
+                    try:
+                        _insert_text_table_into_entry(
+                            iso2,
+                            int(ins_tbl.get("ei") or 0),
+                            n_rows=int(ins_tbl.get("rows") or 2),
+                            n_cols=int(ins_tbl.get("cols") or 2),
+                            col_width=int(ins_tbl.get("cw") or 6),
+                            row_height=int(ins_tbl.get("rh") or 1),
+                            max_u=_content_line_units(),
+                        )
+                        st.session_state[f"wl_exp_{iso2}_{int(ins_tbl.get('ei') or 0)}"] = (
+                            True
+                        )
+                    except Exception:
+                        pass
+
                 # Enter 커밋(입력값 반영 + 칸 분할) — 반드시 위젯 생성 전
                 ent_req = st.session_state.pop(f"wl_do_enter_cell_{iso2}", None)
                 if isinstance(ent_req, dict):
@@ -4568,6 +4647,100 @@ div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) 
                             _mount_entry_client_editor(iso2, i, _cu)
                         with col_content:
                             _mount_entry_lines_editor(iso2, i, max_u)
+                        with st.expander(
+                            "표 넣기 (칸수·넓이·높이)",
+                            expanded=False,
+                            key=f"wl_tbl_exp_{iso2}_{i}",
+                        ):
+                            for _tk, _tv in (
+                                (f"wl_tbl_rows_{iso2}_{i}", 2),
+                                (f"wl_tbl_cols_{iso2}_{i}", 2),
+                                (f"wl_tbl_cw_{iso2}_{i}", 6),
+                                (f"wl_tbl_rh_{iso2}_{i}", 1),
+                            ):
+                                if _tk not in st.session_state:
+                                    st.session_state[_tk] = _tv
+                            tr, tc, tw, th, tb = st.columns(
+                                [1, 1, 1.1, 1.1, 1.2], gap="small"
+                            )
+                            with tr:
+                                st.number_input(
+                                    "행",
+                                    min_value=1,
+                                    max_value=12,
+                                    step=1,
+                                    key=f"wl_tbl_rows_{iso2}_{i}",
+                                    help="표의 가로 줄(데이터 행) 수",
+                                )
+                            with tc:
+                                st.number_input(
+                                    "열",
+                                    min_value=1,
+                                    max_value=6,
+                                    step=1,
+                                    key=f"wl_tbl_cols_{iso2}_{i}",
+                                    help="표의 세로 칸(열) 수",
+                                )
+                            with tw:
+                                st.number_input(
+                                    "칸넓이",
+                                    min_value=2,
+                                    max_value=16,
+                                    step=1,
+                                    key=f"wl_tbl_cw_{iso2}_{i}",
+                                    help="칸 안 글자 수(내용칸 폭 넘치면 자동 축소)",
+                                )
+                            with th:
+                                st.number_input(
+                                    "칸높이",
+                                    min_value=1,
+                                    max_value=4,
+                                    step=1,
+                                    key=f"wl_tbl_rh_{iso2}_{i}",
+                                    help="칸 안 세로 줄 수",
+                                )
+                            with tb:
+                                st.markdown(
+                                    "<div style='height:1.55rem'></div>",
+                                    unsafe_allow_html=True,
+                                )
+                                if st.button(
+                                    "표 삽입",
+                                    width="stretch",
+                                    key=f"wl_tbl_ins_{iso2}_{i}",
+                                    help="이 항목 내용 끝에 텍스트 표를 넣습니다.",
+                                ):
+                                    st.session_state[f"wl_do_insert_table_{iso2}"] = {
+                                        "ei": i,
+                                        "rows": int(
+                                            st.session_state.get(
+                                                f"wl_tbl_rows_{iso2}_{i}", 2
+                                            )
+                                            or 2
+                                        ),
+                                        "cols": int(
+                                            st.session_state.get(
+                                                f"wl_tbl_cols_{iso2}_{i}", 2
+                                            )
+                                            or 2
+                                        ),
+                                        "cw": int(
+                                            st.session_state.get(
+                                                f"wl_tbl_cw_{iso2}_{i}", 6
+                                            )
+                                            or 6
+                                        ),
+                                        "rh": int(
+                                            st.session_state.get(
+                                                f"wl_tbl_rh_{iso2}_{i}", 1
+                                            )
+                                            or 1
+                                        ),
+                                    }
+                                    _wl_rerun()
+                            st.caption(
+                                "글자 표입니다. 칸 안에 직접 입력하고 「저장」하세요."
+                            )
                         _filled = len(
                             _lines_from_entry_widgets(
                                 iso2, i, keep_trailing_empty=False
