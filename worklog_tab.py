@@ -3180,8 +3180,8 @@ return previewDone
 def _launch_browser_print_dialog(xlsx_path: str) -> None:
     """본화면을 유지한 채, 브라우저 인쇄 대화상자를 1회만 바로 연다.
 
-    양식이 잘리지 않도록 충분한 크기의 팝업 창에서 인쇄한다.
-    취소/완료 시 팝업이 닫혀 본화면만 남는다.
+    window.open 팝업은 Streamlit 재실행 후 차단되는 경우가 많아,
+    화면 밖 풀사이즈 iframe에서 window.print()를 호출한다.
     """
     st.session_state["wl_print_panel"] = False
     abs_path = os.path.abspath(xlsx_path)
@@ -3196,41 +3196,27 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
         st.error(f"인쇄 문서 준비 실패: {e}")
         return
     payload = json.dumps(doc_html, ensure_ascii=False)
-    # height=1 iframe에서 print 하면 미리보기가 잘리므로, A4 크기 팝업에서 인쇄
+    # 860×1200 iframe(화면 밖) — 잘림 없음 + 팝업 차단 없음
     bridge = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
-<body style="margin:0;padding:4px 8px;font:12px/1.4 -apple-system,sans-serif;color:#64748B;background:transparent;">
-<div id="m">인쇄 창을 여는 중…</div>
+<body style="margin:0;padding:0;overflow:hidden;background:transparent;">
+<iframe id="wlpf" title="worklog-print" style="
+  position:fixed;left:-12000px;top:0;width:860px;height:1200px;
+  border:0;opacity:0;pointer-events:none;"></iframe>
 <script>
 (function() {{
   var html = {payload};
-  var w = null;
-  try {{
-    w = window.open(
-      '',
-      'worklog_print',
-      'width=860,height=1200,menubar=no,toolbar=no,location=no,status=no,scrollbars=yes,resizable=yes'
-    );
-  }} catch (e0) {{ w = null; }}
-  if (!w) {{
-    document.getElementById('m').innerHTML =
-      '팝업이 차단되었습니다. 주소창에서 팝업을 허용한 뒤 다시 「프린터 화면」을 눌러 주세요.';
-    return;
-  }}
-  try {{
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
-    try {{ w.focus(); }} catch (e1) {{}}
-    document.getElementById('m').textContent =
-      '인쇄 창이 열렸습니다. 취소하면 본화면으로 돌아옵니다.';
-  }} catch (e2) {{
-    document.getElementById('m').textContent = '인쇄 창을 열지 못했습니다.';
-  }}
+  var f = document.getElementById('wlpf');
+  if (!f) return;
+  var doc = f.contentDocument || (f.contentWindow && f.contentWindow.document);
+  if (!doc) return;
+  doc.open();
+  doc.write(html);
+  doc.close();
 }})();
 </script>
 </body></html>"""
-    components.html(bridge, height=32, scrolling=False)
+    components.html(bridge, height=1, scrolling=False)
 
 
 def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = False) -> None:
@@ -3681,9 +3667,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             st.warning(msg)
                     elif _wl_quiet_ui():
                         st.caption(
-                            "Cloud에서는 왼쪽·하단 원본 양식으로 미리보고, "
-                            "「엑셀 저장본」다운로드 후 맥 Excel에서 ⌘P 로 인쇄 미리보세요. "
-                            "Excel 앱 자동 연결은 맥 로컬 대시보드에서 됩니다."
+                            "Cloud에서는 왼쪽 미리보기와 「프린터 화면」으로 확인하세요. "
+                            "「엑셀 저장본」다운로드 후 맥 Excel에서 ⌘P 로 인쇄할 수도 있습니다."
                         )
                 except Exception as e:
                     st.session_state[_left_excel_key] = False
@@ -4331,48 +4316,4 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             st.error(f"저장 실패: {e}")
 
             _wl_entry_editor()
-
-        # 하단: 원본 엑셀 양식 — 배율 유지, iframe 스크롤 없이 전체 표시
-        st.markdown("---")
-        st.markdown("##### 원본 엑셀 양식")
-        try:
-            form_cells = _cells_from_widgets(selected)
-            form_sig = json.dumps(form_cells, ensure_ascii=False, sort_keys=True)
-            form_scale = 0.42
-            sig_key = f"wl_form_sig_v14_{selected.isoformat()}"
-            html_key = f"wl_form_html_v14_{selected.isoformat()}"
-            h_key = f"wl_form_h_v14_{selected.isoformat()}"
-            if st.session_state.get(sig_key) != form_sig:
-                form_path = _build_preview_file(selected, form_cells)
-                _, frame_h = _scaled_view_frame_size(form_path, form_scale)
-                st.session_state[html_key] = render_worklog_view_html(
-                    form_path,
-                    print_mode=False,
-                    scale=form_scale,
-                )
-                st.session_state[h_key] = int(frame_h)
-                st.session_state[sig_key] = form_sig
-            # 이전 세션 캐시 제거
-            for k in list(st.session_state.keys()):
-                if isinstance(k, str) and (
-                    k.startswith("wl_form_html_v")
-                    or k.startswith("wl_form_sig_v")
-                    or k.startswith("wl_form_h_v")
-                ):
-                    if not (
-                        k.startswith("wl_form_html_v14_")
-                        or k.startswith("wl_form_sig_v14_")
-                        or k.startswith("wl_form_h_v14_")
-                    ):
-                        st.session_state.pop(k, None)
-            components.html(
-                st.session_state.get(html_key) or "",
-                height=max(240, int(st.session_state.get(h_key) or 640)),
-                scrolling=False,
-            )
-        except Exception as e:
-            if _wl_quiet_ui():
-                pass
-            else:
-                st.caption(f"원본 양식 표시 실패: {e}")
     _worklog_main()
