@@ -1131,14 +1131,16 @@ def render_worklog_view_html(
 
     toolbar = ""
     if print_mode:
-        toolbar = f"""
+        scale = 1.0
+        # auto_print: 바로 인쇄 대화상자만 — 중간 툴바 없음
+        if not auto_print:
+            toolbar = f"""
         <div class="toolbar no-print">
           <button type="button" id="wl-print-btn">인쇄하기</button>
           <span class="hint">「인쇄하기」를 누르면 인쇄 창이 열립니다. 대상에서 <b>프린터</b>를 선택하세요.
           취소하면 상단 「본화면으로」로 돌아갑니다.</span>
         </div>
         """
-        scale = 1.0
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
     # zoom은 레이아웃까지 축소. wrap은 auto로 두어 하단이 clip 되지 않게 함.
     if print_mode or scale >= 1:
@@ -1168,44 +1170,34 @@ def render_worklog_view_html(
         body_h = f"{frame_h}px"
     if wrap_height is not None:
         wrap_h = wrap_height
-    # 자동 인쇄 없음 — 사용자가 「인쇄하기」를 누를 때만 인쇄 창
+    # auto_print: 새 창/iframe에서 인쇄 대화상자를 1회만 연다 (취소 → 본화면)
     auto_script = ""
-    if print_mode:
+    if auto_print:
         auto_script = """
         <script>
           (function() {
-            var printing = false;
+            var done = false;
             function goPrint() {
-              if (printing) return;
-              printing = true;
+              if (done) return;
+              done = true;
               try { window.focus(); window.print(); } catch (e) {}
-              setTimeout(function() { printing = false; }, 800);
             }
+            if (document.readyState === 'complete') setTimeout(goPrint, 200);
+            else window.addEventListener('load', function() { setTimeout(goPrint, 200); });
+          })();
+        </script>
+        """
+    elif print_mode:
+        auto_script = """
+        <script>
+          (function() {
             var btn = document.getElementById('wl-print-btn');
-            if (btn) btn.addEventListener('click', goPrint);
-            // 인쇄 창에서 취소/완료 → 부모의 「본화면으로」 자동 클릭
-            function backHome() {
-              try {
-                var doc = window.parent && window.parent.document;
-                if (!doc) return;
-                var nodes = doc.querySelectorAll('button, [kind="primary"]');
-                for (var i = 0; i < nodes.length; i++) {
-                  var t = (nodes[i].innerText || nodes[i].textContent || '').replace(/\\s+/g, '');
-                  if (t.indexOf('본화면으로') !== -1) {
-                    nodes[i].click();
-                    return;
-                  }
-                }
-              } catch (e2) {}
-            }
-            window.addEventListener('afterprint', function() {
-              setTimeout(backHome, 120);
+            if (btn) btn.addEventListener('click', function() {
+              try { window.focus(); window.print(); } catch (e) {}
             });
           })();
         </script>
         """
-    # auto_print 인자는 호환용으로만 유지 (더 이상 자동 window.print 하지 않음)
-    _ = auto_print
     fallback_block = ""
     if scale_css_fallback:
         fallback_block = f"""
@@ -3159,11 +3151,35 @@ return previewDone
             return False, f"Excel 실행 실패: {e2}"
 
 
+def _launch_browser_print_dialog(xlsx_path: str) -> None:
+    """본화면을 유지한 채, 브라우저 인쇄 대화상자를 1회만 바로 연다.
+
+    Streamlit 중간 미리보기 패널 없이, 숨은 iframe 문서에 대해 window.print()를
+    호출한다. 취소하면 본화면으로 바로 돌아온다.
+    """
+    st.session_state["wl_print_panel"] = False
+    abs_path = os.path.abspath(xlsx_path)
+    if not os.path.exists(abs_path):
+        st.error("인쇄용 파일이 없습니다.")
+        return
+    try:
+        doc_html = render_worklog_view_html(
+            abs_path, print_mode=True, auto_print=True, scale=1.0
+        )
+    except Exception as e:
+        st.error(f"인쇄 문서 준비 실패: {e}")
+        return
+    # height=1: 화면은 거의 안 보이지만 인쇄 미리보기에는 전체 양식이 표시됨
+    components.html(doc_html, height=1, scrolling=False)
+    st.caption("인쇄 창이 열렸습니다. 취소하면 본화면으로 돌아옵니다.")
+
+
 def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = False) -> None:
-    """인쇄 미리보기 패널만 연다 (자동 인쇄 팝업 없음)."""
+    """인쇄 미리보기 패널(폴백). 가능하면 _launch_browser_print_dialog 사용."""
     st.session_state["wl_print_panel"] = True
     st.session_state["wl_dialog_preview_path"] = os.path.abspath(xlsx_path)
     st.session_state["wl_print_auto_once"] = False
+    _ = auto
 
 
 def _render_worklog_print_panel() -> bool:
@@ -3270,8 +3286,7 @@ def _worklog_form_preview_dialog() -> None:
             st.caption("엑셀 다운로드를 준비하지 못했습니다.")
     with b2:
         if st.button("프린터 화면", width="stretch", key="wl_dialog_browser_print"):
-            _open_worklog_print_panel(path, auto=True)
-            st.rerun()
+            _launch_browser_print_dialog(path)
     with b3:
         if platform.system() == "Darwin":
             if st.button(
@@ -3561,8 +3576,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             ):
                 try:
                     xlsx_abs = _resolve_print_xlsx()
-                    _open_worklog_print_panel(xlsx_abs, auto=True)
-                    _wl_rerun()
+                    _launch_browser_print_dialog(xlsx_abs)
                 except Exception as e:
                     st.error(f"프린터 화면을 열지 못했습니다: {e}")
 
@@ -3576,13 +3590,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         st.success(msg)
                     else:
                         st.warning(msg)
-                        _open_worklog_print_panel(xlsx_abs, auto=True)
-                        _wl_rerun()
+                        _launch_browser_print_dialog(xlsx_abs)
                 except Exception as e:
                     st.error(f"엑셀 저장본 연결 실패: {e}")
                     try:
-                        _open_worklog_print_panel(_resolve_print_xlsx(), auto=True)
-                        _wl_rerun()
+                        _launch_browser_print_dialog(_resolve_print_xlsx())
                     except Exception:
                         pass
 
