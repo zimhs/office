@@ -4754,43 +4754,20 @@ def format_debt_status_label(overdue_amt, overdue_months):
         return "악성"
     return f"연체 {int(overdue_months)}개월"
 def apply_debt_style_fast(df, highlight_debt=True, payment_terms_map=None):
-    """홀수=파란·짝수=초록 그라디언트(진하기 상한) + 연체 분홍. 구분선 없음."""
+    """평탄 배경(합계=회색) + 연체 분홍만. 금액 그라디언트 없음."""
     styles = np.full(df.shape, "", dtype=object)
     terms_map = payment_terms_map or {}
     clients = df.index.get_level_values("거래처")
     gubuns = df.index.get_level_values("구분")
     u_clients_fast = clients.unique()
     is_total = clients.to_numpy() == "📌 [전체 합계]"
-    family_map = _debt_client_color_family_map(u_clients_fast)
-    client_arr = clients.to_numpy()
 
-    # 1) 기본 흰색 / 합계 회색
+    # 1) 기본 흰색 / 합계 회색 (그라디언트 미적용)
     for r in range(df.shape[0]):
         if is_total[r]:
             styles[r, :] = "background-color:#E2E8F0;font-weight:700;color:#0F172A;"
         else:
             styles[r, :] = "background-color:#FFFFFF;color:#31333F;"
-
-    # 2) 구분별 스케일 + 거래처 홀수/짝수 색 계열
-    if df.shape[1] > 0:
-        arr = df.apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
-        abs_arr = np.abs(arr)
-        abs_arr[is_total, :] = 0.0
-        gubun_arr = gubuns.to_numpy()
-        for gubun_name in pd.unique(gubun_arr):
-            if gubun_name is None or (isinstance(gubun_name, float) and pd.isna(gubun_name)):
-                continue
-            row_mask = (gubun_arr == gubun_name) & (~is_total)
-            if not row_mask.any():
-                continue
-            vmax = _debt_gubun_vmax(abs_arr[row_mask, :])
-            if vmax <= 0:
-                continue
-            rows_idx = np.where(row_mask)[0]
-            for r in rows_idx:
-                fam = family_map.get(client_arr[r], "blue")
-                for c in range(df.shape[1]):
-                    styles[r, c] = _debt_heat_cell_css(arr[r, c], 0.0, vmax, family=fam)
 
     def apply_pink_cell(old_style, pink_bg=DEBT_PINK_SOFT):
         s = re.sub(r"background-color:\s*#[0-9a-fA-F]+;", "", old_style or "")
@@ -5650,14 +5627,9 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
     numeric_cols = list(disp_debt.columns)
     clients = disp_debt.index.get_level_values("거래처")
     u_clients = clients.unique()
-    # 거래처·구분·결제·연체까지 같은 계열 색으로 구분 (홀수=파란, 짝수=초록)
-    family_map = _debt_client_color_family_map(u_clients)
+    # 그라디언트 없음 — 합계만 회색, 나머지는 흰색
     color_map = {
-        client: (
-            "#E2E8F0"
-            if client == "📌 [전체 합계]"
-            else _debt_family_tint(family_map.get(client, "blue"), 0.32)
-        )
+        client: ("#E2E8F0" if client == "📌 [전체 합계]" else "#FFFFFF")
         for client in u_clients
     }
     long_cnt = sum(1 for v in status_map.values() if v == "악성")
@@ -5666,11 +5638,11 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
     if compact:
         headers = ["거래처", "구분"] + numeric_cols + ["결제", "연체"]
         left_w, right_w = [108, 40], [52, 64]
-        hint = "셀 클릭 · 홀수=파란/짝수=초록(거래처~연체 열 포함) · 분홍=연체금액"
+        hint = "셀 클릭 · 분홍=연체금액"
     else:
         headers = ["거래처", "구분"] + numeric_cols + ["결제조건", "연체개월수"]
         left_w, right_w = [160, 68], [110, 120]
-        hint = "셀 클릭 · 홀수=파란 · 짝수=초록 · 거래처/구분/결제조건/연체개월수까지 색 구분 · 분홍=연체금액"
+        hint = "셀 클릭 · 분홍=연체금액"
     cell_font = _debt_num_cell_font(compact=compact)
     body_rows = []
     prev_client = None
@@ -5711,7 +5683,7 @@ def render_debt_interactive_table(disp_debt, highlight_debt, height=700, payment
             else:
                 term, status = "", ""
         else:
-            term_bg = color_map.get(client, _debt_family_tint("blue", 0.32))
+            term_bg = color_map.get(client, "#FFFFFF")
             if gubun == "잔액":
                 term = resolve_payment_term(client, terms_map)
                 status = status_map.get(client, "정상")
@@ -5928,17 +5900,9 @@ def render_debt_month_rank_panel(
             left_w, right_w = [140], [110, 120]
         cell = _debt_num_cell_font(compact=compact)
         label = _debt_label_cell_style  # 거래처명 13px 유지
-        # 연체합계 기준 히트맵 (홀수=파란·짝수=초록 · 진하기 상한)
-        _od_vals = np.array(
-            [float(od_meta.get(c, {}).get("overdue_amt") or 0.0) for c in clients_sorted],
-            dtype=float,
-        )
-        _od_vmax = _debt_gubun_vmax(np.abs(_od_vals))
-        _od_fam = _debt_client_color_family_map(clients_sorted)
         body = []
         for i, client in enumerate(clients_sorted):
-            fam = _od_fam.get(client, "blue")
-            bg = _debt_family_tint(fam, 0.32)
+            bg = "#FFFFFF"
             sep = DEBT_CLIENT_SEP if i > 0 else ""
             meta = od_meta.get(client, {})
             od_amts = meta.get("od_month_amts") or {}
@@ -5970,9 +5934,9 @@ def render_debt_month_rank_panel(
                 f'background-color:{DEBT_PINK_SOFT};color:#9F1239;font-weight:600;{sep}" '
                 f'data-raw="{od_total}">{od_total:,.0f}</td>'
             )
-            heat_bal = _debt_heat_cell_css(cur_bal, 0.0, _od_vmax or 1.0, family=fam)
             tds.append(
-                f'<td class="dash-cell-selectable" style="{cell}{heat_bal}{sep}" '
+                f'<td class="dash-cell-selectable" style="{cell}'
+                f'background-color:#FFFFFF;color:#31333F;{sep}" '
                 f'data-raw="{cur_bal}">{cur_bal:,.0f}</td>'
             )
             term = resolve_payment_term(client, terms_map) or "—"
