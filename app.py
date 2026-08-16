@@ -8224,7 +8224,7 @@ except ImportError:
     st.sidebar.warning("PPT 내보내기: `pip install python-pptx kaleido` 설치 후 이용하세요.")
 except Exception as exc:
     st.sidebar.error(f"PPT 생성 오류: {exc}")
-# on_change="rerun" + .open → 활성 탭만 렌더 (상단 필터 변경 시 전체 탭 재계산 방지)
+# 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
     [
         "📌 영업 종합 요약",
@@ -8237,9 +8237,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
         "🛢️ 통합 탱크 재고",
         "📈 수익성 분석",
         "📝 일일업무일지",
-    ],
-    key="dash_main_tabs",
-    on_change="rerun",
+    ]
 )
 inject_sticky_tabs_script()
 inject_ipad_plotly_controls()
