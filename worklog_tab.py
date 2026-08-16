@@ -146,10 +146,11 @@ export default function (component) {
   const variant = String((data && data.variant) || "content");
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
+  const cellIso = String((data && data.iso) || "");
+  const cellEi = Number((data && data.entry_i) || 0);
   const incoming = Array.isArray(data && data.lines)
     ? data.lines.map((x) => String(x ?? ""))
     : [""];
-
   try {
     root.className = "wl-lines" + (variant === "client" ? " client" : "");
     root.style.maxWidth = cellW + "px";
@@ -265,6 +266,46 @@ export default function (component) {
           ? j + 1 + "칸 거래처 (Enter=다음)"
           : j + 1 + "칸 (빈 칸도 저장 · Enter=다음 칸)";
       input.dataset.idx = String(j);
+      const markActive = () => {
+        if (!cellIso) return;
+        let s = 0;
+        let e = 0;
+        try {
+          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
+          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
+        } catch (e0) {}
+        try {
+          window.__wlActiveWorklogCell = {
+            iso: cellIso,
+            ei: cellEi,
+            lj: j,
+            kind: variant === "client" ? "wl_ent_cl" : "wl_ent_ln",
+            el: input,
+            s: s,
+            e: e,
+          };
+        } catch (e1) {}
+        try {
+          document.dispatchEvent(
+            new CustomEvent("wl-active-cell", {
+              bubbles: true,
+              composed: true,
+              detail: {
+                iso: cellIso,
+                ei: cellEi,
+                lj: j,
+                kind: variant === "client" ? "wl_ent_cl" : "wl_ent_ln",
+                s: s,
+                e: e,
+              },
+            })
+          );
+        } catch (e2) {}
+      };
+      input.addEventListener("focus", markActive);
+      input.addEventListener("keyup", markActive);
+      input.addEventListener("mouseup", markActive);
+      input.addEventListener("click", markActive);
       const commitValue = (mode) => {
         if (inst.rebuilding) return;
         const cur = readDomLines();
@@ -345,7 +386,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v8",
+    "worklog_entry_lines_v10",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -2581,6 +2622,8 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             "cell_w": int(_client_input_width_px()),
             "variant": "client",
             "rev": rev,
+            "iso": iso,
+            "entry_i": int(entry_i),
         },
         default={"lines": lines, "focus": focus_n},
         on_lines_change=_on_clients_change,
@@ -2665,6 +2708,8 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             "cell_w": int(_content_input_width_px()),
             "variant": "content",
             "rev": rev,
+            "iso": iso,
+            "entry_i": int(entry_i),
         },
         default={"lines": lines, "focus": focus_n},
         on_lines_change=_on_lines_change,
@@ -2983,62 +3028,99 @@ _WL_SPECIAL_BAR_CSS = """
 
 _WL_SPECIAL_BAR_JS = r"""
 export default function (component) {
-  const { data, parentElement, setTriggerValue } = component;
+  const { data, parentElement, setTriggerValue, setStateValue } = component;
   const iso = (data && data.iso) || "";
   const chars = (data && data.chars) || [];
   let last = null;
 
+  function emitInsert(payload) {
+    const raw = JSON.stringify(payload);
+    try {
+      if (typeof setStateValue === "function") setStateValue("insert", raw);
+    } catch (e0) {}
+    try {
+      if (typeof setTriggerValue === "function") setTriggerValue("insert", raw);
+    } catch (e1) {}
+  }
+
+  function deepActiveInput() {
+    let el = document.activeElement;
+    try {
+      while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+        el = el.shadowRoot.activeElement;
+      }
+    } catch (e0) {}
+    if (el && String(el.tagName || "").toUpperCase() === "INPUT") return el;
+    return null;
+  }
+
+  function inputFromEvent(e) {
+    if (e && typeof e.composedPath === "function") {
+      try {
+        const path = e.composedPath();
+        for (let i = 0; i < path.length; i++) {
+          const n = path[i];
+          if (n && String(n.tagName || "").toUpperCase() === "INPUT") return n;
+        }
+      } catch (e1) {}
+    }
+    if (e && e.target && String(e.target.tagName || "").toUpperCase() === "INPUT") {
+      return e.target;
+    }
+    return deepActiveInput();
+  }
+
+  function findKeyHost(el) {
+    let n = el;
+    while (n) {
+      if (n.classList) {
+        const cls = Array.prototype.find.call(n.classList || [], (c) => {
+          const s = String(c);
+          return (
+            s.indexOf("st-key-wl_lines_comp_") !== -1 ||
+            s.indexOf("st-key-wl_clients_comp_") !== -1 ||
+            s.indexOf("st-key-wl_ent_ln_") !== -1 ||
+            s.indexOf("st-key-wl_ent_cl_") !== -1
+          );
+        });
+        if (cls) return { node: n, cls: String(cls) };
+      }
+      try {
+        const root = n.getRootNode && n.getRootNode();
+        if (root && root.host) {
+          n = root.host;
+          continue;
+        }
+      } catch (e2) {}
+      n = n.parentElement || null;
+    }
+    return null;
+  }
+
   function resolveKey(t) {
     if (!t || String(t.tagName || "").toUpperCase() !== "INPUT") return null;
+    const host = findKeyHost(t);
+    if (!host) return null;
+    const s = host.cls;
 
-    // CCv2 내용/거래처 편집기 (wl_lines_comp / wl_clients_comp)
-    const comp = t.closest
-      ? t.closest(
-          '[class*="st-key-wl_lines_comp_"],[class*="st-key-wl_clients_comp_"]'
-        )
-      : null;
-    if (comp) {
-      const cls = Array.prototype.find.call(comp.classList || [], (c) => {
-        const s = String(c);
-        return (
-          s.indexOf("st-key-wl_lines_comp_") !== -1 ||
-          s.indexOf("st-key-wl_clients_comp_") !== -1
-        );
-      });
-      if (cls) {
-        const s = String(cls);
-        const isClient = s.indexOf("wl_clients_comp_") !== -1;
-        const m = /wl_(?:lines|clients)_comp_(\d{4}-\d{2}-\d{2})_(\d+)/.exec(s);
-        if (m && m[1] === iso) {
-          let lj = 0;
-          try {
-            lj = parseInt(t.getAttribute("data-idx") || "0", 10) || 0;
-          } catch (e0) {
-            lj = 0;
-          }
-          const kind = isClient ? "wl_ent_cl" : "wl_ent_ln";
-          return {
-            key: kind + "_" + m[1] + "_" + m[2] + "_" + lj,
-            el: t,
-          };
-        }
+    if (
+      s.indexOf("wl_lines_comp_") !== -1 ||
+      s.indexOf("wl_clients_comp_") !== -1
+    ) {
+      const isClient = s.indexOf("wl_clients_comp_") !== -1;
+      const m = /wl_(?:lines|clients)_comp_(\d{4}-\d{2}-\d{2})_(\d+)/.exec(s);
+      if (!m || m[1] !== iso) return null;
+      let lj = 0;
+      try {
+        lj = parseInt(t.getAttribute("data-idx") || "0", 10) || 0;
+      } catch (e3) {
+        lj = 0;
       }
+      const kind = isClient ? "wl_ent_cl" : "wl_ent_ln";
+      return { key: kind + "_" + m[1] + "_" + m[2] + "_" + lj, el: t };
     }
 
-    // 레거시 text_input 래퍼
-    const wrap = t.closest
-      ? t.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]')
-      : null;
-    if (!wrap) return null;
-    const cls2 = Array.prototype.find.call(wrap.classList || [], (c) => {
-      const s = String(c);
-      return (
-        s.indexOf("st-key-wl_ent_ln_") !== -1 ||
-        s.indexOf("st-key-wl_ent_cl_") !== -1
-      );
-    });
-    if (!cls2) return null;
-    const key = String(cls2).replace(/^st-key-/, "");
+    const key = s.replace(/^st-key-/, "");
     const m2 = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(
       key
     );
@@ -3046,38 +3128,58 @@ export default function (component) {
     return { key: key, el: t };
   }
 
-  function remember(t) {
-    const info = resolveKey(t);
+  function rememberFromEvent(e) {
+    const inp = inputFromEvent(e);
+    const info = resolveKey(inp);
     if (!info) return;
     let s = 0;
-    let e = 0;
+    let epos = 0;
     try {
       s = typeof info.el.selectionStart === "number" ? info.el.selectionStart : 0;
-      e = typeof info.el.selectionEnd === "number" ? info.el.selectionEnd : s;
+      epos = typeof info.el.selectionEnd === "number" ? info.el.selectionEnd : s;
     } catch (err) {}
-    last = { key: info.key, el: info.el, s: s, e: e };
+    last = { key: info.key, el: info.el, s: s, e: epos };
+  }
+
+  function fromWindowCell() {
+    try {
+      const c = window.__wlActiveWorklogCell;
+      if (!c || String(c.iso) !== String(iso)) return null;
+      const kind = String(c.kind || "wl_ent_ln");
+      const key = kind + "_" + c.iso + "_" + c.ei + "_" + c.lj;
+      return {
+        key: key,
+        el: c.el || null,
+        s: typeof c.s === "number" ? c.s : 0,
+        e: typeof c.e === "number" ? c.e : typeof c.s === "number" ? c.s : 0,
+      };
+    } catch (e0) {
+      return null;
+    }
   }
 
   function insertChar(ch) {
-    const t = document.activeElement;
-    const live = resolveKey(t);
-    const src = live || last;
+    const liveInp = deepActiveInput();
+    const live = resolveKey(liveInp);
+    const win = fromWindowCell();
+    const src = live || last || win;
     if (!src || !src.key) {
-      try {
-        setTriggerValue("insert", JSON.stringify({ miss: true, ch: ch, t: Date.now() }));
-      } catch (err) {}
+      emitInsert({ miss: true, ch: ch, t: Date.now() });
       return;
     }
-    const el = live ? live.el : src.el;
+    const el = (live && live.el) || src.el || (win && win.el) || null;
     let s = 0;
     let e = 0;
     try {
-      if (el && typeof el.selectionStart === "number") {
+      if (live && el && typeof el.selectionStart === "number") {
         s = el.selectionStart;
         e = typeof el.selectionEnd === "number" ? el.selectionEnd : s;
-      } else if (last && last.key === src.key) {
-        s = last.s;
-        e = last.e;
+      } else if (typeof src.s === "number") {
+        s = src.s;
+        e = typeof src.e === "number" ? src.e : src.s;
+      } else if (el && typeof el.selectionStart === "number") {
+        s = el.selectionStart;
+        e = typeof el.selectionEnd === "number" ? el.selectionEnd : s;
       } else {
         s = e = String((el && el.value) || "").length;
       }
@@ -3085,20 +3187,45 @@ export default function (component) {
       s = e = String((el && el.value) || "").length;
     }
     const cur = String((el && el.value) || "");
-    const next = cur.slice(0, s) + ch + cur.slice(e);
-    const pos = s + ch.length;
+    // el이 없거나 비어 보이면 서버가 현재 칸 값에 ch를 끼워 넣음
+    const hasDom = !!(el && el.isConnected !== false);
+    const next = hasDom ? cur.slice(0, s) + ch + cur.slice(e) : "";
+    const pos = hasDom ? s + String(ch).length : s + String(ch).length;
     try {
-      if (el) {
+      if (hasDom && el) {
         el.value = next;
-        el.setSelectionRange(pos, pos);
+        try {
+          el.focus({ preventScroll: true });
+        } catch (e4) {
+          try {
+            el.focus();
+          } catch (e5) {}
+        }
+        try {
+          el.setSelectionRange(pos, pos);
+        } catch (e6) {}
+        try {
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        } catch (e7) {}
+        try {
+          window.__wlActiveWorklogCell = Object.assign(
+            {},
+            window.__wlActiveWorklogCell || {},
+            { el: el, s: pos, e: pos }
+          );
+        } catch (e8) {}
       }
     } catch (err3) {}
-    try {
-      setTriggerValue(
-        "insert",
-        JSON.stringify({ key: src.key, v: next, s: pos, ch: ch, t: Date.now() })
-      );
-    } catch (err4) {}
+    last = { key: src.key, el: el, s: pos, e: pos };
+    emitInsert({
+      key: src.key,
+      v: hasDom ? next : "",
+      s: hasDom ? pos : s,
+      e: hasDom ? pos : e,
+      ch: ch,
+      server_insert: !hasDom,
+      t: Date.now(),
+    });
   }
 
   let root = parentElement.querySelector(".wl-sp");
@@ -3115,7 +3242,18 @@ export default function (component) {
       btn.type = "button";
       btn.textContent = ch;
       btn.title = ch + " 삽입";
-      btn.addEventListener("pointerdown", function (ev) {
+      btn.tabIndex = -1;
+      btn.addEventListener("mousedown", function (ev) {
+        // 포커스가 버튼으로 넘어가기 전에 커서 위치를 확정
+        rememberFromEvent(ev);
+        try {
+          const w = fromWindowCell();
+          if (w) last = w;
+        } catch (e9) {}
+        ev.preventDefault();
+        ev.stopPropagation();
+      });
+      btn.addEventListener("click", function (ev) {
         ev.preventDefault();
         ev.stopPropagation();
         insertChar(ch);
@@ -3124,30 +3262,51 @@ export default function (component) {
     }
   }
 
-  const onFocusIn = (e) => remember(e.target);
+  const onFocusIn = (e) => rememberFromEvent(e);
   const onSel = (e) => {
     if (e && (e.isComposing || e.keyCode === 229)) return;
-    remember(e.target || document.activeElement);
+    rememberFromEvent(e);
+  };
+  const onActiveCell = (e) => {
+    const d = e && e.detail;
+    if (!d || String(d.iso) !== String(iso)) return;
+    last = {
+      key: String(d.kind || "wl_ent_ln") + "_" + d.iso + "_" + d.ei + "_" + d.lj,
+      el: null,
+      s: typeof d.s === "number" ? d.s : 0,
+      e: typeof d.e === "number" ? d.e : typeof d.s === "number" ? d.s : 0,
+    };
+    try {
+      window.__wlActiveWorklogCell = {
+        iso: d.iso,
+        ei: d.ei,
+        lj: d.lj,
+        kind: d.kind || "wl_ent_ln",
+        el: (window.__wlActiveWorklogCell && window.__wlActiveWorklogCell.el) || null,
+        s: last.s,
+        e: last.e,
+      };
+    } catch (e10) {}
   };
   document.addEventListener("focusin", onFocusIn, true);
   document.addEventListener("keyup", onSel, true);
   document.addEventListener("mouseup", onSel, true);
+  document.addEventListener("wl-active-cell", onActiveCell, true);
   document.addEventListener("selectionchange", function () {
-    try {
-      remember(document.activeElement);
-    } catch (e1) {}
+    rememberFromEvent({ target: deepActiveInput() });
   });
 
   return () => {
     document.removeEventListener("focusin", onFocusIn, true);
     document.removeEventListener("keyup", onSel, true);
     document.removeEventListener("mouseup", onSel, true);
+    document.removeEventListener("wl-active-cell", onActiveCell, true);
   };
 }
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v3",
+    "worklog_special_bar_v5",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -3157,12 +3316,7 @@ _WL_SPECIAL_BAR = st.components.v2.component(
 def _render_worklog_special_chars(iso: str) -> None:
     """자주 쓰는 특수문자 — HTML 버튼, 커서 위치에 삽입."""
 
-    def _on_insert():
-        stt = st.session_state.get(f"wl_sp_bar_{iso}") or {}
-        if isinstance(stt, dict):
-            raw = stt.get("insert")
-        else:
-            raw = getattr(stt, "insert", None)
+    def _consume_insert(raw: object) -> None:
         if not raw:
             return
         try:
@@ -3171,36 +3325,75 @@ def _render_worklog_special_chars(iso: str) -> None:
             pos = int(obj.get("s") or 0)
         except Exception:
             return
-        if obj.get("miss"):
-            st.session_state["wl_special_msg"] = "칸을 먼저 클릭한 뒤 특수문자를 누르세요"
-            return
+        ch = str(obj.get("ch") or "")
+        if obj.get("miss") or not fk:
+            meta = st.session_state.get(f"wl_active_cell_meta_{iso}")
+            if isinstance(meta, dict) and meta.get("kind") and ch:
+                fk = (
+                    f"{meta.get('kind')}_{iso}_"
+                    f"{int(meta.get('ei') or 0)}_{int(meta.get('lj') or 0)}"
+                )
+                try:
+                    pos = int(meta.get("s") or 0)
+                except (TypeError, ValueError):
+                    pos = 0
+                obj = {
+                    "key": fk,
+                    "v": "",
+                    "s": pos,
+                    "ch": ch,
+                    "server_insert": True,
+                    "t": obj.get("t") if isinstance(obj, dict) else None,
+                }
+            else:
+                st.session_state["wl_special_msg"] = (
+                    "칸을 먼저 클릭한 뒤 특수문자를 누르세요"
+                )
+                return
         if not (fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_")):
             return
-        sig = f"{fk}\0{obj.get('v')}\0{pos}\0{obj.get('t')}"
+        v_out = (
+            ""
+            if obj.get("server_insert")
+            else str(obj.get("v") if obj.get("v") is not None else "")
+        )
+        sig = f"{fk}\0{v_out}\0{obj.get('ch')}\0{pos}\0{obj.get('t')}"
         done_k = f"wl_special_done_{iso}"
         if st.session_state.get(done_k) == sig:
             return
         st.session_state[done_k] = sig
         st.session_state[f"wl_do_special_{iso}"] = {
             "key": fk,
-            "v": str(obj.get("v") if obj.get("v") is not None else ""),
+            "v": v_out,
             "s": pos,
             "ch": str(obj.get("ch") or ""),
         }
 
-    _WL_SPECIAL_BAR(
+    def _on_insert() -> None:
+        # 콜백 시점 session_state에 trigger가 안 실일 수 있어 result 경로를 우선한다.
+        stt = st.session_state.get(f"wl_sp_bar_{iso}") or {}
+        if isinstance(stt, dict):
+            _consume_insert(stt.get("insert"))
+        else:
+            _consume_insert(getattr(stt, "insert", None))
+
+    result = _WL_SPECIAL_BAR(
         key=f"wl_sp_bar_{iso}",
         data={"iso": iso, "chars": list(_WL_SPECIAL_CHARS)},
         on_insert_change=_on_insert,
         width="stretch",
         height=36,
     )
+    # ComponentResult.insert — trigger는 여기서 확실히 보인다
+    _consume_insert(getattr(result, "insert", None))
+
 
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
     """위젯 생성 전: 특수문자가 반영된 칸 값을 심고 포커스를 되돌린다."""
     val = str(val or "")
-    pos = max(0, min(int(pos or 0), len(val)))
+    ch = str(ch or "")
+    pos = max(0, int(pos or 0))
     m = re.match(
         r"^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)",
         fk,
@@ -3212,13 +3405,31 @@ def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> Non
         cur = _lines_from_entry_widgets(iso, ei, keep_trailing_empty=True)
         while len(cur) <= lj:
             cur.append("")
-        cur[lj] = val
+        if val:
+            pos = max(0, min(pos, len(val)))
+            cur[lj] = val
+        elif ch:
+            base = str(cur[lj] or "")
+            s = max(0, min(pos, len(base)))
+            cur[lj] = base[:s] + ch + base[s:]
+            pos = s + len(ch)
+        else:
+            return
         _apply_entry_lines(iso, ei, cur, focus_j=lj, bump_gen=True)
     else:
         cur = _clients_from_widgets(iso, ei, keep_trailing_empty=True)
         while len(cur) <= lj:
             cur.append("")
-        cur[lj] = val
+        if val:
+            pos = max(0, min(pos, len(val)))
+            cur[lj] = val
+        elif ch:
+            base = str(cur[lj] or "")
+            s = max(0, min(pos, len(base)))
+            cur[lj] = base[:s] + ch + base[s:]
+            pos = s + len(ch)
+        else:
+            return
         _apply_entry_clients(iso, ei, cur, focus_j=lj)
     st.session_state["wl_active_cell_key"] = st.session_state.get(
         f"wl_focus_ln_{iso}"
@@ -5077,6 +5288,8 @@ div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) 
                     height=1,
                 )
                 if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
+                    _wl_rerun()
+                if st.session_state.get(f"wl_do_special_{iso2}"):
                     _wl_rerun()
                 ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
                 if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
