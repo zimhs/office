@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import calendar
-import base64
 import html
 import json
 import os
@@ -1115,11 +1114,13 @@ def workbook_to_html(path: str) -> str:
 
 
 def _a4_print_fit(raw_w: int, raw_h: int) -> float:
-    """화면 미리보기용 축소 비율 (인쇄는 mm 고정폭 사용)."""
+    """A4 인쇄 가능 영역에 양식 전체가 들어가도록 축소 비율 (여유 포함)."""
+    # 프린터/브라우저 여백을 넉넉히 보고 보수적으로 맞춤
+    # A4 210×297mm, 실사용 ~185×270mm ≈ 700×1020px @96dpi
     if raw_w <= 0 or raw_h <= 0:
         return 1.0
-    fit = min(1.0, 680.0 / float(raw_w), 980.0 / float(raw_h))
-    return max(0.2, min(1.0, fit * 0.90))
+    fit = min(1.0, 640.0 / float(raw_w), 960.0 / float(raw_h))
+    return max(0.2, min(1.0, fit * 0.88))
 
 
 def render_worklog_view_html(
@@ -1130,10 +1131,7 @@ def render_worklog_view_html(
     auto_print: bool = False,
     wrap_height: str | None = None,
 ) -> str:
-    """원본 엑셀 양식 HTML (인쇄/보고용).
-
-    인쇄 시 고정 px 폭이 A4를 넘지 않도록, @media print에서 표를 190mm로 강제한다.
-    """
+    """원본 엑셀 양식 HTML (인쇄/보고용)."""
     sheet = workbook_to_html(path)
     raw_w, raw_h = _worklog_sheet_pixel_size(path)
     print_fit = _a4_print_fit(raw_w, raw_h)
@@ -1154,12 +1152,13 @@ def render_worklog_view_html(
             toolbar = """
         <div class="toolbar no-print">
           <button type="button" id="wl-print-btn">인쇄하기</button>
-          <span class="hint">「인쇄하기」를 누르면 인쇄 창이 열립니다.</span>
+          <span class="hint">「인쇄하기」를 누르면 인쇄 창이 열립니다. 대상에서 <b>프린터</b>를 선택하세요.</span>
         </div>
         """
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
+    # print_mode: 화면용 초기 스케일. 인쇄 직전 JS가 실제 DOM 크기로 다시 맞춤.
     if print_mode:
-        # 화면용만 zoom. 인쇄는 아래 @media print(mm)가 담당.
+        # zoom이 인쇄 레이아웃 폭을 줄여 선(테두리) 잘림을 줄임
         scale_css = f"zoom:{print_fit:.4f};width:{raw_w}px;max-width:none;"
         scale_css_fallback = (
             f"transform:scale({print_fit:.4f});transform-origin:top left;"
@@ -1195,25 +1194,33 @@ def render_worklog_view_html(
     if wrap_height is not None:
         wrap_h = wrap_height
 
-    # 인쇄: 폭은 CSS(190mm)로 맞춘 뒤, 높이만 넘치면 zoom으로 한 번 더 축소
-    fit_print_js = """
-        function wlFitToA4() {
+    # 인쇄 직전: 실제 렌더 크기를 재서 A4에 맞춤 (추정값보다 HTML이 클 때 잘림 방지)
+    fit_print_js = f"""
+        function wlFitToA4() {{
           var sheet = document.querySelector('.sheet-scale');
           var wrap = document.querySelector('.wrap');
           var table = document.querySelector('.wl-sheet');
           if (!sheet || !wrap || !table) return;
           sheet.style.transform = 'none';
           sheet.style.zoom = '1';
-          wrap.style.zoom = '1';
-          // 인쇄 레이아웃이 적용된 뒤 높이 초과 시만 축소
-          var h = Math.max(table.getBoundingClientRect().height, table.scrollHeight, 1);
-          var maxH = 1000; // ~ A4 본문 높이 @96dpi (여백 10mm)
-          if (h > maxH) {
-            var s = Math.max(0.55, (maxH / h) * 0.97);
-            sheet.style.zoom = String(s);
-          }
-        }
-        try { window.wlFitToA4 = wlFitToA4; } catch (eBind) {}
+          wrap.style.maxWidth = 'none';
+          wrap.style.overflow = 'visible';
+          wrap.style.width = 'auto';
+          wrap.style.height = 'auto';
+          table.style.width = '{raw_w}px';
+          var w = Math.max(table.scrollWidth, table.offsetWidth, 1);
+          var h = Math.max(table.scrollHeight, table.offsetHeight, 1);
+          var maxW = 620;
+          var maxH = 920;
+          var s = Math.min(1, maxW / w, maxH / h) * 0.92;
+          if (s < 0.25) s = 0.25;
+          sheet.style.zoom = String(s);
+          wrap.style.width = Math.ceil(w * s) + 'px';
+          wrap.style.height = Math.ceil(h * s) + 'px';
+          wrap.style.overflow = 'hidden';
+          wrap.style.margin = '0 auto';
+        }}
+        try {{ window.wlFitToA4 = wlFitToA4; }} catch (e0) {{}}
     """
 
     auto_script = ""
@@ -1224,9 +1231,7 @@ def render_worklog_view_html(
             {fit_print_js}
             function goPrint() {{
               try {{ wlFitToA4(); }} catch (e0) {{}}
-              setTimeout(function() {{
-                try {{ window.focus(); window.print(); }} catch (e) {{}}
-              }}, 60);
+              try {{ window.focus(); window.print(); }} catch (e) {{}}
             }}
             var btn = document.getElementById('wl-print-btn');
             if (btn) btn.addEventListener('click', function(ev) {{
@@ -1236,8 +1241,8 @@ def render_worklog_view_html(
             window.addEventListener('beforeprint', function() {{
               try {{ wlFitToA4(); }} catch (e1) {{}}
             }});
-            if (document.readyState === 'complete') setTimeout(goPrint, 450);
-            else window.addEventListener('load', function() {{ setTimeout(goPrint, 450); }});
+            if (document.readyState === 'complete') setTimeout(goPrint, 350);
+            else window.addEventListener('load', function() {{ setTimeout(goPrint, 350); }});
           }})();
         </script>
         """
@@ -1250,9 +1255,7 @@ def render_worklog_view_html(
             if (btn) btn.addEventListener('click', function(ev) {{
               ev.preventDefault();
               try {{ wlFitToA4(); }} catch (e0) {{}}
-              setTimeout(function() {{
-                try {{ window.focus(); window.print(); }} catch (e) {{}}
-              }}, 60);
+              try {{ window.focus(); window.print(); }} catch (e) {{}}
             }});
             window.addEventListener('beforeprint', function() {{
               try {{ wlFitToA4(); }} catch (e1) {{}}
@@ -1267,13 +1270,12 @@ def render_worklog_view_html(
     .sheet-scale {{ {scale_css_fallback} }}
   }}
 """
-    wrap_max = "none" if print_mode else "100%"
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>일일업무일지</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  @page {{ size: A4 portrait; margin: 10mm; }}
+  @page {{ size: A4 portrait; margin: 12mm; }}
   html, body {{
     margin:0; padding:0; background:#fff;
     overflow:{body_overflow} !important;
@@ -1285,57 +1287,36 @@ def render_worklog_view_html(
     padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px;
     background:#1E293B; color:#fff; cursor:pointer;
   }}
+  .toolbar button.secondary {{
+    background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default;
+  }}
   .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }}
   .wrap {{
     overflow:{wrap_overflow} !important; height:{wrap_h};
-    width:{wrap_w}; max-width:{wrap_max};
+    width:{wrap_w}; max-width:{"none" if print_mode else "100%"};
     border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff;
     box-sizing:border-box;
   }}
   .sheet-scale {{ {scale_css} }}
-  .wl-sheet {{
-    border-collapse:collapse; table-layout:fixed;
-    width:{raw_w}px !important; max-width:none !important;
-  }}
+  .wl-sheet {{ border-collapse:collapse; table-layout:fixed; }}
   .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }}
   {fallback_block}
   @media print {{
     html, body {{
-      width: 190mm !important;
-      max-width: 190mm !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      overflow: visible !important;
-      height: auto !important;
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
+      overflow:visible !important; height:auto !important; width:auto !important;
+      margin:0 !important; padding:0 !important;
+      -webkit-print-color-adjust:exact; print-color-adjust:exact;
     }}
     .no-print, .toolbar {{ display:none !important; }}
-    .wrap, .sheet-scale {{
-      width: 190mm !important;
-      max-width: 190mm !important;
-      height: auto !important;
-      overflow: visible !important;
-      margin: 0 !important;
-      border: none !important;
-      transform: none !important;
-      zoom: 1 !important;
-      page-break-inside: avoid;
+    .wrap {{
+      overflow:hidden !important;
+      max-width:none !important;
+      border:none !important;
+      margin:0 auto !important;
     }}
-    .wl-sheet {{
-      width: 190mm !important;
-      max-width: 190mm !important;
-      table-layout: fixed !important;
-    }}
-    /* 고정 px 열/칸 폭이 페이지를 넘지 않게 전부 해제 → 비율로 재분배 */
-    .wl-sheet col {{
-      width: auto !important;
-    }}
-    .wl-sheet td {{
-      width: auto !important;
-      min-width: 0 !important;
-      max-width: none !important;
-      overflow: hidden !important;
+    .sheet-scale {{
+      transform:none !important;
+      margin:0 !important;
     }}
   }}
 </style></head>
@@ -1344,7 +1325,6 @@ def render_worklog_view_html(
   <div class="wrap"><div class="sheet-scale">{sheet}</div></div>
   {auto_script}
 </body></html>"""
-
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     """항목 뒤에 띄울 빈 칸 수 (0~10)."""
@@ -3231,8 +3211,8 @@ return previewDone
 def _launch_browser_print_dialog(xlsx_path: str) -> None:
     """본화면을 유지한 채, 브라우저 인쇄 대화상자를 연다.
 
-    좁은 Streamlit 칸(height=56)에서 바로 print 하면 우측이 잘리므로,
-    A4 크기 iframe에 문서를 넣고 거기서 인쇄한다.
+    문서를 components.html에 직접 넣고 window.print() 호출.
+    (중첩 iframe/190mm 강제 방식은 선 잘림·2페이지 문제를 일으켜 되돌림)
     """
     st.session_state["wl_print_panel"] = False
     abs_path = os.path.abspath(xlsx_path)
@@ -3248,45 +3228,15 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
         return
     nonce = int(st.session_state.get("wl_print_n", 0)) + 1
     st.session_state["wl_print_n"] = nonce
-    stamped = doc_html.replace("<title>", f"<title><!--wl-print-{nonce}-->", 1)
-    b64 = base64.b64encode(stamped.encode("utf-8")).decode("ascii")
-    bridge = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head>
-<body style="margin:0;padding:6px 8px;font:12px/1.4 -apple-system,sans-serif;color:#475569;background:#F8FAFC;">
-<button type="button" id="manual" style="
-  padding:8px 14px;border:1px solid #334155;border-radius:6px;
-  background:#1E293B;color:#fff;cursor:pointer;font-size:13px;">인쇄 창 열기</button>
-<span id="msg" style="margin-left:8px;">인쇄 준비 중…</span>
-<iframe id="pf" title="print" style="
-  position:fixed;left:-14000px;top:0;width:820px;height:1160px;
-  border:0;opacity:0;pointer-events:none;"></iframe>
-<script>
-(function() {{
-  var b64 = "{b64}";
-  var bin = atob(b64);
-  var bytes = new Uint8Array(bin.length);
-  for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  var html = new TextDecoder("utf-8").decode(bytes);
-  var f = document.getElementById("pf");
-  var doc = f.contentDocument || f.contentWindow.document;
-  doc.open();
-  doc.write(html);
-  doc.close();
-  function go() {{
-    try {{
-      if (f.contentWindow && f.contentWindow.wlFitToA4) f.contentWindow.wlFitToA4();
-    }} catch (e0) {{}}
-    try {{ f.contentWindow.focus(); f.contentWindow.print(); }} catch (e1) {{}}
-  }}
-  document.getElementById("manual").onclick = function(ev) {{
-    ev.preventDefault();
-    go();
-  }};
-  document.getElementById("msg").textContent = "인쇄 창이 열립니다. 안 뜨면 「인쇄 창 열기」를 누르세요.";
-}})();
-</script>
-</body></html>"""
-    components.html(bridge, height=48, scrolling=False)
+    # title HTML 주석은 인쇄 머리글에 노출되므로 body 속성만 사용
+    stamped = doc_html.replace(
+        "<body>",
+        f'<body data-wl-print="{nonce}">',
+        1,
+    )
+    components.html(stamped, height=52, scrolling=False)
+    st.caption("인쇄 창이 열립니다. 안 뜨면 위 「인쇄 창 열기」를 눌러 주세요.")
+
 
 
 def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = False) -> None:
