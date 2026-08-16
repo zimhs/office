@@ -1115,7 +1115,7 @@ def workbook_to_html(path: str) -> str:
 
 
 def _a4_print_fit(raw_w: int, raw_h: int) -> float:
-    """A4 인쇄 가능 영역에 양식 전체가 들어가도록 축소 비율 (여유 포함)."""
+    """화면 미리보기용 축소 비율 (인쇄는 mm 고정폭 사용)."""
     if raw_w <= 0 or raw_h <= 0:
         return 1.0
     fit = min(1.0, 680.0 / float(raw_w), 980.0 / float(raw_h))
@@ -1130,7 +1130,10 @@ def render_worklog_view_html(
     auto_print: bool = False,
     wrap_height: str | None = None,
 ) -> str:
-    """원본 엑셀 양식 HTML (인쇄/보고용)."""
+    """원본 엑셀 양식 HTML (인쇄/보고용).
+
+    인쇄 시 고정 px 폭이 A4를 넘지 않도록, @media print에서 표를 190mm로 강제한다.
+    """
     sheet = workbook_to_html(path)
     raw_w, raw_h = _worklog_sheet_pixel_size(path)
     print_fit = _a4_print_fit(raw_w, raw_h)
@@ -1155,8 +1158,8 @@ def render_worklog_view_html(
         </div>
         """
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
-    # print: Chrome 인쇄는 transform보다 zoom이 레이아웃 폭을 줄여 우측 잘림을 막음
     if print_mode:
+        # 화면용만 zoom. 인쇄는 아래 @media print(mm)가 담당.
         scale_css = f"zoom:{print_fit:.4f};width:{raw_w}px;max-width:none;"
         scale_css_fallback = (
             f"transform:scale({print_fit:.4f});transform-origin:top left;"
@@ -1192,35 +1195,25 @@ def render_worklog_view_html(
     if wrap_height is not None:
         wrap_h = wrap_height
 
-    fit_print_js = f"""
-        function wlFitToA4() {{
+    # 인쇄: 폭은 CSS(190mm)로 맞춘 뒤, 높이만 넘치면 zoom으로 한 번 더 축소
+    fit_print_js = """
+        function wlFitToA4() {
           var sheet = document.querySelector('.sheet-scale');
           var wrap = document.querySelector('.wrap');
           var table = document.querySelector('.wl-sheet');
           if (!sheet || !wrap || !table) return;
           sheet.style.transform = 'none';
           sheet.style.zoom = '1';
-          sheet.style.width = '{raw_w}px';
-          sheet.style.maxWidth = 'none';
-          wrap.style.maxWidth = 'none';
-          wrap.style.overflow = 'visible';
-          wrap.style.width = 'auto';
-          wrap.style.height = 'auto';
-          table.style.width = '{raw_w}px';
-          table.style.maxWidth = 'none';
-          var w = Math.max(table.scrollWidth, table.offsetWidth, sheet.scrollWidth, 1);
-          var h = Math.max(table.scrollHeight, table.offsetHeight, sheet.scrollHeight, 1);
-          var maxW = 660;
-          var maxH = 960;
-          var s = Math.min(1, maxW / w, maxH / h) * 0.94;
-          if (s < 0.2) s = 0.2;
-          sheet.style.zoom = String(s);
-          wrap.style.width = Math.ceil(w * s) + 'px';
-          wrap.style.height = Math.ceil(h * s) + 'px';
-          wrap.style.overflow = 'hidden';
-          wrap.style.margin = '0 auto';
-        }}
-        try {{ window.wlFitToA4 = wlFitToA4; }} catch (eBind) {{}}
+          wrap.style.zoom = '1';
+          // 인쇄 레이아웃이 적용된 뒤 높이 초과 시만 축소
+          var h = Math.max(table.getBoundingClientRect().height, table.scrollHeight, 1);
+          var maxH = 1000; // ~ A4 본문 높이 @96dpi (여백 10mm)
+          if (h > maxH) {
+            var s = Math.max(0.55, (maxH / h) * 0.97);
+            sheet.style.zoom = String(s);
+          }
+        }
+        try { window.wlFitToA4 = wlFitToA4; } catch (eBind) {}
     """
 
     auto_script = ""
@@ -1233,7 +1226,7 @@ def render_worklog_view_html(
               try {{ wlFitToA4(); }} catch (e0) {{}}
               setTimeout(function() {{
                 try {{ window.focus(); window.print(); }} catch (e) {{}}
-              }}, 40);
+              }}, 60);
             }}
             var btn = document.getElementById('wl-print-btn');
             if (btn) btn.addEventListener('click', function(ev) {{
@@ -1243,8 +1236,8 @@ def render_worklog_view_html(
             window.addEventListener('beforeprint', function() {{
               try {{ wlFitToA4(); }} catch (e1) {{}}
             }});
-            if (document.readyState === 'complete') setTimeout(goPrint, 400);
-            else window.addEventListener('load', function() {{ setTimeout(goPrint, 400); }});
+            if (document.readyState === 'complete') setTimeout(goPrint, 450);
+            else window.addEventListener('load', function() {{ setTimeout(goPrint, 450); }});
           }})();
         </script>
         """
@@ -1259,7 +1252,7 @@ def render_worklog_view_html(
               try {{ wlFitToA4(); }} catch (e0) {{}}
               setTimeout(function() {{
                 try {{ window.focus(); window.print(); }} catch (e) {{}}
-              }}, 40);
+              }}, 60);
             }});
             window.addEventListener('beforeprint', function() {{
               try {{ wlFitToA4(); }} catch (e1) {{}}
@@ -1280,7 +1273,7 @@ def render_worklog_view_html(
 <title>일일업무일지</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  @page {{ size: A4 portrait; margin: 8mm; }}
+  @page {{ size: A4 portrait; margin: 10mm; }}
   html, body {{
     margin:0; padding:0; background:#fff;
     overflow:{body_overflow} !important;
@@ -1308,25 +1301,41 @@ def render_worklog_view_html(
   {fallback_block}
   @media print {{
     html, body {{
-      overflow:visible !important; height:auto !important; width:auto !important;
-      margin:0 !important; padding:0 !important;
-      -webkit-print-color-adjust:exact; print-color-adjust:exact;
+      width: 190mm !important;
+      max-width: 190mm !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      overflow: visible !important;
+      height: auto !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }}
     .no-print, .toolbar {{ display:none !important; }}
-    .wrap {{
-      overflow:hidden !important;
-      max-width:none !important;
-      border:none !important;
-      margin:0 auto !important;
-      page-break-inside:avoid;
+    .wrap, .sheet-scale {{
+      width: 190mm !important;
+      max-width: 190mm !important;
+      height: auto !important;
+      overflow: visible !important;
+      margin: 0 !important;
+      border: none !important;
+      transform: none !important;
+      zoom: 1 !important;
+      page-break-inside: avoid;
     }}
-    .sheet-scale {{
-      transform:none !important;
-      max-width:none !important;
-      margin:0 !important;
+    .wl-sheet {{
+      width: 190mm !important;
+      max-width: 190mm !important;
+      table-layout: fixed !important;
+    }}
+    /* 고정 px 열/칸 폭이 페이지를 넘지 않게 전부 해제 → 비율로 재분배 */
+    .wl-sheet col {{
+      width: auto !important;
     }}
     .wl-sheet td {{
-      overflow:hidden !important;
+      width: auto !important;
+      min-width: 0 !important;
+      max-width: none !important;
+      overflow: hidden !important;
     }}
   }}
 </style></head>
