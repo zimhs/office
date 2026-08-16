@@ -126,7 +126,7 @@ export default function (component) {
   const root = parentElement.querySelector(".wl-lines");
   if (!root) return;
 
-  const maxU = Number((data && data.max_u) || 70);
+  const maxU = Number((data && data.max_u) || 52);
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
   const incoming = Array.isArray(data && data.lines)
@@ -416,12 +416,12 @@ def _set_body_font(cell) -> None:
 
 @lru_cache(maxsize=1)
 def _content_line_units() -> int:
-    """원본 G:X 병합 폭 기준 — 칸을 거의 채우되 우측이 넘치지 않게 여유를 둔다.
+    """원본 G:X 병합 폭 기준 — 칸을 넘기지 않게 여유를 더 둔다.
 
-    반각=1, 한글=2. 장문이 원본 테두리를 살짝 넘기던 것을 막아
-    약 70단위(~한글 35자)에서 다음 칸으로 넘긴다.
+    반각=1, 한글=2. 바탕체 미리보기 기준으로 약 52단위(~한글 26자)에서
+    다음 칸으로 넘긴다.
     """
-    fallback = 70
+    fallback = 52
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -432,8 +432,9 @@ def _content_line_units() -> int:
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 1.06)
-        return max(66, min(units, 71))
+        # 바탕체 실측이 추정보다 넓어 보이므로 여유를 크게
+        units = int(total * (11 / 14) * 0.78)
+        return max(48, min(units, 54))
     except Exception:
         return fallback
 
@@ -441,7 +442,7 @@ def _content_line_units() -> int:
 @lru_cache(maxsize=1)
 def _client_line_units() -> int:
     """원본 C:F 거래처 병합 폭 기준 — 칸을 넘기면 다음 행으로(반각=1)."""
-    fallback = 18
+    fallback = 12
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -452,8 +453,8 @@ def _client_line_units() -> int:
             for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 1.05)
-        return max(12, min(units, 28))
+        units = int(total * (11 / 14) * 0.78)
+        return max(10, min(units, 13))
     except Exception:
         return fallback
 
@@ -1049,12 +1050,12 @@ def workbook_to_html(path: str) -> str:
                     .replace(" ", "&nbsp;")
                     .replace("\n", "<br>")
                 )
-            # 내용칸: 엑셀처럼 한 줄 + 옆 빈 칸으로 넘침 표시 (clip 금지)
+            # 내용·거래처 칸: 원본 칸 폭을 넘기지 않게 clip (초과분은 다음 칸으로 분할)
             if is_content or is_client:
                 white = "nowrap"
-                overflow = "visible"
+                overflow = "hidden"
                 text_overflow = "clip"
-                zidx = "position:relative;z-index:1;"
+                zidx = ""
             elif is_side_label:
                 white = "normal"
                 overflow = "hidden"
@@ -2352,12 +2353,11 @@ export default function (component) {
     data && data.focus_caret != null && data.focus_caret !== ""
       ? Number(data.focus_caret)
       : null;
-  const clientMax = Number((data && data.client_max_u) || 15);
-  const contentMax = Number((data && data.content_max_u) || 70);
+  const clientMax = Number((data && data.client_max_u) || 12);
+  const contentMax = Number((data && data.content_max_u) || 52);
   let lastSent = "";
   let lastSig = "";
   let lastAt = 0;
-  let lastFocusKey = "";
 
   function charUnits(ch) {
     const o = ch.charCodeAt(0);
@@ -2448,9 +2448,6 @@ export default function (component) {
     }
     return true;
   }
-  function isComposingTarget(t) {
-    return !!(t && (t.isComposing || t.composing));
-  }
   function findPeer(info, targetKind) {
     const list = listKindInputs(targetKind);
     let best = null;
@@ -2458,7 +2455,6 @@ export default function (component) {
     for (let i = 0; i < list.length; i++) {
       const p = resolveKey(list[i]);
       if (!p) continue;
-      // 같은 항목 우선, 줄 번호 가까운 칸
       const score =
         Math.abs(p.ei - info.ei) * 1000 + Math.abs(p.lj - info.lj);
       if (score < bestScore) {
@@ -2472,14 +2468,23 @@ export default function (component) {
     const now = Date.now();
     const v = String(value || "");
     const sig = key + "\\0" + v;
-    // input + compositionend 이중 발행 / 같은 넘침 반복 차단
-    if (sig === lastSig && now - lastAt < 700) return;
+    if (sig === lastSig && now - lastAt < 280) return;
     lastSig = sig;
     lastAt = now;
     const payload = JSON.stringify({ key: key, t: now, v: v });
     if (payload === lastSent) return;
     lastSent = payload;
     setTriggerValue("enter", payload);
+  }
+  function clipOverflow(t, info, full) {
+    const v = String(full != null ? full : t.value || "");
+    if (displayUnits(v) <= info.maxU) return false;
+    const { head } = fitByUnits(v, info.maxU);
+    try {
+      t.value = head;
+    } catch (err) {}
+    emit(info.key, v);
+    return true;
   }
 
   const onKey = (e) => {
@@ -2495,13 +2500,26 @@ export default function (component) {
     if (e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
-      // 서버로 보내 다음 칸 생성/이동 (원본 엑셀 칸 동작)
       emit(info.key, t.value || "");
       return;
     }
 
-    // 방향키: 한 줄 입력이므로 위/아래는 항상 칸 이동
-    // 좌/우는 커서 끝·앞에서 거래처↔내용 이동
+    if (
+      caretAll &&
+      start === len &&
+      displayUnits(t.value || "") >= info.maxU &&
+      e.key &&
+      e.key.length === 1 &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      emit(info.key, String(t.value || "") + e.key);
+      return;
+    }
+
     if (e.key === "ArrowUp") {
       const list = listKindInputs(info.kind);
       const idx = list.indexOf(t);
@@ -2510,7 +2528,6 @@ export default function (component) {
         e.stopPropagation();
         focusInput(list[idx - 1], "end");
       } else {
-        // 맨 위면 반대편 열의 같은 위치(또는 직전)로
         const peerKind =
           info.kind === "wl_ent_cl" ? "wl_ent_ln" : "wl_ent_cl";
         const peer = findPeer(info, peerKind);
@@ -2551,7 +2568,6 @@ export default function (component) {
           : (() => {
               const list = listKindInputs("wl_ent_cl");
               const idx = list.indexOf(t);
-              // 거래처 칸에서 왼쪽: 이전 거래처 칸
               return idx > 0 ? list[idx - 1] : null;
             })();
       if (peer) {
@@ -2579,38 +2595,23 @@ export default function (component) {
     }
   };
 
-  // 칸 폭 초과 → 다음 칸으로 넘김 (원본 엑셀 칸 반영)
   const onInput = (e) => {
-    if (e.isComposing) return;
     const t = e.target;
     const info = resolveKey(t);
     if (!info) return;
-    const v = String(t.value || "");
-    if (displayUnits(v) <= info.maxU) return;
-    const { head } = fitByUnits(v, info.maxU);
-    try {
-      t.value = head;
-    } catch (err) {}
-    emit(info.key, v);
+    clipOverflow(t, info, t.value || "");
   };
 
   const onCompEnd = (e) => {
     const t = e.target;
     const info = resolveKey(t);
     if (!info) return;
-    const v = String(t.value || "");
-    if (displayUnits(v) <= info.maxU) return;
-    const { head } = fitByUnits(v, info.maxU);
-    try {
-      t.value = head;
-    } catch (err) {}
-    emit(info.key, v);
+    clipOverflow(t, info, t.value || "");
   };
 
   document.addEventListener("keydown", onKey, true);
   document.addEventListener("input", onInput, true);
   document.addEventListener("compositionend", onCompEnd, true);
-  // focus → setTriggerValue 제거: 칸 이동만으로 fragment 로딩이 나던 원인
 
   if (focusKey) {
     const go = () => {
@@ -2639,9 +2640,10 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v12",
+    "worklog_cell_nav_hook_v13",
     js=_WL_ENTER_HOOK_JS,
 )
+
 
 
 
@@ -4050,6 +4052,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         "lj": int(m.group(4)),
                         "v": val,
                     }
+                    # 콜백 직후 바로 반영(다음 칸 생성·포커스)
+                    _wl_rerun()
 
                 def _on_focus_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
