@@ -2028,7 +2028,7 @@ div[class*="st-key-wl_ent_cl_"] input:focus {
   background-color: #DFF3EE !important;
   border-color: #7CBCAD !important;
 }
-/* 업무입력칸 글자 위치 = 원본 엑셀 칸 (가로·세로 가운데) */
+/* 업무입력칸: 세로 가운데 · 글자는 왼쪽부터 */
 div[class*="st-key-wl_ent_cl_"] [data-baseweb="base-input"],
 div[class*="st-key-wl_ent_cl_"] [data-baseweb="input"],
 div[class*="st-key-wl_ent_ln_"] [data-baseweb="base-input"],
@@ -2047,10 +2047,11 @@ div[class*="st-key-wl_ent_ln_"] [data-baseweb="input"] > div {
 }
 div[class*="st-key-wl_ent_cl_"] input,
 div[class*="st-key-wl_ent_ln_"] input {
-  text-align: center !important;
+  text-align: left !important;
   line-height: 1.25 !important;
   padding-top: 0 !important;
   padding-bottom: 0 !important;
+  padding-left: 0.5rem !important;
   height: 2.1rem !important;
   min-height: 2.1rem !important;
 }
