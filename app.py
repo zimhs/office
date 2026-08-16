@@ -64,11 +64,69 @@ st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide"
 CACHE_DIR = "./uploaded_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# 맥·아이패드 공용 Streamlit Cloud (업무일지·캐시 연동)
+# secrets/환경변수로 덮어쓸 수 있음
+DASHBOARD_CLOUD_URL = (
+    os.environ.get("DASHBOARD_CLOUD_URL")
+    or "https://office-g8ryabkapprkpjmfwa5aypw.streamlit.app"
+).strip().rstrip("/")
+
 try:
     from drive_autoload import sync_drive_copy_into_cache, sync_cache_to_drive_copy
 except Exception:  # pragma: no cover
     sync_drive_copy_into_cache = None  # type: ignore
     sync_cache_to_drive_copy = None  # type: ignore
+
+
+def _is_streamlit_cloud() -> bool:
+    """Streamlit Community Cloud 여부. 로컬 맥 Desktop은 False."""
+    try:
+        env = (os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT") or "").strip().lower()
+        if env == "cloud":
+            return True
+    except Exception:
+        pass
+    try:
+        cwd = os.path.abspath(os.getcwd())
+        if cwd.startswith("/mount/src"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _cloud_app_url() -> str:
+    """공용 Cloud URL (secrets > env > 기본값)."""
+    try:
+        secrets = getattr(st, "secrets", None)
+        if secrets is not None:
+            u = str(secrets.get("dashboard_cloud_url", "") or "").strip()
+            if u:
+                return u.rstrip("/")
+    except Exception:
+        pass
+    return DASHBOARD_CLOUD_URL
+
+
+def _render_cloud_sync_banner() -> None:
+    """로컬(localhost)에서만: 맥·아이패드는 같은 Cloud URL 쓰도록 안내."""
+    if _is_streamlit_cloud():
+        st.sidebar.success("Cloud 공용 서버 · 맥·아이패드 동일 저장소")
+        return
+    url = _cloud_app_url()
+    st.sidebar.warning(
+        "지금은 **맥 로컬**입니다. 아이패드와 업무일지·자료를 맞추려면 "
+        "**같은 Cloud 주소**로 여세요."
+    )
+    try:
+        st.sidebar.link_button(
+            "Cloud에서 열기 (맥·아이패드 공용)",
+            url,
+            use_container_width=True,
+        )
+    except TypeError:
+        st.sidebar.markdown(f"[Cloud에서 열기]({url})")
+    st.sidebar.caption(url)
 
 # ==========================================
 # 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
@@ -7383,6 +7441,7 @@ def render_frozen_styler_html(
 # ==========================================
 inject_custom_css()
 st.sidebar.header("📁 데이터 업로드 및 유지")
+_render_cloud_sync_banner()
 # Drive「dashboard 복사본」→ uploaded_cache (맥: Drive 마운트 / 클라우드: 배포 시드)
 _drive_autoload_res = None
 if sync_drive_copy_into_cache is not None:

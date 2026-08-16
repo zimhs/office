@@ -3086,8 +3086,23 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 if not st.session_state.get("_wl_cloud_sync_hint"):
                     st.session_state["_wl_cloud_sync_hint"] = True
                     st.caption(
-                        "클라우드 저장(이 기기). 맥과 공유는 Drive「dashboard 복사본/worklog」"
-                        " — 맥에서 일지 탭을 열면 동기화됩니다."
+                        "Cloud 공용 저장소에 저장됩니다. "
+                        "맥에서도 같은 streamlit.app 주소로 열면 일지가 맞습니다."
+                    )
+            elif (
+                isinstance(_wl_sync, dict)
+                and _wl_sync.get("skipped")
+                and not _wl_quiet_ui()
+            ):
+                if not st.session_state.get("_wl_local_cloud_hint"):
+                    st.session_state["_wl_local_cloud_hint"] = True
+                    _u = (
+                        os.environ.get("DASHBOARD_CLOUD_URL")
+                        or "https://office-g8ryabkapprkpjmfwa5aypw.streamlit.app"
+                    )
+                    st.info(
+                        "로컬 Streamlit입니다. 아이패드와 일지를 맞추려면 사이드바 "
+                        f"**Cloud에서 열기**로 접속하세요.\n\n{_u}"
                     )
         except Exception:
             pass
