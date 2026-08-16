@@ -3055,6 +3055,12 @@ def _publish_view_cells(d: date, cells: dict) -> None:
         f"wl_left_excel_sig_{iso}",
         f"wl_left_excel_html_{iso}",
         f"wl_left_excel_h_{iso}",
+        f"wl_left_excel_sig_v2_{iso}",
+        f"wl_left_excel_html_v2_{iso}",
+        f"wl_left_excel_h_v2_{iso}",
+        f"wl_left_excel_sig_v4_{iso}",
+        f"wl_left_excel_html_v4_{iso}",
+        f"wl_left_excel_h_v4_{iso}",
     ):
         st.session_state.pop(k, None)
 
@@ -3806,6 +3812,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 st.session_state.pop(f"wl_print_html_meta_{out}", None)
                 st.session_state.pop(f"wl_print_html_cache_v2_{out}", None)
                 st.session_state.pop(f"wl_print_html_meta_v2_{out}", None)
+                st.session_state.pop(f"wl_print_html_cache_v3_{out}", None)
+                st.session_state.pop(f"wl_print_html_meta_v3_{out}", None)
                 return out
 
             if do_open_print:
@@ -3855,9 +3863,71 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
             _show_excel_left = bool(st.session_state.get(_left_excel_key))
             if _show_excel_left:
-                sw1, sw2 = st.columns([1, 1])
+                _zoom_key = f"wl_left_excel_zoom_{selected.isoformat()}"
+                if _zoom_key not in st.session_state:
+                    # 왼쪽 칸에 양식이 한눈에 들어오도록 기본 축소
+                    st.session_state[_zoom_key] = 0.42
+                st.markdown(
+                    """
+                    <style>
+                    div[class*="st-key-wl_left_zoom_out"] button,
+                    div[class*="st-key-wl_left_zoom_in"] button {
+                      min-height: 1.55rem !important;
+                      height: 1.55rem !important;
+                      padding: 0 0.35rem !important;
+                      font-size: 0.78rem !important;
+                      font-weight: 700 !important;
+                      line-height: 1 !important;
+                    }
+                    div[class*="st-key-wl_left_to_summary"] button {
+                      min-height: 1.55rem !important;
+                      height: 1.55rem !important;
+                      padding: 0 0.4rem !important;
+                      font-size: 0.72rem !important;
+                    }
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                sw1, zw1, zw2, zw3, sw2 = st.columns(
+                    [1.35, 0.38, 0.55, 0.38, 1.1], gap="small"
+                )
                 with sw1:
                     st.caption("원본 엑셀 양식 적용 중")
+                with zw1:
+                    if st.button(
+                        "−",
+                        width="stretch",
+                        key=f"wl_left_zoom_out_{selected.isoformat()}",
+                        help="축소",
+                    ):
+                        cur = float(st.session_state.get(_zoom_key) or 0.42)
+                        st.session_state[_zoom_key] = round(
+                            max(0.28, cur - 0.08), 2
+                        )
+                        _wl_rerun()
+                with zw2:
+                    _z_pct = int(
+                        round(float(st.session_state.get(_zoom_key) or 0.42) * 100)
+                    )
+                    st.markdown(
+                        f"<div style='text-align:center;font-size:0.72rem;"
+                        f"font-weight:700;color:#475569;padding-top:0.35rem;'>"
+                        f"{_z_pct}%</div>",
+                        unsafe_allow_html=True,
+                    )
+                with zw3:
+                    if st.button(
+                        "+",
+                        width="stretch",
+                        key=f"wl_left_zoom_in_{selected.isoformat()}",
+                        help="확대",
+                    ):
+                        cur = float(st.session_state.get(_zoom_key) or 0.42)
+                        st.session_state[_zoom_key] = round(
+                            min(0.95, cur + 0.08), 2
+                        )
+                        _wl_rerun()
                 with sw2:
                     if st.button(
                         "요약 보기로",
@@ -3871,15 +3941,16 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     try:
                         # 저장(또는 「엑셀 미리보기」) 스냅샷만 표시 — 입력 중 재생성 안 함
                         cells_view = _view_cells_for_preview(selected)
-                        scale_l = 0.62  # 클릭 후 왼쪽 양식 가독성
+                        scale_l = float(st.session_state.get(_zoom_key) or 0.42)
+                        scale_l = max(0.28, min(0.95, scale_l))
                         live_sig = json.dumps(
                             {"cells": cells_view, "scale": scale_l},
                             ensure_ascii=False,
                             sort_keys=True,
                         )
-                        sig_k = f"wl_left_excel_sig_v2_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_v2_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_v2_{selected.isoformat()}"
+                        sig_k = f"wl_left_excel_sig_v4_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_v4_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_v4_{selected.isoformat()}"
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
                             st.session_state[_left_path_key] = xlsx_left
@@ -3910,7 +3981,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 st.session_state[h_k] = fh
                         components.html(
                             excel_html,
-                            height=min(900, max(520, int(fh or 640))),
+                            height=min(920, max(480, int(fh or 560))),
                             scrolling=True,
                         )
                         if st.button(
