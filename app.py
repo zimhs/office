@@ -511,7 +511,7 @@ def inject_custom_css():
             html.dashboard-touch-mode [data-testid="stHeader"],
             html.dashboard-touch-mode [data-testid="stToolbar"],
             html.dashboard-touch-mode [data-testid="stDecoration"] {
-                z-index: 1000001 !important;
+                z-index: 980 !important;
                 position: relative !important;
             }
             html.dashboard-touch-mode [data-testid="stSidebar"],
@@ -554,25 +554,39 @@ def inject_custom_css():
                 padding-right: 2px !important;
             }
             html.dashboard-touch-mode #dashboard-sticky-spacer {
-                min-height: 200px !important;
-                height: 200px !important;
+                min-height: 160px !important;
                 display: block !important;
                 width: 100% !important;
             }
             html.dashboard-touch-mode .dashboard-filter-sticky,
             html.dashboard-touch-mode .dashboard-filter-sticky-touch {
-                height: 200px !important;
-                max-height: 200px !important;
+                height: auto !important;
+                max-height: none !important;
                 overflow: visible !important;
+                clip: auto !important;
+                clip-path: none !important;
+                contain: none !important;
+                isolation: auto !important;
             }
-            html.dashboard-touch-mode .dashboard-filter-sticky [data-baseweb="popover"],
-            html.dashboard-touch-mode .dashboard-filter-sticky [data-baseweb="menu"],
-            html.dashboard-touch-mode .dashboard-filter-sticky ul[role="listbox"] {
-                position: fixed !important;
-                z-index: 2147483646 !important;
-                max-height: 40vh !important;
-                overflow-y: auto !important;
-                background: #FFFFFF !important;
+            /* Streamlit 컬럼 overflow:hidden 이 iPad 검색 목록을 잘라냄 */
+            html.dashboard-touch-mode .dashboard-filter-sticky [data-testid="stVerticalBlock"],
+            html.dashboard-touch-mode .dashboard-filter-sticky [data-testid="stHorizontalBlock"],
+            html.dashboard-touch-mode .dashboard-filter-sticky [data-testid="column"],
+            html.dashboard-touch-mode .dashboard-filter-sticky [data-testid="stColumn"],
+            html.dashboard-touch-mode .dashboard-filter-sticky [data-testid="stElementContainer"],
+            html.dashboard-touch-mode .dashboard-filter-sticky [data-testid="stMultiSelect"],
+            html.dashboard-touch-mode .dashboard-filter-sticky [data-testid="stSelectbox"],
+            html.dashboard-touch-mode .dashboard-filter-sticky [data-baseweb="select"] {
+                overflow: visible !important;
+                contain: none !important;
+            }
+            /* 검색 팝업은 고정바보다 위. layer 전체 강제 z-index는 빈 레이어가 목록을 가림 */
+            html.dashboard-touch-mode [data-baseweb="popover"],
+            html.dashboard-touch-mode [data-baseweb="menu"],
+            html.dashboard-touch-mode [data-testid="stSelectboxVirtualDropdown"],
+            html.dashboard-touch-mode ul[role="listbox"] {
+                z-index: 2000000 !important;
+                pointer-events: auto !important;
             }
             /* 고정바 내부 공백 최소화 */
             .dashboard-filter-sticky [data-testid="stVerticalBlock"],
@@ -6932,7 +6946,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
-            var STICKY_SCRIPT_VER_IPAD = 18; /* iPad: 검색 팝업 다시 표시, 바 높이만 잠금 */
+            var STICKY_SCRIPT_VER_IPAD = 20; /* iPad: 검색 목록 가림(z-index 1)·조작 중 스타일 재기록 금지 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -7192,6 +7206,20 @@ def inject_sticky_tabs_script():
                 return !!(el.querySelector && el.querySelector('[role="tabpanel"]'));
             }
             /* 닫힌 BaseWeb 포털·숨은 listbox는 무시 (담당자 지정 후 탭 미복구 원인) */
+            function isFilterInteracting() {
+                try {
+                    if (isFilterDropdownOpen()) return true;
+                    var ae = parentDoc.activeElement;
+                    if (!ae || !ae.closest) return false;
+                    return !!(ae.closest('[data-testid="stMultiSelect"]') ||
+                        ae.closest('[data-testid="stSelectbox"]') ||
+                        ae.closest('[data-baseweb="select"]') ||
+                        ae.closest('[data-baseweb="popover"]') ||
+                        ae.closest('[data-baseweb="menu"]'));
+                } catch (eFi) {
+                    return false;
+                }
+            }
             function isFilterDropdownOpen() {
                 function visible(el) {
                     if (!el) return false;
@@ -7203,7 +7231,9 @@ def inject_sticky_tabs_script():
                 }
                 try {
                     var nodes = parentDoc.querySelectorAll(
-                        '[data-baseweb="popover"], [data-baseweb="menu"], [data-baseweb="select"] [role="listbox"], ul[role="listbox"]'
+                        '[data-baseweb="popover"], [data-baseweb="menu"], [data-baseweb="layer"], '
+                        + '[data-baseweb="select"] [role="listbox"], ul[role="listbox"], '
+                        + '[data-testid="stSelectboxVirtualDropdown"]'
                     );
                     for (var i = 0; i < nodes.length; i++) {
                         if (visible(nodes[i])) return true;
@@ -7263,7 +7293,19 @@ def inject_sticky_tabs_script():
                 }
                 portal.remove();
             }
+            function lockIpadFilter(ms) {
+                parentWin.__dashboardIpadFilterLockUntil = Date.now() + (ms || 10000);
+            }
+            function isIpadFilterLocked() {
+                try {
+                    if (Date.now() < (parentWin.__dashboardIpadFilterLockUntil || 0)) return true;
+                    return isFilterInteracting();
+                } catch (eLk) {
+                    return false;
+                }
+            }
             function applyIpad0804Hack() {
+                if (isIpadFilterLocked()) return;
                 cleanupIpadPortal();
                 var dropOpen = false;
                 try { dropOpen = isFilterDropdownOpen(); } catch (eDo) {}
@@ -7286,7 +7328,7 @@ def inject_sticky_tabs_script():
             }
             function ipadApplyBoxStyles(targetBox) {
                 if (!targetBox) return;
-                var open = isSidebarOpen();
+                if (isIpadFilterLocked()) return;
                 var spacer = parentDoc.getElementById(SPACER_ID);
                 if (!spacer) {
                     spacer = parentDoc.createElement('div');
@@ -7304,10 +7346,10 @@ def inject_sticky_tabs_script():
                 targetBox.style.setProperty('left', left + 'px', 'important');
                 targetBox.style.setProperty('width', w + 'px', 'important');
                 targetBox.style.setProperty('max-width', w + 'px', 'important');
-                targetBox.style.setProperty('height', '200px', 'important');
-                targetBox.style.setProperty('max-height', '200px', 'important');
+                targetBox.style.setProperty('height', 'auto', 'important');
+                targetBox.style.setProperty('max-height', 'none', 'important');
                 targetBox.style.setProperty('overflow', 'visible', 'important');
-                targetBox.style.setProperty('z-index', open ? '1' : '999999', 'important');
+                targetBox.style.setProperty('z-index', '999999', 'important');
                 targetBox.style.setProperty('background-color', '#FFFFFF', 'important');
                 targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
                 targetBox.style.setProperty('border-top', '3px solid #2563EB', 'important');
@@ -7318,7 +7360,7 @@ def inject_sticky_tabs_script():
                 targetBox.style.setProperty('overflow', 'visible', 'important');
                 targetBox.style.setProperty('-webkit-transform', 'none', 'important');
                 targetBox.style.setProperty('transform', 'none', 'important');
-                var pinH = Math.min(targetBox.offsetHeight || 180, 200);
+                var pinH = Math.max(140, Math.min(targetBox.offsetHeight || 160, 220));
                 spacer.style.height = pinH + 'px';
                 spacer.style.width = '100%';
                 spacer.style.marginBottom = '12px';
@@ -7327,6 +7369,7 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardIpadSpacer = spacer;
             }
             function ipadPinFilterBox() {
+                if (isIpadFilterLocked()) return;
                 var box = findFilterBox();
                 if (!box) return;
                 var prev = parentWin.__dashboardIpadTarget;
@@ -7342,15 +7385,17 @@ def inject_sticky_tabs_script():
                 /* 매 프레임 DOM 쓰기 금지 — iPad 필터 조작 시 버벅임/로딩감 완화 */
                 if (!parentWin.__dashboardIpadLastWidthSync || now - parentWin.__dashboardIpadLastWidthSync >= 800) {
                     parentWin.__dashboardIpadLastWidthSync = now;
-                    var targetBox = parentWin.__dashboardIpadTarget;
-                    var spacer = parentWin.__dashboardIpadSpacer || parentDoc.getElementById(SPACER_ID);
-                    if (!targetBox || !parentDoc.body.contains(targetBox)) {
-                        applyIpad0804Hack();
-                        targetBox = parentWin.__dashboardIpadTarget;
-                        spacer = parentWin.__dashboardIpadSpacer;
-                    }
-                    if (targetBox && spacer && parentDoc.body.contains(spacer)) {
-                        ipadApplyBoxStyles(targetBox);
+                    if (!isIpadFilterLocked()) {
+                        var targetBox = parentWin.__dashboardIpadTarget;
+                        var spacer = parentWin.__dashboardIpadSpacer || parentDoc.getElementById(SPACER_ID);
+                        if (!targetBox || !parentDoc.body.contains(targetBox)) {
+                            applyIpad0804Hack();
+                            targetBox = parentWin.__dashboardIpadTarget;
+                            spacer = parentWin.__dashboardIpadSpacer;
+                        }
+                        if (targetBox && spacer && parentDoc.body.contains(spacer)) {
+                            ipadApplyBoxStyles(targetBox);
+                        }
                     }
                 }
                 parentWin.__dashboardIpadRaf = parentWin.requestAnimationFrame(syncIpadWidthLoop);
@@ -7440,6 +7485,7 @@ def inject_sticky_tabs_script():
             }
             function scheduleSync(ms) {
                 try {
+                    if (touchMode && isIpadFilterLocked()) return;
                     var all = collectMainTabLists();
                     if (all.length > 1) {
                         fixDuplicateMainTabs(true);
@@ -7484,7 +7530,7 @@ def inject_sticky_tabs_script():
                 } catch (eTu) {}
                 var boot = 0;
                 parentWin.__dashboardStickyBootInterval = setInterval(function() {
-                    if (!isFilterDropdownOpen()) applyIpad0804Hack();
+                    if (!isIpadFilterLocked() && !isFilterDropdownOpen()) applyIpad0804Hack();
                     boot++;
                     if (boot > 40) {
                         clearInterval(parentWin.__dashboardStickyBootInterval);
@@ -7493,10 +7539,10 @@ def inject_sticky_tabs_script():
                 }, 200);
                 /* 필터 조작 중 DOM 해킹 빈도 축소 */
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
-                    if (!isFilterDropdownOpen()) applyIpad0804Hack();
+                    if (!isIpadFilterLocked() && !isFilterDropdownOpen()) applyIpad0804Hack();
                 }, 5000);
                 var observer = new MutationObserver(function() {
-                    if (isFilterDropdownOpen()) return;
+                    if (isIpadFilterLocked() || isFilterDropdownOpen()) return;
                     scheduleSync(900);
                 });
                 observer.observe(parentDoc.body, { childList: true, subtree: true });
@@ -7504,6 +7550,32 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardIpadScheduleSync = scheduleSync;
                 parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
                 parentWin.__dashboardStickyTouchReady = STICKY_SCRIPT_VER_IPAD;
+                parentDoc.addEventListener('pointerdown', function(e) {
+                    try {
+                        var t = e.target;
+                        if (!t || !t.closest) return;
+                        if (t.closest('[data-testid="stMultiSelect"]') ||
+                            t.closest('[data-testid="stSelectbox"]') ||
+                            t.closest('[data-baseweb="select"]') ||
+                            t.closest('[data-baseweb="popover"]') ||
+                            t.closest('[data-baseweb="menu"]') ||
+                            t.closest('[data-testid="stSelectboxVirtualDropdown"]') ||
+                            t.closest('ul[role="listbox"]')) {
+                            lockIpadFilter(12000);
+                        }
+                    } catch (ePd) {}
+                }, true);
+                parentDoc.addEventListener('focusin', function(e) {
+                    try {
+                        var t = e.target;
+                        if (!t || !t.closest) return;
+                        if (t.closest('[data-testid="stMultiSelect"]') ||
+                            t.closest('[data-testid="stSelectbox"]') ||
+                            t.closest('[data-baseweb="select"]')) {
+                            lockIpadFilter(12000);
+                        }
+                    } catch (eFi2) {}
+                }, true);
                 parentDoc.addEventListener('click', function(e) {
                     if (e.target.closest('[data-testid="collapsedControl"]') ||
                         e.target.closest('[data-testid="stSidebar"]') ||
@@ -9376,10 +9448,10 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
 if is_touch_ui():
     # iPad: 스크립트는 매 rerun 넣되, 이미 기동된 경우 pin만 (검색 후 가림 방지)
     inject_sticky_tabs_script()
-    if st.session_state.get("_ipad_sticky_ver") != 18:
+    if st.session_state.get("_ipad_sticky_ver") != 20:
         inject_ipad_plotly_controls()
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 18
+        st.session_state["_ipad_sticky_ver"] = 20
 else:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
