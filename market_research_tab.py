@@ -1278,81 +1278,55 @@ def _metric_box(label: str, value: str) -> str:
     )
 
 
+def _mr_extract_suppliers(series, *, limit: int = 300) -> list[str]:
+    """공급사 셀(·|/ 구분)에서 옵션 목록 추출."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in series.astype(str):
+        for p in re.split(r"\s*[·|/]\s*", v):
+            p = p.strip()
+            if not p or p in seen:
+                continue
+            seen.add(p)
+            out.append(p)
+            if len(out) >= limit:
+                return sorted(out)
+    return sorted(out)
+
+
+def _mr_cascade_base(
+    df: pd.DataFrame,
+    *,
+    regions: list[str] | None = None,
+    complexes: list[str] | None = None,
+    include_factory: bool = False,
+    hide_unclassified: bool = False,
+) -> pd.DataFrame:
+    """종속 옵션 계산용 범위 (검색어·공급사 필터는 제외)."""
+    view = df
+    if not include_factory and "_factory_only" in view.columns:
+        view = view[~view["_factory_only"]]
+    if hide_unclassified and "산업단지" in view.columns:
+        view = view[view["산업단지"] != "미분류"]
+    if regions:
+        view = view[view["지역"].isin(regions)]
+    if complexes:
+        view = view[view["산업단지"].isin(complexes)]
+    return view
+
+
 @st.fragment
 def _mr_filter_results_fragment(
     df: pd.DataFrame,
     regions: list[str],
-    complexes: list[str],
-    suppliers: list[str],
     latest_update_str: str,
 ) -> None:
-    """필터·검색·표만 fragment 재실행 (엑셀 재파싱 없음)."""
-    with st.form("mr_filter_form", clear_on_submit=False):
-        f1, f2, f3, f4 = st.columns([1.2, 1.4, 1.2, 1.6])
-        with f1:
-            sel_region = st.multiselect(
-                "지역",
-                options=regions,
-                default=_ms_default(
-                    st.session_state.get("mr_region_applied"), regions
-                ),
-                key="mr_region_form",
-                placeholder="전체 지역",
-            )
-        with f2:
-            sel_cx = st.multiselect(
-                "산업단지",
-                options=complexes,
-                default=_ms_default(
-                    st.session_state.get("mr_complex_applied"), complexes
-                ),
-                key="mr_complex_form",
-                placeholder="전체 산업단지",
-            )
-        with f3:
-            sel_sup = st.multiselect(
-                "공급사",
-                options=suppliers,
-                default=_ms_default(st.session_state.get("mr_sup_applied"), suppliers),
-                key="mr_sup_form",
-                placeholder="전체 공급사",
-            )
-        with f4:
-            q = st.text_input(
-                "검색 (업체·주소·단지·가스·비고)",
-                value=st.session_state.get("mr_q_applied") or "",
-                key="mr_q_form",
-                placeholder="입력 후 「적용」",
-            )
-        b1, b2, b3, b4 = st.columns([1.1, 1.35, 1.25, 1.5])
-        with b1:
-            applied = st.form_submit_button("🔍 적용", type="primary", width="stretch")
-        with b2:
-            include_factory = st.checkbox(
-                "화성공장 DB(단독) 포함",
-                value=bool(st.session_state.get("mr_incl_factory", False)),
-                key="mr_incl_factory_form",
-                help="기본은 시장조사·경쟁사·방문조사만. 공장등록 1만건+는 필요할 때만 포함.",
-            )
-        with b3:
-            hide_unclassified = st.checkbox(
-                "산업단지 미분류 제외",
-                value=bool(st.session_state.get("mr_hide_unclassified", False)),
-                key="mr_hide_unclassified_form",
-                help="단지가 붙은 업체만 봅니다.",
-            )
-        with b4:
-            st.caption("글자마다 재검색하지 않습니다. **적용**을 눌러 주세요.")
+    """필터·검색·표만 fragment 재실행 (엑셀 재파싱 없음).
 
-    if applied:
-        st.session_state["mr_region_applied"] = sel_region
-        st.session_state["mr_complex_applied"] = sel_cx
-        st.session_state["mr_sup_applied"] = sel_sup
-        st.session_state["mr_q_applied"] = q
-        st.session_state["mr_incl_factory"] = include_factory
-        st.session_state["mr_hide_unclassified"] = hide_unclassified
-        st.session_state["mr_filter_ready"] = True
-    elif "mr_filter_ready" not in st.session_state:
+    종속: 지역 → 산업단지 → 공급사 (상위 선택에 따라 하위 옵션만 표시).
+    텍스트 검색만 「적용」필요.
+    """
+    if "mr_filter_ready" not in st.session_state:
         st.session_state["mr_region_applied"] = []
         st.session_state["mr_complex_applied"] = []
         st.session_state["mr_sup_applied"] = []
@@ -1361,19 +1335,122 @@ def _mr_filter_results_fragment(
         st.session_state["mr_hide_unclassified"] = False
         st.session_state["mr_filter_ready"] = True
 
-    sel_region = st.session_state.get("mr_region_applied") or []
-    sel_cx = st.session_state.get("mr_complex_applied") or []
-    sel_sup = st.session_state.get("mr_sup_applied") or []
-    q = st.session_state.get("mr_q_applied") or ""
-    include_factory = bool(st.session_state.get("mr_incl_factory", False))
-    hide_unclassified = bool(st.session_state.get("mr_hide_unclassified", False))
+    c_fac, c_hide = st.columns([1, 1])
+    with c_fac:
+        include_factory = st.checkbox(
+            "화성공장 DB(단독) 포함",
+            value=bool(st.session_state.get("mr_incl_factory", False)),
+            key="mr_incl_factory_live",
+            help="기본은 시장조사·경쟁사·방문조사만. 공장등록 1만건+는 필요할 때만 포함.",
+        )
+    with c_hide:
+        hide_unclassified = st.checkbox(
+            "산업단지 미분류 제외",
+            value=bool(st.session_state.get("mr_hide_unclassified", False)),
+            key="mr_hide_unclassified_live",
+            help="단지가 붙은 업체만 봅니다.",
+        )
+    st.session_state["mr_incl_factory"] = include_factory
+    st.session_state["mr_hide_unclassified"] = hide_unclassified
+
+    f1, f2, f3, f4 = st.columns([1.2, 1.4, 1.2, 1.6])
+    with f1:
+        if "mr_region_live" not in st.session_state:
+            st.session_state["mr_region_live"] = list(
+                st.session_state.get("mr_region_applied") or []
+            )
+        st.session_state["mr_region_live"] = _ms_default(
+            st.session_state.get("mr_region_live"), regions
+        )
+        sel_region = st.multiselect(
+            "지역",
+            options=regions,
+            key="mr_region_live",
+            placeholder="전체 지역",
+            help="지역을 고르면 산업단지 목록이 그 지역만 남습니다.",
+        )
+    # 지역 → 산업단지
+    base_for_cx = _mr_cascade_base(
+        df,
+        regions=sel_region,
+        include_factory=include_factory,
+        hide_unclassified=hide_unclassified,
+    )
+    complex_opts = sorted(
+        [c for c in base_for_cx["산업단지"].dropna().unique().tolist() if c],
+        key=lambda x: (x == "미분류", x),
+    )
+    with f2:
+        if "mr_complex_live" not in st.session_state:
+            st.session_state["mr_complex_live"] = list(
+                st.session_state.get("mr_complex_applied") or []
+            )
+        st.session_state["mr_complex_live"] = _ms_default(
+            st.session_state.get("mr_complex_live"), complex_opts
+        )
+        sel_cx = st.multiselect(
+            "산업단지 (지역 종속)",
+            options=complex_opts,
+            key="mr_complex_live",
+            placeholder="전체 산업단지" if not sel_region else "선택 지역의 단지",
+            help="위에서 고른 지역에 있는 산업단지만 표시됩니다.",
+        )
+    # 산업단지 → 공급사
+    base_for_sup = _mr_cascade_base(
+        df,
+        regions=sel_region,
+        complexes=sel_cx,
+        include_factory=include_factory,
+        hide_unclassified=hide_unclassified,
+    )
+    supplier_opts = _mr_extract_suppliers(
+        base_for_sup["공급사"] if "공급사" in base_for_sup.columns else [],
+        limit=300,
+    )
+    with f3:
+        if "mr_sup_live" not in st.session_state:
+            st.session_state["mr_sup_live"] = list(
+                st.session_state.get("mr_sup_applied") or []
+            )
+        st.session_state["mr_sup_live"] = _ms_default(
+            st.session_state.get("mr_sup_live"), supplier_opts
+        )
+        sel_sup = st.multiselect(
+            "공급사 (단지 종속)",
+            options=supplier_opts,
+            key="mr_sup_live",
+            placeholder="전체 공급사" if not sel_cx else "선택 단지의 공급사",
+            help="위에서 고른 산업단지(및 지역)에 있는 공급사만 표시됩니다.",
+        )
+    with f4:
+        with st.form("mr_filter_q_form", clear_on_submit=False):
+            q = st.text_input(
+                "검색 (업체·주소·단지·가스·비고)",
+                value=st.session_state.get("mr_q_applied") or "",
+                key="mr_q_form",
+                placeholder="입력 후 「적용」",
+            )
+            applied = st.form_submit_button("🔍 검색 적용", type="primary", width="stretch")
+        if applied:
+            st.session_state["mr_q_applied"] = q
+
+    # 종속 필터는 선택 즉시 반영, 검색어는 적용 값 사용
+    st.session_state["mr_region_applied"] = sel_region
+    st.session_state["mr_complex_applied"] = _ms_default(sel_cx, complex_opts)
+    st.session_state["mr_sup_applied"] = _ms_default(sel_sup, supplier_opts)
+    q_applied = st.session_state.get("mr_q_applied") or ""
+
+    st.caption(
+        "지역 → 산업단지 → 공급사 순으로 종속됩니다. "
+        "텍스트 검색만 **검색 적용**이 필요합니다."
+    )
 
     view = _filter_frame(
         df,
         regions=sel_region,
-        complexes=sel_cx,
-        suppliers=sel_sup,
-        query=q,
+        complexes=_ms_default(sel_cx, complex_opts),
+        suppliers=_ms_default(sel_sup, supplier_opts),
+        query=q_applied,
         include_factory=include_factory,
         hide_unclassified=hide_unclassified,
     )
@@ -1400,7 +1477,6 @@ def _mr_filter_results_fragment(
             hide_index=True,
             height=480,
         )
-        # 대용량 CSV는 잘라서 부담 완화 (전체는 화성공장 포함 시 무거움)
         csv_n = min(n_view, 5000)
         csv = view[show_cols].head(csv_n).to_csv(index=False).encode("utf-8-sig")
         st.download_button(
@@ -1431,7 +1507,6 @@ def _mr_filter_results_fragment(
             st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
 
     with tab_supplier:
-        # 공급사 문자열을 · 단위로 풀어 집계 (간단·빠름)
         cnt: Counter[str] = Counter()
         for s in view["공급사"]:
             s = str(s or "").strip()
@@ -1750,22 +1825,4 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         [r for r in df["지역"].dropna().unique().tolist() if r],
         key=lambda x: (x == "미분류", x),
     )
-    complexes = sorted(
-        [c for c in df["산업단지"].dropna().unique().tolist() if c],
-        key=lambda x: (x == "미분류", x),
-    )
-    # 공급사 옵션: 공장단독 제외 표본에서만 (옵션 목록 축소 → 위젯 가벼움)
-    _sup_base = df.loc[~df["_factory_only"], "공급사"]
-    _sup_set: set[str] = set()
-    for v in _sup_base.astype(str):
-        for p in re.split(r"\s*[·|/]\s*", v):
-            p = p.strip()
-            if p:
-                _sup_set.add(p)
-            if len(_sup_set) >= 300:
-                break
-        if len(_sup_set) >= 300:
-            break
-    suppliers = sorted(_sup_set)
-
-    _mr_filter_results_fragment(df, regions, complexes, suppliers, latest_update_str)
+    _mr_filter_results_fragment(df, regions, latest_update_str)
