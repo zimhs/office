@@ -4532,6 +4532,139 @@ def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_versio
     return _parse_sales_uploaded_tuples(file_tuples)
 
 
+def _dash_pivot_cache_key(
+    selected_client,
+    selected_staff,
+    selected_item,
+    start_date,
+    end_date,
+    sales_meta,
+    manual_token,
+):
+    return (
+        selected_client,
+        tuple(selected_staff or ()),
+        tuple(selected_item or ()),
+        str(start_date),
+        str(end_date),
+        sales_meta,
+        manual_token,
+    )
+
+
+def _dash_compute_pivot_bundle(df_base, df_client_filtered, df_f, full_df, all_months):
+    """필터 조합별 피벗·지표 (세션 캐시용 — 거래처 재선택 시 즉시 복원)."""
+    raw_years = sorted(full_df["연도"].unique()) if "연도" in full_df.columns else ["2026"]
+    years = sorted(raw_years, reverse=True)
+    desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
+    pivot_m_total = cached_get_yearly_monthly_pivot(df_base, all_months, years)
+    client_item_qty_pivot = cached_client_item_qty_pivot(
+        df_client_filtered, years, all_months
+    )
+    sales_p, qty_p, unit_price_p = cached_tab3_pivots(df_f, years, all_months)
+    staff_pivot = cached_staff_pivot(df_base, desired_order)
+    detail_cols = [
+        "매출일_dt",
+        "담당자",
+        "거래처",
+        "품목명",
+        "출고량",
+        "단가",
+        "매출액",
+    ]
+    df_detail = (
+        df_f[detail_cols] if not df_f.empty else pd.DataFrame(columns=detail_cols)
+    )
+    df_total_monthly = df_base.groupby(df_base["매출일_dt"].dt.to_period("M"))[
+        "매출액"
+    ].sum()
+    if not df_total_monthly.empty:
+        latest_period_total = df_total_monthly.index.max()
+        cur_month_sales_total = df_total_monthly.loc[latest_period_total] * 1.1
+        prev_period_total = latest_period_total - 1
+        prev_month_sales_total = df_total_monthly.get(prev_period_total, 0.0) * 1.1
+        mom_rate_total = (
+            (cur_month_sales_total - prev_month_sales_total)
+            / prev_month_sales_total
+            * 100
+            if prev_month_sales_total > 0
+            else 0.0
+        )
+        avg_monthly_sales_total = df_total_monthly.mean() * 1.1
+        avg_rate_total = (
+            (cur_month_sales_total - avg_monthly_sales_total)
+            / avg_monthly_sales_total
+            * 100
+            if avg_monthly_sales_total > 0
+            else 0.0
+        )
+        latest_month_str_total = latest_period_total.strftime("%Y년 %m월")
+    else:
+        cur_month_sales_total = 0.0
+        prev_month_sales_total = 0.0
+        mom_rate_total = 0.0
+        avg_monthly_sales_total = 0.0
+        avg_rate_total = 0.0
+        latest_month_str_total = "-"
+    if not df_client_filtered.empty:
+        df_client_monthly = (
+            df_client_filtered.groupby(
+                df_client_filtered["매출일_dt"].dt.to_period("M")
+            )["매출액"].sum()
+            * 1.1
+        )
+        latest_period_client = df_client_monthly.index.max()
+        cur_month_sales_client = df_client_monthly.loc[latest_period_client]
+        prev_period_client = latest_period_client - 1
+        prev_month_sales_client = df_client_monthly.get(prev_period_client, 0.0)
+        mom_rate_client = (
+            (cur_month_sales_client - prev_month_sales_client)
+            / prev_month_sales_client
+            * 100
+            if prev_month_sales_client > 0
+            else 0.0
+        )
+        avg_monthly_sales_client = df_client_monthly.mean()
+        avg_rate_client = (
+            (cur_month_sales_client - avg_monthly_sales_client)
+            / avg_monthly_sales_client
+            * 100
+            if avg_monthly_sales_client > 0
+            else 0.0
+        )
+        latest_month_str_client = latest_period_client.strftime("%Y년 %m월")
+    else:
+        cur_month_sales_client = 0.0
+        prev_month_sales_client = 0.0
+        mom_rate_client = 0.0
+        avg_monthly_sales_client = 0.0
+        avg_rate_client = 0.0
+        latest_month_str_client = "-"
+    return {
+        "years": years,
+        "desired_order": desired_order,
+        "pivot_m_total": pivot_m_total,
+        "client_item_qty_pivot": client_item_qty_pivot,
+        "sales_p": sales_p,
+        "qty_p": qty_p,
+        "unit_price_p": unit_price_p,
+        "staff_pivot": staff_pivot,
+        "df_detail": df_detail,
+        "cur_month_sales_total": cur_month_sales_total,
+        "prev_month_sales_total": prev_month_sales_total,
+        "mom_rate_total": mom_rate_total,
+        "avg_monthly_sales_total": avg_monthly_sales_total,
+        "avg_rate_total": avg_rate_total,
+        "latest_month_str_total": latest_month_str_total,
+        "cur_month_sales_client": cur_month_sales_client,
+        "prev_month_sales_client": prev_month_sales_client,
+        "mom_rate_client": mom_rate_client,
+        "avg_monthly_sales_client": avg_monthly_sales_client,
+        "avg_rate_client": avg_rate_client,
+        "latest_month_str_client": latest_month_str_client,
+    }
+
+
 # ==========================================
 # 4. 피벗 및 지표 계산 연산 캐싱 (최적화)
 # ==========================================
@@ -8907,11 +9040,16 @@ if not full_df.empty:
             if selected_staff
             else df_base_opts
         )
-        all_clients = (
-            sorted(df_staff_for_opts["거래처"].astype(str).unique())
-            if not df_staff_for_opts.empty
-            else []
-        )
+        _client_opts_sig = (start_date, end_date, tuple(selected_staff or ()))
+        if st.session_state.get("_dash_client_opts_sig") != _client_opts_sig:
+            st.session_state["_dash_client_opts_sig"] = _client_opts_sig
+            if df_staff_for_opts.empty:
+                st.session_state["_dash_client_opts_tuple"] = ()
+            else:
+                st.session_state["_dash_client_opts_tuple"] = tuple(
+                    df_staff_for_opts["거래처"].astype(str).unique()
+                )
+        all_clients = sorted(st.session_state.get("_dash_client_opts_tuple", ()))
         # 단일 선택 + 태그 X로 원복 (selectbox는 지우기 불가 → multiselect max 1)
         # 구 selectbox 키 문자열 → 새 리스트 키로 1회 이관
         if "dash_filter_client_ms" not in st.session_state:
@@ -8971,41 +9109,44 @@ if not full_df.empty:
             if selected_item
             else df_client_filtered
         )
-    raw_years = sorted(full_df["연도"].unique()) if "연도" in full_df.columns else ["2026"]
-    years = sorted(raw_years, reverse=True)
-    desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
-    pivot_m_total = cached_get_yearly_monthly_pivot(df_base, all_months, years)
-    client_item_qty_pivot = cached_client_item_qty_pivot(df_client_filtered, years, all_months)
-    sales_p, qty_p, unit_price_p = cached_tab3_pivots(df_f, years, all_months)
-    staff_pivot = cached_staff_pivot(df_base, desired_order)
-    detail_cols = ["매출일_dt", "담당자", "거래처", "품목명", "출고량", "단가", "매출액"]
-    df_detail = df_f[detail_cols].copy() if not df_f.empty else pd.DataFrame(columns=detail_cols)
-    df_total_monthly = df_base.groupby(df_base["매출일_dt"].dt.to_period("M"))["매출액"].sum()
-    if not df_total_monthly.empty:
-        latest_period_total = df_total_monthly.index.max()
-        cur_month_sales_total = df_total_monthly.loc[latest_period_total] * 1.1
-        prev_period_total = latest_period_total - 1
-        prev_month_sales_total = df_total_monthly.get(prev_period_total, 0.0) * 1.1
-        mom_rate_total = ((cur_month_sales_total - prev_month_sales_total) / prev_month_sales_total * 100) if prev_month_sales_total > 0 else 0.0
-        avg_monthly_sales_total = (df_total_monthly.mean() * 1.1)
-        avg_rate_total = ((cur_month_sales_total - avg_monthly_sales_total) / avg_monthly_sales_total * 100) if avg_monthly_sales_total > 0 else 0.0
-        latest_month_str_total = latest_period_total.strftime("%Y년 %m월")
-    else:
-        cur_month_sales_total = prev_month_sales_total = mom_rate_total = avg_monthly_sales_total = avg_rate_total = 0.0
-        latest_month_str_total = "-"
-    if not df_client_filtered.empty:
-        df_client_monthly = df_client_filtered.groupby(df_client_filtered["매출일_dt"].dt.to_period("M"))["매출액"].sum() * 1.1
-        latest_period_client = df_client_monthly.index.max()
-        cur_month_sales_client = df_client_monthly.loc[latest_period_client]
-        prev_period_client = latest_period_client - 1
-        prev_month_sales_client = df_client_monthly.get(prev_period_client, 0.0)
-        mom_rate_client = ((cur_month_sales_client - prev_month_sales_client) / prev_month_sales_client * 100) if prev_month_sales_client > 0 else 0.0
-        avg_monthly_sales_client = df_client_monthly.mean()
-        avg_rate_client = ((cur_month_sales_client - avg_monthly_sales_client) / avg_monthly_sales_client * 100) if avg_monthly_sales_client > 0 else 0.0
-        latest_month_str_client = latest_period_client.strftime("%Y년 %m월")
-    else:
-        cur_month_sales_client = prev_month_sales_client = mom_rate_client = avg_monthly_sales_client = avg_rate_client = 0.0
-        latest_month_str_client = "-"
+        _pivot_ck = _dash_pivot_cache_key(
+            selected_client,
+            selected_staff,
+            selected_item,
+            start_date,
+            end_date,
+            sales_file_meta,
+            _manual_staff_map_cache_token(),
+        )
+        _pivot_store = st.session_state.setdefault("_dash_pivot_store", {})
+        if _pivot_ck not in _pivot_store:
+            _pivot_store[_pivot_ck] = _dash_compute_pivot_bundle(
+                df_base, df_client_filtered, df_f, full_df, all_months
+            )
+            while len(_pivot_store) > 24:
+                _pivot_store.pop(next(iter(_pivot_store)))
+        _pb = _pivot_store[_pivot_ck]
+        years = _pb["years"]
+        desired_order = _pb["desired_order"]
+        pivot_m_total = _pb["pivot_m_total"]
+        client_item_qty_pivot = _pb["client_item_qty_pivot"]
+        sales_p = _pb["sales_p"]
+        qty_p = _pb["qty_p"]
+        unit_price_p = _pb["unit_price_p"]
+        staff_pivot = _pb["staff_pivot"]
+        df_detail = _pb["df_detail"]
+        cur_month_sales_total = _pb["cur_month_sales_total"]
+        prev_month_sales_total = _pb["prev_month_sales_total"]
+        mom_rate_total = _pb["mom_rate_total"]
+        avg_monthly_sales_total = _pb["avg_monthly_sales_total"]
+        avg_rate_total = _pb["avg_rate_total"]
+        latest_month_str_total = _pb["latest_month_str_total"]
+        cur_month_sales_client = _pb["cur_month_sales_client"]
+        prev_month_sales_client = _pb["prev_month_sales_client"]
+        mom_rate_client = _pb["mom_rate_client"]
+        avg_monthly_sales_client = _pb["avg_monthly_sales_client"]
+        avg_rate_client = _pb["avg_rate_client"]
+        latest_month_str_client = _pb["latest_month_str_client"]
 else:
     cur_month_sales_total = prev_month_sales_total = mom_rate_total = avg_monthly_sales_total = avg_rate_total = 0.0
     latest_month_str_total = "-"
@@ -9030,18 +9171,6 @@ else:
     client_addr = str(client_addr_raw)
 st.sidebar.markdown("---")
 st.sidebar.subheader("📥 엑셀 내보내기")
-sheets_dict = {
-    "연도별_월매출(만원)": (pivot_m_total, True),
-    "거래처별_품목별사용량": (client_item_qty_pivot, True),
-    "선택거래처_품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
-    "선택거래처_품목별_출고량": (qty_p, True),
-    "선택거래처_품목별_적용단가": (unit_price_p, True),
-    "담당자별_매출(만원)": (staff_pivot, True),
-    "상세거래내역": (df_detail, False),
-}
-if not filtered_debt_df.empty:
-    sheets_dict["채권관리_현황"] = (filtered_debt_df, False)
-# 필터 변경 시에만 엑셀 재생성 (탭 전환·기타 위젯 rerun에서는 캐시 재사용)
 _excel_sig = (
     selected_client,
     tuple(selected_staff or []),
@@ -9054,16 +9183,44 @@ _excel_sig = (
     int(len(filtered_debt_df)),
 )
 if st.session_state.get("_dash_excel_sig") != _excel_sig:
-    st.session_state["_dash_excel_sig"] = _excel_sig
-    st.session_state["_dash_excel_bytes"] = convert_dfs_to_excel(sheets_dict)
-excel_data = st.session_state.get("_dash_excel_bytes") or convert_dfs_to_excel(sheets_dict)
-st.sidebar.download_button(
-    label="📊 전체 분석 시트별 엑셀 다운로드",
-    data=excel_data,
-    file_name="통합영업분석_시트별보고서.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    use_container_width=True,
+    st.session_state.pop("_dash_excel_bytes", None)
+_excel_ready = bool(
+    st.session_state.get("_dash_excel_sig") == _excel_sig
+    and st.session_state.get("_dash_excel_bytes")
 )
+if st.sidebar.button(
+    "📊 엑셀 파일 준비",
+    key="dash_excel_prepare",
+    use_container_width=True,
+    help="현재 검색 조건으로 시트별 엑셀을 만듭니다.",
+):
+    with st.spinner("엑셀 생성 중…"):
+        _sheets_dict = {
+            "연도별_월매출(만원)": (pivot_m_total, True),
+            "거래처별_품목별사용량": (client_item_qty_pivot, True),
+            "선택거래처_품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
+            "선택거래처_품목별_출고량": (qty_p, True),
+            "선택거래처_품목별_적용단가": (unit_price_p, True),
+            "담당자별_매출(만원)": (staff_pivot, True),
+            "상세거래내역": (df_detail, False),
+        }
+        if not filtered_debt_df.empty:
+            _sheets_dict["채권관리_현황"] = (filtered_debt_df, False)
+        st.session_state["_dash_excel_sig"] = _excel_sig
+        st.session_state["_dash_excel_bytes"] = convert_dfs_to_excel(_sheets_dict)
+        _excel_ready = True
+if _excel_ready:
+    st.sidebar.download_button(
+        label="⬇️ 전체 분석 시트별 엑셀 다운로드",
+        data=st.session_state["_dash_excel_bytes"],
+        file_name="통합영업분석_시트별보고서.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+elif st.session_state.get("_dash_excel_sig") and st.session_state.get("_dash_excel_sig") != _excel_sig:
+    st.sidebar.caption("검색 조건이 바뀌었습니다. 「엑셀 파일 준비」를 다시 눌러 주세요.")
+else:
+    st.sidebar.caption("엑셀은 「엑셀 파일 준비」 후 다운로드 (거래처 지정 시 자동 생성 안 함)")
 st.sidebar.subheader("📽️ PPT 내보내기")
 _ppt_sig = (
     selected_client,
