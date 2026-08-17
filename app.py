@@ -554,9 +554,42 @@ def inject_custom_css():
                 padding-right: 2px !important;
             }
             html.dashboard-touch-mode #dashboard-sticky-spacer {
-                min-height: 160px !important;
+                min-height: 0 !important;
+                height: var(--dashboard-fixed-bar-height, 0px) !important;
+                margin: 0 !important;
+                padding: 0 !important;
                 display: block !important;
                 width: 100% !important;
+            }
+            html.dashboard-touch-mode .dashboard-tabs-host-compact [role="tabpanel"] {
+                padding-top: 0 !important;
+            }
+            html.dashboard-touch-mode .dashboard-tab-panel-head {
+                padding-top: 0 !important;
+                margin-top: 0 !important;
+                margin-bottom: 4px !important;
+            }
+            /* iPad: 탭이 화면 밖으로 잘리지 않게 줄바꿈 */
+            html.dashboard-touch-mode .dashboard-filter-sticky [role="tablist"],
+            html.dashboard-touch-mode .dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter,
+            html.dashboard-touch-mode .dashboard-tabs-in-filter {
+                display: flex !important;
+                flex-wrap: wrap !important;
+                overflow-x: visible !important;
+                overflow-y: visible !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
+                row-gap: 0 !important;
+                column-gap: 0 !important;
+            }
+            html.dashboard-touch-mode .dashboard-filter-sticky [role="tab"] {
+                flex: 0 0 auto !important;
+                min-width: 0 !important;
+                max-width: none !important;
+                white-space: nowrap !important;
+                font-size: 12px !important;
+                padding: 3px 6px 4px 6px !important;
             }
             html.dashboard-touch-mode .dashboard-filter-sticky,
             html.dashboard-touch-mode .dashboard-filter-sticky-touch {
@@ -6946,7 +6979,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
-            var STICKY_SCRIPT_VER_IPAD = 20; /* iPad: 검색 목록 가림(z-index 1)·조작 중 스타일 재기록 금지 */
+            var STICKY_SCRIPT_VER_IPAD = 21; /* iPad: 본문 여백 밀착 + 탭 줄바꿈 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -7360,11 +7393,16 @@ def inject_sticky_tabs_script():
                 targetBox.style.setProperty('overflow', 'visible', 'important');
                 targetBox.style.setProperty('-webkit-transform', 'none', 'important');
                 targetBox.style.setProperty('transform', 'none', 'important');
-                var pinH = Math.max(140, Math.min(targetBox.offsetHeight || 160, 220));
-                spacer.style.height = pinH + 'px';
-                spacer.style.width = '100%';
-                spacer.style.marginBottom = '12px';
-                spacer.style.display = 'block';
+                var barBottom = targetBox.getBoundingClientRect().bottom;
+                var spacerTop = spacer.getBoundingClientRect().top;
+                var pinH = Math.max(4, Math.round(barBottom - spacerTop + 2));
+                spacer.style.setProperty('height', pinH + 'px', 'important');
+                spacer.style.setProperty('min-height', '0', 'important');
+                spacer.style.setProperty('margin', '0', 'important');
+                spacer.style.setProperty('padding', '0', 'important');
+                spacer.style.setProperty('width', '100%', 'important');
+                spacer.style.setProperty('display', 'block', 'important');
+                parentDoc.documentElement.style.setProperty('--dashboard-fixed-bar-height', pinH + 'px');
                 parentWin.__dashboardIpadTarget = targetBox;
                 parentWin.__dashboardIpadSpacer = spacer;
             }
@@ -9448,10 +9486,10 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
 if is_touch_ui():
     # iPad: 스크립트는 매 rerun 넣되, 이미 기동된 경우 pin만 (검색 후 가림 방지)
     inject_sticky_tabs_script()
-    if st.session_state.get("_ipad_sticky_ver") != 20:
+    if st.session_state.get("_ipad_sticky_ver") != 21:
         inject_ipad_plotly_controls()
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 20
+        st.session_state["_ipad_sticky_ver"] = 21
 else:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
