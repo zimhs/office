@@ -595,7 +595,14 @@ def _invalidate_mr_loaded() -> None:
         load_market_research_frame.clear()
     except Exception:
         pass
-    for k in ("_mr_data_warm", "_mr_data_sig"):
+    for k in (
+        "_mr_data_warm",
+        "_mr_data_sig",
+        "_mr_df",
+        "_mr_raw_n",
+        "_mr_removed_n",
+        "_mr_cascade",
+    ):
         st.session_state.pop(k, None)
 
 
@@ -1353,6 +1360,17 @@ def _cached_mr_cascade_index(_cache_sig: str) -> dict:
     return mr_cascade.build_cascade_index(frame)
 
 
+_MR_SLIM_COLS = list(dict.fromkeys(
+    list(_MR_SHOW_COLS) + ["_factory_only", "_has_factory", "_search"]
+))
+
+
+def _mr_slim_frame(df: pd.DataFrame) -> pd.DataFrame:
+    cols = [c for c in _MR_SLIM_COLS if c in df.columns]
+    return df.loc[:, cols]
+
+
+@st.fragment
 def _mr_filter_results_fragment(
     df: pd.DataFrame,
     regions: list[str],
@@ -1366,8 +1384,8 @@ def _mr_filter_results_fragment(
             return
 
         st.caption(
-            "필터 **v6** · 지역→단지→공급사 종속 · "
-            "조건을 고른 뒤 **적용**을 누르세요 (백지 방지)."
+            "필터 **v7** · 지역→단지→공급사 종속 · "
+            "조건을 고른 뒤 **적용** (부분 갱신, 전체 재로딩 없음)."
         )
 
         # 직전에 적용된 값 (옵션 종속 기준)
@@ -1448,7 +1466,10 @@ def _mr_filter_results_fragment(
                 cascade, list(r_in or []), kept_c, include_factory=bool(fac_in)
             )
             st.session_state["mr_v6_sup"] = [x for x in (s_in or []) if x in new_sup]
-            st.rerun()
+            try:
+                st.rerun(scope="fragment")
+            except TypeError:
+                st.rerun()
 
         app_r = list(st.session_state.get("mr_v6_region") or [])
         app_c = list(st.session_state.get("mr_v6_complex") or [])
@@ -1772,21 +1793,30 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                 "(맥이면 Drive「시장조사/직접입력_시장조사.json」에도 복사)"
             )
 
-    # Drive 동기화는 세션당 1회
-    ensure_market_research_cache()
-    sig = _cache_signature()
+    # Drive 동기화·엑셀 병합은 세션당 1회. 적용 버튼은 fragment만 재실행.
     if not st.session_state.get("_mr_data_warm"):
+        ensure_market_research_cache()
+        sig = _cache_signature()
         with st.spinner("시장조사 자료 최초 정리·병합 중… (이후 검색은 빠릅니다)"):
             df, raw_n, removed_n = load_market_research_frame(sig)
+        st.session_state["_mr_df"] = _mr_slim_frame(df)
+        st.session_state["_mr_raw_n"] = raw_n
+        st.session_state["_mr_removed_n"] = removed_n
         st.session_state["_mr_data_warm"] = True
         st.session_state["_mr_data_sig"] = sig
-    else:
+        st.session_state["_mr_cascade"] = _cached_mr_cascade_index(sig)
+    df = st.session_state.get("_mr_df")
+    raw_n = int(st.session_state.get("_mr_raw_n") or 0)
+    removed_n = int(st.session_state.get("_mr_removed_n") or 0)
+    if df is None or getattr(df, "empty", True):
+        ensure_market_research_cache()
+        sig = _cache_signature()
         df, raw_n, removed_n = load_market_research_frame(sig)
-        if st.session_state.get("_mr_data_sig") != sig:
-            with st.spinner("시장조사 자료 변경 감지 — 갱신 중…"):
-                load_market_research_frame.clear()
-                df, raw_n, removed_n = load_market_research_frame(sig)
-            st.session_state["_mr_data_sig"] = sig
+        df = _mr_slim_frame(df)
+        st.session_state["_mr_df"] = df
+        st.session_state["_mr_raw_n"] = raw_n
+        st.session_state["_mr_removed_n"] = removed_n
+        st.session_state["_mr_cascade"] = _cached_mr_cascade_index(sig)
 
     if df.empty:
         st.info(
@@ -1817,9 +1847,11 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         [r for r in df["지역"].dropna().unique().tolist() if r],
         key=lambda x: (x == "미분류", x),
     )
-    sig_now = _cache_signature()
+    cascade = st.session_state.get("_mr_cascade")
+    if not cascade:
+        cascade = _cached_mr_cascade_index(st.session_state.get("_mr_data_sig") or "")
+        st.session_state["_mr_cascade"] = cascade
     try:
-        cascade = _cached_mr_cascade_index(sig_now)
         _mr_filter_results_fragment(df, regions, cascade, latest_update_str)
     except Exception as e:
         st.error(f"시장조사 필터 표시 실패: {e}")
