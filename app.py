@@ -2621,6 +2621,54 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
                 return float(res.json()['documents'][0]['y']), float(res.json()['documents'][0]['x'])
         except: pass
     return None, None
+
+
+# Tab6 전용: 프로세스 재시작 후에도 좌표 API를 다시 치지 않도록 디스크에 저장
+KAKAO_GEOCODE_CACHE_PATH = os.path.join(CACHE_DIR, "kakao_geocode_cache.json")
+
+
+def _kakao_geocode_disk_key(company_name, address):
+    return f"{str(company_name).strip()}||{str(address or '').strip()}"
+
+
+def _load_kakao_geocode_disk():
+    path = KAKAO_GEOCODE_CACHE_PATH
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_kakao_geocode_disk(cache_dict):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(KAKAO_GEOCODE_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache_dict, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def get_lat_lon_kakao_disk(company_name, address, rest_api_key, disk_cache, dirty_flag):
+    """디스크 캐시 우선 → 없으면 Kakao API(@st.cache_data) 호출."""
+    key = _kakao_geocode_disk_key(company_name, address)
+    if key in disk_cache:
+        hit = disk_cache[key]
+        if not hit or hit.get("lat") is None or hit.get("lon") is None:
+            return None, None
+        try:
+            return float(hit["lat"]), float(hit["lon"])
+        except Exception:
+            return None, None
+    lat, lon = get_lat_lon_kakao(company_name, address, rest_api_key)
+    disk_cache[key] = {"lat": lat, "lon": lon}
+    dirty_flag[0] = True
+    return lat, lon
+
+
 KAKAO_REST_API_KEY = "21a8c4d7312051598c2e05dba0b9c0c7"
 @st.cache_data(show_spinner=False, max_entries=2000)
 def kakao_place_search(query, rest_api_key=None, size=15):
@@ -9776,109 +9824,134 @@ with tab6:
         btn_zoom_out = st.button("➖ 축소 (-)", use_container_width=True)
     with ctrl_c4:
         btn_reset_map = st.button("🏠 기본 위치", use_container_width=True)
-    if btn_load_map or btn_zoom_in or btn_zoom_out or btn_reset_map or "show_map" not in st.session_state:
-        st.session_state.show_map = True
-    
-    if st.session_state.show_map:
-        target_map_df = df_base.copy()
-    
-        if map_selected_client:
-            target_map_df = target_map_df[target_map_df["거래처"].isin(map_selected_client)]
-        elif map_selected_staff:
-            target_map_df = target_map_df[target_map_df["담당자"].isin(map_selected_staff)]
-    
-        if not target_map_df.empty:
-            unique_clients_df = target_map_df[['거래처', '담당자']].drop_duplicates(subset=['거래처'])
-        
-            map_data = []
-            total_cnt = len(unique_clients_df)
-            progress_text = "최초 1회 주소 좌표 변환 중입니다 (이후부터는 빠르게 로딩됩니다) 🚀"
-            my_bar = st.progress(0, text=progress_text)
-        
-            invalid_clients = [] 
-        
-            for i, (_, row) in enumerate(unique_clients_df.iterrows()):
-                c_name = row['거래처']
-                c_staff = row['담당자']
-            
-                c_addr_raw = resolve_client_address(c_name, addr_dict)
-                c_addr = c_addr_raw if c_addr_raw else "등록된 주소 정보가 없습니다."
-            
-                lat, lon = get_lat_lon_kakao(c_name, c_addr, rest_api_key)
-            
-                if lat is not None and lon is not None:
-                    map_data.append({
-                        "거래처": c_name,
-                        "담당자": c_staff,
-                        "주소": c_addr,
-                        "lat": lat,
-                        "lon": lon
-                    })
-                else:
-                    invalid_clients.append(c_name)
-                
-                my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i+1}/{total_cnt})")
-        
-            my_bar.empty()
-        
-            if map_data:
-                map_df = pd.DataFrame(map_data)
-                center_lat = map_df['lat'].mean()
-                center_lon = map_df['lon'].mean()
-            
-                default_zoom = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
-            
-                if "map_zoom" not in st.session_state or btn_reset_map or btn_load_map:
-                    st.session_state.map_zoom = default_zoom
-            
-                if btn_zoom_in: 
-                    st.session_state.map_zoom = min(st.session_state.map_zoom + 2, 20)
-                elif btn_zoom_out: 
-                    st.session_state.map_zoom = max(st.session_state.map_zoom - 2, 2) 
-            
-                vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
-                vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
-                vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
-                dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
 
-                # iPad 전용: Plotly Mapbox WebGL이 Safari에서 마커/범례를 검정으로 그림
-                # → Leaflet 원형 마커(명시 HEX)로만 우회. 맥 경로(아래 else)는 일절 변경 없음.
-                if is_touch_ui():
-                    _palette = [
-                        "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
-                        "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
-                        "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#8C564B",
-                    ]
-                    _staffs = sorted(map_df["담당자"].astype(str).unique())
-                    _cmap = {s: _palette[i % len(_palette)] for i, s in enumerate(_staffs)}
-                    _pts = []
-                    for _, _r in map_df.iterrows():
-                        _staff = str(_r["담당자"])
-                        _pts.append({
-                            "lat": float(_r["lat"]),
-                            "lon": float(_r["lon"]),
-                            "name": str(_r["거래처"]),
-                            "staff": _staff,
-                            "addr": str(_r.get("주소") or ""),
-                            "color": _cmap.get(_staff, "#636EFA"),
-                        })
-                    _legend_html = "".join(
-                        f'<span style="display:inline-flex;align-items:center;margin:0 10px 6px 0;'
-                        f'font-size:13px;color:#334155;">'
-                        f'<span style="width:12px;height:12px;border-radius:50%;background:{_cmap[s]};'
-                        f'display:inline-block;margin-right:5px;border:1px solid #94A3B8;"></span>'
-                        f"{html.escape(s)}</span>"
-                        for s in _staffs
-                    )
-                    _use_sat = "일반" not in map_style_choice
-                    _tiles_js = (
-                        f'L.tileLayer("{vworld_sat}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
-                        f'L.tileLayer("{vworld_hybrid}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
-                        if _use_sat
-                        else f'L.tileLayer("{vworld_base}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
-                    )
-                    _pts_json = json.dumps(_pts, ensure_ascii=False)
-                    _leaflet_html = f"""<!DOCTYPE html>
+    # 재시작·다른 탭 조작 시 전체 지오코딩이 돌지 않도록: 조회 버튼 후에만 로드
+    if "show_map" not in st.session_state:
+        st.session_state.show_map = False
+    if btn_load_map:
+        st.session_state.show_map = True
+        st.session_state.map_force_rebuild = True
+    if btn_zoom_in or btn_zoom_out or btn_reset_map:
+        st.session_state.show_map = True
+
+    map_filter_fp = (
+        tuple(sorted(map_selected_staff or [])),
+        tuple(sorted(map_selected_client or [])),
+    )
+
+    if not st.session_state.show_map:
+        st.info("담당자·거래처를 선택한 뒤 **지도 새로고침/조회**를 누르면 지도를 불러옵니다. (재시작 시 자동 조회하지 않아 앱이 빨라집니다)")
+    else:
+        need_rebuild = (
+            st.session_state.pop("map_force_rebuild", False)
+            or st.session_state.get("tab6_map_fp") != map_filter_fp
+            or "tab6_map_df" not in st.session_state
+        )
+
+        if need_rebuild:
+            target_map_df = df_base.copy()
+            if map_selected_client:
+                target_map_df = target_map_df[target_map_df["거래처"].isin(map_selected_client)]
+            elif map_selected_staff:
+                target_map_df = target_map_df[target_map_df["담당자"].isin(map_selected_staff)]
+
+            map_data = []
+            invalid_clients = []
+            if not target_map_df.empty:
+                unique_clients_df = target_map_df[["거래처", "담당자"]].drop_duplicates(subset=["거래처"])
+                total_cnt = len(unique_clients_df)
+                disk_cache = _load_kakao_geocode_disk()
+                dirty = [False]
+                progress_text = "주소 좌표 변환 중 (디스크 캐시 우선) 🚀"
+                my_bar = st.progress(0, text=progress_text)
+
+                for i, (_, row) in enumerate(unique_clients_df.iterrows()):
+                    c_name = row["거래처"]
+                    c_staff = row["담당자"]
+                    c_addr_raw = resolve_client_address(c_name, addr_dict)
+                    c_addr = c_addr_raw if c_addr_raw else "등록된 주소 정보가 없습니다."
+                    lat, lon = get_lat_lon_kakao_disk(c_name, c_addr, rest_api_key, disk_cache, dirty)
+                    if lat is not None and lon is not None:
+                        map_data.append(
+                            {
+                                "거래처": c_name,
+                                "담당자": c_staff,
+                                "주소": c_addr,
+                                "lat": lat,
+                                "lon": lon,
+                            }
+                        )
+                    else:
+                        invalid_clients.append(c_name)
+                    my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i + 1}/{total_cnt})")
+                my_bar.empty()
+                if dirty[0]:
+                    _save_kakao_geocode_disk(disk_cache)
+
+            st.session_state.tab6_map_df = pd.DataFrame(map_data) if map_data else pd.DataFrame()
+            st.session_state.tab6_invalid_clients = invalid_clients
+            st.session_state.tab6_map_fp = map_filter_fp
+
+        map_df = st.session_state.get("tab6_map_df", pd.DataFrame())
+        invalid_clients = st.session_state.get("tab6_invalid_clients", [])
+
+        if map_df is not None and not map_df.empty:
+            center_lat = float(map_df["lat"].mean())
+            center_lon = float(map_df["lon"].mean())
+
+            default_zoom = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
+
+            if "map_zoom" not in st.session_state or btn_reset_map or btn_load_map:
+                st.session_state.map_zoom = default_zoom
+
+            if btn_zoom_in:
+                st.session_state.map_zoom = min(st.session_state.map_zoom + 2, 20)
+            elif btn_zoom_out:
+                st.session_state.map_zoom = max(st.session_state.map_zoom - 2, 2)
+
+            vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
+            vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
+            vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
+            dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
+
+            # iPad 전용: Plotly Mapbox WebGL이 Safari에서 마커/범례를 검정으로 그림
+            # → Leaflet 원형 마커(명시 HEX)로만 우회. 맥 경로(아래 else)는 일절 변경 없음.
+            if is_touch_ui():
+                _palette = [
+                    "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
+                    "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
+                    "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#8C564B",
+                ]
+                _staffs = sorted(map_df["담당자"].astype(str).unique())
+                _cmap = {s: _palette[i % len(_palette)] for i, s in enumerate(_staffs)}
+                _pts = []
+                for _, _r in map_df.iterrows():
+                    _staff = str(_r["담당자"])
+                    _pts.append({
+                        "lat": float(_r["lat"]),
+                        "lon": float(_r["lon"]),
+                        "name": str(_r["거래처"]),
+                        "staff": _staff,
+                        "addr": str(_r.get("주소") or ""),
+                        "color": _cmap.get(_staff, "#636EFA"),
+                    })
+                _legend_html = "".join(
+                    f'<span style="display:inline-flex;align-items:center;margin:0 10px 6px 0;'
+                    f'font-size:13px;color:#334155;">'
+                    f'<span style="width:12px;height:12px;border-radius:50%;background:{_cmap[s]};'
+                    f'display:inline-block;margin-right:5px;border:1px solid #94A3B8;"></span>'
+                    f"{html.escape(s)}</span>"
+                    for s in _staffs
+                )
+                _use_sat = "일반" not in map_style_choice
+                _tiles_js = (
+                    f'L.tileLayer("{vworld_sat}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                    f'L.tileLayer("{vworld_hybrid}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                    if _use_sat
+                    else f'L.tileLayer("{vworld_base}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                )
+                _pts_json = json.dumps(_pts, ensure_ascii=False)
+                _leaflet_html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -9915,47 +9988,47 @@ with tab6:
 }})();
 </script>
 </body></html>"""
-                    components.html(_leaflet_html, height=620, scrolling=False)
-                else:
-                    fig_map = px.scatter_mapbox(
-                        map_df,
-                        lat="lat",
-                        lon="lon",
-                        color="담당자",
-                        hover_name="거래처",
-                        hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
-                        zoom=st.session_state.map_zoom,
-                        center={"lat": center_lat, "lon": center_lon},
-                        height=600
-                    )
-                    fig_map.update_traces(marker=dict(size=14, opacity=0.9))
-                    if "일반" in map_style_choice:
-                        mapbox_layers = [
-                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
-                        ]
-                    else:
-                        mapbox_layers = [
-                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
-                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
-                        ]
-                    fig_map.update_layout(
-                        mapbox_style="white-bg",
-                        mapbox_layers=mapbox_layers,
-                        margin={"r": 0, "t": 10, "l": 0, "b": 0},
-                        legend=dict(
-                            orientation="h",
-                            yanchor="bottom",
-                            y=-0.15,
-                            xanchor="center",
-                            x=0.5
-                        )
-                    )
-                    render_plotly_chart(fig_map, use_container_width=True, key=dynamic_key, allow_drag=True)
-                if invalid_clients:
-                    with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
-                        st.write(", ".join(invalid_clients))
+                components.html(_leaflet_html, height=620, scrolling=False)
             else:
-                st.info("조건에 맞는 거래처 데이터가 없습니다.")
+                fig_map = px.scatter_mapbox(
+                    map_df,
+                    lat="lat",
+                    lon="lon",
+                    color="담당자",
+                    hover_name="거래처",
+                    hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
+                    zoom=st.session_state.map_zoom,
+                    center={"lat": center_lat, "lon": center_lon},
+                    height=600
+                )
+                fig_map.update_traces(marker=dict(size=14, opacity=0.9))
+                if "일반" in map_style_choice:
+                    mapbox_layers = [
+                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
+                    ]
+                else:
+                    mapbox_layers = [
+                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
+                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
+                    ]
+                fig_map.update_layout(
+                    mapbox_style="white-bg",
+                    mapbox_layers=mapbox_layers,
+                    margin={"r": 0, "t": 10, "l": 0, "b": 0},
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.15,
+                        xanchor="center",
+                        x=0.5
+                    )
+                )
+                render_plotly_chart(fig_map, use_container_width=True, key=dynamic_key, allow_drag=True)
+            if invalid_clients:
+                with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
+                    st.write(", ".join(invalid_clients))
+        else:
+            st.info("조건에 맞는 거래처 데이터가 없습니다.")
 # Tab 7: 🏭 설비 재고 현황
 with tab7:
     t7_c1, t7_c2 = st.columns([4, 1])
