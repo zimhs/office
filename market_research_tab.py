@@ -1330,17 +1330,17 @@ def _mr_widget_key(prefix: str, parts: list[str]) -> str:
     return f"{prefix}__{tail}"
 
 
-@st.fragment
 def _mr_filter_results_fragment(
     df: pd.DataFrame,
     regions: list[str],
     latest_update_str: str,
 ) -> None:
-    """필터·검색·표만 fragment 재실행 (엑셀 재파싱 없음).
+    """필터·검색·표.
 
     종속: 지역 → 산업단지 → 공급사.
-    상위 범위에 하위 값이 없으면 빈 목록 + 「데이터 없음」.
+    fragment 미사용 — 지역 변경 시 단지 옵션이 반드시 다시 계산됨.
     """
+    st.caption("필터 **v3** · 지역을 고르면 산업단지·공급사 목록이 그 범위만 남습니다.")
     if "mr_filter_ready" not in st.session_state:
         st.session_state["mr_region_applied"] = []
         st.session_state["mr_complex_applied"] = []
@@ -1405,7 +1405,7 @@ def _mr_filter_results_fragment(
             )
         if sel_region and not complex_opts:
             st.multiselect(
-                "산업단지",
+                f"산업단지 · {'/'.join(sel_region)} · 0개",
                 options=[],
                 key=cx_key,
                 placeholder="데이터 없음",
@@ -1415,14 +1415,19 @@ def _mr_filter_results_fragment(
             st.caption(":red[선택 지역에 산업단지 데이터 없음]")
             sel_cx: list[str] = []
         else:
+            cx_label = (
+                "산업단지"
+                if not sel_region
+                else f"산업단지 · {'/'.join(sel_region)} · {len(complex_opts)}개"
+            )
             sel_cx = st.multiselect(
-                "산업단지",
+                cx_label,
                 options=complex_opts,
                 key=cx_key,
                 placeholder=(
                     "전체 산업단지"
                     if not sel_region
-                    else f"선택 지역 단지 {len(complex_opts)}개"
+                    else f"선택 지역 단지만 ({len(complex_opts)}개)"
                 ),
                 help="위에서 고른 지역 안의 산업단지만 표시됩니다.",
             )
