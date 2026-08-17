@@ -546,7 +546,7 @@ def inject_custom_css():
             }
             html.dashboard-touch-mode #dashboard-sticky-spacer {
                 display: block !important;
-                height: var(--dashboard-fixed-bar-height, 150px) !important;
+                height: var(--dashboard-fixed-bar-height, 8px) !important;
                 min-height: 0 !important;
                 margin: 0 !important;
                 padding: 0 !important;
@@ -579,7 +579,7 @@ def inject_custom_css():
             }
             html.dashboard-touch-mode #dashboard-sticky-spacer {
                 display: block !important;
-                height: var(--dashboard-fixed-bar-height, 150px) !important;
+                height: var(--dashboard-fixed-bar-height, 8px) !important;
                 min-height: 0 !important;
                 margin: 0 !important;
                 padding: 0 !important;
@@ -7040,7 +7040,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
-            var STICKY_SCRIPT_VER_IPAD = 29; /* iPad: window 스크롤 + 헤더 바로 아래 fixed 1회 */
+            var STICKY_SCRIPT_VER_IPAD = 30; /* iPad: 여백 1회 밀착 + 거래처 rerun 시 스크립트 재주입 금지 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -7614,8 +7614,8 @@ def inject_sticky_tabs_script():
             }
             function ipadApplyBoxStyles(targetBox) {
                 if (!targetBox) return;
-                if (parentWin.__dashboardIpadFreezeLayout) return;
-                if (isIpadFilterLocked()) return;
+                if (parentWin.__dashboardIpadFreezeLayout && targetBox.style.position === 'fixed') return;
+                if (isFilterDropdownOpen()) return;
                 ipadScrollTabs(targetBox);
                 targetBox.classList.add('dashboard-filter-sticky');
                 targetBox.classList.add('dashboard-filter-sticky-touch');
@@ -7644,6 +7644,13 @@ def inject_sticky_tabs_script():
                     if (targetBox.parentNode) targetBox.parentNode.insertBefore(spacer, targetBox);
                 }
                 var barH = Math.round(targetBox.offsetHeight || 160);
+                var y = parentWin.pageYOffset || parentDoc.documentElement.scrollTop || 0;
+                if (y < 24) {
+                    try {
+                        var pinH = Math.round(targetBox.getBoundingClientRect().bottom - spacer.getBoundingClientRect().top);
+                        if (pinH >= 8 && pinH <= 280) barH = pinH;
+                    } catch (ePinH) {}
+                }
                 spacer.style.setProperty('display', 'block', 'important');
                 spacer.style.setProperty('height', barH + 'px', 'important');
                 spacer.style.setProperty('min-height', '0', 'important');
@@ -7654,19 +7661,12 @@ def inject_sticky_tabs_script():
                 ipadFreezeLayout();
             }
             function ipadPinFilterBox() {
-                if (parentWin.__dashboardIpadFreezeLayout) {
-                    var live = findFilterBox();
-                    if (live && live.style.position === 'fixed') return;
-                    parentWin.__dashboardIpadFreezeLayout = false;
-                }
-                if (isIpadFilterLocked()) return;
                 var box = findFilterBox();
                 if (!box) return;
-                var prev = parentWin.__dashboardIpadTarget;
-                if (!prev || prev !== box || !parentDoc.body.contains(prev)) {
-                    applyIpad0804Hack();
-                    return;
-                }
+                if (box.style.position === 'fixed' && parentWin.__dashboardIpadFreezeLayout) return;
+                if (isFilterDropdownOpen()) return;
+                parentWin.__dashboardIpadFreezeLayout = false;
+                try { fixDuplicateMainTabs(false); } catch (eDup2) {}
                 ipadApplyBoxStyles(box);
             }
             parentWin.__dashboardIpadPin = ipadPinFilterBox;
@@ -7836,8 +7836,12 @@ def inject_sticky_tabs_script():
                     if (!isIpadFilterLocked() && !isFilterDropdownOpen()) applyIpad0804Hack();
                 }, 5000);
                 var observer = new MutationObserver(function() {
-                    if (parentWin.__dashboardIpadFreezeLayout || isIpadFilterLocked() || isFilterDropdownOpen()) return;
-                    scheduleSync(900);
+                    if (isIpadFilterLocked() || isFilterDropdownOpen()) return;
+                    var box = findFilterBox();
+                    if (!box) return;
+                    if (box.style.position === 'fixed') return;
+                    parentWin.__dashboardIpadFreezeLayout = false;
+                    ipadPinFilterBox();
                 });
                 observer.observe(parentDoc.body, { childList: true, subtree: true });
                 parentWin.__dashboardStickyObserver = observer;
@@ -9753,12 +9757,12 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
     ]
 )
 if is_touch_ui():
-    # iPad: 사이드바가 접히면 iframe 스크립트가 안 돌아가 본문에 둠
-    inject_sticky_tabs_script()
-    if st.session_state.get("_ipad_sticky_ver") != 29:
+    # iPad: 거래처 변경 rerun마다 components.html 재주입하면 로딩이 되살아남
+    if st.session_state.get("_ipad_sticky_ver") != 30:
+        inject_sticky_tabs_script()
         inject_ipad_plotly_controls()
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 29
+        st.session_state["_ipad_sticky_ver"] = 30
 else:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
