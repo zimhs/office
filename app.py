@@ -6774,13 +6774,18 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardStickyBootInterval = setInterval(function() {
                     if (!isFilterDropdownOpen()) syncFixedBar();
                     pollCount++;
-                    if (pollCount > 60) {
+                    if (pollCount > 40) {
                         clearInterval(parentWin.__dashboardStickyBootInterval);
                         parentWin.__dashboardStickyBootInterval = null;
                     }
-                }, 200);
-                /* attributes 관찰 제거 — 필터 입력마다 폭주하던 맥 로딩 완화 */
-                var observer = new MutationObserver(function() { scheduleSync(220); });
+                }, 250);
+                /* 맥: 필터 위젯 DOM churn 무시 — 메인 탭/마커 관련 mutation만 반응 */
+                var observer = new MutationObserver(function(mutations) {
+                    if (!mutationTouchesMainTabs(mutations)) return;
+                    var n = collectMainTabLists().length;
+                    if (n > 1) fixDuplicateMainTabs(true);
+                    else scheduleSync(320);
+                });
                 observer.observe(parentDoc.body, {
                     childList: true,
                     subtree: true
@@ -6789,27 +6794,25 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardMacScheduleSync = scheduleSync;
                 parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
                 parentWin.__dashboardStickyMacReady = STICKY_SCRIPT_VER;
-                var scrollRoot = parentDoc.querySelector('[data-testid="stAppViewContainer"]') || parentDoc;
-                scrollRoot.addEventListener('scroll', function() { scheduleSync(80); }, { passive: true, capture: true });
-                parentWin.addEventListener('resize', function() { scheduleSync(100); }, { passive: true });
-                parentWin.addEventListener('pageshow', function() { scheduleSync(100); }, { passive: true });
+                parentWin.addEventListener('resize', function() { scheduleSync(120); }, { passive: true });
+                parentWin.addEventListener('pageshow', function() { scheduleSync(120); }, { passive: true });
                 if (parentWin.visualViewport) {
-                    parentWin.visualViewport.addEventListener('resize', function() { scheduleSync(80); }, { passive: true });
+                    parentWin.visualViewport.addEventListener('resize', function() { scheduleSync(100); }, { passive: true });
                 }
                 parentDoc.addEventListener('click', function(e) {
                     if (e.target.closest('[data-testid="collapsedControl"]') ||
                         e.target.closest('[role="tab"]')) {
-                        scheduleSync(80);
-                        scheduleSync(350);
+                        scheduleSync(100);
+                        scheduleSync(400);
                     }
                 }, true);
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (sidebar) {
-                    sidebar.addEventListener('transitionend', function() { scheduleSync(80); });
+                    sidebar.addEventListener('transitionend', function() { scheduleSync(100); });
                 }
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
                     if (!isFilterDropdownOpen()) syncFixedBar();
-                }, 5000);
+                }, 8000);
                 syncFixedBar();
             }
         })();
