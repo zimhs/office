@@ -7451,7 +7451,7 @@ def inject_sticky_tabs_script():
                 }
                 var labels = [];
                 for (i = 0; i < origTabs.length; i++) {
-                    labels.push((origTabs[i].textContent || '').replace(/\s+/g, ' ').trim());
+                    labels.push((origTabs[i].textContent || '').replace(/\\s+/g, ' ').trim());
                 }
                 var sig = labels.join('|');
                 if (bar.getAttribute('data-sig') !== sig || bar.childNodes.length !== origTabs.length) {
