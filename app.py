@@ -7016,7 +7016,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
-            var STICKY_SCRIPT_VER_IPAD = 24; /* iPad: 탭 가로 스크롤을 parent head CSS로 강제 */
+            var STICKY_SCRIPT_VER_IPAD = 25; /* iPad: 커스텀 가로 스크롤 탭바 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -7034,18 +7034,17 @@ def inject_sticky_tabs_script():
                     (parentDoc.head || parentDoc.documentElement).appendChild(s);
                 }
                 s.textContent = (
-                    '.dashboard-filter-sticky-touch [role="tablist"],'
-                    + '.dashboard-filter-sticky-touch [data-baseweb="tab-list"]{'
-                    + 'display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;'
-                    + 'align-items:center!important;overflow-x:auto!important;overflow-y:hidden!important;'
-                    + 'width:100%!important;max-width:100%!important;min-width:0!important;'
-                    + 'height:44px!important;max-height:44px!important;'
-                    + '-webkit-overflow-scrolling:touch!important;scrollbar-width:thin;}'
-                    + '.dashboard-filter-sticky-touch [role="tab"],'
-                    + '.dashboard-filter-sticky-touch [data-testid="stTab"]{'
-                    + 'display:inline-flex!important;flex:0 0 auto!important;flex-direction:row!important;'
-                    + 'width:auto!important;min-width:max-content!important;max-width:none!important;'
-                    + 'height:44px!important;white-space:nowrap!important;}'
+                    '#dashboard-ipad-h-tabs{display:block!important;overflow-x:auto!important;overflow-y:hidden!important;'
+                    + 'white-space:nowrap!important;width:100%!important;max-width:100%!important;height:46px!important;'
+                    + 'max-height:46px!important;-webkit-overflow-scrolling:touch!important;'
+                    + 'border-top:1px solid #E2E8F0!important;background:#fff!important;}'
+                    + '#dashboard-ipad-h-tabs button{display:inline-block!important;white-space:nowrap!important;'
+                    + 'width:auto!important;height:46px!important;padding:0 12px!important;margin:0!important;'
+                    + 'border:0!important;border-bottom:2px solid transparent!important;background:#fff!important;'
+                    + 'font-size:13px!important;font-weight:700!important;color:#1E293B!important;vertical-align:top!important;}'
+                    + '#dashboard-ipad-h-tabs button.dashboard-ipad-tab-on{color:#2563EB!important;border-bottom-color:#2563EB!important;}'
+                    + '.dashboard-ipad-hide-tabs{display:none!important;height:0!important;max-height:0!important;'
+                    + 'overflow:hidden!important;visibility:hidden!important;}'
                 );
             }
             if (isTouchPadEarly()) {
@@ -7428,40 +7427,62 @@ def inject_sticky_tabs_script():
             function ipadScrollTabs(box) {
                 if (!box) return;
                 try { ipadInjectTabHScrollCss(); } catch (eCss2) {}
+                var list = null;
                 var lists = box.querySelectorAll('[role="tablist"], [data-baseweb="tab-list"]');
-                if (!lists.length) {
-                    var oneTab = box.querySelector('[data-testid="stTab"], [role="tab"]');
-                    if (oneTab && oneTab.parentElement) {
-                        lists = [oneTab.parentElement];
-                    }
-                }
-                var i, el, t, tabs;
+                var i;
                 for (i = 0; i < lists.length; i++) {
-                    el = lists[i];
-                    el.style.setProperty('display', 'flex', 'important');
-                    el.style.setProperty('flex-direction', 'row', 'important');
-                    el.style.setProperty('flex-wrap', 'nowrap', 'important');
-                    el.style.setProperty('align-items', 'center', 'important');
-                    el.style.setProperty('width', '100%', 'important');
-                    el.style.setProperty('max-width', '100%', 'important');
-                    el.style.setProperty('min-width', '0', 'important');
-                    el.style.setProperty('height', '44px', 'important');
-                    el.style.setProperty('max-height', '44px', 'important');
-                    el.style.setProperty('overflow-x', 'auto', 'important');
-                    el.style.setProperty('overflow-y', 'hidden', 'important');
-                    el.style.setProperty('-webkit-overflow-scrolling', 'touch', 'important');
-                    tabs = el.querySelectorAll('[role="tab"], [data-testid="stTab"]');
-                    for (t = 0; t < tabs.length; t++) {
-                        tabs[t].style.setProperty('display', 'inline-flex', 'important');
-                        tabs[t].style.setProperty('flex', '0 0 auto', 'important');
-                        tabs[t].style.setProperty('flex-direction', 'row', 'important');
-                        tabs[t].style.setProperty('width', 'auto', 'important');
-                        tabs[t].style.setProperty('min-width', 'max-content', 'important');
-                        tabs[t].style.setProperty('max-width', 'none', 'important');
-                        tabs[t].style.setProperty('height', '44px', 'important');
-                        tabs[t].style.setProperty('white-space', 'nowrap', 'important');
+                    if (isMainTabList(lists[i])) { list = lists[i]; break; }
+                }
+                if (!list) list = findMainTabList();
+                if (!list) {
+                    var oneTab = parentDoc.querySelector('[data-testid="stTab"]');
+                    if (oneTab) list = oneTab.parentElement;
+                }
+                if (!list) return;
+                var origTabs = list.querySelectorAll('[data-testid="stTab"], [role="tab"]');
+                if (!origTabs.length) return;
+                var bar = parentDoc.getElementById('dashboard-ipad-h-tabs');
+                if (!bar) {
+                    bar = parentDoc.createElement('div');
+                    bar.id = 'dashboard-ipad-h-tabs';
+                }
+                if (bar.parentNode !== box) {
+                    box.appendChild(bar);
+                }
+                var labels = [];
+                for (i = 0; i < origTabs.length; i++) {
+                    labels.push((origTabs[i].textContent || '').replace(/\s+/g, ' ').trim());
+                }
+                var sig = labels.join('|');
+                if (bar.getAttribute('data-sig') !== sig || bar.childNodes.length !== origTabs.length) {
+                    bar.setAttribute('data-sig', sig);
+                    bar.innerHTML = '';
+                    for (i = 0; i < origTabs.length; i++) {
+                        (function (orig, label) {
+                            var b = parentDoc.createElement('button');
+                            b.type = 'button';
+                            b.textContent = label;
+                            b.addEventListener('click', function (ev) {
+                                ev.preventDefault();
+                                try { orig.click(); } catch (eCl) {}
+                            });
+                            bar.appendChild(b);
+                        })(origTabs[i], labels[i]);
                     }
                 }
+                var btns = bar.querySelectorAll('button');
+                for (i = 0; i < origTabs.length && i < btns.length; i++) {
+                    var on = origTabs[i].getAttribute('aria-selected') === 'true'
+                        || origTabs[i].hasAttribute('data-selected')
+                        || origTabs[i].getAttribute('data-selected') === 'true';
+                    if (on) btns[i].classList.add('dashboard-ipad-tab-on');
+                    else btns[i].classList.remove('dashboard-ipad-tab-on');
+                }
+                list.classList.add('dashboard-ipad-hide-tabs');
+                list.style.setProperty('display', 'none', 'important');
+                list.style.setProperty('height', '0', 'important');
+                list.style.setProperty('max-height', '0', 'important');
+                list.style.setProperty('overflow', 'hidden', 'important');
             }
             function ipadCloseContentGap(targetBox, spacer) {
                 var host = findMainTabsHost();
@@ -9617,13 +9638,12 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
     ]
 )
 if is_touch_ui():
-    # iPad: 스크립트는 사이드바에 넣어 본문 빈 iframe 간격을 만들지 않음
-    with st.sidebar:
-        inject_sticky_tabs_script()
-    if st.session_state.get("_ipad_sticky_ver") != 24:
+    # iPad: 사이드바가 접히면 iframe 스크립트가 안 돌아가 본문에 둠
+    inject_sticky_tabs_script()
+    if st.session_state.get("_ipad_sticky_ver") != 25:
         inject_ipad_plotly_controls()
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 24
+        st.session_state["_ipad_sticky_ver"] = 25
 else:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
