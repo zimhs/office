@@ -1315,6 +1315,21 @@ def _mr_cascade_base(
     return view
 
 
+def _mr_complex_options(base: pd.DataFrame) -> list[str]:
+    """검색용 산업단지 — '미분류'는 옵션에서 제외 (없으면 빈 목록)."""
+    if base is None or base.empty or "산업단지" not in base.columns:
+        return []
+    vals = base["산업단지"].dropna().astype(str).unique().tolist()
+    return sorted([c for c in vals if c and c != "미분류"])
+
+
+def _mr_widget_key(prefix: str, parts: list[str]) -> str:
+    """상위 선택이 바뀌면 위젯을 새로 만들어 옵션이 확실히 갱신되게 함."""
+    tail = "|".join(parts) if parts else "ALL"
+    tail = re.sub(r"[^\w가-힣|.\-]+", "_", tail)[:80]
+    return f"{prefix}__{tail}"
+
+
 @st.fragment
 def _mr_filter_results_fragment(
     df: pd.DataFrame,
@@ -1323,8 +1338,8 @@ def _mr_filter_results_fragment(
 ) -> None:
     """필터·검색·표만 fragment 재실행 (엑셀 재파싱 없음).
 
-    종속: 지역 → 산업단지 → 공급사 (상위 선택에 따라 하위 옵션만 표시).
-    텍스트 검색만 「적용」필요.
+    종속: 지역 → 산업단지 → 공급사.
+    상위 범위에 하위 값이 없으면 빈 목록 + 「데이터 없음」.
     """
     if "mr_filter_ready" not in st.session_state:
         st.session_state["mr_region_applied"] = []
@@ -1341,61 +1356,78 @@ def _mr_filter_results_fragment(
             "화성공장 DB(단독) 포함",
             value=bool(st.session_state.get("mr_incl_factory", False)),
             key="mr_incl_factory_live",
-            help="기본은 시장조사·경쟁사·방문조사만. 공장등록 1만건+는 필요할 때만 포함.",
+            help="기본은 시장조사·경쟁사·방문조사만.",
         )
     with c_hide:
         hide_unclassified = st.checkbox(
             "산업단지 미분류 제외",
             value=bool(st.session_state.get("mr_hide_unclassified", False)),
             key="mr_hide_unclassified_live",
-            help="단지가 붙은 업체만 봅니다.",
         )
     st.session_state["mr_incl_factory"] = include_factory
     st.session_state["mr_hide_unclassified"] = hide_unclassified
 
     f1, f2, f3, f4 = st.columns([1.2, 1.4, 1.2, 1.6])
     with f1:
-        if "mr_region_live" not in st.session_state:
-            st.session_state["mr_region_live"] = list(
-                st.session_state.get("mr_region_applied") or []
+        region_key = "mr_region_live_v2"
+        if region_key not in st.session_state:
+            st.session_state[region_key] = _ms_default(
+                st.session_state.get("mr_region_applied"), regions
             )
-        st.session_state["mr_region_live"] = _ms_default(
-            st.session_state.get("mr_region_live"), regions
+        st.session_state[region_key] = _ms_default(
+            st.session_state.get(region_key), regions
         )
         sel_region = st.multiselect(
             "지역",
             options=regions,
-            key="mr_region_live",
+            key=region_key,
             placeholder="전체 지역",
-            help="지역을 고르면 산업단지 목록이 그 지역만 남습니다.",
+            help="지역을 고르면 아래 산업단지가 그 지역 것만으로 줄어듭니다.",
         )
-    # 지역 → 산업단지
+
+    # ① 지역 → 산업단지 (선택 지역 행만, 미분류 제외)
     base_for_cx = _mr_cascade_base(
         df,
         regions=sel_region,
         include_factory=include_factory,
-        hide_unclassified=hide_unclassified,
+        hide_unclassified=True,  # 옵션 목록에서는 미분류 제외
     )
-    complex_opts = sorted(
-        [c for c in base_for_cx["산업단지"].dropna().unique().tolist() if c],
-        key=lambda x: (x == "미분류", x),
-    )
+    complex_opts = _mr_complex_options(base_for_cx)
+    cx_key = _mr_widget_key("mr_cx_v2", sel_region)
     with f2:
-        if "mr_complex_live" not in st.session_state:
-            st.session_state["mr_complex_live"] = list(
-                st.session_state.get("mr_complex_applied") or []
+        if cx_key not in st.session_state:
+            st.session_state[cx_key] = _ms_default(
+                st.session_state.get("mr_complex_applied"), complex_opts
             )
-        st.session_state["mr_complex_live"] = _ms_default(
-            st.session_state.get("mr_complex_live"), complex_opts
-        )
-        sel_cx = st.multiselect(
-            "산업단지 (지역 종속)",
-            options=complex_opts,
-            key="mr_complex_live",
-            placeholder="전체 산업단지" if not sel_region else "선택 지역의 단지",
-            help="위에서 고른 지역에 있는 산업단지만 표시됩니다.",
-        )
-    # 산업단지 → 공급사
+        else:
+            st.session_state[cx_key] = _ms_default(
+                st.session_state.get(cx_key), complex_opts
+            )
+        if sel_region and not complex_opts:
+            st.multiselect(
+                "산업단지",
+                options=[],
+                key=cx_key,
+                placeholder="데이터 없음",
+                disabled=True,
+                help="선택한 지역에 분류된 산업단지가 없습니다.",
+            )
+            st.caption(":red[선택 지역에 산업단지 데이터 없음]")
+            sel_cx: list[str] = []
+        else:
+            sel_cx = st.multiselect(
+                "산업단지",
+                options=complex_opts,
+                key=cx_key,
+                placeholder=(
+                    "전체 산업단지"
+                    if not sel_region
+                    else f"선택 지역 단지 {len(complex_opts)}개"
+                ),
+                help="위에서 고른 지역 안의 산업단지만 표시됩니다.",
+            )
+
+    # ② 산업단지 → 공급사
     base_for_sup = _mr_cascade_base(
         df,
         regions=sel_region,
@@ -1407,49 +1439,70 @@ def _mr_filter_results_fragment(
         base_for_sup["공급사"] if "공급사" in base_for_sup.columns else [],
         limit=300,
     )
+    sup_key = _mr_widget_key("mr_sup_v2", list(sel_region) + list(sel_cx))
     with f3:
-        if "mr_sup_live" not in st.session_state:
-            st.session_state["mr_sup_live"] = list(
-                st.session_state.get("mr_sup_applied") or []
+        if sup_key not in st.session_state:
+            st.session_state[sup_key] = _ms_default(
+                st.session_state.get("mr_sup_applied"), supplier_opts
             )
-        st.session_state["mr_sup_live"] = _ms_default(
-            st.session_state.get("mr_sup_live"), supplier_opts
-        )
-        sel_sup = st.multiselect(
-            "공급사 (단지 종속)",
-            options=supplier_opts,
-            key="mr_sup_live",
-            placeholder="전체 공급사" if not sel_cx else "선택 단지의 공급사",
-            help="위에서 고른 산업단지(및 지역)에 있는 공급사만 표시됩니다.",
-        )
+        else:
+            st.session_state[sup_key] = _ms_default(
+                st.session_state.get(sup_key), supplier_opts
+            )
+        # 단지를 지정했는데 공급사가 없으면 빈 목록
+        if sel_cx and not supplier_opts:
+            st.multiselect(
+                "공급사",
+                options=[],
+                key=sup_key,
+                placeholder="데이터 없음",
+                disabled=True,
+                help="선택한 산업단지에 공급사 데이터가 없습니다.",
+            )
+            st.caption(":red[선택 단지에 공급사 데이터 없음]")
+            sel_sup: list[str] = []
+        else:
+            sel_sup = st.multiselect(
+                "공급사",
+                options=supplier_opts,
+                key=sup_key,
+                placeholder=(
+                    "전체 공급사"
+                    if not sel_cx
+                    else f"선택 단지 공급사 {len(supplier_opts)}개"
+                ),
+                help="위에서 고른 산업단지 안의 공급사만 표시됩니다.",
+            )
+
     with f4:
         with st.form("mr_filter_q_form", clear_on_submit=False):
             q = st.text_input(
                 "검색 (업체·주소·단지·가스·비고)",
                 value=st.session_state.get("mr_q_applied") or "",
                 key="mr_q_form",
-                placeholder="입력 후 「적용」",
+                placeholder="입력 후 「검색 적용」",
             )
-            applied = st.form_submit_button("🔍 검색 적용", type="primary", width="stretch")
+            applied = st.form_submit_button(
+                "🔍 검색 적용", type="primary", width="stretch"
+            )
         if applied:
             st.session_state["mr_q_applied"] = q
 
-    # 종속 필터는 선택 즉시 반영, 검색어는 적용 값 사용
-    st.session_state["mr_region_applied"] = sel_region
-    st.session_state["mr_complex_applied"] = _ms_default(sel_cx, complex_opts)
-    st.session_state["mr_sup_applied"] = _ms_default(sel_sup, supplier_opts)
+    st.session_state["mr_region_applied"] = list(sel_region or [])
+    st.session_state["mr_complex_applied"] = list(sel_cx or [])
+    st.session_state["mr_sup_applied"] = list(sel_sup or [])
     q_applied = st.session_state.get("mr_q_applied") or ""
 
     st.caption(
-        "지역 → 산업단지 → 공급사 순으로 종속됩니다. "
-        "텍스트 검색만 **검색 적용**이 필요합니다."
+        "종속 검색: **지역 → 산업단지 → 공급사**. "
+        "상위 범위에 값이 없으면 「데이터 없음」으로 비웁니다."
     )
 
     view = _filter_frame(
         df,
-        regions=sel_region,
-        complexes=_ms_default(sel_cx, complex_opts),
-        suppliers=_ms_default(sel_sup, supplier_opts),
+        regions=list(sel_region or []),
+        complexes=list(sel_cx or []),
+        suppliers=list(sel_sup or []),
         query=q_applied,
         include_factory=include_factory,
         hide_unclassified=hide_unclassified,
