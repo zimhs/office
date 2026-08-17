@@ -147,12 +147,32 @@ def inject_custom_css():
         <script>
             document.documentElement.lang = 'ko';
             document.documentElement.classList.add('notranslate');
+            document.body && document.body.classList.add('notranslate');
+            (function () {
+                const markNoTranslate = (root) => {
+                    const nodes = (root || document).querySelectorAll(
+                        '[data-testid="stMultiSelect"], [data-testid="stTextInput"], '
+                        + '[data-testid="stSelectbox"], [data-baseweb="tag"], '
+                        + '[data-baseweb="select"], [data-baseweb="popover"], '
+                        + '[data-baseweb="menu"]'
+                    );
+                    nodes.forEach((el) => {
+                        el.classList.add('notranslate');
+                        el.setAttribute('translate', 'no');
+                    });
+                };
+                markNoTranslate(document);
+                const obs = new MutationObserver(() => markNoTranslate(document));
+                if (document.body) {
+                    obs.observe(document.body, { childList: true, subtree: true });
+                }
+            })();
         </script>
         <meta name="google" content="notranslate" />
+        <meta http-equiv="Content-Language" content="ko" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <style>
-            /* 기본 불필요 UI 숨김 */
-            div[data-baseweb="select"] + div:has(span) { display: none !important; }
+            /* 기본 불필요 UI 숨김 (드롭다운 검색창은 숨기지 않음) */
             div[data-testid="stMultiSelect"] [data-testid="stWidgetInstructions"] { display: none !important; }
             small[data-testid="stCaptionContainer"] { display: none !important; }
             
@@ -161,6 +181,25 @@ def inject_custom_css():
                 color: #1E293B !important;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                 -webkit-tap-highlight-color: transparent;
+            }
+            .notranslate,
+            .notranslate *,
+            [translate="no"],
+            [data-testid="stMultiSelect"],
+            [data-testid="stMultiSelect"] *,
+            [data-baseweb="tag"],
+            [data-baseweb="select"],
+            [data-baseweb="menu"] {
+                translate: no !important;
+            }
+            .dashboard-client-raw {
+                margin-top: 2px;
+                font-size: 11px;
+                line-height: 1.3;
+                color: #64748B;
+                font-weight: 600;
+                letter-spacing: -0.01em;
+                word-break: break-all;
             }
             
             /* ★★★ 상단 여백 최소화 (Streamlit 헤더는 그대로) ★★★ */
@@ -346,12 +385,12 @@ def inject_custom_css():
                 box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
                 margin-bottom: 8px;
             }
-            .metric-label { color: #64748B; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
-            .metric-value { color: #0F172A; font-size: 20px; font-weight: 700; }
+            .metric-label { color: #475569; font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+            .metric-value { color: #0F172A; font-size: 22px; font-weight: 700; }
             
             .sub-header {
                 color: #1E3A8A;
-                font-size: 17px;
+                font-size: 18px;
                 font-weight: 700;
                 margin-top: 0 !important;
                 margin-bottom: 12px;
@@ -449,8 +488,7 @@ def inject_custom_css():
                 padding: 1px 6px 0 6px !important;
                 box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.06) !important;
                 box-sizing: border-box !important;
-                overflow-x: hidden !important;
-                overflow-y: visible !important;
+                overflow: visible !important;
                 margin: 0 !important;
             }
             .dashboard-filter-sticky-touch {
@@ -492,9 +530,9 @@ def inject_custom_css():
             .dashboard-filter-sticky label {
                 margin-bottom: 2px !important;
                 padding-bottom: 0 !important;
-                font-size: 12px !important;
-                font-weight: 600 !important;
-                color: #334155 !important;
+                font-size: 13px !important;
+                font-weight: 700 !important;
+                color: #1E293B !important;
                 line-height: 1.25 !important;
                 min-height: auto !important;
             }
@@ -512,8 +550,9 @@ def inject_custom_css():
             .dashboard-filter-sticky [data-baseweb="tag"],
             .dashboard-filter-sticky [data-baseweb="select"] span,
             .dashboard-filter-sticky [data-baseweb="select"] div {
-                font-size: 12px !important;
-                line-height: 1.3 !important;
+                font-size: 13px !important;
+                line-height: 1.35 !important;
+                color: #0F172A !important;
             }
             .dashboard-filter-sticky [data-baseweb="tag"] {
                 background-color: #EFF6FF !important;
@@ -521,12 +560,34 @@ def inject_custom_css():
                 color: #1E3A8A !important;
                 max-width: 100% !important;
             }
-            .dashboard-filter-sticky [data-baseweb="select"] {
+            /* 멀티선택: 선택 태그 영역만 스크롤, 검색 input·드롭다운은 가리지 않음 */
+            .dashboard-filter-sticky [data-testid="stMultiSelect"] [data-baseweb="select"] > div:first-child {
                 max-height: 4.6rem !important;
                 overflow-y: auto !important;
             }
+            .dashboard-filter-sticky [data-testid="stMultiSelect"] [data-baseweb="select"] {
+                max-height: none !important;
+                overflow: visible !important;
+            }
+            .dashboard-filter-sticky [data-testid="stMultiSelect"] input {
+                display: inline-block !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                min-width: 5rem !important;
+                flex: 1 1 5rem !important;
+            }
+            .dashboard-filter-sticky [data-baseweb="select"] {
+                max-height: none !important;
+                overflow: visible !important;
+            }
+            /* sticky 필터 위로 드롭다운·검색 팝업 표시 */
+            body [data-baseweb="popover"],
+            body [data-baseweb="menu"],
+            body [role="listbox"] {
+                z-index: 1000020 !important;
+            }
             .dashboard-filter-sticky input {
-                font-size: 13px !important;
+                font-size: 14px !important;
                 color: #0F172A !important;
             }
             .dashboard-filter-sticky [data-testid="stMarkdownContainer"] {
@@ -583,8 +644,9 @@ def inject_custom_css():
                 min-width: -webkit-max-content !important;
                 min-width: max-content !important;
                 padding: 4px 10px 5px 10px !important;
-                font-size: 13px !important;
-                font-weight: 600 !important;
+                font-size: 14px !important;
+                font-weight: 700 !important;
+                color: #1E293B !important;
             }
             .dashboard-filter-sticky [role="tablist"]::-webkit-scrollbar,
             .dashboard-tabs-in-filter::-webkit-scrollbar {
@@ -616,13 +678,28 @@ def inject_custom_css():
                     padding: 4px 8px 0 8px !important;
                 }
                 .dashboard-filter-sticky [role="tab"] {
-                    font-size: 12px !important;
+                    font-size: 14px !important;
                     padding: 4px 8px 5px 8px !important;
                 }
                 .dashboard-filter-sticky [data-testid="stWidgetLabel"],
                 .dashboard-filter-sticky label {
-                    font-size: 12px !important;
+                    font-size: 13px !important;
                 }
+            }
+            /* 표·본문 가독성 (레이아웃 유지, 글자·대비만) */
+            div[data-testid="stDataFrame"] td,
+            div[data-testid="stDataFrame"] th {
+                font-size: 14px !important;
+                line-height: 1.4 !important;
+                color: #0F172A !important;
+            }
+            [data-testid="stMetricValue"] {
+                font-size: 1.55rem !important;
+                color: #0F172A !important;
+            }
+            [data-testid="stMetricLabel"] {
+                font-size: 0.95rem !important;
+                color: #334155 !important;
             }
             @supports (top: env(safe-area-inset-top)) {
                 .dashboard-filter-sticky {
@@ -3585,31 +3662,18 @@ def match_macos_client_note(client_name: str, items: list[dict]) -> dict | None:
             hits.sort(key=lambda it: _score(it, mode))
             return {**hits[0], "match": mode}
 
-    cores = sorted((k for k in key_set if len(k) >= 2), key=len, reverse=True)
-    contains = []
-    for it in items:
-        nk = _note_name_key(it.get("name") or "")
-        pk = _note_name_key(it.get("parent") or "")
-        for core in cores:
-            name_hit = len(nk) >= 2 and (core in nk or nk in core)
-            parent_hit = len(pk) >= 2 and (core in pk or pk in core)
-            if name_hit or parent_hit:
-                contains.append(it)
-                break
-    if contains:
-        contains.sort(key=lambda it: _score(it, "contains"))
-        return {**contains[0], "match": "contains"}
     return None
 
 
 def _show_macos_matched_note(match: dict) -> tuple[bool, str, str]:
     """일치한 노트를 메모 앱에서 열고 plaintext를 반환."""
-    kind = match.get("kind") or "NOTE"
+    kind_raw = str(match.get("kind") or "NOTE").upper()
+    mode = {"FOLDER": "folder", "SUBNOTE": "sub", "NOTE": "top"}.get(kind_raw, "top")
     name = str(match.get("name") or "")
     parent = str(match.get("parent") or "")
     script = """
 on run argv
-    set kind to item 1 of argv
+    set targetMode to item 1 of argv
     set noteName to item 2 of argv
     set parentName to item 3 of argv
     tell application "Notes"
@@ -3618,30 +3682,30 @@ on run argv
             try
                 if exists folder "거래처" of acc then
                     set parentFolder to folder "거래처" of acc
-                    if kind is "FOLDER" then
+                    if targetMode is "folder" then
                         if exists folder noteName of parentFolder then
                             set sf to folder noteName of parentFolder
                             if (count of notes of sf) > 0 then
-                                set n to note 1 of sf
-                                show n
-                                return plaintext of n
+                                set oneNote to note 1 of sf
+                                show oneNote
+                                return plaintext of oneNote
                             end if
                         end if
-                    else if kind is "SUBNOTE" then
+                    else if targetMode is "sub" then
                         if exists folder parentName of parentFolder then
                             set sf to folder parentName of parentFolder
-                            repeat with n in (notes of sf)
-                                if name of n is noteName then
-                                    show n
-                                    return plaintext of n
+                            repeat with oneNote in (notes of sf)
+                                if name of oneNote is noteName then
+                                    show oneNote
+                                    return plaintext of oneNote
                                 end if
                             end repeat
                         end if
                     else
-                        repeat with n in (notes of parentFolder)
-                            if name of n is noteName then
-                                show n
-                                return plaintext of n
+                        repeat with oneNote in (notes of parentFolder)
+                            if name of oneNote is noteName then
+                                show oneNote
+                                return plaintext of oneNote
                             end if
                         end repeat
                     end if
@@ -3653,7 +3717,7 @@ on run argv
 end run
 """
     try:
-        result = _run_osascript_file(script, [kind, name, parent], timeout=45)
+        result = _run_osascript_file(script, [mode, name, parent], timeout=45)
     except subprocess.TimeoutExpired:
         return False, "메모 앱 응답 시간 초과.", ""
     except Exception as e:
@@ -8814,6 +8878,10 @@ if not full_df.empty:
         return ["거래종료"] + _staff_opts
 
     with filter_container:
+        st.markdown(
+            '<div id="dashboard-filter-bar" class="notranslate" translate="no" lang="ko"></div>',
+            unsafe_allow_html=True,
+        )
         st.markdown("<div id='sticky-marker' style='display:none;'></div>", unsafe_allow_html=True)
         fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1.15, 1.35, 1.15])
         start_date = fc1.text_input("📅 조회 시작", "200101", key="dash_filter_start")
