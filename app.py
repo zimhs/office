@@ -8218,7 +8218,7 @@ if not full_df.empty:
                 st.form_submit_button(
                     "✅ 필터 적용",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 )
             st.caption("iPad: 담당자·거래처·품목을 고른 뒤 **필터 적용**을 누르면 반영됩니다.")
         else:
