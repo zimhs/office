@@ -1,6 +1,7 @@
 """시장조사 탭 — Drive「Desktop/업무/시장조사」자료를 지역·산업단지·공급사로 정리해 조회."""
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -1248,6 +1249,19 @@ _MR_SHOW_COLS = [
     "병합건수",
 ]
 _MR_DISPLAY_LIMIT = 400
+_MR_EXCEL_LIMIT = 10000
+
+
+@st.cache_data(show_spinner=False)
+def _mr_filter_excel_bytes(df: pd.DataFrame) -> bytes:
+    """검색 결과 DataFrame → .xlsx 바이트."""
+    buf = io.BytesIO()
+    out = df.copy() if df is not None else pd.DataFrame()
+    if out.empty:
+        out = pd.DataFrame({"알림": ["검색 결과가 없습니다."]})
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        out.to_excel(writer, sheet_name="검색결과", index=False)
+    return buf.getvalue()
 
 
 @st.cache_data(show_spinner=False)
@@ -1490,6 +1504,22 @@ def _mr_filter_results_fragment(
 
         show_cols = [c for c in _MR_SHOW_COLS if c in view.columns]
         limit = _MR_DISPLAY_LIMIT
+        n_view = len(view)
+        cap_c, dl_c = st.columns([2.4, 1])
+        with cap_c:
+            st.caption(f"검색 결과 **{n_view:,}**건 · 화면에 {min(n_view, limit):,}건 표시")
+        with dl_c:
+            xl_n = min(n_view, _MR_EXCEL_LIMIT)
+            xl_df = view[show_cols].head(xl_n) if show_cols else view.head(xl_n)
+            st.download_button(
+                f"엑셀 다운로드 ({xl_n:,}건)",
+                data=_mr_filter_excel_bytes(xl_df),
+                file_name=f"시장조사_검색결과_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="mr_dl_xlsx_search",
+                type="primary",
+                width="stretch",
+            )
         mode = st.radio(
             "보기",
             options=["통합 목록", "지역별", "공급사별", "화성공장 DB", "산업단지별"],
@@ -1498,21 +1528,11 @@ def _mr_filter_results_fragment(
         )
 
         if mode == "통합 목록":
-            n_view = len(view)
-            st.caption(f"결과 **{n_view:,}**건")
             st.dataframe(
                 view[show_cols].head(limit),
                 width="stretch",
                 hide_index=True,
                 height=480,
-            )
-            csv_n = min(n_view, 5000)
-            st.download_button(
-                f"CSV 다운로드 (최대 {csv_n:,}건)",
-                data=view[show_cols].head(csv_n).to_csv(index=False).encode("utf-8-sig"),
-                file_name="시장조사_필터결과.csv",
-                mime="text/csv",
-                key="mr_dl_csv_v6",
             )
         elif mode == "지역별":
             region_counts = (
