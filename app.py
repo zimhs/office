@@ -3245,11 +3245,7 @@ def get_diesel_price_monthly(force_refresh=False):
 # ==========================================
 # ★ 메모 생성 AppleScript ★
 # ==========================================
-def _build_client_note_html(client_name, dart_api_key, df_integrated=None, address=None) -> str:
-    info = get_company_info_hybrid(client_name, dart_api_key, address=address)
-    search_q = info.get("lookup_hint") or info["clean_name"]
-    encoded_name = urllib.parse.quote(search_q)
-
+def _client_note_inventory_html(client_name, df_integrated) -> str:
     inventory_html = ""
     if (
         df_integrated is not None
@@ -3286,7 +3282,12 @@ def _build_client_note_html(client_name, dart_api_key, df_integrated=None, addre
                     f"(S/N: {html.escape(str(serial))}{html.escape(cap_str)})</li>"
                 )
             inventory_html += "</ul><br>"
+    return inventory_html
 
+
+def _format_client_note_html(client_name, info, inventory_html="") -> str:
+    search_q = info.get("lookup_hint") or info["clean_name"]
+    encoded_name = urllib.parse.quote(search_q)
     title = html.escape(str(client_name))
     clean_name = html.escape(str(info["clean_name"]))
     return f"""<h1>{title}</h1>
@@ -3310,6 +3311,128 @@ def _build_client_note_html(client_name, dart_api_key, df_integrated=None, addre
 <h3>📝 영업 및 특이사항</h3>
 <p></p>
 """
+
+
+def _format_client_note_plain(client_name, info, df_integrated=None) -> str:
+    search_q = info.get("lookup_hint") or info["clean_name"]
+    encoded_name = urllib.parse.quote(search_q)
+    lines = [
+        str(client_name),
+        "",
+        f"📌 요약 기업 정보 (데이터 출처: {info['source']})",
+        f"- 대표자: {info['ceo']}",
+        f"- 업종: {info['industry']}",
+        f"- 매출액: {info['revenue']}",
+        f"- 영업이익: {info['profit']}",
+        "",
+    ]
+    if (
+        df_integrated is not None
+        and not df_integrated.empty
+        and "거래처(사용처)/보관장소" in df_integrated.columns
+    ):
+        client_inv = df_integrated[
+            df_integrated["거래처(사용처)/보관장소"]
+            .astype(str)
+            .str.contains(client_name, regex=False, na=False)
+        ]
+        if not client_inv.empty:
+            lines.append("🛢️ 설치/보관 장비 현황 (통합 탱크 재고)")
+            for _, row in client_inv.iterrows():
+                item = row.get("품목", "미상")
+                status = row.get("사용구분", "")
+                serial = row.get("일련(제조)번호", "S/N 없음")
+                vol = row.get("저장부피(L)", "")
+                weight = row.get("저장무게(kg)", "")
+                vol_str = f"{vol}L" if pd.notna(vol) and str(vol).strip() != "" else ""
+                weight_str = (
+                    f"{weight}kg" if pd.notna(weight) and str(weight).strip() != "" else ""
+                )
+                cap_str = (
+                    f" / 용량: {vol_str} {weight_str}".strip()
+                    if vol_str or weight_str
+                    else ""
+                )
+                lines.append(f"- [{item}] {status} (S/N: {serial}{cap_str})")
+            lines.append("")
+    lines.extend(
+        [
+            "🔗 상세 정보 검색",
+            f"- 네이버: https://search.naver.com/search.naver?query={encoded_name} 기업정보",
+            f"- 사람인: https://www.saramin.co.kr/zf_user/search/company?searchword={encoded_name}",
+            f"- 잡코리아: https://www.jobkorea.co.kr/Search/?stext={encoded_name}&tabType=corp",
+            "",
+            "📝 영업 및 특이사항",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def prepare_client_note_export(
+    client_name, dart_api_key, df_integrated=None, address=None
+) -> tuple[str, str, str, str]:
+    info = get_company_info_hybrid(client_name, dart_api_key, address=address)
+    inventory_html = _client_note_inventory_html(client_name, df_integrated)
+    body_html = _format_client_note_html(client_name, info, inventory_html)
+    plain_text = _format_client_note_plain(client_name, info, df_integrated)
+    safe_title = html.escape(str(client_name))
+    full_html = (
+        "<!DOCTYPE html>\n"
+        '<html lang="ko"><head><meta charset="utf-8">'
+        f"<title>{safe_title}</title></head>\n"
+        f"<body>{body_html}</body></html>"
+    )
+    fname = re.sub(r'[\\/:*?"<>|]+', "_", str(client_name)).strip()[:60] or "note"
+    return body_html, plain_text, full_html, f"{fname}_메모.html"
+
+
+def _render_tab2_note_share_html(plain_text: str, title: str) -> None:
+    js_title = json.dumps(str(title), ensure_ascii=False)
+    js_text = json.dumps(str(plain_text), ensure_ascii=False)
+    components.html(
+        f"""
+<div style="font-family:system-ui,-apple-system,sans-serif;font-size:14px;">
+  <button id="tab2-copy-btn" style="width:100%;padding:10px 12px;margin-bottom:8px;cursor:pointer;border:1px solid #CBD5E1;border-radius:8px;background:#fff;">📋 클립보드에 복사</button>
+  <button id="tab2-share-btn" style="width:100%;padding:10px 12px;cursor:pointer;border:1px solid #CBD5E1;border-radius:8px;background:#fff;">📤 공유 (iPad·iPhone 메모 등)</button>
+  <p id="tab2-share-status" style="margin:8px 0 0;color:#64748B;font-size:12px;line-height:1.4;"></p>
+</div>
+<script>
+const title = {js_title};
+const text = {js_text};
+const status = document.getElementById("tab2-share-status");
+document.getElementById("tab2-copy-btn").onclick = async () => {{
+  try {{
+    await navigator.clipboard.writeText(text);
+    status.textContent = "클립보드에 복사했습니다. 메모 앱에 붙여넣기 하세요.";
+  }} catch (e) {{
+    status.textContent = "복사 실패. Safari/Chrome에서 이 페이지 클립보드 권한을 확인해 주세요.";
+  }}
+}};
+document.getElementById("tab2-share-btn").onclick = async () => {{
+  if (navigator.share) {{
+    try {{
+      await navigator.share({{ title: title, text: text }});
+      status.textContent = "공유 시트를 열었습니다. 메모를 선택하세요.";
+    }} catch (e) {{
+      if (!e || e.name !== "AbortError") {{
+        status.textContent = "공유를 완료하지 못했습니다. 클립보드 복사를 사용해 주세요.";
+      }}
+    }}
+  }} else {{
+    status.textContent = "이 브라우저는 공유를 지원하지 않습니다. 클립보드 복사를 사용하세요.";
+  }}
+}};
+</script>
+""",
+        height=130,
+    )
+
+
+def _build_client_note_html(client_name, dart_api_key, df_integrated=None, address=None) -> str:
+    info = get_company_info_hybrid(client_name, dart_api_key, address=address)
+    inventory_html = _client_note_inventory_html(client_name, df_integrated)
+    return _format_client_note_html(client_name, info, inventory_html)
 
 
 def open_macos_notes_folder(
@@ -9143,33 +9266,56 @@ with tab2:
                 if client_addr and client_addr != "등록된 주소 정보가 없습니다."
                 else None
             )
-            _notes_help = None
-            if _is_streamlit_cloud():
-                _notes_help = (
-                    "Cloud·iPad에서는 macOS 메모를 열 수 없습니다. "
-                    "맥에서 streamlit run app.py 로 실행하세요."
-                )
-            elif selected_client == "전체 거래처":
-                _notes_help = "특정 거래처를 선택하세요."
-            if st.button(
-                "📝 macOS 메모에서 노트 열기/생성",
-                key="btn_notes",
+            _notes_disabled = selected_client == "전체 거래처"
+            _notes_label = (
+                "📝 macOS 메모 · 열기/내보내기"
+                if _is_local_macos()
+                else "📝 거래처 메모 · 내보내기"
+            )
+            with st.popover(
+                _notes_label,
                 width="stretch",
-                disabled=selected_client == "전체 거래처",
-                help=_notes_help,
+                disabled=_notes_disabled,
+                help="특정 거래처를 선택하세요." if _notes_disabled else None,
             ):
-                ok, msg = open_macos_notes_folder(
-                    selected_client,
-                    dart_api_key,
-                    df_integrated,
-                    address=_notes_addr,
-                )
-                if ok:
-                    st.success(msg)
-                else:
-                    st.error(msg)
-            if _is_streamlit_cloud():
-                st.caption("Cloud에서는 메모 버튼이 동작하지 않습니다. 로컬 맥 실행 시 연동됩니다.")
+                if not _notes_disabled:
+                    _, _note_plain, _note_file_html, _note_filename = prepare_client_note_export(
+                        selected_client,
+                        dart_api_key,
+                        df_integrated,
+                        address=_notes_addr,
+                    )
+                    if _is_local_macos():
+                        if st.button(
+                            "macOS 메모에서 노트 열기/생성",
+                            key="tab2_notes_open_mac",
+                            width="stretch",
+                        ):
+                            ok, msg = open_macos_notes_folder(
+                                selected_client,
+                                dart_api_key,
+                                df_integrated,
+                                address=_notes_addr,
+                            )
+                            if ok:
+                                st.success(msg)
+                            else:
+                                st.error(msg)
+                        st.caption("로컬 맥 실행 시 Notes 앱을 바로 엽니다.")
+                    else:
+                        st.caption(
+                            "Cloud·iPad에서는 아래 **다운로드·복사·공유**로 메모 앱에 넣을 수 있습니다."
+                        )
+                    st.download_button(
+                        "HTML 파일 다운로드",
+                        data=_note_file_html.encode("utf-8"),
+                        file_name=_note_filename,
+                        mime="text/html",
+                        key="tab2_notes_download",
+                        width="stretch",
+                    )
+                    st.caption("Mac: 다운로드 후 Safari로 열어 전체 선택 → 메모에 붙여넣기.")
+                    _render_tab2_note_share_html(_note_plain, selected_client)
         with btn_c2:
             btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
             if st.button(btn_label, key="btn_dart_info", width="stretch"):
