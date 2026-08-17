@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import pickle
 import re
 import shutil
 import unicodedata
@@ -30,6 +31,9 @@ MR_MANUAL_FILE = os.path.join(MR_CACHE_DIR, "manual_entries.json")
 MR_UPLOAD_DIR = os.path.join(MR_CACHE_DIR, "uploads")
 MR_UPLOAD_MANIFEST = os.path.join(MR_UPLOAD_DIR, "manifest.json")
 MR_MANUAL_SOURCE = "직접입력"
+MR_FRAME_PKL = os.path.join(MR_CACHE_DIR, "_merged_frame.pkl")
+MR_FRAME_SIG = os.path.join(MR_CACHE_DIR, "_merged_frame.sig")
+_MR_DRIVE_SYNCED = False
 MR_UPLOAD_KINDS = [
     ("자동", "파일명·양식으로 자동 감지"),
     ("지역시장조사", "시장조사(67) 스타일 — 상호/위치/현공급처"),
@@ -431,14 +435,16 @@ def _pick(d: dict[str, str], *cands: str) -> str:
 
 
 def ensure_market_research_cache(*, force: bool = False) -> str:
-    """Drive 원본이 있으면 캐시로 동기화. 세션당 1회만 시도(검색 시 재동기화 금지)."""
+    """Drive 원본이 있으면 캐시로 동기화. 프로세스·세션당 1회만 시도."""
+    global _MR_DRIVE_SYNCED
     os.makedirs(MR_CACHE_DIR, exist_ok=True)
     if not force:
         try:
-            if st.session_state.get("_mr_cache_synced"):
+            if _MR_DRIVE_SYNCED or st.session_state.get("_mr_cache_synced"):
                 return MR_CACHE_DIR
         except Exception:
-            pass
+            if _MR_DRIVE_SYNCED:
+                return MR_CACHE_DIR
     for cand in MR_DRIVE_CANDIDATES:
         if cand and os.path.isdir(cand):
             try:
@@ -466,6 +472,7 @@ def ensure_market_research_cache(*, force: bool = False) -> str:
                     st.session_state["_mr_cache_synced"] = True
                 except Exception:
                     pass
+                _MR_DRIVE_SYNCED = True
                 return MR_CACHE_DIR
             except Exception:
                 continue
@@ -473,6 +480,7 @@ def ensure_market_research_cache(*, force: bool = False) -> str:
         st.session_state["_mr_cache_synced"] = True
     except Exception:
         pass
+    _MR_DRIVE_SYNCED = True
     return MR_CACHE_DIR
 
 
@@ -596,6 +604,12 @@ def _invalidate_mr_loaded() -> None:
         load_market_research_frame.clear()
     except Exception:
         pass
+    for p in (MR_FRAME_PKL, MR_FRAME_SIG, MR_FRAME_PKL + ".tmp"):
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
     for k in (
         "_mr_data_warm",
         "_mr_data_sig",
@@ -1082,6 +1096,44 @@ def _parse_seojin(path: Path) -> list[dict]:
     return records
 
 
+def _frame_disk_load(sig: str):
+    if not sig or not os.path.isfile(MR_FRAME_PKL) or not os.path.isfile(MR_FRAME_SIG):
+        return None
+    try:
+        with open(MR_FRAME_SIG, "r", encoding="utf-8") as f:
+            if f.read().strip() != sig:
+                return None
+        with open(MR_FRAME_PKL, "rb") as f:
+            payload = pickle.load(f)
+        if not isinstance(payload, (tuple, list)) or len(payload) != 3:
+            return None
+        df, raw_n, removed = payload
+        if not isinstance(df, pd.DataFrame):
+            return None
+        return df, int(raw_n), int(removed)
+    except Exception:
+        return None
+
+
+def _frame_disk_save(sig: str, df: pd.DataFrame, raw_n: int, removed: int) -> None:
+    if not sig:
+        return
+    try:
+        os.makedirs(MR_CACHE_DIR, exist_ok=True)
+        tmp = MR_FRAME_PKL + ".tmp"
+        with open(tmp, "wb") as f:
+            pickle.dump((df, int(raw_n), int(removed)), f, protocol=4)
+        os.replace(tmp, MR_FRAME_PKL)
+        with open(MR_FRAME_SIG, "w", encoding="utf-8") as f:
+            f.write(sig)
+    except Exception:
+        try:
+            if os.path.exists(MR_FRAME_PKL + ".tmp"):
+                os.remove(MR_FRAME_PKL + ".tmp")
+        except Exception:
+            pass
+
+
 @st.cache_data(show_spinner=False, ttl=600)
 def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]:
     """모든 시장조사 엑셀을 합치고 중복 업체를 병합.
@@ -1090,6 +1142,9 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
     -------
     (merged_df, raw_count, removed_dup_count)
     """
+    disk = _frame_disk_load(_cache_sig)
+    if disk is not None:
+        return disk
     root = ensure_market_research_cache()
     files = list(_list_xlsx(root))
     kind_map = {
@@ -1208,6 +1263,7 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
     merged["_has_factory"] = merged["출처"].str.contains(
         "화성공장등록", regex=False, na=False
     )
+    _frame_disk_save(_cache_sig, merged, raw_n, removed)
     return merged, raw_n, removed
 
 
@@ -1813,30 +1869,12 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                 "(맥이면 Drive「시장조사/직접입력_시장조사.json」에도 복사)"
             )
 
-    # Drive 동기화·엑셀 병합은 세션당 1회. 적용 버튼은 fragment만 재실행.
-    if not st.session_state.get("_mr_data_warm"):
-        ensure_market_research_cache()
-        sig = _cache_signature()
-        with st.spinner("시장조사 자료 최초 정리·병합 중… (이후 검색은 빠릅니다)"):
-            df, raw_n, removed_n = load_market_research_frame(sig)
-        st.session_state["_mr_df"] = _mr_slim_frame(df)
-        st.session_state["_mr_raw_n"] = raw_n
-        st.session_state["_mr_removed_n"] = removed_n
-        st.session_state["_mr_data_warm"] = True
-        st.session_state["_mr_data_sig"] = sig
-        st.session_state["_mr_cascade"] = _cached_mr_cascade_index(sig)
-    df = st.session_state.get("_mr_df")
-    raw_n = int(st.session_state.get("_mr_raw_n") or 0)
-    removed_n = int(st.session_state.get("_mr_removed_n") or 0)
-    if df is None or getattr(df, "empty", True):
-        ensure_market_research_cache()
-        sig = _cache_signature()
-        df, raw_n, removed_n = load_market_research_frame(sig)
-        df = _mr_slim_frame(df)
-        st.session_state["_mr_df"] = df
-        st.session_state["_mr_raw_n"] = raw_n
-        st.session_state["_mr_removed_n"] = removed_n
-        st.session_state["_mr_cascade"] = _cached_mr_cascade_index(sig)
+    # Drive 동기화·엑셀 병합은 디스크 캐시 우선. 세션에 대형 DF를 두지 않음.
+    ensure_market_research_cache()
+    sig = _cache_signature()
+    df, raw_n, removed_n = load_market_research_frame(sig)
+    df = _mr_slim_frame(df)
+    cascade = _cached_mr_cascade_index(sig)
 
     if df.empty:
         st.info(
@@ -1867,10 +1905,6 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         [r for r in df["지역"].dropna().unique().tolist() if r],
         key=lambda x: (x == "미분류", x),
     )
-    cascade = st.session_state.get("_mr_cascade")
-    if not cascade:
-        cascade = _cached_mr_cascade_index(st.session_state.get("_mr_data_sig") or "")
-        st.session_state["_mr_cascade"] = cascade
     try:
         _mr_filter_results_fragment(df, regions, cascade, latest_update_str)
     except Exception as e:

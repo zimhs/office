@@ -51,4 +51,7 @@ uploaded_cache/**
 # 탭에서 올린 사용자 엑셀은 커밋하지 않음
 uploaded_cache/market_research/uploads/
 uploaded_cache/market_research/uploads/**
+uploaded_cache/market_research/_merged_frame.pkl
+uploaded_cache/market_research/_merged_frame.sig
+uploaded_cache/market_research/_merged_frame.pkl.tmp
 worklog_tab.py.final_*

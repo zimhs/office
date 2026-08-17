@@ -8957,19 +8957,19 @@ if not full_df.empty:
             placeholder="품목 선택…",
         )
 
-        df_base = df_base_opts.copy()
+        df_base = df_base_opts
         df_staff_filtered = (
-            df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base.copy()
+            df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base
         )
         df_client_filtered = (
             df_staff_filtered[df_staff_filtered["거래처"] == selected_client]
             if selected_client != "전체 거래처"
-            else df_staff_filtered.copy()
+            else df_staff_filtered
         )
         df_f = (
             df_client_filtered[df_client_filtered["품목명"].isin(selected_item)]
             if selected_item
-            else df_client_filtered.copy()
+            else df_client_filtered
         )
     raw_years = sorted(full_df["연도"].unique()) if "연도" in full_df.columns else ["2026"]
     years = sorted(raw_years, reverse=True)
@@ -11862,7 +11862,9 @@ with tab10:
 
         _wl_path = getattr(_worklog_tab, "__file__", None) or ""
         _wl_mtime = os.path.getmtime(_wl_path) if _wl_path and os.path.exists(_wl_path) else 0
-        if st.session_state.get("_wl_mod_mtime") != _wl_mtime:
+        if "_wl_mod_mtime" not in st.session_state:
+            st.session_state["_wl_mod_mtime"] = _wl_mtime
+        elif st.session_state.get("_wl_mod_mtime") != _wl_mtime:
             _worklog_tab = importlib.reload(_worklog_tab)
             st.session_state["_wl_mod_mtime"] = _wl_mtime
             sys.modules["worklog_tab"] = _worklog_tab
@@ -11892,7 +11894,9 @@ with tab11:
 
         _mr_path = getattr(_mr_tab, "__file__", None) or ""
         _mr_mtime = os.path.getmtime(_mr_path) if _mr_path and os.path.exists(_mr_path) else 0
-        if st.session_state.get("_mr_mod_mtime") != _mr_mtime:
+        if "_mr_mod_mtime" not in st.session_state:
+            st.session_state["_mr_mod_mtime"] = _mr_mtime
+        elif st.session_state.get("_mr_mod_mtime") != _mr_mtime:
             _mr_tab = importlib.reload(_mr_tab)
             st.session_state["_mr_mod_mtime"] = _mr_mtime
             sys.modules["market_research_tab"] = _mr_tab
