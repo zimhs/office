@@ -1337,20 +1337,10 @@ def _mr_widget_key(prefix: str, parts: list[str]) -> str:
 
 @st.cache_data(show_spinner=False, ttl=600)
 def _cached_mr_cascade_index(_cache_sig: str) -> dict:
+    if mr_cascade is None:
+        return {"survey": {"cxr": {}, "cxa": [], "sr": {}, "src": {}, "sa": []}, "all": {"cxr": {}, "cxa": [], "sr": {}, "src": {}, "sa": []}}
     frame, _, _ = load_market_research_frame(_cache_sig)
     return mr_cascade.build_cascade_index(frame)
-
-
-def _mr_prune_key(key: str, options: list[str]) -> None:
-    """위젯 생성 전에 선택값을 options 교집합으로만 유지 (Streamlit 크래시 방지)."""
-    if key not in st.session_state:
-        return
-    cur = st.session_state.get(key)
-    if not isinstance(cur, list):
-        st.session_state[key] = []
-        return
-    opt = set(options or [])
-    st.session_state[key] = [x for x in cur if x in opt]
 
 
 def _mr_filter_results_fragment(
@@ -1359,98 +1349,112 @@ def _mr_filter_results_fragment(
     cascade: dict,
     latest_update_str: str,
 ) -> None:
-    """필터·검색·표. fragment 없이 안정 동작 (지역 선택 백지 방지)."""
+    """필터·검색·표 — form+적용으로 지역 선택 즉시 재실행 크래시를 피함."""
     try:
         if mr_cascade is None:
-            st.error("market_research_cascade 모듈이 없습니다. 배포 파일을 확인하세요.")
+            st.error("market_research_cascade 모듈이 없습니다.")
             return
-        st.caption("필터 **v5** · 지역→단지→공급사 종속")
 
-        include_factory = st.checkbox(
-            "화성공장 DB(단독) 포함",
-            value=bool(st.session_state.get("mr_incl_factory", False)),
-            key="mr_incl_factory_v5",
+        st.caption(
+            "필터 **v6** · 지역→단지→공급사 종속 · "
+            "조건을 고른 뒤 **적용**을 누르세요 (백지 방지)."
         )
-        hide_unclassified = st.checkbox(
-            "산업단지 미분류 제외",
-            value=bool(st.session_state.get("mr_hide_unclassified", False)),
-            key="mr_hide_unclassified_v5",
+
+        # 직전에 적용된 값 (옵션 종속 기준)
+        app_r = list(st.session_state.get("mr_v6_region") or [])
+        app_c = list(st.session_state.get("mr_v6_complex") or [])
+        app_s = list(st.session_state.get("mr_v6_sup") or [])
+        app_q = str(st.session_state.get("mr_v6_q") or "")
+        app_fac = bool(st.session_state.get("mr_v6_fac", False))
+        app_hide = bool(st.session_state.get("mr_v6_hide", False))
+
+        cx_opts = mr_cascade.complex_opts(cascade, app_r, include_factory=app_fac)
+        # 폼 안에서는 직전 적용 지역 기준으로 단지 옵션을 보여 줌
+        # (지역을 바꾼 뒤 적용 1회 → 단지 목록이 줄어듦)
+        form_cx_opts = mr_cascade.complex_opts(cascade, app_r, include_factory=app_fac)
+        form_sup_opts = mr_cascade.supplier_opts(
+            cascade, app_r, app_c, include_factory=app_fac
         )
-        st.session_state["mr_incl_factory"] = bool(include_factory)
-        st.session_state["mr_hide_unclassified"] = bool(hide_unclassified)
 
-        f1, f2, f3, f4 = st.columns([1.2, 1.4, 1.2, 1.6])
-        with f1:
-            _mr_prune_key("mr_region_v5", regions)
-            sel_region = st.multiselect(
-                "지역",
-                options=regions,
-                key="mr_region_v5",
-                placeholder="전체 지역",
-            )
+        with st.form("mr_filter_v6", clear_on_submit=False):
+            c_fac, c_hide = st.columns(2)
+            with c_fac:
+                fac_in = st.checkbox("화성공장 DB(단독) 포함", value=app_fac)
+            with c_hide:
+                hide_in = st.checkbox("산업단지 미분류 제외", value=app_hide)
 
-        complex_opts = mr_cascade.complex_opts(
-            cascade, list(sel_region or []), include_factory=include_factory
-        )
-        with f2:
-            _mr_prune_key("mr_complex_v5", complex_opts)
-            label = (
-                "산업단지"
-                if not sel_region
-                else f"산업단지 ({len(complex_opts)}개)"
-            )
-            sel_cx = st.multiselect(
-                label,
-                options=complex_opts,
-                key="mr_complex_v5",
-                placeholder=(
-                    "데이터 없음"
-                    if (sel_region and not complex_opts)
-                    else ("전체 산업단지" if not sel_region else "선택 지역 단지만")
-                ),
-            )
-            if sel_region and not complex_opts:
-                st.caption(":red[선택 지역에 산업단지 데이터 없음]")
+            f1, f2, f3, f4 = st.columns([1.2, 1.4, 1.2, 1.6])
+            with f1:
+                r_in = st.multiselect(
+                    "지역",
+                    options=regions,
+                    default=[x for x in app_r if x in regions],
+                    placeholder="전체 지역",
+                )
+            with f2:
+                # 지역 변경 직후(아직 미적용)에는 직전 지역 단지 목록을 보여 줌
+                c_in = st.multiselect(
+                    "산업단지" + (f" ({len(form_cx_opts)}개)" if app_r else ""),
+                    options=form_cx_opts,
+                    default=[x for x in app_c if x in form_cx_opts],
+                    placeholder=(
+                        "데이터 없음"
+                        if (app_r and not form_cx_opts)
+                        else "전체 산업단지"
+                    ),
+                )
+                if app_r and not form_cx_opts:
+                    st.caption("선택 지역에 산업단지 데이터 없음 (적용 후 확인)")
+            with f3:
+                s_in = st.multiselect(
+                    "공급사",
+                    options=form_sup_opts,
+                    default=[x for x in app_s if x in form_sup_opts],
+                    placeholder=(
+                        "데이터 없음"
+                        if (app_c and not form_sup_opts)
+                        else "전체 공급사"
+                    ),
+                )
+            with f4:
+                q_in = st.text_input("검색 (업체·주소·단지·가스·비고)", value=app_q)
 
-        supplier_opts = mr_cascade.supplier_opts(
-            cascade,
-            list(sel_region or []),
-            list(sel_cx or []),
-            include_factory=include_factory,
-        )
-        with f3:
-            _mr_prune_key("mr_sup_v5", supplier_opts)
-            sel_sup = st.multiselect(
-                "공급사",
-                options=supplier_opts,
-                key="mr_sup_v5",
-                placeholder=(
-                    "데이터 없음"
-                    if (sel_cx and not supplier_opts)
-                    else ("전체 공급사" if not sel_cx else "선택 단지 공급사")
-                ),
-            )
-            if sel_cx and not supplier_opts:
-                st.caption(":red[선택 단지에 공급사 데이터 없음]")
+            applied = st.form_submit_button("🔍 적용", type="primary", width="stretch")
 
-        with f4:
-            q = st.text_input(
-                "검색 (업체·주소·단지·가스·비고)",
-                value=st.session_state.get("mr_q_applied") or "",
-                key="mr_q_v5",
+        if applied:
+            st.session_state["mr_v6_region"] = list(r_in or [])
+            st.session_state["mr_v6_complex"] = list(c_in or [])
+            st.session_state["mr_v6_sup"] = list(s_in or [])
+            st.session_state["mr_v6_q"] = q_in or ""
+            st.session_state["mr_v6_fac"] = bool(fac_in)
+            st.session_state["mr_v6_hide"] = bool(hide_in)
+            # 지역이 바뀌면 단지/공급사는 새 범위로 다시 고르게
+            new_cx = mr_cascade.complex_opts(
+                cascade, list(r_in or []), include_factory=bool(fac_in)
             )
-            if st.button("🔍 검색 적용", type="primary", key="mr_q_apply_v5"):
-                st.session_state["mr_q_applied"] = q
+            kept_c = [x for x in (c_in or []) if x in new_cx]
+            st.session_state["mr_v6_complex"] = kept_c
+            new_sup = mr_cascade.supplier_opts(
+                cascade, list(r_in or []), kept_c, include_factory=bool(fac_in)
+            )
+            st.session_state["mr_v6_sup"] = [x for x in (s_in or []) if x in new_sup]
+            st.rerun()
 
-        q_applied = st.session_state.get("mr_q_applied") or ""
+        app_r = list(st.session_state.get("mr_v6_region") or [])
+        app_c = list(st.session_state.get("mr_v6_complex") or [])
+        app_s = list(st.session_state.get("mr_v6_sup") or [])
+        app_q = str(st.session_state.get("mr_v6_q") or "")
+        app_fac = bool(st.session_state.get("mr_v6_fac", False))
+        app_hide = bool(st.session_state.get("mr_v6_hide", False))
+
         view = _filter_frame(
             df,
-            regions=list(sel_region or []),
-            complexes=list(sel_cx or []),
-            suppliers=list(sel_sup or []),
-            query=q_applied,
-            include_factory=include_factory,
-            hide_unclassified=hide_unclassified,
+            regions=app_r,
+            complexes=app_c,
+            suppliers=app_s,
+            query=app_q,
+            include_factory=app_fac,
+            hide_unclassified=app_hide,
         )
 
         show_cols = [c for c in _MR_SHOW_COLS if c in view.columns]
@@ -1459,7 +1463,7 @@ def _mr_filter_results_fragment(
             "보기",
             options=["통합 목록", "지역별", "공급사별", "화성공장 DB", "산업단지별"],
             horizontal=True,
-            key="mr_view_v5",
+            key="mr_view_v6",
         )
 
         if mode == "통합 목록":
@@ -1477,7 +1481,7 @@ def _mr_filter_results_fragment(
                 data=view[show_cols].head(csv_n).to_csv(index=False).encode("utf-8-sig"),
                 file_name="시장조사_필터결과.csv",
                 mime="text/csv",
-                key="mr_dl_csv_v5",
+                key="mr_dl_csv_v6",
             )
         elif mode == "지역별":
             region_counts = (
@@ -1492,7 +1496,7 @@ def _mr_filter_results_fragment(
                 st.dataframe(region_counts, width="stretch", hide_index=True, height=400)
             with right:
                 opts = region_counts["지역"].tolist() or ["미분류"]
-                pick = st.selectbox("지역 상세", options=opts, key="mr_region_pick_v5")
+                pick = st.selectbox("지역 상세", options=opts, key="mr_region_pick_v6")
                 sub = view[view["지역"] == pick][show_cols]
                 st.caption(f"{pick} · {len(sub):,}건")
                 st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
@@ -1517,21 +1521,30 @@ def _mr_filter_results_fragment(
                     st.dataframe(sc, width="stretch", hide_index=True, height=400)
                 with b:
                     pick_s = st.selectbox(
-                        "공급사 상세", options=sc["공급사"].tolist(), key="mr_sup_pick_v5"
+                        "공급사 상세", options=sc["공급사"].tolist(), key="mr_sup_pick_v6"
                     )
                     sub = view[
-                        view["공급사"].str.contains(re.escape(pick_s), regex=True, na=False)
+                        view["공급사"].str.contains(
+                            re.escape(pick_s), regex=True, na=False
+                        )
                     ][show_cols]
                     st.caption(f"{pick_s} · {len(sub):,}건")
-                    st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
+                    st.dataframe(
+                        sub.head(limit), width="stretch", hide_index=True, height=400
+                    )
         elif mode == "화성공장 DB":
-            fac = df[df["_has_factory"]] if "_has_factory" in df.columns else df.iloc[0:0]
+            fac = (
+                df[df["_has_factory"]]
+                if "_has_factory" in df.columns
+                else df.iloc[0:0]
+            )
             st.caption(f"화성공장 관련 **{len(fac):,}**건")
-            q2 = st.text_input("공장 DB 검색", key="mr_fac_q_v5")
+            q2 = st.text_input("공장 DB 검색", key="mr_fac_q_v6")
             fac2 = fac
-            if (q2 or "").strip():
+            qq = (q2 or "").strip()
+            if qq and "_search" in fac2.columns:
                 fac2 = fac[
-                    fac["_search"].str.contains(q2.strip().casefold(), regex=False, na=False)
+                    fac["_search"].str.contains(qq.casefold(), regex=False, na=False)
                 ]
             st.dataframe(
                 fac2[show_cols].head(limit),
@@ -1553,7 +1566,7 @@ def _mr_filter_results_fragment(
             with right:
                 opts_cx = cx_counts["산업단지"].tolist() or ["미분류"]
                 pick_cx = st.selectbox(
-                    "산업단지 상세", options=opts_cx, key="mr_complex_pick_v5"
+                    "산업단지 상세", options=opts_cx, key="mr_complex_pick_v6"
                 )
                 sub = view[view["산업단지"] == pick_cx][show_cols]
                 st.caption(f"{pick_cx} · {len(sub):,}건")
@@ -1795,5 +1808,9 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         key=lambda x: (x == "미분류", x),
     )
     sig_now = _cache_signature()
-    cascade = _cached_mr_cascade_index(sig_now)
-    _mr_filter_results_fragment(df, regions, cascade, latest_update_str)
+    try:
+        cascade = _cached_mr_cascade_index(sig_now)
+        _mr_filter_results_fragment(df, regions, cascade, latest_update_str)
+    except Exception as e:
+        st.error(f"시장조사 필터 표시 실패: {e}")
+        st.exception(e)
