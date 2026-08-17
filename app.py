@@ -569,27 +569,28 @@ def inject_custom_css():
                 margin-top: 0 !important;
                 margin-bottom: 4px !important;
             }
-            /* iPad: 탭이 화면 밖으로 잘리지 않게 줄바꿈 */
+            /* iPad: 탭은 한 줄 + 가로 스크롤 (한꺼번에 다 보이게 하지 않음) */
             html.dashboard-touch-mode .dashboard-filter-sticky [role="tablist"],
             html.dashboard-touch-mode .dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter,
             html.dashboard-touch-mode .dashboard-tabs-in-filter {
                 display: flex !important;
-                flex-wrap: wrap !important;
-                overflow-x: visible !important;
-                overflow-y: visible !important;
+                flex-direction: row !important;
+                flex-wrap: nowrap !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
                 width: 100% !important;
                 max-width: 100% !important;
                 min-width: 0 !important;
-                row-gap: 0 !important;
-                column-gap: 0 !important;
+                -webkit-overflow-scrolling: touch !important;
+                scrollbar-width: thin;
             }
             html.dashboard-touch-mode .dashboard-filter-sticky [role="tab"] {
                 flex: 0 0 auto !important;
-                min-width: 0 !important;
+                min-width: max-content !important;
                 max-width: none !important;
                 white-space: nowrap !important;
-                font-size: 12px !important;
-                padding: 3px 6px 4px 6px !important;
+                font-size: 13px !important;
+                padding: 4px 10px 5px 10px !important;
             }
             html.dashboard-touch-mode .dashboard-filter-sticky,
             html.dashboard-touch-mode .dashboard-filter-sticky-touch {
@@ -777,23 +778,41 @@ def inject_custom_css():
             .dashboard-filter-sticky [role="tab"] label {
                 white-space: nowrap !important;
             }
-            /* iPad 고정바: html.dashboard-touch-mode 없어도 탭 줄바꿈 (클래스 미부착 대비) */
-            .dashboard-filter-sticky.dashboard-filter-sticky-touch [role="tablist"],
-            .dashboard-filter-sticky.dashboard-filter-sticky-touch [role="tablist"] > div,
-            .dashboard-filter-sticky.dashboard-filter-sticky-touch [role="tablist"] > div > div {
+            /* iPad 고정바: 탭 한 줄 가로 스크롤 */
+            .dashboard-filter-sticky.dashboard-filter-sticky-touch [role="tablist"] {
                 display: flex !important;
-                flex-wrap: wrap !important;
-                overflow: visible !important;
+                flex-direction: row !important;
+                flex-wrap: nowrap !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
                 width: 100% !important;
                 max-width: 100% !important;
                 min-width: 0 !important;
+                -webkit-overflow-scrolling: touch !important;
+                scrollbar-width: thin;
+            }
+            .dashboard-filter-sticky.dashboard-filter-sticky-touch [role="tablist"] > div {
+                display: flex !important;
+                flex-direction: row !important;
+                flex-wrap: nowrap !important;
+                width: max-content !important;
+                max-width: none !important;
+                min-width: max-content !important;
+                overflow: visible !important;
+            }
+            .dashboard-filter-sticky.dashboard-filter-sticky-touch [role="tablist"]::-webkit-scrollbar,
+            .dashboard-filter-sticky.dashboard-filter-sticky-touch [role="tablist"] > div::-webkit-scrollbar {
+                display: block !important;
+                height: 4px !important;
             }
             .dashboard-filter-sticky.dashboard-filter-sticky-touch [role="tab"] {
                 flex: 0 0 auto !important;
-                min-width: 0 !important;
+                min-width: max-content !important;
+                width: auto !important;
+                max-width: none !important;
                 white-space: nowrap !important;
-                font-size: 12px !important;
-                padding: 3px 6px 4px 6px !important;
+                font-size: 13px !important;
+                padding: 4px 10px 5px 10px !important;
             }
             @media (max-width: 1024px) {
                 .dashboard-filter-sticky {
@@ -6997,7 +7016,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
-            var STICKY_SCRIPT_VER_IPAD = 22; /* iPad: 탭 줄바꿈 JS + 본문 여백 끌어붙임 */
+            var STICKY_SCRIPT_VER_IPAD = 23; /* iPad: 탭 한 줄 가로 스크롤 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -7377,37 +7396,48 @@ def inject_sticky_tabs_script():
                 }
                 ipadApplyBoxStyles(targetBox);
             }
-            function ipadWrapTabs(box) {
+            function ipadScrollTabs(box) {
                 if (!box) return;
-                function wrapFlex(node) {
+                function rowScroll(node, isRoot) {
                     if (!node || node.nodeType !== 1) return;
                     if (node.getAttribute && node.getAttribute('role') === 'tab') return;
                     node.style.setProperty('display', 'flex', 'important');
-                    node.style.setProperty('flex-wrap', 'wrap', 'important');
-                    node.style.setProperty('width', '100%', 'important');
-                    node.style.setProperty('max-width', '100%', 'important');
-                    node.style.setProperty('min-width', '0', 'important');
-                    node.style.setProperty('overflow', 'visible', 'important');
+                    node.style.setProperty('flex-direction', 'row', 'important');
+                    node.style.setProperty('flex-wrap', 'nowrap', 'important');
+                    node.style.setProperty('align-items', 'center', 'important');
+                    if (isRoot) {
+                        node.style.setProperty('width', '100%', 'important');
+                        node.style.setProperty('max-width', '100%', 'important');
+                        node.style.setProperty('min-width', '0', 'important');
+                        node.style.setProperty('overflow-x', 'auto', 'important');
+                        node.style.setProperty('overflow-y', 'hidden', 'important');
+                        node.style.setProperty('-webkit-overflow-scrolling', 'touch', 'important');
+                    } else {
+                        node.style.setProperty('width', 'max-content', 'important');
+                        node.style.setProperty('max-width', 'none', 'important');
+                        node.style.setProperty('min-width', 'max-content', 'important');
+                        node.style.setProperty('overflow', 'visible', 'important');
+                    }
                 }
                 var lists = box.querySelectorAll('[role="tablist"]');
-                var i, el, ch, gch, t, tabs;
+                var i, el, ch, t, tabs;
                 for (i = 0; i < lists.length; i++) {
                     el = lists[i];
-                    wrapFlex(el);
+                    rowScroll(el, true);
                     for (ch = el.firstElementChild; ch; ch = ch.nextElementSibling) {
-                        wrapFlex(ch);
                         if (ch.getAttribute && ch.getAttribute('role') === 'tab') continue;
-                        for (gch = ch.firstElementChild; gch; gch = gch.nextElementSibling) {
-                            wrapFlex(gch);
-                        }
+                        rowScroll(ch, false);
                     }
                     tabs = el.querySelectorAll('[role="tab"]');
                     for (t = 0; t < tabs.length; t++) {
                         tabs[t].style.setProperty('flex', '0 0 auto', 'important');
-                        tabs[t].style.setProperty('min-width', '0', 'important');
+                        tabs[t].style.setProperty('display', 'inline-flex', 'important');
+                        tabs[t].style.setProperty('width', 'auto', 'important');
+                        tabs[t].style.setProperty('min-width', 'max-content', 'important');
+                        tabs[t].style.setProperty('max-width', 'none', 'important');
                         tabs[t].style.setProperty('white-space', 'nowrap', 'important');
-                        tabs[t].style.setProperty('font-size', '12px', 'important');
-                        tabs[t].style.setProperty('padding', '3px 6px 4px 6px', 'important');
+                        tabs[t].style.setProperty('font-size', '13px', 'important');
+                        tabs[t].style.setProperty('padding', '4px 10px 5px 10px', 'important');
                     }
                 }
             }
@@ -7440,7 +7470,7 @@ def inject_sticky_tabs_script():
             }
             function ipadApplyBoxStyles(targetBox) {
                 if (!targetBox) return;
-                ipadWrapTabs(targetBox);
+                ipadScrollTabs(targetBox);
                 if (isIpadFilterLocked()) return;
                 var spacer = parentDoc.getElementById(SPACER_ID);
                 if (!spacer) {
@@ -9568,10 +9598,10 @@ if is_touch_ui():
     # iPad: 스크립트는 사이드바에 넣어 본문 빈 iframe 간격을 만들지 않음
     with st.sidebar:
         inject_sticky_tabs_script()
-    if st.session_state.get("_ipad_sticky_ver") != 22:
+    if st.session_state.get("_ipad_sticky_ver") != 23:
         inject_ipad_plotly_controls()
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 22
+        st.session_state["_ipad_sticky_ver"] = 23
 else:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
