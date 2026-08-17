@@ -617,6 +617,7 @@ def _invalidate_mr_loaded() -> None:
         "_mr_raw_n",
         "_mr_removed_n",
         "_mr_cascade",
+        "_mr_ipad_bundle",
     ):
         st.session_state.pop(k, None)
 
@@ -1870,11 +1871,36 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
             )
 
     # Drive 동기화·엑셀 병합은 디스크 캐시 우선. 세션에 대형 DF를 두지 않음.
-    ensure_market_research_cache()
-    sig = _cache_signature()
-    df, raw_n, removed_n = load_market_research_frame(sig)
-    df = _mr_slim_frame(df)
-    cascade = _cached_mr_cascade_index(sig)
+    _ipad_mr = False
+    try:
+        _ipad_mr = bool(st.session_state.get("force_touch_ui"))
+    except Exception:
+        _ipad_mr = False
+    if _ipad_mr:
+        _warm = st.session_state.get("_mr_ipad_bundle")
+        if isinstance(_warm, dict) and _warm.get("df") is not None:
+            df = _warm["df"]
+            raw_n = int(_warm.get("raw_n") or 0)
+            removed_n = int(_warm.get("removed_n") or 0)
+            cascade = _warm.get("cascade") or {}
+        else:
+            ensure_market_research_cache()
+            sig = _cache_signature()
+            df, raw_n, removed_n = load_market_research_frame(sig)
+            df = _mr_slim_frame(df)
+            cascade = _cached_mr_cascade_index(sig)
+            st.session_state["_mr_ipad_bundle"] = {
+                "df": df,
+                "raw_n": raw_n,
+                "removed_n": removed_n,
+                "cascade": cascade,
+            }
+    else:
+        ensure_market_research_cache()
+        sig = _cache_signature()
+        df, raw_n, removed_n = load_market_research_frame(sig)
+        df = _mr_slim_frame(df)
+        cascade = _cached_mr_cascade_index(sig)
 
     if df.empty:
         st.info(

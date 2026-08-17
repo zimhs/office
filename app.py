@@ -6874,7 +6874,8 @@ def inject_sticky_tabs_script():
             var parentWin = window.parent;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER = 12; /* 맥 필터 지정/원복 시 sticky 과동기화 억제(레이아웃·로직 무손실) */
+            var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
+            var STICKY_SCRIPT_VER_IPAD = 14; /* iPad: 거래처 rerun 시 sticky 재동기화 생략 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -6884,18 +6885,11 @@ def inject_sticky_tabs_script():
                 return ios || ipadOs;
             }
             /* 동일 버전 sticky면 재기동 금지 */
-            if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady === STICKY_SCRIPT_VER) {
-                try {
-                    if (typeof parentWin.__dashboardFixDuplicateTabs === 'function') {
-                        parentWin.__dashboardFixDuplicateTabs(false);
-                    }
-                    if (typeof parentWin.__dashboardIpadScheduleSync === 'function') {
-                        parentWin.__dashboardIpadScheduleSync(200);
-                    }
-                } catch (eSkip) {}
+            if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady === STICKY_SCRIPT_VER_IPAD) {
+                /* iPad: 거래처 지정 rerun마다 sticky 재동기화 금지 (맥은 아래 Mac 분기 유지) */
                 return;
             }
-            if (!isTouchPadEarly() && parentWin.__dashboardStickyMacReady === STICKY_SCRIPT_VER) {
+            if (!isTouchPadEarly() && parentWin.__dashboardStickyMacReady === STICKY_SCRIPT_VER_MAC) {
                 try {
                     /* 맥: 필터 rerun마다 scheduleSync 금지 — 이중탭일 때만 정리(로딩감 주범) */
                     if (typeof parentWin.__dashboardFixDuplicateTabs === 'function') {
@@ -7255,7 +7249,7 @@ def inject_sticky_tabs_script():
             function syncIpadWidthLoop() {
                 var now = Date.now();
                 /* 매 프레임 DOM 쓰기 금지 — iPad 필터 조작 시 버벅임/로딩감 완화 */
-                if (!parentWin.__dashboardIpadLastWidthSync || now - parentWin.__dashboardIpadLastWidthSync >= 200) {
+                if (!parentWin.__dashboardIpadLastWidthSync || now - parentWin.__dashboardIpadLastWidthSync >= 800) {
                     parentWin.__dashboardIpadLastWidthSync = now;
                     var targetBox = parentWin.__dashboardIpadTarget;
                     var spacer = parentWin.__dashboardIpadSpacer || parentDoc.getElementById(SPACER_ID);
@@ -7418,12 +7412,15 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
                     if (!isFilterDropdownOpen()) applyIpad0804Hack();
                 }, 5000);
-                var observer = new MutationObserver(function() { scheduleSync(450); });
+                var observer = new MutationObserver(function() {
+                    if (isFilterDropdownOpen()) return;
+                    scheduleSync(900);
+                });
                 observer.observe(parentDoc.body, { childList: true, subtree: true });
                 parentWin.__dashboardStickyObserver = observer;
                 parentWin.__dashboardIpadScheduleSync = scheduleSync;
                 parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
-                parentWin.__dashboardStickyTouchReady = STICKY_SCRIPT_VER;
+                parentWin.__dashboardStickyTouchReady = STICKY_SCRIPT_VER_IPAD;
                 parentDoc.addEventListener('click', function(e) {
                     if (e.target.closest('[data-testid="collapsedControl"]') ||
                         e.target.closest('[data-testid="stSidebar"]') ||
@@ -7463,7 +7460,7 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardStickyObserver = observer;
                 parentWin.__dashboardMacScheduleSync = scheduleSync;
                 parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
-                parentWin.__dashboardStickyMacReady = STICKY_SCRIPT_VER;
+                parentWin.__dashboardStickyMacReady = STICKY_SCRIPT_VER_MAC;
                 parentWin.addEventListener('resize', function() { scheduleSync(120); }, { passive: true });
                 parentWin.addEventListener('pageshow', function() { scheduleSync(120); }, { passive: true });
                 if (parentWin.visualViewport) {
@@ -9293,8 +9290,15 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
         "🔎 시장조사",
     ]
 )
-inject_sticky_tabs_script()
-inject_ipad_plotly_controls()
+if is_touch_ui():
+    # iPad: sticky/plotly iframe은 세션 첫 렌더만. 거래처 지정 rerun마다 재삽입하면 로딩이 김.
+    if not st.session_state.get("_ipad_sticky_injected"):
+        inject_sticky_tabs_script()
+        inject_ipad_plotly_controls()
+        st.session_state["_ipad_sticky_injected"] = True
+else:
+    inject_sticky_tabs_script()
+    inject_ipad_plotly_controls()
 # Tab 1: 📌 영업 종합 요약
 with tab1:
     t1_c1, t1_c2 = st.columns([4, 1])

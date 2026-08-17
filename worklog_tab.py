@@ -4355,7 +4355,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             _now = time.time()
             _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
             _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
-            if _force or (_now - _prev >= 90):
+            _ipad_wl = _wl_is_touch_ui()
+            # iPad: 거래처 지정 rerun마다 Drive 동기화 금지. 맥은 90초 주기 유지.
+            if _ipad_wl and not _force:
+                _wl_sync = {"ok": True, "skipped": True, "copied": []}
+            elif _force or (_now - _prev >= 90):
                 st.session_state["_wl_drive_sync_ts"] = _now
                 _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR)
             else:
