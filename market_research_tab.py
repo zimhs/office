@@ -1243,17 +1243,18 @@ _MR_SHOW_COLS = [
 _MR_DISPLAY_LIMIT = 400
 
 
+@st.cache_data(show_spinner=False)
 def _filter_frame(
     df: pd.DataFrame,
     *,
-    regions: list[str],
-    complexes: list[str],
-    suppliers: list[str],
+    regions: tuple,
+    complexes: tuple,
+    suppliers: tuple,
     query: str,
     include_factory: bool,
     hide_unclassified: bool = False,
 ) -> pd.DataFrame:
-    """가벼운 필터 — 사전계산 _search / _factory_only 사용."""
+    """가벼운 필터 — Pandas str.contains 대신 초고속 List Comprehension 적용"""
     view = df
     if not include_factory:
         view = view[~view["_factory_only"]]
@@ -1263,16 +1264,25 @@ def _filter_frame(
         view = view[view["지역"].isin(regions)]
     if complexes:
         view = view[view["산업단지"].isin(complexes)]
+        
+    # 1. 공급사 검색 속도 극대화 (List Comprehension 적용)
     if suppliers:
-        sup_mask = False
-        for s in suppliers:
-            sup_mask = sup_mask | view["공급사"].str.contains(
-                re.escape(s), case=False, regex=True, na=False
-            )
-        view = view[sup_mask]
+        sup_lowers = [s.casefold() for s in suppliers]
+        sup_list = view["공급사"].str.casefold().tolist()
+        mask = [any(sl in v for sl in sup_lowers) for v in sup_list]
+        view = view[mask]
+
+    # 2. 띄어쓰기 기반 스마트 다중 검색 및 속도 극대화
     q = (query or "").strip()
     if q:
-        view = view[view["_search"].str.contains(q.casefold(), regex=False, na=False)]
+        # 띄어쓰기 기준으로 키워드 분리 (예: "동탄 산소" -> "동탄" AND "산소")
+        keywords = [k.casefold() for k in q.split()]
+        search_list = view["_search"].tolist()
+        
+        # 정규식(Regex) 엔진을 거치지 않는 Python 순수 in 연산자 사용 (압도적 속도)
+        mask = [all(k in s for k in keywords) for s in search_list]
+        view = view[mask]
+        
     return view
 
 
@@ -1449,9 +1459,9 @@ def _mr_filter_results_fragment(
 
         view = _filter_frame(
             df,
-            regions=app_r,
-            complexes=app_c,
-            suppliers=app_s,
+            regions=tuple(app_r),
+            complexes=tuple(app_c),
+            suppliers=tuple(app_s),
             query=app_q,
             include_factory=app_fac,
             hide_unclassified=app_hide,
@@ -1571,8 +1581,8 @@ def _mr_filter_results_fragment(
                 sub = view[view["산업단지"] == pick_cx][show_cols]
                 st.caption(f"{pick_cx} · {len(sub):,}건")
                 st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
-            if latest_update_str:
-                st.caption(f"대시보드 기준 시각: {latest_update_str}")
+        if latest_update_str:
+            st.caption(f"대시보드 기준 시각: {latest_update_str}")
     except Exception as e:
         st.error(f"시장조사 필터 오류: {e}")
         st.exception(e)
