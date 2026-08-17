@@ -153,39 +153,6 @@ def inject_custom_css():
                 const ipad = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
                 if (ipad) {
                     document.documentElement.classList.add('dashboard-touch-mode');
-                    const pinIpadMenus = () => {
-                        const marker = document.getElementById('sticky-marker');
-                        const box = document.querySelector('.dashboard-filter-sticky') ||
-                            (marker && marker.closest('[data-testid="stVerticalBlockBorderWrapper"]'));
-                        if (!box) return;
-                        const nodes = box.querySelectorAll('[data-baseweb="popover"], [data-baseweb="menu"], [role="listbox"]');
-                        for (let i = 0; i < nodes.length; i++) {
-                            const el = nodes[i];
-                            if (el.getAttribute('role') === 'tablist') continue;
-                            const r = el.getBoundingClientRect();
-                            if (r.height < 8 && r.width < 8) continue;
-                            el.style.setProperty('position', 'fixed', 'important');
-                            el.style.setProperty('top', '8.4rem', 'important');
-                            el.style.setProperty('left', '8px', 'important');
-                            el.style.setProperty('right', '8px', 'important');
-                            el.style.setProperty('bottom', 'auto', 'important');
-                            el.style.setProperty('width', 'auto', 'important');
-                            el.style.setProperty('max-width', 'calc(100vw - 16px)', 'important');
-                            el.style.setProperty('max-height', '40vh', 'important');
-                            el.style.setProperty('overflow-y', 'auto', 'important');
-                            el.style.setProperty('z-index', '2147483646', 'important');
-                            el.style.setProperty('transform', 'none', 'important');
-                            el.style.setProperty('-webkit-transform', 'none', 'important');
-                            el.style.setProperty('background', '#FFFFFF', 'important');
-                            if (el.parentNode !== document.body) {
-                                try { document.body.appendChild(el); } catch (eMove) {}
-                            }
-                        }
-                    };
-                    if (document.body) {
-                        new MutationObserver(pinIpadMenus).observe(document.body, { childList: true, subtree: true });
-                    }
-                    setInterval(pinIpadMenus, 250);
                 }
                 const markNoTranslate = (root) => {
                     const nodes = (root || document).querySelectorAll(
@@ -552,14 +519,10 @@ def inject_custom_css():
             html.dashboard-touch-mode section[data-testid="stSidebar"] {
                 z-index: 1000005 !important;
             }
-            html.dashboard-touch-mode [data-testid="stAppViewContainer"] {
-                overflow-x: hidden !important;
-                overflow-y: auto !important;
-            }
+            html.dashboard-touch-mode [data-testid="stAppViewContainer"],
             html.dashboard-touch-mode section.main,
             html.dashboard-touch-mode section.main .block-container {
-                overflow-x: hidden !important;
-                overflow-y: visible !important;
+                overflow: visible !important;
                 max-width: 100% !important;
                 padding-left: 0.55rem !important;
                 padding-right: 0.55rem !important;
@@ -598,27 +561,17 @@ def inject_custom_css():
             }
             html.dashboard-touch-mode .dashboard-filter-sticky,
             html.dashboard-touch-mode .dashboard-filter-sticky-touch {
+                height: 200px !important;
                 max-height: 200px !important;
-                height: auto !important;
-                overflow: hidden !important;
+                overflow: visible !important;
             }
             html.dashboard-touch-mode .dashboard-filter-sticky [data-baseweb="popover"],
             html.dashboard-touch-mode .dashboard-filter-sticky [data-baseweb="menu"],
-            html.dashboard-touch-mode .dashboard-filter-sticky [role="listbox"],
-            html.dashboard-touch-mode body > [data-baseweb="popover"],
-            html.dashboard-touch-mode body > [data-baseweb="menu"],
-            html.dashboard-touch-mode body > [role="listbox"] {
+            html.dashboard-touch-mode .dashboard-filter-sticky ul[role="listbox"] {
                 position: fixed !important;
-                top: 8.4rem !important;
-                left: 8px !important;
-                right: 8px !important;
-                width: auto !important;
-                max-width: calc(100vw - 16px) !important;
+                z-index: 2147483646 !important;
                 max-height: 40vh !important;
                 overflow-y: auto !important;
-                z-index: 2147483646 !important;
-                transform: none !important;
-                -webkit-transform: none !important;
                 background: #FFFFFF !important;
             }
             /* 고정바 내부 공백 최소화 */
@@ -6979,7 +6932,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
-            var STICKY_SCRIPT_VER_IPAD = 17; /* iPad: 검색 목록을 body로 분리, 고정바 높이 잠금 */
+            var STICKY_SCRIPT_VER_IPAD = 18; /* iPad: 검색 팝업 다시 표시, 바 높이만 잠금 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -7351,8 +7304,9 @@ def inject_sticky_tabs_script():
                 targetBox.style.setProperty('left', left + 'px', 'important');
                 targetBox.style.setProperty('width', w + 'px', 'important');
                 targetBox.style.setProperty('max-width', w + 'px', 'important');
+                targetBox.style.setProperty('height', '200px', 'important');
                 targetBox.style.setProperty('max-height', '200px', 'important');
-                targetBox.style.setProperty('overflow', 'hidden', 'important');
+                targetBox.style.setProperty('overflow', 'visible', 'important');
                 targetBox.style.setProperty('z-index', open ? '1' : '999999', 'important');
                 targetBox.style.setProperty('background-color', '#FFFFFF', 'important');
                 targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
@@ -7361,8 +7315,7 @@ def inject_sticky_tabs_script():
                 targetBox.style.setProperty('padding', '6px 8px 0px 8px', 'important');
                 targetBox.style.setProperty('margin-top', '0', 'important');
                 targetBox.style.setProperty('box-sizing', 'border-box', 'important');
-                targetBox.style.setProperty('overflow', 'hidden', 'important');
-                targetBox.style.setProperty('box-shadow', '0 8px 14px -4px rgba(37, 99, 235, 0.18)', 'important');
+                targetBox.style.setProperty('overflow', 'visible', 'important');
                 targetBox.style.setProperty('-webkit-transform', 'none', 'important');
                 targetBox.style.setProperty('transform', 'none', 'important');
                 var pinH = Math.min(targetBox.offsetHeight || 180, 200);
@@ -9423,10 +9376,10 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
 if is_touch_ui():
     # iPad: 스크립트는 매 rerun 넣되, 이미 기동된 경우 pin만 (검색 후 가림 방지)
     inject_sticky_tabs_script()
-    if st.session_state.get("_ipad_sticky_ver") != 17:
+    if st.session_state.get("_ipad_sticky_ver") != 18:
         inject_ipad_plotly_controls()
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 17
+        st.session_state["_ipad_sticky_ver"] = 18
 else:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
