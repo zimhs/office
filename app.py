@@ -8,6 +8,7 @@ import glob
 import time
 import subprocess
 import shutil
+import tempfile
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
@@ -76,6 +77,11 @@ try:
 except Exception:  # pragma: no cover
     sync_drive_copy_into_cache = None  # type: ignore
     sync_cache_to_drive_copy = None  # type: ignore
+
+
+def _is_local_macos() -> bool:
+    """로컬 맥에서 streamlit run 중일 때만 True (Notes 자동화 가능)."""
+    return sys.platform == "darwin" and not _is_streamlit_cloud()
 
 
 def _is_streamlit_cloud() -> bool:
@@ -3237,112 +3243,203 @@ def get_diesel_price_monthly(force_refresh=False):
     fetched["month"] = month
     return fetched
 # ==========================================
-# ★ 메모 생성 AppleScript ★ 
+# ★ 메모 생성 AppleScript ★
 # ==========================================
-def open_macos_notes_folder(client_name, dart_api_key, df_integrated=None):
-    safe_client_name = client_name.replace('"', '\\"')
-    info = get_company_info_hybrid(client_name, dart_api_key)
-    encoded_name = urllib.parse.quote(info['clean_name'])
-    
-    # 통합 탱크 재고 연동 HTML 생성
+def _build_client_note_html(client_name, dart_api_key, df_integrated=None, address=None) -> str:
+    info = get_company_info_hybrid(client_name, dart_api_key, address=address)
+    search_q = info.get("lookup_hint") or info["clean_name"]
+    encoded_name = urllib.parse.quote(search_q)
+
     inventory_html = ""
-    if df_integrated is not None and not df_integrated.empty and '거래처(사용처)/보관장소' in df_integrated.columns:
-        client_inv = df_integrated[df_integrated['거래처(사용처)/보관장소'].astype(str).str.contains(client_name, regex=False, na=False)]
+    if (
+        df_integrated is not None
+        and not df_integrated.empty
+        and "거래처(사용처)/보관장소" in df_integrated.columns
+    ):
+        client_inv = df_integrated[
+            df_integrated["거래처(사용처)/보관장소"]
+            .astype(str)
+            .str.contains(client_name, regex=False, na=False)
+        ]
         if not client_inv.empty:
             inventory_html = "<h3>🛢️ 설치/보관 장비 현황 (통합 탱크 재고)</h3><ul>"
             for _, row in client_inv.iterrows():
-                item = row.get('품목', '미상')
-                status = row.get('사용구분', '')
-                serial = row.get('일련(제조)번호', 'S/N 없음')
-                vol = row.get('저장부피(L)', '')
-                weight = row.get('저장무게(kg)', '')
-                
+                item = row.get("품목", "미상")
+                status = row.get("사용구분", "")
+                serial = row.get("일련(제조)번호", "S/N 없음")
+                vol = row.get("저장부피(L)", "")
+                weight = row.get("저장무게(kg)", "")
+
                 vol_str = f"{vol}L" if pd.notna(vol) and str(vol).strip() != "" else ""
-                weight_str = f"{weight}kg" if pd.notna(weight) and str(weight).strip() != "" else ""
-                cap_str = f" / 용량: {vol_str} {weight_str}".strip() if vol_str or weight_str else ""
-                
-                inventory_html += f"<li><b>[{item}]</b> {status} (S/N: {serial}{cap_str})</li>"
+                weight_str = (
+                    f"{weight}kg" if pd.notna(weight) and str(weight).strip() != "" else ""
+                )
+                cap_str = (
+                    f" / 용량: {vol_str} {weight_str}".strip()
+                    if vol_str or weight_str
+                    else ""
+                )
+
+                inventory_html += (
+                    f"<li><b>[{html.escape(str(item))}]</b> "
+                    f"{html.escape(str(status))} "
+                    f"(S/N: {html.escape(str(serial))}{html.escape(cap_str)})</li>"
+                )
             inventory_html += "</ul><br>"
-    note_content = f"""
-    <h1>{safe_client_name}</h1>
-    <br>
-    <h3>📌 요약 기업 정보 (데이터 출처: {info['source']})</h3>
-    <ul>
-        <li><b>대표자:</b> {info['ceo']}</li>
-        <li><b>업종:</b> {info['industry']}</li>
-        <li><b>매출액:</b> {info['revenue']}</li>
-        <li><b>영업이익:</b> {info['profit']}</li>
-    </ul>
-    <br>
-    {inventory_html}
-    <h3>🔗 상세 정보 원클릭 검색</h3>
-    <ul>
-        <li><a href="https://search.naver.com/search.naver?query={encoded_name} 기업정보">네이버에서 '{info['clean_name']}' 재무정보 보기</a></li>
-        <li><a href="https://www.saramin.co.kr/zf_user/search/company?searchword={encoded_name}">사람인에서 '{info['clean_name']}' 기업/채용 검색</a></li>
-        <li><a href="https://www.jobkorea.co.kr/Search/?stext={encoded_name}&tabType=corp">잡코리아에서 '{info['clean_name']}' 기업 검색</a></li>
-    </ul>
-    <br>
-    <h3>📝 영업 및 특이사항</h3>
-    <p></p>
-    """
-    safe_note_content = note_content.replace('"', '\\"')
-    script = f"""
+
+    title = html.escape(str(client_name))
+    clean_name = html.escape(str(info["clean_name"]))
+    return f"""<h1>{title}</h1>
+<br>
+<h3>📌 요약 기업 정보 (데이터 출처: {html.escape(str(info['source']))})</h3>
+<ul>
+    <li><b>대표자:</b> {html.escape(str(info['ceo']))}</li>
+    <li><b>업종:</b> {html.escape(str(info['industry']))}</li>
+    <li><b>매출액:</b> {html.escape(str(info['revenue']))}</li>
+    <li><b>영업이익:</b> {html.escape(str(info['profit']))}</li>
+</ul>
+<br>
+{inventory_html}
+<h3>🔗 상세 정보 원클릭 검색</h3>
+<ul>
+    <li><a href="https://search.naver.com/search.naver?query={encoded_name} 기업정보">네이버에서 '{clean_name}' 재무정보 보기</a></li>
+    <li><a href="https://www.saramin.co.kr/zf_user/search/company?searchword={encoded_name}">사람인에서 '{clean_name}' 기업/채용 검색</a></li>
+    <li><a href="https://www.jobkorea.co.kr/Search/?stext={encoded_name}&tabType=corp">잡코리아에서 '{clean_name}' 기업 검색</a></li>
+</ul>
+<br>
+<h3>📝 영업 및 특이사항</h3>
+<p></p>
+"""
+
+
+def open_macos_notes_folder(
+    client_name, dart_api_key, df_integrated=None, address=None
+) -> tuple[bool, str]:
+    if not client_name or client_name == "전체 거래처":
+        return False, "사이드바에서 특정 거래처를 선택한 뒤 다시 시도해 주세요."
+
+    if not _is_local_macos():
+        return (
+            False,
+            "macOS 메모 연동은 **맥에서 로컬 실행**(`streamlit run app.py`)할 때만 "
+            "동작합니다. Streamlit Cloud·iPad 브라우저에서는 Notes 앱을 열 수 없습니다.",
+        )
+
+    note_content = _build_client_note_html(
+        client_name, dart_api_key, df_integrated=df_integrated, address=address
+    )
+
+    body_path = ""
+    script_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".html", prefix="dash_note_", delete=False, encoding="utf-8"
+        ) as body_file:
+            body_file.write(note_content.strip())
+            body_path = body_file.name
+
+        applescript = """
+on run argv
+    set bodyPath to item 1 of argv
+    set noteName to item 2 of argv
+    set noteBody to do shell script "cat " & quoted form of bodyPath
+
     tell application "Notes"
         activate
-        
         set targetFolderName to "거래처"
-        set noteName to "{safe_client_name}"
         set noteFound to false
         set targetAcc to missing value
-        
+
         repeat with acc in accounts
             try
                 if exists folder targetFolderName of acc then
                     set parentFolder to folder targetFolderName of acc
-                    set foundNotes to (notes of parentFolder whose name is noteName)
-                    if (count of foundNotes) > 0 then
-                        show (item 1 of foundNotes)
-                        set noteFound to true
-                        exit repeat
-                    end if
+                    repeat with n in (notes of parentFolder)
+                        if name of n is noteName then
+                            show n
+                            set noteFound to true
+                            exit repeat
+                        end if
+                    end repeat
+                    if noteFound then exit repeat
                 end if
             end try
         end repeat
-        
+
         if not noteFound then
             repeat with acc in accounts
-                if name of acc is "iCloud" then
-                    set targetAcc to acc
-                    exit repeat
-                end if
+                try
+                    if exists folder targetFolderName of acc then
+                        set targetAcc to acc
+                        exit repeat
+                    end if
+                end try
             end repeat
-            
             if targetAcc is missing value then
-                set targetAcc to first account
+                repeat with acc in accounts
+                    if name of acc is "iCloud" then
+                        set targetAcc to acc
+                        exit repeat
+                    end if
+                end repeat
             end if
-            
+            if targetAcc is missing value then set targetAcc to first account
+
             if not (exists folder targetFolderName of targetAcc) then
-                make new folder at targetAcc with properties {{name:targetFolderName}}
+                make new folder at targetAcc with properties {name:targetFolderName}
             end if
-            
+
             set parentFolder to folder targetFolderName of targetAcc
-            
-            set newNote to make new note at parentFolder with properties {{body:"{safe_note_content}"}}
-            
+            set newNote to make new note at parentFolder with properties {body:noteBody}
             show newNote
         end if
     end tell
-    """
-    try:
-        process = subprocess.Popen(['osascript', '-'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate(script.encode('utf-8'))
-        
-        if process.returncode == 0:
-            return True
-        else:
-            return False
+end run
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".applescript",
+            prefix="dash_notes_",
+            delete=False,
+            encoding="utf-8",
+        ) as script_file:
+            script_file.write(applescript.strip())
+            script_path = script_file.name
+
+        result = subprocess.run(
+            ["osascript", script_path, body_path, str(client_name)],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        if result.returncode == 0:
+            return True, f"메모 앱에서 '{client_name}' 노트를 열었습니다."
+
+        err = (result.stderr or result.stdout or "").strip()
+        hint = ""
+        low = err.lower()
+        if (
+            "not authorized" in low
+            or "assistive" in low
+            or "-1743" in err
+            or "1002" in err
+        ):
+            hint = (
+                " 시스템 설정 → 개인정보 보호 및 보안 → **자동화**에서 "
+                "터미널/Cursor/Python에 **메모(Notes)** 제어를 허용해 주세요."
+            )
+        return False, f"메모 연동 실패: {err or '알 수 없는 오류'}.{hint}"
+    except subprocess.TimeoutExpired:
+        return False, "메모 앱 응답 시간 초과. Notes가 실행 중인지 확인해 주세요."
     except Exception as e:
-        return False
+        return False, f"메모 연동 오류: {e}"
+    finally:
+        for path in (body_path, script_path):
+            if path:
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
 def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0f"):
     fig = go.Figure()
     sorted_years = sorted(pivot_df.columns, key=lambda x: str(x))
@@ -9041,12 +9138,38 @@ with tab2:
     with st.container(key="tab2_action_btns"):
         btn_c1, btn_c2, btn_c3 = st.columns([2.4, 2.0, 1.8], gap="medium")
         with btn_c1:
+            _notes_addr = (
+                client_addr
+                if client_addr and client_addr != "등록된 주소 정보가 없습니다."
+                else None
+            )
+            _notes_help = None
+            if _is_streamlit_cloud():
+                _notes_help = (
+                    "Cloud·iPad에서는 macOS 메모를 열 수 없습니다. "
+                    "맥에서 streamlit run app.py 로 실행하세요."
+                )
+            elif selected_client == "전체 거래처":
+                _notes_help = "특정 거래처를 선택하세요."
             if st.button(
                 "📝 macOS 메모에서 노트 열기/생성",
                 key="btn_notes",
                 width="stretch",
+                disabled=selected_client == "전체 거래처",
+                help=_notes_help,
             ):
-                open_macos_notes_folder(selected_client, dart_api_key, df_integrated)
+                ok, msg = open_macos_notes_folder(
+                    selected_client,
+                    dart_api_key,
+                    df_integrated,
+                    address=_notes_addr,
+                )
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+            if _is_streamlit_cloud():
+                st.caption("Cloud에서는 메모 버튼이 동작하지 않습니다. 로컬 맥 실행 시 연동됩니다.")
         with btn_c2:
             btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
             if st.button(btn_label, key="btn_dart_info", width="stretch"):
