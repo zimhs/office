@@ -7016,7 +7016,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
-            var STICKY_SCRIPT_VER_IPAD = 26; /* iPad: 스크롤 중 spacer 재계산 금지 */
+            var STICKY_SCRIPT_VER_IPAD = 27; /* iPad: 고정 후 레이아웃 동결 + scrollIntoView 차단 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -7047,8 +7047,43 @@ def inject_sticky_tabs_script():
                     + 'overflow:hidden!important;visibility:hidden!important;}'
                 );
             }
+            function ipadPatchScrollIntoView() {
+                if (parentWin.__dashboardIpadSivPatched) return;
+                parentWin.__dashboardIpadSivPatched = true;
+                try {
+                    var proto = parentWin.Element.prototype;
+                    var orig = proto.scrollIntoView;
+                    proto.scrollIntoView = function () {
+                        try {
+                            if (this && this.closest && (
+                                this.closest('[role="tab"]') ||
+                                this.closest('[role="tablist"]') ||
+                                this.closest('[data-testid="stTab"]') ||
+                                this.closest('[data-testid="stTabs"]') ||
+                                this.closest('#dashboard-ipad-h-tabs') ||
+                                this.closest('.dashboard-filter-sticky')
+                            )) return;
+                        } catch (eSiv) {}
+                        return orig.apply(this, arguments);
+                    };
+                } catch (eP) {}
+            }
+            function ipadFreezeLayout() {
+                parentWin.__dashboardIpadFreezeLayout = true;
+                try {
+                    if (parentWin.__dashboardIpadRaf) {
+                        parentWin.cancelAnimationFrame(parentWin.__dashboardIpadRaf);
+                        parentWin.__dashboardIpadRaf = null;
+                    }
+                    if (parentWin.__dashboardStickyTouchInterval) {
+                        clearInterval(parentWin.__dashboardStickyTouchInterval);
+                        parentWin.__dashboardStickyTouchInterval = null;
+                    }
+                } catch (eFz) {}
+            }
             if (isTouchPadEarly()) {
                 try { ipadInjectTabHScrollCss(); } catch (eCss) {}
+                try { ipadPatchScrollIntoView(); } catch (eSiv2) {}
             }
             /* 동일 버전 sticky면 재기동 금지 */
             if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady === STICKY_SCRIPT_VER_IPAD) {
@@ -7407,6 +7442,7 @@ def inject_sticky_tabs_script():
                 }
             }
             function applyIpad0804Hack() {
+                if (parentWin.__dashboardIpadFreezeLayout) return;
                 if (isIpadFilterLocked()) return;
                 cleanupIpadPortal();
                 var dropOpen = false;
@@ -7517,8 +7553,9 @@ def inject_sticky_tabs_script():
             }
             function ipadApplyBoxStyles(targetBox) {
                 if (!targetBox) return;
-                ipadScrollTabs(targetBox);
+                if (parentWin.__dashboardIpadFreezeLayout) return;
                 if (isIpadFilterLocked()) return;
+                ipadScrollTabs(targetBox);
                 var spacer = parentDoc.getElementById(SPACER_ID);
                 if (!spacer) {
                     spacer = parentDoc.createElement('div');
@@ -7565,8 +7602,14 @@ def inject_sticky_tabs_script():
                 spacer.style.setProperty('display', 'block', 'important');
                 parentWin.__dashboardIpadTarget = targetBox;
                 parentWin.__dashboardIpadSpacer = spacer;
+                ipadFreezeLayout();
             }
             function ipadPinFilterBox() {
+                if (parentWin.__dashboardIpadFreezeLayout) {
+                    var live = findFilterBox();
+                    if (live && live.style.position === 'fixed') return;
+                    parentWin.__dashboardIpadFreezeLayout = false;
+                }
                 if (isIpadFilterLocked()) return;
                 var box = findFilterBox();
                 if (!box) return;
@@ -7579,6 +7622,10 @@ def inject_sticky_tabs_script():
             }
             parentWin.__dashboardIpadPin = ipadPinFilterBox;
             function syncIpadWidthLoop() {
+                if (parentWin.__dashboardIpadFreezeLayout) {
+                    parentWin.__dashboardIpadRaf = null;
+                    return;
+                }
                 var now = Date.now();
                 /* 매 프레임 DOM 쓰기 금지 — iPad 필터 조작 시 버벅임/로딩감 완화 */
                 if (!parentWin.__dashboardIpadLastWidthSync || now - parentWin.__dashboardIpadLastWidthSync >= 800) {
@@ -7683,7 +7730,7 @@ def inject_sticky_tabs_script():
             }
             function scheduleSync(ms) {
                 try {
-                    if (touchMode && isIpadFilterLocked()) return;
+                    if (touchMode && (parentWin.__dashboardIpadFreezeLayout || isIpadFilterLocked())) return;
                     var all = collectMainTabLists();
                     if (all.length > 1) {
                         fixDuplicateMainTabs(true);
