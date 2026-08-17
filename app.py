@@ -3435,25 +3435,280 @@ def _build_client_note_html(client_name, dart_api_key, df_integrated=None, addre
     return _format_client_note_html(client_name, info, inventory_html)
 
 
+def _note_name_key(name: str) -> str:
+    s = re.sub(r"\s+", "", str(name or "").strip().lower())
+    s = re.sub(r"[.\u3002]+$", "", s)
+    s = re.sub(r"주식회사|㈜|\(주\)|유한회사|\(유\)", "", s)
+    return s
+
+
+def _macos_notes_auth_hint(err: str) -> str:
+    low = (err or "").lower()
+    if (
+        "not authorized" in low
+        or "assistive" in low
+        or "-1743" in (err or "")
+        or "1002" in (err or "")
+    ):
+        return (
+            " 시스템 설정 → 개인정보 보호 및 보안 → **자동화**에서 "
+            "터미널/Cursor/Python에 **메모(Notes)** 제어를 허용해 주세요."
+        )
+    return ""
+
+
+def _run_osascript_file(script_text: str, args: list[str], timeout: int = 60):
+    script_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".applescript",
+            prefix="dash_notes_",
+            delete=False,
+            encoding="utf-8",
+        ) as script_file:
+            script_file.write(script_text.strip())
+            script_path = script_file.name
+        return subprocess.run(
+            ["osascript", script_path, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    finally:
+        if script_path:
+            try:
+                os.unlink(script_path)
+            except Exception:
+                pass
+
+
+def list_macos_client_notes(force: bool = False) -> tuple[list[dict], str]:
+    """메모「거래처」폴더의 노트·하위폴더 목록. (로컬 맥 전용)"""
+    if not _is_local_macos():
+        return [], "로컬 맥에서만 메모 목록을 읽을 수 있습니다."
+    cache = st.session_state.get("_macos_notes_index")
+    now = time.time()
+    if (
+        not force
+        and isinstance(cache, dict)
+        and now - float(cache.get("ts") or 0) < 300
+        and cache.get("items") is not None
+    ):
+        return list(cache["items"]), ""
+
+    script = """
+on run
+    set outLines to {}
+    tell application "Notes"
+        repeat with acc in accounts
+            try
+                set accName to name of acc
+                if exists folder "거래처" of acc then
+                    set parentFolder to folder "거래처" of acc
+                    repeat with n in (notes of parentFolder)
+                        set end of outLines to "NOTE\t" & accName & "\t" & (name of n)
+                    end repeat
+                    try
+                        repeat with f in (folders of parentFolder)
+                            set fName to name of f
+                            set end of outLines to "FOLDER\t" & accName & "\t" & fName
+                            repeat with n in (notes of f)
+                                set end of outLines to "SUBNOTE\t" & accName & "\t" & fName & "\t" & (name of n)
+                            end repeat
+                        end repeat
+                    end try
+                end if
+            end try
+        end repeat
+    end tell
+    set AppleScript's text item delimiters to linefeed
+    return outLines as text
+end run
+"""
+    try:
+        result = _run_osascript_file(script, [], timeout=90)
+    except subprocess.TimeoutExpired:
+        return [], "메모 목록 조회 시간 초과."
+    except Exception as e:
+        return [], f"메모 목록 조회 오류: {e}"
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        return [], f"메모 목록 조회 실패: {err or '알 수 없는 오류'}.{_macos_notes_auth_hint(err)}"
+
+    items = []
+    for line in (result.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        kind, acc = parts[0].strip(), parts[1].strip()
+        if kind == "NOTE" and len(parts) >= 3:
+            items.append({"kind": "NOTE", "account": acc, "name": parts[2].strip(), "parent": ""})
+        elif kind == "FOLDER" and len(parts) >= 3:
+            items.append({"kind": "FOLDER", "account": acc, "name": parts[2].strip(), "parent": ""})
+        elif kind == "SUBNOTE" and len(parts) >= 4:
+            items.append(
+                {
+                    "kind": "SUBNOTE",
+                    "account": acc,
+                    "parent": parts[2].strip(),
+                    "name": parts[3].strip(),
+                }
+            )
+    st.session_state["_macos_notes_index"] = {"ts": now, "items": items}
+    return items, ""
+
+
+def match_macos_client_note(client_name: str, items: list[dict]) -> dict | None:
+    """거래처명과 같은(또는 정규화 일치) 메모 노트/폴더를 고른다."""
+    raw = str(client_name or "").strip()
+    if not raw or raw == "전체 거래처":
+        return None
+    cands = [raw]
+    for c in _company_name_candidates(raw):
+        if c not in cands:
+            cands.append(c)
+    cand_set = {c.strip() for c in cands if c and c.strip()}
+    key_set = {_note_name_key(c) for c in cand_set if _note_name_key(c)}
+
+    def _score(item: dict, mode: str) -> tuple:
+        kind_rank = {"NOTE": 0, "SUBNOTE": 1, "FOLDER": 2}.get(item.get("kind"), 9)
+        return (kind_rank, len(str(item.get("name") or "")), str(item.get("name") or ""))
+
+    for mode, pred in (
+        ("exact", lambda it: str(it.get("name") or "").strip() == raw),
+        ("candidate", lambda it: str(it.get("name") or "").strip() in cand_set),
+        ("normalized", lambda it: _note_name_key(it.get("name") or "") in key_set),
+    ):
+        hits = [it for it in items if pred(it)]
+        if hits:
+            hits.sort(key=lambda it: _score(it, mode))
+            return {**hits[0], "match": mode}
+
+    cores = sorted((k for k in key_set if len(k) >= 2), key=len, reverse=True)
+    contains = []
+    for it in items:
+        nk = _note_name_key(it.get("name") or "")
+        pk = _note_name_key(it.get("parent") or "")
+        for core in cores:
+            name_hit = len(nk) >= 2 and (core in nk or nk in core)
+            parent_hit = len(pk) >= 2 and (core in pk or pk in core)
+            if name_hit or parent_hit:
+                contains.append(it)
+                break
+    if contains:
+        contains.sort(key=lambda it: _score(it, "contains"))
+        return {**contains[0], "match": "contains"}
+    return None
+
+
+def _show_macos_matched_note(match: dict) -> tuple[bool, str, str]:
+    """일치한 노트를 메모 앱에서 열고 plaintext를 반환."""
+    kind = match.get("kind") or "NOTE"
+    name = str(match.get("name") or "")
+    parent = str(match.get("parent") or "")
+    script = """
+on run argv
+    set kind to item 1 of argv
+    set noteName to item 2 of argv
+    set parentName to item 3 of argv
+    tell application "Notes"
+        activate
+        repeat with acc in accounts
+            try
+                if exists folder "거래처" of acc then
+                    set parentFolder to folder "거래처" of acc
+                    if kind is "FOLDER" then
+                        if exists folder noteName of parentFolder then
+                            set sf to folder noteName of parentFolder
+                            if (count of notes of sf) > 0 then
+                                set n to note 1 of sf
+                                show n
+                                return plaintext of n
+                            end if
+                        end if
+                    else if kind is "SUBNOTE" then
+                        if exists folder parentName of parentFolder then
+                            set sf to folder parentName of parentFolder
+                            repeat with n in (notes of sf)
+                                if name of n is noteName then
+                                    show n
+                                    return plaintext of n
+                                end if
+                            end repeat
+                        end if
+                    else
+                        repeat with n in (notes of parentFolder)
+                            if name of n is noteName then
+                                show n
+                                return plaintext of n
+                            end if
+                        end repeat
+                    end if
+                end if
+            end try
+        end repeat
+    end tell
+    return ""
+end run
+"""
+    try:
+        result = _run_osascript_file(script, [kind, name, parent], timeout=45)
+    except subprocess.TimeoutExpired:
+        return False, "메모 앱 응답 시간 초과.", ""
+    except Exception as e:
+        return False, f"메모 열기 오류: {e}", ""
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        return False, f"메모 열기 실패: {err or '알 수 없는 오류'}.{_macos_notes_auth_hint(err)}", ""
+    body = (result.stdout or "").strip()
+    label = parent + "/" + name if parent else name
+    return True, f"메모「거래처」에서 '{label}' 노트를 열었습니다.", body
+
+
 def open_macos_notes_folder(
     client_name, dart_api_key, df_integrated=None, address=None
-) -> tuple[bool, str]:
+) -> dict:
+    empty = {
+        "ok": False,
+        "msg": "",
+        "created": False,
+        "matched_name": "",
+        "body": "",
+        "kind": "",
+    }
     if not client_name or client_name == "전체 거래처":
-        return False, "사이드바에서 특정 거래처를 선택한 뒤 다시 시도해 주세요."
+        empty["msg"] = "사이드바에서 특정 거래처를 선택한 뒤 다시 시도해 주세요."
+        return empty
 
     if not _is_local_macos():
-        return (
-            False,
-            "macOS 메모 연동은 **맥에서 로컬 실행**(`streamlit run app.py`)할 때만 "
-            "동작합니다. Streamlit Cloud·iPad 브라우저에서는 Notes 앱을 열 수 없습니다.",
+        empty["msg"] = (
+            "macOS 메모 연동은 **맥에서 로컬 실행**할 때만 동작합니다. "
+            "바탕화면의 **dashboard_Local** 바로가기로 실행하세요."
         )
+        return empty
+
+    items, list_err = list_macos_client_notes()
+    if list_err and not items:
+        empty["msg"] = list_err
+        return empty
+
+    match = match_macos_client_note(client_name, items)
+    if match:
+        ok, msg, body = _show_macos_matched_note(match)
+        return {
+            "ok": ok,
+            "msg": msg,
+            "created": False,
+            "matched_name": str(match.get("name") or ""),
+            "body": body,
+            "kind": str(match.get("kind") or ""),
+        }
 
     note_content = _build_client_note_html(
         client_name, dart_api_key, df_integrated=df_integrated, address=address
     )
-
     body_path = ""
-    script_path = ""
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".html", prefix="dash_note_", delete=False, encoding="utf-8"
@@ -3470,99 +3725,63 @@ on run argv
     tell application "Notes"
         activate
         set targetFolderName to "거래처"
-        set noteFound to false
         set targetAcc to missing value
 
         repeat with acc in accounts
             try
                 if exists folder targetFolderName of acc then
-                    set parentFolder to folder targetFolderName of acc
-                    repeat with n in (notes of parentFolder)
-                        if name of n is noteName then
-                            show n
-                            set noteFound to true
-                            exit repeat
-                        end if
-                    end repeat
-                    if noteFound then exit repeat
+                    set targetAcc to acc
+                    exit repeat
                 end if
             end try
         end repeat
-
-        if not noteFound then
+        if targetAcc is missing value then
             repeat with acc in accounts
-                try
-                    if exists folder targetFolderName of acc then
-                        set targetAcc to acc
-                        exit repeat
-                    end if
-                end try
+                if name of acc is "iCloud" then
+                    set targetAcc to acc
+                    exit repeat
+                end if
             end repeat
-            if targetAcc is missing value then
-                repeat with acc in accounts
-                    if name of acc is "iCloud" then
-                        set targetAcc to acc
-                        exit repeat
-                    end if
-                end repeat
-            end if
-            if targetAcc is missing value then set targetAcc to first account
-
-            if not (exists folder targetFolderName of targetAcc) then
-                make new folder at targetAcc with properties {name:targetFolderName}
-            end if
-
-            set parentFolder to folder targetFolderName of targetAcc
-            set newNote to make new note at parentFolder with properties {body:noteBody}
-            show newNote
         end if
+        if targetAcc is missing value then set targetAcc to first account
+
+        if not (exists folder targetFolderName of targetAcc) then
+            make new folder at targetAcc with properties {name:targetFolderName}
+        end if
+
+        set parentFolder to folder targetFolderName of targetAcc
+        set newNote to make new note at parentFolder with properties {body:noteBody}
+        show newNote
+        return plaintext of newNote
     end tell
 end run
 """
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".applescript",
-            prefix="dash_notes_",
-            delete=False,
-            encoding="utf-8",
-        ) as script_file:
-            script_file.write(applescript.strip())
-            script_path = script_file.name
-
-        result = subprocess.run(
-            ["osascript", script_path, body_path, str(client_name)],
-            capture_output=True,
-            text=True,
-            timeout=45,
-        )
+        result = _run_osascript_file(applescript, [body_path, str(client_name)], timeout=45)
         if result.returncode == 0:
-            return True, f"메모 앱에서 '{client_name}' 노트를 열었습니다."
-
+            st.session_state.pop("_macos_notes_index", None)
+            return {
+                "ok": True,
+                "msg": f"같은 이름의 노트가 없어 '{client_name}' 노트를 새로 만들었습니다.",
+                "created": True,
+                "matched_name": str(client_name),
+                "body": (result.stdout or "").strip(),
+                "kind": "NOTE",
+            }
         err = (result.stderr or result.stdout or "").strip()
-        hint = ""
-        low = err.lower()
-        if (
-            "not authorized" in low
-            or "assistive" in low
-            or "-1743" in err
-            or "1002" in err
-        ):
-            hint = (
-                " 시스템 설정 → 개인정보 보호 및 보안 → **자동화**에서 "
-                "터미널/Cursor/Python에 **메모(Notes)** 제어를 허용해 주세요."
-            )
-        return False, f"메모 연동 실패: {err or '알 수 없는 오류'}.{hint}"
+        empty["msg"] = f"메모 연동 실패: {err or '알 수 없는 오류'}.{_macos_notes_auth_hint(err)}"
+        return empty
     except subprocess.TimeoutExpired:
-        return False, "메모 앱 응답 시간 초과. Notes가 실행 중인지 확인해 주세요."
+        empty["msg"] = "메모 앱 응답 시간 초과. Notes가 실행 중인지 확인해 주세요."
+        return empty
     except Exception as e:
-        return False, f"메모 연동 오류: {e}"
+        empty["msg"] = f"메모 연동 오류: {e}"
+        return empty
     finally:
-        for path in (body_path, script_path):
-            if path:
-                try:
-                    os.unlink(path)
-                except Exception:
-                    pass
+        if body_path:
+            try:
+                os.unlink(body_path)
+            except Exception:
+                pass
 def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0f"):
     fig = go.Figure()
     sorted_years = sorted(pivot_df.columns, key=lambda x: str(x))
@@ -9267,55 +9486,72 @@ with tab2:
                 else None
             )
             _notes_disabled = selected_client == "전체 거래처"
-            _notes_label = (
-                "📝 macOS 메모 · 열기/내보내기"
-                if _is_local_macos()
-                else "📝 거래처 메모 · 내보내기"
-            )
-            with st.popover(
-                _notes_label,
-                width="stretch",
-                disabled=_notes_disabled,
-                help="특정 거래처를 선택하세요." if _notes_disabled else None,
-            ):
-                if not _notes_disabled:
-                    _, _note_plain, _note_file_html, _note_filename = prepare_client_note_export(
-                        selected_client,
-                        dart_api_key,
-                        df_integrated,
-                        address=_notes_addr,
-                    )
-                    if _is_local_macos():
-                        if st.button(
-                            "macOS 메모에서 노트 열기/생성",
-                            key="tab2_notes_open_mac",
-                            width="stretch",
-                        ):
-                            ok, msg = open_macos_notes_folder(
-                                selected_client,
-                                dart_api_key,
-                                df_integrated,
-                                address=_notes_addr,
-                            )
-                            if ok:
-                                st.success(msg)
+            if _is_local_macos():
+                if st.button(
+                    "📝 macOS 메모에서 노트 열기/생성",
+                    key="btn_notes",
+                    width="stretch",
+                    disabled=_notes_disabled,
+                    help="특정 거래처를 선택하세요." if _notes_disabled else "메모「거래처」폴더에서 같은 거래처명 노트를 엽니다.",
+                ):
+                    with st.spinner("메모「거래처」폴더에서 같은 거래처명을 찾는 중..."):
+                        _notes_res = open_macos_notes_folder(
+                            selected_client,
+                            dart_api_key,
+                            df_integrated,
+                            address=_notes_addr,
+                        )
+                    st.session_state["_tab2_loaded_note"] = {
+                        **_notes_res,
+                        "client": selected_client,
+                    }
+                _loaded = st.session_state.get("_tab2_loaded_note") or {}
+                if _loaded.get("client") == selected_client:
+                    if _loaded.get("ok"):
+                        st.success(_loaded.get("msg") or "메모를 열었습니다.")
+                        _body = str(_loaded.get("body") or "").strip()
+                        _title = _loaded.get("matched_name") or selected_client
+                        with st.expander(f"불러온 메모 · {_title}", expanded=True):
+                            if _body:
+                                st.text_area(
+                                    "메모 본문",
+                                    value=_body,
+                                    height=220,
+                                    key=f"tab2_loaded_note_body_{selected_client}",
+                                    label_visibility="collapsed",
+                                )
                             else:
-                                st.error(msg)
-                        st.caption("로컬 맥 실행 시 Notes 앱을 바로 엽니다.")
-                    else:
+                                st.caption("노트는 열렸지만 본문을 읽지 못했습니다.")
+                    elif _loaded.get("msg"):
+                        st.error(_loaded.get("msg"))
+            else:
+                _notes_label = "📝 거래처 메모 · 내보내기"
+                with st.popover(
+                    _notes_label,
+                    width="stretch",
+                    disabled=_notes_disabled,
+                    help="특정 거래처를 선택하세요." if _notes_disabled else None,
+                ):
+                    if not _notes_disabled:
+                        _, _note_plain, _note_file_html, _note_filename = prepare_client_note_export(
+                            selected_client,
+                            dart_api_key,
+                            df_integrated,
+                            address=_notes_addr,
+                        )
                         st.caption(
                             "Cloud·iPad에서는 아래 **다운로드·복사·공유**로 메모 앱에 넣을 수 있습니다."
                         )
-                    st.download_button(
-                        "HTML 파일 다운로드",
-                        data=_note_file_html.encode("utf-8"),
-                        file_name=_note_filename,
-                        mime="text/html",
-                        key="tab2_notes_download",
-                        width="stretch",
-                    )
-                    st.caption("Mac: 다운로드 후 Safari로 열어 전체 선택 → 메모에 붙여넣기.")
-                    _render_tab2_note_share_html(_note_plain, selected_client)
+                        st.download_button(
+                            "HTML 파일 다운로드",
+                            data=_note_file_html.encode("utf-8"),
+                            file_name=_note_filename,
+                            mime="text/html",
+                            key="tab2_notes_download",
+                            width="stretch",
+                        )
+                        st.caption("Mac: 다운로드 후 Safari로 열어 전체 선택 → 메모에 붙여넣기.")
+                        _render_tab2_note_share_html(_note_plain, selected_client)
         with btn_c2:
             btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
             if st.button(btn_label, key="btn_dart_info", width="stretch"):
