@@ -453,21 +453,44 @@ def inject_custom_css():
             }
             .dashboard-filter-sticky [data-testid="stWidgetLabel"],
             .dashboard-filter-sticky label {
-                margin-bottom: 0 !important;
+                margin-bottom: 2px !important;
                 padding-bottom: 0 !important;
-                font-size: 11px !important;
-                line-height: 1.15 !important;
+                font-size: 12px !important;
+                font-weight: 600 !important;
+                color: #334155 !important;
+                line-height: 1.25 !important;
                 min-height: auto !important;
             }
             .dashboard-filter-sticky [data-testid="stTextInput"],
             .dashboard-filter-sticky [data-testid="stSelectbox"],
             .dashboard-filter-sticky [data-testid="stMultiSelect"] {
-                margin-bottom: 0 !important;
+                margin-bottom: 2px !important;
                 padding-bottom: 0 !important;
             }
             .dashboard-filter-sticky [data-testid="stTextInput"] > div > div,
             .dashboard-filter-sticky [data-baseweb="select"] > div {
-                min-height: 1.85rem !important;
+                min-height: 2.05rem !important;
+            }
+            /* 상단 검색(멀티선택) 태그·텍스트 가독성 */
+            .dashboard-filter-sticky [data-baseweb="tag"],
+            .dashboard-filter-sticky [data-baseweb="select"] span,
+            .dashboard-filter-sticky [data-baseweb="select"] div {
+                font-size: 12px !important;
+                line-height: 1.3 !important;
+            }
+            .dashboard-filter-sticky [data-baseweb="tag"] {
+                background-color: #EFF6FF !important;
+                border: 1px solid #93C5FD !important;
+                color: #1E3A8A !important;
+                max-width: 100% !important;
+            }
+            .dashboard-filter-sticky [data-baseweb="select"] {
+                max-height: 4.6rem !important;
+                overflow-y: auto !important;
+            }
+            .dashboard-filter-sticky input {
+                font-size: 13px !important;
+                color: #0F172A !important;
             }
             .dashboard-filter-sticky [data-testid="stMarkdownContainer"] {
                 margin: 0 !important;
@@ -522,8 +545,9 @@ def inject_custom_css():
                 white-space: nowrap !important;
                 min-width: -webkit-max-content !important;
                 min-width: max-content !important;
-                padding: 2px 8px 3px 8px !important;
-                font-size: 12px !important;
+                padding: 4px 10px 5px 10px !important;
+                font-size: 13px !important;
+                font-weight: 600 !important;
             }
             .dashboard-filter-sticky [role="tablist"]::-webkit-scrollbar,
             .dashboard-tabs-in-filter::-webkit-scrollbar {
@@ -552,11 +576,15 @@ def inject_custom_css():
             }
             @media (max-width: 1024px) {
                 .dashboard-filter-sticky {
-                    padding: 2px 6px 0 6px !important;
+                    padding: 4px 8px 0 8px !important;
                 }
                 .dashboard-filter-sticky [role="tab"] {
-                    font-size: 10px !important;
-                    padding: 2px 6px 3px 6px !important;
+                    font-size: 12px !important;
+                    padding: 4px 8px 5px 8px !important;
+                }
+                .dashboard-filter-sticky [data-testid="stWidgetLabel"],
+                .dashboard-filter-sticky label {
+                    font-size: 12px !important;
                 }
             }
             @supports (top: env(safe-area-inset-top)) {
@@ -6167,7 +6195,7 @@ def inject_sticky_tabs_script():
             var parentWin = window.parent;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER = 9; /* iPad 필터 로딩: form + sticky 스로틀 */
+            var STICKY_SCRIPT_VER = 10; /* 필터 자동반영 복구 + 맥/아이패드 sticky 재기동 방지 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -6176,15 +6204,23 @@ def inject_sticky_tabs_script():
                 var ipadOs = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
                 return ios || ipadOs;
             }
-            /* iPad: 동일 버전 sticky만 유지. 버전 업(이중탭 수정) 시 재기동 */
+            /* 동일 버전 sticky면 재기동 금지 — 필터 지정마다 observer 재생성 = 맥/아이패드 로딩 주범 */
             if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady === STICKY_SCRIPT_VER) {
                 try {
                     if (typeof parentWin.__dashboardIpadScheduleSync === 'function') {
-                        parentWin.__dashboardIpadScheduleSync(80);
-                        parentWin.__dashboardIpadScheduleSync(250);
-                        parentWin.__dashboardIpadScheduleSync(600);
+                        parentWin.__dashboardIpadScheduleSync(120);
+                        parentWin.__dashboardIpadScheduleSync(400);
                     }
                 } catch (eSkip) {}
+                return;
+            }
+            if (!isTouchPadEarly() && parentWin.__dashboardStickyMacReady === STICKY_SCRIPT_VER) {
+                try {
+                    if (typeof parentWin.__dashboardMacScheduleSync === 'function') {
+                        parentWin.__dashboardMacScheduleSync(120);
+                        parentWin.__dashboardMacScheduleSync(400);
+                    }
+                } catch (eMacSkip) {}
                 return;
             }
             if (parentWin.__dashboardStickyObserver) {
@@ -6543,12 +6579,11 @@ def inject_sticky_tabs_script():
                 }
             }
             function scheduleSync(ms) {
-                if (touchMode && isFilterDropdownOpen()) return;
+                if (isFilterDropdownOpen()) return;
                 if (syncTimer) clearTimeout(syncTimer);
                 var delay = ms || 40;
-                if (touchMode) {
-                    delay = Math.max(delay, 350);
-                }
+                /* 필터 조작 직후 과도한 remount 완화 (맥·터치 공통) */
+                delay = Math.max(delay, touchMode ? 350 : 180);
                 syncTimer = setTimeout(syncFixedBar, delay);
             }
             if (touchMode) {
@@ -6608,44 +6643,43 @@ def inject_sticky_tabs_script():
             } else {
                 var pollCount = 0;
                 parentWin.__dashboardStickyBootInterval = setInterval(function() {
-                    syncFixedBar();
+                    if (!isFilterDropdownOpen()) syncFixedBar();
                     pollCount++;
-                    if (pollCount > 100) {
+                    if (pollCount > 60) {
                         clearInterval(parentWin.__dashboardStickyBootInterval);
                         parentWin.__dashboardStickyBootInterval = null;
                     }
-                }, 150);
-                var observer = new MutationObserver(function() { scheduleSync(60); });
+                }, 200);
+                /* attributes 관찰 제거 — 필터 입력마다 폭주하던 맥 로딩 완화 */
+                var observer = new MutationObserver(function() { scheduleSync(220); });
                 observer.observe(parentDoc.body, {
                     childList: true,
-                    subtree: true,
-                    attributes: true
+                    subtree: true
                 });
                 parentWin.__dashboardStickyObserver = observer;
+                parentWin.__dashboardMacScheduleSync = scheduleSync;
+                parentWin.__dashboardStickyMacReady = STICKY_SCRIPT_VER;
                 var scrollRoot = parentDoc.querySelector('[data-testid="stAppViewContainer"]') || parentDoc;
-                scrollRoot.addEventListener('scroll', function() { scheduleSync(30); }, { passive: true, capture: true });
-                parentDoc.addEventListener('scroll', function() { scheduleSync(30); }, { passive: true, capture: true });
-                parentWin.addEventListener('scroll', function() { scheduleSync(30); }, { passive: true });
-                parentWin.addEventListener('resize', function() { scheduleSync(80); }, { passive: true });
-                parentWin.addEventListener('pageshow', function() { scheduleSync(80); }, { passive: true });
+                scrollRoot.addEventListener('scroll', function() { scheduleSync(80); }, { passive: true, capture: true });
+                parentWin.addEventListener('resize', function() { scheduleSync(100); }, { passive: true });
+                parentWin.addEventListener('pageshow', function() { scheduleSync(100); }, { passive: true });
                 if (parentWin.visualViewport) {
-                    parentWin.visualViewport.addEventListener('resize', function() { scheduleSync(40); }, { passive: true });
-                    parentWin.visualViewport.addEventListener('scroll', function() { scheduleSync(40); }, { passive: true });
+                    parentWin.visualViewport.addEventListener('resize', function() { scheduleSync(80); }, { passive: true });
                 }
                 parentDoc.addEventListener('click', function(e) {
                     if (e.target.closest('[data-testid="collapsedControl"]') ||
                         e.target.closest('[role="tab"]')) {
-                        scheduleSync(50);
-                        scheduleSync(300);
+                        scheduleSync(80);
+                        scheduleSync(350);
                     }
                 }, true);
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (sidebar) {
-                    sidebar.addEventListener('transitionend', function() { scheduleSync(40); });
+                    sidebar.addEventListener('transitionend', function() { scheduleSync(80); });
                 }
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
-                    syncFixedBar();
-                }, 3000);
+                    if (!isFilterDropdownOpen()) syncFixedBar();
+                }, 5000);
                 syncFixedBar();
             }
         })();
@@ -8147,15 +8181,13 @@ if not full_df.empty:
         latest_update_str = latest_dt_overall.strftime("%Y-%m-%d")
     # ==============================================================
     # 필터 영역 (상단 고정은 inject_sticky_tabs_script에서 처리)
-    # iPad: form+적용으로 선택마다 전체 rerun/로딩 방지. 맥: 즉시 반영(기존).
+    # 맥·iPad 공통: 선택 즉시 반영. sticky 재기동 억제로 로딩감 완화.
     # ==============================================================
     st.markdown("<div id='dashboard-sticky-spacer'></div>", unsafe_allow_html=True)
     try:
         filter_container = st.container(border=True)
     except TypeError:
         filter_container = st.container()
-
-    _touch_filters = is_touch_ui()
 
     def _dash_parse_filter_dates(start_s, end_s):
         _sd = pd.to_datetime(start_s, format="%y%m%d", errors="coerce")
@@ -8177,105 +8209,67 @@ if not full_df.empty:
 
     with filter_container:
         st.markdown("<div id='sticky-marker' style='display:none;'></div>", unsafe_allow_html=True)
-        if _touch_filters:
-            with st.form("dash_top_filter_form", clear_on_submit=False, border=False):
-                fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
-                start_date = fc1.text_input("📅 조회 시작", "200101", key="dash_filter_start")
-                end_date = fc2.text_input("📅 조회 종료", "261231", key="dash_filter_end")
-                start_dt, end_dt = _dash_parse_filter_dates(start_date, end_date)
-                df_base_opts = full_df[
-                    (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
-                ].copy()
-                _staff_opts = _dash_staff_opts_from(df_base_opts)
-                _prev_staff = st.session_state.get("dash_filter_staff", [])
-                if isinstance(_prev_staff, list) and _prev_staff:
-                    _kept_staff = [x for x in _prev_staff if x in _staff_opts]
-                    if _kept_staff != _prev_staff:
-                        st.session_state["dash_filter_staff"] = _kept_staff
-                selected_staff = fc3.multiselect("👤 담당자", _staff_opts, key="dash_filter_staff")
-                # form 안에서는 담당자 바뀔 때 옵션 rerun이 없으므로 기간 기준 전체 거래처/품목 제공
-                all_clients = (
-                    sorted(df_base_opts["거래처"].unique()) if not df_base_opts.empty else []
-                )
-                client_options = ["전체 거래처"] + all_clients
-                _prev_client = st.session_state.get("dash_filter_client", "전체 거래처")
-                if _prev_client not in client_options:
-                    st.session_state["dash_filter_client"] = "전체 거래처"
-                selected_client = fc4.selectbox(
-                    "🏢 거래처", options=client_options, key="dash_filter_client"
-                )
-                available_items = (
-                    sorted(df_base_opts["품목명"].unique()) if not df_base_opts.empty else []
-                )
-                _prev_items = st.session_state.get("dash_filter_items", [])
-                if isinstance(_prev_items, list) and _prev_items:
-                    _kept = [x for x in _prev_items if x in available_items]
-                    if _kept != _prev_items:
-                        st.session_state["dash_filter_items"] = _kept
-                selected_item = fc5.multiselect(
-                    "📦 품목명", available_items, key="dash_filter_items"
-                )
-                st.form_submit_button(
-                    "✅ 필터 적용",
-                    type="primary",
-                    width="stretch",
-                )
-            st.caption("iPad: 담당자·거래처·품목을 고른 뒤 **필터 적용**을 누르면 반영됩니다.")
-        else:
-            fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
-            start_date = fc1.text_input("📅 조회 시작", "200101", key="dash_filter_start")
-            end_date = fc2.text_input("📅 조회 종료", "261231", key="dash_filter_end")
-            start_dt, end_dt = _dash_parse_filter_dates(start_date, end_date)
-            df_base_opts = full_df[
-                (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
-            ].copy()
-            _staff_opts = _dash_staff_opts_from(df_base_opts)
-            _prev_staff = st.session_state.get("dash_filter_staff", [])
-            if isinstance(_prev_staff, list) and _prev_staff:
-                _kept_staff = [x for x in _prev_staff if x in _staff_opts]
-                if _kept_staff != _prev_staff:
-                    st.session_state["dash_filter_staff"] = _kept_staff
-            selected_staff = fc3.multiselect("👤 담당자", _staff_opts, key="dash_filter_staff")
-            df_staff_for_opts = (
-                df_base_opts[df_base_opts["담당자"].isin(selected_staff)]
-                if selected_staff
-                else df_base_opts
-            )
-            all_clients = (
-                sorted(df_staff_for_opts["거래처"].unique())
-                if not df_staff_for_opts.empty
-                else []
-            )
-            client_options = ["전체 거래처"] + all_clients
-            _prev_client = st.session_state.get("dash_filter_client", "전체 거래처")
-            if _prev_client not in client_options:
-                st.session_state["dash_filter_client"] = "전체 거래처"
-            selected_client = fc4.selectbox(
-                "🏢 거래처", options=client_options, key="dash_filter_client"
-            )
-            df_client_for_opts = (
-                df_staff_for_opts[df_staff_for_opts["거래처"] == selected_client]
-                if selected_client != "전체 거래처"
-                else df_staff_for_opts
-            )
-            available_items = (
-                sorted(df_client_for_opts["품목명"].unique())
-                if not df_client_for_opts.empty
-                else []
-            )
-            _prev_items = st.session_state.get("dash_filter_items", [])
-            if isinstance(_prev_items, list) and _prev_items:
-                _kept = [x for x in _prev_items if x in available_items]
-                if _kept != _prev_items:
-                    st.session_state["dash_filter_items"] = _kept
-            selected_item = fc5.multiselect(
-                "📦 품목명", available_items, key="dash_filter_items"
-            )
-
+        fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1.15, 1.35, 1.15])
+        start_date = fc1.text_input("📅 조회 시작", "200101", key="dash_filter_start")
+        end_date = fc2.text_input("📅 조회 종료", "261231", key="dash_filter_end")
         start_dt, end_dt = _dash_parse_filter_dates(start_date, end_date)
-        df_base = full_df[
+        df_base_opts = full_df[
             (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
-        ].copy()
+        ]
+        _staff_opts = _dash_staff_opts_from(df_base_opts)
+        _prev_staff = st.session_state.get("dash_filter_staff", [])
+        if isinstance(_prev_staff, list) and _prev_staff:
+            _kept_staff = [x for x in _prev_staff if x in _staff_opts]
+            if _kept_staff != _prev_staff:
+                st.session_state["dash_filter_staff"] = _kept_staff
+        selected_staff = fc3.multiselect(
+            "👤 담당자",
+            _staff_opts,
+            key="dash_filter_staff",
+            placeholder="담당자 선택…",
+        )
+        df_staff_for_opts = (
+            df_base_opts[df_base_opts["담당자"].isin(selected_staff)]
+            if selected_staff
+            else df_base_opts
+        )
+        all_clients = (
+            sorted(df_staff_for_opts["거래처"].astype(str).unique())
+            if not df_staff_for_opts.empty
+            else []
+        )
+        client_options = ["전체 거래처"] + all_clients
+        _prev_client = st.session_state.get("dash_filter_client", "전체 거래처")
+        if _prev_client not in client_options:
+            st.session_state["dash_filter_client"] = "전체 거래처"
+        selected_client = fc4.selectbox(
+            "🏢 거래처",
+            options=client_options,
+            key="dash_filter_client",
+        )
+        df_client_for_opts = (
+            df_staff_for_opts[df_staff_for_opts["거래처"] == selected_client]
+            if selected_client != "전체 거래처"
+            else df_staff_for_opts
+        )
+        available_items = (
+            sorted(df_client_for_opts["품목명"].astype(str).unique())
+            if not df_client_for_opts.empty
+            else []
+        )
+        _prev_items = st.session_state.get("dash_filter_items", [])
+        if isinstance(_prev_items, list) and _prev_items:
+            _kept = [x for x in _prev_items if x in available_items]
+            if _kept != _prev_items:
+                st.session_state["dash_filter_items"] = _kept
+        selected_item = fc5.multiselect(
+            "📦 품목명",
+            available_items,
+            key="dash_filter_items",
+            placeholder="품목 선택…",
+        )
+
+        df_base = df_base_opts.copy()
         df_staff_filtered = (
             df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base.copy()
         )
