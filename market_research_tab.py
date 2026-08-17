@@ -14,6 +14,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+import market_research_cascade as mr_cascade
+
 try:
     from openpyxl import load_workbook
 except Exception:  # pragma: no cover
@@ -1330,17 +1332,21 @@ def _mr_widget_key(prefix: str, parts: list[str]) -> str:
     return f"{prefix}__{tail}"
 
 
+@st.cache_data(show_spinner=False, ttl=600)
+def _cached_mr_cascade_index(_cache_sig: str) -> dict:
+    frame, _, _ = load_market_research_frame(_cache_sig)
+    return mr_cascade.build_cascade_index(frame)
+
+
+@st.fragment
 def _mr_filter_results_fragment(
     df: pd.DataFrame,
     regions: list[str],
+    cascade: dict,
     latest_update_str: str,
 ) -> None:
-    """필터·검색·표.
-
-    종속: 지역 → 산업단지 → 공급사.
-    fragment 미사용 — 지역 변경 시 단지 옵션이 반드시 다시 계산됨.
-    """
-    st.caption("필터 **v3** · 지역을 고르면 산업단지·공급사 목록이 그 범위만 남습니다.")
+    """필터·검색·표 — fragment라 지역 선택 시 전체 탭 재로딩 없음."""
+    st.caption("필터 **v4** · 지역→단지→공급사 종속 · 빠른 부분 갱신")
     if "mr_filter_ready" not in st.session_state:
         st.session_state["mr_region_applied"] = []
         st.session_state["mr_complex_applied"] = []
@@ -1385,14 +1391,10 @@ def _mr_filter_results_fragment(
             help="지역을 고르면 아래 산업단지가 그 지역 것만으로 줄어듭니다.",
         )
 
-    # ① 지역 → 산업단지 (선택 지역 행만, 미분류 제외)
-    base_for_cx = _mr_cascade_base(
-        df,
-        regions=sel_region,
-        include_factory=include_factory,
-        hide_unclassified=True,  # 옵션 목록에서는 미분류 제외
+    # ① 지역 → 산업단지 (사전 인덱스)
+    complex_opts = mr_cascade.complex_opts(
+        cascade, list(sel_region or []), include_factory=include_factory
     )
-    complex_opts = _mr_complex_options(base_for_cx)
     cx_key = _mr_widget_key("mr_cx_v2", sel_region)
     with f2:
         if cx_key not in st.session_state:
@@ -1432,17 +1434,12 @@ def _mr_filter_results_fragment(
                 help="위에서 고른 지역 안의 산업단지만 표시됩니다.",
             )
 
-    # ② 산업단지 → 공급사
-    base_for_sup = _mr_cascade_base(
-        df,
-        regions=sel_region,
-        complexes=sel_cx,
+    # ② 산업단지 → 공급사 (사전 인덱스)
+    supplier_opts = mr_cascade.supplier_opts(
+        cascade,
+        list(sel_region or []),
+        list(sel_cx or []),
         include_factory=include_factory,
-        hide_unclassified=hide_unclassified,
-    )
-    supplier_opts = _mr_extract_suppliers(
-        base_for_sup["공급사"] if "공급사" in base_for_sup.columns else [],
-        limit=300,
     )
     sup_key = _mr_widget_key("mr_sup_v2", list(sel_region) + list(sel_cx))
     with f3:
@@ -1883,4 +1880,6 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         [r for r in df["지역"].dropna().unique().tolist() if r],
         key=lambda x: (x == "미분류", x),
     )
-    _mr_filter_results_fragment(df, regions, latest_update_str)
+    sig_now = _cache_signature()
+    cascade = _cached_mr_cascade_index(sig_now)
+    _mr_filter_results_fragment(df, regions, cascade, latest_update_str)
