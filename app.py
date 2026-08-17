@@ -552,9 +552,19 @@ def inject_custom_css():
                 padding-left: 2px !important;
                 padding-right: 2px !important;
             }
-            html.dashboard-touch-mode .dashboard-filter-sticky [data-testid="stMultiSelect"] input {
-                min-width: 2rem !important;
-                flex: 1 1 2rem !important;
+            html.dashboard-touch-mode .dashboard-filter-sticky,
+            html.dashboard-touch-mode .dashboard-filter-sticky-touch {
+                max-height: 210px !important;
+                overflow: visible !important;
+            }
+            /* 거래처 검색 목록이 고정바 높이를 늘려 화면을 가리지 않게 */
+            html.dashboard-touch-mode [data-baseweb="popover"],
+            html.dashboard-touch-mode [data-baseweb="menu"],
+            html.dashboard-touch-mode [role="listbox"] {
+                position: fixed !important;
+                z-index: 1000030 !important;
+                max-height: 42vh !important;
+                overflow-y: auto !important;
             }
             /* 고정바 내부 공백 최소화 */
             .dashboard-filter-sticky [data-testid="stVerticalBlock"],
@@ -6914,7 +6924,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
-            var STICKY_SCRIPT_VER_IPAD = 15; /* iPad: 고정바 상향 + 우측 잘림 방지 */
+            var STICKY_SCRIPT_VER_IPAD = 16; /* iPad: 거래처 검색 시 고정바 화면 가림 방지 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -6925,7 +6935,12 @@ def inject_sticky_tabs_script():
             }
             /* 동일 버전 sticky면 재기동 금지 */
             if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady === STICKY_SCRIPT_VER_IPAD) {
-                /* iPad: 거래처 지정 rerun마다 sticky 재동기화 금지 (맥은 아래 Mac 분기 유지) */
+                /* iPad: 전체 sticky 재기동은 하지 않고, 새 필터 박스만 다시 고정(검색 후 가림 방지) */
+                try {
+                    if (typeof parentWin.__dashboardIpadPin === 'function') {
+                        parentWin.__dashboardIpadPin();
+                    }
+                } catch (ePin) {}
                 return;
             }
             if (!isTouchPadEarly() && parentWin.__dashboardStickyMacReady === STICKY_SCRIPT_VER_MAC) {
@@ -7242,19 +7257,46 @@ def inject_sticky_tabs_script():
             }
             function applyIpad0804Hack() {
                 cleanupIpadPortal();
-                try { fixDuplicateMainTabs(collectMainTabLists().length > 1); } catch (eDup) {}
-                if (isFilterDropdownOpen()) return;
+                var dropOpen = false;
+                try { dropOpen = isFilterDropdownOpen(); } catch (eDo) {}
+                if (!dropOpen) {
+                    try { fixDuplicateMainTabs(collectMainTabLists().length > 1); } catch (eDup) {}
+                }
                 var targetBox = findFilterBox();
                 if (!targetBox) return;
-                /* React가 새로 만든 tablist를 우선 선택 — 고정바의 고아(비활성) 목록은 무시 */
-                var tabList = findMainTabList();
-                if (!tabList) return;
-                if (!remountLiveTabList(targetBox, tabList)) return;
-                var tabHeader = tabList;
-                /* iPad: 헤더 바로 아래(2.8rem). 폭은 뷰포트 안으로 제한해 우측 잘림 방지 */
+                if (!dropOpen) {
+                    var tabList = findMainTabList();
+                    if (!tabList) return;
+                    if (!remountLiveTabList(targetBox, tabList)) return;
+                    tabList.style.setProperty('padding', '0 10px 0px 10px', 'important');
+                    tabList.style.setProperty('margin-top', '5px', 'important');
+                    tabList.style.setProperty('border-bottom', 'none', 'important');
+                    tabList.style.setProperty('background-color', 'transparent', 'important');
+                    tabList.style.setProperty('pointer-events', 'auto', 'important');
+                }
+                ipadApplyBoxStyles(targetBox);
+            }
+            function ipadApplyBoxStyles(targetBox) {
+                if (!targetBox) return;
                 var open = isSidebarOpen();
+                var spacer = parentDoc.getElementById(SPACER_ID);
+                if (!spacer) {
+                    spacer = parentDoc.createElement('div');
+                    spacer.id = SPACER_ID;
+                }
+                if (targetBox.parentNode && (spacer.parentNode !== targetBox.parentNode || spacer.nextElementSibling !== targetBox)) {
+                    targetBox.parentNode.insertBefore(spacer, targetBox);
+                }
+                var rect = spacer.getBoundingClientRect();
+                var vw = parentWin.innerWidth || parentDoc.documentElement.clientWidth || rect.width;
+                var left = Math.max(8, Math.round(rect.left || 8));
+                var w = Math.max(200, Math.min(Math.round(rect.width || vw - 16), vw - left - 8));
                 targetBox.style.setProperty('position', 'fixed', 'important');
                 targetBox.style.setProperty('top', '2.8rem', 'important');
+                targetBox.style.setProperty('left', left + 'px', 'important');
+                targetBox.style.setProperty('width', w + 'px', 'important');
+                targetBox.style.setProperty('max-width', w + 'px', 'important');
+                targetBox.style.setProperty('max-height', '210px', 'important');
                 targetBox.style.setProperty('z-index', open ? '1' : '999999', 'important');
                 targetBox.style.setProperty('background-color', '#FFFFFF', 'important');
                 targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
@@ -7263,29 +7305,29 @@ def inject_sticky_tabs_script():
                 targetBox.style.setProperty('padding', '6px 8px 0px 8px', 'important');
                 targetBox.style.setProperty('margin-top', '0', 'important');
                 targetBox.style.setProperty('box-sizing', 'border-box', 'important');
+                targetBox.style.setProperty('overflow', 'visible', 'important');
                 targetBox.style.setProperty('box-shadow', '0 8px 14px -4px rgba(37, 99, 235, 0.18)', 'important');
                 targetBox.style.setProperty('-webkit-transform', 'none', 'important');
                 targetBox.style.setProperty('transform', 'none', 'important');
-                tabHeader.style.setProperty('padding', '0 10px 0px 10px', 'important');
-                tabHeader.style.setProperty('margin-top', '5px', 'important');
-                tabHeader.style.setProperty('border-bottom', 'none', 'important');
-                tabHeader.style.setProperty('background-color', 'transparent', 'important');
-                tabHeader.style.setProperty('pointer-events', 'auto', 'important');
-                var spacer = parentDoc.getElementById(SPACER_ID);
-                if (!spacer) {
-                    spacer = parentDoc.createElement('div');
-                    spacer.id = SPACER_ID;
-                }
-                if (spacer.parentNode !== targetBox.parentNode || spacer.nextElementSibling !== targetBox) {
-                    targetBox.parentNode.insertBefore(spacer, targetBox);
-                }
-                spacer.style.height = targetBox.offsetHeight + 'px';
+                var pinH = Math.min(targetBox.offsetHeight || 180, 210);
+                spacer.style.height = pinH + 'px';
                 spacer.style.width = '100%';
                 spacer.style.marginBottom = '12px';
                 spacer.style.display = 'block';
                 parentWin.__dashboardIpadTarget = targetBox;
                 parentWin.__dashboardIpadSpacer = spacer;
             }
+            function ipadPinFilterBox() {
+                var box = findFilterBox();
+                if (!box) return;
+                var prev = parentWin.__dashboardIpadTarget;
+                if (!prev || prev !== box || !parentDoc.body.contains(prev)) {
+                    applyIpad0804Hack();
+                    return;
+                }
+                ipadApplyBoxStyles(box);
+            }
+            parentWin.__dashboardIpadPin = ipadPinFilterBox;
             function syncIpadWidthLoop() {
                 var now = Date.now();
                 /* 매 프레임 DOM 쓰기 금지 — iPad 필터 조작 시 버벅임/로딩감 완화 */
@@ -7294,25 +7336,12 @@ def inject_sticky_tabs_script():
                     var targetBox = parentWin.__dashboardIpadTarget;
                     var spacer = parentWin.__dashboardIpadSpacer || parentDoc.getElementById(SPACER_ID);
                     if (!targetBox || !parentDoc.body.contains(targetBox)) {
-                        if (!isFilterDropdownOpen()) {
-                            applyIpad0804Hack();
-                        }
+                        applyIpad0804Hack();
                         targetBox = parentWin.__dashboardIpadTarget;
                         spacer = parentWin.__dashboardIpadSpacer;
                     }
-                    if (targetBox && spacer && parentDoc.body.contains(spacer) && !isFilterDropdownOpen()) {
-                        var rect = spacer.getBoundingClientRect();
-                        var vw = parentWin.innerWidth || parentDoc.documentElement.clientWidth || rect.width;
-                        var left = Math.max(8, Math.round(rect.left));
-                        var w = Math.max(200, Math.min(Math.round(rect.width), vw - left - 8));
-                        targetBox.style.setProperty('position', 'fixed', 'important');
-                        targetBox.style.setProperty('top', '2.8rem', 'important');
-                        targetBox.style.setProperty('width', w + 'px', 'important');
-                        targetBox.style.setProperty('max-width', w + 'px', 'important');
-                        targetBox.style.setProperty('left', left + 'px', 'important');
-                        targetBox.style.setProperty('box-sizing', 'border-box', 'important');
-                        targetBox.style.setProperty('z-index', isSidebarOpen() ? '1' : '999999', 'important');
-                        spacer.style.height = targetBox.offsetHeight + 'px';
+                    if (targetBox && spacer && parentDoc.body.contains(spacer)) {
+                        ipadApplyBoxStyles(targetBox);
                     }
                 }
                 parentWin.__dashboardIpadRaf = parentWin.requestAnimationFrame(syncIpadWidthLoop);
@@ -9336,13 +9365,12 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
     ]
 )
 if is_touch_ui():
-    # iPad: sticky/plotly iframe은 세션 첫 렌더만. 거래처 지정 rerun마다 재삽입하면 로딩이 김.
-    # 버전 15(잘림 수정)는 한 번 더 주입.
-    if st.session_state.get("_ipad_sticky_ver") != 15:
-        inject_sticky_tabs_script()
+    # iPad: 스크립트는 매 rerun 넣되, 이미 기동된 경우 pin만 (검색 후 가림 방지)
+    inject_sticky_tabs_script()
+    if st.session_state.get("_ipad_sticky_ver") != 16:
         inject_ipad_plotly_controls()
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 15
+        st.session_state["_ipad_sticky_ver"] = 16
 else:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
