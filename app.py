@@ -10883,9 +10883,5 @@ with tab11:
         )
         st.info("다른 탭은 정상 이용 가능합니다.")
     except Exception as _mr_err:
-        if is_touch_ui():
-            st.error("시장조사 탭을 표시하지 못했습니다. 잠시 후 새로고침해 주세요.")
-            st.info("다른 탭은 정상 이용 가능합니다.")
-        else:
-            st.error(f"시장조사 탭 오류: {_mr_err}")
-            st.info("다른 탭은 정상 이용 가능합니다.")
+        st.error(f"시장조사 탭 오류: {_mr_err}")
+        st.info("다른 탭은 정상 이용 가능합니다. 새로고침 후에도 같으면 관리자에게 오류 문구를 보내 주세요.")

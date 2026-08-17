@@ -14,7 +14,10 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-import market_research_cascade as mr_cascade
+try:
+    import market_research_cascade as mr_cascade
+except Exception:  # pragma: no cover
+    mr_cascade = None
 
 try:
     from openpyxl import load_workbook
@@ -1358,6 +1361,9 @@ def _mr_filter_results_fragment(
 ) -> None:
     """필터·검색·표. fragment 없이 안정 동작 (지역 선택 백지 방지)."""
     try:
+        if mr_cascade is None:
+            st.error("market_research_cascade 모듈이 없습니다. 배포 파일을 확인하세요.")
+            return
         st.caption("필터 **v5** · 지역→단지→공급사 종속")
 
         include_factory = st.checkbox(
@@ -1388,26 +1394,23 @@ def _mr_filter_results_fragment(
         )
         with f2:
             _mr_prune_key("mr_complex_v5", complex_opts)
+            label = (
+                "산업단지"
+                if not sel_region
+                else f"산업단지 ({len(complex_opts)}개)"
+            )
+            sel_cx = st.multiselect(
+                label,
+                options=complex_opts,
+                key="mr_complex_v5",
+                placeholder=(
+                    "데이터 없음"
+                    if (sel_region and not complex_opts)
+                    else ("전체 산업단지" if not sel_region else "선택 지역 단지만")
+                ),
+            )
             if sel_region and not complex_opts:
                 st.caption(":red[선택 지역에 산업단지 데이터 없음]")
-                sel_cx: list[str] = []
-                st.session_state["mr_complex_v5"] = []
-            else:
-                label = (
-                    "산업단지"
-                    if not sel_region
-                    else f"산업단지 ({len(complex_opts)}개)"
-                )
-                sel_cx = st.multiselect(
-                    label,
-                    options=complex_opts,
-                    key="mr_complex_v5",
-                    placeholder=(
-                        "전체 산업단지"
-                        if not sel_region
-                        else "선택 지역 단지만"
-                    ),
-                )
 
         supplier_opts = mr_cascade.supplier_opts(
             cascade,
@@ -1417,19 +1420,18 @@ def _mr_filter_results_fragment(
         )
         with f3:
             _mr_prune_key("mr_sup_v5", supplier_opts)
+            sel_sup = st.multiselect(
+                "공급사",
+                options=supplier_opts,
+                key="mr_sup_v5",
+                placeholder=(
+                    "데이터 없음"
+                    if (sel_cx and not supplier_opts)
+                    else ("전체 공급사" if not sel_cx else "선택 단지 공급사")
+                ),
+            )
             if sel_cx and not supplier_opts:
                 st.caption(":red[선택 단지에 공급사 데이터 없음]")
-                sel_sup: list[str] = []
-                st.session_state["mr_sup_v5"] = []
-            else:
-                sel_sup = st.multiselect(
-                    "공급사",
-                    options=supplier_opts,
-                    key="mr_sup_v5",
-                    placeholder=(
-                        "전체 공급사" if not sel_cx else "선택 단지 공급사"
-                    ),
-                )
 
         with f4:
             q = st.text_input(
