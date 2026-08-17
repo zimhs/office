@@ -6204,7 +6204,7 @@ def inject_sticky_tabs_script():
             var parentWin = window.parent;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER = 11; /* 맥/아이패드 이동탭 이중표시 강제 정리 */
+            var STICKY_SCRIPT_VER = 12; /* 맥 필터 지정/원복 시 sticky 과동기화 억제(레이아웃·로직 무손실) */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -6213,27 +6213,23 @@ def inject_sticky_tabs_script():
                 var ipadOs = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
                 return ios || ipadOs;
             }
-            /* 동일 버전 sticky면 재기동 금지 — 단, 이중 탭 정리는 매번 수행 */
+            /* 동일 버전 sticky면 재기동 금지 */
             if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady === STICKY_SCRIPT_VER) {
                 try {
                     if (typeof parentWin.__dashboardFixDuplicateTabs === 'function') {
-                        parentWin.__dashboardFixDuplicateTabs(true);
+                        parentWin.__dashboardFixDuplicateTabs(false);
                     }
                     if (typeof parentWin.__dashboardIpadScheduleSync === 'function') {
-                        parentWin.__dashboardIpadScheduleSync(120);
-                        parentWin.__dashboardIpadScheduleSync(400);
+                        parentWin.__dashboardIpadScheduleSync(200);
                     }
                 } catch (eSkip) {}
                 return;
             }
             if (!isTouchPadEarly() && parentWin.__dashboardStickyMacReady === STICKY_SCRIPT_VER) {
                 try {
+                    /* 맥: 필터 rerun마다 scheduleSync 금지 — 이중탭일 때만 정리(로딩감 주범) */
                     if (typeof parentWin.__dashboardFixDuplicateTabs === 'function') {
-                        parentWin.__dashboardFixDuplicateTabs(true);
-                    }
-                    if (typeof parentWin.__dashboardMacScheduleSync === 'function') {
-                        parentWin.__dashboardMacScheduleSync(120);
-                        parentWin.__dashboardMacScheduleSync(400);
+                        parentWin.__dashboardFixDuplicateTabs(false);
                     }
                 } catch (eMacSkip) {}
                 return;
@@ -6371,11 +6367,21 @@ def inject_sticky_tabs_script():
                 }
             }
             /* 드롭다운 열림과 무관하게 이중 탭 제거. keep=React 연결(stTabs) 우선 */
+            function isTabMountHealthy(filterBox, all) {
+                if (!filterBox || !all || all.length !== 1) return false;
+                var t = all[0];
+                return !!(filterBox.contains(t) && t.classList.contains('dashboard-tabs-in-filter'));
+            }
             function fixDuplicateMainTabs(forceMove) {
                 var filterBox = findFilterBox();
                 var host = findMainTabsHost();
                 var all = collectMainTabLists();
                 if (!all.length) return false;
+                /* 이미 정상(탭 1개·고정바 장착)이면 DOM 손대지 않음 — 맥 필터 원복 로딩 완화 */
+                if (!forceMove && isTabMountHealthy(filterBox, all)) {
+                    parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
+                    return true;
+                }
                 var keep = null;
                 var i;
                 if (host) {
@@ -6399,7 +6405,7 @@ def inject_sticky_tabs_script():
                     host.classList.add('dashboard-tabs-host-compact');
                     hideStaleTabListsInHost(host, keep);
                 }
-                var canMove = !!filterBox && (!isFilterDropdownOpen() || forceMove);
+                var canMove = !!filterBox && (!isFilterDropdownOpen() || forceMove || all.length > 1);
                 if (canMove) {
                     filterBox.classList.add('dashboard-filter-sticky');
                     if (touchMode) filterBox.classList.add('dashboard-filter-sticky-touch');
@@ -6441,10 +6447,12 @@ def inject_sticky_tabs_script():
             }
             function remountLiveTabList(filterBox, tabList) {
                 if (!filterBox || !tabList) return false;
-                /* 이중 탭이면 드롭다운 중이어도 정리 우선 */
                 var mains = collectMainTabLists();
                 if (mains.length > 1) {
                     return fixDuplicateMainTabs(true);
+                }
+                if (isTabMountHealthy(filterBox, mains)) {
+                    return true;
                 }
                 if (isFilterDropdownOpen()) {
                     fixDuplicateMainTabs(false);
@@ -6601,43 +6609,55 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardIpadRaf = parentWin.requestAnimationFrame(syncIpadWidthLoop);
             }
             function syncFixedBar() {
-                try { fixDuplicateMainTabs(collectMainTabLists().length > 1); } catch (eSf) {}
+                try { fixDuplicateMainTabs(false); } catch (eSf) {}
                 if (touchMode) {
                     if (isFilterDropdownOpen()) return;
                     applyIpad0804Hack();
                     return;
                 }
-                /* ===== Mac 분기 ===== */
+                /* ===== Mac 분기 (레이아웃 무손실, 불필요 style 재기록 억제) ===== */
                 var filterBox = findFilterBox();
                 var tabList = findMainTabList();
                 if (!filterBox || !tabList) {
-                    /* 담당자 지정 직후 탭 DOM이 늦게 뜨면 재시도 (상한) */
                     parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
                     if (parentWin.__dashTabRetry < 25) scheduleSync(200);
                     return;
                 }
-                var mounted = mountTabs(filterBox, tabList);
-                /* mount 후 keep가 바뀌었을 수 있음 — 최신 리스트로 위치만 맞춤 */
-                tabList = findMainTabList() || tabList;
-                if (!mounted || !filterBox.contains(tabList)) {
-                    parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
-                    if (parentWin.__dashTabRetry < 25) scheduleSync(180);
-                    return;
+                var mains = collectMainTabLists();
+                if (!isTabMountHealthy(filterBox, mains)) {
+                    var mounted = mountTabs(filterBox, tabList);
+                    tabList = findMainTabList() || tabList;
+                    if (!mounted || !filterBox.contains(tabList)) {
+                        parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
+                        if (parentWin.__dashTabRetry < 25) scheduleSync(180);
+                        return;
+                    }
                 }
                 parentWin.__dashTabRetry = 0;
                 var rectMac = getMainRect();
                 if (!rectMac) return;
                 var topMac = getTopOffsetMac();
-                filterBox.style.setProperty('position', 'fixed', 'important');
-                filterBox.style.setProperty('top', topMac + 'px', 'important');
-                filterBox.style.setProperty('left', rectMac.left + 'px', 'important');
-                filterBox.style.setProperty('width', rectMac.width + 'px', 'important');
-                filterBox.style.setProperty('max-width', rectMac.width + 'px', 'important');
-                filterBox.style.setProperty('z-index', '990', 'important');
-                parentDoc.documentElement.style.setProperty('--dashboard-bar-top', topMac + 'px');
-                parentDoc.documentElement.style.setProperty('--dashboard-bar-left', rectMac.left + 'px');
-                parentDoc.documentElement.style.setProperty('--dashboard-bar-width', rectMac.width + 'px');
-                syncTopShield(topMac, rectMac);
+                var curLeft = parseFloat(filterBox.style.left) || -9999;
+                var curTop = parseFloat(filterBox.style.top) || -9999;
+                var curW = parseFloat(filterBox.style.width) || 0;
+                var posOk = (
+                    filterBox.style.position === 'fixed' &&
+                    Math.abs(curLeft - rectMac.left) < 1.5 &&
+                    Math.abs(curTop - topMac) < 1.5 &&
+                    Math.abs(curW - rectMac.width) < 2.5
+                );
+                if (!posOk) {
+                    filterBox.style.setProperty('position', 'fixed', 'important');
+                    filterBox.style.setProperty('top', topMac + 'px', 'important');
+                    filterBox.style.setProperty('left', rectMac.left + 'px', 'important');
+                    filterBox.style.setProperty('width', rectMac.width + 'px', 'important');
+                    filterBox.style.setProperty('max-width', rectMac.width + 'px', 'important');
+                    filterBox.style.setProperty('z-index', '990', 'important');
+                    parentDoc.documentElement.style.setProperty('--dashboard-bar-top', topMac + 'px');
+                    parentDoc.documentElement.style.setProperty('--dashboard-bar-left', rectMac.left + 'px');
+                    parentDoc.documentElement.style.setProperty('--dashboard-bar-width', rectMac.width + 'px');
+                    syncTopShield(topMac, rectMac);
+                }
                 var barHMac = filterBox.offsetHeight + 4;
                 if (Math.abs(barHMac - lastH) > 1) {
                     var spacerMac = ensureSpacer(filterBox);
@@ -6647,16 +6667,51 @@ def inject_sticky_tabs_script():
                     lastH = barHMac;
                 }
             }
+            function mutationTouchesMainTabs(mutations) {
+                function check(node) {
+                    if (!node || node.nodeType !== 1) return false;
+                    try {
+                        if (node.id === 'sticky-marker' || node.id === SPACER_ID) return true;
+                        if (node.getAttribute && node.getAttribute('data-testid') === 'stTabs') return true;
+                        if (node.getAttribute && node.getAttribute('role') === 'tablist') return isMainTabList(node);
+                        if (node.querySelector) {
+                            if (node.querySelector('#sticky-marker')) return true;
+                            var tl = node.querySelector('div[role="tablist"]');
+                            if (tl && isMainTabList(tl)) return true;
+                        }
+                    } catch (eC) {}
+                    return false;
+                }
+                for (var m = 0; m < mutations.length; m++) {
+                    var rec = mutations[m];
+                    if (check(rec.target)) return true;
+                    var a, r;
+                    for (a = 0; a < rec.addedNodes.length; a++) if (check(rec.addedNodes[a])) return true;
+                    for (r = 0; r < rec.removedNodes.length; r++) if (check(rec.removedNodes[r])) return true;
+                }
+                return false;
+            }
             function scheduleSync(ms) {
                 try {
-                    var dup = collectMainTabLists().length > 1;
-                    fixDuplicateMainTabs(dup);
+                    var all = collectMainTabLists();
+                    if (all.length > 1) {
+                        fixDuplicateMainTabs(true);
+                        all = collectMainTabLists();
+                    } else {
+                        fixDuplicateMainTabs(false);
+                    }
+                    if (!touchMode) {
+                        var fb = findFilterBox();
+                        if (isTabMountHealthy(fb, all) && !isFilterDropdownOpen()) {
+                            var hNow = fb ? (fb.offsetHeight + 4) : lastH;
+                            if (Math.abs(hNow - lastH) <= 1) return;
+                        }
+                    }
                 } catch (eFix) {}
                 if (isFilterDropdownOpen() && collectMainTabLists().length <= 1) return;
                 if (syncTimer) clearTimeout(syncTimer);
                 var delay = ms || 40;
-                /* 필터 조작 직후 과도한 remount 완화 (맥·터치 공통) */
-                delay = Math.max(delay, touchMode ? 350 : 180);
+                delay = Math.max(delay, touchMode ? 350 : 280);
                 syncTimer = setTimeout(syncFixedBar, delay);
             }
             if (touchMode) {
