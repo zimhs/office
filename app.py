@@ -185,19 +185,41 @@ def inject_custom_css():
             div[data-testid="column"] { align-self: flex-start; }
             /* 채권관리 월/연체 토글 — 해당 컨테이너에만 적용 (다른 탭 버튼에 영향 금지) */
             [class*="st-key-debt_compact_btns"] div[data-testid="stButton"] > button {
-                min-height: 26px !important;
-                height: 26px !important;
-                padding: 0 6px !important;
-                font-size: 11px !important;
-                font-weight: 600 !important;
-                line-height: 1.1 !important;
-                border-radius: 6px !important;
-                max-width: 88px !important;
+                min-height: 30px !important;
+                height: 30px !important;
+                padding: 0 8px !important;
+                font-size: 12px !important;
+                font-weight: 700 !important;
+                line-height: 1.15 !important;
+                border-radius: 7px !important;
+                max-width: 100px !important;
                 margin: 0 auto !important;
             }
             [class*="st-key-debt_compact_btns"] div[data-testid="column"] {
-                padding-left: 1px !important;
-                padding-right: 1px !important;
+                padding-left: 2px !important;
+                padding-right: 2px !important;
+            }
+            /* 채권관리 탭 메트릭·안내 가독성 */
+            .dashboard-debt-metric .metric-label {
+                font-size: 13px !important;
+                font-weight: 600 !important;
+                color: #475569 !important;
+            }
+            .dashboard-debt-metric .metric-value {
+                font-size: 22px !important;
+                font-weight: 800 !important;
+                letter-spacing: -0.02em;
+            }
+            .dashboard-debt-filter-chip {
+                display: inline-block;
+                margin: 0 0 10px 0;
+                padding: 6px 12px;
+                border-radius: 8px;
+                background: #EFF6FF;
+                border: 1px solid #93C5FD;
+                color: #1E3A8A;
+                font-size: 13px;
+                font-weight: 600;
             }
             /* Tab2 기업정보 통합 카드 */
             .tab2-corp-card {
@@ -3670,7 +3692,7 @@ def dedupe_debt_client_gubun(df):
     else:
         out = out.drop_duplicates(subset=["거래처", "구분"], keep="first")
     return out.reset_index(drop=True)
-@st.cache_data(show_spinner="채권 데이터를 읽어오는 중입니다...")
+@st.cache_data(show_spinner=False)
 def load_debt_file(debt_bytes):
     if not debt_bytes:
         return pd.DataFrame()
@@ -4867,6 +4889,7 @@ def format_debt_status_label(overdue_amt, overdue_months):
     if overdue_months >= 4:
         return "악성"
     return f"연체 {int(overdue_months)}개월"
+@st.cache_data(show_spinner=False, max_entries=64)
 def apply_debt_style_fast(df, highlight_debt=True, payment_terms_map=None):
     """업체별 교차 구분색(밝음/흐린연한) + 연체 분홍. 금액 히트맵 그라디언트 없음."""
     styles = np.full(df.shape, "", dtype=object)
@@ -4922,6 +4945,7 @@ def apply_debt_style_fast(df, highlight_debt=True, payment_terms_map=None):
             for c in pink_cols:
                 styles[i_sal, c] = apply_pink_cell(styles[i_sal, c], DEBT_PINK_SOFT)
     return pd.DataFrame(styles, index=df.index, columns=df.columns)
+@st.cache_data(show_spinner=False, max_entries=64)
 def compute_debt_status_by_client(disp_debt, payment_terms_map=None):
     """거래처 → 채권구분 라벨 (정상 / 연체 1~3개월 / 악성)."""
     terms_map = payment_terms_map or {}
@@ -4952,26 +4976,26 @@ def compute_debt_status_by_client(disp_debt, payment_terms_map=None):
         out[client] = format_debt_status_label(overdue, od_m)
     return out
 def _debt_label_cell_style(client, gubun, color_map, compact=False):
-    """거래처분석 탭과 동일 계열: 13px / weight 400 · 중간정렬."""
-    pad = "4px 4px" if compact else "6px 8px"
+    """채권표 거래처/구분 — 가독성 우선(14px·선명 대비)."""
+    pad = "5px 5px" if compact else "7px 9px"
     base = (
-        f"padding:{pad};border-bottom:1px solid #E2E8F0;white-space:nowrap;"
-        "font-size:13px;font-weight:400;line-height:1.4;vertical-align:middle;"
+        f"padding:{pad};border-bottom:1px solid #CBD5E1;white-space:nowrap;"
+        "font-size:14px;font-weight:500;line-height:1.45;vertical-align:middle;"
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        "overflow:hidden;text-overflow:ellipsis;color:#31333F;"
+        "overflow:hidden;text-overflow:ellipsis;color:#0F172A;"
     )
     if client == "📌 [전체 합계]":
-        return base + "background-color:#E2E8F0;font-weight:600;text-align:center;"
+        return base + "background-color:#E2E8F0;font-weight:700;text-align:center;"
     bg = color_map.get(client, "#FFFFFF")
     return base + f"background-color:{bg};text-align:center;"
 def _debt_num_cell_font(compact=False):
-    """숫자만 거래처명(13px)보다 한 단계 작게."""
-    pad = "4px 4px" if compact else "6px 8px"
+    """채권표 숫자 — 거래처명보다 한 단계 작게, 대비 강화."""
+    pad = "5px 5px" if compact else "7px 9px"
     return (
-        f"padding:{pad};border-bottom:1px solid #E2E8F0;white-space:nowrap;"
-        "font-size:12px;font-weight:400;line-height:1.4;vertical-align:middle;text-align:center;"
+        f"padding:{pad};border-bottom:1px solid #CBD5E1;white-space:nowrap;"
+        "font-size:13px;font-weight:500;line-height:1.45;vertical-align:middle;text-align:center;"
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        "font-variant-numeric:tabular-nums;color:#31333F;"
+        "font-variant-numeric:tabular-nums;color:#0F172A;"
     )
 PAYMENT_TERMS_PATH = os.path.join(CACHE_DIR, "payment_terms.csv")
 PAYMENT_TERMS_FALLBACK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "payment_terms.csv")
@@ -5865,6 +5889,7 @@ def compute_debt_status_from_raw(debt_df, month_cols, payment_terms_map=None):
     """원본 채권 df → 거래처별 연체 라벨 (정상 포함)."""
     meta = compute_debt_od_meta_from_raw(debt_df, month_cols, payment_terms_map)
     return {c: v["label"] for c, v in meta.items()}
+@st.cache_data(show_spinner=False, max_entries=32)
 def compute_debt_od_meta_from_raw(debt_df, month_cols, payment_terms_map=None):
     """거래처 → {label, months, overdue_amt, pink_months, od_month_amts, cur_bal}."""
     terms_map = payment_terms_map or {}
@@ -5924,10 +5949,13 @@ def _debt_od_filter_categories(status_map):
         if lab not in ordered:
             ordered.append(lab)
     return ordered
+@st.fragment
 def render_debt_month_rank_panel(
     debt_df, month_cols, payment_terms_map=None, height=480, status_month_cols=None
 ):
-    """화면 절반: 연체업체만 · 연체개월수 다중필터 · 채권액 내림차순."""
+    """화면 절반: 연체업체만 · 연체개월수 다중필터 · 채권액 내림차순.
+    fragment: 연체 토글은 전체 앱 rerun 없이 패널만 갱신(거래처 원복 로딩과 분리).
+    """
     terms_map = payment_terms_map or {}
     mat = build_debt_client_balance_matrix(debt_df, month_cols)
     if mat.empty:
@@ -5954,11 +5982,14 @@ def render_debt_month_rank_panel(
         st.session_state["debt_od_filters"] = list(filter_cats)
     else:
         kept = [x for x in st.session_state["debt_od_filters"] if x in filter_cats]
-        st.session_state["debt_od_filters"] = kept if kept else list(filter_cats)
+        _next = kept if kept else list(filter_cats)
+        # 값 변경 시에만 기록 — 거래처 원복 rerun마다 session 쓰기로 추가 로딩 방지
+        if list(st.session_state.get("debt_od_filters") or []) != _next:
+            st.session_state["debt_od_filters"] = _next
     st.markdown(
-        "<div style='font-size:14px;font-weight:600;color:#334155;margin:18px 0 8px;'>"
+        "<div style='font-size:15px;font-weight:700;color:#1E293B;margin:18px 0 8px;'>"
         "📊 연체개월수 기준 채권 현황 <span style='font-size:12px;font-weight:500;color:#64748B;'>"
-        "(거래처 선택 무시·전체 · 담당자 필터 적용 · 정상 제외 · 연체개월 다중선택 · 화면 절반)</span></div>",
+        "(거래처 선택 무시·담당자 필터 · 정상 제외 · 연체개월 다중선택)</span></div>",
         unsafe_allow_html=True,
     )
     # 연체개월수 / 악성 다중 토글 (아담한 버튼 — 이 컨테이너에만 compact CSS)
@@ -5981,7 +6012,10 @@ def render_debt_month_rank_panel(
                         cur.append(cat)
                         cur = [x for x in filter_cats if x in cur]
                     st.session_state["debt_od_filters"] = cur
-                    st.rerun()
+                    try:
+                        st.rerun(scope="fragment")
+                    except TypeError:
+                        st.rerun()
     selected = st.session_state["debt_od_filters"]
     mat_f = mat.loc[[c for c in mat.index if status_map.get(c) in selected]]
     if mat_f.empty:
@@ -9968,67 +10002,95 @@ with tab5:
         # 데이터가 0(없는) 달 제거 로직 추가
         numeric_cols_temp = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
         valid_numeric_cols = [c for c in numeric_cols_temp if filtered_debt_df[c].abs().sum() > 0]
-    
+
         filtered_debt_df = filtered_debt_df[["거래처", "구분"] + valid_numeric_cols]
         numeric_cols_debt = valid_numeric_cols
-    
+
         if numeric_cols_debt:
             latest_month = numeric_cols_debt[-1]
-        
+
     debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
 
     t5_c1, t5_c2 = st.columns([4, 1])
     t5_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
     t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
 
+    _debt_chip = (
+        f"담당자 {', '.join(selected_staff)}" if selected_staff else "담당자 전체"
+    )
+    _debt_chip += (
+        f" · 거래처 {selected_client}"
+        if selected_client != "전체 거래처"
+        else " · 거래처 전체"
+    )
+    st.markdown(
+        f"<div class='dashboard-debt-filter-chip'>현재 필터: {_debt_chip}</div>",
+        unsafe_allow_html=True,
+    )
+
     if not debt_df.empty:
         if not filtered_debt_df.empty:
             numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
-        
+
             total_outstanding = 0
             warning_count = 0
-        
+
             if latest_month:
-                u_clients = filtered_debt_df['거래처'].unique()
-                for uc in u_clients:
-                    c_mask = filtered_debt_df['거래처'] == uc
-                    b_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '잔액'), latest_month].sum()
-                    s_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '매출'), latest_month].sum()
-                
-                    total_outstanding += max(0, b_val)
-                    if b_val > 0 and b_val > s_val:
-                        warning_count += 1
-                    
+                # 거래처별 집계 — 반복 loc 대신 groupby로 원복/지정 시 부하 완화
+                _bal = filtered_debt_df[filtered_debt_df["구분"] == "잔액"]
+                _sal = filtered_debt_df[filtered_debt_df["구분"] == "매출"]
+                if latest_month in _bal.columns and not _bal.empty:
+                    bal_by = _bal.groupby("거래처", sort=False)[latest_month].sum()
+                    sal_by = (
+                        _sal.groupby("거래처", sort=False)[latest_month].sum()
+                        if not _sal.empty and latest_month in _sal.columns
+                        else pd.Series(dtype=float)
+                    )
+                    for uc, b_val in bal_by.items():
+                        b_val = float(b_val) if pd.notna(b_val) else 0.0
+                        s_val = float(sal_by.get(uc, 0.0) or 0.0)
+                        total_outstanding += max(0.0, b_val)
+                        if b_val > 0 and b_val > s_val:
+                            warning_count += 1
+
             m1, m2 = st.columns(2)
-            m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div><div class='metric-value'>{total_outstanding:,.0f} 원</div></div>", unsafe_allow_html=True)
-            m2.markdown(f"<div class='metric-box'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div><div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>", unsafe_allow_html=True)
-        
-            st.markdown("<br>", unsafe_allow_html=True)
+            m1.markdown(
+                f"<div class='metric-box dashboard-debt-metric'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div>"
+                f"<div class='metric-value'>{total_outstanding:,.0f} 원</div></div>",
+                unsafe_allow_html=True,
+            )
+            m2.markdown(
+                f"<div class='metric-box dashboard-debt-metric'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div>"
+                f"<div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>",
+                unsafe_allow_html=True,
+            )
+
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
             summary_rows = []
-            for gubun in ["이월", "익월", "매출", "수금", "잔액", "합계"]: 
+            for gubun in ["이월", "익월", "매출", "수금", "잔액", "합계"]:
                 if gubun in filtered_debt_df["구분"].values:
                     sum_vals = filtered_debt_df[filtered_debt_df["구분"] == gubun][numeric_cols].sum()
                     row_data = {"거래처": "📌 [전체 합계]", "구분": gubun}
                     for col in numeric_cols:
                         row_data[col] = sum_vals[col]
                     summary_rows.append(row_data)
-        
+
             if summary_rows:
                 summary_df = pd.DataFrame(summary_rows)
                 disp_debt = pd.concat([filtered_debt_df, summary_df], ignore_index=True)
             else:
                 disp_debt = filtered_debt_df.copy()
-        
+
             gubun_order = {"이월": 1, "매출": 2, "수금": 3, "잔액": 4, "합계": 5}
             disp_debt["구분순위"] = disp_debt["구분"].map(gubun_order).fillna(99)
             client_order = {c: i for i, c in enumerate(disp_debt["거래처"].unique())}
             disp_debt["거래처순위"] = disp_debt["거래처"].map(client_order)
-        
+
             disp_debt = disp_debt.sort_values(by=["거래처순위", "구분순위"]).drop(columns=["거래처순위", "구분순위"])
-        
+
             disp_debt = disp_debt.set_index(["거래처", "구분"])
             debt_highlight = selected_client != "전체 거래처"
-            df_height = 500 if selected_client != "전체 거래처" else 700
+            df_height = 520 if selected_client != "전체 거래처" else 720
             show_cols = list(numeric_cols)
             # 입금기준표 결제조건 → 표 맨 우측 고정 표시
             if os.path.exists(PAYMENT_TERMS_FALLBACK) and not os.path.exists(PAYMENT_TERMS_PATH):
@@ -10037,6 +10099,11 @@ with tab5:
                 except Exception:
                     pass
             payment_terms_map = load_payment_terms_map()
+            st.markdown(
+                "<div style='font-size:14px;font-weight:700;color:#1E293B;margin:4px 0 6px;'>"
+                "📋 거래처별 채권 상세</div>",
+                unsafe_allow_html=True,
+            )
             render_debt_interactive_table(
                 disp_debt[show_cols],
                 debt_highlight,
@@ -10044,6 +10111,7 @@ with tab5:
                 payment_terms_map=payment_terms_map,
             )
             # 상세표 아래: 연체개월수 요약 — 거래처(상위검색) 무시, 담당자 필터만 적용
+            # staff 기준 메타는 cache → 거래처만 바꿔도 연체패널 재계산 부담 감소
             if not staff_debt_df.empty:
                 _staff_num = [c for c in staff_debt_df.columns if c not in ("거래처", "구분")]
                 _staff_months = [c for c in _staff_num if staff_debt_df[c].abs().sum() > 0]
