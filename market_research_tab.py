@@ -49,24 +49,25 @@ _SKIP_SHEET = re.compile(
     re.I,
 )
 
-# 산업단지 분류 — 공장등록 DB 공식명 + 주소/비고 키워드(로컬 규칙, 실시간 웹검색 없음)
+# 산업단지 분류 — 공장등록 DB 공식명 + 주소 키워드 + 읍면동/리 맵
+# (업체마다 실시간 웹검색은 느리고 불안정 → 등록 DB·공개 단지 위치 규칙 사용)
 _COMPLEX_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"동탄\s*도시\s*첨단|동탄도시첨단"), "화성동탄도시첨단산업단지"),
     (re.compile(r"동탄\s*일반|동탄산단|동탄\s*산업단지"), "화성동탄일반산업단지"),
-    (re.compile(r"발안|팔탄.*발안|화성발안|발안리"), "화성발안일반산업단지"),
+    (re.compile(r"발안|팔탄.*발안|화성발안|발안리|구문천리|하길리"), "화성발안일반산업단지"),
     (re.compile(r"바이오\s*밸리|바이오밸리"), "화성바이오밸리일반산업단지"),
-    (re.compile(r"전곡|전곡해양|우정.*전곡|전곡리"), "화성전곡해양일반산업단지"),
-    (re.compile(r"마도\s*(일반|공단|산업|면)|화성마도|마도공단|마도안길"), "화성마도일반산업단지"),
-    (re.compile(r"송산\s*테크노|테크노\s*파크|송산테크노"), "화성송산테크노파크일반산업단지"),
-    (re.compile(r"송산\s*그린|그린\s*시티|송산그린"), "송산그린시티 국가산업단지"),
-    (re.compile(r"정남\s*(일반|산단|산업|면)|화성정남"), "화성정남일반산업단지"),
+    (re.compile(r"전곡|전곡해양|전곡리|장외리"), "화성전곡해양일반산업단지"),
+    (re.compile(r"마도\s*(일반|공단|산업)|화성마도|마도공단|마도안길|쌍송리|송정리|금당리|두곡리|석교리|해문리|백곡리"), "화성마도일반산업단지"),
+    (re.compile(r"송산\s*테크노|테크노\s*파크|송산테크노|지화리|중송리"), "화성송산테크노파크일반산업단지"),
+    (re.compile(r"송산\s*그린|그린\s*시티|송산그린|삼존리"), "송산그린시티 국가산업단지"),
+    (re.compile(r"정남\s*(일반|산단|산업)|화성정남|음양리|귀래리|문학리|괘랑리|덕절리"), "화성정남일반산업단지"),
     (re.compile(r"향남\s*제약|제약\s*일반"), "화성향남제약일반산업단지"),
-    (re.compile(r"향남\s*(지방|산단|산업|공단|읍)|화성향남"), "화성향남지방산업단지"),
-    (re.compile(r"주곡|화성주곡"), "화성주곡일반산업단지"),
+    (re.compile(r"향남\s*(지방|산단|산업|공단)|화성향남|동오리|백토리|화리현리|증거리|상신리|송곡리|길성리|상두리|수직리"), "화성향남지방산업단지"),
+    (re.compile(r"주곡|화성주곡|주곡리"), "화성주곡일반산업단지"),
     (re.compile(r"화남|화성화남"), "화성화남일반산업단지"),
     (re.compile(r"장안\s*제?\s*2|장안2"), "장안제2첨단일반산업단지"),
     (re.compile(r"장안\s*제?\s*1|장안1|장안\s*첨단"), "장안제1첨단일반산업단지"),
-    (re.compile(r"반월|반월국가"), "반월국가산업단지"),
+    (re.compile(r"반월국가|반월\s*산단|반월동"), "반월국가산업단지"),
     (re.compile(r"시화|시화공단|시화MTV|정왕동"), "시화국가산업단지"),
     (re.compile(r"남동\s*(공단|산단|국가)|남동국가"), "남동국가산업단지"),
     (re.compile(r"포승|포승국가|평택.*포승"), "포승국가산업단지"),
@@ -79,10 +80,18 @@ _COMPLEX_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"증평\s*.*산단|증평2산단"), "증평일반산업단지"),
     (re.compile(r"메가폴리스|대소원"), "충주메가폴리스일반산업단지"),
     (re.compile(r"명지\s*(산단|국제)|녹산"), "부산명지녹산국가산업단지"),
+    # 동 단위 (공장등록 고신뢰)
+    (re.compile(r"영천동"), "화성동탄도시첨단산업단지"),
+    (re.compile(r"방교동"), "화성동탄일반산업단지"),
 ]
 # 주소에 「○○산단」만 있고 위 규칙에 안 걸릴 때 쓰는 보조 패턴
 _COMPLEX_ADDR_TOKEN = re.compile(
     r"([가-힣A-Za-z0-9]{2,16})\s*산단(?:로|길|단지|공단)?"
+)
+_COMPLEX_AREA_ADDR = re.compile(
+    r"(?:화성시|평택시|안산시|시흥시|안성시|용인시)?\s*"
+    r"([가-힣]+(?:읍|면|동))"
+    r"(?:\s*([가-힣]+리))?"
 )
 
 _REGION_RULES: list[tuple[re.Pattern[str], str]] = [
@@ -295,6 +304,90 @@ def _ms_default(prev, options: list[str]) -> list[str]:
     """Multiselect default는 options 부분집합이어야 Streamlit 오류가 안 남."""
     opts = set(options or [])
     return [x for x in (prev or []) if x in opts]
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def _area_complex_lookup(_cache_sig: str) -> dict[str, str]:
+    """공장등록 주소(읍면동·리) → 산업단지 고신뢰 맵.
+
+    공개 단지 위치와 같은 근거(등록 DB)로 미분류를 재분류할 때 사용.
+    """
+    from collections import Counter, defaultdict
+
+    root = ensure_market_research_cache()
+    fac: list[dict] = []
+    for p in _list_xlsx(root):
+        nfc = unicodedata.normalize("NFC", p.name)
+        if "화성" in nfc and "공장" in nfc:
+            fac = _parse_factory_registry(p)
+            break
+    votes: dict[str, Counter] = defaultdict(Counter)
+    for r in fac:
+        cx = _s(r.get("산업단지"))
+        if not cx or cx == "미분류":
+            continue
+        addr = _s(r.get("주소"))
+        mm = _COMPLEX_AREA_ADDR.search(addr)
+        if not mm:
+            continue
+        dong, ri = mm.group(1), mm.group(2) or ""
+        if ri:
+            votes[f"{dong}|{ri}"][cx] += 1
+        votes[dong][cx] += 1
+    out: dict[str, str] = {}
+    for key, c in votes.items():
+        top, n = c.most_common(1)[0]
+        tot = sum(c.values())
+        # 리면 8건·80%, 읍면동만이면 더 엄격(오분류 방지)
+        if "|" in key:
+            ok = n >= 8 and n / tot >= 0.8
+        else:
+            ok = n >= 80 and n / tot >= 0.9
+        if ok:
+            out[key] = top
+    return out
+
+
+def _complex_from_area(addr: str, lookup: dict[str, str]) -> str:
+    if not addr or not lookup:
+        return ""
+    mm = _COMPLEX_AREA_ADDR.search(addr)
+    if not mm:
+        return ""
+    dong, ri = mm.group(1), mm.group(2) or ""
+    if ri:
+        hit = lookup.get(f"{dong}|{ri}")
+        if hit:
+            return hit
+    return lookup.get(dong, "")
+
+
+def enrich_unclassified_complexes(
+    df: pd.DataFrame, lookup: dict[str, str]
+) -> tuple[pd.DataFrame, int]:
+    """미분류 행을 주소 읍면동/리 맵으로 재분류. (변경 DF, 재분류 건수)."""
+    if df.empty or "산업단지" not in df.columns or not lookup:
+        return df, 0
+    out = df.copy()
+    n = 0
+    for i in out.index:
+        if _s(out.at[i, "산업단지"]) not in {"", "미분류"}:
+            continue
+        cx = _complex_from_area(_s(out.at[i, "주소"]), lookup)
+        if not cx:
+            # 지역+주소 텍스트로 한 번 더
+            cx2 = infer_complex(
+                _s(out.at[i, "주소"]),
+                _s(out.at[i, "지역"]),
+                _s(out.at[i, "업체명"]),
+                _s(out.at[i, "비고"]),
+            )
+            if cx2 != "미분류":
+                cx = cx2
+        if cx and cx != "미분류":
+            out.at[i, "산업단지"] = cx
+            n += 1
+    return out, n
 
 
 def _find_header_row(rows: list[tuple], keywords: list[str], scan: int = 12) -> int | None:
@@ -1076,6 +1169,9 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         else:
             merged[c] = merged[c].fillna("").astype(str)
     merged.loc[merged["산업단지"].isin(["", "nan"]), "산업단지"] = "미분류"
+    # 미분류 → 공장등록 기반 읍면동/리 맵 + 주소 키워드로 재분류
+    lookup = _area_complex_lookup(_cache_sig)
+    merged, _ = enrich_unclassified_complexes(merged, lookup)
     merged["_search"] = (
         merged["업체명"]
         + " "
@@ -1403,8 +1499,8 @@ def _mr_filter_results_fragment(
 
     with tab_complex:
         st.caption(
-            "공장등록「산업단지명」+ 주소 키워드(마도·발안·동탄 등)로 분류. "
-            "실시간 웹검색은 쓰지 않습니다."
+            "공장등록「산업단지명」+ 주소 키워드 + 읍면동/리 맵(등록 DB 고신뢰)으로 분류. "
+            "업체마다 실시간 웹검색은 쓰지 않습니다."
         )
         left, right = st.columns([1, 1.4])
         cx_counts = (
