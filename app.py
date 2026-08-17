@@ -7016,7 +7016,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
-            var STICKY_SCRIPT_VER_IPAD = 25; /* iPad: 커스텀 가로 스크롤 탭바 */
+            var STICKY_SCRIPT_VER_IPAD = 26; /* iPad: 스크롤 중 spacer 재계산 금지 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -7394,8 +7394,12 @@ def inject_sticky_tabs_script():
             function lockIpadFilter(ms) {
                 parentWin.__dashboardIpadFilterLockUntil = Date.now() + (ms || 10000);
             }
+            function markIpadScrolling() {
+                parentWin.__dashboardIpadScrollLockUntil = Date.now() + 1500;
+            }
             function isIpadFilterLocked() {
                 try {
+                    if (Date.now() < (parentWin.__dashboardIpadScrollLockUntil || 0)) return true;
                     if (Date.now() < (parentWin.__dashboardIpadFilterLockUntil || 0)) return true;
                     return isFilterInteracting();
                 } catch (eLk) {
@@ -7546,17 +7550,19 @@ def inject_sticky_tabs_script():
                 targetBox.style.setProperty('overflow', 'visible', 'important');
                 targetBox.style.setProperty('-webkit-transform', 'none', 'important');
                 targetBox.style.setProperty('transform', 'none', 'important');
-                var barBottom = targetBox.getBoundingClientRect().bottom;
-                var spacerTop = spacer.getBoundingClientRect().top;
-                var pinH = Math.max(4, Math.round(barBottom - spacerTop + 2));
-                spacer.style.setProperty('height', pinH + 'px', 'important');
+                var barH = Math.round(targetBox.offsetHeight || 0);
+                if (barH < 40) barH = parentWin.__dashboardIpadSpacerH || 160;
+                var prevH = parentWin.__dashboardIpadSpacerH || 0;
+                if (Math.abs(barH - prevH) > 6) {
+                    parentWin.__dashboardIpadSpacerH = barH;
+                    spacer.style.setProperty('height', barH + 'px', 'important');
+                    parentDoc.documentElement.style.setProperty('--dashboard-fixed-bar-height', barH + 'px');
+                }
                 spacer.style.setProperty('min-height', '0', 'important');
                 spacer.style.setProperty('margin', '0', 'important');
                 spacer.style.setProperty('padding', '0', 'important');
                 spacer.style.setProperty('width', '100%', 'important');
                 spacer.style.setProperty('display', 'block', 'important');
-                parentDoc.documentElement.style.setProperty('--dashboard-fixed-bar-height', pinH + 'px');
-                ipadCloseContentGap(targetBox, spacer);
                 parentWin.__dashboardIpadTarget = targetBox;
                 parentWin.__dashboardIpadSpacer = spacer;
             }
@@ -7742,6 +7748,15 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardIpadScheduleSync = scheduleSync;
                 parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
                 parentWin.__dashboardStickyTouchReady = STICKY_SCRIPT_VER_IPAD;
+                try {
+                    var appScroll = parentDoc.querySelector('[data-testid="stAppViewContainer"]');
+                    if (appScroll) {
+                        appScroll.addEventListener('scroll', markIpadScrolling, { passive: true, capture: true });
+                    }
+                    parentDoc.addEventListener('scroll', markIpadScrolling, { passive: true, capture: true });
+                    parentWin.addEventListener('scroll', markIpadScrolling, { passive: true, capture: true });
+                    parentDoc.addEventListener('touchmove', markIpadScrolling, { passive: true, capture: true });
+                } catch (eScr) {}
                 parentDoc.addEventListener('pointerdown', function(e) {
                     try {
                         var t = e.target;
@@ -7776,7 +7791,10 @@ def inject_sticky_tabs_script():
                         scheduleSync(400);
                     }
                 }, true);
-                parentWin.addEventListener('resize', function() { scheduleSync(80); }, { passive: true });
+                parentWin.addEventListener('resize', function() {
+                    if (isIpadFilterLocked()) return;
+                    scheduleSync(80);
+                }, { passive: true });
                 parentWin.addEventListener('orientationchange', function() {
                     scheduleSync(120);
                     scheduleSync(450);
@@ -9640,10 +9658,10 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
 if is_touch_ui():
     # iPad: 사이드바가 접히면 iframe 스크립트가 안 돌아가 본문에 둠
     inject_sticky_tabs_script()
-    if st.session_state.get("_ipad_sticky_ver") != 25:
+    if st.session_state.get("_ipad_sticky_ver") != 26:
         inject_ipad_plotly_controls()
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 25
+        st.session_state["_ipad_sticky_ver"] = 26
 else:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
