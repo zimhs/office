@@ -8405,15 +8405,29 @@ if not full_df.empty:
             if not df_staff_for_opts.empty
             else []
         )
-        client_options = ["전체 거래처"] + all_clients
-        _prev_client = st.session_state.get("dash_filter_client", "전체 거래처")
-        if _prev_client not in client_options:
-            st.session_state["dash_filter_client"] = "전체 거래처"
-        selected_client = fc4.selectbox(
+        # 단일 선택 + 태그 X로 원복 (selectbox는 지우기 불가 → multiselect max 1)
+        # 구 selectbox 키 문자열 → 새 리스트 키로 1회 이관
+        if "dash_filter_client_ms" not in st.session_state:
+            _old_c = st.session_state.get("dash_filter_client", "전체 거래처")
+            if isinstance(_old_c, str) and _old_c and _old_c != "전체 거래처" and _old_c in all_clients:
+                st.session_state["dash_filter_client_ms"] = [_old_c]
+            else:
+                st.session_state["dash_filter_client_ms"] = []
+        _prev_clients = st.session_state.get("dash_filter_client_ms", [])
+        if isinstance(_prev_clients, list) and _prev_clients:
+            _kept_c = [x for x in _prev_clients if x in all_clients]
+            if _kept_c != _prev_clients:
+                st.session_state["dash_filter_client_ms"] = _kept_c
+        _client_picked = fc4.multiselect(
             "🏢 거래처",
-            options=client_options,
-            key="dash_filter_client",
+            options=all_clients,
+            max_selections=1,
+            key="dash_filter_client_ms",
+            placeholder="전체 거래처",
         )
+        selected_client = _client_picked[0] if _client_picked else "전체 거래처"
+        # 하위 로직·엑셀 시그니처 호환용
+        st.session_state["dash_filter_client"] = selected_client
         df_client_for_opts = (
             df_staff_for_opts[df_staff_for_opts["거래처"] == selected_client]
             if selected_client != "전체 거래처"
