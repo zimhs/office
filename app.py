@@ -519,36 +519,38 @@ def inject_custom_css():
             html.dashboard-touch-mode section[data-testid="stSidebar"] {
                 z-index: 1000005 !important;
             }
-            html.dashboard-touch-mode [data-testid="stAppViewContainer"] {
-                overflow-x: hidden !important;
-                overflow-y: auto !important;
-                -webkit-overflow-scrolling: touch !important;
-                overflow-anchor: none !important;
+            html.dashboard-touch-mode [data-testid="stAppViewContainer"],
+            html.dashboard-touch-mode .stApp {
+                overflow: visible !important;
+                height: auto !important;
+                max-height: none !important;
             }
             html.dashboard-touch-mode section.main,
             html.dashboard-touch-mode section.main .block-container {
                 overflow: visible !important;
                 max-width: 100% !important;
+                padding-top: 0 !important;
                 padding-left: 0.55rem !important;
                 padding-right: 0.55rem !important;
                 box-sizing: border-box !important;
             }
             html.dashboard-touch-mode .dashboard-filter-sticky,
             html.dashboard-touch-mode .dashboard-filter-sticky-touch {
-                position: -webkit-sticky !important;
-                position: sticky !important;
-                top: 2.8rem !important;
-                left: auto !important;
-                width: 100% !important;
-                max-width: 100% !important;
+                position: fixed !important;
+                top: 2.5rem !important;
+                left: 8px !important;
+                right: 8px !important;
+                width: auto !important;
+                max-width: calc(100vw - 16px) !important;
                 overflow-anchor: none !important;
             }
             html.dashboard-touch-mode #dashboard-sticky-spacer {
-                display: none !important;
-                height: 0 !important;
+                display: block !important;
+                height: var(--dashboard-fixed-bar-height, 150px) !important;
                 min-height: 0 !important;
                 margin: 0 !important;
                 padding: 0 !important;
+                width: 100% !important;
             }
             html.dashboard-touch-mode [data-testid="column"],
             html.dashboard-touch-mode [data-testid="stHorizontalBlock"] > div {
@@ -576,8 +578,8 @@ def inject_custom_css():
                 padding-right: 2px !important;
             }
             html.dashboard-touch-mode #dashboard-sticky-spacer {
-                display: none !important;
-                height: 0 !important;
+                display: block !important;
+                height: var(--dashboard-fixed-bar-height, 150px) !important;
                 min-height: 0 !important;
                 margin: 0 !important;
                 padding: 0 !important;
@@ -7038,7 +7040,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 12; /* 맥 분기 유지 — 버전 올리면 맥 sticky 재기동 */
-            var STICKY_SCRIPT_VER_IPAD = 28; /* iPad: fixed 제거 → sticky + 스크롤 복구 */
+            var STICKY_SCRIPT_VER_IPAD = 29; /* iPad: window 스크롤 + 헤더 바로 아래 fixed 1회 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -7617,11 +7619,18 @@ def inject_sticky_tabs_script():
                 ipadScrollTabs(targetBox);
                 targetBox.classList.add('dashboard-filter-sticky');
                 targetBox.classList.add('dashboard-filter-sticky-touch');
-                targetBox.style.setProperty('position', 'sticky', 'important');
-                targetBox.style.setProperty('top', '2.8rem', 'important');
-                targetBox.style.setProperty('left', 'auto', 'important');
-                targetBox.style.setProperty('width', '100%', 'important');
-                targetBox.style.setProperty('max-width', '100%', 'important');
+                var header = parentDoc.querySelector('[data-testid="stHeader"]');
+                var topPx = 40;
+                if (header) {
+                    var hb = header.getBoundingClientRect().bottom;
+                    if (hb > 20) topPx = Math.round(hb);
+                }
+                targetBox.style.setProperty('position', 'fixed', 'important');
+                targetBox.style.setProperty('top', topPx + 'px', 'important');
+                targetBox.style.setProperty('left', '8px', 'important');
+                targetBox.style.setProperty('right', '8px', 'important');
+                targetBox.style.setProperty('width', 'auto', 'important');
+                targetBox.style.setProperty('max-width', 'calc(100vw - 16px)', 'important');
                 targetBox.style.setProperty('z-index', '999999', 'important');
                 targetBox.style.setProperty('height', 'auto', 'important');
                 targetBox.style.setProperty('max-height', 'none', 'important');
@@ -7629,12 +7638,17 @@ def inject_sticky_tabs_script():
                 targetBox.style.setProperty('-webkit-transform', 'none', 'important');
                 targetBox.style.setProperty('transform', 'none', 'important');
                 var spacer = parentDoc.getElementById(SPACER_ID);
-                if (spacer) {
-                    spacer.style.setProperty('display', 'none', 'important');
-                    spacer.style.setProperty('height', '0', 'important');
-                    spacer.style.setProperty('min-height', '0', 'important');
-                    spacer.style.setProperty('margin', '0', 'important');
+                if (!spacer) {
+                    spacer = parentDoc.createElement('div');
+                    spacer.id = SPACER_ID;
+                    if (targetBox.parentNode) targetBox.parentNode.insertBefore(spacer, targetBox);
                 }
+                var barH = Math.round(targetBox.offsetHeight || 160);
+                spacer.style.setProperty('display', 'block', 'important');
+                spacer.style.setProperty('height', barH + 'px', 'important');
+                spacer.style.setProperty('min-height', '0', 'important');
+                spacer.style.setProperty('margin', '0', 'important');
+                parentDoc.documentElement.style.setProperty('--dashboard-fixed-bar-height', barH + 'px');
                 parentWin.__dashboardIpadTarget = targetBox;
                 parentWin.__dashboardIpadSpacer = spacer;
                 ipadFreezeLayout();
@@ -9741,10 +9755,10 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
 if is_touch_ui():
     # iPad: 사이드바가 접히면 iframe 스크립트가 안 돌아가 본문에 둠
     inject_sticky_tabs_script()
-    if st.session_state.get("_ipad_sticky_ver") != 28:
+    if st.session_state.get("_ipad_sticky_ver") != 29:
         inject_ipad_plotly_controls()
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 28
+        st.session_state["_ipad_sticky_ver"] = 29
 else:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
