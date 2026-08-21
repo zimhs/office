@@ -1232,7 +1232,7 @@ def workbook_to_html(path: str) -> str:
     # 💡 [수정] 로고를 표 바깥이 아닌, 표 내부의 마지막 줄(투명한 칸)로 만듭니다.
     import base64
     logo_tr = ""
-    logo_path = os.path.join(WORKLOG_DIR, "logo.png")
+    logo_path = "logo.png"
     
     if os.path.exists(logo_path):
         try:
