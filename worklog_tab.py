@@ -1110,7 +1110,7 @@ def workbook_to_html(path: str) -> str:
             if ha == "general":
                 ha = "left"
             if r < 9:
-                va = "middle"    
+                va = "middle"   
             # 익일업무·특이사항 라벨(C열 병합) 및 결재란: 원본처럼 세로 글자
             is_side_label = c == 3 and (
                 (r == 40 and rs >= 3) or (r == 44 and rs >= 3)
@@ -4305,13 +4305,18 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         expanded=bool(st.session_state.get(exp_key)),
                         key=exp_key,
                     ):
+                        
+                        # 💡 [핵심 수정] 항목 삭제와 빈 칸 수 조절이 좁은 화면에서 나란히 있지 않도록 강제 분리합니다.
+                        # 각각 화면 너비를 100% 차지하게 만들어 아이패드 세로모드 찌그러짐을 방지합니다.
+                        
                         if st.button(
                             "이 항목 삭제",
                             key=f"wl_del_btn_{iso2}_{i}",
-                            width="stretch",
+                            use_container_width=True,
                         ):
                             st.session_state[f"wl_do_del_{iso2}"] = i
                             _wl_rerun()
+                            
                         _cu = _client_line_units()
                         if int(
                             st.session_state.get(
@@ -4411,6 +4416,8 @@ div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) 
                                 ),
                                 1,
                             )
+                        
+                        # 삭제 버튼 밑으로 '빈 칸 수 조절'이 넓게 혼자 들어가도록 밖으로 뺐습니다.
                         st.number_input(
                             "다음 항목 전 빈 칸 수",
                             min_value=0,
@@ -4586,5 +4593,3 @@ div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) 
 
             _wl_entry_editor()
     _worklog_main()
-
-
