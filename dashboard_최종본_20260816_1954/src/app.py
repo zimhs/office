@@ -8,7 +8,6 @@ import glob
 import time
 import subprocess
 import shutil
-import tempfile
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
@@ -20,33 +19,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 import datetime
 from matplotlib.colors import LinearSegmentedColormap
-import sys
-# 유저님 맥북에 다트 부품이 확실하게 설치되어 있는 '진짜 주소'를 강제로 주입합니다!
-sys.path.append("/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages")
-
-try:
-    import OpenDartReader
-except ImportError:
-    OpenDartReader = None
-# [UI 패치] 검색창 팝업 입력칸 바로 아래 딱 붙이기 (좌우 위치 이탈 방지)
-st.markdown(
-    """
-    <style>
-    /* 1. 팝업창의 높이만 깔끔하게 제한 (위치 계산은 스트림릿에게 맡겨서 입력칸에 딱 붙게 함) */
-    div[data-baseweb="popover"] > div,
-    ul[role="listbox"] {
-        max-height: 35vh !important;
-        overflow-y: auto !important;
-    }
-    
-    /* 2. 고정바 안에서도 스트림릿이 "밑에 공간 넓다!"고 착각하게 만들어 무조건 아래로 열게 유도 */
-    .main .block-container {
-        padding-bottom: 60vh !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
 # Tab3 히트맵 — 파스텔만 사용 (진한 네이비/브라운 제외)
 _TAB3_CMAP_BLUE = LinearSegmentedColormap.from_list(
     "tab3_blue", ["#F8FAFC", "#DBEAFE", "#93C5FD"]
@@ -57,24 +29,32 @@ _TAB3_CMAP_GREEN = LinearSegmentedColormap.from_list(
 _TAB3_CMAP_ORANGE = LinearSegmentedColormap.from_list(
     "tab3_orange", ["#FFF7ED", "#FFEDD5", "#FDBA74"]
 )
-# OpenDartReader 강제 주입 및 인식 패치
-import sys
-import subprocess
-import importlib
-import streamlit as st
+# OpenDartReader 임포트 (패키지명 여러 경로 대응)
+# 주의: 시작 시 자동 pip/페이지 reload 금지 → Streamlit 재부팅 무한로딩 유발
+_OPENDART_IMPORT_ERROR = ""
 
-try:
-    import OpenDartReader
-except ImportError:
+
+def _try_import_opendart():
     try:
-        # 1. 강제 설치
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "opendartreader"])
-        # 2. 파이썬 안경 씌우기 (새로 설치된 부품 즉시 인식!)
-        importlib.invalidate_caches()
-        # 3. 다시 임포트
-        import OpenDartReader
-    except Exception:
-        OpenDartReader = None
+        from opendartreader import OpenDartReader as _ODR
+
+        return _ODR, ""
+    except Exception as e1:
+        try:
+            from OpenDartReader import OpenDartReader as _ODR  # type: ignore
+
+            return _ODR, ""
+        except Exception as e2:
+            try:
+                import OpenDartReader as _odr_mod  # type: ignore
+
+                _ODR = getattr(_odr_mod, "OpenDartReader", _odr_mod)
+                return _ODR, ""
+            except Exception as e3:
+                return None, f"{e1} / {e2} / {e3}"
+
+
+OpenDartReader, _OPENDART_IMPORT_ERROR = _try_import_opendart()
 # 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide", initial_sidebar_state="expanded")
@@ -96,11 +76,6 @@ try:
 except Exception:  # pragma: no cover
     sync_drive_copy_into_cache = None  # type: ignore
     sync_cache_to_drive_copy = None  # type: ignore
-
-
-def _is_local_macos() -> bool:
-    """로컬 맥에서 streamlit run 중일 때만 True (Notes 자동화 가능)."""
-    return sys.platform == "darwin" and not _is_streamlit_cloud()
 
 
 def _is_streamlit_cloud() -> bool:
@@ -160,32 +135,6 @@ def _render_cloud_sync_banner() -> None:
 # ==========================================
 # 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
 # ==========================================
-# OpenDartReader 임포트 (설치되지 않았을 경우를 대비한 예외 처리)
-try:
-    import OpenDartReader
-except ImportError:
-    OpenDartReader = None
-
-# 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
-pd.set_option("styler.render.max_elements", 2000000)
-st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide", initial_sidebar_state="expanded")
-
-# ==========================================
-# 0. 로컬 파일 자동 저장을 위한 디렉토리 설정
-# ==========================================
-CACHE_DIR = "./uploaded_cache"
-os.makedirs(CACHE_DIR, exist_ok=True)
-
-
-# ==========================================
-# 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
-# ==========================================
-# ==========================================
-# 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
-# ==========================================
-# ==========================================
-# 1. 상단 공백 최소화 및 사이드바 무손실 복구 CSS
-# ==========================================
 def inject_custom_css():
     st.markdown(
         """
@@ -216,37 +165,151 @@ def inject_custom_css():
                 padding-right: 1rem !important;
                 max-width: 99% !important; 
             }
-
             section.main [data-testid="stVerticalBlock"]:first-child,
             section.main [data-testid="stVerticalBlockBorderWrapper"]:first-child {
                 margin-top: 0 !important;
                 padding-top: 0 !important;
             }
-
             /* 사이드바 — Streamlit 기본 동작 유지, 색상만 보조 */
             [data-testid="stSidebar"] {
                 background-color: #F1F5F9 !important;
                 border-right: 1px solid #E2E8F0;
-                height: 100vh !important;
-                position: -webkit-sticky !important;
-                position: sticky !important;
-                top: 0 !important;
-            }
-            [data-testid="stSidebar"] > div:first-child {
-                overflow-y: auto !important;
-                height: 100% !important;
             }
             [data-testid="stSidebar"] .block-container { 
                 padding-top: 1.5rem !important; 
-                padding-bottom: 15rem !important; /* 하단 짤림 방지 여유 쿠션 */
             }
             [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, 
             [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown {
                 color: #334155 !important;
             }
-
             div[data-testid="column"] { align-self: flex-start; }
+            /* 채권관리 월/연체 토글 — 해당 컨테이너에만 적용 (다른 탭 버튼에 영향 금지) */
+            [class*="st-key-debt_compact_btns"] div[data-testid="stButton"] > button {
+                min-height: 26px !important;
+                height: 26px !important;
+                padding: 0 6px !important;
+                font-size: 11px !important;
+                font-weight: 600 !important;
+                line-height: 1.1 !important;
+                border-radius: 6px !important;
+                max-width: 88px !important;
+                margin: 0 auto !important;
+            }
+            [class*="st-key-debt_compact_btns"] div[data-testid="column"] {
+                padding-left: 1px !important;
+                padding-right: 1px !important;
+            }
+            /* Tab2 기업정보 통합 카드 */
+            .tab2-corp-card {
+                border: 1px solid #E2E8F0;
+                border-radius: 10px;
+                background: #FFFFFF;
+                padding: 14px 16px 12px;
+                margin: 4px 0 12px;
+            }
+            .tab2-corp-card h4 {
+                margin: 0 0 10px;
+                font-size: 16px;
+                color: #0F172A;
+                font-weight: 700;
+            }
+            .tab2-corp-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 8px 20px;
+            }
+            .tab2-corp-grid .row {
+                display: flex;
+                gap: 8px;
+                font-size: 13px;
+                line-height: 1.45;
+                color: #334155;
+            }
+            .tab2-corp-grid .k {
+                flex: 0 0 72px;
+                color: #64748B;
+                font-weight: 600;
+            }
+            .tab2-corp-grid .v { flex: 1; word-break: break-word; }
+            .tab2-corp-sec {
+                margin-top: 12px;
+                padding-top: 10px;
+                border-top: 1px solid #F1F5F9;
+            }
+            .tab2-corp-sec .sec-title {
+                font-size: 12px;
+                font-weight: 700;
+                color: #475569;
+                margin-bottom: 6px;
+                letter-spacing: 0.02em;
+            }
+            .tab2-corp-op {
+                display: inline-block;
+                margin-top: 4px;
+                padding: 4px 10px;
+                border-radius: 6px;
+                background: #F8FAFC;
+                border: 1px solid #E2E8F0;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            @media (max-width: 720px) {
+                .tab2-corp-grid { grid-template-columns: 1fr; }
+            }
 
+            .st-key-tab2_action_btns div[data-testid="stButton"],
+            .st-key-tab2_action_btns div[data-testid="stLinkButton"] {
+                width: 100% !important;
+            }
+            .st-key-tab2_action_btns div[data-testid="stButton"] > button,
+            .st-key-tab2_action_btns a[data-testid="stLinkButton"] {
+                width: 100% !important;
+                max-width: none !important;
+                min-height: 48px !important;
+                height: 48px !important;
+                padding: 0 16px !important;
+                font-size: 13px !important;
+                font-weight: 600 !important;
+                line-height: 1.2 !important;
+                border-radius: 8px !important;
+                text-align: center !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                box-sizing: border-box !important;
+            }
+            /* Tab2 카카오맵 버튼 아래 주소 — 버튼과 동일 폭·글자 크기, 간격 1mm */
+            .st-key-tab2_action_btns div[data-testid="stLinkButton"],
+            .st-key-tab2_action_btns div[data-testid="stButton"] {
+                margin-bottom: 0 !important;
+            }
+            .st-key-tab2_action_btns div[data-testid="stMarkdownContainer"] {
+                margin-top: 0 !important;
+                margin-bottom: 0 !important;
+            }
+            .st-key-tab2_action_btns [data-testid="stMarkdown"] {
+                margin-top: 1mm !important;
+                margin-bottom: 0 !important;
+            }
+            .st-key-tab2_action_btns .tab2-kakao-addr {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+                margin: 0 !important;
+                min-height: 48px !important;
+                padding: 0 16px !important;
+                font-size: 13px !important;
+                font-weight: 600 !important;
+                line-height: 1.2 !important;
+                border-radius: 8px !important;
+                border: 1px solid #E2E8F0 !important;
+                background: #FFFFFF !important;
+                text-align: center !important;
+                word-break: keep-all !important;
+                white-space: normal !important;
+            }
             .metric-box {
                 background: #FFFFFF;
                 padding: 16px 20px;
@@ -267,11 +330,9 @@ def inject_custom_css():
                 border-left: 4px solid #1E3A8A;
                 padding-left: 10px;
             }
-
             .dashboard-tabs-host-compact [role="tabpanel"] {
                 padding-top: 8px !important;
             }
-
             .dashboard-tab-title-row {
                 min-height: 44px !important;
                 align-items: flex-start !important;
@@ -283,7 +344,6 @@ def inject_custom_css():
                 border-radius: 8px;
                 border: 1px solid #E2E8F0;
             }
-
             /* ===== 상단 통합 고정바 (필터 + 탭) ===== */
             #dashboard-sticky-spacer {
                 width: 100% !important;
@@ -293,15 +353,12 @@ def inject_custom_css():
                 pointer-events: none !important;
                 flex-shrink: 0 !important;
             }
-
             #dashboard-top-shield {
                 pointer-events: none !important;
             }
-
             section.main {
                 overflow: visible !important;
             }
-
             .dashboard-tabs-host-compact {
                 margin-top: 0 !important;
                 padding-top: 0 !important;
@@ -309,7 +366,6 @@ def inject_custom_css():
                 max-height: none !important;
                 overflow: visible !important;
             }
-
             /* tablist만 숨김 — tabpanel 직접 자식은 반드시 유지 */
             .dashboard-tabs-host-compact > div:has(> [role="tablist"]),
             .dashboard-tabs-host-compact > div.dashboard-tabs-list-shell:empty {
@@ -320,7 +376,6 @@ def inject_custom_css():
                 padding: 0 !important;
                 overflow: hidden !important;
             }
-
             .dashboard-tabs-host-compact > div[role="tabpanel"],
             .dashboard-tabs-host-compact [role="tabpanel"] {
                 display: block !important;
@@ -329,7 +384,6 @@ def inject_custom_css():
                 min-height: 0 !important;
                 overflow: visible !important;
             }
-
             .dashboard-filter-sticky {
                 position: fixed !important;
                 top: var(--dashboard-bar-top, 2.75rem) !important;
@@ -347,7 +401,6 @@ def inject_custom_css():
                 overflow-y: visible !important;
                 margin: 0 !important;
             }
-
             .dashboard-filter-sticky-touch {
                 z-index: 999999 !important;
                 top: 3.65rem !important;
@@ -358,26 +411,22 @@ def inject_custom_css():
                 box-shadow: 0 8px 14px -4px rgba(37, 99, 235, 0.18) !important;
                 margin-top: 0 !important;
             }
-
             html.dashboard-touch-mode [data-testid="stHeader"],
             html.dashboard-touch-mode [data-testid="stToolbar"],
             html.dashboard-touch-mode [data-testid="stDecoration"] {
                 z-index: 1000001 !important;
                 position: relative !important;
             }
-
             html.dashboard-touch-mode [data-testid="stSidebar"],
             html.dashboard-touch-mode [data-testid="stSidebarBackdrop"],
             html.dashboard-touch-mode section[data-testid="stSidebar"] {
                 z-index: 1000005 !important;
             }
-
             html.dashboard-touch-mode [data-testid="stAppViewContainer"],
             html.dashboard-touch-mode section.main,
             html.dashboard-touch-mode section.main .block-container {
                 overflow: visible !important;
             }
-
             /* 고정바 내부 공백 최소화 */
             .dashboard-filter-sticky [data-testid="stVerticalBlock"],
             .dashboard-filter-sticky [data-testid="stHorizontalBlock"] {
@@ -409,12 +458,10 @@ def inject_custom_css():
                 margin: 0 !important;
                 padding: 0 !important;
             }
-
             div[data-testid="stVerticalBlockBorderWrapper"].dashboard-filter-sticky {
                 padding-top: 2px !important;
                 padding-bottom: 0 !important;
             }
-
             /* 고정바 하단 구분선 — 가늘고 연하게 */
             .dashboard-filter-sticky::after {
                 content: '' !important;
@@ -425,7 +472,6 @@ def inject_custom_css():
                 box-shadow: none !important;
                 border-radius: 0 !important;
             }
-
             /* 탭 패널 높이 — 대시보드 메인 탭만 */
             .dashboard-tabs-host-compact,
             .dashboard-tabs-host-compact > div,
@@ -434,11 +480,9 @@ def inject_custom_css():
                 max-height: none !important;
                 height: auto !important;
             }
-
             div[data-testid="stDataFrame"] > div {
                 -webkit-overflow-scrolling: touch;
             }
-
             /* 탭: 필터 고정바 내부 하단, 세로모드 가로 스크롤 */
             .dashboard-filter-sticky [role="tablist"],
             .dashboard-tabs-in-filter {
@@ -458,7 +502,6 @@ def inject_custom_css():
                 scrollbar-width: none;
                 touch-action: pan-x !important;
             }
-
             .dashboard-filter-sticky [role="tab"] {
                 flex: 0 0 auto !important;
                 white-space: nowrap !important;
@@ -467,83 +510,85 @@ def inject_custom_css():
                 padding: 2px 8px 3px 8px !important;
                 font-size: 12px !important;
             }
-
             .dashboard-filter-sticky [role="tablist"]::-webkit-scrollbar,
             .dashboard-tabs-in-filter::-webkit-scrollbar {
                 display: none;
             }
-
             .dashboard-tabs-host-compact [role="tabpanel"] {
                 padding-top: 4px !important;
             }
-
             .dashboard-tab-panel-head {
                 padding-top: 2px !important;
                 margin-bottom: 6px !important;
             }
-
             .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]) {
                 padding-bottom: 48px !important;
             }
-
             /* Streamlit 기본 스크롤 복구 */
             [data-testid="stAppViewContainer"] {
                 overflow-y: auto !important;
                 overflow-x: hidden !important;
                 -webkit-overflow-scrolling: touch !important;
             }
-
             .dashboard-filter-sticky [role="tab"] p,
             .dashboard-filter-sticky [role="tab"] span,
             .dashboard-filter-sticky [role="tab"] label {
                 white-space: nowrap !important;
             }
-
             @media (max-width: 1024px) {
                 .dashboard-filter-sticky {
                     padding: 2px 6px 0 6px !important;
                 }
-
                 .dashboard-filter-sticky [role="tab"] {
                     font-size: 10px !important;
                     padding: 2px 6px 3px 6px !important;
                 }
             }
-
             @supports (top: env(safe-area-inset-top)) {
                 .dashboard-filter-sticky {
                     padding-left: max(10px, env(safe-area-inset-left)) !important;
                     padding-right: max(10px, env(safe-area-inset-right)) !important;
                 }
             }
-
-            /* ==========================================
-               [최종 팝업 방어 패치] 거대 하얀 박스 완벽 차단
-               ========================================== */
-            /* 1. 팝업창 가로 크기가 화면 전체를 덮는 현상 원천 차단 */
-            div[data-baseweb="popover"] {
-                max-width: 400px !important; 
+            /* iPad only: Top30 표·도넛 가로 100% — 직계 칼럼만 (중첩 월버튼 칼럼 제외) */
+            html.dashboard-touch-mode .top30-touch-scope,
+            html.dashboard-touch-mode .top30-touch-row {
+                width: 100% !important;
+                max-width: 100% !important;
+                box-sizing: border-box !important;
             }
-            
-            /* 2. 스크롤 높이 제한 및 하단 공간(쿠션) 확보 */
-            div[data-baseweb="popover"] > div,
-            ul[role="listbox"] {
-                max-height: 35vh !important;
-                overflow-y: auto !important;
+            html.dashboard-touch-mode .top30-touch-row {
+                display: flex !important;
+                flex-direction: column !important;
+                flex-wrap: nowrap !important;
+                align-items: stretch !important;
+                gap: 0.75rem !important;
             }
-            div[data-testid="stAppViewContainer"] {
-                padding-bottom: 50vh !important;
+            html.dashboard-touch-mode .top30-touch-row > [data-testid="column"],
+            html.dashboard-touch-mode .top30-touch-row > [data-testid="stColumn"],
+            html.dashboard-touch-mode .top30-touch-row > div > [data-testid="column"],
+            html.dashboard-touch-mode .top30-touch-row > div > [data-testid="stColumn"] {
+                width: 100% !important;
+                min-width: 100% !important;
+                max-width: 100% !important;
+                flex: 1 1 100% !important;
+                box-sizing: border-box !important;
             }
-            
-            /* 3. 쓸데없는 경고 툴팁 아예 숨김 처리 */
-            div[data-baseweb="tooltip"] {
-                display: none !important;
-                opacity: 0 !important;
-                pointer-events: none !important;
+            html.dashboard-touch-mode .top30-touch-row iframe,
+            html.dashboard-touch-mode .top30-touch-row [data-testid="stPlotlyChart"],
+            html.dashboard-touch-mode .top30-touch-row [data-testid="stPlotlyChart"] > div {
+                width: 100% !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
+            }
+            html.dashboard-touch-mode .top30-touch-row [data-testid="stPlotlyChart"],
+            html.dashboard-touch-mode .top30-touch-row [data-testid="stPlotlyChart"] iframe {
+                min-height: 420px !important;
+                height: 420px !important;
             }
         </style>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 # ==========================================
 # 2. 날짜 파싱 및 데이터 정규화 유틸리티
@@ -922,25 +967,45 @@ def convert_dashboard_to_ppt(
 # ★ 네이버 크롤링 + DART API 하이브리드 유틸리티 ★
 # ==========================================
 def _company_name_candidates(company_name):
-    """DART/네이버 검색용 상호 후보 최적화 (무한로딩 폭탄 제거)"""
+    """DART/네이버 검색용 상호 후보 (구상호·법인표기 완화).
+
+    DART find_corp_code는 '라쿨'처럼 짧은 핵심 상호만 맞는 경우가 많아
+    짧은 이름을 앞에 둔다.
+    """
     raw = str(company_name or "").strip()
     cands = []
 
     def _add(x):
         x = re.sub(r"\s+", " ", str(x or "").strip())
-        if x and len(x) > 1 and x not in cands:
+        if x and x not in cands:
             cands.append(x)
 
-    # 1. 괄호 안의 내용(구상호) 및 법인 표기 완전 제거 -> 핵심 이름만 쏙 뽑기 (예: 라쿨)
-    core_name = re.sub(r"\(.*?\)|\[.*?\]|\(주\)|주식회사|㈜|\(유\)|유한회사", "", raw).strip()
-    _add(core_name)
-    
-    # 2. 원래 이름에서 괄호만 제거한 버전 (예: 라쿨 주식회사)
+    _add(raw)
+    # (구.신정우) / [구 신정우] 등 이전 상호
+    for m in re.finditer(r"[\(\[]\s*구\.?\s*([^\)\]]+)[\)\]]", raw):
+        _add(m.group(1))
     no_bracket = re.sub(r"\(.*?\)|\[.*?\]", "", raw).strip()
     _add(no_bracket)
-
-    # 핵심 키워드 딱 2개까지만 반환 (후보가 많아지면 수십번 API를 긁어 앱이 뻗는 현상 원천 차단)
-    return cands[:2]
+    for base in list(cands):
+        core = re.sub(r"\(.*?\)|\[.*?\]", "", base).strip()
+        stripped = re.sub(
+            r"주식회사|㈜|\(주\)|유한회사|\(유\)|\s+",
+            "",
+            core,
+        ).strip()
+        _add(stripped)
+        if stripped:
+            _add(f"{stripped} 주식회사")
+            _add(f"(주){stripped}")
+    # 짧은 핵심 상호 우선 (예: 라쿨 → 라쿨 주식회사 → 원문)
+    return sorted(
+        [c for c in cands if c],
+        key=lambda x: (
+            0 if re.fullmatch(r"[가-힣A-Za-z0-9]+", x) else 1,
+            len(x),
+            x,
+        ),
+    )
 
 
 def _dart_first_corp_row(by_name):
@@ -1194,11 +1259,14 @@ def _factory_is_auth_error(err):
     )
 
 
-def _factory_http_get(url, api_key, extra_params, timeout=1.5):
-    """data.go.kr 호출 (해외 IP 차단 무한로딩 방지 1.5초 컷 패치 완료)"""
-    if st.session_state.get("factory_is_blocked"):
-        return {"OpenAPI_ServiceResponse": {"cmmMsgHeader": {"errMsg": "BLOCKED", "returnAuthMsg": "EMPTY_BODY (해외IP 차단됨)"}}}
+def _factory_http_get(url, api_key, extra_params, timeout=12):
+    """data.go.kr 호출.
 
+    주의: Encoding 키(%3D%3D)를 requests params에 넣으면 %253D로 이중인코딩되어
+    '등록되지 않은 서비스키'가 난다.
+    - Decoding 키(==) → params로 전달(라이브러리가 1회 인코딩)
+    - Encoding 키(%3D%3D) → URL에 그대로 붙임(추가 인코딩 없음)
+    """
     raw_key = str(api_key or "").strip()
     decoded = urllib.parse.unquote(raw_key)
     encoded = urllib.parse.quote(decoded, safe="")
@@ -1208,9 +1276,13 @@ def _factory_http_get(url, api_key, extra_params, timeout=1.5):
         if v is not None and str(v).strip() != "":
             base_extra[k] = str(v).strip()
 
-    attempts = [("params", decoded)]
+    attempts = []
+    # 1) Decoding 키 + params (정상 경로)
+    attempts.append(("params", decoded))
+    # 2) Encoding 키를 URL에 raw append
     if encoded != decoded:
         attempts.append(("raw", encoded))
+    # 3) 사용자가 Encoding 키를 그대로 넣은 경우도 raw로 한 번 더
     if "%" in raw_key and raw_key not in (encoded, decoded):
         attempts.append(("raw", raw_key))
 
@@ -1218,35 +1290,32 @@ def _factory_http_get(url, api_key, extra_params, timeout=1.5):
     last_auth_err = ""
     for mode, key in attempts:
         for resp_type in ("json", "xml"):
-            q = {"pageNo": "1", "numOfRows": "20", "type": resp_type}
+            q = {
+                "pageNo": "1",
+                "numOfRows": "20",
+                "type": resp_type,
+            }
             q.update(base_extra)
             try:
                 if mode == "params":
                     params = dict(q)
                     params["serviceKey"] = key
-                    # 🚀 신분증(User-Agent) 장착 완료!
-                    r = requests.get(url, params=params, headers={'User-Agent': 'Mozilla/5.0'}, timeout=timeout)
+                    r = requests.get(url, params=params, timeout=timeout)
                 else:
                     qs = urllib.parse.urlencode(q, doseq=True)
-                    # 🚀 신분증(User-Agent) 장착 완료!
-                    r = requests.get(f"{url}?serviceKey={key}&{qs}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=timeout)
-                
+                    r = requests.get(
+                        f"{url}?serviceKey={key}&{qs}", timeout=timeout
+                    )
                 payload = _factory_parse_response_text(r.text)
                 last_payload = payload
                 items, err = _factory_extract_items(payload)
-                
-                if items or not err:
+                if items:
                     return payload
-                
                 if _factory_is_auth_error(err):
                     last_auth_err = err
+                    # 이 키/모드로는 인증 실패 → 다음 시도
                     break
             except Exception as e:
-                err_str = str(e).lower()
-                if "timeout" in err_str or "connection" in err_str or "max retries" in err_str:
-                    st.session_state.factory_is_blocked = True
-                    return {"OpenAPI_ServiceResponse": {"cmmMsgHeader": {"errMsg": "TIMEOUT", "returnAuthMsg": "EMPTY_BODY (해외IP 차단/타임아웃)"}}}
-                
                 last_payload = {
                     "OpenAPI_ServiceResponse": {
                         "cmmMsgHeader": {
@@ -1261,7 +1330,12 @@ def _factory_http_get(url, api_key, extra_params, timeout=1.5):
             "OpenAPI_ServiceResponse": {
                 "cmmMsgHeader": {
                     "errMsg": "SERVICE_KEY_ERROR",
-                    "returnAuthMsg": f"등록되지 않은 서비스키 (원문: {last_auth_err})",
+                    "returnAuthMsg": (
+                        "등록되지 않은 서비스키 — "
+                        "① data.go.kr에서 해당 API(생산정보/필지) 활용신청이 '승인'인지 확인 "
+                        "② 포털의 Decoding 키(끝 ==)로 다시 저장 후 '다시 조회' "
+                        f"(원문: {last_auth_err})"
+                    ),
                 }
             }
         }
@@ -1519,26 +1593,15 @@ def fetch_factory_registry(company_name, address=None, api_key=None, _cache_v=4)
     return _factory_row_to_info(best_prod, land_row)
 
 
-def _dart_pick_corp_by_address(dart, name, loc_tokens, max_check=2):
-    """동명 법인 중 주소(adres)가 거래처 주소와 맞는 항목 우선 선택. (타임아웃 감지 즉시 영구 차단 패치)"""
-    if st.session_state.get("dart_is_blocked"):
-        return None, 0
-        
-    def _check_timeout(e):
-        err_str = str(e).lower()
-        if "timeout" in err_str or "connection" in err_str or "max retries" in err_str:
-            st.session_state.dart_is_blocked = True
-            return True
-        return False
-
+def _dart_pick_corp_by_address(dart, name, loc_tokens, max_check=12):
+    """동명 법인 중 주소(adres)가 거래처 주소와 맞는 항목 우선 선택.
+    주소 토큰이 있는데 일치가 없으면 None (오매칭 방지)."""
     rows = []
     try:
         if hasattr(dart, "company_by_name"):
             rows = _dart_corp_rows(dart.company_by_name(name))
-    except Exception as e:
-        if _check_timeout(e): return None, 0
+    except Exception:
         rows = []
-
     # corp_codes 보조 검색
     if len(rows) < 2 and hasattr(dart, "corp_codes") and dart.corp_codes is not None:
         try:
@@ -1552,16 +1615,12 @@ def _dart_pick_corp_by_address(dart, name, loc_tokens, max_check=2):
                     rows.append(d)
         except Exception:
             pass
-
-    if st.session_state.get("dart_is_blocked"): return None, 0
-
     if not rows:
         code = None
         try:
             if hasattr(dart, "find_corp_code"):
                 code = dart.find_corp_code(name)
-        except Exception as e:
-            if _check_timeout(e): return None, 0
+        except Exception:
             code = None
         if code:
             rows = [{"corp_code": str(code), "corp_name": name}]
@@ -1569,29 +1628,37 @@ def _dart_pick_corp_by_address(dart, name, loc_tokens, max_check=2):
     best = None
     best_score = -1
     for row in rows[:max_check]:
-        if st.session_state.get("dart_is_blocked"): break
         code = str(row.get("corp_code") or "").strip()
         ci = row
         if code:
             try:
                 fetched = dart.company(code)
-                if isinstance(fetched, dict) and str(fetched.get("status", "000")) in ("000", "0", ""):
+                if isinstance(fetched, dict) and str(fetched.get("status", "000")) in (
+                    "000",
+                    "0",
+                    "",
+                ):
                     ci = fetched
-            except Exception as e:
-                if _check_timeout(e): break
+            except Exception:
+                pass
         if not isinstance(ci, dict):
             continue
         if str(ci.get("status", "000")) not in ("000", "0", "", "None"):
-            if ci.get("status") is not None and str(ci.get("status")) not in ("000", "0", ""):
+            # status 없는 corp_codes 행은 허용
+            if ci.get("status") is not None and str(ci.get("status")) not in (
+                "000",
+                "0",
+                "",
+            ):
                 continue
         adres = str(ci.get("adres") or ci.get("address") or "")
         score = _score_text_vs_loc_tokens(adres, loc_tokens)
+        # 주소 없을 때: 첫 후보만 약한 점수
         if not loc_tokens and best is None:
             score = 0
         if score > best_score:
             best_score = score
             best = ci
-            
     if loc_tokens and best_score <= 0:
         return None, 0
     return best, best_score
@@ -1664,16 +1731,10 @@ def _make_opendart_reader(dart_api_key: str):
 
 
 def get_opendart_reader(dart_api_key):
-    """OpenDartReader 재사용. 연결 실패 시 None 반환 및 재시도 영구 차단 패치"""
+    """OpenDartReader 재사용. 연결 실패 시 None + session 오류 메시지."""
     key = str(dart_api_key or "").strip()
-    
-    # [핵심] 이미 한 번이라도 차단당한 적이 있으면 아예 시도조차 하지 않고 즉시 0.1초 컷!
-    if not key or OpenDartReader is None or st.session_state.get("dart_is_blocked"):
+    if not key or OpenDartReader is None:
         return None
-        
-    import socket
-    old_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(10.0) # 연결 대기 시간 1.5초로 강제 고정
     try:
         return _make_opendart_reader(key)
     except Exception as e:
@@ -1682,203 +1743,255 @@ def get_opendart_reader(dart_api_key):
         except Exception:
             pass
         st.session_state["_opendart_last_error"] = str(e)
-        # [핵심] 연결에 실패하면 '차단됨' 도장을 찍어서 다음 거래처부터는 절대 헛고생하지 않도록 방어
-        st.session_state.dart_is_blocked = True 
         return None
-    finally:
-        socket.setdefaulttimeout(old_timeout)
 
 
 @st.cache_data(show_spinner=False, max_entries=100)
-def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cache_v=10):
-    """기업정보 조회 (비상장/차단 무한로딩 원천 차단 패치)"""
-    import socket
-    
-    import re
-    clean_name = re.sub(r'\(.*?\)|\[.*?\]|주식회사|수식회사|㈜|\(주\)|주\)', '', str(company_name)).strip()
-    if not clean_name:
-        clean_name = str(company_name)
-    candidates = [clean_name]
+def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cache_v=6):
+    """기업정보 조회. address가 있으면 거래처명+지역으로 동명회사 오매칭을 줄인다."""
+    candidates = _company_name_candidates(company_name)
+    clean_name = candidates[0] if candidates else str(company_name)
     loc_tokens = _loc_tokens_from_address(address)
     loc_hint = " ".join(loc_tokens[:3]).strip()
 
     info = {
-        "ceo": "정보 없음", "industry": "정보 없음", "revenue": "정보 없음", "profit": "정보 없음",
-        "clean_name": clean_name, "matched_name": "", "corp_code": "", "source": "정보 없음",
-        "dart_error": "", "dart_ready": bool(dart_api_key) and OpenDartReader is not None,
+        "ceo": "정보 없음",
+        "industry": "정보 없음",
+        "revenue": "정보 없음",
+        "profit": "정보 없음",
+        "clean_name": clean_name,
+        "matched_name": "",
+        "corp_code": "",
+        "source": "정보 없음",
+        "dart_error": "",
+        "dart_ready": bool(dart_api_key) and OpenDartReader is not None,
         "lookup_hint": f"{clean_name} {loc_hint}".strip(),
     }
     dart_success = False
 
-    if st.session_state.get("dart_is_blocked"):
-        info["dart_error"] = "해외 IP 차단으로 DART 조회를 생략합니다."
-    elif not dart_api_key:
+    if not dart_api_key:
         info["dart_error"] = "사이드바에 DART API 키가 없습니다."
     elif OpenDartReader is None:
-        info["dart_error"] = ""
+        info["dart_error"] = "opendartreader 미설치 — 앱을 재시작해 주세요."
     else:
-        old_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(10.0)
         try:
             dart = get_opendart_reader(dart_api_key)
             if dart is None:
-                info["dart_error"] = f"DART 연결 실패: {st.session_state.get('_opendart_last_error')}"
+                _err = st.session_state.get("_opendart_last_error") or "알 수 없는 오류"
+                info["dart_error"] = f"DART 연결 실패: {_err}"
             else:
                 corp_code = None
                 matched = None
                 corp_info = None
 
-                def _is_timeout(e):
-                    err_str = str(e).lower()
-                    # [핵심 1] Timeout뿐만 아니라 WAF 차단 페이지(HTML)로 인한 JSON 에러도 완벽하게 차단 감지!
-                    if "timeout" in err_str or "connection" in err_str or "max retries" in err_str or "jsondecode" in err_str or "expecting value" in err_str:
-                        st.session_state.dart_is_blocked = True
-                        return True
-                    return False
-
-                # 1. 빠르고 가벼운 로컬 캐시에서 먼저 상호를 뒤져서 확실한 법인코드를 확보!
                 for name in candidates:
-                    if st.session_state.get("dart_is_blocked"): break
                     try:
                         picked, score = _dart_pick_corp_by_address(dart, name, loc_tokens)
-                        if picked and picked.get("corp_code"):
+                        if picked and (
+                            picked.get("corp_name")
+                            or picked.get("ceo_nm")
+                            or picked.get("corp_code")
+                        ):
                             corp_info = picked
-                            corp_code = str(picked.get("corp_code")).strip()
+                            corp_code = str(picked.get("corp_code") or "").strip() or None
                             matched = str(picked.get("corp_name") or name)
+                            if loc_tokens and score > 0:
+                                info["lookup_hint"] = f"{matched} · 주소매칭({score})"
                             break
-                    except Exception as e:
-                        if _is_timeout(e): break
+                    except Exception:
+                        continue
 
-                # [핵심 2] DART에 없는 회사면 10번씩 삽질(API 호출)하지 않고 즉시 네이버로 0.1초 만에 탈출!
-                if not corp_code:
-                    info["dart_error"] = "DART 미등록 기업 (빠른 네이버 조회로 전환)"
+                lookup_keys = []
+                for k in (corp_code, matched, clean_name):
+                    if k and str(k) not in lookup_keys:
+                        lookup_keys.append(str(k))
+
+                if corp_info is None and not loc_tokens:
+                    for name in candidates[:3]:
+                        try:
+                            ci = dart.company(name)
+                            if (
+                                isinstance(ci, dict)
+                                and str(ci.get("status", "")) in ("000", "0")
+                                and (ci.get("corp_name") or ci.get("ceo_nm"))
+                            ):
+                                corp_info = ci
+                                matched = ci.get("corp_name") or name
+                                corp_code = str(ci.get("corp_code") or "").strip() or corp_code
+                                break
+                        except Exception:
+                            continue
+
+                if isinstance(corp_info, dict):
+                    if corp_info.get("ceo_nm"):
+                        info["ceo"] = corp_info["ceo_nm"]
+                    if corp_info.get("induty_nm"):
+                        info["industry"] = corp_info.get("induty_nm") or "정보 없음"
+                    info["matched_name"] = (
+                        corp_info.get("corp_name")
+                        or corp_info.get("stock_name")
+                        or matched
+                        or clean_name
+                    )
+                    info["corp_code"] = str(
+                        corp_info.get("corp_code") or corp_code or ""
+                    ).strip()
+                elif matched:
+                    info["matched_name"] = matched
+                    info["corp_code"] = str(corp_code or "").strip()
+
+                this_year = datetime.date.today().year
+                years_try = list(range(this_year - 1, 2019, -1))
+                fin_year_used = None
+                fin_state = None
+                for yr in years_try:
+                    for k in lookup_keys:
+                        try:
+                            fs = dart.finstate(k, yr)
+                            if fs is not None and not getattr(fs, "empty", True):
+                                fin_state = fs
+                                fin_year_used = yr
+                                break
+                        except Exception:
+                            continue
+                    if fin_state is not None:
+                        break
+
+                if fin_state is not None:
+                    sales_row = _pick_fin_account(
+                        fin_state,
+                        exact_names=["매출액", "수익(매출액)", "영업수익"],
+                        contains_names=["매출액"],
+                    )
+                    profit_row = _pick_fin_account(
+                        fin_state,
+                        exact_names=["영업이익", "영업이익(손실)"],
+                        contains_names=["영업이익"],
+                    )
+                    if sales_row is not None and "thstrm_amount" in sales_row.index:
+                        info["revenue"] = _fmt_dart_amount(sales_row["thstrm_amount"])
+                    if profit_row is not None and "thstrm_amount" in profit_row.index:
+                        info["profit"] = _fmt_dart_amount(profit_row["thstrm_amount"])
+                    if info["revenue"] != "정보 없음" or info["profit"] != "정보 없음":
+                        info["source"] = f"금융감독원 DART ({fin_year_used})"
+                        dart_success = True
+                    elif info["matched_name"] or info["ceo"] != "정보 없음":
+                        info["source"] = "금융감독원 DART 기업개요"
+                        info["dart_error"] = (
+                            f"법인({info['matched_name']})은 찾았으나 "
+                            "OpenAPI 재무제표(매출/영업이익)가 없습니다. "
+                            "감사보고서 PDF는 DART 사이트에서 직접 확인하세요."
+                        )
+                elif info["matched_name"] or info["ceo"] != "정보 없음":
+                    info["source"] = "금융감독원 DART 기업개요"
+                    info["dart_error"] = (
+                        f"법인({info.get('matched_name') or matched})은 찾았으나 "
+                        "구조화 재무 API 값이 없습니다(비상장·감사보고서만 공시된 경우)."
+                    )
                 else:
-                    if isinstance(corp_info, dict):
-                        if corp_info.get("ceo_nm"): info["ceo"] = corp_info["ceo_nm"]
-                        if corp_info.get("induty_nm"): info["industry"] = corp_info.get("induty_nm") or "정보 없음"
-                        info["matched_name"] = corp_info.get("corp_name") or corp_info.get("stock_name") or matched
-                        info["corp_code"] = corp_code
-
-                    if not st.session_state.get("dart_is_blocked"):
-                        this_year = datetime.date.today().year
-                        fin_state = None
-                        fin_year_used = None
-                        # 재무제표는 최근 3년만, 헛고생 없이 딱 찾은 법인코드로만 찌르기
-                        for yr in [this_year - 1, this_year - 2, this_year - 3]:
-                            try:
-                                fs = dart.finstate(corp_code, yr)
-                                if fs is not None and not getattr(fs, "empty", True):
-                                    fin_state = fs
-                                    fin_year_used = yr
-                                    break
-                            except Exception as e:
-                                if _is_timeout(e): break
-
-                        if fin_state is not None:
-                            sales_row = _pick_fin_account(fin_state, exact_names=["매출액", "수익(매출액)", "영업수익"], contains_names=["매출액"])
-                            profit_row = _pick_fin_account(fin_state, exact_names=["영업이익", "영업이익(손실)"], contains_names=["영업이익"])
-                            if sales_row is not None and "thstrm_amount" in sales_row.index:
-                                info["revenue"] = _fmt_dart_amount(sales_row["thstrm_amount"])
-                            if profit_row is not None and "thstrm_amount" in profit_row.index:
-                                info["profit"] = _fmt_dart_amount(profit_row["thstrm_amount"])
-                            
-                            if info["revenue"] != "정보 없음" or info["profit"] != "정보 없음":
-                                info["source"] = f"금융감독원 DART ({fin_year_used})"
-                                dart_success = True
-                            else:
-                                info["source"] = "금융감독원 DART 기업개요"
-                                info["dart_error"] = "재무제표 내 매출액/영업이익을 찾을 수 없습니다."
-                        else:
-                            info["source"] = "금융감독원 DART 기업개요"
-                            info["dart_error"] = "최근 3년 내 구조화된 OpenAPI 재무제표가 없습니다."
-                            
+                    loc_msg = f", 지역: {loc_hint}" if loc_hint else ""
+                    info["dart_error"] = (
+                        "DART에서 법인을 찾지 못했습니다. "
+                        f"시도 상호: {', '.join(candidates[:5])}{loc_msg}"
+                    )
         except Exception as e:
             info["dart_error"] = str(e)
-        finally:
-            socket.setdefaulttimeout(old_timeout)
 
-    # --- 네이버 검색 로직 그대로 유지 ---
     need_naver = (
         not dart_success
         or info["revenue"] == "정보 없음"
         or info["ceo"] == "정보 없음"
         or info["profit"] == "정보 없음"
     )
-    
-    if need_naver and not st.session_state.get("scraping_is_blocked"):
+    if need_naver:
         naver_hit = False
         dart_matched = bool(info.get("matched_name") or info.get("corp_code"))
         name_limit = 2 if dart_matched else 4
+        naver_timeout = 2.5 if dart_matched else 4
         naver_queries = []
         for name in candidates[:name_limit]:
             if loc_hint:
                 naver_queries.append(f"{name} {loc_hint} 기업정보")
             naver_queries.append(f"{name} 기업정보")
-        
         ordered_q = []
         _seen_q = set()
         for q in naver_queries:
             if q not in _seen_q:
                 _seen_q.add(q)
                 ordered_q.append(q)
-        
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
         }
-        
         for q in ordered_q:
-            if st.session_state.get("scraping_is_blocked"): break
             try:
-                url = "https://search.naver.com/search.naver?query=" + urllib.parse.quote(q)
-                response = requests.get(url, headers=headers, timeout=1.5)
-                if response.status_code != 200: continue
+                url = (
+                    "https://search.naver.com/search.naver?query="
+                    + urllib.parse.quote(q)
+                )
+                response = requests.get(url, headers=headers, timeout=naver_timeout)
+                if response.status_code != 200:
+                    continue
                 soup = BeautifulSoup(response.text, "html.parser")
                 texts = list(soup.stripped_strings)
                 head_blob = " ".join(texts[:100])
                 if loc_tokens and loc_hint and loc_hint.split()[0] in q:
-                    if not any(t in head_blob for t in loc_tokens[:3]): continue
+                    if not any(t in head_blob for t in loc_tokens[:3]):
+                        continue
                 for i, text in enumerate(texts):
-                    if text in ["대표자", "대표자명"] and info["ceo"] == "정보 없음" and i + 1 < len(texts):
-                        info["ceo"] = texts[i + 1]
-                        naver_hit = True
-                    elif text in ["업종", "산업(업종)"] and info["industry"] == "정보 없음" and i + 1 < len(texts):
-                        info["industry"] = texts[i + 1]
-                        naver_hit = True
-                    elif text in ["매출액"] and info["revenue"] == "정보 없음" and i + 1 < len(texts):
-                        info["revenue"] = texts[i + 1]
-                        naver_hit = True
-                    elif text in ["영업이익"] and info["profit"] == "정보 없음" and i + 1 < len(texts):
-                        info["profit"] = texts[i + 1]
-                        naver_hit = True
-                
-                if info["ceo"] != "정보 없음" and info["revenue"] != "정보 없음" and info["profit"] != "정보 없음":
+                    if text in ["대표자", "대표자명"]:
+                        if info["ceo"] == "정보 없음" and i + 1 < len(texts):
+                            info["ceo"] = texts[i + 1]
+                            naver_hit = True
+                    elif text in ["업종", "산업(업종)"]:
+                        if info["industry"] == "정보 없음" and i + 1 < len(texts):
+                            info["industry"] = texts[i + 1]
+                            naver_hit = True
+                    elif text in ["매출액"]:
+                        if info["revenue"] == "정보 없음" and i + 1 < len(texts):
+                            info["revenue"] = texts[i + 1]
+                            naver_hit = True
+                    elif text in ["영업이익"]:
+                        if info["profit"] == "정보 없음" and i + 1 < len(texts):
+                            info["profit"] = texts[i + 1]
+                            naver_hit = True
+                if (
+                    info["ceo"] != "정보 없음"
+                    and info["revenue"] != "정보 없음"
+                    and info["profit"] != "정보 없음"
+                ):
                     naver_hit = True
-                    
                 if naver_hit:
                     if not dart_success:
-                        info["source"] = "네이버 기업정보 요약" + (f" ({loc_hint})" if loc_hint else "")
-                    elif info["revenue"] != "정보 없음" and "DART" not in str(info["source"]):
+                        info["source"] = "네이버 기업정보 요약" + (
+                            f" ({loc_hint})" if loc_hint else ""
+                        )
+                    elif info["revenue"] != "정보 없음" and "DART" in str(info["source"]):
+                        pass
+                    elif info["revenue"] != "정보 없음":
                         info["source"] = f"{info['source']} + 네이버"
                     break
-            except Exception as e:
-                if "timeout" in str(e).lower() or "connection" in str(e).lower():
-                    st.session_state.scraping_is_blocked = True
-                    break
+            except Exception:
+                continue
 
-    if not dart_success or info["industry"] == "정보 없음":
-        try:
-            job = enrich_company_from_job_portals(company_name, address=address, _cache_v=4)
-            if job.get("industry") and info["industry"] == "정보 없음":
-                info["industry"] = job["industry"]
-            if job.get("source") and not dart_success:
-                src = str(info.get("source") or "")
-                if src in ("", "정보 없음"):
-                    info["source"] = job["source"]
-                elif job["source"] not in src:
-                    info["source"] = f"{src} + {job['source']}"
-            info["job_links"] = job.get("links") or {}
-        except Exception:
-            pass
+        if not dart_success or info["industry"] == "정보 없음":
+            try:
+                job = enrich_company_from_job_portals(
+                    company_name, address=address, _cache_v=2
+                )
+                if job.get("industry") and info["industry"] == "정보 없음":
+                    info["industry"] = job["industry"]
+                if job.get("source") and not dart_success:
+                    src = str(info.get("source") or "")
+                    if src in ("", "정보 없음"):
+                        info["source"] = job["source"]
+                    elif job["source"] not in src:
+                        info["source"] = f"{src} + {job['source']}"
+                info["job_links"] = job.get("links") or {}
+            except Exception:
+                pass
 
     return info
 
@@ -2371,68 +2484,76 @@ def build_job_portal_links(company_name, address=None):
 
 
 @st.cache_data(show_spinner=False, max_entries=40)
-def enrich_company_from_job_portals(company_name, address=None, _cache_v=4):
-    """사람인/네이버 기업개요 스크래핑 (해외망 무한로딩 방지 1.5초 컷 패치)"""
+def enrich_company_from_job_portals(company_name, address=None, _cache_v=2):
+    """사람인 등에서 기업개요 보강 시도 (실패해도 링크만 반환).
+    검색어는 상호+주소(지역) 병합. 재무는 제공하지 않음."""
     links = build_job_portal_links(company_name, address)
     out = {
-        "links": links, "snippets": [], "industry": "", "size": "", 
-        "summary": "", "source": "", "note": ""
+        "links": links,
+        "snippets": [],
+        "industry": "",
+        "size": "",
+        "summary": "",
+        "source": "",
+        "note": "",
     }
-    
-    # [핵심 패치 2] 한 번 차단된 걸 감지하면 사람인도 미련 없이 패스
-    if st.session_state.get("scraping_is_blocked"):
-        out["note"] = "해외망 차단으로 사람인/네이버 스크래핑 생략"
-        return out
-
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
         "Accept-Language": "ko-KR,ko;q=0.9",
     }
     loc_tokens = _loc_tokens_from_address(address)
+    # 1) 사람인: 상호+지역 → 실패 시 상호만
     saramin_urls = [links["saramin_company"]]
     if links.get("loc"):
         ne = urllib.parse.quote(links.get("name") or company_name)
-        saramin_urls.append(f"https://www.saramin.co.kr/zf_user/search/company?searchword={ne}")
-    
+        saramin_urls.append(
+            f"https://www.saramin.co.kr/zf_user/search/company?searchword={ne}"
+        )
     try:
         for s_url in saramin_urls:
-            if st.session_state.get("scraping_is_blocked"): break
-            try:
-                r = requests.get(s_url, headers=headers, timeout=1.5) # 1.5초 컷!
-                if r.status_code != 200 or len(r.text) <= 500: continue
-                soup = BeautifulSoup(r.text, "html.parser")
-                texts = [t.strip() for t in soup.stripped_strings if t and len(t.strip()) > 1]
-                head_blob = " ".join(texts[:120])
-                if loc_tokens and links.get("loc") and links["loc"].split()[0] in urllib.parse.unquote(s_url.split("searchword=")[-1]):
-                    if not any(t in head_blob for t in loc_tokens[:3]): continue
-                for i, t in enumerate(texts):
-                    if t in ("업종", "산업") and i + 1 < len(texts) and not out["industry"]:
-                        cand = texts[i + 1]
-                        if cand not in ("업종", "산업", "기업형태") and len(cand) < 40: out["industry"] = cand
-                    if t in ("사원수", "직원수", "기업규모") and i + 1 < len(texts) and not out["size"]:
-                        cand = texts[i + 1]
-                        if len(cand) < 30: out["size"] = cand
-                name_key = links.get("name") or ""
-                for t in texts:
-                    if name_key and name_key in t and 20 < len(t) < 180:
-                        out["snippets"].append(t)
-                        break
-                if out["industry"] or out["size"] or out["snippets"]:
-                    out["source"] = "사람인 기업검색(자동추출)"
-                    out["summary"] = " · ".join(x for x in [out.get("industry"), out.get("size")] if x)
+            r = requests.get(s_url, headers=headers, timeout=5)
+            if r.status_code != 200 or len(r.text) <= 500:
+                continue
+            soup = BeautifulSoup(r.text, "html.parser")
+            texts = [t.strip() for t in soup.stripped_strings if t and len(t.strip()) > 1]
+            head_blob = " ".join(texts[:120])
+            if loc_tokens and links.get("loc") and links["loc"].split()[0] in (
+                urllib.parse.unquote(s_url.split("searchword=")[-1])
+            ):
+                if not any(t in head_blob for t in loc_tokens[:3]):
+                    continue
+            for i, t in enumerate(texts):
+                if t in ("업종", "산업") and i + 1 < len(texts) and not out["industry"]:
+                    cand = texts[i + 1]
+                    if cand not in ("업종", "산업", "기업형태") and len(cand) < 40:
+                        out["industry"] = cand
+                if t in ("사원수", "직원수", "기업규모") and i + 1 < len(texts) and not out["size"]:
+                    cand = texts[i + 1]
+                    if len(cand) < 30:
+                        out["size"] = cand
+            name_key = links.get("name") or ""
+            for t in texts:
+                if name_key and name_key in t and 20 < len(t) < 180:
+                    out["snippets"].append(t)
                     break
-            except Exception as e:
-                if "timeout" in str(e).lower() or "connection" in str(e).lower():
-                    st.session_state.scraping_is_blocked = True
-                    break
+            if out["industry"] or out["size"] or out["snippets"]:
+                out["source"] = "사람인 기업검색(자동추출)"
+                out["summary"] = " · ".join(
+                    x for x in [out.get("industry"), out.get("size")] if x
+                )
+                break
     except Exception as e:
-        out["note"] = f"사람인 추출 실패: {e}"
+        out["note"] = f"사람인 자동추출 실패: {e}"
 
-    if not out["summary"] and not st.session_state.get("scraping_is_blocked"):
+    # 2) 네이버 검색 스니펫 보강 (주소 포함)
+    if not out["summary"]:
         try:
             q = links["query"] + " 기업"
             url = f"https://search.naver.com/search.naver?query={urllib.parse.quote(q)}"
-            r = requests.get(url, headers=headers, timeout=1.5)
+            r = requests.get(url, headers=headers, timeout=4)
             if r.status_code == 200:
                 soup = BeautifulSoup(r.text, "html.parser")
                 texts = list(soup.stripped_strings)
@@ -2443,12 +2564,14 @@ def enrich_company_from_job_portals(company_name, address=None, _cache_v=4):
                         out["size"] = texts[i + 1]
                 if out["industry"] or out["size"]:
                     out["source"] = (out["source"] + " + " if out["source"] else "") + "네이버요약"
-                    out["summary"] = " · ".join(x for x in [out.get("industry"), out.get("size")] if x)
-        except Exception as e:
-            if "timeout" in str(e).lower() or "connection" in str(e).lower():
-                st.session_state.scraping_is_blocked = True
+                    out["summary"] = " · ".join(
+                        x for x in [out.get("industry"), out.get("size")] if x
+                    )
+        except Exception:
+            pass
 
-    if not out["source"]: out["note"] = out.get("note") or "검색 링크로만 제공합니다."
+    if not out["source"]:
+        out["note"] = out.get("note") or "자동추출 결과가 없어 검색 링크로만 제공합니다."
     return out
 
 # ==========================================
@@ -2498,54 +2621,6 @@ def get_lat_lon_kakao(company_name, address, rest_api_key):
                 return float(res.json()['documents'][0]['y']), float(res.json()['documents'][0]['x'])
         except: pass
     return None, None
-
-
-# Tab6 전용: 프로세스 재시작 후에도 좌표 API를 다시 치지 않도록 디스크에 저장
-KAKAO_GEOCODE_CACHE_PATH = os.path.join(CACHE_DIR, "kakao_geocode_cache.json")
-
-
-def _kakao_geocode_disk_key(company_name, address):
-    return f"{str(company_name).strip()}||{str(address or '').strip()}"
-
-
-def _load_kakao_geocode_disk():
-    path = KAKAO_GEOCODE_CACHE_PATH
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _save_kakao_geocode_disk(cache_dict):
-    try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        with open(KAKAO_GEOCODE_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(cache_dict, f, ensure_ascii=False)
-    except Exception:
-        pass
-
-
-def get_lat_lon_kakao_disk(company_name, address, rest_api_key, disk_cache, dirty_flag):
-    """디스크 캐시 우선 → 없으면 Kakao API(@st.cache_data) 호출."""
-    key = _kakao_geocode_disk_key(company_name, address)
-    if key in disk_cache:
-        hit = disk_cache[key]
-        if not hit or hit.get("lat") is None or hit.get("lon") is None:
-            return None, None
-        try:
-            return float(hit["lat"]), float(hit["lon"])
-        except Exception:
-            return None, None
-    lat, lon = get_lat_lon_kakao(company_name, address, rest_api_key)
-    disk_cache[key] = {"lat": lat, "lon": lon}
-    dirty_flag[0] = True
-    return lat, lon
-
-
 KAKAO_REST_API_KEY = "21a8c4d7312051598c2e05dba0b9c0c7"
 @st.cache_data(show_spinner=False, max_entries=2000)
 def kakao_place_search(query, rest_api_key=None, size=15):
@@ -3040,532 +3115,112 @@ def get_diesel_price_monthly(force_refresh=False):
     fetched["month"] = month
     return fetched
 # ==========================================
-# ★ 메모 생성 AppleScript ★
+# ★ 메모 생성 AppleScript ★ 
 # ==========================================
-def _client_note_inventory_html(client_name, df_integrated) -> str:
+def open_macos_notes_folder(client_name, dart_api_key, df_integrated=None):
+    safe_client_name = client_name.replace('"', '\\"')
+    info = get_company_info_hybrid(client_name, dart_api_key)
+    encoded_name = urllib.parse.quote(info['clean_name'])
+    
+    # 통합 탱크 재고 연동 HTML 생성
     inventory_html = ""
-    if (
-        df_integrated is not None
-        and not df_integrated.empty
-        and "거래처(사용처)/보관장소" in df_integrated.columns
-    ):
-        client_inv = df_integrated[
-            df_integrated["거래처(사용처)/보관장소"]
-            .astype(str)
-            .str.contains(client_name, regex=False, na=False)
-        ]
+    if df_integrated is not None and not df_integrated.empty and '거래처(사용처)/보관장소' in df_integrated.columns:
+        client_inv = df_integrated[df_integrated['거래처(사용처)/보관장소'].astype(str).str.contains(client_name, regex=False, na=False)]
         if not client_inv.empty:
             inventory_html = "<h3>🛢️ 설치/보관 장비 현황 (통합 탱크 재고)</h3><ul>"
             for _, row in client_inv.iterrows():
-                item = row.get("품목", "미상")
-                status = row.get("사용구분", "")
-                serial = row.get("일련(제조)번호", "S/N 없음")
-                vol = row.get("저장부피(L)", "")
-                weight = row.get("저장무게(kg)", "")
-
+                item = row.get('품목', '미상')
+                status = row.get('사용구분', '')
+                serial = row.get('일련(제조)번호', 'S/N 없음')
+                vol = row.get('저장부피(L)', '')
+                weight = row.get('저장무게(kg)', '')
+                
                 vol_str = f"{vol}L" if pd.notna(vol) and str(vol).strip() != "" else ""
-                weight_str = (
-                    f"{weight}kg" if pd.notna(weight) and str(weight).strip() != "" else ""
-                )
-                cap_str = (
-                    f" / 용량: {vol_str} {weight_str}".strip()
-                    if vol_str or weight_str
-                    else ""
-                )
-
-                inventory_html += (
-                    f"<li><b>[{html.escape(str(item))}]</b> "
-                    f"{html.escape(str(status))} "
-                    f"(S/N: {html.escape(str(serial))}{html.escape(cap_str)})</li>"
-                )
+                weight_str = f"{weight}kg" if pd.notna(weight) and str(weight).strip() != "" else ""
+                cap_str = f" / 용량: {vol_str} {weight_str}".strip() if vol_str or weight_str else ""
+                
+                inventory_html += f"<li><b>[{item}]</b> {status} (S/N: {serial}{cap_str})</li>"
             inventory_html += "</ul><br>"
-    return inventory_html
-
-
-def _format_client_note_html(client_name, info, inventory_html="") -> str:
-    search_q = info.get("lookup_hint") or info["clean_name"]
-    encoded_name = urllib.parse.quote(search_q)
-    title = html.escape(str(client_name))
-    clean_name = html.escape(str(info["clean_name"]))
-    return f"""<h1>{title}</h1>
-<br>
-<h3>📌 요약 기업 정보 (데이터 출처: {html.escape(str(info['source']))})</h3>
-<ul>
-    <li><b>대표자:</b> {html.escape(str(info['ceo']))}</li>
-    <li><b>업종:</b> {html.escape(str(info['industry']))}</li>
-    <li><b>매출액:</b> {html.escape(str(info['revenue']))}</li>
-    <li><b>영업이익:</b> {html.escape(str(info['profit']))}</li>
-</ul>
-<br>
-{inventory_html}
-<h3>🔗 상세 정보 원클릭 검색</h3>
-<ul>
-    <li><a href="https://search.naver.com/search.naver?query={encoded_name} 기업정보">네이버에서 '{clean_name}' 재무정보 보기</a></li>
-    <li><a href="https://www.saramin.co.kr/zf_user/search/company?searchword={encoded_name}">사람인에서 '{clean_name}' 기업/채용 검색</a></li>
-    <li><a href="https://www.jobkorea.co.kr/Search/?stext={encoded_name}&tabType=corp">잡코리아에서 '{clean_name}' 기업 검색</a></li>
-</ul>
-<br>
-<h3>📝 영업 및 특이사항</h3>
-<p></p>
-"""
-
-
-def _format_client_note_plain(client_name, info, df_integrated=None) -> str:
-    search_q = info.get("lookup_hint") or info["clean_name"]
-    encoded_name = urllib.parse.quote(search_q)
-    lines = [
-        str(client_name),
-        "",
-        f"📌 요약 기업 정보 (데이터 출처: {info['source']})",
-        f"- 대표자: {info['ceo']}",
-        f"- 업종: {info['industry']}",
-        f"- 매출액: {info['revenue']}",
-        f"- 영업이익: {info['profit']}",
-        "",
-    ]
-    if (
-        df_integrated is not None
-        and not df_integrated.empty
-        and "거래처(사용처)/보관장소" in df_integrated.columns
-    ):
-        client_inv = df_integrated[
-            df_integrated["거래처(사용처)/보관장소"]
-            .astype(str)
-            .str.contains(client_name, regex=False, na=False)
-        ]
-        if not client_inv.empty:
-            lines.append("🛢️ 설치/보관 장비 현황 (통합 탱크 재고)")
-            for _, row in client_inv.iterrows():
-                item = row.get("품목", "미상")
-                status = row.get("사용구분", "")
-                serial = row.get("일련(제조)번호", "S/N 없음")
-                vol = row.get("저장부피(L)", "")
-                weight = row.get("저장무게(kg)", "")
-                vol_str = f"{vol}L" if pd.notna(vol) and str(vol).strip() != "" else ""
-                weight_str = (
-                    f"{weight}kg" if pd.notna(weight) and str(weight).strip() != "" else ""
-                )
-                cap_str = (
-                    f" / 용량: {vol_str} {weight_str}".strip()
-                    if vol_str or weight_str
-                    else ""
-                )
-                lines.append(f"- [{item}] {status} (S/N: {serial}{cap_str})")
-            lines.append("")
-    lines.extend(
-        [
-            "🔗 상세 정보 검색",
-            f"- 네이버: https://search.naver.com/search.naver?query={encoded_name} 기업정보",
-            f"- 사람인: https://www.saramin.co.kr/zf_user/search/company?searchword={encoded_name}",
-            f"- 잡코리아: https://www.jobkorea.co.kr/Search/?stext={encoded_name}&tabType=corp",
-            "",
-            "📝 영업 및 특이사항",
-            "",
-        ]
-    )
-    return "\n".join(lines)
-
-
-def prepare_client_note_export(
-    client_name, dart_api_key, df_integrated=None, address=None
-) -> tuple[str, str, str, str]:
-    info = get_company_info_hybrid(client_name, dart_api_key, address=address)
-    inventory_html = _client_note_inventory_html(client_name, df_integrated)
-    body_html = _format_client_note_html(client_name, info, inventory_html)
-    plain_text = _format_client_note_plain(client_name, info, df_integrated)
-    safe_title = html.escape(str(client_name))
-    full_html = (
-        "<!DOCTYPE html>\n"
-        '<html lang="ko"><head><meta charset="utf-8">'
-        f"<title>{safe_title}</title></head>\n"
-        f"<body>{body_html}</body></html>"
-    )
-    fname = re.sub(r'[\\/:*?"<>|]+', "_", str(client_name)).strip()[:60] or "note"
-    return body_html, plain_text, full_html, f"{fname}_메모.html"
-
-
-def _render_tab2_note_share_html(plain_text: str, title: str) -> None:
-    js_title = json.dumps(str(title), ensure_ascii=False)
-    js_text = json.dumps(str(plain_text), ensure_ascii=False)
-    components.html(
-        f"""
-<div style="font-family:system-ui,-apple-system,sans-serif;font-size:14px;">
-  <button id="tab2-copy-btn" style="width:100%;padding:10px 12px;margin-bottom:8px;cursor:pointer;border:1px solid #CBD5E1;border-radius:8px;background:#fff;">📋 클립보드에 복사</button>
-  <button id="tab2-share-btn" style="width:100%;padding:10px 12px;cursor:pointer;border:1px solid #CBD5E1;border-radius:8px;background:#fff;">📤 공유 (iPad·iPhone 메모 등)</button>
-  <p id="tab2-share-status" style="margin:8px 0 0;color:#64748B;font-size:12px;line-height:1.4;"></p>
-</div>
-<script>
-const title = {js_title};
-const text = {js_text};
-const status = document.getElementById("tab2-share-status");
-document.getElementById("tab2-copy-btn").onclick = async () => {{
-  try {{
-    await navigator.clipboard.writeText(text);
-    status.textContent = "클립보드에 복사했습니다. 메모 앱에 붙여넣기 하세요.";
-  }} catch (e) {{
-    status.textContent = "복사 실패. Safari/Chrome에서 이 페이지 클립보드 권한을 확인해 주세요.";
-  }}
-}};
-document.getElementById("tab2-share-btn").onclick = async () => {{
-  if (navigator.share) {{
-    try {{
-      await navigator.share({{ title: title, text: text }});
-      status.textContent = "공유 시트를 열었습니다. 메모를 선택하세요.";
-    }} catch (e) {{
-      if (!e || e.name !== "AbortError") {{
-        status.textContent = "공유를 완료하지 못했습니다. 클립보드 복사를 사용해 주세요.";
-      }}
-    }}
-  }} else {{
-    status.textContent = "이 브라우저는 공유를 지원하지 않습니다. 클립보드 복사를 사용하세요.";
-  }}
-}};
-</script>
-""",
-        height=130,
-    )
-
-
-def _build_client_note_html(client_name, dart_api_key, df_integrated=None, address=None) -> str:
-    info = get_company_info_hybrid(client_name, dart_api_key, address=address)
-    inventory_html = _client_note_inventory_html(client_name, df_integrated)
-    return _format_client_note_html(client_name, info, inventory_html)
-
-
-def _note_name_key(name: str) -> str:
-    s = re.sub(r"\s+", "", str(name or "").strip().lower())
-    s = re.sub(r"[.\u3002]+$", "", s)
-    s = re.sub(r"주식회사|㈜|\(주\)|유한회사|\(유\)", "", s)
-    return s
-
-
-def _macos_notes_auth_hint(err: str) -> str:
-    low = (err or "").lower()
-    if (
-        "not authorized" in low
-        or "assistive" in low
-        or "-1743" in (err or "")
-        or "1002" in (err or "")
-    ):
-        return (
-            " 시스템 설정 → 개인정보 보호 및 보안 → **자동화**에서 "
-            "터미널/Cursor/Python에 **메모(Notes)** 제어를 허용해 주세요."
-        )
-    return ""
-
-
-def _run_osascript_file(script_text: str, args: list[str], timeout: int = 60):
-    script_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".applescript",
-            prefix="dash_notes_",
-            delete=False,
-            encoding="utf-8",
-        ) as script_file:
-            script_file.write(script_text.strip())
-            script_path = script_file.name
-        return subprocess.run(
-            ["osascript", script_path, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    finally:
-        if script_path:
-            try:
-                os.unlink(script_path)
-            except Exception:
-                pass
-
-
-def list_macos_client_notes(force: bool = False) -> tuple[list[dict], str]:
-    """메모「거래처」폴더의 노트·하위폴더 목록. (로컬 맥 전용)"""
-    if not _is_local_macos():
-        return [], "로컬 맥에서만 메모 목록을 읽을 수 있습니다."
-    cache = st.session_state.get("_macos_notes_index")
-    now = time.time()
-    if (
-        not force
-        and isinstance(cache, dict)
-        and now - float(cache.get("ts") or 0) < 300
-        and cache.get("items") is not None
-    ):
-        return list(cache["items"]), ""
-
-    script = """
-on run
-    set outLines to {}
-    tell application "Notes"
-        repeat with acc in accounts
-            try
-                set accName to name of acc
-                if exists folder "거래처" of acc then
-                    set parentFolder to folder "거래처" of acc
-                    repeat with n in (notes of parentFolder)
-                        set end of outLines to "NOTE\t" & accName & "\t" & (name of n)
-                    end repeat
-                    try
-                        repeat with f in (folders of parentFolder)
-                            set fName to name of f
-                            set end of outLines to "FOLDER\t" & accName & "\t" & fName
-                            repeat with n in (notes of f)
-                                set end of outLines to "SUBNOTE\t" & accName & "\t" & fName & "\t" & (name of n)
-                            end repeat
-                        end repeat
-                    end try
-                end if
-            end try
-        end repeat
-    end tell
-    set AppleScript's text item delimiters to linefeed
-    return outLines as text
-end run
-"""
-    try:
-        result = _run_osascript_file(script, [], timeout=90)
-    except subprocess.TimeoutExpired:
-        return [], "메모 목록 조회 시간 초과."
-    except Exception as e:
-        return [], f"메모 목록 조회 오류: {e}"
-    if result.returncode != 0:
-        err = (result.stderr or result.stdout or "").strip()
-        return [], f"메모 목록 조회 실패: {err or '알 수 없는 오류'}.{_macos_notes_auth_hint(err)}"
-
-    items = []
-    for line in (result.stdout or "").splitlines():
-        parts = line.split("\t")
-        if len(parts) < 3:
-            continue
-        kind, acc = parts[0].strip(), parts[1].strip()
-        if kind == "NOTE" and len(parts) >= 3:
-            items.append({"kind": "NOTE", "account": acc, "name": parts[2].strip(), "parent": ""})
-        elif kind == "FOLDER" and len(parts) >= 3:
-            items.append({"kind": "FOLDER", "account": acc, "name": parts[2].strip(), "parent": ""})
-        elif kind == "SUBNOTE" and len(parts) >= 4:
-            items.append(
-                {
-                    "kind": "SUBNOTE",
-                    "account": acc,
-                    "parent": parts[2].strip(),
-                    "name": parts[3].strip(),
-                }
-            )
-    st.session_state["_macos_notes_index"] = {"ts": now, "items": items}
-    return items, ""
-
-
-def match_macos_client_note(client_name: str, items: list[dict]) -> dict | None:
-    """거래처명과 같은(또는 정규화 일치) 메모 노트/폴더를 고른다."""
-    raw = str(client_name or "").strip()
-    if not raw or raw == "전체 거래처":
-        return None
-    cands = [raw]
-    for c in _company_name_candidates(raw):
-        if c not in cands:
-            cands.append(c)
-    cand_set = {c.strip() for c in cands if c and c.strip()}
-    key_set = {_note_name_key(c) for c in cand_set if _note_name_key(c)}
-
-    def _score(item: dict, mode: str) -> tuple:
-        kind_rank = {"NOTE": 0, "SUBNOTE": 1, "FOLDER": 2}.get(item.get("kind"), 9)
-        return (kind_rank, len(str(item.get("name") or "")), str(item.get("name") or ""))
-
-    for mode, pred in (
-        ("exact", lambda it: str(it.get("name") or "").strip() == raw),
-        ("candidate", lambda it: str(it.get("name") or "").strip() in cand_set),
-        ("normalized", lambda it: _note_name_key(it.get("name") or "") in key_set),
-    ):
-        hits = [it for it in items if pred(it)]
-        if hits:
-            hits.sort(key=lambda it: _score(it, mode))
-            return {**hits[0], "match": mode}
-
-    return None
-
-
-def _show_macos_matched_note(match: dict) -> tuple[bool, str, str]:
-    """일치한 노트를 메모 앱에서 열고 plaintext를 반환."""
-    kind_raw = str(match.get("kind") or "NOTE").upper()
-    mode = {"FOLDER": "folder", "SUBNOTE": "sub", "NOTE": "top"}.get(kind_raw, "top")
-    name = str(match.get("name") or "")
-    parent = str(match.get("parent") or "")
-    script = """
-on run argv
-    set targetMode to item 1 of argv
-    set noteName to item 2 of argv
-    set parentName to item 3 of argv
+    note_content = f"""
+    <h1>{safe_client_name}</h1>
+    <br>
+    <h3>📌 요약 기업 정보 (데이터 출처: {info['source']})</h3>
+    <ul>
+        <li><b>대표자:</b> {info['ceo']}</li>
+        <li><b>업종:</b> {info['industry']}</li>
+        <li><b>매출액:</b> {info['revenue']}</li>
+        <li><b>영업이익:</b> {info['profit']}</li>
+    </ul>
+    <br>
+    {inventory_html}
+    <h3>🔗 상세 정보 원클릭 검색</h3>
+    <ul>
+        <li><a href="https://search.naver.com/search.naver?query={encoded_name} 기업정보">네이버에서 '{info['clean_name']}' 재무정보 보기</a></li>
+        <li><a href="https://www.saramin.co.kr/zf_user/search/company?searchword={encoded_name}">사람인에서 '{info['clean_name']}' 기업/채용 검색</a></li>
+        <li><a href="https://www.jobkorea.co.kr/Search/?stext={encoded_name}&tabType=corp">잡코리아에서 '{info['clean_name']}' 기업 검색</a></li>
+    </ul>
+    <br>
+    <h3>📝 영업 및 특이사항</h3>
+    <p></p>
+    """
+    safe_note_content = note_content.replace('"', '\\"')
+    script = f"""
     tell application "Notes"
         activate
+        
+        set targetFolderName to "거래처"
+        set noteName to "{safe_client_name}"
+        set noteFound to false
+        set targetAcc to missing value
+        
         repeat with acc in accounts
             try
-                if exists folder "거래처" of acc then
-                    set parentFolder to folder "거래처" of acc
-                    if targetMode is "folder" then
-                        if exists folder noteName of parentFolder then
-                            set sf to folder noteName of parentFolder
-                            if (count of notes of sf) > 0 then
-                                set oneNote to note 1 of sf
-                                show oneNote
-                                return plaintext of oneNote
-                            end if
-                        end if
-                    else if targetMode is "sub" then
-                        if exists folder parentName of parentFolder then
-                            set sf to folder parentName of parentFolder
-                            repeat with oneNote in (notes of sf)
-                                if name of oneNote is noteName then
-                                    show oneNote
-                                    return plaintext of oneNote
-                                end if
-                            end repeat
-                        end if
-                    else
-                        repeat with oneNote in (notes of parentFolder)
-                            if name of oneNote is noteName then
-                                show oneNote
-                                return plaintext of oneNote
-                            end if
-                        end repeat
+                if exists folder targetFolderName of acc then
+                    set parentFolder to folder targetFolderName of acc
+                    set foundNotes to (notes of parentFolder whose name is noteName)
+                    if (count of foundNotes) > 0 then
+                        show (item 1 of foundNotes)
+                        set noteFound to true
+                        exit repeat
                     end if
                 end if
             end try
         end repeat
-    end tell
-    return ""
-end run
-"""
-    try:
-        result = _run_osascript_file(script, [mode, name, parent], timeout=45)
-    except subprocess.TimeoutExpired:
-        return False, "메모 앱 응답 시간 초과.", ""
-    except Exception as e:
-        return False, f"메모 열기 오류: {e}", ""
-    if result.returncode != 0:
-        err = (result.stderr or result.stdout or "").strip()
-        return False, f"메모 열기 실패: {err or '알 수 없는 오류'}.{_macos_notes_auth_hint(err)}", ""
-    body = (result.stdout or "").strip()
-    label = parent + "/" + name if parent else name
-    return True, f"메모「거래처」에서 '{label}' 노트를 열었습니다.", body
-
-
-def open_macos_notes_folder(
-    client_name, dart_api_key, df_integrated=None, address=None
-) -> dict:
-    empty = {
-        "ok": False,
-        "msg": "",
-        "created": False,
-        "matched_name": "",
-        "body": "",
-        "kind": "",
-    }
-    if not client_name or client_name == "전체 거래처":
-        empty["msg"] = "사이드바에서 특정 거래처를 선택한 뒤 다시 시도해 주세요."
-        return empty
-
-    if not _is_local_macos():
-        empty["msg"] = (
-            "macOS 메모 연동은 **맥에서 로컬 실행**할 때만 동작합니다. "
-            "바탕화면의 **dashboard_Local** 바로가기로 실행하세요."
-        )
-        return empty
-
-    items, list_err = list_macos_client_notes()
-    if list_err and not items:
-        empty["msg"] = list_err
-        return empty
-
-    match = match_macos_client_note(client_name, items)
-    if match:
-        ok, msg, body = _show_macos_matched_note(match)
-        return {
-            "ok": ok,
-            "msg": msg,
-            "created": False,
-            "matched_name": str(match.get("name") or ""),
-            "body": body,
-            "kind": str(match.get("kind") or ""),
-        }
-
-    note_content = _build_client_note_html(
-        client_name, dart_api_key, df_integrated=df_integrated, address=address
-    )
-    body_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".html", prefix="dash_note_", delete=False, encoding="utf-8"
-        ) as body_file:
-            body_file.write(note_content.strip())
-            body_path = body_file.name
-
-        applescript = """
-on run argv
-    set bodyPath to item 1 of argv
-    set noteName to item 2 of argv
-    set noteBody to do shell script "cat " & quoted form of bodyPath
-
-    tell application "Notes"
-        activate
-        set targetFolderName to "거래처"
-        set targetAcc to missing value
-
-        repeat with acc in accounts
-            try
-                if exists folder targetFolderName of acc then
-                    set targetAcc to acc
-                    exit repeat
-                end if
-            end try
-        end repeat
-        if targetAcc is missing value then
+        
+        if not noteFound then
             repeat with acc in accounts
                 if name of acc is "iCloud" then
                     set targetAcc to acc
                     exit repeat
                 end if
             end repeat
+            
+            if targetAcc is missing value then
+                set targetAcc to first account
+            end if
+            
+            if not (exists folder targetFolderName of targetAcc) then
+                make new folder at targetAcc with properties {{name:targetFolderName}}
+            end if
+            
+            set parentFolder to folder targetFolderName of targetAcc
+            
+            set newNote to make new note at parentFolder with properties {{body:"{safe_note_content}"}}
+            
+            show newNote
         end if
-        if targetAcc is missing value then set targetAcc to first account
-
-        if not (exists folder targetFolderName of targetAcc) then
-            make new folder at targetAcc with properties {name:targetFolderName}
-        end if
-
-        set parentFolder to folder targetFolderName of targetAcc
-        set newNote to make new note at parentFolder with properties {body:noteBody}
-        show newNote
-        return plaintext of newNote
     end tell
-end run
-"""
-        result = _run_osascript_file(applescript, [body_path, str(client_name)], timeout=45)
-        if result.returncode == 0:
-            st.session_state.pop("_macos_notes_index", None)
-            return {
-                "ok": True,
-                "msg": f"같은 이름의 노트가 없어 '{client_name}' 노트를 새로 만들었습니다.",
-                "created": True,
-                "matched_name": str(client_name),
-                "body": (result.stdout or "").strip(),
-                "kind": "NOTE",
-            }
-        err = (result.stderr or result.stdout or "").strip()
-        empty["msg"] = f"메모 연동 실패: {err or '알 수 없는 오류'}.{_macos_notes_auth_hint(err)}"
-        return empty
-    except subprocess.TimeoutExpired:
-        empty["msg"] = "메모 앱 응답 시간 초과. Notes가 실행 중인지 확인해 주세요."
-        return empty
+    """
+    try:
+        process = subprocess.Popen(['osascript', '-'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate(script.encode('utf-8'))
+        
+        if process.returncode == 0:
+            return True
+        else:
+            return False
     except Exception as e:
-        empty["msg"] = f"메모 연동 오류: {e}"
-        return empty
-    finally:
-        if body_path:
-            try:
-                os.unlink(body_path)
-            except Exception:
-                pass
+        return False
 def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0f"):
     fig = go.Figure()
     sorted_years = sorted(pivot_df.columns, key=lambda x: str(x))
@@ -3915,7 +3570,7 @@ def dedupe_debt_client_gubun(df):
     else:
         out = out.drop_duplicates(subset=["거래처", "구분"], keep="first")
     return out.reset_index(drop=True)
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner="채권 데이터를 읽어오는 중입니다...")
 def load_debt_file(debt_bytes):
     if not debt_bytes:
         return pd.DataFrame()
@@ -4146,15 +3801,15 @@ def _parse_sales_uploaded_tuples(file_tuples):
         except Exception as e:
             st.sidebar.error(f"파일 읽기 오류 ({file_name}): {e}")
     result_df = pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
-    # # 동일 행 중복(연간+월별 복사본 등) 제거 — 매출 2배 집계 방지
-    # if not result_df.empty:
-    #     subset = [
-    #         c
-    #         for c in ("거래처", "품목명", "매출일_dt", "매출액", "출고량", "단가", "담당자")
-    #         if c in result_df.columns
-    #     ]
-    #     if len(subset) >= 4:
-    #         result_df = result_df.drop_duplicates(subset=subset, keep="last")
+    # 동일 행 중복(연간+월별 복사본 등) 제거 — 매출 2배 집계 방지
+    if not result_df.empty:
+        subset = [
+            c
+            for c in ("거래처", "품목명", "매출일_dt", "매출액", "출고량", "단가", "담당자")
+            if c in result_df.columns
+        ]
+        if len(subset) >= 4:
+            result_df = result_df.drop_duplicates(subset=subset, keep="last")
     
     # ★ '미지정' 및 '담당자없음' 데이터 통합 및 최신 담당자 자동 추론 로직
     if not result_df.empty and "거래처" in result_df.columns and "담당자" in result_df.columns:
@@ -4250,139 +3905,6 @@ def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_versio
         except Exception:
             continue
     return _parse_sales_uploaded_tuples(file_tuples)
-
-
-def _dash_pivot_cache_key(
-    selected_client,
-    selected_staff,
-    selected_item,
-    start_date,
-    end_date,
-    sales_meta,
-    manual_token,
-):
-    return (
-        selected_client,
-        tuple(selected_staff or ()),
-        tuple(selected_item or ()),
-        str(start_date),
-        str(end_date),
-        sales_meta,
-        manual_token,
-    )
-
-
-def _dash_compute_pivot_bundle(df_base, df_client_filtered, df_f, full_df, all_months):
-    """필터 조합별 피벗·지표 (세션 캐시용 — 거래처 재선택 시 즉시 복원)."""
-    raw_years = sorted(full_df["연도"].unique()) if "연도" in full_df.columns else ["2026"]
-    years = sorted(raw_years, reverse=True)
-    desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
-    pivot_m_total = cached_get_yearly_monthly_pivot(df_base, all_months, years)
-    client_item_qty_pivot = cached_client_item_qty_pivot(
-        df_client_filtered, years, all_months
-    )
-    sales_p, qty_p, unit_price_p = cached_tab3_pivots(df_f, years, all_months)
-    staff_pivot = cached_staff_pivot(df_base, desired_order)
-    detail_cols = [
-        "매출일_dt",
-        "담당자",
-        "거래처",
-        "품목명",
-        "출고량",
-        "단가",
-        "매출액",
-    ]
-    df_detail = (
-        df_f[detail_cols] if not df_f.empty else pd.DataFrame(columns=detail_cols)
-    )
-    df_total_monthly = df_base.groupby(df_base["매출일_dt"].dt.to_period("M"))[
-        "매출액"
-    ].sum()
-    if not df_total_monthly.empty:
-        latest_period_total = df_total_monthly.index.max()
-        cur_month_sales_total = df_total_monthly.loc[latest_period_total] * 1.1
-        prev_period_total = latest_period_total - 1
-        prev_month_sales_total = df_total_monthly.get(prev_period_total, 0.0) * 1.1
-        mom_rate_total = (
-            (cur_month_sales_total - prev_month_sales_total)
-            / prev_month_sales_total
-            * 100
-            if prev_month_sales_total > 0
-            else 0.0
-        )
-        avg_monthly_sales_total = df_total_monthly.mean() * 1.1
-        avg_rate_total = (
-            (cur_month_sales_total - avg_monthly_sales_total)
-            / avg_monthly_sales_total
-            * 100
-            if avg_monthly_sales_total > 0
-            else 0.0
-        )
-        latest_month_str_total = latest_period_total.strftime("%Y년 %m월")
-    else:
-        cur_month_sales_total = 0.0
-        prev_month_sales_total = 0.0
-        mom_rate_total = 0.0
-        avg_monthly_sales_total = 0.0
-        avg_rate_total = 0.0
-        latest_month_str_total = "-"
-    if not df_client_filtered.empty:
-        df_client_monthly = (
-            df_client_filtered.groupby(
-                df_client_filtered["매출일_dt"].dt.to_period("M")
-            )["매출액"].sum()
-            * 1.1
-        )
-        latest_period_client = df_client_monthly.index.max()
-        cur_month_sales_client = df_client_monthly.loc[latest_period_client]
-        prev_period_client = latest_period_client - 1
-        prev_month_sales_client = df_client_monthly.get(prev_period_client, 0.0)
-        mom_rate_client = (
-            (cur_month_sales_client - prev_month_sales_client)
-            / prev_month_sales_client
-            * 100
-            if prev_month_sales_client > 0
-            else 0.0
-        )
-        avg_monthly_sales_client = df_client_monthly.mean()
-        avg_rate_client = (
-            (cur_month_sales_client - avg_monthly_sales_client)
-            / avg_monthly_sales_client
-            * 100
-            if avg_monthly_sales_client > 0
-            else 0.0
-        )
-        latest_month_str_client = latest_period_client.strftime("%Y년 %m월")
-    else:
-        cur_month_sales_client = 0.0
-        prev_month_sales_client = 0.0
-        mom_rate_client = 0.0
-        avg_monthly_sales_client = 0.0
-        avg_rate_client = 0.0
-        latest_month_str_client = "-"
-    return {
-        "years": years,
-        "desired_order": desired_order,
-        "pivot_m_total": pivot_m_total,
-        "client_item_qty_pivot": client_item_qty_pivot,
-        "sales_p": sales_p,
-        "qty_p": qty_p,
-        "unit_price_p": unit_price_p,
-        "staff_pivot": staff_pivot,
-        "df_detail": df_detail,
-        "cur_month_sales_total": cur_month_sales_total,
-        "prev_month_sales_total": prev_month_sales_total,
-        "mom_rate_total": mom_rate_total,
-        "avg_monthly_sales_total": avg_monthly_sales_total,
-        "avg_rate_total": avg_rate_total,
-        "latest_month_str_total": latest_month_str_total,
-        "cur_month_sales_client": cur_month_sales_client,
-        "prev_month_sales_client": prev_month_sales_client,
-        "mom_rate_client": mom_rate_client,
-        "avg_monthly_sales_client": avg_monthly_sales_client,
-        "avg_rate_client": avg_rate_client,
-        "latest_month_str_client": latest_month_str_client,
-    }
 
 
 # ==========================================
@@ -4866,7 +4388,7 @@ def cached_get_industry_pivot(data_df, industry_name, metric, all_months, years)
     if metric == "매출액 (만원)":
         pvt = df_ind.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
     elif metric == "출고량":
-        pvt = df_ind.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
+        pvt = df_ind.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0)
     elif metric == "총매출 대비 비중 (%)":
         pvt_ind = df_ind.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
         pvt_total = data_df.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
@@ -5245,7 +4767,6 @@ def format_debt_status_label(overdue_amt, overdue_months):
     if overdue_months >= 4:
         return "악성"
     return f"연체 {int(overdue_months)}개월"
-@st.cache_data(show_spinner=False, max_entries=64)
 def apply_debt_style_fast(df, highlight_debt=True, payment_terms_map=None):
     """업체별 교차 구분색(밝음/흐린연한) + 연체 분홍. 금액 히트맵 그라디언트 없음."""
     styles = np.full(df.shape, "", dtype=object)
@@ -5301,7 +4822,6 @@ def apply_debt_style_fast(df, highlight_debt=True, payment_terms_map=None):
             for c in pink_cols:
                 styles[i_sal, c] = apply_pink_cell(styles[i_sal, c], DEBT_PINK_SOFT)
     return pd.DataFrame(styles, index=df.index, columns=df.columns)
-@st.cache_data(show_spinner=False, max_entries=64)
 def compute_debt_status_by_client(disp_debt, payment_terms_map=None):
     """거래처 → 채권구분 라벨 (정상 / 연체 1~3개월 / 악성)."""
     terms_map = payment_terms_map or {}
@@ -5332,26 +4852,26 @@ def compute_debt_status_by_client(disp_debt, payment_terms_map=None):
         out[client] = format_debt_status_label(overdue, od_m)
     return out
 def _debt_label_cell_style(client, gubun, color_map, compact=False):
-    """채권표 거래처/구분 — 가독성 우선(14px·선명 대비)."""
-    pad = "5px 5px" if compact else "7px 9px"
+    """거래처분석 탭과 동일 계열: 13px / weight 400 · 중간정렬."""
+    pad = "4px 4px" if compact else "6px 8px"
     base = (
-        f"padding:{pad};border-bottom:1px solid #CBD5E1;white-space:nowrap;"
-        "font-size:14px;font-weight:500;line-height:1.45;vertical-align:middle;"
+        f"padding:{pad};border-bottom:1px solid #E2E8F0;white-space:nowrap;"
+        "font-size:13px;font-weight:400;line-height:1.4;vertical-align:middle;"
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        "overflow:hidden;text-overflow:ellipsis;color:#0F172A;"
+        "overflow:hidden;text-overflow:ellipsis;color:#31333F;"
     )
     if client == "📌 [전체 합계]":
-        return base + "background-color:#E2E8F0;font-weight:700;text-align:center;"
+        return base + "background-color:#E2E8F0;font-weight:600;text-align:center;"
     bg = color_map.get(client, "#FFFFFF")
     return base + f"background-color:{bg};text-align:center;"
 def _debt_num_cell_font(compact=False):
-    """채권표 숫자 — 거래처명보다 한 단계 작게, 대비 강화."""
-    pad = "5px 5px" if compact else "7px 9px"
+    """숫자만 거래처명(13px)보다 한 단계 작게."""
+    pad = "4px 4px" if compact else "6px 8px"
     return (
-        f"padding:{pad};border-bottom:1px solid #CBD5E1;white-space:nowrap;"
-        "font-size:13px;font-weight:500;line-height:1.45;vertical-align:middle;text-align:center;"
+        f"padding:{pad};border-bottom:1px solid #E2E8F0;white-space:nowrap;"
+        "font-size:12px;font-weight:400;line-height:1.4;vertical-align:middle;text-align:center;"
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        "font-variant-numeric:tabular-nums;color:#0F172A;"
+        "font-variant-numeric:tabular-nums;color:#31333F;"
     )
 PAYMENT_TERMS_PATH = os.path.join(CACHE_DIR, "payment_terms.csv")
 PAYMENT_TERMS_FALLBACK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "payment_terms.csv")
@@ -6245,7 +5765,6 @@ def compute_debt_status_from_raw(debt_df, month_cols, payment_terms_map=None):
     """원본 채권 df → 거래처별 연체 라벨 (정상 포함)."""
     meta = compute_debt_od_meta_from_raw(debt_df, month_cols, payment_terms_map)
     return {c: v["label"] for c, v in meta.items()}
-@st.cache_data(show_spinner=False, max_entries=32)
 def compute_debt_od_meta_from_raw(debt_df, month_cols, payment_terms_map=None):
     """거래처 → {label, months, overdue_amt, pink_months, od_month_amts, cur_bal}."""
     terms_map = payment_terms_map or {}
@@ -6305,13 +5824,10 @@ def _debt_od_filter_categories(status_map):
         if lab not in ordered:
             ordered.append(lab)
     return ordered
-@st.fragment
 def render_debt_month_rank_panel(
     debt_df, month_cols, payment_terms_map=None, height=480, status_month_cols=None
 ):
-    """화면 절반: 연체업체만 · 연체개월수 다중필터 · 채권액 내림차순.
-    fragment: 연체 토글은 전체 앱 rerun 없이 패널만 갱신(거래처 원복 로딩과 분리).
-    """
+    """화면 절반: 연체업체만 · 연체개월수 다중필터 · 채권액 내림차순."""
     terms_map = payment_terms_map or {}
     mat = build_debt_client_balance_matrix(debt_df, month_cols)
     if mat.empty:
@@ -6338,14 +5854,11 @@ def render_debt_month_rank_panel(
         st.session_state["debt_od_filters"] = list(filter_cats)
     else:
         kept = [x for x in st.session_state["debt_od_filters"] if x in filter_cats]
-        _next = kept if kept else list(filter_cats)
-        # 값 변경 시에만 기록 — 거래처 원복 rerun마다 session 쓰기로 추가 로딩 방지
-        if list(st.session_state.get("debt_od_filters") or []) != _next:
-            st.session_state["debt_od_filters"] = _next
+        st.session_state["debt_od_filters"] = kept if kept else list(filter_cats)
     st.markdown(
-        "<div style='font-size:15px;font-weight:700;color:#1E293B;margin:18px 0 8px;'>"
+        "<div style='font-size:14px;font-weight:600;color:#334155;margin:18px 0 8px;'>"
         "📊 연체개월수 기준 채권 현황 <span style='font-size:12px;font-weight:500;color:#64748B;'>"
-        "(거래처 선택 무시·담당자 필터 · 정상 제외 · 연체개월 다중선택)</span></div>",
+        "(거래처 선택 무시·전체 · 담당자 필터 적용 · 정상 제외 · 연체개월 다중선택 · 화면 절반)</span></div>",
         unsafe_allow_html=True,
     )
     # 연체개월수 / 악성 다중 토글 (아담한 버튼 — 이 컨테이너에만 compact CSS)
@@ -6368,10 +5881,7 @@ def render_debt_month_rank_panel(
                         cur.append(cat)
                         cur = [x for x in filter_cats if x in cur]
                     st.session_state["debt_od_filters"] = cur
-                    try:
-                        st.rerun(scope="fragment")
-                    except TypeError:
-                        st.rerun()
+                    st.rerun()
     selected = st.session_state["debt_od_filters"]
     mat_f = mat.loc[[c for c in mat.index if status_map.get(c) in selected]]
     if mat_f.empty:
@@ -6583,8 +6093,8 @@ def render_update_badge(date_str):
     return f"<div style='text-align: right; margin-top: 0;'><span style='background-color: #FFFFFF; color: #475569; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 1px solid #CBD5E1; box-shadow: 0 1px 2px rgba(0,0,0,0.05);'>⏱️ 데이터 업데이트: {date_str}</span></div>"
 def inject_sticky_tabs_script():
     """필터+탭 상단 fixed.
-    - 맥: 현재 안정 코드 100% 무손실 유지 (양식 깨짐 절대 없음)
-    - iPad: 필터/검색창 터치 시 키보드를 강제로 내리거나 입력을 방해하던 스크롤 고정 족쇄 제거 패치
+    - 맥: 현재 안정 코드 무손실 유지
+    - iPad: 0804-최종 DOM 해킹 (fixed + 3.65rem + spacer + RAF)
     """
     components.html(
         """
@@ -6594,8 +6104,6 @@ def inject_sticky_tabs_script():
             var parentWin = window.parent;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 12; 
-            var STICKY_SCRIPT_VER_IPAD = 37; /* iPad: 검색창 방해 스크롤/포커스 족쇄 제거 */
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -6604,89 +6112,15 @@ def inject_sticky_tabs_script():
                 var ipadOs = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
                 return ios || ipadOs;
             }
-            function ipadInjectTabHScrollCss() {
-                var id = 'dashboard-ipad-tab-hscroll';
-                var s = parentDoc.getElementById(id);
-                if (!s) {
-                    s = parentDoc.createElement('style');
-                    s.id = id;
-                    (parentDoc.head || parentDoc.documentElement).appendChild(s);
-                }
-                s.textContent = (
-                    '#dashboard-ipad-h-tabs{display:block!important;overflow-x:auto!important;overflow-y:hidden!important;'
-                    + 'white-space:nowrap!important;width:100%!important;max-width:100%!important;height:46px!important;'
-                    + 'max-height:46px!important;-webkit-overflow-scrolling:touch!important;'
-                    + 'border-top:1px solid #E2E8F0!important;background:#fff!important;}'
-                    + '#dashboard-ipad-h-tabs button{display:inline-block!important;white-space:nowrap!important;'
-                    + 'width:auto!important;height:46px!important;padding:0 12px!important;margin:0!important;'
-                    + 'border:0!important;border-bottom:2px solid transparent!important;background:#fff!important;'
-                    + 'font-size:13px!important;font-weight:700!important;color:#1E293B!important;vertical-align:top!important;}'
-                    + '#dashboard-ipad-h-tabs button.dashboard-ipad-tab-on{color:#2563EB!important;border-bottom-color:#2563EB!important;}'
-                    + '.dashboard-ipad-hide-tabs{display:none!important;height:0!important;max-height:0!important;'
-                    + 'overflow:hidden!important;visibility:hidden!important;}'
-                );
-            }
-            function ipadPatchScrollIntoView() {
-                if (parentWin.__dashboardIpadSivPatched) return;
-                parentWin.__dashboardIpadSivPatched = true;
+            /* iPad: 필터 rerun iframe 재삽입 시 기존 sticky 루프 유지 (끊고 재기동 금지) */
+            if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady) {
                 try {
-                    var proto = parentWin.Element.prototype;
-                    var orig = proto.scrollIntoView;
-                    proto.scrollIntoView = function () {
-                        try {
-                            if (this && this.closest && (
-                                this.closest('[role="tab"]') ||
-                                this.closest('[role="tablist"]') ||
-                                this.closest('[data-testid="stTab"]') ||
-                                this.closest('[data-testid="stTabs"]') ||
-                                this.closest('#dashboard-ipad-h-tabs') ||
-                                this.closest('.dashboard-filter-sticky')
-                            )) return;
-                        } catch (eSiv) {}
-                        return orig.apply(this, arguments);
-                    };
-                } catch (eP) {}
-            }
-            function ipadFreezeLayout() {
-                parentWin.__dashboardIpadFreezeLayout = true;
-                try {
-                    if (parentWin.__dashboardStickyTouchInterval) {
-                        clearInterval(parentWin.__dashboardStickyTouchInterval);
-                        parentWin.__dashboardStickyTouchInterval = null;
+                    if (typeof parentWin.__dashboardIpadScheduleSync === 'function') {
+                        parentWin.__dashboardIpadScheduleSync(80);
+                        parentWin.__dashboardIpadScheduleSync(250);
+                        parentWin.__dashboardIpadScheduleSync(600);
                     }
-                    if (parentWin.__dashboardStickyBootInterval) {
-                        clearInterval(parentWin.__dashboardStickyBootInterval);
-                        parentWin.__dashboardStickyBootInterval = null;
-                    }
-                } catch (eFz) {}
-            }
-            function ipadInstallScrollGuard() {
-                if (parentWin.__dashboardIpadScrollGuard) return;
-                parentWin.__dashboardIpadScrollGuard = true;
-                
-                /* [중요 패치 1] iOS 가상 키보드가 올라올 때 화면을 억지로 위로 당겨버려서 
-                   드롭다운을 강제 종료시키던 과도한 스크롤 방어 로직 완전 무력화 */
-                return;
-            }
-            if (isTouchPadEarly()) {
-                try { ipadInjectTabHScrollCss(); } catch (eCss) {}
-                try { ipadPatchScrollIntoView(); } catch (eSiv2) {}
-                try { ipadInstallScrollGuard(); } catch (eSg) {}
-            }
-            if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady === STICKY_SCRIPT_VER_IPAD) {
-                try {
-                    if (typeof parentWin.__dashboardIpadPin === 'function') {
-                        parentWin.__dashboardIpadPin();
-                    }
-                } catch (ePin) {}
-                return;
-            }
-            if (!isTouchPadEarly() && parentWin.__dashboardStickyMacReady === STICKY_SCRIPT_VER_MAC) {
-                try {
-                    if (typeof parentWin.__dashboardFixDuplicateTabs === 'function') {
-                        parentWin.__dashboardFixDuplicateTabs(false);
-                    }
-                } catch (eMacSkip) {}
+                } catch (eSkip) {}
                 return;
             }
             if (parentWin.__dashboardStickyObserver) {
@@ -6726,39 +6160,14 @@ def inject_sticky_tabs_script():
                 var block = parentDoc.querySelector('section.main .block-container');
                 return block ? block.getBoundingClientRect() : null;
             }
-            function isMainTabList(el) {
-                if (!el || !el.textContent) return false;
-                return el.textContent.indexOf('📌 영업 종합 요약') !== -1;
-            }
-            function findMainTabsHost() {
-                var hosts = parentDoc.querySelectorAll('div[data-testid="stTabs"]');
-                for (var i = 0; i < hosts.length; i++) {
-                    if (hosts[i].querySelector('[role="tabpanel"]')) return hosts[i];
-                    if (hosts[i].textContent.indexOf('📌 영업 종합 요약') !== -1) return hosts[i];
+            function findMainTabList() {
+                var lists = parentDoc.querySelectorAll('div[role="tablist"]');
+                for (var i = 0; i < lists.length; i++) {
+                    if (lists[i].textContent.indexOf('📌 영업 종합 요약') !== -1) {
+                        return lists[i];
+                    }
                 }
                 return null;
-            }
-            function findMainTabList() {
-                var hosts = parentDoc.querySelectorAll('div[data-testid="stTabs"]');
-                var i, lists, j, el;
-                for (i = 0; i < hosts.length; i++) {
-                    lists = hosts[i].querySelectorAll('div[role="tablist"]');
-                    for (j = 0; j < lists.length; j++) {
-                        if (isMainTabList(lists[j])) return lists[j];
-                    }
-                }
-                lists = parentDoc.querySelectorAll('div[role="tablist"]');
-                var inFilter = null;
-                for (i = 0; i < lists.length; i++) {
-                    el = lists[i];
-                    if (!isMainTabList(el)) continue;
-                    if (el.closest('.dashboard-filter-sticky')) {
-                        inFilter = inFilter || el;
-                        continue;
-                    }
-                    return el;
-                }
-                return inFilter;
             }
             function findFilterBox() {
                 var marker = parentDoc.getElementById('sticky-marker');
@@ -6766,172 +6175,21 @@ def inject_sticky_tabs_script():
                 return marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') ||
                        marker.closest('div[data-testid="stVerticalBlock"]');
             }
-            function collectMainTabLists() {
-                var out = [];
-                var lists = parentDoc.querySelectorAll('div[role="tablist"]');
-                for (var i = 0; i < lists.length; i++) {
-                    if (isMainTabList(lists[i])) out.push(lists[i]);
+            function findMainTabsHost() {
+                var hosts = parentDoc.querySelectorAll('div[data-testid="stTabs"]');
+                for (var i = 0; i < hosts.length; i++) {
+                    /* lazy tabs: 패널이 아직 없어도 메인 탭호스트 인식 */
+                    if (hosts[i].querySelector('[role="tabpanel"]')) return hosts[i];
+                    if (hosts[i].textContent.indexOf('📌 영업 종합 요약') !== -1) return hosts[i];
                 }
-                return out;
-            }
-            function hideOrphanTabList(el) {
-                if (!el) return;
-                try {
-                    el.setAttribute('data-dashboard-orphan-tabs', '1');
-                    el.classList.remove('dashboard-tabs-in-filter');
-                    el.style.setProperty('display', 'none', 'important');
-                    el.style.setProperty('visibility', 'hidden', 'important');
-                    el.style.setProperty('height', '0', 'important');
-                    el.style.setProperty('max-height', '0', 'important');
-                    el.style.setProperty('overflow', 'hidden', 'important');
-                    el.style.setProperty('pointer-events', 'none', 'important');
-                    el.style.setProperty('margin', '0', 'important');
-                    el.style.setProperty('padding', '0', 'important');
-                } catch (eH) {}
-            }
-            function hideStaleTabListsInHost(tabsHost, keepList) {
-                if (!tabsHost) return;
-                Array.from(tabsHost.children).forEach(function(child) {
-                    if (containsTabPanel(child)) return;
-                    if (keepList && (child === keepList || child.contains(keepList))) return;
-                    child.classList.add('dashboard-tabs-list-shell');
-                    child.style.setProperty('display', 'none', 'important');
-                    child.style.setProperty('height', '0', 'important');
-                    child.style.setProperty('overflow', 'hidden', 'important');
-                    child.style.setProperty('visibility', 'hidden', 'important');
-                    child.style.setProperty('pointer-events', 'none', 'important');
-                });
-                var left = tabsHost.querySelectorAll('div[role="tablist"]');
-                for (var k = 0; k < left.length; k++) {
-                    if (keepList && left[k] === keepList) continue;
-                    if (!isMainTabList(left[k])) continue;
-                    hideOrphanTabList(left[k]);
-                }
-            }
-            function purgeOrphanTabLists(filterBox, keepList) {
-                if (!filterBox) return;
-                var lists = filterBox.querySelectorAll('div[role="tablist"]');
-                for (var i = 0; i < lists.length; i++) {
-                    if (keepList && lists[i] === keepList) continue;
-                    if (!isMainTabList(lists[i])) continue;
-                    try { lists[i].remove(); } catch (eRm) {
-                        hideOrphanTabList(lists[i]);
-                    }
-                }
-            }
-            function isTabMountHealthy(filterBox, all) {
-                if (!filterBox || !all || all.length !== 1) return false;
-                var t = all[0];
-                return !!(filterBox.contains(t) && t.classList.contains('dashboard-tabs-in-filter'));
-            }
-            function fixDuplicateMainTabs(forceMove) {
-                var filterBox = findFilterBox();
-                var host = findMainTabsHost();
-                var all = collectMainTabLists();
-                if (!all.length) return false;
-                if (!forceMove && isTabMountHealthy(filterBox, all)) {
-                    parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
-                    return true;
-                }
-                var keep = null;
-                var i;
-                if (host) {
-                    for (i = 0; i < all.length; i++) {
-                        if (host.contains(all[i])) { keep = all[i]; break; }
-                    }
-                }
-                if (!keep) {
-                    for (i = 0; i < all.length; i++) {
-                        if (!all[i].closest('.dashboard-filter-sticky')) { keep = all[i]; break; }
-                    }
-                }
-                if (!keep) keep = all[all.length - 1];
-                for (i = 0; i < all.length; i++) {
-                    if (all[i] === keep) continue;
-                    try { all[i].remove(); } catch (eRm2) {
-                        hideOrphanTabList(all[i]);
-                    }
-                }
-                if (host) {
-                    host.classList.add('dashboard-tabs-host-compact');
-                    hideStaleTabListsInHost(host, keep);
-                }
-                var canMove = !!filterBox && (!isFilterDropdownOpen() || forceMove || all.length > 1);
-                if (canMove) {
-                    filterBox.classList.add('dashboard-filter-sticky');
-                    if (touchMode) filterBox.classList.add('dashboard-filter-sticky-touch');
-                    try {
-                        var stuck = keep.closest('.dashboard-tabs-list-shell');
-                        if (stuck && !filterBox.contains(keep)) {
-                            stuck.style.removeProperty('display');
-                            stuck.style.display = '';
-                            stuck.style.removeProperty('visibility');
-                            stuck.style.removeProperty('pointer-events');
-                        }
-                    } catch (eUh) {}
-                    purgeOrphanTabLists(filterBox, keep);
-                    if (!filterBox.contains(keep)) {
-                        try { filterBox.appendChild(keep); } catch (eAp) {}
-                    }
-                    keep.classList.add('dashboard-tabs-in-filter');
-                    keep.removeAttribute('data-dashboard-orphan-tabs');
-                    keep.style.removeProperty('display');
-                    keep.style.removeProperty('height');
-                    keep.style.removeProperty('max-height');
-                    keep.style.removeProperty('overflow');
-                    keep.style.setProperty('visibility', 'visible', 'important');
-                    keep.style.setProperty('pointer-events', 'auto', 'important');
-                    if (touchMode) {
-                        try { ipadScrollTabs(filterBox); } catch (eSc) {}
-                    }
-                    if (host) hideStaleTabListsInHost(host, keep);
-                } else if (filterBox && filterBox.contains(keep)) {
-                    keep.classList.add('dashboard-tabs-in-filter');
-                    keep.removeAttribute('data-dashboard-orphan-tabs');
-                } else if (!filterBox || !filterBox.contains(keep)) {
-                    keep.classList.remove('dashboard-tabs-in-filter');
-                    keep.removeAttribute('data-dashboard-orphan-tabs');
-                    keep.style.removeProperty('display');
-                    keep.style.setProperty('visibility', 'visible', 'important');
-                    keep.style.setProperty('pointer-events', 'auto', 'important');
-                }
-                parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
-                return true;
-            }
-            function remountLiveTabList(filterBox, tabList) {
-                if (!filterBox || !tabList) return false;
-                var mains = collectMainTabLists();
-                if (mains.length > 1) {
-                    return fixDuplicateMainTabs(true);
-                }
-                if (isTabMountHealthy(filterBox, mains)) {
-                    return true;
-                }
-                if (isFilterDropdownOpen()) {
-                    fixDuplicateMainTabs(false);
-                    return false;
-                }
-                return fixDuplicateMainTabs(true);
+                return null;
             }
             function containsTabPanel(el) {
                 if (!el || el.nodeType !== 1) return false;
                 if (el.getAttribute && el.getAttribute('role') === 'tabpanel') return true;
                 return !!(el.querySelector && el.querySelector('[role="tabpanel"]'));
             }
-            function isFilterInteracting() {
-                try {
-                    if (isFilterDropdownOpen()) return true;
-                    var ae = parentDoc.activeElement;
-                    if (!ae || !ae.closest) return false;
-                    return !!(ae.closest('[data-testid="stMultiSelect"]') ||
-                        ae.closest('[data-testid="stSelectbox"]') ||
-                        ae.closest('[data-baseweb="select"]') ||
-                        ae.closest('[data-baseweb="popover"]') ||
-                        ae.closest('[data-baseweb="menu"]'));
-                } catch (eFi) {
-                    return false;
-                }
-            }
+            /* 닫힌 BaseWeb 포털·숨은 listbox는 무시 (담당자 지정 후 탭 미복구 원인) */
             function isFilterDropdownOpen() {
                 function visible(el) {
                     if (!el) return false;
@@ -6943,9 +6201,7 @@ def inject_sticky_tabs_script():
                 }
                 try {
                     var nodes = parentDoc.querySelectorAll(
-                        '[data-baseweb="popover"], [data-baseweb="menu"], [data-baseweb="layer"], '
-                        + '[data-baseweb="select"] [role="listbox"], ul[role="listbox"], '
-                        + '[data-testid="stSelectboxVirtualDropdown"]'
+                        '[data-baseweb="popover"], [data-baseweb="menu"], [data-baseweb="select"] [role="listbox"], ul[role="listbox"]'
                     );
                     for (var i = 0; i < nodes.length; i++) {
                         if (visible(nodes[i])) return true;
@@ -6982,10 +6238,44 @@ def inject_sticky_tabs_script():
                 shield.style.setProperty('pointer-events', 'none', 'important');
             }
             function mountTabs(filterBox, tabList) {
-                return remountLiveTabList(filterBox, tabList);
+                if (!filterBox || !tabList) return false;
+                /* 드롭다운이 실제로 열려 있을 때만 보류 — 숨은 listbox 때문에 영구 스킵 금지 */
+                if (isFilterDropdownOpen()) return false;
+                filterBox.classList.add('dashboard-filter-sticky');
+                if (touchMode) {
+                    filterBox.classList.add('dashboard-filter-sticky-touch');
+                } else {
+                    filterBox.classList.remove('dashboard-filter-sticky-touch');
+                }
+                /* rerun 후 탭리스트가 display:none 셸에 갇히면 먼저 풀어 준 뒤 필터바로 이동 */
+                try {
+                    var stuck = tabList.closest('.dashboard-tabs-list-shell');
+                    if (stuck && !filterBox.contains(tabList)) {
+                        stuck.style.removeProperty('display');
+                        stuck.style.setProperty('display', '', 'important');
+                        stuck.style.display = '';
+                    }
+                } catch (eUnhide) {}
+                if (!filterBox.contains(tabList)) {
+                    filterBox.appendChild(tabList);
+                }
+                tabList.classList.add('dashboard-tabs-in-filter');
+                tabList.style.removeProperty('display');
+                tabList.style.setProperty('display', '', 'important');
+                var tabsHost = findMainTabsHost();
+                if (tabsHost) {
+                    tabsHost.classList.add('dashboard-tabs-host-compact');
+                    Array.from(tabsHost.children).forEach(function(child) {
+                        if (!containsTabPanel(child) && !child.contains(tabList) && child !== tabList) {
+                            child.classList.add('dashboard-tabs-list-shell');
+                            child.style.setProperty('display', 'none', 'important');
+                            child.style.setProperty('height', '0', 'important');
+                        }
+                    });
+                }
+                return true;
             }
-            
-            /* ===== iPad 전용 로직 ===== */
+            /* ===== iPad: 0804-최종 해킹 ===== */
             function isSidebarOpen() {
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (!sidebar) return false;
@@ -7006,273 +6296,128 @@ def inject_sticky_tabs_script():
                 }
                 portal.remove();
             }
-            function lockIpadFilter(ms) {
-                parentWin.__dashboardIpadFilterLockUntil = Date.now() + (ms || 10000);
-            }
-            function markIpadScrolling() {
-                parentWin.__dashboardIpadScrollLockUntil = Date.now() + 1500;
-            }
-            function isIpadFilterLocked() {
-                try {
-                    if (Date.now() < (parentWin.__dashboardIpadScrollLockUntil || 0)) return true;
-                    if (Date.now() < (parentWin.__dashboardIpadFilterLockUntil || 0)) return true;
-                    return isFilterInteracting();
-                } catch (eLk) {
-                    return false;
-                }
-            }
             function applyIpad0804Hack() {
-                if (parentWin.__dashboardIpadFreezeLayout) return;
-                if (isIpadFilterLocked()) return;
                 cleanupIpadPortal();
-                var dropOpen = false;
-                try { dropOpen = isFilterDropdownOpen(); } catch (eDo) {}
-                if (!dropOpen) {
-                    try { fixDuplicateMainTabs(collectMainTabLists().length > 1); } catch (eDup) {}
-                }
-                var targetBox = findFilterBox();
-                if (!targetBox) return;
-                if (!dropOpen) {
-                    var tabList = findMainTabList();
-                    if (!tabList) return;
-                    if (!remountLiveTabList(targetBox, tabList)) return;
-                    tabList.style.setProperty('padding', '0 10px 0px 10px', 'important');
-                    tabList.style.setProperty('margin-top', '5px', 'important');
-                    tabList.style.setProperty('border-bottom', 'none', 'important');
-                    tabList.style.setProperty('background-color', 'transparent', 'important');
-                    tabList.style.setProperty('pointer-events', 'auto', 'important');
-                }
-                ipadApplyBoxStyles(targetBox);
-            }
-            function ipadScrollTabs(box) {
-                if (!box) return;
-                try { ipadInjectTabHScrollCss(); } catch (eCss2) {}
-                var list = null;
-                var lists = box.querySelectorAll('[role="tablist"], [data-baseweb="tab-list"]');
-                var i;
-                for (i = 0; i < lists.length; i++) {
-                    if (isMainTabList(lists[i])) { list = lists[i]; break; }
-                }
-                if (!list) list = findMainTabList();
-                if (!list) {
-                    var oneTab = parentDoc.querySelector('[data-testid="stTab"]');
-                    if (oneTab) list = oneTab.parentElement;
-                }
-                if (!list) return;
-                var origTabs = list.querySelectorAll('[data-testid="stTab"], [role="tab"]');
-                if (!origTabs.length) return;
-                var bar = parentDoc.getElementById('dashboard-ipad-h-tabs');
-                if (!bar) {
-                    bar = parentDoc.createElement('div');
-                    bar.id = 'dashboard-ipad-h-tabs';
-                }
-                if (bar.parentNode !== box) {
-                    box.appendChild(bar);
-                }
-                var labels = [];
-                for (i = 0; i < origTabs.length; i++) {
-                    labels.push((origTabs[i].textContent || '').replace(/\\s+/g, ' ').trim());
-                }
-                var sig = labels.join('|');
-                if (bar.getAttribute('data-sig') !== sig || bar.childNodes.length !== origTabs.length) {
-                    bar.setAttribute('data-sig', sig);
-                    bar.innerHTML = '';
-                    for (i = 0; i < origTabs.length; i++) {
-                        (function (orig, label) {
-                            var b = parentDoc.createElement('button');
-                            b.type = 'button';
-                            b.textContent = label;
-                            
-                            b.addEventListener('click', function (ev) {
-                                ev.preventDefault();
-                                var siblings = bar.querySelectorAll('button');
-                                for(var k = 0; k < siblings.length; k++) {
-                                    siblings[k].classList.remove('dashboard-ipad-tab-on');
-                                }
-                                b.classList.add('dashboard-ipad-tab-on');
-                                try { orig.click(); } catch (eCl) {}
-                            });
-                            bar.appendChild(b);
-                        })(origTabs[i], labels[i]);
-                    }
-                }
-                var btns = bar.querySelectorAll('button');
-                for (i = 0; i < origTabs.length && i < btns.length; i++) {
-                    var on = origTabs[i].getAttribute('aria-selected') === 'true'
-                        || origTabs[i].hasAttribute('data-selected')
-                        || origTabs[i].getAttribute('data-selected') === 'true';
-                    if (on) btns[i].classList.add('dashboard-ipad-tab-on');
-                    else btns[i].classList.remove('dashboard-ipad-tab-on');
-                }
-                list.classList.add('dashboard-ipad-hide-tabs');
-                list.style.setProperty('display', 'none', 'important');
-                list.style.setProperty('height', '0', 'important');
-                list.style.setProperty('max-height', '0', 'important');
-                list.style.setProperty('overflow', 'hidden', 'important');
-            }
-            function ipadApplyBoxStyles(targetBox) {
-                if (!targetBox) return;
-                if (parentWin.__dashboardIpadFreezeLayout && targetBox.style.position === 'fixed') return;
                 if (isFilterDropdownOpen()) return;
-                ipadScrollTabs(targetBox);
+                var marker = parentDoc.getElementById('sticky-marker');
+                if (!marker) return;
+                var targetBox = marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') ||
+                                marker.closest('div[data-testid="stVerticalBlock"]');
+                if (!targetBox) return;
+                var tabList = findMainTabList();
+                var stTabs = findMainTabsHost();
+                var tabHeader = tabList || (stTabs ? stTabs.querySelector('div:first-child') : null);
+                if (!tabHeader) return;
+                try {
+                    var stuckI = tabHeader.closest('.dashboard-tabs-list-shell');
+                    if (stuckI && !targetBox.contains(tabHeader)) {
+                        stuckI.style.removeProperty('display');
+                        stuckI.style.display = '';
+                    }
+                } catch (eUh) {}
+                if (!targetBox.contains(tabHeader)) {
+                    targetBox.appendChild(tabHeader);
+                }
                 targetBox.classList.add('dashboard-filter-sticky');
                 targetBox.classList.add('dashboard-filter-sticky-touch');
-                var header = parentDoc.querySelector('[data-testid="stHeader"]');
-                var topPx = 40;
-                if (header) {
-                    var hb = header.getBoundingClientRect().bottom;
-                    if (hb > 20) topPx = Math.round(hb);
+                tabHeader.classList.add('dashboard-tabs-in-filter');
+                tabHeader.style.removeProperty('display');
+                if (stTabs) {
+                    stTabs.classList.add('dashboard-tabs-host-compact');
+                    Array.from(stTabs.children).forEach(function(child) {
+                        if (!containsTabPanel(child) && !child.contains(tabHeader) && child !== tabHeader) {
+                            child.classList.add('dashboard-tabs-list-shell');
+                            child.style.setProperty('display', 'none', 'important');
+                            child.style.setProperty('height', '0', 'important');
+                        }
+                    });
                 }
+                /* iPad: Share/메뉴·≫ 버튼 아래 + 상단 파란선이 보이도록 내림 */
+                var open = isSidebarOpen();
                 targetBox.style.setProperty('position', 'fixed', 'important');
-                targetBox.style.setProperty('top', topPx + 'px', 'important');
-                targetBox.style.setProperty('left', '8px', 'important');
-                targetBox.style.setProperty('right', '8px', 'important');
-                targetBox.style.setProperty('width', 'auto', 'important');
-                targetBox.style.setProperty('max-width', 'calc(100vw - 16px)', 'important');
-                targetBox.style.setProperty('z-index', '999999', 'important');
-                targetBox.style.setProperty('height', 'auto', 'important');
-                targetBox.style.setProperty('max-height', 'none', 'important');
-                targetBox.style.setProperty('overflow', 'visible', 'important');
-                
-                targetBox.style.setProperty('-webkit-transform', 'translate3d(0, 0, 0)', 'important');
-                targetBox.style.setProperty('transform', 'translate3d(0, 0, 0)', 'important');
-                
+                targetBox.style.setProperty('top', '3.65rem', 'important');
+                targetBox.style.setProperty('z-index', open ? '1' : '999999', 'important');
+                targetBox.style.setProperty('background-color', '#FFFFFF', 'important');
+                targetBox.style.setProperty('border', '2px solid #2563EB', 'important');
+                targetBox.style.setProperty('border-top', '3px solid #2563EB', 'important');
+                targetBox.style.setProperty('border-radius', '0 0 8px 8px', 'important');
+                targetBox.style.setProperty('padding', '8px 10px 0px 10px', 'important');
+                targetBox.style.setProperty('margin-top', '0', 'important');
+                targetBox.style.setProperty('box-shadow', '0 8px 14px -4px rgba(37, 99, 235, 0.18)', 'important');
+                targetBox.style.setProperty('-webkit-transform', 'none', 'important');
+                targetBox.style.setProperty('transform', 'none', 'important');
+                tabHeader.style.setProperty('padding', '0 10px 0px 10px', 'important');
+                tabHeader.style.setProperty('margin-top', '5px', 'important');
+                tabHeader.style.setProperty('border-bottom', 'none', 'important');
+                tabHeader.style.setProperty('background-color', 'transparent', 'important');
                 var spacer = parentDoc.getElementById(SPACER_ID);
                 if (!spacer) {
                     spacer = parentDoc.createElement('div');
                     spacer.id = SPACER_ID;
-                    if (targetBox.parentNode) targetBox.parentNode.insertBefore(spacer, targetBox);
                 }
-                var barH = Math.round(targetBox.offsetHeight || 160);
-                var y = parentWin.pageYOffset || parentDoc.documentElement.scrollTop || 0;
-                if (y < 24) {
-                    try {
-                        var pinH = Math.round(targetBox.getBoundingClientRect().bottom - spacer.getBoundingClientRect().top);
-                        if (pinH >= 8 && pinH <= 280) barH = pinH;
-                    } catch (ePinH) {}
+                if (spacer.parentNode !== targetBox.parentNode || spacer.nextElementSibling !== targetBox) {
+                    targetBox.parentNode.insertBefore(spacer, targetBox);
                 }
-                spacer.style.setProperty('display', 'block', 'important');
-                spacer.style.setProperty('height', barH + 'px', 'important');
-                spacer.style.setProperty('min-height', '0', 'important');
-                spacer.style.setProperty('margin', '0', 'important');
-                parentDoc.documentElement.style.setProperty('--dashboard-fixed-bar-height', barH + 'px');
+                spacer.style.height = targetBox.offsetHeight + 'px';
+                spacer.style.width = '100%';
+                spacer.style.marginBottom = '12px';
+                spacer.style.display = 'block';
                 parentWin.__dashboardIpadTarget = targetBox;
                 parentWin.__dashboardIpadSpacer = spacer;
-                ipadFreezeLayout();
             }
-            function ipadPinFilterBox() {
-                var box = findFilterBox();
-                if (!box) return;
-                if (box.style.position === 'fixed' && parentWin.__dashboardIpadFreezeLayout) return;
-                if (isFilterDropdownOpen()) return;
-                parentWin.__dashboardIpadFreezeLayout = false;
-                try { fixDuplicateMainTabs(false); } catch (eDup2) {}
-                ipadApplyBoxStyles(box);
-            }
-            parentWin.__dashboardIpadPin = ipadPinFilterBox;
-            
             function syncIpadWidthLoop() {
-                if (!parentWin.__dashboardIpadFreezeLayout) {
-                    var targetBox = parentWin.__dashboardIpadTarget || findFilterBox();
-                    var spacer = parentWin.__dashboardIpadSpacer || parentDoc.getElementById(SPACER_ID);
-                    
-                    if (targetBox && spacer && parentDoc.body.contains(spacer)) {
-                        var currentHeight = Math.round(targetBox.getBoundingClientRect().height);
-                        if (currentHeight > 0) {
-                            spacer.style.setProperty('height', currentHeight + 'px', 'important');
-                            parentDoc.documentElement.style.setProperty('--dashboard-fixed-bar-height', currentHeight + 'px');
-                        }
-                    }
-                    
-                    var now = Date.now();
-                    if (!parentWin.__dashboardIpadLastWidthSync || now - parentWin.__dashboardIpadLastWidthSync >= 800) {
-                        parentWin.__dashboardIpadLastWidthSync = now;
-                        if (!isIpadFilterLocked()) {
-                            if (!targetBox || !parentDoc.body.contains(targetBox)) {
-                                applyIpad0804Hack();
-                                targetBox = parentWin.__dashboardIpadTarget;
-                                spacer = parentWin.__dashboardIpadSpacer;
-                            }
-                            if (targetBox && spacer && parentDoc.body.contains(spacer)) {
-                                ipadApplyBoxStyles(targetBox);
-                            }
-                        }
-                    }
+                var targetBox = parentWin.__dashboardIpadTarget;
+                var spacer = parentWin.__dashboardIpadSpacer || parentDoc.getElementById(SPACER_ID);
+                if (!targetBox || !parentDoc.body.contains(targetBox)) {
+                    applyIpad0804Hack();
+                    targetBox = parentWin.__dashboardIpadTarget;
+                    spacer = parentWin.__dashboardIpadSpacer;
                 }
-                
-                try {
-                    var bar = parentDoc.getElementById('dashboard-ipad-h-tabs');
-                    if (bar) {
-                        var list = parentDoc.querySelector('.dashboard-ipad-hide-tabs');
-                        if (list) {
-                            var origTabs = list.querySelectorAll('[data-testid="stTab"], [role="tab"]');
-                            var btns = bar.querySelectorAll('button');
-                            if (origTabs.length === btns.length) {
-                                for (var i = 0; i < origTabs.length; i++) {
-                                    var on = origTabs[i].getAttribute('aria-selected') === 'true'
-                                        || origTabs[i].hasAttribute('data-selected')
-                                        || origTabs[i].getAttribute('data-selected') === 'true';
-                                    if (on) btns[i].classList.add('dashboard-ipad-tab-on');
-                                    else btns[i].classList.remove('dashboard-ipad-tab-on');
-                                }
-                            }
-                        }
-                    }
-                } catch(eTabSync) {}
-
+                if (targetBox && spacer && parentDoc.body.contains(spacer)) {
+                    var rect = spacer.getBoundingClientRect();
+                    targetBox.style.setProperty('position', 'fixed', 'important');
+                    targetBox.style.setProperty('top', '3.65rem', 'important');
+                    targetBox.style.setProperty('width', rect.width + 'px', 'important');
+                    targetBox.style.setProperty('left', rect.left + 'px', 'important');
+                    targetBox.style.setProperty('z-index', isSidebarOpen() ? '1' : '999999', 'important');
+                    spacer.style.height = targetBox.offsetHeight + 'px';
+                }
                 parentWin.__dashboardIpadRaf = parentWin.requestAnimationFrame(syncIpadWidthLoop);
             }
-
             function syncFixedBar() {
-                try { fixDuplicateMainTabs(false); } catch (eSf) {}
                 if (touchMode) {
-                    if (isFilterDropdownOpen()) return;
                     applyIpad0804Hack();
                     return;
                 }
-                /* ===== Mac 환경: 원본 레이아웃 로직 100% 무손실 복구 ===== */
+                /* ===== Mac 무손실 분기 (변경 금지) ===== */
                 var filterBox = findFilterBox();
                 var tabList = findMainTabList();
                 if (!filterBox || !tabList) {
+                    /* 담당자 지정 직후 탭 DOM이 늦게 뜨면 재시도 (상한) */
                     parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
                     if (parentWin.__dashTabRetry < 25) scheduleSync(200);
                     return;
                 }
-                var mains = collectMainTabLists();
-                if (!isTabMountHealthy(filterBox, mains)) {
-                    var mounted = mountTabs(filterBox, tabList);
-                    tabList = findMainTabList() || tabList;
-                    if (!mounted || !filterBox.contains(tabList)) {
-                        parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
-                        if (parentWin.__dashTabRetry < 25) scheduleSync(180);
-                        return;
-                    }
+                var mounted = mountTabs(filterBox, tabList);
+                if (!mounted || !filterBox.contains(tabList)) {
+                    parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
+                    if (parentWin.__dashTabRetry < 25) scheduleSync(180);
+                    return;
                 }
                 parentWin.__dashTabRetry = 0;
                 var rectMac = getMainRect();
                 if (!rectMac) return;
                 var topMac = getTopOffsetMac();
-                var curLeft = parseFloat(filterBox.style.left) || -9999;
-                var curTop = parseFloat(filterBox.style.top) || -9999;
-                var curW = parseFloat(filterBox.style.width) || 0;
-                var posOk = (
-                    filterBox.style.position === 'fixed' &&
-                    Math.abs(curLeft - rectMac.left) < 1.5 &&
-                    Math.abs(curTop - topMac) < 1.5 &&
-                    Math.abs(curW - rectMac.width) < 2.5
-                );
-                if (!posOk) {
-                    filterBox.style.setProperty('position', 'fixed', 'important');
-                    filterBox.style.setProperty('top', topMac + 'px', 'important');
-                    filterBox.style.setProperty('left', rectMac.left + 'px', 'important');
-                    filterBox.style.setProperty('width', rectMac.width + 'px', 'important');
-                    filterBox.style.setProperty('max-width', rectMac.width + 'px', 'important');
-                    filterBox.style.setProperty('z-index', '990', 'important');
-                    parentDoc.documentElement.style.setProperty('--dashboard-bar-top', topMac + 'px');
-                    parentDoc.documentElement.style.setProperty('--dashboard-bar-left', rectMac.left + 'px');
-                    parentDoc.documentElement.style.setProperty('--dashboard-bar-width', rectMac.width + 'px');
-                    syncTopShield(topMac, rectMac);
-                }
+                filterBox.style.setProperty('position', 'fixed', 'important');
+                filterBox.style.setProperty('top', topMac + 'px', 'important');
+                filterBox.style.setProperty('left', rectMac.left + 'px', 'important');
+                filterBox.style.setProperty('width', rectMac.width + 'px', 'important');
+                filterBox.style.setProperty('max-width', rectMac.width + 'px', 'important');
+                filterBox.style.setProperty('z-index', '990', 'important');
+                parentDoc.documentElement.style.setProperty('--dashboard-bar-top', topMac + 'px');
+                parentDoc.documentElement.style.setProperty('--dashboard-bar-left', rectMac.left + 'px');
+                parentDoc.documentElement.style.setProperty('--dashboard-bar-width', rectMac.width + 'px');
+                syncTopShield(topMac, rectMac);
                 var barHMac = filterBox.offsetHeight + 4;
                 if (Math.abs(barHMac - lastH) > 1) {
                     var spacerMac = ensureSpacer(filterBox);
@@ -7282,71 +6427,13 @@ def inject_sticky_tabs_script():
                     lastH = barHMac;
                 }
             }
-            
-            function mutationTouchesMainTabs(mutations) {
-                function check(node) {
-                    if (!node || node.nodeType !== 1) return false;
-                    try {
-                        if (node.id === 'sticky-marker' || node.id === SPACER_ID) return true;
-                        if (node.getAttribute && node.getAttribute('data-testid') === 'stTabs') return true;
-                        if (node.getAttribute && node.getAttribute('role') === 'tablist') return isMainTabList(node);
-                        if (node.querySelector) {
-                            if (node.querySelector('#sticky-marker')) return true;
-                            var tl = node.querySelector('div[role="tablist"]');
-                            if (tl && isMainTabList(tl)) return true;
-                        }
-                    } catch (eC) {}
-                    return false;
-                }
-                for (var m = 0; m < mutations.length; m++) {
-                    var rec = mutations[m];
-                    if (check(rec.target)) return true;
-                    var a, r;
-                    for (a = 0; a < rec.addedNodes.length; a++) if (check(rec.addedNodes[a])) return true;
-                    for (r = 0; r < rec.removedNodes.length; r++) if (check(rec.removedNodes[r])) return true;
-                }
-                return false;
-            }
             function scheduleSync(ms) {
-                try {
-                    if (touchMode && (parentWin.__dashboardIpadFreezeLayout || isIpadFilterLocked())) return;
-                    var all = collectMainTabLists();
-                    if (all.length > 1) {
-                        fixDuplicateMainTabs(true);
-                        all = collectMainTabLists();
-                    } else {
-                        fixDuplicateMainTabs(false);
-                    }
-                    if (!touchMode) {
-                        var fb = findFilterBox();
-                        if (isTabMountHealthy(fb, all) && !isFilterDropdownOpen()) {
-                            var hNow = fb ? (fb.offsetHeight + 4) : lastH;
-                            if (Math.abs(hNow - lastH) <= 1) return;
-                        }
-                    }
-                } catch (eFix) {}
-                if (isFilterDropdownOpen() && collectMainTabLists().length <= 1) return;
                 if (syncTimer) clearTimeout(syncTimer);
-                var delay = ms || 40;
-                delay = Math.max(delay, touchMode ? 350 : 280);
-                syncTimer = setTimeout(syncFixedBar, delay);
+                syncTimer = setTimeout(syncFixedBar, ms || 40);
             }
-
             if (touchMode) {
                 parentDoc.documentElement.classList.add('dashboard-touch-mode');
-                
-                parentDoc.addEventListener('focusin', function(e) {
-                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') {
-                        setTimeout(function() {
-                            var box = findFilterBox();
-                            if(box) {
-                                box.style.setProperty('transform', 'translate3d(0,0,0)', 'important');
-                                /* [중요 패치 2] iOS 키보드 입력을 튕겨내던 scrollTo 강제고정 삭제 (자연스러운 스크롤 허용) */
-                            }
-                        }, 100);
-                    }
-                }, true);
-
+                /* iPad UI 분기 — 세션당 1회만 reload (무한 로딩 방지). 맥 분기 미진입 */
                 try {
                     try { parentDoc.cookie = 'dashboard_touch=1; path=/; max-age=31536000; SameSite=Lax'; } catch (eCk) {}
                     if (!parentWin.__dashboardTouchUiSynced) {
@@ -7355,152 +6442,90 @@ def inject_sticky_tabs_script():
                         if (tu.searchParams.get('touch_ui') !== '1') {
                             tu.searchParams.set('touch_ui', '1');
                             try { parentWin.history.replaceState(null, '', tu.toString()); } catch (eHs) {}
+                            try {
+                                if (parentWin.sessionStorage.getItem('__dash_touch_boot') !== '1') {
+                                    parentWin.sessionStorage.setItem('__dash_touch_boot', '1');
+                                    parentWin.location.replace(tu.toString());
+                                    return;
+                                }
+                            } catch (eSs) {}
                         }
                     }
                 } catch (eTu) {}
-                
                 var boot = 0;
                 parentWin.__dashboardStickyBootInterval = setInterval(function() {
-                    if (!isIpadFilterLocked() && !isFilterDropdownOpen()) applyIpad0804Hack();
+                    applyIpad0804Hack();
                     boot++;
                     if (boot > 40) {
                         clearInterval(parentWin.__dashboardStickyBootInterval);
                         parentWin.__dashboardStickyBootInterval = null;
                     }
                 }, 200);
-                
+                /* 800ms → 2s: 필터 조작 중 DOM 해킹 빈도 축소 */
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
-                    if (!isIpadFilterLocked() && !isFilterDropdownOpen()) applyIpad0804Hack();
-                }, 5000);
-                
-                var observer = new MutationObserver(function() {
-                    if (isIpadFilterLocked() || isFilterDropdownOpen()) return;
-                    var box = findFilterBox();
-                    if (!box) return;
-                    if (box.style.position === 'fixed') return;
-                    parentWin.__dashboardIpadFreezeLayout = false;
-                    ipadPinFilterBox();
-                });
+                    applyIpad0804Hack();
+                }, 2000);
+                var observer = new MutationObserver(function() { scheduleSync(120); });
                 observer.observe(parentDoc.body, { childList: true, subtree: true });
                 parentWin.__dashboardStickyObserver = observer;
                 parentWin.__dashboardIpadScheduleSync = scheduleSync;
-                parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
-                parentWin.__dashboardStickyTouchReady = STICKY_SCRIPT_VER_IPAD;
-                
-                try {
-                    var appScroll = parentDoc.querySelector('[data-testid="stAppViewContainer"]');
-                    if (appScroll) {
-                        appScroll.addEventListener('scroll', markIpadScrolling, { passive: true, capture: true });
-                    }
-                    parentDoc.addEventListener('scroll', markIpadScrolling, { passive: true, capture: true });
-                    parentWin.addEventListener('scroll', markIpadScrolling, { passive: true, capture: true });
-                    parentDoc.addEventListener('touchmove', markIpadScrolling, { passive: true, capture: true });
-                } catch (eScr) {}
-                parentDoc.addEventListener('pointerdown', function(e) {
-                    try {
-                        var t = e.target;
-                        if (!t || !t.closest) return;
-                        if (t.closest('[data-testid="stMultiSelect"]') ||
-                            t.closest('[data-testid="stSelectbox"]') ||
-                            t.closest('[data-baseweb="select"]') ||
-                            t.closest('[data-baseweb="popover"]') ||
-                            t.closest('[data-baseweb="menu"]') ||
-                            t.closest('[data-testid="stSelectboxVirtualDropdown"]') ||
-                            t.closest('ul[role="listbox"]')) {
-                            lockIpadFilter(12000);
-                        }
-                    } catch (ePd) {}
-                }, true);
-                parentDoc.addEventListener('focusin', function(e) {
-                    try {
-                        var t = e.target;
-                        if (!t || !t.closest) return;
-                        if (t.closest('[data-testid="stMultiSelect"]') ||
-                            t.closest('[data-testid="stSelectbox"]') ||
-                            t.closest('[data-baseweb="select"]')) {
-                            lockIpadFilter(12000);
-                        }
-                    } catch (eFi2) {}
-                }, true);
+                parentWin.__dashboardStickyTouchReady = true;
                 parentDoc.addEventListener('click', function(e) {
                     if (e.target.closest('[data-testid="collapsedControl"]') ||
                         e.target.closest('[data-testid="stSidebar"]') ||
                         e.target.closest('[role="tab"]')) {
-                        scheduleSync(80);
-                        scheduleSync(400);
+                        scheduleSync(30);
+                        scheduleSync(300);
                     }
                 }, true);
-                parentWin.addEventListener('resize', function() {
-                    if (isIpadFilterLocked()) return;
-                    scheduleSync(80);
-                }, { passive: true });
-                
+                parentWin.addEventListener('resize', function() { scheduleSync(80); }, { passive: true });
                 parentWin.addEventListener('orientationchange', function() {
-                    parentWin.__dashboardIpadFreezeLayout = false;
-                    parentWin.__dashboardIpadSpacerH = 0;
-                    
-                    var delays = [50, 150, 300, 500];
-                    delays.forEach(function(ms) {
-                        setTimeout(function() {
-                            var box = findFilterBox();
-                            var sp = parentDoc.getElementById(SPACER_ID);
-                            if (box && sp) {
-                                var h = Math.round(box.getBoundingClientRect().height);
-                                if (h > 0) sp.style.setProperty('height', h + 'px', 'important');
-                                box.style.setProperty('transform', 'translate3d(0,0,0)', 'important');
-                            }
-                        }, ms);
-                    });
-                    
                     scheduleSync(120);
                     scheduleSync(450);
                 }, { passive: true });
                 applyIpad0804Hack();
-                syncIpadWidthLoop(); 
+                syncIpadWidthLoop();
             } else {
-                /* Mac 전용 오리지널 환경 유지 (무손실 복원) */
                 var pollCount = 0;
                 parentWin.__dashboardStickyBootInterval = setInterval(function() {
-                    if (!isFilterDropdownOpen()) syncFixedBar();
+                    syncFixedBar();
                     pollCount++;
-                    if (pollCount > 40) {
+                    if (pollCount > 100) {
                         clearInterval(parentWin.__dashboardStickyBootInterval);
                         parentWin.__dashboardStickyBootInterval = null;
                     }
-                }, 250);
-                var observer = new MutationObserver(function(mutations) {
-                    if (!mutationTouchesMainTabs(mutations)) return;
-                    var n = collectMainTabLists().length;
-                    if (n > 1) fixDuplicateMainTabs(true);
-                    else scheduleSync(320);
-                });
+                }, 150);
+                var observer = new MutationObserver(function() { scheduleSync(60); });
                 observer.observe(parentDoc.body, {
                     childList: true,
-                    subtree: true
+                    subtree: true,
+                    attributes: true
                 });
                 parentWin.__dashboardStickyObserver = observer;
-                parentWin.__dashboardMacScheduleSync = scheduleSync;
-                parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
-                parentWin.__dashboardStickyMacReady = STICKY_SCRIPT_VER_MAC;
-                parentWin.addEventListener('resize', function() { scheduleSync(120); }, { passive: true });
-                parentWin.addEventListener('pageshow', function() { scheduleSync(120); }, { passive: true });
+                var scrollRoot = parentDoc.querySelector('[data-testid="stAppViewContainer"]') || parentDoc;
+                scrollRoot.addEventListener('scroll', function() { scheduleSync(30); }, { passive: true, capture: true });
+                parentDoc.addEventListener('scroll', function() { scheduleSync(30); }, { passive: true, capture: true });
+                parentWin.addEventListener('scroll', function() { scheduleSync(30); }, { passive: true });
+                parentWin.addEventListener('resize', function() { scheduleSync(80); }, { passive: true });
+                parentWin.addEventListener('pageshow', function() { scheduleSync(80); }, { passive: true });
                 if (parentWin.visualViewport) {
-                    parentWin.visualViewport.addEventListener('resize', function() { scheduleSync(100); }, { passive: true });
+                    parentWin.visualViewport.addEventListener('resize', function() { scheduleSync(40); }, { passive: true });
+                    parentWin.visualViewport.addEventListener('scroll', function() { scheduleSync(40); }, { passive: true });
                 }
                 parentDoc.addEventListener('click', function(e) {
                     if (e.target.closest('[data-testid="collapsedControl"]') ||
                         e.target.closest('[role="tab"]')) {
-                        scheduleSync(100);
-                        scheduleSync(400);
+                        scheduleSync(50);
+                        scheduleSync(300);
                     }
                 }, true);
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (sidebar) {
-                    sidebar.addEventListener('transitionend', function() { scheduleSync(100); });
+                    sidebar.addEventListener('transitionend', function() { scheduleSync(40); });
                 }
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
-                    if (!isFilterDropdownOpen()) syncFixedBar();
-                }, 8000);
+                    syncFixedBar();
+                }, 3000);
                 syncFixedBar();
             }
         })();
@@ -8658,8 +7683,22 @@ elif dart_api_key and not _read_dart_key_file(API_KEY_FILE):
 if OpenDartReader is None:
     if is_touch_ui():
         st.sidebar.caption("DART 재무연동은 선택 사항입니다. (미연결 시 해당 기능만 비활성)")
-    else:     
-        pass
+    else:
+        st.sidebar.warning(
+            "opendartreader 미연결 — requirements.txt 배포 후 Reboot 하세요. "
+            "필요 시 아래 버튼으로만 설치를 시도합니다."
+        )
+        if st.sidebar.button("📦 opendartreader 지금 설치 시도", key="btn_install_opendart"):
+            try:
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "opendartreader>=0.3.2"],
+                    timeout=120,
+                )
+                st.sidebar.success("설치 완료 — 상단 메뉴에서 Reboot/새로고침 하세요.")
+            except Exception as _ie:
+                st.sidebar.error(f"설치 실패: {_ie}")
+        if _OPENDART_IMPORT_ERROR:
+            st.sidebar.caption(f"원인: `{_OPENDART_IMPORT_ERROR[:220]}`")
 elif dart_api_key:
     st.sidebar.caption("✓ DART 연동 준비됨 (거래처 분석 → 기업 재무정보)")
 else:
@@ -8940,33 +7979,26 @@ elif debt_bytes:
 df_tank = load_equipment_file(tank_bytes, tank_name) if tank_bytes else pd.DataFrame()
 df_vaporizer = load_equipment_file(vaporizer_bytes, vaporizer_name) if vaporizer_bytes else pd.DataFrame()
 df_integrated = load_equipment_file(int_bytes, int_name) if int_bytes else pd.DataFrame()
-# ===== [초고속 데이터 전처리 캐시 엔진 (기존 로직 100% 무손실 보존)] =====
-@st.cache_data(show_spinner=False)
-def get_fast_processed_full_df(meta_data, staff_token, ind_dict):
-    """필터 클릭 시 매번 발생하는 무거운 텍스트 연산(정규식, 매핑)을 1회로 압축"""
-    # 1. 유저의 기존 고급 로드 기능 완벽 유지
-    temp_df = (
-        load_uploaded_files_from_meta(meta_data, staff_token, 5)
-        if meta_data else pd.DataFrame()
+full_df = (
+    load_uploaded_files_from_meta(
+        sales_file_meta,
+        _manual_staff_map_cache_token(),
+        5,
     )
-    
-    # 2. 무거운 데이터 정제 작업을 캐시 안으로 이동 (한 번만 실행됨)
-    if not temp_df.empty:
-        temp_df = _apply_manual_staff_mapping(temp_df)
-        _client_s = temp_df["거래처"].astype(str).str.strip()
-        mask_closed = _client_s.str.match(r"^[zZ]", na=False)
-        if mask_closed.any():
-            temp_df.loc[mask_closed, "담당자"] = "거래종료"
-            
-        is_deposit_row = temp_df["품목명"].astype(str).str.contains("입금", na=False)
-        temp_df = temp_df[~is_deposit_row].copy()
-        temp_df["업종"] = temp_df["거래처"].map(ind_dict).fillna("미분류")
-        
-    return temp_df
-
-# 단 0.01초 만에 메모리에서 정제 완료된 데이터를 즉시 꺼내옴
-full_df = get_fast_processed_full_df(sales_file_meta, _manual_staff_map_cache_token(), industry_dict)
-# ====================================================================
+    if sales_file_meta
+    else pd.DataFrame()
+)
+# 캐시에 옛 담당자가 남아 있어도 매핑·빈거래처 정규화는 매 실행마다 강제
+if not full_df.empty:
+    full_df = _apply_manual_staff_mapping(full_df)
+    _client_s = full_df["거래처"].astype(str).str.strip()
+    mask_closed = _client_s.str.match(r"^[zZ]", na=False)
+    if mask_closed.any():
+        full_df.loc[mask_closed, "담당자"] = "거래종료"
+if not full_df.empty:
+    is_deposit_row = full_df["품목명"].astype(str).str.contains("입금", na=False)
+    full_df = full_df[~is_deposit_row].copy()
+    full_df["업종"] = full_df["거래처"].map(industry_dict).fillna("미분류")
 target_items = [
     "CO2 (kg, Bulk)",
     "N2 (kg, Bulk)",
@@ -8995,166 +8027,89 @@ if not full_df.empty:
         latest_update_str = latest_dt_overall.strftime("%Y-%m-%d")
     # ==============================================================
     # 필터 영역 (상단 고정은 inject_sticky_tabs_script에서 처리)
-    # 맥·iPad 공통: 선택 즉시 반영. sticky 재기동 억제로 로딩감 완화.
     # ==============================================================
     st.markdown("<div id='dashboard-sticky-spacer'></div>", unsafe_allow_html=True)
     try:
         filter_container = st.container(border=True)
     except TypeError:
         filter_container = st.container()
-
-    def _dash_parse_filter_dates(start_s, end_s):
-        _sd = pd.to_datetime(start_s, format="%y%m%d", errors="coerce")
-        _ed = pd.to_datetime(end_s, format="%y%m%d", errors="coerce")
-        if pd.isna(_sd):
-            _sd = pd.Timestamp("2000-01-01")
-        if pd.isna(_ed):
-            _ed = pd.Timestamp("2099-12-31")
-        return _sd, _ed
-
-    def _dash_staff_opts_from(df_src):
-        _staff_raw = (
-            sorted(df_src["담당자"].dropna().astype(str).unique())
-            if not df_src.empty and "담당자" in df_src.columns
-            else []
-        )
-        _staff_opts = [s for s in _staff_raw if s != "거래종료"]
-        return ["거래종료"] + _staff_opts
-
+        
     with filter_container:
-        st.markdown(
-            '<div id="dashboard-filter-bar" class="notranslate" translate="no" lang="ko"></div>',
-            unsafe_allow_html=True,
-        )
         st.markdown("<div id='sticky-marker' style='display:none;'></div>", unsafe_allow_html=True)
-        fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1.15, 1.35, 1.15])
+        fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1, 1, 1])
         start_date = fc1.text_input("📅 조회 시작", "200101", key="dash_filter_start")
         end_date = fc2.text_input("📅 조회 종료", "261231", key="dash_filter_end")
-        start_dt, end_dt = _dash_parse_filter_dates(start_date, end_date)
-        df_base_opts = full_df[
-            (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
-        ]
-        _staff_opts = _dash_staff_opts_from(df_base_opts)
+        start_dt = pd.to_datetime(start_date, format="%y%m%d", errors="coerce")
+        end_dt = pd.to_datetime(end_date, format="%y%m%d", errors="coerce")
+        if pd.isna(start_dt): start_dt = pd.Timestamp("2000-01-01")
+        if pd.isna(end_dt): end_dt = pd.Timestamp("2099-12-31")
+        df_base = full_df[(full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)].copy()
+        _staff_raw = (
+            sorted(df_base["담당자"].dropna().astype(str).unique())
+            if not df_base.empty and "담당자" in df_base.columns
+            else []
+        )
+        # 거래종료는 항상 선택 가능하도록 옵션에 포함 (맨 앞)
+        _staff_opts = [s for s in _staff_raw if s != "거래종료"]
+        _staff_opts = ["거래종료"] + _staff_opts
+        # 안정 key + 옵션 밖 선택값 정리 (담당자→거래처→품목 연쇄 시 불필요 rerun/로딩 방지)
         _prev_staff = st.session_state.get("dash_filter_staff", [])
         if isinstance(_prev_staff, list) and _prev_staff:
             _kept_staff = [x for x in _prev_staff if x in _staff_opts]
             if _kept_staff != _prev_staff:
                 st.session_state["dash_filter_staff"] = _kept_staff
-        # 👤 담당자 선택 (불편한 multiselect 버리고 selectbox로 교체 + 호환성 유지)
-        _staff_opts_with_all = ["전체 담당자"] + _staff_opts
-        _staff_picked = fc3.selectbox("👤 담당자", options=_staff_opts_with_all, index=0, key="dash_filter_staff_sb_new")
-        selected_staff = [] if _staff_picked == "전체 담당자" else [_staff_picked]
-        df_staff_for_opts = (
-            df_base_opts[df_base_opts["담당자"].isin(selected_staff)]
-            if selected_staff
-            else df_base_opts
-        )
-        _client_opts_sig = (start_date, end_date, tuple(selected_staff or ()))
-        if st.session_state.get("_dash_client_opts_sig") != _client_opts_sig:
-            st.session_state["_dash_client_opts_sig"] = _client_opts_sig
-            if df_staff_for_opts.empty:
-                st.session_state["_dash_client_opts_tuple"] = ()
-            else:
-                st.session_state["_dash_client_opts_tuple"] = tuple(
-                    df_staff_for_opts["거래처"].astype(str).unique()
-                )
-        all_clients = sorted(st.session_state.get("_dash_client_opts_tuple", ()))
-        # 단일 선택 + 태그 X로 원복 (selectbox는 지우기 불가 → multiselect max 1)
-        # 구 selectbox 키 문자열 → 새 리스트 키로 1회 이관
-        if "dash_filter_client_ms" not in st.session_state:
-            _old_c = st.session_state.get("dash_filter_client", "전체 거래처")
-            if isinstance(_old_c, str) and _old_c and _old_c != "전체 거래처" and _old_c in all_clients:
-                st.session_state["dash_filter_client_ms"] = [_old_c]
-            else:
-                st.session_state["dash_filter_client_ms"] = []
-        _prev_clients = st.session_state.get("dash_filter_client_ms", [])
-        if isinstance(_prev_clients, list) and _prev_clients:
-            _kept_c = [x for x in _prev_clients if x in all_clients]
-            if _kept_c != _prev_clients:
-                st.session_state["dash_filter_client_ms"] = _kept_c
-        # 🏢 거래처 선택 (기형적인 multiselect 버리고 1초 타자 가능한 selectbox로 순정 복구)
-        client_options_with_all = ["전체 거래처"] + all_clients
-        
-        selected_client = fc4.selectbox(
-            "🏢 거래처",
-            options=client_options_with_all,
-            index=0,
-            key="dash_filter_client_selectbox"
-        )
-        # 하위 로직·엑셀 시그니처 호환용
-        st.session_state["dash_filter_client"] = selected_client
-        df_client_for_opts = (
-            df_staff_for_opts[df_staff_for_opts["거래처"] == selected_client]
-            if selected_client != "전체 거래처"
-            else df_staff_for_opts
-        )
-        available_items = (
-            sorted(df_client_for_opts["품목명"].astype(str).unique())
-            if not df_client_for_opts.empty
-            else []
-        )
+        selected_staff = fc3.multiselect("👤 담당자", _staff_opts, key="dash_filter_staff")
+        df_staff_filtered = df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base.copy()
+        all_clients = sorted(df_staff_filtered["거래처"].unique()) if not df_staff_filtered.empty else []
+        client_options = ["전체 거래처"] + all_clients
+        _prev_client = st.session_state.get("dash_filter_client", "전체 거래처")
+        if _prev_client not in client_options:
+            st.session_state["dash_filter_client"] = "전체 거래처"
+        selected_client = fc4.selectbox("🏢 거래처", options=client_options, key="dash_filter_client")
+        df_client_filtered = df_staff_filtered[df_staff_filtered["거래처"] == selected_client] if selected_client != "전체 거래처" else df_staff_filtered.copy()
+        available_items = sorted(df_client_filtered["품목명"].unique()) if not df_client_filtered.empty else []
         _prev_items = st.session_state.get("dash_filter_items", [])
         if isinstance(_prev_items, list) and _prev_items:
             _kept = [x for x in _prev_items if x in available_items]
             if _kept != _prev_items:
                 st.session_state["dash_filter_items"] = _kept
-        # 📦 품목명 선택 (불편한 multiselect 버리고 selectbox로 교체 + 호환성 유지)
-        _item_opts = ["전체 품목"] + available_items
-        _item_picked = fc5.selectbox("📦 품목명", options=_item_opts, index=0, key="dash_filter_items_sb_new")
-        selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
-
-        df_base = df_base_opts
-        df_staff_filtered = (
-            df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base
-        )
-        df_client_filtered = (
-            df_staff_filtered[df_staff_filtered["거래처"] == selected_client]
-            if selected_client != "전체 거래처"
-            else df_staff_filtered
-        )
-        df_f = (
-            df_client_filtered[df_client_filtered["품목명"].isin(selected_item)]
-            if selected_item
-            else df_client_filtered
-        )
-        _pivot_ck = _dash_pivot_cache_key(
-            selected_client,
-            selected_staff,
-            selected_item,
-            start_date,
-            end_date,
-            sales_file_meta,
-            _manual_staff_map_cache_token(),
-        )
-        _pivot_store = st.session_state.setdefault("_dash_pivot_store", {})
-        if _pivot_ck not in _pivot_store:
-            _pivot_store[_pivot_ck] = _dash_compute_pivot_bundle(
-                df_base, df_client_filtered, df_f, full_df, all_months
-            )
-            while len(_pivot_store) > 24:
-                _pivot_store.pop(next(iter(_pivot_store)))
-        _pb = _pivot_store[_pivot_ck]
-        years = _pb["years"]
-        desired_order = _pb["desired_order"]
-        pivot_m_total = _pb["pivot_m_total"]
-        client_item_qty_pivot = _pb["client_item_qty_pivot"]
-        sales_p = _pb["sales_p"]
-        qty_p = _pb["qty_p"]
-        unit_price_p = _pb["unit_price_p"]
-        staff_pivot = _pb["staff_pivot"]
-        df_detail = _pb["df_detail"]
-        cur_month_sales_total = _pb["cur_month_sales_total"]
-        prev_month_sales_total = _pb["prev_month_sales_total"]
-        mom_rate_total = _pb["mom_rate_total"]
-        avg_monthly_sales_total = _pb["avg_monthly_sales_total"]
-        avg_rate_total = _pb["avg_rate_total"]
-        latest_month_str_total = _pb["latest_month_str_total"]
-        cur_month_sales_client = _pb["cur_month_sales_client"]
-        prev_month_sales_client = _pb["prev_month_sales_client"]
-        mom_rate_client = _pb["mom_rate_client"]
-        avg_monthly_sales_client = _pb["avg_monthly_sales_client"]
-        avg_rate_client = _pb["avg_rate_client"]
-        latest_month_str_client = _pb["latest_month_str_client"]
+        selected_item = fc5.multiselect("📦 품목명", available_items, key="dash_filter_items")
+        df_f = df_client_filtered[df_client_filtered["품목명"].isin(selected_item)] if selected_item else df_client_filtered.copy()
+    raw_years = sorted(full_df["연도"].unique()) if "연도" in full_df.columns else ["2026"]
+    years = sorted(raw_years, reverse=True)
+    desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
+    pivot_m_total = cached_get_yearly_monthly_pivot(df_base, all_months, years)
+    client_item_qty_pivot = cached_client_item_qty_pivot(df_client_filtered, years, all_months)
+    sales_p, qty_p, unit_price_p = cached_tab3_pivots(df_f, years, all_months)
+    staff_pivot = cached_staff_pivot(df_base, desired_order)
+    detail_cols = ["매출일_dt", "담당자", "거래처", "품목명", "출고량", "단가", "매출액"]
+    df_detail = df_f[detail_cols].copy() if not df_f.empty else pd.DataFrame(columns=detail_cols)
+    df_total_monthly = df_base.groupby(df_base["매출일_dt"].dt.to_period("M"))["매출액"].sum()
+    if not df_total_monthly.empty:
+        latest_period_total = df_total_monthly.index.max()
+        cur_month_sales_total = df_total_monthly.loc[latest_period_total] * 1.1
+        prev_period_total = latest_period_total - 1
+        prev_month_sales_total = df_total_monthly.get(prev_period_total, 0.0) * 1.1
+        mom_rate_total = ((cur_month_sales_total - prev_month_sales_total) / prev_month_sales_total * 100) if prev_month_sales_total > 0 else 0.0
+        avg_monthly_sales_total = (df_total_monthly.mean() * 1.1)
+        avg_rate_total = ((cur_month_sales_total - avg_monthly_sales_total) / avg_monthly_sales_total * 100) if avg_monthly_sales_total > 0 else 0.0
+        latest_month_str_total = latest_period_total.strftime("%Y년 %m월")
+    else:
+        cur_month_sales_total = prev_month_sales_total = mom_rate_total = avg_monthly_sales_total = avg_rate_total = 0.0
+        latest_month_str_total = "-"
+    if not df_client_filtered.empty:
+        df_client_monthly = df_client_filtered.groupby(df_client_filtered["매출일_dt"].dt.to_period("M"))["매출액"].sum() * 1.1
+        latest_period_client = df_client_monthly.index.max()
+        cur_month_sales_client = df_client_monthly.loc[latest_period_client]
+        prev_period_client = latest_period_client - 1
+        prev_month_sales_client = df_client_monthly.get(prev_period_client, 0.0)
+        mom_rate_client = ((cur_month_sales_client - prev_month_sales_client) / prev_month_sales_client * 100) if prev_month_sales_client > 0 else 0.0
+        avg_monthly_sales_client = df_client_monthly.mean()
+        avg_rate_client = ((cur_month_sales_client - avg_monthly_sales_client) / avg_monthly_sales_client * 100) if avg_monthly_sales_client > 0 else 0.0
+        latest_month_str_client = latest_period_client.strftime("%Y년 %m월")
+    else:
+        cur_month_sales_client = prev_month_sales_client = mom_rate_client = avg_monthly_sales_client = avg_rate_client = 0.0
+        latest_month_str_client = "-"
 else:
     cur_month_sales_total = prev_month_sales_total = mom_rate_total = avg_monthly_sales_total = avg_rate_total = 0.0
     latest_month_str_total = "-"
@@ -9179,6 +8134,18 @@ else:
     client_addr = str(client_addr_raw)
 st.sidebar.markdown("---")
 st.sidebar.subheader("📥 엑셀 내보내기")
+sheets_dict = {
+    "연도별_월매출(만원)": (pivot_m_total, True),
+    "거래처별_품목별사용량": (client_item_qty_pivot, True),
+    "선택거래처_품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
+    "선택거래처_품목별_출고량": (qty_p, True),
+    "선택거래처_품목별_적용단가": (unit_price_p, True),
+    "담당자별_매출(만원)": (staff_pivot, True),
+    "상세거래내역": (df_detail, False),
+}
+if not filtered_debt_df.empty:
+    sheets_dict["채권관리_현황"] = (filtered_debt_df, False)
+# 필터 변경 시에만 엑셀 재생성 (탭 전환·기타 위젯 rerun에서는 캐시 재사용)
 _excel_sig = (
     selected_client,
     tuple(selected_staff or []),
@@ -9191,44 +8158,16 @@ _excel_sig = (
     int(len(filtered_debt_df)),
 )
 if st.session_state.get("_dash_excel_sig") != _excel_sig:
-    st.session_state.pop("_dash_excel_bytes", None)
-_excel_ready = bool(
-    st.session_state.get("_dash_excel_sig") == _excel_sig
-    and st.session_state.get("_dash_excel_bytes")
-)
-if st.sidebar.button(
-    "📊 엑셀 파일 준비",
-    key="dash_excel_prepare",
+    st.session_state["_dash_excel_sig"] = _excel_sig
+    st.session_state["_dash_excel_bytes"] = convert_dfs_to_excel(sheets_dict)
+excel_data = st.session_state.get("_dash_excel_bytes") or convert_dfs_to_excel(sheets_dict)
+st.sidebar.download_button(
+    label="📊 전체 분석 시트별 엑셀 다운로드",
+    data=excel_data,
+    file_name="통합영업분석_시트별보고서.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     use_container_width=True,
-    help="현재 검색 조건으로 시트별 엑셀을 만듭니다.",
-):
-    with st.spinner("엑셀 생성 중…"):
-        _sheets_dict = {
-            "연도별_월매출(만원)": (pivot_m_total, True),
-            "거래처별_품목별사용량": (client_item_qty_pivot, True),
-            "선택거래처_품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
-            "선택거래처_품목별_출고량": (qty_p, True),
-            "선택거래처_품목별_적용단가": (unit_price_p, True),
-            "담당자별_매출(만원)": (staff_pivot, True),
-            "상세거래내역": (df_detail, False),
-        }
-        if not filtered_debt_df.empty:
-            _sheets_dict["채권관리_현황"] = (filtered_debt_df, False)
-        st.session_state["_dash_excel_sig"] = _excel_sig
-        st.session_state["_dash_excel_bytes"] = convert_dfs_to_excel(_sheets_dict)
-        _excel_ready = True
-if _excel_ready:
-    st.sidebar.download_button(
-        label="⬇️ 전체 분석 시트별 엑셀 다운로드",
-        data=st.session_state["_dash_excel_bytes"],
-        file_name="통합영업분석_시트별보고서.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
-elif st.session_state.get("_dash_excel_sig") and st.session_state.get("_dash_excel_sig") != _excel_sig:
-    st.sidebar.caption("검색 조건이 바뀌었습니다. 「엑셀 파일 준비」를 다시 눌러 주세요.")
-else:
-    st.sidebar.caption("엑셀은 「엑셀 파일 준비」 후 다운로드 (거래처 지정 시 자동 생성 안 함)")
+)
 st.sidebar.subheader("📽️ PPT 내보내기")
 _ppt_sig = (
     selected_client,
@@ -9286,7 +8225,7 @@ except ImportError:
 except Exception as exc:
     st.sidebar.error(f"PPT 생성 오류: {exc}")
 # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
     [
         "📌 영업 종합 요약",
         "🏢 거래처 분석",
@@ -9298,19 +8237,10 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
         "🛢️ 통합 탱크 재고",
         "📈 수익성 분석",
         "📝 일일업무일지",
-        "🔎 시장조사",
     ]
 )
-if is_touch_ui():
-    # iPad: 거래처 변경 rerun마다 components.html 재주입하면 로딩이 되살아남
-    if st.session_state.get("_ipad_sticky_ver") != 30:
-        inject_sticky_tabs_script()
-        inject_ipad_plotly_controls()
-        st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 30
-else:
-    inject_sticky_tabs_script()
-    inject_ipad_plotly_controls()
+inject_sticky_tabs_script()
+inject_ipad_plotly_controls()
 # Tab 1: 📌 영업 종합 요약
 with tab1:
     t1_c1, t1_c2 = st.columns([4, 1])
@@ -9398,37 +8328,20 @@ with tab1:
                 selected_ind_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="industry_metric_radio")
         
             ind_pivot = cached_get_industry_pivot(df_base, selected_industry, selected_ind_metric, all_months, years)
-            
+        
             i_col_left2, i_col_right2 = st.columns([1, 1])
             with i_col_left2:
-                st.caption("💡 표의 행(월)을 클릭하면 아래 '업종별 매출 비중' 도넛 차트의 기준 월이 변경됩니다.")
                 ind_pivot_disp = get_display_df_with_sum(ind_pivot, "연간 합계")
-                
-                # 표에 on_select 추가하여 클릭 감지
                 if "비중" in selected_ind_metric:
-                    ind_ev = st.dataframe(style_with_sum(ind_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key="ind_table_pct")
+                    st.dataframe(style_with_sum(ind_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=460)
                     y_suf_i, y_fmt_i = "%", ",.1f"
                 elif "출고량" in selected_ind_metric:
-                    # 🟢 소수점 1자리(1f)와 '천' 단위가 적용된 부분입니다!
-                    ind_ev = st.dataframe(style_with_sum(ind_pivot_disp, "{:,.1f}", "Greens", axis=None), use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key="ind_table_qty")
-                    y_suf_i, y_fmt_i = " 천", ",.1f"
+                    st.dataframe(style_with_sum(ind_pivot_disp, "{:,.0f}", "Greens", axis=None), use_container_width=True, height=460)
+                    y_suf_i, y_fmt_i = "", ",.0f"
                 else:
-                    ind_ev = st.dataframe(style_with_sum(ind_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key="ind_table_amt")
+                    st.dataframe(style_with_sum(ind_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
                     y_suf_i, y_fmt_i = " 만원", ",.0f"
-                    
-                # 행(월) 클릭 시 도넛 차트 월(top30_month) 강제 업데이트
-                if ind_ev and ind_ev.selection.rows:
-                    sel_idx = ind_ev.selection.rows[0]
-                    sel_month = ind_pivot_disp.index[sel_idx]
-                    
-                    if sel_month in all_months and st.session_state.get("top30_month") != sel_month:
-                        st.session_state["top30_month"] = sel_month
-                        try:
-                            st.query_params["top30_month"] = sel_month
-                        except Exception:
-                            pass
-                        st.rerun()
-                        
+        
             with i_col_right2:
                 render_plotly_chart(
                     create_stacked_bar_chart(
@@ -9734,105 +8647,16 @@ with tab2:
 
     if "show_corp_info" not in st.session_state:
         st.session_state.show_corp_info = False
-
-    # [핵심 패치] 거래처 필터를 바꿀 때 기업정보 창이 열려있으면 자동으로 닫아서 API 무한 로딩(프리징) 완벽 방지
-    if "last_opened_client" not in st.session_state:
-        st.session_state.last_opened_client = selected_client
-    if st.session_state.show_corp_info and st.session_state.last_opened_client != selected_client:
-        st.session_state.show_corp_info = False
-    st.session_state.last_opened_client = selected_client
-
     # 가로 넓은 직사각형 버튼 — 글씨 한 줄로 박스 안에
     with st.container(key="tab2_action_btns"):
         btn_c1, btn_c2, btn_c3 = st.columns([2.4, 2.0, 1.8], gap="medium")
         with btn_c1:
-            _notes_addr = (
-                client_addr
-                if client_addr and client_addr != "등록된 주소 정보가 없습니다."
-                else None
-            )
-            _notes_disabled = selected_client == "전체 거래처"
-            if _is_local_macos():
-                if st.button(
-                    "📝 macOS 메모에서 노트 열기/생성",
-                    key="btn_notes",
-                    width="stretch",
-                    disabled=_notes_disabled,
-                    help="특정 거래처를 선택하세요." if _notes_disabled else "메모「거래처」폴더에서 같은 거래처명 노트를 엽니다.",
-                ):
-                    with st.spinner("메모「거래처」폴더에서 같은 거래처명을 찾는 중..."):
-                        _notes_res = open_macos_notes_folder(
-                            selected_client,
-                            dart_api_key,
-                            df_integrated,
-                            address=_notes_addr,
-                        )
-                    st.session_state["_tab2_loaded_note"] = {
-                        **_notes_res,
-                        "client": selected_client,
-                    }
-                _loaded = st.session_state.get("_tab2_loaded_note") or {}
-                if _loaded.get("client") == selected_client:
-                    if _loaded.get("ok"):
-                        st.success(_loaded.get("msg") or "메모를 열었습니다.")
-                        _body = str(_loaded.get("body") or "").strip()
-                        _title = _loaded.get("matched_name") or selected_client
-                        with st.expander(f"불러온 메모 · {_title}", expanded=True):
-                            if _body:
-                                st.text_area(
-                                    "메모 본문",
-                                    value=_body,
-                                    height=220,
-                                    key=f"tab2_loaded_note_body_{selected_client}",
-                                    label_visibility="collapsed",
-                                )
-                            else:
-                                st.caption("노트는 열렸지만 본문을 읽지 못했습니다.")
-                    elif _loaded.get("msg"):
-                        st.error(_loaded.get("msg"))
-            else:
-                _notes_label = "📝 거래처 메모 · 내보내기"
-                with st.popover(
-                    _notes_label,
-                    width="stretch",
-                    disabled=_notes_disabled,
-                    help="특정 거래처를 선택하세요." if _notes_disabled else None,
-                ):
-                    if not _notes_disabled:
-                        # [핵심 패치] 팝오버를 열자마자 API를 긁어와 무한 로딩에 빠지는 현상 방지
-                        if st.button("🚀 메모 데이터 수집/생성 (클릭)", key="btn_gen_memo_export", use_container_width=True):
-                            with st.spinner("DART/팩토리온/네이버 조회 중..."):
-                                _, _n_plain, _n_html, _n_fname = prepare_client_note_export(
-                                    selected_client,
-                                    dart_api_key,
-                                    df_integrated,
-                                    address=_notes_addr,
-                                )
-                                st.session_state["_ready_note_export"] = {
-                                    "client": selected_client,
-                                    "plain": _n_plain,
-                                    "html": _n_html,
-                                    "fname": _n_fname
-                                }
-                        
-                        _note_cache = st.session_state.get("_ready_note_export", {})
-                        if _note_cache.get("client") == selected_client:
-                            st.success("✅ 메모가 준비되었습니다!")
-                            st.caption(
-                                "Cloud·iPad에서는 아래 **다운로드·복사·공유**로 메모 앱에 넣을 수 있습니다."
-                            )
-                            st.download_button(
-                                "HTML 파일 다운로드",
-                                data=_note_cache["html"].encode("utf-8"),
-                                file_name=_note_cache["fname"],
-                                mime="text/html",
-                                key="tab2_notes_download",
-                                use_container_width=True,
-                            )
-                            st.caption("Mac: 다운로드 후 Safari로 열어 전체 선택 → 메모에 붙여넣기.")
-                            _render_tab2_note_share_html(_note_cache["plain"], selected_client)
-                        else:
-                            st.info("👆 위 버튼을 눌러 기업 정보를 먼저 수집하세요.")
+            if st.button(
+                "📝 macOS 메모에서 노트 열기/생성",
+                key="btn_notes",
+                width="stretch",
+            ):
+                open_macos_notes_folder(selected_client, dart_api_key, df_integrated)
         with btn_c2:
             btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
             if st.button(btn_label, key="btn_dart_info", width="stretch"):
@@ -9958,13 +8782,7 @@ with tab2:
                         "latest_audit": _latest_audit,
                         "audit_sum": {},
                     }
-                    # 📊 DART 재무제표 표 화면에 출력하기
-                    st.markdown("##### 📊 DART 재무제표 요약")
-                    st.error(f"🕵️‍♂️ 파이썬 검색 단어: {_lookup} / 기업코드: {c_info.get('corp_code')}")
-                    if _latest_audit is not None and not _latest_audit.empty:
-                     st.dataframe(_latest_audit, use_container_width=True)
-                    else:
-                     st.info("💡 다트에 등록된 재무제표가 없는 기업(비상장 등)입니다.")
+
             # 감사 본문 추출: 맥은 자동, iPad는 버튼(동일 데이터·무손실)
             _want_audit_parse = bool(st.session_state.get("_tab2_force_audit_parse"))
             if (
@@ -10009,16 +8827,7 @@ with tab2:
                         "audit_sum": dict(_audit_sum) if _audit_sum else {},
                     }
                     st.session_state.pop("_tab2_force_audit_parse", None)
-                      # 📊 DART 재무제표 표 화면에 출력하기
-                    st.markdown("##### 📊 DART 재무제표 요약")
-                    
-                    # 👉 파이썬이 무슨 단어로 검색했는지 화면에 박제하기!
-                    st.error(f"🕵️‍♂️ 파이썬 검색 단어: {_lookup} / 기업코드: {c_info.get('corp_code')}")
-                    
-                    if _latest_audit is not None and not _latest_audit.empty:
-                        st.dataframe(_latest_audit, use_container_width=True)
-                    else:
-                        st.info("💡 다트에 등록된 재무제표가 없는 기업(비상장 등)입니다.")
+
             def _autosave_factory_api_key():
                 v = str(st.session_state.get("tab2_factory_api_key_input") or "").strip()
                 if not v:
@@ -10817,95 +9626,67 @@ with tab5:
         # 데이터가 0(없는) 달 제거 로직 추가
         numeric_cols_temp = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
         valid_numeric_cols = [c for c in numeric_cols_temp if filtered_debt_df[c].abs().sum() > 0]
-
+    
         filtered_debt_df = filtered_debt_df[["거래처", "구분"] + valid_numeric_cols]
         numeric_cols_debt = valid_numeric_cols
-
+    
         if numeric_cols_debt:
             latest_month = numeric_cols_debt[-1]
-
+        
     debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
 
     t5_c1, t5_c2 = st.columns([4, 1])
     t5_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
     t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
 
-    _debt_chip = (
-        f"담당자 {', '.join(selected_staff)}" if selected_staff else "담당자 전체"
-    )
-    _debt_chip += (
-        f" · 거래처 {selected_client}"
-        if selected_client != "전체 거래처"
-        else " · 거래처 전체"
-    )
-    st.markdown(
-        f"<div class='dashboard-debt-filter-chip'>현재 필터: {_debt_chip}</div>",
-        unsafe_allow_html=True,
-    )
-
     if not debt_df.empty:
         if not filtered_debt_df.empty:
             numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
-
+        
             total_outstanding = 0
             warning_count = 0
-
+        
             if latest_month:
-                # 거래처별 집계 — 반복 loc 대신 groupby로 원복/지정 시 부하 완화
-                _bal = filtered_debt_df[filtered_debt_df["구분"] == "잔액"]
-                _sal = filtered_debt_df[filtered_debt_df["구분"] == "매출"]
-                if latest_month in _bal.columns and not _bal.empty:
-                    bal_by = _bal.groupby("거래처", sort=False)[latest_month].sum()
-                    sal_by = (
-                        _sal.groupby("거래처", sort=False)[latest_month].sum()
-                        if not _sal.empty and latest_month in _sal.columns
-                        else pd.Series(dtype=float)
-                    )
-                    for uc, b_val in bal_by.items():
-                        b_val = float(b_val) if pd.notna(b_val) else 0.0
-                        s_val = float(sal_by.get(uc, 0.0) or 0.0)
-                        total_outstanding += max(0.0, b_val)
-                        if b_val > 0 and b_val > s_val:
-                            warning_count += 1
-
+                u_clients = filtered_debt_df['거래처'].unique()
+                for uc in u_clients:
+                    c_mask = filtered_debt_df['거래처'] == uc
+                    b_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '잔액'), latest_month].sum()
+                    s_val = filtered_debt_df.loc[c_mask & (filtered_debt_df['구분'] == '매출'), latest_month].sum()
+                
+                    total_outstanding += max(0, b_val)
+                    if b_val > 0 and b_val > s_val:
+                        warning_count += 1
+                    
             m1, m2 = st.columns(2)
-            m1.markdown(
-                f"<div class='metric-box dashboard-debt-metric'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div>"
-                f"<div class='metric-value'>{total_outstanding:,.0f} 원</div></div>",
-                unsafe_allow_html=True,
-            )
-            m2.markdown(
-                f"<div class='metric-box dashboard-debt-metric'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div>"
-                f"<div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>",
-                unsafe_allow_html=True,
-            )
-
-            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div><div class='metric-value'>{total_outstanding:,.0f} 원</div></div>", unsafe_allow_html=True)
+            m2.markdown(f"<div class='metric-box'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div><div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>", unsafe_allow_html=True)
+        
+            st.markdown("<br>", unsafe_allow_html=True)
             summary_rows = []
-            for gubun in ["이월", "익월", "매출", "수금", "잔액", "합계"]:
+            for gubun in ["이월", "익월", "매출", "수금", "잔액", "합계"]: 
                 if gubun in filtered_debt_df["구분"].values:
                     sum_vals = filtered_debt_df[filtered_debt_df["구분"] == gubun][numeric_cols].sum()
                     row_data = {"거래처": "📌 [전체 합계]", "구분": gubun}
                     for col in numeric_cols:
                         row_data[col] = sum_vals[col]
                     summary_rows.append(row_data)
-
+        
             if summary_rows:
                 summary_df = pd.DataFrame(summary_rows)
                 disp_debt = pd.concat([filtered_debt_df, summary_df], ignore_index=True)
             else:
                 disp_debt = filtered_debt_df.copy()
-
+        
             gubun_order = {"이월": 1, "매출": 2, "수금": 3, "잔액": 4, "합계": 5}
             disp_debt["구분순위"] = disp_debt["구분"].map(gubun_order).fillna(99)
             client_order = {c: i for i, c in enumerate(disp_debt["거래처"].unique())}
             disp_debt["거래처순위"] = disp_debt["거래처"].map(client_order)
-
+        
             disp_debt = disp_debt.sort_values(by=["거래처순위", "구분순위"]).drop(columns=["거래처순위", "구분순위"])
-
+        
             disp_debt = disp_debt.set_index(["거래처", "구분"])
             debt_highlight = selected_client != "전체 거래처"
-            df_height = 520 if selected_client != "전체 거래처" else 720
+            df_height = 500 if selected_client != "전체 거래처" else 700
             show_cols = list(numeric_cols)
             # 입금기준표 결제조건 → 표 맨 우측 고정 표시
             if os.path.exists(PAYMENT_TERMS_FALLBACK) and not os.path.exists(PAYMENT_TERMS_PATH):
@@ -10914,11 +9695,6 @@ with tab5:
                 except Exception:
                     pass
             payment_terms_map = load_payment_terms_map()
-            st.markdown(
-                "<div style='font-size:14px;font-weight:700;color:#1E293B;margin:4px 0 6px;'>"
-                "📋 거래처별 채권 상세</div>",
-                unsafe_allow_html=True,
-            )
             render_debt_interactive_table(
                 disp_debt[show_cols],
                 debt_highlight,
@@ -10926,7 +9702,6 @@ with tab5:
                 payment_terms_map=payment_terms_map,
             )
             # 상세표 아래: 연체개월수 요약 — 거래처(상위검색) 무시, 담당자 필터만 적용
-            # staff 기준 메타는 cache → 거래처만 바꿔도 연체패널 재계산 부담 감소
             if not staff_debt_df.empty:
                 _staff_num = [c for c in staff_debt_df.columns if c not in ("거래처", "구분")]
                 _staff_months = [c for c in _staff_num if staff_debt_df[c].abs().sum() > 0]
@@ -11000,134 +9775,109 @@ with tab6:
         btn_zoom_out = st.button("➖ 축소 (-)", use_container_width=True)
     with ctrl_c4:
         btn_reset_map = st.button("🏠 기본 위치", use_container_width=True)
-
-    # 재시작·다른 탭 조작 시 전체 지오코딩이 돌지 않도록: 조회 버튼 후에만 로드
-    if "show_map" not in st.session_state:
-        st.session_state.show_map = False
-    if btn_load_map:
+    if btn_load_map or btn_zoom_in or btn_zoom_out or btn_reset_map or "show_map" not in st.session_state:
         st.session_state.show_map = True
-        st.session_state.map_force_rebuild = True
-    if btn_zoom_in or btn_zoom_out or btn_reset_map:
-        st.session_state.show_map = True
-
-    map_filter_fp = (
-        tuple(sorted(map_selected_staff or [])),
-        tuple(sorted(map_selected_client or [])),
-    )
-
-    if not st.session_state.show_map:
-        st.info("담당자·거래처를 선택한 뒤 **지도 새로고침/조회**를 누르면 지도를 불러옵니다. (재시작 시 자동 조회하지 않아 앱이 빨라집니다)")
-    else:
-        need_rebuild = (
-            st.session_state.pop("map_force_rebuild", False)
-            or st.session_state.get("tab6_map_fp") != map_filter_fp
-            or "tab6_map_df" not in st.session_state
-        )
-
-        if need_rebuild:
-            target_map_df = df_base.copy()
-            if map_selected_client:
-                target_map_df = target_map_df[target_map_df["거래처"].isin(map_selected_client)]
-            elif map_selected_staff:
-                target_map_df = target_map_df[target_map_df["담당자"].isin(map_selected_staff)]
-
+    
+    if st.session_state.show_map:
+        target_map_df = df_base.copy()
+    
+        if map_selected_client:
+            target_map_df = target_map_df[target_map_df["거래처"].isin(map_selected_client)]
+        elif map_selected_staff:
+            target_map_df = target_map_df[target_map_df["담당자"].isin(map_selected_staff)]
+    
+        if not target_map_df.empty:
+            unique_clients_df = target_map_df[['거래처', '담당자']].drop_duplicates(subset=['거래처'])
+        
             map_data = []
-            invalid_clients = []
-            if not target_map_df.empty:
-                unique_clients_df = target_map_df[["거래처", "담당자"]].drop_duplicates(subset=["거래처"])
-                total_cnt = len(unique_clients_df)
-                disk_cache = _load_kakao_geocode_disk()
-                dirty = [False]
-                progress_text = "주소 좌표 변환 중 (디스크 캐시 우선) 🚀"
-                my_bar = st.progress(0, text=progress_text)
-
-                for i, (_, row) in enumerate(unique_clients_df.iterrows()):
-                    c_name = row["거래처"]
-                    c_staff = row["담당자"]
-                    c_addr_raw = resolve_client_address(c_name, addr_dict)
-                    c_addr = c_addr_raw if c_addr_raw else "등록된 주소 정보가 없습니다."
-                    lat, lon = get_lat_lon_kakao_disk(c_name, c_addr, rest_api_key, disk_cache, dirty)
-                    if lat is not None and lon is not None:
-                        map_data.append(
-                            {
-                                "거래처": c_name,
-                                "담당자": c_staff,
-                                "주소": c_addr,
-                                "lat": lat,
-                                "lon": lon,
-                            }
-                        )
-                    else:
-                        invalid_clients.append(c_name)
-                    my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i + 1}/{total_cnt})")
-                my_bar.empty()
-                if dirty[0]:
-                    _save_kakao_geocode_disk(disk_cache)
-
-            st.session_state.tab6_map_df = pd.DataFrame(map_data) if map_data else pd.DataFrame()
-            st.session_state.tab6_invalid_clients = invalid_clients
-            st.session_state.tab6_map_fp = map_filter_fp
-
-        map_df = st.session_state.get("tab6_map_df", pd.DataFrame())
-        invalid_clients = st.session_state.get("tab6_invalid_clients", [])
-
-        if map_df is not None and not map_df.empty:
-            center_lat = float(map_df["lat"].mean())
-            center_lon = float(map_df["lon"].mean())
-
-            default_zoom = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
-
-            if "map_zoom" not in st.session_state or btn_reset_map or btn_load_map:
-                st.session_state.map_zoom = default_zoom
-
-            if btn_zoom_in:
-                st.session_state.map_zoom = min(st.session_state.map_zoom + 2, 20)
-            elif btn_zoom_out:
-                st.session_state.map_zoom = max(st.session_state.map_zoom - 2, 2)
-
-            vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
-            vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
-            vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
-            dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
-
-            # iPad 전용: Plotly Mapbox WebGL이 Safari에서 마커/범례를 검정으로 그림
-            # → Leaflet 원형 마커(명시 HEX)로만 우회. 맥 경로(아래 else)는 일절 변경 없음.
-            if is_touch_ui():
-                _palette = [
-                    "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
-                    "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
-                    "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#8C564B",
-                ]
-                _staffs = sorted(map_df["담당자"].astype(str).unique())
-                _cmap = {s: _palette[i % len(_palette)] for i, s in enumerate(_staffs)}
-                _pts = []
-                for _, _r in map_df.iterrows():
-                    _staff = str(_r["담당자"])
-                    _pts.append({
-                        "lat": float(_r["lat"]),
-                        "lon": float(_r["lon"]),
-                        "name": str(_r["거래처"]),
-                        "staff": _staff,
-                        "addr": str(_r.get("주소") or ""),
-                        "color": _cmap.get(_staff, "#636EFA"),
+            total_cnt = len(unique_clients_df)
+            progress_text = "최초 1회 주소 좌표 변환 중입니다 (이후부터는 빠르게 로딩됩니다) 🚀"
+            my_bar = st.progress(0, text=progress_text)
+        
+            invalid_clients = [] 
+        
+            for i, (_, row) in enumerate(unique_clients_df.iterrows()):
+                c_name = row['거래처']
+                c_staff = row['담당자']
+            
+                c_addr_raw = resolve_client_address(c_name, addr_dict)
+                c_addr = c_addr_raw if c_addr_raw else "등록된 주소 정보가 없습니다."
+            
+                lat, lon = get_lat_lon_kakao(c_name, c_addr, rest_api_key)
+            
+                if lat is not None and lon is not None:
+                    map_data.append({
+                        "거래처": c_name,
+                        "담당자": c_staff,
+                        "주소": c_addr,
+                        "lat": lat,
+                        "lon": lon
                     })
-                _legend_html = "".join(
-                    f'<span style="display:inline-flex;align-items:center;margin:0 10px 6px 0;'
-                    f'font-size:13px;color:#334155;">'
-                    f'<span style="width:12px;height:12px;border-radius:50%;background:{_cmap[s]};'
-                    f'display:inline-block;margin-right:5px;border:1px solid #94A3B8;"></span>'
-                    f"{html.escape(s)}</span>"
-                    for s in _staffs
-                )
-                _use_sat = "일반" not in map_style_choice
-                _tiles_js = (
-                    f'L.tileLayer("{vworld_sat}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
-                    f'L.tileLayer("{vworld_hybrid}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
-                    if _use_sat
-                    else f'L.tileLayer("{vworld_base}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
-                )
-                _pts_json = json.dumps(_pts, ensure_ascii=False)
-                _leaflet_html = f"""<!DOCTYPE html>
+                else:
+                    invalid_clients.append(c_name)
+                
+                my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i+1}/{total_cnt})")
+        
+            my_bar.empty()
+        
+            if map_data:
+                map_df = pd.DataFrame(map_data)
+                center_lat = map_df['lat'].mean()
+                center_lon = map_df['lon'].mean()
+            
+                default_zoom = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
+            
+                if "map_zoom" not in st.session_state or btn_reset_map or btn_load_map:
+                    st.session_state.map_zoom = default_zoom
+            
+                if btn_zoom_in: 
+                    st.session_state.map_zoom = min(st.session_state.map_zoom + 2, 20)
+                elif btn_zoom_out: 
+                    st.session_state.map_zoom = max(st.session_state.map_zoom - 2, 2) 
+            
+                vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
+                vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
+                vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
+                dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
+
+                # iPad 전용: Plotly Mapbox WebGL이 Safari에서 마커/범례를 검정으로 그림
+                # → Leaflet 원형 마커(명시 HEX)로만 우회. 맥 경로(아래 else)는 일절 변경 없음.
+                if is_touch_ui():
+                    _palette = [
+                        "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
+                        "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
+                        "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#8C564B",
+                    ]
+                    _staffs = sorted(map_df["담당자"].astype(str).unique())
+                    _cmap = {s: _palette[i % len(_palette)] for i, s in enumerate(_staffs)}
+                    _pts = []
+                    for _, _r in map_df.iterrows():
+                        _staff = str(_r["담당자"])
+                        _pts.append({
+                            "lat": float(_r["lat"]),
+                            "lon": float(_r["lon"]),
+                            "name": str(_r["거래처"]),
+                            "staff": _staff,
+                            "addr": str(_r.get("주소") or ""),
+                            "color": _cmap.get(_staff, "#636EFA"),
+                        })
+                    _legend_html = "".join(
+                        f'<span style="display:inline-flex;align-items:center;margin:0 10px 6px 0;'
+                        f'font-size:13px;color:#334155;">'
+                        f'<span style="width:12px;height:12px;border-radius:50%;background:{_cmap[s]};'
+                        f'display:inline-block;margin-right:5px;border:1px solid #94A3B8;"></span>'
+                        f"{html.escape(s)}</span>"
+                        for s in _staffs
+                    )
+                    _use_sat = "일반" not in map_style_choice
+                    _tiles_js = (
+                        f'L.tileLayer("{vworld_sat}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                        f'L.tileLayer("{vworld_hybrid}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                        if _use_sat
+                        else f'L.tileLayer("{vworld_base}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                    )
+                    _pts_json = json.dumps(_pts, ensure_ascii=False)
+                    _leaflet_html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -11164,47 +9914,47 @@ with tab6:
 }})();
 </script>
 </body></html>"""
-                components.html(_leaflet_html, height=620, scrolling=False)
-            else:
-                fig_map = px.scatter_mapbox(
-                    map_df,
-                    lat="lat",
-                    lon="lon",
-                    color="담당자",
-                    hover_name="거래처",
-                    hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
-                    zoom=st.session_state.map_zoom,
-                    center={"lat": center_lat, "lon": center_lon},
-                    height=600
-                )
-                fig_map.update_traces(marker=dict(size=14, opacity=0.9))
-                if "일반" in map_style_choice:
-                    mapbox_layers = [
-                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
-                    ]
+                    components.html(_leaflet_html, height=620, scrolling=False)
                 else:
-                    mapbox_layers = [
-                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
-                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
-                    ]
-                fig_map.update_layout(
-                    mapbox_style="white-bg",
-                    mapbox_layers=mapbox_layers,
-                    margin={"r": 0, "t": 10, "l": 0, "b": 0},
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=-0.15,
-                        xanchor="center",
-                        x=0.5
+                    fig_map = px.scatter_mapbox(
+                        map_df,
+                        lat="lat",
+                        lon="lon",
+                        color="담당자",
+                        hover_name="거래처",
+                        hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
+                        zoom=st.session_state.map_zoom,
+                        center={"lat": center_lat, "lon": center_lon},
+                        height=600
                     )
-                )
-                render_plotly_chart(fig_map, use_container_width=True, key=dynamic_key, allow_drag=True)
-            if invalid_clients:
-                with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
-                    st.write(", ".join(invalid_clients))
-        else:
-            st.info("조건에 맞는 거래처 데이터가 없습니다.")
+                    fig_map.update_traces(marker=dict(size=14, opacity=0.9))
+                    if "일반" in map_style_choice:
+                        mapbox_layers = [
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
+                        ]
+                    else:
+                        mapbox_layers = [
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
+                        ]
+                    fig_map.update_layout(
+                        mapbox_style="white-bg",
+                        mapbox_layers=mapbox_layers,
+                        margin={"r": 0, "t": 10, "l": 0, "b": 0},
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.15,
+                            xanchor="center",
+                            x=0.5
+                        )
+                    )
+                    render_plotly_chart(fig_map, use_container_width=True, key=dynamic_key, allow_drag=True)
+                if invalid_clients:
+                    with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
+                        st.write(", ".join(invalid_clients))
+            else:
+                st.info("조건에 맞는 거래처 데이터가 없습니다.")
 # Tab 7: 🏭 설비 재고 현황
 with tab7:
     t7_c1, t7_c2 = st.columns([4, 1])
@@ -12090,9 +10840,7 @@ with tab10:
 
         _wl_path = getattr(_worklog_tab, "__file__", None) or ""
         _wl_mtime = os.path.getmtime(_wl_path) if _wl_path and os.path.exists(_wl_path) else 0
-        if "_wl_mod_mtime" not in st.session_state:
-            st.session_state["_wl_mod_mtime"] = _wl_mtime
-        elif st.session_state.get("_wl_mod_mtime") != _wl_mtime:
+        if st.session_state.get("_wl_mod_mtime") != _wl_mtime:
             _worklog_tab = importlib.reload(_worklog_tab)
             st.session_state["_wl_mod_mtime"] = _wl_mtime
             sys.modules["worklog_tab"] = _worklog_tab
@@ -12110,31 +10858,3 @@ with tab10:
         else:
             st.error(f"일일업무일지 탭 오류: {_wl_err}")
             st.info("다른 탭은 정상 이용 가능합니다.")
-
-with tab11:
-    # 시장조사 탭 전용 — 다른 탭과 공유 상태/헬퍼를 쓰지 않음.
-    try:
-        import importlib
-        import os
-        import sys
-
-        import market_research_tab as _mr_tab
-
-        _mr_path = getattr(_mr_tab, "__file__", None) or ""
-        _mr_mtime = os.path.getmtime(_mr_path) if _mr_path and os.path.exists(_mr_path) else 0
-        if "_mr_mod_mtime" not in st.session_state:
-            st.session_state["_mr_mod_mtime"] = _mr_mtime
-        elif st.session_state.get("_mr_mod_mtime") != _mr_mtime:
-            _mr_tab = importlib.reload(_mr_tab)
-            st.session_state["_mr_mod_mtime"] = _mr_mtime
-            sys.modules["market_research_tab"] = _mr_tab
-        _mr_tab.render_market_research_tab(latest_update_str)
-    except ModuleNotFoundError:
-        st.error(
-            "시장조사 모듈(`market_research_tab.py`)을 찾을 수 없습니다. "
-            "배포 파일에 포함되었는지 확인해 주세요."
-        )
-        st.info("다른 탭은 정상 이용 가능합니다.")
-    except Exception as _mr_err:
-        st.error(f"시장조사 탭 오류: {_mr_err}")
-        st.info("다른 탭은 정상 이용 가능합니다. 새로고침 후에도 같으면 관리자에게 오류 문구를 보내 주세요.")

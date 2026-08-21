@@ -32,7 +32,7 @@ _DONE = False
 
 
 def resolve_drive_dashboard_copy() -> Optional[str]:
-    """Google Drive「내 드라이브/dashboard 복사본/uproad」절대경로."""
+    """Google Drive「내 드라이브/dashboard 복사본」절대경로. 없으면 None."""
     home = os.path.expanduser("~")
     cloud = os.path.join(home, "Library", "CloudStorage")
     if not os.path.isdir(cloud):
@@ -46,15 +46,9 @@ def resolve_drive_dashboard_copy() -> Optional[str]:
             continue
         root = os.path.join(cloud, name)
         for drive_label in ("내 드라이브", "My Drive"):
-            base = os.path.join(root, drive_label, DRIVE_COPY_NAME)
-            if os.path.isdir(base):
-                # 💡 [핵심 수정] dashboard 복사본 폴더 안에 uproad 폴더를 만들고 최종 목적지로 지정!
-                uproad_dir = os.path.join(base, "uproad")
-                try:
-                    os.makedirs(uproad_dir, exist_ok=True)
-                    return uproad_dir
-                except OSError:
-                    return base
+            candidate = os.path.join(root, drive_label, DRIVE_COPY_NAME)
+            if os.path.isdir(candidate):
+                return candidate
     return None
 
 

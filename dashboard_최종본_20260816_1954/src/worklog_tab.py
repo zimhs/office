@@ -96,7 +96,7 @@ _WL_LINES_CSS = """
   background: #fff;
   color: #0F172A;
   font-family: 'Batang','BatangChe','바탕','바탕체','바탕글','Apple Myungjo','Nanum Myeongjo',serif;
-  font-size: 15px;
+  font-size: 11px;
   letter-spacing: 0;
   line-height: 1.2;
   outline: none;
@@ -385,10 +385,10 @@ def _scrub_dummy_label(val: str) -> str:
 
 
 def _char_units(ch: str) -> int:
-    """파이썬과 화면(JS)의 글자 폭 계산을 100% 일치시켜 칸 분할(두 칸 생성) 오류 방지"""
-    if not ch:
-        return 0
-    
+    """엑셀 동아시아 폭: 전각·한글·호환자모=2, 그 외=1."""
+    ea = unicodedata.east_asian_width(ch)
+    if ea in ("F", "W", "A"):
+        return 2
     o = ord(ch)
     if (
         0xAC00 <= o <= 0xD7A3
@@ -455,8 +455,11 @@ def _set_body_font(cell) -> None:
 
 @lru_cache(maxsize=1)
 def _content_line_units() -> int:
-    """원본 엑셀 내용칸(G:X 병합) 폭 — 반각=1, 한글=2."""
-    fallback = 76
+    """원본 엑셀 내용칸(G:X 병합) 폭 — 반각=1, 한글=2.
+
+    미리보기와 같은 칸 넘김. 한글 약 1자 여유만 두고 다음 칸으로 넘긴다.
+    """
+    fallback = 64
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -467,10 +470,9 @@ def _content_line_units() -> int:
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        # 💡 원본(1.06 비율, +2)을 기준으로 한글 1자(+2)를 더 추가합니다.
-        units = int(total * (11 / 14) * 0.98) + 6
-        # 상한선도 원본(75)에서 딱 2칸만 늘려줍니다.
-        return max(60, min(units, 76))
+        # 본문 14pt 보정 후 한글 1자(2단위) 여유
+        units = int(total * (11 / 14) * 1.06) - 6
+        return max(60, min(units, 65))
     except Exception:
         return fallback
 
@@ -478,7 +480,7 @@ def _content_line_units() -> int:
 @lru_cache(maxsize=1)
 def _client_line_units() -> int:
     """원본 엑셀 거래처칸(C:F 병합) 폭 — 반각=1, 한글=2."""
-    fallback = 18
+    fallback = 14
     if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
         return fallback
     try:
@@ -489,8 +491,8 @@ def _client_line_units() -> int:
             for c in range(WL_CLIENT_COL_START, WL_CLIENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 1.05) + 2
-        return max(12, min(units, 20))
+        units = int(total * (11 / 14) * 1.05) - 2
+        return max(12, min(units, 16))
     except Exception:
         return fallback
 
@@ -664,21 +666,16 @@ def resolve_worklog_archive_root() -> str | None:
 
 
 def worklog_archive_path(d: date) -> str | None:
-    """달력 외 보관 경로: …/일지/{년도}/{월}월/{YYYY-MM-DD}.xlsx (년도/월 폴더 없으면 생성)."""
+    """달력 외 보관 경로: …/일지/{년도}/{YYYY-MM-DD}.xlsx (년도 폴더 없으면 생성)."""
     root = resolve_worklog_archive_root()
     if not root:
         return None
-    
-    # 💡 [핵심 수정] 년도 폴더 아래에 'X월' 폴더 경로를 추가합니다.
-    month_dir = os.path.join(root, str(d.year), f"{d.month}월")
-    
+    year_dir = os.path.join(root, str(d.year))
     try:
-        # makedirs는 중간 경로(년도 폴더)가 없으면 같이 만들어 줍니다.
-        os.makedirs(month_dir, exist_ok=True)
+        os.makedirs(year_dir, exist_ok=True)
     except OSError:
         return None
-        
-    return os.path.join(month_dir, f"{d.isoformat()}.xlsx")
+    return os.path.join(year_dir, f"{d.isoformat()}.xlsx")
 
 
 def worklog_path(d: date) -> str:
@@ -1051,11 +1048,6 @@ def workbook_to_html(path: str) -> str:
     for c in range(WL_MIN_COL, WL_MAX_COL + 1):
         w = _excel_col_width(ws, c)
         px = _excel_width_to_px(w)
-        
-        # 💡 [핵심 추가] 글자가 잘리지 않도록 미리보기 표의 내용칸(G열~X열, 7~24) 너비를 확 늘려줍니다.
-        if 7 <= c <= 24:
-            px += 2  # 각 열마다 6픽셀씩 넓힙니다 (전체 약 108픽셀 확장되어 두 글자가 넉넉히 들어갑니다)
-            
         col_widths.append(px)
         total_w += px
 
@@ -1109,26 +1101,13 @@ def workbook_to_html(path: str) -> str:
             va = align.vertical or "middle"
             if ha == "general":
                 ha = "left"
-            if r < 9:
-                va = "middle"    
-            # 익일업무·특이사항 라벨(C열 병합) 및 결재란: 원본처럼 세로 글자
+            # 익일업무·특이사항 라벨(C열 병합): 원본처럼 세로 글자
             is_side_label = c == 3 and (
                 (r == 40 and rs >= 3) or (r == 44 and rs >= 3)
             )
-            
-            # 텍스트 공백/줄바꿈 제거 후 확인
-            _text_clean = str(text).replace(" ", "").replace("\u3000", "").replace("\n", "") if text else ""
-            
-            # 엑셀 세로쓰기가 적용되었거나, '결재' 글자이면서 세로 병합(rs>=2)된 좁은 칸이면 세로 텍스트로 취급
-            is_vertical = is_side_label or getattr(align, "textRotation", 0) == 255 or (_text_clean == "결재" and rs >= 2 and cs == 1)
-
-            if is_vertical:
+            if is_side_label:
                 ha = "center"
                 va = "middle"
-            # 💡 거래처(client)와 내용(content) 칸이면 무조건 좌측 정렬 강제
-            elif is_client or is_content:
-                ha = "left"
-                
             fill = _cell_fill_color(cell) or "#FFFFFF"
             border = _border_css(cell)
             span = ""
@@ -1136,17 +1115,15 @@ def workbook_to_html(path: str) -> str:
                 span += f' rowspan="{rs}"'
             if cs > 1:
                 span += f' colspan="{cs}"'
-                
             # 소프트 빈 줄(항목 안 빈 칸)은 화면에서도 비어 보이게
             if text in (_WL_SOFT_BLANK, "\u00a0"):
                 text = ""
             elif is_content and text.strip() == "" and text != "":
                 text = ""
-                
             # 연속 공백·선행 공백이 HTML에서 사라지지 않게
-            if is_vertical and text.strip():
-                # 공백 제거 후 글자마다 세로 배치 (결재 / 익일업무 / 특이사항)
-                chars = [ch for ch in _text_clean if ch]
+            if is_side_label and text.strip():
+                # 공백 제거 후 글자마다 세로 배치 (익일업무 / 특이사항)
+                chars = [ch for ch in text.replace(" ", "").replace("\u3000", "") if ch]
                 esc = "<br>".join(html.escape(ch) for ch in chars)
             else:
                 esc = (
@@ -1154,14 +1131,13 @@ def workbook_to_html(path: str) -> str:
                     .replace(" ", "&nbsp;")
                     .replace("\n", "<br>")
                 )
-                
             # 내용·거래처 칸: 원본 칸 폭을 넘기지 않게 clip (초과분은 다음 칸으로 분할)
             if is_content or is_client:
                 white = "nowrap"
                 overflow = "hidden"
                 text_overflow = "clip"
                 zidx = ""
-            elif is_vertical:
+            elif is_side_label:
                 white = "normal"
                 overflow = "hidden"
                 text_overflow = "clip"
@@ -1171,14 +1147,12 @@ def workbook_to_html(path: str) -> str:
                 overflow = "visible"
                 text_overflow = "clip"
                 zidx = ""
-                
             # 병합 셀 폭 = 포함 열 합 (고정 레이아웃에서 원본과 같은 채움감)
             c0 = c - WL_MIN_COL
             span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
             width_css = f"width:{span_w}px;min-width:{span_w}px;max-width:{span_w}px;" if span_w else ""
-
-            # 💡 [누락 복구] 제가 실수로 날려버린 폰트 및 여백 설정 변수를 다시 살립니다!
-            if is_content or is_client or is_body_d or is_vertical:
+            # 바탕글(바탕체) 우선 — Nanum/고딕으로 대체되지 않게
+            if is_content or is_client or is_body_d or is_side_label:
                 font_stack = (
                     "'Batang','BatangChe','바탕','바탕체','바탕글',"
                     "'Apple Myungjo','AppleMyungjo','Nanum Myeongjo',serif"
@@ -1188,38 +1162,23 @@ def workbook_to_html(path: str) -> str:
                     f"'{html.escape(fname_css)}','Batang','BatangChe',"
                     f"'Apple Myungjo','Malgun Gothic',serif"
                 )
-                
-            pad_css = "padding:4px 1px;" if is_vertical else "padding:0 2px;"
-
-            # 💡 [최종 수정] "담당" 칸(1~8행)이 위로 쏠리지 않도록 
-            # 높이 고정 및 방해 속성을 모두 제거하고 순수 중앙 정렬에 맡깁니다.
-            if is_vertical:
-                line_css = f"line-height:{max(fsize_px * 1.35, fsize_px + 2):.2f}px;"
-            else:
-                line_css = f"line-height:{line_h_px:.2f}px;"
-
-            if r < 9 and not is_vertical:
-                # 결재란 상단("담당" 등)은 방해되는 CSS 모두 제거하여 완벽한 중앙 정렬
-                style = (
-                    f"box-sizing:border-box;{width_css}"
-                    f"font-family:{font_stack};"
-                    f"font-size:{fsize_px:.4f}px;font-weight:{bold};"
-                    f"text-align:center; vertical-align:middle;"
-                    f"background:{fill}; {border} padding:0;"
-                )
-            else:
-                # 본문 등 나머지 칸
-                style = (
-                    f"box-sizing:border-box;{width_css}{zidx}"
-                    f"font-family:{font_stack};"
-                    f"font-size:{fsize_px:.4f}px;font-weight:{bold};"
-                    f"text-align:{ha};vertical-align:{va};"
-                    f"background:{fill};{border}"
-                    f"{pad_css}white-space:{white};overflow:{overflow};"
-                    f"text-overflow:{text_overflow};word-break:keep-all;"
-                    f"{line_css}"
-                )
-            
+            pad_css = "padding:4px 1px;" if is_side_label else "padding:0 2px;"
+            line_css = (
+                f"line-height:{max(fsize_px * 1.35, fsize_px + 2):.2f}px;"
+                if is_side_label
+                else f"line-height:{line_h_px:.2f}px;"
+            )
+            style = (
+                f"box-sizing:border-box;{width_css}{zidx}"
+                f"font-family:{font_stack};"
+                f"font-size:{fsize_px:.4f}px;font-weight:{bold};"
+                f"text-align:{ha};vertical-align:{va};"
+                f"background:{fill};{border}"
+                f"{pad_css}white-space:{white};overflow:{overflow};"
+                f"text-overflow:{text_overflow};word-break:keep-all;"
+                f"height:{height_px}px;min-height:{height_px}px;"
+                f"{line_css}"
+            )
             tds.append(f'<td{span} style="{style}">{esc}</td>')
         rows_html.append(
             f'<tr style="height:{height_px}px;box-sizing:border-box;">'
@@ -1228,34 +1187,10 @@ def workbook_to_html(path: str) -> str:
 
     colgroup = "".join(f'<col style="width:{w}px">' for w in col_widths)
     wb.close()
-    
-    # 💡 [수정] 로고를 표 바깥이 아닌, 표 내부의 마지막 줄(투명한 칸)로 만듭니다.
-    import base64
-    logo_tr = ""
-    logo_path = os.path.join(WORKLOG_DIR, "logo.png")
-    
-    if os.path.exists(logo_path):
-        try:
-            with open(logo_path, "rb") as img_f:
-                b64_img = base64.b64encode(img_f.read()).decode("utf-8")
-            # 표 26칸을 하나로 합치고 테두리 없이 로고만 띄웁니다.
-            logo_tr = f'''
-            <tr style="border:none; background:#fff;">
-              <td colspan="26" style="text-align:center; padding-top:25px; padding-bottom:25px; border:none;">
-                <img src="data:image/png;base64,{b64_img}" alt="신일가스 로고" style="height: 85px; opacity: 1.0;">
-              </td>
-            </tr>
-            '''
-        except Exception:
-            pass
-
     return f"""
     <table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;box-sizing:border-box;">
       <colgroup>{colgroup}</colgroup>
-      <tbody>
-        {"".join(rows_html)}
-        {logo_tr}
-      </tbody>
+      <tbody>{"".join(rows_html)}</tbody>
     </table>
     """
 
@@ -1266,8 +1201,8 @@ def _a4_print_fit(raw_w: int, raw_h: int) -> float:
     # A4 210×297mm, 실사용 ~185×270mm ≈ 700×1020px @96dpi
     if raw_w <= 0 or raw_h <= 0:
         return 1.0
-    fit = min(1.0, 740.0 / float(raw_w), 1050.0 / float(raw_h))
-    return max(0.2, min(1.0, fit * 0.96))
+    fit = min(1.0, 640.0 / float(raw_w), 960.0 / float(raw_h))
+    return max(0.2, min(1.0, fit * 0.88))
 
 
 def render_worklog_view_html(
@@ -1369,9 +1304,9 @@ def render_worklog_view_html(
           table.style.width = '{raw_w}px';
           var w = Math.max(table.scrollWidth, table.offsetWidth, 1);
           var h = Math.max(table.scrollHeight, table.offsetHeight, 1);
-          var maxW = 740;
-          var maxH = 1050;
-          var s = Math.min(1, maxW / w, maxH / h) * 0.96;
+          var maxW = 620;
+          var maxH = 920;
+          var s = Math.min(1, maxW / w, maxH / h) * 0.92;
           if (s < 0.25) s = 0.25;
           wlApplyZoom(s);
         }}
@@ -1441,7 +1376,7 @@ def render_worklog_view_html(
 <title>일일업무일지</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  @page {{ size: A4 portrait; margin: 8mm; }}
+  @page {{ size: A4 portrait; margin: 12mm; }}
   html, body {{
     margin:0; padding:0; background:#fff;
     overflow:{body_overflow} !important;
@@ -1539,7 +1474,7 @@ def _grouped_entries_from_cells(cells: dict) -> list[dict]:
             blank_run += 1
             continue
 
-        if g_whitespace_only or (soft_blank and not client):
+        if g_whitespace_only or soft_blank:
             blank_run = 0
             if entries:
                 entries[-1].setdefault("lines", []).append("")
@@ -3059,14 +2994,6 @@ def _read_editor_entries(d: date) -> list[dict]:
             blank_after = _entry_blank_after(stored[i], 1)
         else:
             client, content, blank_after, lines, client_lines = "", "", 1, [], []
-            
-        # 🟢 [안전장치] 타이밍 문제로 1번 칸(i=0)이 억울하게 날아가는 현상 방지!
-        if i == 0 and not client and not content and len(stored) > 0:
-            client = str(stored[0].get("client") or "")
-            content = str(stored[0].get("content") or "")
-            client_lines = stored[0].get("client_lines") or []
-            lines = stored[0].get("lines") or []
-            
         out.append(
             {
                 "client": client,
@@ -3076,7 +3003,6 @@ def _read_editor_entries(d: date) -> list[dict]:
                 "blank_after": blank_after,
             }
         )
-        
     return out or [{"client": "", "client_lines": [], "content": "", "lines": [], "blank_after": 1}]
 
 
@@ -3741,7 +3667,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         saved = list_saved_worklog_dates()
         _init_widget_state(selected)
-        draft = _cells_from_widgets(selected)
+        draft = _view_cells_for_preview(selected)
 
         # 인쇄 패널이 열려 있으면 본화면 대신 인쇄 UI만 (팝업 중첩·취소 반복 방지)
         if st.session_state.get("wl_print_panel"):
@@ -3839,16 +3765,32 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     st.session_state[_left_excel_key] = True
                     st.session_state[_left_path_key] = xlsx_abs
                     st.session_state["wl_dialog_preview_path"] = xlsx_abs
-                    
                     # 하단 원본 양식 캐시도 즉시 갱신
-                    form_sig = json.dumps(cells_now, ensure_ascii=False)
-                    st.session_state[f"wl_form_sig_v14_{selected.isoformat()}"] = form_sig
+                    form_sig = json.dumps(cells_now, ensure_ascii=False, sort_keys=True)
+                    st.session_state[f"wl_form_sig_v14_{selected.isoformat()}"] = None
                     st.session_state["_wl_force_form_sig"] = form_sig
-                    
-                    st.success("✅ 엑셀 미리보기 화면이 갱신되었습니다.")
+                    # 맥 로컬: Excel 실행 + 인쇄 미리보기까지. Cloud는 화면 양식만.
+                    if platform.system() == "Darwin":
+                        ok, msg = open_excel_print_preview(
+                            xlsx_abs, prefer_print_dialog=True
+                        )
+                        if ok:
+                            st.success(msg)
+                        else:
+                            st.warning(msg)
+                    elif _wl_quiet_ui():
+                        st.caption(
+                            "Cloud에서는 왼쪽 미리보기와 「인쇄창열기」로 확인하세요."
+                        )
                 except Exception as e:
-                    st.error(f"미리보기 생성 중 오류가 발생했습니다: {e}")
                     st.session_state[_left_excel_key] = False
+                    if _wl_quiet_ui():
+                        st.error(
+                            "엑셀 미리보기를 적용하지 못했습니다. "
+                            "「인쇄창열기」로 출력해 주세요."
+                        )
+                    else:
+                        st.error(f"엑셀 미리보기 오류: {e}")
 
             _show_excel_left = bool(st.session_state.get(_left_excel_key))
             if _show_excel_left:
@@ -3867,7 +3809,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 if xlsx_left and os.path.exists(str(xlsx_left)):
                     try:
                         # 저장(또는 「엑셀 미리보기」) 스냅샷만 표시 — 입력 중 재생성 안 함
-                        cells_view = _cells_from_widgets(selected)
+                        cells_view = _view_cells_for_preview(selected)
                         live_sig = json.dumps(
                             cells_view, ensure_ascii=False, sort_keys=True
                         )

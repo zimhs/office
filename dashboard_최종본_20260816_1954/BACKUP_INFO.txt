@@ -1,0 +1,12 @@
+dashboard 최종본 백업
+====================
+시각(로컬): 2026-08-16 19:54:33 KST
+Git commit: b014a51fd329bcd92d89ff9681809b5cb1e08833
+Short:      b014a51
+Message:    Update worklog summary/Excel preview only on save to avoid live-sync loading.
+Remote:     https://github.com/zimhs/office.git (main)
+Local tag:  final-worklog-20260816_1954
+
+포함: src/ 소스 (worklog_tab.py 중심)
+복구: src/worklog_tab.py → dashboard/worklog_tab.py 덮어쓰기
+또는: worklog_tab.py.final_20260816_1954 을 worklog_tab.py 로 복사

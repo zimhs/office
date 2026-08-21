@@ -1,0 +1,12 @@
+streamlit
+pandas
+numpy
+openpyxl
+altair
+matplotlib
+plotly
+python-pptx
+kaleido
+requests
+beautifulsoup4
+opendartreader>=0.3.2

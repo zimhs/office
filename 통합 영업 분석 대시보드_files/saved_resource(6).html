@@ -1,0 +1,43 @@
+
+<!-- saved from url=(0012)about:srcdoc -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"><script>
+        (function () {
+            var parentWin = window.parent;
+            if (!parentWin) return;
+            var parentDoc = parentWin.document;
+            function isTouchPad() {
+                try {
+                    var ua = parentWin.navigator.userAgent || "";
+                    var ios = /iPad|iPhone|iPod/.test(ua);
+                    var ipadOs = parentWin.navigator.platform === "MacIntel" && parentWin.navigator.maxTouchPoints > 1;
+                    return ios || ipadOs || parentDoc.documentElement.classList.contains("dashboard-touch-mode");
+                } catch (e) { return false; }
+            }
+            try {
+                var old = parentDoc.getElementById("dashboard-ipad-plotly-reset");
+                if (old) old.remove();
+            } catch (e0) {}
+            if (!isTouchPad()) return;
+            try {
+                parentDoc.cookie = "dashboard_touch=1; path=/; max-age=31536000; SameSite=Lax";
+            } catch (e1) {}
+            try {
+                if (!parentWin.__dashboardTouchUiSynced) {
+                    parentWin.__dashboardTouchUiSynced = true;
+                    var url = new URL(parentWin.location.href);
+                    if (url.searchParams.get("touch_ui") !== "1") {
+                        url.searchParams.set("touch_ui", "1");
+                        try { parentWin.history.replaceState(null, "", url.toString()); } catch (eHs3) {}
+                        try {
+                            if (parentWin.sessionStorage.getItem("__dash_touch_boot") !== "1") {
+                                parentWin.sessionStorage.setItem("__dash_touch_boot", "1");
+                                parentWin.location.replace(url.toString());
+                                return;
+                            }
+                        } catch (eSs3) {}
+                    }
+                }
+            } catch (e2) {}
+        })();
+        </script>
+        </head><body></body></html>
