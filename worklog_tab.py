@@ -152,7 +152,7 @@ export default function (component) {
 
   try {
     root.className = "wl-lines" + (variant === "client" ? " client" : "");
-    root.style.maxWidth = cellW + "px";
+    // 💡 거래처 칸의 최대 폭 제한을 완전히 해제합니다.
     root.style.width = "100%";
   } catch (e0) {}
 
@@ -4306,9 +4306,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         key=exp_key,
                     ):
                         
-                        # 💡 [핵심 수정] 항목 삭제와 빈 칸 수 조절이 좁은 화면에서 나란히 있지 않도록 강제 분리합니다.
-                        # 각각 화면 너비를 100% 차지하게 만들어 아이패드 세로모드 찌그러짐을 방지합니다.
-                        
+                        # 💡 [핵심 수정] 항목 삭제 버튼을 가로 100% 꽉 차게 단독 배치합니다.
                         if st.button(
                             "이 항목 삭제",
                             key=f"wl_del_btn_{iso2}_{i}",
@@ -4374,11 +4372,13 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                         or ""
                                     ),
                                 )
+                                
+                        # 💡 [핵심 수정] 거래처 칸과 내용 칸을 좌/우로 쪼개지 않고, 위/아래로 시원하게 100% 배치합니다.
                         if i == 0:
                             st.markdown(
                                 """
 <style>
-/* 거래처·내용 CCv2 입력칸 좌우·높이 정렬 */
+/* 거래처·내용 CCv2 입력칸 100% 확장 (좌우 분할 해제) */
 div[class*="st-key-wl_clients_comp_"],
 div[class*="st-key-wl_lines_comp_"] {
   width: 100%;
@@ -4387,20 +4387,17 @@ div[class*="st-key-wl_clients_comp_"] .wl-lines,
 div[class*="st-key-wl_lines_comp_"] .wl-lines {
   margin: 0;
 }
-div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) {
-  align-items: flex-start !important;
-}
 </style>
                                 """,
                                 unsafe_allow_html=True,
                             )
-                        col_client, col_content = st.columns(
-                            [1, 3.2], gap="small"
-                        )
-                        with col_client:
-                            _mount_entry_client_editor(iso2, i, _cu)
-                        with col_content:
-                            _mount_entry_lines_editor(iso2, i, max_u)
+                        
+                        st.markdown("<div style='font-size:13px;font-weight:700;color:#334155;margin:8px 0 4px;'>🏢 거래처</div>", unsafe_allow_html=True)
+                        _mount_entry_client_editor(iso2, i, _cu)
+                        
+                        st.markdown("<div style='font-size:13px;font-weight:700;color:#334155;margin:12px 0 4px;'>📝 내용</div>", unsafe_allow_html=True)
+                        _mount_entry_lines_editor(iso2, i, max_u)
+
                         _filled = len(
                             _lines_from_entry_widgets(
                                 iso2, i, keep_trailing_empty=False
@@ -4417,7 +4414,8 @@ div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) 
                                 1,
                             )
                         
-                        # 삭제 버튼 밑으로 '빈 칸 수 조절'이 넓게 혼자 들어가도록 밖으로 뺐습니다.
+                        st.markdown("<hr style='margin:16px 0 12px;border:none;border-top:1px dashed #E2E8F0;'>", unsafe_allow_html=True)
+                        # 빈 칸 수 조절도 단독으로 배치
                         st.number_input(
                             "다음 항목 전 빈 칸 수",
                             min_value=0,
