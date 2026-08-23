@@ -267,6 +267,38 @@ export default function (component) {
       input.addEventListener("compositionend", () => {
         commitValue("type");
       });
+      input.addEventListener("focus", () => {
+        if (inst.rebuilding) return;
+        let s = 0;
+        let e = 0;
+        try {
+          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
+          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
+        } catch (err) {}
+        setStateValue("focus", j);
+        setStateValue("caret", { s: s, e: e, j: j });
+      });
+      input.addEventListener("keyup", () => {
+        if (inst.rebuilding) return;
+        let s = 0;
+        let e = 0;
+        try {
+          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
+          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
+        } catch (err) {}
+        setStateValue("caret", { s: s, e: e, j: j });
+      });
+      input.addEventListener("click", () => {
+        if (inst.rebuilding) return;
+        let s = 0;
+        let e = 0;
+        try {
+          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
+          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
+        } catch (err) {}
+        setStateValue("focus", j);
+        setStateValue("caret", { s: s, e: e, j: j });
+      });
       input.addEventListener("blur", () => {
         commitValue("blur");
       });
@@ -314,7 +346,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v8",
+    "worklog_entry_lines_v9",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -539,6 +571,41 @@ export default function (component) {
 
   document.addEventListener("keydown", onKey, true);
 
+  function emitFocus(key) {
+    try { setTriggerValue("focus", String(key || "")); } catch (e) {}
+  }
+  function emitCaret(key, s, e) {
+    try {
+      setTriggerValue("caret", JSON.stringify({ key: key, s: s, e: e, t: Date.now() }));
+    } catch (e) {}
+  }
+  const onFocusIn = (e) => {
+    const info = resolveKey(e.target);
+    if (!info) return;
+    let s = 0;
+    let en = 0;
+    try {
+      s = typeof e.target.selectionStart === "number" ? e.target.selectionStart : 0;
+      en = typeof e.target.selectionEnd === "number" ? e.target.selectionEnd : s;
+    } catch (err) {}
+    emitFocus(info.key);
+    emitCaret(info.key, s, en);
+  };
+  const onSel = (e) => {
+    const info = resolveKey(e.target);
+    if (!info) return;
+    let s = 0;
+    let en = 0;
+    try {
+      s = typeof e.target.selectionStart === "number" ? e.target.selectionStart : 0;
+      en = typeof e.target.selectionEnd === "number" ? e.target.selectionEnd : s;
+    } catch (err) {}
+    emitCaret(info.key, s, en);
+  };
+  document.addEventListener("focusin", onFocusIn, true);
+  document.addEventListener("keyup", onSel, true);
+  document.addEventListener("click", onSel, true);
+
   if (focusKey) {
     const go = () => {
       const el = findInputForFocusKey(focusKey);
@@ -552,12 +619,15 @@ export default function (component) {
 
   return () => {
     document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("focusin", onFocusIn, true);
+    document.removeEventListener("keyup", onSel, true);
+    document.removeEventListener("click", onSel, true);
   };
 }
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v19",
+    "worklog_cell_nav_hook_v20",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -625,6 +695,29 @@ export default function (component) {
     return { key: kind + "_" + iso + "_" + ei + "_" + lj, el: t };
   }
 
+  function findInputForFocusKey(focusKey) {
+    if (!focusKey) return null;
+    let m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(focusKey);
+    if (m) {
+      const kind = m[1];
+      const isoVal = m[2];
+      const ei = m[3];
+      const lj = m[4];
+      const compNeedle =
+        (kind === "wl_ent_cl" ? "st-key-wl_clients_comp_" : "st-key-wl_lines_comp_") + isoVal + "_" + ei;
+      const wraps = document.querySelectorAll('div[class*="' + compNeedle + '"]');
+      for (let i = 0; i < wraps.length; i++) {
+        const el = wraps[i].querySelector('.wl-lines input[data-idx="' + lj + '"]');
+        if (el) return el;
+      }
+      const legacy = document.querySelector('div[class*="st-key-' + focusKey + '"] input');
+      if (legacy) return legacy;
+    }
+    return document.querySelector(
+      'div[class*="st-key-' + focusKey + '"] input, div[class*="st-key-' + focusKey + '"] textarea'
+    );
+  }
+
   function remember(t) {
     const info = resolveKey(t);
     if (!info) return;
@@ -639,12 +732,23 @@ export default function (component) {
   function insertChar(ch) {
     const t = document.activeElement;
     const live = resolveKey(t);
-    const src = live || last;
+    const src = last || live;
     if (!src || !src.key) {
+      const ak = (data && data.active_key) || "";
+      const ac = Number((data && data.active_caret) || 0);
+      if (ak) {
+        try {
+          setTriggerValue(
+            "insert",
+            JSON.stringify({ key: ak, ch: ch, use_active: true, s: ac, t: Date.now() })
+          );
+        } catch (err) {}
+        return;
+      }
       try { setTriggerValue("insert", JSON.stringify({ miss: true, ch: ch, t: Date.now() })); } catch (err) {}
       return;
     }
-    const el = live ? live.el : src.el;
+    const el = src.el || (live && live.el) || null;
     let s = 0; let e = 0;
     try {
       if (el && typeof el.selectionStart === "number") {
@@ -687,11 +791,22 @@ export default function (component) {
       btn.type = "button";
       btn.textContent = ch;
       btn.title = ch + " 삽입";
-      btn.addEventListener("pointerdown", function (ev) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        insertChar(ch);
-      });
+      const fire = (function (symbol) {
+        let lastAt = 0;
+        return function (ev) {
+          const now = Date.now();
+          if (now - lastAt < 350) return;
+          lastAt = now;
+          if (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+          }
+          insertChar(symbol);
+        };
+      })(ch);
+      btn.addEventListener("pointerdown", fire);
+      btn.addEventListener("touchend", fire);
+      btn.addEventListener("click", fire);
       root.appendChild(btn);
     }
   }
@@ -702,11 +817,13 @@ export default function (component) {
     remember(e.target || document.activeElement);
   };
   document.addEventListener("focusin", onFocusIn, true);
+  document.addEventListener("touchstart", onFocusIn, true);
   document.addEventListener("keyup", onSel, true);
   document.addEventListener("mouseup", onSel, true);
 
   return () => {
     document.removeEventListener("focusin", onFocusIn, true);
+    document.removeEventListener("touchstart", onFocusIn, true);
     document.removeEventListener("keyup", onSel, true);
     document.removeEventListener("mouseup", onSel, true);
   };
@@ -714,7 +831,7 @@ export default function (component) {
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v2",
+    "worklog_special_bar_v3",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -1676,12 +1793,15 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             while filled and filled[-1] == "": filled.pop()
             st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(filled)
 
+    def _on_clients_focus_change() -> None:
+        _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_client_key)
+
     result = _WL_LINES_EDITOR(
         key=ck,
         data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "variant": "client", "rev": int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0)},
         default={"lines": lines, "focus": focus_n}, 
         on_lines_change=_on_clients_change,
-        on_focus_change=lambda: None
+        on_focus_change=_on_clients_focus_change
     )
     
     out_lines = lines
@@ -1729,12 +1849,15 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             while filled and filled[-1] == "": filled.pop()
             st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(filled)
 
+    def _on_lines_focus_change() -> None:
+        _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_line_key)
+
     result = _WL_LINES_EDITOR(
         key=ck,
         data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "variant": "content", "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0)},
         default={"lines": lines, "focus": focus_n}, 
         on_lines_change=_on_lines_change,
-        on_focus_change=lambda: None
+        on_focus_change=_on_lines_focus_change
     )
     
     out_lines = lines
@@ -1754,15 +1877,127 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     return out
 
 
+def _remember_active_cell(iso: str, fk: str, pos: int) -> None:
+    st.session_state["wl_active_cell_key"] = fk
+    st.session_state[f"wl_focus_ln_{iso}"] = fk
+    st.session_state["wl_active_cell_sel"] = (pos, pos)
+    st.session_state[f"wl_focus_caret_{iso}"] = pos
+
+
+def _read_cell_value(iso: str, fk: str) -> str:
+    if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
+        return str(st.session_state.get(fk, "") or "")
+    m = re.match(r"^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)", fk)
+    if not m or m.group(2) != iso:
+        return ""
+    kind, ei, lj = m.group(1), int(m.group(3)), int(m.group(4))
+    if kind == "wl_ent_ln":
+        lines = _lines_from_entry_widgets(iso, ei, keep_trailing_empty=True)
+    else:
+        lines = _clients_from_widgets(iso, ei, keep_trailing_empty=True)
+    while len(lines) <= lj:
+        lines.append("")
+    return str(lines[lj] or "")
+
+
+def _insert_special_char_at_active(iso: str, ch: str) -> bool:
+    fk = str(st.session_state.get("wl_active_cell_key") or st.session_state.get(f"wl_focus_ln_{iso}") or "")
+    if not (
+        fk.startswith("wl_ent_ln_")
+        or fk.startswith("wl_ent_cl_")
+        or fk.startswith("wl_next_area_")
+        or fk.startswith("wl_notes_area_")
+    ):
+        st.session_state["wl_special_msg"] = "칸을 먼저 클릭한 뒤 특수문자를 누르세요"
+        return False
+    pos = int(st.session_state.get(f"wl_focus_caret_{iso}") or 0)
+    sel = st.session_state.get("wl_active_cell_sel")
+    if isinstance(sel, (list, tuple)) and len(sel) >= 1:
+        try:
+            pos = int(sel[0])
+        except (TypeError, ValueError):
+            pass
+    val = _read_cell_value(iso, fk)
+    pos = max(0, min(pos, len(val)))
+    new_val = val[:pos] + ch + val[pos:]
+    _apply_special_insert(iso, fk, new_val, pos + len(ch), ch)
+    return True
+
+
+def _sync_editor_focus_from_comp(iso: str, entry_i: int, comp_key: str, key_fn) -> None:
+    cur = st.session_state.get(comp_key)
+    if not isinstance(cur, dict):
+        return
+    try:
+        fj = int(cur.get("focus", -1))
+    except (TypeError, ValueError):
+        fj = -1
+    if fj < 0:
+        return
+    caret = cur.get("caret") if isinstance(cur.get("caret"), dict) else {}
+    try:
+        pos = int(caret.get("s", 0))
+    except (TypeError, ValueError):
+        pos = 0
+    _remember_active_cell(iso, key_fn(iso, entry_i, fj), pos)
+
+
+def _render_worklog_special_chars_touch(iso: str) -> None:
+    st.markdown(
+        """<style>
+        div[class*="st-key-wl_sp_touch_wrap_"] [data-testid="column"] { padding: 0 1px !important; }
+        div[class*="st-key-wl_sp_touch_wrap_"] button {
+          min-width: 2rem !important; min-height: 2rem !important;
+          padding: 0.15rem 0.2rem !important; font-size: 1rem !important;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+    with st.container(key=f"wl_sp_touch_wrap_{iso}"):
+        row_size = 8
+        for row_start in range(0, len(_WL_SPECIAL_CHARS), row_size):
+            chunk = _WL_SPECIAL_CHARS[row_start : row_start + row_size]
+            cols = st.columns(len(chunk))
+            for i, ch in enumerate(chunk):
+                idx = row_start + i
+                if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
+                    if _insert_special_char_at_active(iso, ch):
+                        _wl_rerun()
+
+
 def _render_worklog_special_chars(iso: str) -> None:
+    if _wl_quiet_ui():
+        _render_worklog_special_chars_touch(iso)
+        return
+
     def _on_insert():
         stt = st.session_state.get(f"wl_sp_bar_{iso}") or {}
         raw = stt.get("insert") if isinstance(stt, dict) else getattr(stt, "insert", None)
-        if not raw: return
+        if not raw:
+            return
         try:
-            obj = json.loads(str(raw)); fk, pos = str(obj.get("key") or ""), int(obj.get("s") or 0)
-        except Exception: return
-        if obj.get("miss"): st.session_state["wl_special_msg"] = "칸을 먼저 클릭한 뒤 특수문자를 누르세요"; return
+            obj = json.loads(str(raw))
+        except Exception:
+            return
+        if obj.get("miss"):
+            st.session_state["wl_special_msg"] = "칸을 먼저 클릭한 뒤 특수문자를 누르세요"
+            return
+        if obj.get("use_active"):
+            fk = str(obj.get("key") or "")
+            ch = str(obj.get("ch") or "")
+            if fk:
+                try:
+                    st.session_state[f"wl_focus_caret_{iso}"] = int(obj.get("s") or 0)
+                except (TypeError, ValueError):
+                    pass
+                st.session_state["wl_active_cell_key"] = fk
+            if _insert_special_char_at_active(iso, ch):
+                _wl_rerun()
+            return
+        try:
+            fk, pos = str(obj.get("key") or ""), int(obj.get("s") or 0)
+        except Exception:
+            return
         if not (
             fk.startswith("wl_ent_ln_")
             or fk.startswith("wl_ent_cl_")
@@ -1771,12 +2006,24 @@ def _render_worklog_special_chars(iso: str) -> None:
         ):
             return
         sig = f"{fk}\0{obj.get('v')}\0{pos}\0{obj.get('t')}"
-        if st.session_state.get(f"wl_special_done_{iso}") == sig: return
+        if st.session_state.get(f"wl_special_done_{iso}") == sig:
+            return
         st.session_state[f"wl_special_done_{iso}"] = sig
-        st.session_state[f"wl_do_special_{iso}"] = {"key": fk, "v": str(obj.get("v") if obj.get("v") is not None else ""), "s": pos, "ch": str(obj.get("ch") or "")}
-    
-    # 💡 이벤트 이름을 반드시 on_insert_change 형식으로 변경
-    _WL_SPECIAL_BAR(key=f"wl_sp_bar_{iso}", data={"iso": iso, "chars": list(_WL_SPECIAL_CHARS)}, on_insert_change=_on_insert)
+        st.session_state[f"wl_do_special_{iso}"] = {
+            "key": fk,
+            "v": str(obj.get("v") if obj.get("v") is not None else ""),
+            "s": pos,
+            "ch": str(obj.get("ch") or ""),
+        }
+        _wl_rerun()
+
+    active_key = str(st.session_state.get("wl_active_cell_key") or st.session_state.get(f"wl_focus_ln_{iso}") or "")
+    active_caret = int(st.session_state.get(f"wl_focus_caret_{iso}") or 0)
+    _WL_SPECIAL_BAR(
+        key=f"wl_sp_bar_{iso}",
+        data={"iso": iso, "chars": list(_WL_SPECIAL_CHARS), "active_key": active_key, "active_caret": active_caret},
+        on_insert_change=_on_insert,
+    )
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
     val, pos = str(val or ""), max(0, min(int(pos or 0), len(str(val or ""))))
@@ -2459,7 +2706,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
                 def _on_focus_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
-                    if not isinstance(hook, dict): return
+                    if not isinstance(hook, dict):
+                        return
                     fk = str(hook.get("focus") or "")
                     if (
                         fk.startswith("wl_ent_ln_")
@@ -2468,16 +2716,20 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         or fk.startswith("wl_notes_area_")
                     ):
                         st.session_state["wl_active_cell_key"] = fk
+                        st.session_state[f"wl_focus_ln_{iso2}"] = fk
 
                 def _on_caret_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
-                    if not isinstance(hook, dict): return
+                    if not isinstance(hook, dict):
+                        return
                     raw = hook.get("caret")
-                    if not raw: return
+                    if not raw:
+                        return
                     try:
                         obj = json.loads(str(raw))
                         fk, s, e = str(obj.get("key") or ""), int(obj.get("s") or 0), int(obj.get("e") or int(obj.get("s") or 0))
-                    except Exception: return
+                    except Exception:
+                        return
                     if (
                         fk.startswith("wl_ent_ln_")
                         or fk.startswith("wl_ent_cl_")
@@ -2485,7 +2737,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         or fk.startswith("wl_notes_area_")
                     ):
                         st.session_state["wl_active_cell_key"] = fk
+                        st.session_state[f"wl_focus_ln_{iso2}"] = fk
                         st.session_state["wl_active_cell_sel"] = (s, e)
+                        st.session_state[f"wl_focus_caret_{iso2}"] = s
 
                 st.caption("「저장」하면 왼쪽 요약·미리보기에 반영됩니다. 「엑셀 미리보기」로도 현재 입력을 바로 확인할 수 있습니다.")
                 _live_entries = _read_editor_entries(d)
@@ -2603,6 +2857,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     key=f"wl_enter_hook_{iso2}",
                     data={"iso": iso2, "focus_key": focus_key if isinstance(focus_key, str) else "", "focus_caret": (int(focus_caret) if isinstance(focus_caret, (int, float)) else ""), "client_max_u": _client_line_units(), "content_max_u": _content_line_units()},
                     on_enter_change=_on_enter_trigger,
+                    on_focus_change=_on_focus_trigger,
+                    on_caret_change=_on_caret_trigger,
                 )
                 if st.session_state.get(f"wl_do_enter_cell_{iso2}"): _wl_rerun()
                 ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
