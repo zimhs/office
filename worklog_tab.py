@@ -1792,6 +1792,8 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             filled = list(synced)
             while filled and filled[-1] == "": filled.pop()
             st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(filled)
+            lj = _last_used_line_index(synced)
+            _remember_active_cell(iso, _entry_client_key(iso, entry_i, lj), len(str(synced[lj] or "")))
 
     def _on_clients_focus_change() -> None:
         _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_client_key)
@@ -1848,6 +1850,8 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             filled = list(synced)
             while filled and filled[-1] == "": filled.pop()
             st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(filled)
+            lj = _last_used_line_index(synced)
+            _remember_active_cell(iso, _entry_line_key(iso, entry_i, lj), len(str(synced[lj] or "")))
 
     def _on_lines_focus_change() -> None:
         _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_line_key)
@@ -1942,17 +1946,115 @@ def _sync_editor_focus_from_comp(iso: str, entry_i: int, comp_key: str, key_fn) 
     _remember_active_cell(iso, key_fn(iso, entry_i, fj), pos)
 
 
-def _render_worklog_special_chars_touch(iso: str) -> None:
+def _last_used_line_index(lines: list[str]) -> int:
+    for j in range(len(lines) - 1, -1, -1):
+        if str(lines[j] or ""):
+            return j
+    return 0
+
+
+def _insert_special_char_touch(iso: str, ch: str, target: str, entry_i: int) -> bool:
+    """iPad 등 터치 UI — 포커스 없이 선택한 칸 끝에 특수기호 추가."""
+    entry_i = max(0, int(entry_i or 0))
+    target = str(target or "내용")
+    if target == "내용":
+        lines = _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)
+        lj = _last_used_line_index(lines)
+        while len(lines) <= lj:
+            lines.append("")
+        val = str(lines[lj] or "")
+        pos = len(val)
+        new_val = val + ch
+        fk = f"wl_ent_ln_{iso}_{entry_i}_{lj}"
+        _apply_special_insert(iso, fk, new_val, pos + len(ch), ch)
+        return True
+    if target == "거래처":
+        lines = _clients_from_widgets(iso, entry_i, keep_trailing_empty=True)
+        lj = _last_used_line_index(lines)
+        while len(lines) <= lj:
+            lines.append("")
+        val = str(lines[lj] or "")
+        pos = len(val)
+        new_val = val + ch
+        fk = f"wl_ent_cl_{iso}_{entry_i}_{lj}"
+        _apply_special_insert(iso, fk, new_val, pos + len(ch), ch)
+        return True
+    if target == "익일업무":
+        fk = f"wl_next_area_{iso}"
+        val = str(st.session_state.get(fk, "") or "")
+        pos = len(val)
+        new_val = val + ch
+        _apply_special_insert(iso, fk, new_val, pos + len(ch), ch)
+        return True
+    if target == "특이사항":
+        fk = f"wl_notes_area_{iso}"
+        val = str(st.session_state.get(fk, "") or "")
+        pos = len(val)
+        new_val = val + ch
+        _apply_special_insert(iso, fk, new_val, pos + len(ch), ch)
+        return True
+    st.session_state["wl_special_msg"] = "특수기호를 넣을 칸을 선택해 주세요."
+    return False
+
+
+def _process_pending_special_char(iso: str, entry_count: int) -> None:
+    pending = st.session_state.pop(f"wl_pending_sp_{iso}", None)
+    if not pending:
+        return
+    ch = str(pending or "")
+    if not ch:
+        return
+    if _wl_quiet_ui():
+        target = str(st.session_state.get(f"wl_sp_target_{iso}", "내용") or "내용")
+        try:
+            entry_i = int(st.session_state.get(f"wl_sp_entry_num_{iso}", entry_count) or entry_count) - 1
+        except (TypeError, ValueError):
+            entry_i = max(0, entry_count - 1)
+        entry_i = max(0, min(entry_i, max(0, entry_count - 1)))
+        if not _insert_special_char_touch(iso, ch, target, entry_i):
+            st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다. 칸을 선택한 뒤 다시 눌러 주세요."
+        return
+    if _insert_special_char_at_active(iso, ch):
+        return
+    target = str(st.session_state.get(f"wl_sp_target_{iso}", "내용") or "내용")
+    try:
+        entry_i = int(st.session_state.get(f"wl_sp_entry_num_{iso}", entry_count) or entry_count) - 1
+    except (TypeError, ValueError):
+        entry_i = max(0, entry_count - 1)
+    entry_i = max(0, min(entry_i, max(0, entry_count - 1)))
+    if not _insert_special_char_touch(iso, ch, target, entry_i):
+        st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다. 칸을 선택한 뒤 다시 눌러 주세요."
+
+
+def _render_worklog_special_chars_touch(iso: str, entry_count: int) -> None:
     st.markdown(
         """<style>
         div[class*="st-key-wl_sp_touch_wrap_"] [data-testid="column"] { padding: 0 1px !important; }
         div[class*="st-key-wl_sp_touch_wrap_"] button {
-          min-width: 2rem !important; min-height: 2rem !important;
+          min-width: 2.1rem !important; min-height: 2.1rem !important;
           padding: 0.15rem 0.2rem !important; font-size: 1rem !important;
         }
         </style>""",
         unsafe_allow_html=True,
     )
+    st.caption("특수기호 — 아래에서 **넣을 칸**을 고른 뒤 기호를 누르세요.")
+    target = st.radio(
+        "특수기호 칸",
+        options=["내용", "거래처", "익일업무", "특이사항"],
+        horizontal=True,
+        key=f"wl_sp_target_{iso}",
+        label_visibility="collapsed",
+    )
+    if entry_count > 1 and target in ("내용", "거래처"):
+        st.number_input(
+            "항목 번호",
+            min_value=1,
+            max_value=max(1, entry_count),
+            value=min(entry_count, max(1, int(st.session_state.get(f"wl_sp_entry_num_{iso}", entry_count) or entry_count))),
+            step=1,
+            key=f"wl_sp_entry_num_{iso}",
+            help="여러 항목 중 특수기호를 넣을 항목 번호",
+        )
     with st.container(key=f"wl_sp_touch_wrap_{iso}"):
         row_size = 8
         for row_start in range(0, len(_WL_SPECIAL_CHARS), row_size):
@@ -1961,13 +2063,21 @@ def _render_worklog_special_chars_touch(iso: str) -> None:
             for i, ch in enumerate(chunk):
                 idx = row_start + i
                 if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
-                    if _insert_special_char_at_active(iso, ch):
-                        _wl_rerun()
+                    try:
+                        entry_i = int(st.session_state.get(f"wl_sp_entry_num_{iso}", entry_count) or entry_count) - 1
+                    except (TypeError, ValueError):
+                        entry_i = max(0, entry_count - 1)
+                    entry_i = max(0, min(entry_i, max(0, entry_count - 1)))
+                    if _insert_special_char_touch(iso, ch, str(target), entry_i):
+                        st.session_state["wl_special_msg"] = f"「{ch}」삽입 ({target})"
+                    else:
+                        st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
+                    _wl_rerun()
 
 
-def _render_worklog_special_chars(iso: str) -> None:
+def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
     if _wl_quiet_ui():
-        _render_worklog_special_chars_touch(iso)
+        _render_worklog_special_chars_touch(iso, entry_count)
         return
 
     def _on_insert():
@@ -2529,9 +2639,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             bar_date, bar_cal, bar_del = st.columns([2.4, 1.1, 0.7], gap="small")
             with bar_date:
                 picked = st.date_input("업무일지 날짜", key="wl_date_pick", help="저장 후에도 날짜를 바꿀 수 있습니다.")
-                _render_worklog_special_chars(selected.isoformat())
-                msg = st.session_state.pop("wl_special_msg", None)
-                if msg: st.caption(msg)
             with bar_cal:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
                 with st.popover("📅 달력", width="content"):
@@ -2687,6 +2794,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     except (TypeError, ValueError): _sp_pos = 0
                     _apply_special_insert(iso2, str(sp_req.get("key") or ""), str(sp_req.get("v") if sp_req.get("v") is not None else ""), _sp_pos, str(sp_req.get("ch") or ""))
 
+                _process_pending_special_char(iso2, n)
+
                 def _on_enter_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
                     payload = str(hook.get("enter") or "") if isinstance(hook, dict) else ""
@@ -2812,6 +2921,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 st.text_area("익일업무", key=f"wl_next_area_{iso2}", label_visibility="collapsed", height=110)
                 st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>", unsafe_allow_html=True)
                 st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
+
+                _render_worklog_special_chars(iso2, n)
+                msg = st.session_state.pop("wl_special_msg", None)
+                if msg:
+                    st.caption(msg)
 
                 if st.button("저장", type="primary", width="stretch", key=f"wl_save_btn_{iso2}"):
                     try:
