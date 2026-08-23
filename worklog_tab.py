@@ -682,7 +682,7 @@ _WL_SPECIAL_BAR_CSS = """
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
@@ -694,20 +694,22 @@ _WL_SPECIAL_BAR_CSS = """
 }
 .wl-sp button {
   flex: 0 0 auto;
-  min-width: 2.25rem;
-  width: 2.25rem;
-  height: 2.25rem;
+  min-width: 1.85rem;
+  width: 1.85rem;
+  height: 1.85rem;
   margin: 0;
   padding: 0;
   border: 1px solid #cbd5e1;
-  border-radius: 0.4rem;
+  border-radius: 0.35rem;
   background: #f8fafc;
   color: #0f172a;
-  font-size: 1.02rem;
-  line-height: 2.25rem;
+  font-size: 0.95rem;
+  line-height: 1.85rem;
   text-align: center;
   cursor: pointer;
   touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .wl-sp button:hover { background: #e2e8f0; }
 .wl-sp button:active { background: #dbeafe; }
@@ -717,6 +719,7 @@ _WL_SPECIAL_BAR_JS = r"""
 export default function (component) {
   const { data, parentElement, setTriggerValue } = component;
   const chars = (data && data.chars) || [];
+  const token = String((data && data.token) || "");
 
   let root = parentElement.querySelector(".wl-sp");
   if (!root) {
@@ -724,7 +727,8 @@ export default function (component) {
     root.className = "wl-sp";
     parentElement.appendChild(root);
   }
-  if (root.childElementCount !== chars.length) {
+  if (root.dataset.token !== token || root.childElementCount !== chars.length) {
+    root.dataset.token = token;
     root.innerHTML = "";
     for (let i = 0; i < chars.length; i++) {
       const ch = String(chars[i] || "");
@@ -736,17 +740,18 @@ export default function (component) {
         let lastAt = 0;
         return function (ev) {
           const now = Date.now();
-          if (now - lastAt < 350) return;
+          if (now - lastAt < 280) return;
           lastAt = now;
           if (ev) {
-            ev.preventDefault();
-            ev.stopPropagation();
+            try { ev.preventDefault(); } catch (e1) {}
+            try { ev.stopPropagation(); } catch (e2) {}
           }
-          try { setTriggerValue("pick", symbol); } catch (err) {}
+          try {
+            setTriggerValue("pick", JSON.stringify({ ch: symbol, t: Date.now() }));
+          } catch (err) {}
         };
       })(ch);
-      btn.addEventListener("pointerdown", fire);
-      btn.addEventListener("touchend", fire);
+      btn.addEventListener("pointerup", fire);
       btn.addEventListener("click", fire);
       root.appendChild(btn);
     }
@@ -757,7 +762,7 @@ export default function (component) {
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v5",
+    "worklog_special_bar_v6",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -1928,14 +1933,26 @@ def _process_pending_special_char(iso: str, entry_count: int) -> None:
     ch = str(pending or "")
     if not ch:
         return
-    if _insert_special_char_auto(iso, ch, entry_count):
-        st.session_state["wl_special_msg"] = f"「{ch}」삽입"
-    else:
-        st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
+    try:
+        if _insert_special_char_auto(iso, ch, entry_count):
+            st.session_state["wl_special_msg"] = f"「{ch}」삽입"
+        else:
+            st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
+    except StreamlitAPIException:
+        # 재시도 루프 방지 — pending을 되돌리지 않음
+        st.session_state["wl_special_msg"] = "특수기호 적용에 실패했습니다. 칸을 선택한 뒤 다시 눌러 주세요."
+
+
+def _queue_special_char(iso: str, ch: str) -> None:
+    """특수기호 pending만 설정. 절대 여기서 rerun 하지 않음(재시도 오류 방지)."""
+    ch = str(ch or "")
+    if not ch:
+        return
+    st.session_state[f"wl_pending_sp_{iso}"] = ch
 
 
 def _render_worklog_special_chars_ipad(iso: str, entry_count: int = 1) -> None:
-    """iPad: 네이티브 버튼 그리드(8열) — 탭 시 pending → 자동 삽입."""
+    """iPad: 네이티브 버튼 그리드(8열). pending만 설정 — 에디터 마운트 전에 적용."""
     del entry_count
     st.markdown(
         """<style>
@@ -1975,13 +1992,11 @@ def _render_worklog_special_chars_ipad(iso: str, entry_count: int = 1) -> None:
             for i, ch in enumerate(chunk):
                 idx = row_start + i
                 if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
-                    st.session_state[f"wl_pending_sp_{iso}"] = ch
-                    _wl_rerun()
+                    _queue_special_char(iso, ch)
 
 
 def _render_worklog_special_chars_scroll(iso: str) -> None:
-    """맥·클라우드: 네이티브 버튼 한 줄 가로 스크롤 — 로컬/클라우드 공통 안정 경로."""
-    n = len(_WL_SPECIAL_CHARS)
+    """맥·클라우드: 네이티브 버튼을 세로블록→가로 flex 스크롤로 배치(컬럼/iframe 미사용)."""
     st.markdown(
         f"""<style>
         div[class*="st-key-wl_sp_panel_"] {{
@@ -1999,63 +2014,52 @@ def _render_worklog_special_chars_scroll(iso: str) -> None:
         div[class*="st-key-wl_sp_scroll_{iso}"] {{
           width: 100% !important;
           max-width: 100% !important;
+          margin: 0 !important;
+          padding: 0 !important;
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] > div[data-testid="stVerticalBlock"],
+        div[class*="st-key-wl_sp_scroll_{iso}"] div[data-testid="stVerticalBlock"] {{
+          display: flex !important;
+          flex-direction: row !important;
+          flex-wrap: nowrap !important;
+          align-items: center !important;
+          gap: 0.18rem !important;
+          width: 100% !important;
+          max-width: 100% !important;
           overflow-x: auto !important;
           overflow-y: hidden !important;
           -webkit-overflow-scrolling: touch;
-          scroll-behavior: smooth;
-          padding: 0 0 3px !important;
+          padding: 0 0 4px !important;
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] [data-testid="stElementContainer"] {{
+          flex: 0 0 auto !important;
+          width: auto !important;
+          min-width: 1.85rem !important;
           margin: 0 !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] > div {{
-          overflow: visible !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] [data-testid="stHorizontalBlock"] {{
-          display: flex !important;
-          flex-wrap: nowrap !important;
-          flex-direction: row !important;
-          align-items: center !important;
-          gap: 0.12rem !important;
-          width: max-content !important;
-          min-width: 100% !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] [data-testid="column"] {{
-          flex: 0 0 1.95rem !important;
-          width: 1.95rem !important;
-          min-width: 1.95rem !important;
-          max-width: 1.95rem !important;
-          padding: 0 !important;
         }}
         div[class*="st-key-wl_sp_scroll_{iso}"] button {{
-          min-width: 1.9rem !important;
-          width: 1.9rem !important;
-          min-height: 1.9rem !important;
-          height: 1.9rem !important;
+          min-width: 1.85rem !important;
+          width: 1.85rem !important;
+          min-height: 1.85rem !important;
+          height: 1.85rem !important;
           padding: 0 !important;
           margin: 0 !important;
-          font-size: 0.92rem !important;
+          font-size: 0.95rem !important;
           line-height: 1 !important;
           border-radius: 0.35rem !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] [data-testid="stColumn"] {{
-          flex: 0 0 1.95rem !important;
-          width: 1.95rem !important;
-          min-width: 1.95rem !important;
-          max-width: 1.95rem !important;
         }}
         </style>""",
         unsafe_allow_html=True,
     )
     st.caption("특수기호 ←→ 스크롤 · 클릭하면 바로 반영")
     with st.container(key=f"wl_sp_scroll_{iso}"):
-        cols = st.columns(n, gap="small")
         for idx, ch in enumerate(_WL_SPECIAL_CHARS):
-            if cols[idx].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
-                st.session_state[f"wl_pending_sp_{iso}"] = ch
-                _wl_rerun()
+            if st.button(ch, key=f"wl_sp_btn_{iso}_{idx}"):
+                _queue_special_char(iso, ch)
 
 
 def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
-    """iPad: 네이티브 그리드 / 맥·클라우드: 가로 스크롤 바. 삽입은 공통 pending 경로."""
+    """iPad: 네이티브 그리드 / 맥·클라우드: HTML 가로 스크롤. pending만 설정."""
     if _wl_is_ipad_ui():
         _render_worklog_special_chars_ipad(iso, entry_count)
     else:
@@ -2435,10 +2439,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
         with st.container(key=f"wl_sp_panel_{_iso_bar}"):
             _render_worklog_special_chars(_iso_bar, _n_bar)
-        _process_pending_special_char(_iso_bar, _n_bar)
-        _sp_msg = st.session_state.pop("wl_special_msg", None)
-        if _sp_msg:
-            st.caption(_sp_msg)
+        # pending 적용은 에디터 마운트 직전(_wl_entry_editor 호출 전)에서만 수행
 
         # 💡 가운데 2번째 컬럼(게이지)을 화면 상단에 스크롤 고정
         st.markdown("""
@@ -2729,8 +2730,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     except (TypeError, ValueError): _sp_pos = 0
                     _apply_special_insert(iso2, str(sp_req.get("key") or ""), str(sp_req.get("v") if sp_req.get("v") is not None else ""), _sp_pos, str(sp_req.get("ch") or ""))
 
-                _process_pending_special_char(iso2, n)
-
                 def _on_enter_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
                     payload = str(hook.get("enter") or "") if isinstance(hook, dict) else ""
@@ -2916,5 +2915,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
             _n_now = int(st.session_state.get(f"wl_entry_count_{iso}", 1) or 1)
             _process_pending_special_char(iso, _n_now)
+            _sp_msg = st.session_state.pop("wl_special_msg", None)
+            if _sp_msg:
+                st.caption(_sp_msg)
             _wl_entry_editor()
     _worklog_main()
