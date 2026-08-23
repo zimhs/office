@@ -631,16 +631,50 @@ _WL_ENTER_HOOK = st.components.v2.component(
     js=_WL_ENTER_HOOK_JS,
 )
 
-_WL_SPECIAL_CHARS = ["※", "★", "☆", "○", "●", "◎", "▲", "△", "■", "□", "→", "←", "·", "～", "【", "】", "「", "」", "①", "②", "③", "✓", "◇", "◆"]
+# 자주 쓰는 순 (앞쪽 = 우선 표시)
+_WL_SPECIAL_CHARS = [
+    "※", "★", "☆", "○", "●", "◎", "→", "·", "△", "▲", "■", "□",
+    "「", "」", "【", "】", "～", "←", "✓", "①", "②", "③", "◇", "◆",
+]
 
 _WL_SPECIAL_BAR_HTML = """
 <div class="wl-sp"></div>
 """
 
 _WL_SPECIAL_BAR_CSS = """
-.wl-sp { display: flex; flex-wrap: nowrap; gap: 4px; width: 100%; overflow-x: auto; padding: 2px 0; box-sizing: border-box; }
-.wl-sp button { flex: 1 0 auto; min-width: 1.35rem; height: 1.55rem; margin: 0; padding: 0 2px; border: 1px solid #cbd5e1; border-radius: 0.35rem; background: #f8fafc; color: #0f172a; font-size: 0.85rem; line-height: 1.55rem; cursor: pointer; }
+.wl-sp {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  padding: 4px 2px 6px;
+  box-sizing: border-box;
+}
+.wl-sp button {
+  flex: 0 0 auto;
+  min-width: 2.4rem;
+  width: 2.4rem;
+  height: 2.4rem;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.45rem;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 1.05rem;
+  line-height: 2.4rem;
+  text-align: center;
+  cursor: pointer;
+  touch-action: manipulation;
+}
 .wl-sp button:hover { background: #e2e8f0; }
+.wl-sp button:active { background: #dbeafe; }
 """
 
 _WL_SPECIAL_BAR_JS = r"""
@@ -831,7 +865,7 @@ export default function (component) {
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v3",
+    "worklog_special_bar_v4",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -2029,47 +2063,38 @@ def _process_pending_special_char(iso: str, entry_count: int) -> None:
         st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다. 칸을 선택한 뒤 다시 눌러 주세요."
 
 
-def _render_worklog_special_chars_touch(iso: str, entry_count: int) -> None:
-    """날짜 아래 한 줄 가로 스크롤 + 넣을 칸 선택(콤팩트). 클릭 시 pending만 저장."""
+def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
+    """날짜 아래 전체 폭 가로 스크롤 특수기호 바 (iPad·맥·Cloud 공통)."""
     st.markdown(
         """<style>
-        div[class*="st-key-wl_sp_scroll_"] {
-          overflow-x: auto !important;
-          overflow-y: hidden !important;
-          white-space: nowrap !important;
-          -webkit-overflow-scrolling: touch;
-          padding: 2px 0 4px !important;
-          margin: 0 !important;
+        div[class*="st-key-wl_sp_panel_"] {
+          width: 100% !important;
+          max-width: 100% !important;
+          margin: 0.15rem 0 0.35rem !important;
         }
-        div[class*="st-key-wl_sp_scroll_"] [data-testid="stHorizontalBlock"] {
-          flex-wrap: nowrap !important;
-          gap: 0.2rem !important;
-          width: max-content !important;
-          min-width: 100%;
+        div[class*="st-key-wl_sp_panel_"] [data-testid="stCustomComponentV1"],
+        div[class*="st-key-wl_sp_panel_"] iframe {
+          width: 100% !important;
+          max-width: 100% !important;
+          min-height: 2.85rem !important;
+          height: 2.85rem !important;
         }
-        div[class*="st-key-wl_sp_scroll_"] [data-testid="column"] {
-          padding: 0 1px !important;
-          flex: 0 0 auto !important;
-          width: 2.05rem !important;
-          min-width: 2.05rem !important;
+        div[class*="st-key-wl_sp_panel_"] [data-testid="stSelectbox"],
+        div[class*="st-key-wl_sp_panel_"] [data-testid="stNumberInput"] {
+          margin-bottom: 0 !important;
         }
-        div[class*="st-key-wl_sp_scroll_"] button {
-          min-width: 2rem !important; min-height: 1.7rem !important;
-          padding: 0.1rem 0.15rem !important; font-size: 0.95rem !important;
-        }
-        div[class*="st-key-wl_sp_target_"] { margin-bottom: 0 !important; }
         </style>""",
         unsafe_allow_html=True,
     )
-    tcol, ecol = st.columns([3.2, 1.2], gap="small")
-    with tcol:
+    row1a, row1b = st.columns([2.6, 1], gap="small")
+    with row1a:
         st.selectbox(
             "넣을 칸",
             options=["내용", "거래처", "익일업무", "특이사항"],
             key=f"wl_sp_target_{iso}",
             label_visibility="collapsed",
         )
-    with ecol:
+    with row1b:
         if entry_count > 1:
             st.number_input(
                 "항목",
@@ -2080,20 +2105,8 @@ def _render_worklog_special_chars_touch(iso: str, entry_count: int) -> None:
                 label_visibility="collapsed",
                 help="항목 번호",
             )
-        else:
+        elif f"wl_sp_entry_num_{iso}" not in st.session_state:
             st.session_state[f"wl_sp_entry_num_{iso}"] = 1
-    with st.container(key=f"wl_sp_scroll_{iso}"):
-        cols = st.columns(len(_WL_SPECIAL_CHARS))
-        for idx, ch in enumerate(_WL_SPECIAL_CHARS):
-            if cols[idx].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
-                st.session_state[f"wl_pending_sp_{iso}"] = ch
-                _wl_rerun()
-
-
-def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
-    if _wl_quiet_ui():
-        _render_worklog_special_chars_touch(iso, entry_count)
-        return
 
     def _on_insert():
         stt = st.session_state.get(f"wl_sp_bar_{iso}") or {}
@@ -2105,9 +2118,8 @@ def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
         except Exception:
             return
         if obj.get("miss"):
-            st.session_state["wl_special_msg"] = "칸을 먼저 클릭한 뒤 특수문자를 누르세요"
+            st.session_state["wl_special_msg"] = "넣을 칸을 선택한 뒤 특수문자를 누르세요"
             return
-        # 렌더 중 위젯 상태 변경 금지 — pending만 넣고 다음 실행에서 적용
         ch = str(obj.get("ch") or "")
         if not ch:
             return
@@ -2119,30 +2131,29 @@ def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
                 except (TypeError, ValueError):
                     pass
                 st.session_state["wl_active_cell_key"] = fk
-            st.session_state[f"wl_pending_sp_{iso}"] = ch
-            _wl_rerun()
-            return
-        try:
-            fk, pos = str(obj.get("key") or ""), int(obj.get("s") or 0)
-        except Exception:
-            return
-        if not (
-            fk.startswith("wl_ent_ln_")
-            or fk.startswith("wl_ent_cl_")
-            or fk.startswith("wl_next_area_")
-            or fk.startswith("wl_notes_area_")
-        ):
-            return
-        sig = f"{fk}\0{obj.get('v')}\0{pos}\0{obj.get('t')}"
-        if st.session_state.get(f"wl_special_done_{iso}") == sig:
-            return
-        st.session_state[f"wl_special_done_{iso}"] = sig
-        st.session_state[f"wl_do_special_{iso}"] = {
-            "key": fk,
-            "v": str(obj.get("v") if obj.get("v") is not None else ""),
-            "s": pos,
-            "ch": ch,
-        }
+        if not _wl_quiet_ui():
+            try:
+                fk, pos = str(obj.get("key") or ""), int(obj.get("s") or 0)
+            except Exception:
+                fk, pos = "", 0
+            if (
+                fk.startswith("wl_ent_ln_")
+                or fk.startswith("wl_ent_cl_")
+                or fk.startswith("wl_next_area_")
+                or fk.startswith("wl_notes_area_")
+            ):
+                sig = f"{fk}\0{obj.get('v')}\0{pos}\0{obj.get('t')}"
+                if st.session_state.get(f"wl_special_done_{iso}") != sig:
+                    st.session_state[f"wl_special_done_{iso}"] = sig
+                    st.session_state[f"wl_do_special_{iso}"] = {
+                        "key": fk,
+                        "v": str(obj.get("v") if obj.get("v") is not None else ""),
+                        "s": pos,
+                        "ch": ch,
+                    }
+                    _wl_rerun()
+                    return
+        st.session_state[f"wl_pending_sp_{iso}"] = ch
         _wl_rerun()
 
     active_key = str(st.session_state.get("wl_active_cell_key") or st.session_state.get(f"wl_focus_ln_{iso}") or "")
@@ -2657,12 +2668,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             bar_date, bar_cal, bar_del = st.columns([2.4, 1.1, 0.7], gap="small")
             with bar_date:
                 picked = st.date_input("업무일지 날짜", key="wl_date_pick", help="저장 후에도 날짜를 바꿀 수 있습니다.")
-                _iso_bar = selected.isoformat()
-                _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
-                _render_worklog_special_chars(_iso_bar, _n_bar)
-                msg = st.session_state.pop("wl_special_msg", None)
-                if msg:
-                    st.caption(msg)
             with bar_cal:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
                 with st.popover("📅 달력", width="content"):
@@ -2680,6 +2685,14 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
                         st.session_state["wl_do_delete_day"] = selected.isoformat()
                         _wl_rerun()
+
+            _iso_bar = selected.isoformat()
+            _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
+            with st.container(key=f"wl_sp_panel_{_iso_bar}"):
+                _render_worklog_special_chars(_iso_bar, _n_bar)
+            msg = st.session_state.pop("wl_special_msg", None)
+            if msg:
+                st.caption(msg)
 
             if isinstance(picked, date) and picked != selected:
                 if os.path.exists(worklog_path(picked)):
