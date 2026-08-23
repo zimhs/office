@@ -646,29 +646,29 @@ _WL_SPECIAL_BAR_CSS = """
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
-  padding: 4px 2px 6px;
+  padding: 2px 1px 4px;
   box-sizing: border-box;
 }
 .wl-sp button {
   flex: 0 0 auto;
-  min-width: 2.4rem;
-  width: 2.4rem;
-  height: 2.4rem;
+  min-width: 2.25rem;
+  width: 2.25rem;
+  height: 2.25rem;
   margin: 0;
   padding: 0;
   border: 1px solid #cbd5e1;
-  border-radius: 0.45rem;
+  border-radius: 0.4rem;
   background: #f8fafc;
   color: #0f172a;
-  font-size: 1.05rem;
-  line-height: 2.4rem;
+  font-size: 1.02rem;
+  line-height: 2.25rem;
   text-align: center;
   cursor: pointer;
   touch-action: manipulation;
@@ -680,136 +680,7 @@ _WL_SPECIAL_BAR_CSS = """
 _WL_SPECIAL_BAR_JS = r"""
 export default function (component) {
   const { data, parentElement, setTriggerValue } = component;
-  const iso = (data && data.iso) || "";
   const chars = (data && data.chars) || [];
-  let last = null;
-
-  function resolveKey(t) {
-    if (!t) return null;
-    const tag = String(t.tagName || "").toUpperCase();
-    if (tag === "TEXTAREA") {
-      const wrap = t.closest ? t.closest('[class*="st-key-wl_next_area_"],[class*="st-key-wl_notes_area_"]') : null;
-      if (!wrap) return null;
-      const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
-        const s = String(c);
-        return s.indexOf("st-key-wl_next_area_") !== -1 || s.indexOf("st-key-wl_notes_area_") !== -1;
-      });
-      if (!cls) return null;
-      const key = String(cls).replace(/^st-key-/, "");
-      const m = /^(wl_(?:next|notes)_area)_(\d{4}-\d{2}-\d{2})$/.exec(key);
-      if (!m || m[2] !== iso) return null;
-      return { key: key, el: t };
-    }
-    if (tag !== "INPUT") return null;
-    let wrap = t.closest ? t.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]') : null;
-    if (wrap) {
-      const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
-        const s = String(c);
-        return s.indexOf("st-key-wl_ent_ln_") !== -1 || s.indexOf("st-key-wl_ent_cl_") !== -1;
-      });
-      if (cls) {
-        const key = String(cls).replace(/^st-key-/, "");
-        const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(key);
-        if (m && m[2] === iso) return { key: key, el: t };
-      }
-    }
-    wrap = t.closest ? t.closest('[class*="st-key-wl_lines_comp_"],[class*="st-key-wl_clients_comp_"]') : null;
-    if (!wrap) return null;
-    const cls2 = Array.prototype.find.call(wrap.classList || [], (c) => {
-      const s = String(c);
-      return s.indexOf("st-key-wl_lines_comp_") !== -1 || s.indexOf("st-key-wl_clients_comp_") !== -1;
-    });
-    if (!cls2) return null;
-    const compKey = String(cls2).replace(/^st-key-/, "");
-    const m2 = /^(wl_(?:lines|clients)_comp)_(\d{4}-\d{2}-\d{2})_(\d+)$/.exec(compKey);
-    if (!m2 || m2[2] !== iso) return null;
-    const kind = m2[1] === "wl_clients_comp" ? "wl_ent_cl" : "wl_ent_ln";
-    const ei = Number(m2[3]);
-    const lj = Number(t.dataset && t.dataset.idx != null ? t.dataset.idx : 0);
-    return { key: kind + "_" + iso + "_" + ei + "_" + lj, el: t };
-  }
-
-  function findInputForFocusKey(focusKey) {
-    if (!focusKey) return null;
-    let m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(focusKey);
-    if (m) {
-      const kind = m[1];
-      const isoVal = m[2];
-      const ei = m[3];
-      const lj = m[4];
-      const compNeedle =
-        (kind === "wl_ent_cl" ? "st-key-wl_clients_comp_" : "st-key-wl_lines_comp_") + isoVal + "_" + ei;
-      const wraps = document.querySelectorAll('div[class*="' + compNeedle + '"]');
-      for (let i = 0; i < wraps.length; i++) {
-        const el = wraps[i].querySelector('.wl-lines input[data-idx="' + lj + '"]');
-        if (el) return el;
-      }
-      const legacy = document.querySelector('div[class*="st-key-' + focusKey + '"] input');
-      if (legacy) return legacy;
-    }
-    return document.querySelector(
-      'div[class*="st-key-' + focusKey + '"] input, div[class*="st-key-' + focusKey + '"] textarea'
-    );
-  }
-
-  function remember(t) {
-    const info = resolveKey(t);
-    if (!info) return;
-    let s = 0; let e = 0;
-    try {
-      s = typeof info.el.selectionStart === "number" ? info.el.selectionStart : 0;
-      e = typeof info.el.selectionEnd === "number" ? info.el.selectionEnd : s;
-    } catch (err) {}
-    last = { key: info.key, el: info.el, s: s, e: e };
-  }
-
-  function insertChar(ch) {
-    const t = document.activeElement;
-    const live = resolveKey(t);
-    const src = last || live;
-    if (!src || !src.key) {
-      const ak = (data && data.active_key) || "";
-      const ac = Number((data && data.active_caret) || 0);
-      if (ak) {
-        try {
-          setTriggerValue(
-            "insert",
-            JSON.stringify({ key: ak, ch: ch, use_active: true, s: ac, t: Date.now() })
-          );
-        } catch (err) {}
-        return;
-      }
-      try { setTriggerValue("insert", JSON.stringify({ miss: true, ch: ch, t: Date.now() })); } catch (err) {}
-      return;
-    }
-    const el = src.el || (live && live.el) || null;
-    let s = 0; let e = 0;
-    try {
-      if (el && typeof el.selectionStart === "number") {
-        s = el.selectionStart;
-        e = typeof el.selectionEnd === "number" ? el.selectionEnd : s;
-      } else if (last && last.key === src.key) {
-        s = last.s;
-        e = last.e;
-      } else {
-        s = e = String((el && el.value) || "").length;
-      }
-    } catch (err2) {
-      s = e = String((el && el.value) || "").length;
-    }
-    const cur = String((el && el.value) || "");
-    const next = cur.slice(0, s) + ch + cur.slice(e);
-    const pos = s + ch.length;
-    try {
-      if (el) {
-        el.value = next;
-        el.setSelectionRange(pos, pos);
-      }
-    } catch (err3) {}
-    try {
-      setTriggerValue("insert", JSON.stringify({ key: src.key, v: next, s: pos, ch: ch, t: Date.now() }));
-    } catch (err4) {}
-  }
 
   let root = parentElement.querySelector(".wl-sp");
   if (!root) {
@@ -835,7 +706,7 @@ export default function (component) {
             ev.preventDefault();
             ev.stopPropagation();
           }
-          insertChar(symbol);
+          try { setTriggerValue("pick", symbol); } catch (err) {}
         };
       })(ch);
       btn.addEventListener("pointerdown", fire);
@@ -845,27 +716,12 @@ export default function (component) {
     }
   }
 
-  const onFocusIn = (e) => remember(e.target);
-  const onSel = (e) => {
-    if (e && (e.isComposing || e.keyCode === 229)) return;
-    remember(e.target || document.activeElement);
-  };
-  document.addEventListener("focusin", onFocusIn, true);
-  document.addEventListener("touchstart", onFocusIn, true);
-  document.addEventListener("keyup", onSel, true);
-  document.addEventListener("mouseup", onSel, true);
-
-  return () => {
-    document.removeEventListener("focusin", onFocusIn, true);
-    document.removeEventListener("touchstart", onFocusIn, true);
-    document.removeEventListener("keyup", onSel, true);
-    document.removeEventListener("mouseup", onSel, true);
-  };
+  return () => {};
 }
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v4",
+    "worklog_special_bar_v5",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -2043,40 +1899,59 @@ def _process_pending_special_char(iso: str, entry_count: int) -> None:
 
 
 def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
-    """네이티브 버튼 그리드(8열×여러 행). 넣을 칸 선택 없음 — 탭하면 바로 pending."""
-    del entry_count  # 자동 삽입은 process 단계에서 entry_count 사용
+    """한 줄 가로 스크롤 HTML 바 — 탭 시 pending → 자동 삽입(편집 칸 우선)."""
+    del entry_count
     st.markdown(
         """<style>
         div[class*="st-key-wl_sp_panel_"] {
           width: 100% !important;
           max-width: 100% !important;
-          margin: 0.1rem 0 0.25rem !important;
-        }
-        div[class*="st-key-wl_sp_grid_"] [data-testid="column"] {
-          padding: 0 2px !important;
-        }
-        div[class*="st-key-wl_sp_grid_"] button {
-          min-height: 2.55rem !important;
-          height: 2.55rem !important;
+          margin: 0 !important;
           padding: 0 !important;
-          font-size: 1.15rem !important;
-          line-height: 1 !important;
-          border-radius: 0.45rem !important;
+        }
+        div[class*="st-key-wl_sp_panel_"] [data-testid="stCaptionContainer"] {
+          margin: 0 0 0.12rem !important;
+          padding: 0 !important;
+          font-size: 0.72rem !important;
+          line-height: 1.2 !important;
+        }
+        div[class*="st-key-wl_sp_bar_"] {
+          width: 100% !important;
+          max-width: 100% !important;
+          min-height: 0 !important;
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+        div[class*="st-key-wl_sp_bar_"] iframe {
+          width: 100% !important;
+          min-height: 2.35rem !important;
+          height: 2.35rem !important;
+          border: none !important;
+          display: block !important;
         }
         </style>""",
         unsafe_allow_html=True,
     )
-    st.caption("특수기호 — 누르면 바로 반영됩니다. (편집 중이던 칸 → 없으면 내용)")
-    with st.container(key=f"wl_sp_grid_{iso}"):
-        per_row = 8
-        for row_start in range(0, len(_WL_SPECIAL_CHARS), per_row):
-            chunk = _WL_SPECIAL_CHARS[row_start : row_start + per_row]
-            cols = st.columns(per_row, gap="small")
-            for i, ch in enumerate(chunk):
-                idx = row_start + i
-                if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
-                    st.session_state[f"wl_pending_sp_{iso}"] = ch
-                    _wl_rerun()
+    st.caption("특수기호 ←→ 스크롤 · 탭하면 바로 반영")
+
+    def _on_pick() -> None:
+        stt = st.session_state.get(f"wl_sp_bar_{iso}") or {}
+        if isinstance(stt, dict):
+            ch = stt.get("pick")
+        else:
+            ch = getattr(stt, "pick", None)
+        if not ch:
+            return
+        st.session_state[f"wl_pending_sp_{iso}"] = str(ch)
+
+    with st.container(key=f"wl_sp_bar_wrap_{iso}"):
+        _WL_SPECIAL_BAR(
+            key=f"wl_sp_bar_{iso}",
+            data={"iso": iso, "chars": list(_WL_SPECIAL_CHARS)},
+            on_pick_change=_on_pick,
+            width="stretch",
+            height=38,
+        )
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
     val, pos = str(val or ""), max(0, min(int(pos or 0), len(str(val or ""))))
