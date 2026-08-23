@@ -1563,6 +1563,8 @@ def _apply_entry_lines(iso: str, entry_i: int, lines: list[str], *, focus_j: int
     st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(chunks)
     _set_comp_lines_state(iso, entry_i, chunks, focus_j=focus_j)
     st.session_state[_entry_lines_rev_key(iso, entry_i)] = int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0) + 1
+    # 컴포넌트가 이전 result.lines로 덮어쓰지 않도록 가드
+    st.session_state[f"wl_force_comp_lines_{iso}_{entry_i}"] = list(chunks)
     if focus_j is not None:
         fj = max(0, min(int(focus_j), len(chunks) - 1))
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, fj)
@@ -1620,6 +1622,7 @@ def _apply_entry_clients(iso: str, entry_i: int, lines: list[str], *, focus_j: i
     st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(filled)
     _set_comp_clients_state(iso, entry_i, chunks, focus_j=focus_j)
     st.session_state[_entry_clients_rev_key(iso, entry_i)] = int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0) + 1
+    st.session_state[f"wl_force_comp_clients_{iso}_{entry_i}"] = list(chunks)
     if focus_j is not None:
         fj = max(0, min(int(focus_j), len(chunks) - 1))
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, fj)
@@ -1743,10 +1746,15 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     )
     
     out_lines = lines
-    if hasattr(result, "lines") and isinstance(result.lines, list): out_lines = result.lines
-    elif isinstance(result, dict) and isinstance(result.get("lines"), list): out_lines = result.get("lines")
+    forced = st.session_state.pop(f"wl_force_comp_clients_{iso}_{entry_i}", None)
+    if isinstance(forced, list):
+        out_lines = [str(x or "") for x in forced]
+    elif hasattr(result, "lines") and isinstance(result.lines, list):
+        out_lines = result.lines
+    elif isinstance(result, dict) and isinstance(result.get("lines"), list):
+        out_lines = result.get("lines")
     out = [str(x or "") for x in out_lines]
-    
+
     if not out or out[-1] != "": out = list(out) + [""]
     st.session_state[live_key] = out
     old = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
@@ -1801,8 +1809,13 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     )
     
     out_lines = lines
-    if hasattr(result, "lines") and isinstance(result.lines, list): out_lines = result.lines
-    elif isinstance(result, dict) and isinstance(result.get("lines"), list): out_lines = result.get("lines")
+    forced = st.session_state.pop(f"wl_force_comp_lines_{iso}_{entry_i}", None)
+    if isinstance(forced, list):
+        out_lines = [str(x or "") for x in forced]
+    elif hasattr(result, "lines") and isinstance(result.lines, list):
+        out_lines = result.lines
+    elif isinstance(result, dict) and isinstance(result.get("lines"), list):
+        out_lines = result.get("lines")
     out = [str(x or "") for x in out_lines]
     
     if not out or out[-1] != "": out = list(out) + [""]
@@ -1912,8 +1925,12 @@ def _insert_special_char_auto(iso: str, ch: str, entry_count: int) -> bool:
         or fk == f"wl_notes_area_{iso}"
     ):
         if _insert_special_char_at_active(iso, ch):
+            m = re.match(r"^wl_ent_(?:ln|cl)_\d{4}-\d{2}-\d{2}_(\d+)_", fk)
+            if m:
+                st.session_state[f"wl_force_expand_{iso}"] = int(m.group(1))
             return True
     ei = _resolve_special_entry_i(iso, entry_count)
+    st.session_state[f"wl_force_expand_{iso}"] = ei
     lines = _lines_from_entry_widgets(iso, ei, keep_trailing_empty=True)
     if not lines:
         lines = [""]
@@ -1951,19 +1968,18 @@ def _queue_special_char(iso: str, ch: str) -> None:
     st.session_state[f"wl_pending_sp_{iso}"] = ch
 
 
-def _render_worklog_special_chars_ipad(iso: str, entry_count: int = 1) -> None:
-    """iPad: 네이티브 버튼 그리드(8열). pending만 설정 — 에디터 마운트 전에 적용."""
+def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
+    """맥·iPad 공통: 접기/펼치기 + 8열 네이티브 버튼. pending만 설정."""
     del entry_count
     st.markdown(
         """<style>
-        div[class*="st-key-wl_sp_panel_"] {
+        div[class*="st-key-wl_sp_exp_"] {
           width: 100% !important;
           max-width: 100% !important;
-          margin: 0 0 0.2rem !important;
-          padding: 0 !important;
+          margin: 0 0 0.25rem !important;
         }
-        div[class*="st-key-wl_sp_panel_"] [data-testid="stCaptionContainer"] {
-          margin: 0 0 0.12rem !important;
+        div[class*="st-key-wl_sp_exp_"] [data-testid="stCaptionContainer"] {
+          margin: 0 0 0.2rem !important;
           padding: 0 !important;
           font-size: 0.72rem !important;
           line-height: 1.2 !important;
@@ -1972,98 +1988,28 @@ def _render_worklog_special_chars_ipad(iso: str, entry_count: int = 1) -> None:
           padding: 0 2px !important;
         }
         div[class*="st-key-wl_sp_grid_"] button {
-          min-height: 2.55rem !important;
-          height: 2.55rem !important;
+          min-height: 2.4rem !important;
+          height: 2.4rem !important;
           padding: 0 !important;
-          font-size: 1.15rem !important;
+          font-size: 1.1rem !important;
           line-height: 1 !important;
-          border-radius: 0.45rem !important;
+          border-radius: 0.4rem !important;
           touch-action: manipulation;
         }
         </style>""",
         unsafe_allow_html=True,
     )
-    st.caption("특수기호 — 탭하면 바로 반영 (편집 중 칸 → 없으면 내용)")
-    with st.container(key=f"wl_sp_grid_{iso}"):
-        per_row = 8
-        for row_start in range(0, len(_WL_SPECIAL_CHARS), per_row):
-            chunk = _WL_SPECIAL_CHARS[row_start : row_start + per_row]
-            cols = st.columns(per_row, gap="small")
-            for i, ch in enumerate(chunk):
-                idx = row_start + i
-                if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
-                    _queue_special_char(iso, ch)
-
-
-def _render_worklog_special_chars_scroll(iso: str) -> None:
-    """맥·클라우드: 네이티브 버튼을 세로블록→가로 flex 스크롤로 배치(컬럼/iframe 미사용)."""
-    st.markdown(
-        f"""<style>
-        div[class*="st-key-wl_sp_panel_"] {{
-          width: 100% !important;
-          max-width: 100% !important;
-          margin: 0 0 0.2rem !important;
-          padding: 0 !important;
-        }}
-        div[class*="st-key-wl_sp_panel_"] [data-testid="stCaptionContainer"] {{
-          margin: 0 0 0.12rem !important;
-          padding: 0 !important;
-          font-size: 0.72rem !important;
-          line-height: 1.2 !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] {{
-          width: 100% !important;
-          max-width: 100% !important;
-          margin: 0 !important;
-          padding: 0 !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] > div[data-testid="stVerticalBlock"],
-        div[class*="st-key-wl_sp_scroll_{iso}"] div[data-testid="stVerticalBlock"] {{
-          display: flex !important;
-          flex-direction: row !important;
-          flex-wrap: nowrap !important;
-          align-items: center !important;
-          gap: 0.18rem !important;
-          width: 100% !important;
-          max-width: 100% !important;
-          overflow-x: auto !important;
-          overflow-y: hidden !important;
-          -webkit-overflow-scrolling: touch;
-          padding: 0 0 4px !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] [data-testid="stElementContainer"] {{
-          flex: 0 0 auto !important;
-          width: auto !important;
-          min-width: 1.85rem !important;
-          margin: 0 !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] button {{
-          min-width: 1.85rem !important;
-          width: 1.85rem !important;
-          min-height: 1.85rem !important;
-          height: 1.85rem !important;
-          padding: 0 !important;
-          margin: 0 !important;
-          font-size: 0.95rem !important;
-          line-height: 1 !important;
-          border-radius: 0.35rem !important;
-        }}
-        </style>""",
-        unsafe_allow_html=True,
-    )
-    st.caption("특수기호 ←→ 스크롤 · 클릭하면 바로 반영")
-    with st.container(key=f"wl_sp_scroll_{iso}"):
-        for idx, ch in enumerate(_WL_SPECIAL_CHARS):
-            if st.button(ch, key=f"wl_sp_btn_{iso}_{idx}"):
-                _queue_special_char(iso, ch)
-
-
-def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
-    """iPad: 네이티브 그리드 / 맥·클라우드: HTML 가로 스크롤. pending만 설정."""
-    if _wl_is_ipad_ui():
-        _render_worklog_special_chars_ipad(iso, entry_count)
-    else:
-        _render_worklog_special_chars_scroll(iso)
+    with st.expander("특수기호", expanded=False, key=f"wl_sp_exp_{iso}"):
+        st.caption("탭하면 바로 반영 · 편집 중 칸 → 없으면 펼친 항목 내용")
+        with st.container(key=f"wl_sp_grid_{iso}"):
+            per_row = 8
+            for row_start in range(0, len(_WL_SPECIAL_CHARS), per_row):
+                chunk = _WL_SPECIAL_CHARS[row_start : row_start + per_row]
+                cols = st.columns(per_row, gap="small")
+                for i, ch in enumerate(chunk):
+                    idx = row_start + i
+                    if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
+                        _queue_special_char(iso, ch)
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
     val, pos = str(val or ""), max(0, min(int(pos or 0), len(str(val or ""))))
@@ -2435,12 +2381,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         try: _gauge_usage = _content_row_usage(_read_editor_entries(selected))
         except Exception: _gauge_usage = _content_row_usage([])
 
-        _iso_bar = selected.isoformat()
-        _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
-        with st.container(key=f"wl_sp_panel_{_iso_bar}"):
-            _render_worklog_special_chars(_iso_bar, _n_bar)
-        # pending 적용은 에디터 마운트 직전(_wl_entry_editor 호출 전)에서만 수행
-
         # 💡 가운데 2번째 컬럼(게이지)을 화면 상단에 스크롤 고정
         st.markdown("""
         <style>
@@ -2592,6 +2532,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
                         st.session_state["wl_do_delete_day"] = selected.isoformat()
                         _wl_rerun()
+
+            _iso_bar = selected.isoformat()
+            _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
+            _render_worklog_special_chars(_iso_bar, _n_bar)
 
             if isinstance(picked, date) and picked != selected:
                 if os.path.exists(worklog_path(picked)):
