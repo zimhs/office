@@ -1942,7 +1942,7 @@ def _render_worklog_special_chars_ipad(iso: str, entry_count: int = 1) -> None:
         div[class*="st-key-wl_sp_panel_"] {
           width: 100% !important;
           max-width: 100% !important;
-          margin: 0 !important;
+          margin: 0 0 0.2rem !important;
           padding: 0 !important;
         }
         div[class*="st-key-wl_sp_panel_"] [data-testid="stCaptionContainer"] {
@@ -1980,58 +1980,78 @@ def _render_worklog_special_chars_ipad(iso: str, entry_count: int = 1) -> None:
 
 
 def _render_worklog_special_chars_scroll(iso: str) -> None:
-    """맥·클라우드: 한 줄 가로 스크롤 HTML 바 — 탭 시 pending → 자동 삽입."""
+    """맥·클라우드: 네이티브 버튼 한 줄 가로 스크롤 — 로컬/클라우드 공통 안정 경로."""
+    n = len(_WL_SPECIAL_CHARS)
     st.markdown(
-        """<style>
-        div[class*="st-key-wl_sp_panel_"] {
+        f"""<style>
+        div[class*="st-key-wl_sp_panel_"] {{
           width: 100% !important;
           max-width: 100% !important;
-          margin: 0 !important;
+          margin: 0 0 0.2rem !important;
           padding: 0 !important;
-        }
-        div[class*="st-key-wl_sp_panel_"] [data-testid="stCaptionContainer"] {
+        }}
+        div[class*="st-key-wl_sp_panel_"] [data-testid="stCaptionContainer"] {{
           margin: 0 0 0.12rem !important;
           padding: 0 !important;
           font-size: 0.72rem !important;
           line-height: 1.2 !important;
-        }
-        div[class*="st-key-wl_sp_bar_"] {
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] {{
           width: 100% !important;
           max-width: 100% !important;
-          min-height: 0 !important;
+          overflow-x: auto !important;
+          overflow-y: hidden !important;
+          -webkit-overflow-scrolling: touch;
+          scroll-behavior: smooth;
+          padding: 0 0 3px !important;
           margin: 0 !important;
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] > div {{
+          overflow: visible !important;
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] [data-testid="stHorizontalBlock"] {{
+          display: flex !important;
+          flex-wrap: nowrap !important;
+          flex-direction: row !important;
+          align-items: center !important;
+          gap: 0.12rem !important;
+          width: max-content !important;
+          min-width: 100% !important;
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] [data-testid="column"] {{
+          flex: 0 0 1.95rem !important;
+          width: 1.95rem !important;
+          min-width: 1.95rem !important;
+          max-width: 1.95rem !important;
           padding: 0 !important;
-        }
-        div[class*="st-key-wl_sp_bar_"] iframe {
-          width: 100% !important;
-          min-height: 2.35rem !important;
-          height: 2.35rem !important;
-          border: none !important;
-          display: block !important;
-        }
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] button {{
+          min-width: 1.9rem !important;
+          width: 1.9rem !important;
+          min-height: 1.9rem !important;
+          height: 1.9rem !important;
+          padding: 0 !important;
+          margin: 0 !important;
+          font-size: 0.92rem !important;
+          line-height: 1 !important;
+          border-radius: 0.35rem !important;
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] [data-testid="stColumn"] {{
+          flex: 0 0 1.95rem !important;
+          width: 1.95rem !important;
+          min-width: 1.95rem !important;
+          max-width: 1.95rem !important;
+        }}
         </style>""",
         unsafe_allow_html=True,
     )
-    st.caption("특수기호 ←→ 스크롤 · 탭하면 바로 반영")
-
-    def _on_pick() -> None:
-        stt = st.session_state.get(f"wl_sp_bar_{iso}") or {}
-        if isinstance(stt, dict):
-            ch = stt.get("pick")
-        else:
-            ch = getattr(stt, "pick", None)
-        if not ch:
-            return
-        st.session_state[f"wl_pending_sp_{iso}"] = str(ch)
-
-    with st.container(key=f"wl_sp_bar_wrap_{iso}"):
-        _WL_SPECIAL_BAR(
-            key=f"wl_sp_bar_{iso}",
-            data={"iso": iso, "chars": list(_WL_SPECIAL_CHARS)},
-            on_pick_change=_on_pick,
-            width="stretch",
-            height=38,
-        )
+    st.caption("특수기호 ←→ 스크롤 · 클릭하면 바로 반영")
+    with st.container(key=f"wl_sp_scroll_{iso}"):
+        cols = st.columns(n, gap="small")
+        for idx, ch in enumerate(_WL_SPECIAL_CHARS):
+            if cols[idx].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
+                st.session_state[f"wl_pending_sp_{iso}"] = ch
+                _wl_rerun()
 
 
 def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
@@ -2411,6 +2431,15 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         try: _gauge_usage = _content_row_usage(_read_editor_entries(selected))
         except Exception: _gauge_usage = _content_row_usage([])
 
+        _iso_bar = selected.isoformat()
+        _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
+        with st.container(key=f"wl_sp_panel_{_iso_bar}"):
+            _render_worklog_special_chars(_iso_bar, _n_bar)
+        _process_pending_special_char(_iso_bar, _n_bar)
+        _sp_msg = st.session_state.pop("wl_special_msg", None)
+        if _sp_msg:
+            st.caption(_sp_msg)
+
         # 💡 가운데 2번째 컬럼(게이지)을 화면 상단에 스크롤 고정
         st.markdown("""
         <style>
@@ -2562,14 +2591,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
                         st.session_state["wl_do_delete_day"] = selected.isoformat()
                         _wl_rerun()
-
-            _iso_bar = selected.isoformat()
-            _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
-            with st.container(key=f"wl_sp_panel_{_iso_bar}"):
-                _render_worklog_special_chars(_iso_bar, _n_bar)
-            msg = st.session_state.pop("wl_special_msg", None)
-            if msg:
-                st.caption(msg)
 
             if isinstance(picked, date) and picked != selected:
                 if os.path.exists(worklog_path(picked)):
