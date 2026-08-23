@@ -1610,12 +1610,15 @@ def _content_from_entry_lines(iso: str, entry_i: int) -> str: return "\n".join(_
 
 def _set_comp_lines_state(iso: str, entry_i: int, chunks: list[str], *, focus_j: int | None = None) -> None:
     ck = _entry_lines_comp_key(iso, entry_i)
-    if ck not in st.session_state or not isinstance(st.session_state.get(ck), dict): st.session_state[ck] = {"lines": chunks, "focus": -1}
-    else: st.session_state[ck]["lines"] = chunks
+    prev = st.session_state.get(ck) if isinstance(st.session_state.get(ck), dict) else {}
+    fj = prev.get("focus", -1) if focus_j is None else max(0, min(int(focus_j), max(len(chunks) - 1, 0)))
+    new_state = {"lines": list(chunks), "focus": fj}
+    if isinstance(prev.get("caret"), dict):
+        new_state["caret"] = dict(prev.get("caret") or {})
+    # 위젯 키는 중첩 mutate 금지 — 통째로 교체
+    st.session_state[ck] = new_state
     if focus_j is not None:
-        fj = max(0, min(int(focus_j), max(len(chunks) - 1, 0)))
-        st.session_state[ck]["focus"] = fj
-        st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, fj)
+        st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, int(fj))
     st.session_state[_entry_lines_live_key(iso, entry_i)] = list(chunks)
 
 def _apply_entry_lines(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None, bump_gen: bool = False) -> None:
@@ -1664,12 +1667,14 @@ def _clients_from_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bool =
 
 def _set_comp_clients_state(iso: str, entry_i: int, chunks: list[str], *, focus_j: int | None = None) -> None:
     ck = _entry_clients_comp_key(iso, entry_i)
-    if ck not in st.session_state or not isinstance(st.session_state.get(ck), dict): st.session_state[ck] = {"lines": chunks, "focus": -1}
-    else: st.session_state[ck]["lines"] = chunks
+    prev = st.session_state.get(ck) if isinstance(st.session_state.get(ck), dict) else {}
+    fj = prev.get("focus", -1) if focus_j is None else max(0, min(int(focus_j), max(len(chunks) - 1, 0)))
+    new_state = {"lines": list(chunks), "focus": fj}
+    if isinstance(prev.get("caret"), dict):
+        new_state["caret"] = dict(prev.get("caret") or {})
+    st.session_state[ck] = new_state
     if focus_j is not None:
-        fj = max(0, min(int(focus_j), max(len(chunks) - 1, 0)))
-        st.session_state[ck]["focus"] = fj
-        st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, fj)
+        st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, int(fj))
     st.session_state[_entry_clients_live_key(iso, entry_i)] = list(chunks)
 
 def _apply_entry_clients(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None) -> None:
@@ -2004,75 +2009,85 @@ def _process_pending_special_char(iso: str, entry_count: int) -> None:
     ch = str(pending or "")
     if not ch:
         return
-    if _wl_quiet_ui():
-        target = str(st.session_state.get(f"wl_sp_target_{iso}", "내용") or "내용")
-        try:
-            entry_i = int(st.session_state.get(f"wl_sp_entry_num_{iso}", entry_count) or entry_count) - 1
-        except (TypeError, ValueError):
-            entry_i = max(0, entry_count - 1)
-        entry_i = max(0, min(entry_i, max(0, entry_count - 1)))
-        if not _insert_special_char_touch(iso, ch, target, entry_i):
-            st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다. 칸을 선택한 뒤 다시 눌러 주세요."
-        return
-    if _insert_special_char_at_active(iso, ch):
-        return
     target = str(st.session_state.get(f"wl_sp_target_{iso}", "내용") or "내용")
     try:
         entry_i = int(st.session_state.get(f"wl_sp_entry_num_{iso}", entry_count) or entry_count) - 1
     except (TypeError, ValueError):
         entry_i = max(0, entry_count - 1)
     entry_i = max(0, min(entry_i, max(0, entry_count - 1)))
-    if not _insert_special_char_touch(iso, ch, target, entry_i):
+    if _wl_quiet_ui():
+        if _insert_special_char_touch(iso, ch, target, entry_i):
+            st.session_state["wl_special_msg"] = f"「{ch}」삽입 ({target})"
+        else:
+            st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다. 넣을 칸을 확인한 뒤 다시 눌러 주세요."
+        return
+    if _insert_special_char_at_active(iso, ch):
+        return
+    if _insert_special_char_touch(iso, ch, target, entry_i):
+        st.session_state["wl_special_msg"] = f"「{ch}」삽입 ({target})"
+    else:
         st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다. 칸을 선택한 뒤 다시 눌러 주세요."
 
 
 def _render_worklog_special_chars_touch(iso: str, entry_count: int) -> None:
+    """날짜 아래 한 줄 가로 스크롤 + 넣을 칸 선택(콤팩트). 클릭 시 pending만 저장."""
     st.markdown(
         """<style>
-        div[class*="st-key-wl_sp_touch_wrap_"] [data-testid="column"] { padding: 0 1px !important; }
-        div[class*="st-key-wl_sp_touch_wrap_"] button {
-          min-width: 2.1rem !important; min-height: 2.1rem !important;
-          padding: 0.15rem 0.2rem !important; font-size: 1rem !important;
+        div[class*="st-key-wl_sp_scroll_"] {
+          overflow-x: auto !important;
+          overflow-y: hidden !important;
+          white-space: nowrap !important;
+          -webkit-overflow-scrolling: touch;
+          padding: 2px 0 4px !important;
+          margin: 0 !important;
         }
+        div[class*="st-key-wl_sp_scroll_"] [data-testid="stHorizontalBlock"] {
+          flex-wrap: nowrap !important;
+          gap: 0.2rem !important;
+          width: max-content !important;
+          min-width: 100%;
+        }
+        div[class*="st-key-wl_sp_scroll_"] [data-testid="column"] {
+          padding: 0 1px !important;
+          flex: 0 0 auto !important;
+          width: 2.05rem !important;
+          min-width: 2.05rem !important;
+        }
+        div[class*="st-key-wl_sp_scroll_"] button {
+          min-width: 2rem !important; min-height: 1.7rem !important;
+          padding: 0.1rem 0.15rem !important; font-size: 0.95rem !important;
+        }
+        div[class*="st-key-wl_sp_target_"] { margin-bottom: 0 !important; }
         </style>""",
         unsafe_allow_html=True,
     )
-    st.caption("특수기호 — 아래에서 **넣을 칸**을 고른 뒤 기호를 누르세요.")
-    target = st.radio(
-        "특수기호 칸",
-        options=["내용", "거래처", "익일업무", "특이사항"],
-        horizontal=True,
-        key=f"wl_sp_target_{iso}",
-        label_visibility="collapsed",
-    )
-    if entry_count > 1 and target in ("내용", "거래처"):
-        st.number_input(
-            "항목 번호",
-            min_value=1,
-            max_value=max(1, entry_count),
-            value=min(entry_count, max(1, int(st.session_state.get(f"wl_sp_entry_num_{iso}", entry_count) or entry_count))),
-            step=1,
-            key=f"wl_sp_entry_num_{iso}",
-            help="여러 항목 중 특수기호를 넣을 항목 번호",
+    tcol, ecol = st.columns([3.2, 1.2], gap="small")
+    with tcol:
+        st.selectbox(
+            "넣을 칸",
+            options=["내용", "거래처", "익일업무", "특이사항"],
+            key=f"wl_sp_target_{iso}",
+            label_visibility="collapsed",
         )
-    with st.container(key=f"wl_sp_touch_wrap_{iso}"):
-        row_size = 8
-        for row_start in range(0, len(_WL_SPECIAL_CHARS), row_size):
-            chunk = _WL_SPECIAL_CHARS[row_start : row_start + row_size]
-            cols = st.columns(len(chunk))
-            for i, ch in enumerate(chunk):
-                idx = row_start + i
-                if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
-                    try:
-                        entry_i = int(st.session_state.get(f"wl_sp_entry_num_{iso}", entry_count) or entry_count) - 1
-                    except (TypeError, ValueError):
-                        entry_i = max(0, entry_count - 1)
-                    entry_i = max(0, min(entry_i, max(0, entry_count - 1)))
-                    if _insert_special_char_touch(iso, ch, str(target), entry_i):
-                        st.session_state["wl_special_msg"] = f"「{ch}」삽입 ({target})"
-                    else:
-                        st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
-                    _wl_rerun()
+    with ecol:
+        if entry_count > 1:
+            st.number_input(
+                "항목",
+                min_value=1,
+                max_value=max(1, entry_count),
+                step=1,
+                key=f"wl_sp_entry_num_{iso}",
+                label_visibility="collapsed",
+                help="항목 번호",
+            )
+        else:
+            st.session_state[f"wl_sp_entry_num_{iso}"] = 1
+    with st.container(key=f"wl_sp_scroll_{iso}"):
+        cols = st.columns(len(_WL_SPECIAL_CHARS))
+        for idx, ch in enumerate(_WL_SPECIAL_CHARS):
+            if cols[idx].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
+                st.session_state[f"wl_pending_sp_{iso}"] = ch
+                _wl_rerun()
 
 
 def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
@@ -2092,17 +2107,20 @@ def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
         if obj.get("miss"):
             st.session_state["wl_special_msg"] = "칸을 먼저 클릭한 뒤 특수문자를 누르세요"
             return
+        # 렌더 중 위젯 상태 변경 금지 — pending만 넣고 다음 실행에서 적용
+        ch = str(obj.get("ch") or "")
+        if not ch:
+            return
         if obj.get("use_active"):
             fk = str(obj.get("key") or "")
-            ch = str(obj.get("ch") or "")
             if fk:
                 try:
                     st.session_state[f"wl_focus_caret_{iso}"] = int(obj.get("s") or 0)
                 except (TypeError, ValueError):
                     pass
                 st.session_state["wl_active_cell_key"] = fk
-            if _insert_special_char_at_active(iso, ch):
-                _wl_rerun()
+            st.session_state[f"wl_pending_sp_{iso}"] = ch
+            _wl_rerun()
             return
         try:
             fk, pos = str(obj.get("key") or ""), int(obj.get("s") or 0)
@@ -2123,7 +2141,7 @@ def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
             "key": fk,
             "v": str(obj.get("v") if obj.get("v") is not None else ""),
             "s": pos,
-            "ch": str(obj.get("ch") or ""),
+            "ch": ch,
         }
         _wl_rerun()
 
@@ -2639,6 +2657,12 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             bar_date, bar_cal, bar_del = st.columns([2.4, 1.1, 0.7], gap="small")
             with bar_date:
                 picked = st.date_input("업무일지 날짜", key="wl_date_pick", help="저장 후에도 날짜를 바꿀 수 있습니다.")
+                _iso_bar = selected.isoformat()
+                _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
+                _render_worklog_special_chars(_iso_bar, _n_bar)
+                msg = st.session_state.pop("wl_special_msg", None)
+                if msg:
+                    st.caption(msg)
             with bar_cal:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
                 with st.popover("📅 달력", width="content"):
@@ -2921,11 +2945,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 st.text_area("익일업무", key=f"wl_next_area_{iso2}", label_visibility="collapsed", height=110)
                 st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>", unsafe_allow_html=True)
                 st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
-
-                _render_worklog_special_chars(iso2, n)
-                msg = st.session_state.pop("wl_special_msg", None)
-                if msg:
-                    st.caption(msg)
 
                 if st.button("저장", type="primary", width="stretch", key=f"wl_save_btn_{iso2}"):
                     try:
