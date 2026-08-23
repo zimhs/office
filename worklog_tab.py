@@ -44,6 +44,42 @@ def _wl_quiet_ui() -> bool:
     except Exception: return True
 
 
+def _wl_is_ipad_ui() -> bool:
+    """iPad/touch UI — app.is_touch_ui()와 동일 기준. 맥·데스크톱 브라우저는 False."""
+    try:
+        if st.session_state.get("force_touch_ui") is True:
+            return True
+        v = st.query_params.get("touch_ui", "")
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else ""
+        if str(v).strip() in ("1", "true", "True"):
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    try:
+        cookies = getattr(st.context, "cookies", None)
+        if cookies is not None and str(cookies.get("dashboard_touch", "")) == "1":
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    try:
+        headers = getattr(st.context, "headers", None)
+        ua = ""
+        if headers is not None:
+            ua = str(headers.get("User-Agent") or headers.get("user-agent") or "")
+        if ua and (
+            re.search(r"iPad|iPhone|iPod", ua)
+            or ("Macintosh" in ua and "Mobile" in ua)
+        ):
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    return bool(st.session_state.get("force_touch_ui"))
+
+
 def _invalidate_saved_dates_cache() -> None:
     st.session_state.pop("wl_saved_dates_cache", None)
 
@@ -1898,9 +1934,53 @@ def _process_pending_special_char(iso: str, entry_count: int) -> None:
         st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
 
 
-def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
-    """한 줄 가로 스크롤 HTML 바 — 탭 시 pending → 자동 삽입(편집 칸 우선)."""
+def _render_worklog_special_chars_ipad(iso: str, entry_count: int = 1) -> None:
+    """iPad: 네이티브 버튼 그리드(8열) — 탭 시 pending → 자동 삽입."""
     del entry_count
+    st.markdown(
+        """<style>
+        div[class*="st-key-wl_sp_panel_"] {
+          width: 100% !important;
+          max-width: 100% !important;
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+        div[class*="st-key-wl_sp_panel_"] [data-testid="stCaptionContainer"] {
+          margin: 0 0 0.12rem !important;
+          padding: 0 !important;
+          font-size: 0.72rem !important;
+          line-height: 1.2 !important;
+        }
+        div[class*="st-key-wl_sp_grid_"] [data-testid="column"] {
+          padding: 0 2px !important;
+        }
+        div[class*="st-key-wl_sp_grid_"] button {
+          min-height: 2.55rem !important;
+          height: 2.55rem !important;
+          padding: 0 !important;
+          font-size: 1.15rem !important;
+          line-height: 1 !important;
+          border-radius: 0.45rem !important;
+          touch-action: manipulation;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+    st.caption("특수기호 — 탭하면 바로 반영 (편집 중 칸 → 없으면 내용)")
+    with st.container(key=f"wl_sp_grid_{iso}"):
+        per_row = 8
+        for row_start in range(0, len(_WL_SPECIAL_CHARS), per_row):
+            chunk = _WL_SPECIAL_CHARS[row_start : row_start + per_row]
+            cols = st.columns(per_row, gap="small")
+            for i, ch in enumerate(chunk):
+                idx = row_start + i
+                if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
+                    st.session_state[f"wl_pending_sp_{iso}"] = ch
+                    _wl_rerun()
+
+
+def _render_worklog_special_chars_scroll(iso: str) -> None:
+    """맥·클라우드: 한 줄 가로 스크롤 HTML 바 — 탭 시 pending → 자동 삽입."""
     st.markdown(
         """<style>
         div[class*="st-key-wl_sp_panel_"] {
@@ -1952,6 +2032,14 @@ def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
             width="stretch",
             height=38,
         )
+
+
+def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
+    """iPad: 네이티브 그리드 / 맥·클라우드: 가로 스크롤 바. 삽입은 공통 pending 경로."""
+    if _wl_is_ipad_ui():
+        _render_worklog_special_chars_ipad(iso, entry_count)
+    else:
+        _render_worklog_special_chars_scroll(iso)
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
     val, pos = str(val or ""), max(0, min(int(pos or 0), len(str(val or ""))))
