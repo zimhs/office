@@ -382,7 +382,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v9",
+    "worklog_entry_lines_v10",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -1546,7 +1546,8 @@ def _set_comp_lines_state(iso: str, entry_i: int, chunks: list[str], *, focus_j:
     new_state = {"lines": list(chunks), "focus": fj}
     if isinstance(prev.get("caret"), dict):
         new_state["caret"] = dict(prev.get("caret") or {})
-    # 위젯 키는 중첩 mutate 금지 — 통째로 교체
+    # 위젯 키는 중첩 mutate 금지 — 통째로 교체. 이전 값 잔존 시 pop 후 재설정.
+    st.session_state.pop(ck, None)
     st.session_state[ck] = new_state
     if focus_j is not None:
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, int(fj))
@@ -1605,6 +1606,7 @@ def _set_comp_clients_state(iso: str, entry_i: int, chunks: list[str], *, focus_
     new_state = {"lines": list(chunks), "focus": fj}
     if isinstance(prev.get("caret"), dict):
         new_state["caret"] = dict(prev.get("caret") or {})
+    st.session_state.pop(ck, None)
     st.session_state[ck] = new_state
     if focus_j is not None:
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, int(fj))
@@ -1969,20 +1971,18 @@ def _queue_special_char(iso: str, ch: str) -> None:
 
 
 def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
-    """맥·iPad 공통: 접기/펼치기 + 8열 네이티브 버튼. pending만 설정."""
+    """맥·iPad 공통: 접기/펼치기 토글 + 8열 네이티브 버튼(기본 펼침)."""
     del entry_count
+    show_k = f"wl_sp_show_{iso}"
+    if show_k not in st.session_state:
+        st.session_state[show_k] = True
+
     st.markdown(
         """<style>
-        div[class*="st-key-wl_sp_exp_"] {
-          width: 100% !important;
-          max-width: 100% !important;
-          margin: 0 0 0.25rem !important;
-        }
-        div[class*="st-key-wl_sp_exp_"] [data-testid="stCaptionContainer"] {
-          margin: 0 0 0.2rem !important;
-          padding: 0 !important;
-          font-size: 0.72rem !important;
-          line-height: 1.2 !important;
+        div[class*="st-key-wl_sp_tog_"] button {
+          min-height: 2rem !important;
+          padding: 0.2rem 0.5rem !important;
+          font-size: 0.9rem !important;
         }
         div[class*="st-key-wl_sp_grid_"] [data-testid="column"] {
           padding: 0 2px !important;
@@ -1999,17 +1999,25 @@ def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
         </style>""",
         unsafe_allow_html=True,
     )
-    with st.expander("특수기호", expanded=False, key=f"wl_sp_exp_{iso}"):
-        st.caption("탭하면 바로 반영 · 편집 중 칸 → 없으면 펼친 항목 내용")
-        with st.container(key=f"wl_sp_grid_{iso}"):
-            per_row = 8
-            for row_start in range(0, len(_WL_SPECIAL_CHARS), per_row):
-                chunk = _WL_SPECIAL_CHARS[row_start : row_start + per_row]
-                cols = st.columns(per_row, gap="small")
-                for i, ch in enumerate(chunk):
-                    idx = row_start + i
-                    if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
-                        _queue_special_char(iso, ch)
+    open_now = bool(st.session_state.get(show_k))
+    tog_label = "특수기호 접기 ▲" if open_now else "특수기호 펼치기 ▼"
+    if st.button(tog_label, key=f"wl_sp_tog_{iso}", use_container_width=True):
+        st.session_state[show_k] = not open_now
+        open_now = bool(st.session_state.get(show_k))
+
+    if not open_now:
+        return
+
+    st.caption("탭하면 바로 반영 · 편집 중 칸 → 없으면 펼친 항목 내용")
+    with st.container(key=f"wl_sp_grid_{iso}"):
+        per_row = 8
+        for row_start in range(0, len(_WL_SPECIAL_CHARS), per_row):
+            chunk = _WL_SPECIAL_CHARS[row_start : row_start + per_row]
+            cols = st.columns(per_row, gap="small")
+            for i, ch in enumerate(chunk):
+                idx = row_start + i
+                if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
+                    _queue_special_char(iso, ch)
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
     val, pos = str(val or ""), max(0, min(int(pos or 0), len(str(val or ""))))
