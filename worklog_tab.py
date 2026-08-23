@@ -329,29 +329,86 @@ export default function (component) {
   let lastSent = ""; let lastSig = ""; let lastAt = 0;
 
   function resolveKey(t) {
-    if (!t || String(t.tagName || "").toUpperCase() !== "INPUT") return null;
-    const wrap = t.closest ? t.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]') : null;
+    if (!t) return null;
+    const tag = String(t.tagName || "").toUpperCase();
+    if (tag === "TEXTAREA") {
+      const wrap = t.closest ? t.closest('[class*="st-key-wl_next_area_"],[class*="st-key-wl_notes_area_"]') : null;
+      if (!wrap) return null;
+      const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
+        const s = String(c);
+        return s.indexOf("st-key-wl_next_area_") !== -1 || s.indexOf("st-key-wl_notes_area_") !== -1;
+      });
+      if (!cls) return null;
+      const key = String(cls).replace(/^st-key-/, "");
+      const m = /^(wl_(?:next|notes)_area)_(\d{4}-\d{2}-\d{2})$/.exec(key);
+      if (!m || m[2] !== iso) return null;
+      return { key: key, kind: m[1], ei: -1, lj: -1 };
+    }
+    if (tag !== "INPUT") return null;
+    let wrap = t.closest ? t.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]') : null;
+    if (wrap) {
+      const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
+        const s = String(c);
+        return s.indexOf("st-key-wl_ent_ln_") !== -1 || s.indexOf("st-key-wl_ent_cl_") !== -1;
+      });
+      if (cls) {
+        const key = String(cls).replace(/^st-key-/, "");
+        const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(key);
+        if (m && m[2] === iso) return { key: key, kind: m[1], ei: Number(m[3]), lj: Number(m[4]) };
+      }
+    }
+    wrap = t.closest ? t.closest('[class*="st-key-wl_lines_comp_"],[class*="st-key-wl_clients_comp_"]') : null;
     if (!wrap) return null;
-    const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
+    const cls2 = Array.prototype.find.call(wrap.classList || [], (c) => {
       const s = String(c);
-      return (s.indexOf("st-key-wl_ent_ln_") !== -1 || s.indexOf("st-key-wl_ent_cl_") !== -1);
+      return s.indexOf("st-key-wl_lines_comp_") !== -1 || s.indexOf("st-key-wl_clients_comp_") !== -1;
     });
-    if (!cls) return null;
-    const key = String(cls).replace(/^st-key-/, "");
-    const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(key);
-    if (!m || m[2] !== iso) return null;
-    return { key: key, kind: m[1], ei: Number(m[3]), lj: Number(m[4]) };
+    if (!cls2) return null;
+    const compKey = String(cls2).replace(/^st-key-/, "");
+    const m2 = /^(wl_(?:lines|clients)_comp)_(\d{4}-\d{2}-\d{2})_(\d+)$/.exec(compKey);
+    if (!m2 || m2[2] !== iso) return null;
+    const kind = m2[1] === "wl_clients_comp" ? "wl_ent_cl" : "wl_ent_ln";
+    const ei = Number(m2[3]);
+    const lj = Number(t.dataset && t.dataset.idx != null ? t.dataset.idx : 0);
+    const logicalKey = kind + "_" + iso + "_" + ei + "_" + lj;
+    return { key: logicalKey, kind: kind, ei: ei, lj: lj };
   }
 
   function listKindInputs(kind) {
     const needle = kind === "wl_ent_cl" ? "st-key-wl_ent_cl_" : "st-key-wl_ent_ln_";
-    const nodes = document.querySelectorAll('div[class*="' + needle + '"] input');
+    const compNeedle = kind === "wl_ent_cl" ? "st-key-wl_clients_comp_" : "st-key-wl_lines_comp_";
+    const nodes = document.querySelectorAll(
+      'div[class*="' + needle + '"] input, div[class*="' + compNeedle + '"] .wl-lines input[data-idx]'
+    );
     const out = [];
     for (let i = 0; i < nodes.length; i++) {
       const info = resolveKey(nodes[i]);
       if (info) out.push(nodes[i]);
     }
     return out;
+  }
+
+  function findInputForFocusKey(focusKey) {
+    if (!focusKey) return null;
+    let m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(focusKey);
+    if (m) {
+      const kind = m[1];
+      const isoVal = m[2];
+      const ei = m[3];
+      const lj = m[4];
+      const compNeedle =
+        (kind === "wl_ent_cl" ? "st-key-wl_clients_comp_" : "st-key-wl_lines_comp_") + isoVal + "_" + ei;
+      const wraps = document.querySelectorAll('div[class*="' + compNeedle + '"]');
+      for (let i = 0; i < wraps.length; i++) {
+        const el = wraps[i].querySelector('.wl-lines input[data-idx="' + lj + '"]');
+        if (el) return el;
+      }
+      const legacy = document.querySelector('div[class*="st-key-' + focusKey + '"] input');
+      if (legacy) return legacy;
+    }
+    return document.querySelector(
+      'div[class*="st-key-' + focusKey + '"] input, div[class*="st-key-' + focusKey + '"] textarea'
+    );
   }
 
   function focusInput(el, caret) {
@@ -484,7 +541,7 @@ export default function (component) {
 
   if (focusKey) {
     const go = () => {
-      const el = document.querySelector('div[class*="st-key-' + focusKey + '"] input');
+      const el = findInputForFocusKey(focusKey);
       if (!el) return false;
       const caret = focusCaret != null && Number.isFinite(focusCaret) ? focusCaret : "end";
       focusInput(el, caret);
@@ -500,7 +557,7 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v18",
+    "worklog_cell_nav_hook_v19",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -524,18 +581,48 @@ export default function (component) {
   let last = null;
 
   function resolveKey(t) {
-    if (!t || String(t.tagName || "").toUpperCase() !== "INPUT") return null;
-    const wrap = t.closest ? t.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]') : null;
+    if (!t) return null;
+    const tag = String(t.tagName || "").toUpperCase();
+    if (tag === "TEXTAREA") {
+      const wrap = t.closest ? t.closest('[class*="st-key-wl_next_area_"],[class*="st-key-wl_notes_area_"]') : null;
+      if (!wrap) return null;
+      const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
+        const s = String(c);
+        return s.indexOf("st-key-wl_next_area_") !== -1 || s.indexOf("st-key-wl_notes_area_") !== -1;
+      });
+      if (!cls) return null;
+      const key = String(cls).replace(/^st-key-/, "");
+      const m = /^(wl_(?:next|notes)_area)_(\d{4}-\d{2}-\d{2})$/.exec(key);
+      if (!m || m[2] !== iso) return null;
+      return { key: key, el: t };
+    }
+    if (tag !== "INPUT") return null;
+    let wrap = t.closest ? t.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]') : null;
+    if (wrap) {
+      const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
+        const s = String(c);
+        return s.indexOf("st-key-wl_ent_ln_") !== -1 || s.indexOf("st-key-wl_ent_cl_") !== -1;
+      });
+      if (cls) {
+        const key = String(cls).replace(/^st-key-/, "");
+        const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(key);
+        if (m && m[2] === iso) return { key: key, el: t };
+      }
+    }
+    wrap = t.closest ? t.closest('[class*="st-key-wl_lines_comp_"],[class*="st-key-wl_clients_comp_"]') : null;
     if (!wrap) return null;
-    const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
+    const cls2 = Array.prototype.find.call(wrap.classList || [], (c) => {
       const s = String(c);
-      return (s.indexOf("st-key-wl_ent_ln_") !== -1 || s.indexOf("st-key-wl_ent_cl_") !== -1);
+      return s.indexOf("st-key-wl_lines_comp_") !== -1 || s.indexOf("st-key-wl_clients_comp_") !== -1;
     });
-    if (!cls) return null;
-    const key = String(cls).replace(/^st-key-/, "");
-    const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(key);
-    if (!m || m[2] !== iso) return null;
-    return { key: key, el: t };
+    if (!cls2) return null;
+    const compKey = String(cls2).replace(/^st-key-/, "");
+    const m2 = /^(wl_(?:lines|clients)_comp)_(\d{4}-\d{2}-\d{2})_(\d+)$/.exec(compKey);
+    if (!m2 || m2[2] !== iso) return null;
+    const kind = m2[1] === "wl_clients_comp" ? "wl_ent_cl" : "wl_ent_ln";
+    const ei = Number(m2[3]);
+    const lj = Number(t.dataset && t.dataset.idx != null ? t.dataset.idx : 0);
+    return { key: kind + "_" + iso + "_" + ei + "_" + lj, el: t };
   }
 
   function remember(t) {
@@ -627,7 +714,7 @@ export default function (component) {
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v1",
+    "worklog_special_bar_v2",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -1676,7 +1763,13 @@ def _render_worklog_special_chars(iso: str) -> None:
             obj = json.loads(str(raw)); fk, pos = str(obj.get("key") or ""), int(obj.get("s") or 0)
         except Exception: return
         if obj.get("miss"): st.session_state["wl_special_msg"] = "칸을 먼저 클릭한 뒤 특수문자를 누르세요"; return
-        if not (fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_")): return
+        if not (
+            fk.startswith("wl_ent_ln_")
+            or fk.startswith("wl_ent_cl_")
+            or fk.startswith("wl_next_area_")
+            or fk.startswith("wl_notes_area_")
+        ):
+            return
         sig = f"{fk}\0{obj.get('v')}\0{pos}\0{obj.get('t')}"
         if st.session_state.get(f"wl_special_done_{iso}") == sig: return
         st.session_state[f"wl_special_done_{iso}"] = sig
@@ -1687,6 +1780,16 @@ def _render_worklog_special_chars(iso: str) -> None:
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
     val, pos = str(val or ""), max(0, min(int(pos or 0), len(str(val or ""))))
+    if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
+        if not fk.endswith(f"_{iso}"):
+            return
+        st.session_state[fk] = val
+        st.session_state[f"wl_focus_ln_{iso}"] = fk
+        st.session_state["wl_active_cell_key"] = fk
+        st.session_state["wl_active_cell_sel"] = (pos, pos)
+        st.session_state[f"wl_focus_caret_{iso}"] = pos
+        st.session_state["wl_special_msg"] = f"「{ch}」삽입" if ch else "특수문자 삽입"
+        return
     m = re.match(r"^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)", fk)
     if not m or m.group(2) != iso: return
     kind, ei, lj = m.group(1), int(m.group(3)), int(m.group(4))
@@ -2358,7 +2461,13 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
                     if not isinstance(hook, dict): return
                     fk = str(hook.get("focus") or "")
-                    if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"): st.session_state["wl_active_cell_key"] = fk
+                    if (
+                        fk.startswith("wl_ent_ln_")
+                        or fk.startswith("wl_ent_cl_")
+                        or fk.startswith("wl_next_area_")
+                        or fk.startswith("wl_notes_area_")
+                    ):
+                        st.session_state["wl_active_cell_key"] = fk
 
                 def _on_caret_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
@@ -2369,7 +2478,12 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         obj = json.loads(str(raw))
                         fk, s, e = str(obj.get("key") or ""), int(obj.get("s") or 0), int(obj.get("e") or int(obj.get("s") or 0))
                     except Exception: return
-                    if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
+                    if (
+                        fk.startswith("wl_ent_ln_")
+                        or fk.startswith("wl_ent_cl_")
+                        or fk.startswith("wl_next_area_")
+                        or fk.startswith("wl_notes_area_")
+                    ):
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state["wl_active_cell_sel"] = (s, e)
 
