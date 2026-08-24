@@ -113,7 +113,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-25b · 바탕체(나눔명조) · 미리보기75% · 입력11pt · 로고ON"
+_WL_UI_BUILD = "2026-08-25c · 바탕체(나눔명조) · 익일/특이 11pt·Enter줄바꿈"
 
 
 # =====================================================================
@@ -546,6 +546,16 @@ export default function (component) {
     const caretAll = start === end;
 
     if (e.key === "Enter") {
+      const tag = String(t.tagName || "").toUpperCase();
+      // 익일업무·특이사항 textarea: Enter = 다음 줄, ⌘/Ctrl+Enter = 반영
+      if (tag === "TEXTAREA") {
+        if (e.metaKey || e.ctrlKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          emit(info.key, t.value || "");
+        }
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       emit(info.key, t.value || "");
@@ -674,7 +684,7 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v20",
+    "worklog_cell_nav_hook_v21",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -3000,9 +3010,20 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     st.session_state[f"wl_do_add_{iso2}"] = True
                     _wl_rerun()
 
-                st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>", unsafe_allow_html=True)
+                st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"""<style>
+                    div[class*="st-key-wl_next_area_"] textarea,
+                    div[class*="st-key-wl_notes_area_"] textarea {{
+                      font-family: {_WL_FONT_STACK} !important;
+                      font-size: 11pt !important;
+                      line-height: 1.45 !important;
+                    }}
+                    </style>""",
+                    unsafe_allow_html=True,
+                )
                 st.text_area("익일업무", key=f"wl_next_area_{iso2}", label_visibility="collapsed", height=110)
-                st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분)</span></div>", unsafe_allow_html=True)
+                st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
                 st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
 
                 if st.button("저장", type="primary", width="stretch", key=f"wl_save_btn_{iso2}"):
