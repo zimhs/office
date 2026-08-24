@@ -1175,6 +1175,8 @@ def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
         total_h = 0
         for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
             total_h += _excel_row_height_px(ws, r) + 1
+        # 원본 로고(특이사항 하단, Excel 표시 높이 61 + 간격)
+        total_h += 61 + 10
         wb.close()
         return max(1, total_w), max(1, total_h)
     except Exception: return 900, 1312
@@ -1234,7 +1236,34 @@ def _scaled_view_frame_size(path: str, scale: float) -> tuple[int, int]:
     s = float(scale) if scale and scale > 0 else 1.0
     return int(w * s) + 28, int(h * s) + 64
 
-def workbook_to_html(path: str, *, include_logo: bool = False, layout_scale: float = 1.0) -> str:
+def _worklog_logo_bytes(xlsx_path: str | None = None) -> tuple[bytes, str, int, int] | None:
+    """원본 템플릿 내장 로고(320×61) 우선. (bytes, mime, w, h)"""
+    candidates: list[tuple[str, str]] = []
+    if xlsx_path and os.path.exists(xlsx_path):
+        try:
+            import zipfile
+            with zipfile.ZipFile(xlsx_path) as zf:
+                for name in ("xl/media/image1.jpeg", "xl/media/image1.jpg", "xl/media/image1.png"):
+                    if name in zf.namelist():
+                        data = zf.read(name)
+                        mime = "image/jpeg" if name.endswith((".jpeg", ".jpg")) else "image/png"
+                        return data, mime, 320, 61  # 원본 Excel 표시 크기
+        except Exception:
+            pass
+    for p, mime in (
+        (os.path.join(WORKLOG_DIR, "shinil_logo.jpeg"), "image/jpeg"),
+        ("logo.png", "image/png"),
+    ):
+        if os.path.exists(p):
+            try:
+                with open(p, "rb") as f:
+                    return f.read(), mime, 320, 61
+            except Exception:
+                continue
+    return None
+
+
+def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: float = 1.0) -> str:
     if load_workbook is None: return "<p>openpyxl 필요</p>"
     wb = load_workbook(path, data_only=False)
     ws = wb.active
@@ -1356,19 +1385,27 @@ def workbook_to_html(path: str, *, include_logo: bool = False, layout_scale: flo
     
     import base64
     logo_tr = ""
-    # HTML 로고는 인쇄 2페이지 밀림 원인 → 기본 끔(원본 xlsx drawing 로고 사용)
-    if include_logo and os.path.exists("logo.png"):
-        try:
-            with open("logo.png", "rb") as img_f: b64_img = base64.b64encode(img_f.read()).decode("utf-8")
-            logo_tr = (
-                '<tr style="border:none;background:#fff;height:52px;">'
-                '<td colspan="26" style="text-align:center;padding:4px 0;border:none;vertical-align:middle;">'
-                f'<img src="data:image/png;base64,{b64_img}" alt="신일가스 로고" '
-                'style="height:44px;width:auto;max-width:68%;display:block;margin:0 auto;">'
-                "</td></tr>"
-            )
-        except Exception:
-            pass
+    # 원본: 특이사항(47행) 바로 아래 중앙, Excel 표시 크기 320×61
+    if include_logo:
+        logo = _worklog_logo_bytes(path)
+        if logo:
+            try:
+                data, mime, nat_w, nat_h = logo
+                b64_img = base64.b64encode(data).decode("utf-8")
+                ls = float(layout_scale) if layout_scale and layout_scale > 0 else 1.0
+                logo_w = max(1, int(round(nat_w * ls)))
+                logo_h = max(1, int(round(nat_h * ls)))
+                pad_top = max(4, int(round(8 * ls)))  # 원본과 비슷한 위쪽 간격
+                logo_tr = (
+                    f'<tr style="border:none;background:#fff;height:{logo_h + pad_top + 2}px;">'
+                    f'<td colspan="26" style="text-align:center;padding:{pad_top}px 0 0 0;border:none;vertical-align:top;">'
+                    f'<img src="data:{mime};base64,{b64_img}" alt="신일가스 로고" '
+                    f'width="{logo_w}" height="{logo_h}" '
+                    f'style="width:{logo_w}px;height:{logo_h}px;max-width:none;display:block;margin:0 auto;">'
+                    "</td></tr>"
+                )
+            except Exception:
+                pass
 
     return f"""
     <table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;box-sizing:border-box;">
@@ -1388,7 +1425,7 @@ def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: floa
     # 인쇄: Excel 배율(69%)을 HTML 글씨·셀에 직접 반영 → CSS transform으로 또 줄이지 않음
     excel_print_s = _excel_print_scale(path)
     layout_s = float(excel_print_s) if print_mode else 1.0
-    sheet = workbook_to_html(path, include_logo=False, layout_scale=layout_s)
+    sheet = workbook_to_html(path, include_logo=True, layout_scale=layout_s)
     raw_w, raw_h = _worklog_sheet_pixel_size(path)
     print_fit = excel_print_s
     # print_mode에서는 이미 layout_scale 적용된 크기
@@ -2250,7 +2287,7 @@ def _view_cells_key(d: date) -> str: return f"wl_view_cells_{d.isoformat()}"
 def _publish_view_cells(d: date, cells: dict) -> None:
     iso = d.isoformat()
     st.session_state[_view_cells_key(d)] = dict(cells or {})
-    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v18_{iso}", f"wl_left_excel_html_v18_{iso}", f"wl_left_excel_h_v18_{iso}"): st.session_state.pop(k, None)
+    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v21_{iso}", f"wl_left_excel_html_v21_{iso}", f"wl_left_excel_h_v21_{iso}"): st.session_state.pop(k, None)
 
 def _view_cells_for_preview(d: date) -> dict:
     key = _view_cells_key(d)
@@ -2325,7 +2362,7 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     try: mtime = os.path.getmtime(abs_path)
     except OSError: mtime = 0.0
     cached, meta = st.session_state.get(cache_k), st.session_state.get(meta_k) or {}
-    cache_ver = "v20"
+    cache_ver = "v21"
     if isinstance(cached, str) and cached and meta.get("mtime") == mtime and meta.get("path") == abs_path and meta.get("ver") == cache_ver:
         stamped, preview_h = cached, int(meta.get("h") or 720)
     else:
@@ -2608,9 +2645,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     try:
                         cells_view = _cells_from_widgets(selected)
                         live_sig = json.dumps(cells_view, ensure_ascii=False, sort_keys=True)
-                        sig_k = f"wl_left_excel_sig_v18_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_v18_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_v18_{selected.isoformat()}"
+                        sig_k = f"wl_left_excel_sig_v21_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_v21_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_v21_{selected.isoformat()}"
                         scale_l = _WL_PREVIEW_SCALE
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
