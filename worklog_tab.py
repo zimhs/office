@@ -1306,10 +1306,10 @@ def workbook_to_html(path: str) -> str:
         try:
             with open(logo_path, "rb") as img_f: b64_img = base64.b64encode(img_f.read()).decode("utf-8")
             logo_tr = (
-                '<tr style="border:none;background:#fff;height:52px;">'
-                '<td colspan="26" style="text-align:center;padding:0;border:none;vertical-align:top;">'
+                '<tr style="border:none;background:#fff;height:78px;">'
+                '<td colspan="26" style="text-align:center;padding:12px 0 6px 0;border:none;vertical-align:middle;">'
                 f'<img src="data:image/png;base64,{b64_img}" alt="신일가스 로고" '
-                'style="height:48px;width:auto;max-width:100%;display:block;margin:0 auto;padding:0;">'
+                'style="height:58px;width:auto;max-width:72%;display:block;margin:0 auto;">'
                 "</td></tr>"
             )
         except Exception:
