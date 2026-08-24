@@ -129,8 +129,8 @@ _WL_LINES_CSS = """
   border: none;
   background: transparent;
   color: #0F172A;
-  font-family: 'Batang','BatangChe','바탕','바탕체','Apple Myungjo',serif;
-  font-size: 11pt;  /* 👈 웹 입력창 12pt 원복 완료 */
+  font-family: 'Batang','BatangChe','바탕','바탕체','Nanum Myeongjo','Apple Myungjo',serif;
+  font-size: 14pt;  /* 원본 엑셀 본문(바탕체 14)과 동일 */
   line-height: 31px;
   outline: none;
   box-sizing: border-box;
@@ -972,8 +972,12 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
     wb = load_workbook(path)
     ws = wb.active
     if force_template: _clear_content_cells(ws)
-    try: ws[WL_DATE_CELL].value = cells.get("date") or format_worklog_date(d)
-    except AttributeError: pass
+    try:
+        date_cell = ws[WL_DATE_CELL]
+        date_cell.value = cells.get("date") or format_worklog_date(d)
+        _set_body_font(date_cell)
+    except AttributeError:
+        pass
 
     for r in WL_CLIENT_ROWS:
         try:
@@ -1124,9 +1128,11 @@ def _excel_col_width(ws, col_idx: int) -> float:
     return float(ws.sheet_format.defaultColWidth or 8.43)
 
 def _excel_width_to_px(width: float) -> int:
+    """엑셀 열 너비 → px. 원본 화면과 비슷하게 약간 넓게(가로 점유↑)."""
     try: w = float(width)
     except (TypeError, ValueError): w = 8.43
-    return max(10, int(w * 7 + 5))
+    # 기존(w*7+5)보다 살짝 넓혀 본문이 가로로 더 차지하게
+    return max(10, int(w * 7.6 + 6))
 
 def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
     if load_workbook is None or not path or not os.path.exists(path): return 900, 1312
@@ -1137,7 +1143,15 @@ def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
         total_h = 0
         for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
             h = ws.row_dimensions[r].height
-            total_h += (int(round(float(h) * 96 / 72)) if h else 28) + 1
+            if h:
+                height_px = int(round(float(h) * 96 / 72))
+            else:
+                height_px = 20
+            if r <= 2:
+                height_px = max(height_px, 20) + 12
+            total_h += height_px + 1
+        # 로고 행(특이사항 하단) 대략 반영
+        total_h += 78
         wb.close()
         return max(1, total_w), max(1, total_h)
     except Exception: return 900, 1312
@@ -1201,7 +1215,13 @@ def workbook_to_html(path: str) -> str:
     rows_html = []
     for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
         h = ws.row_dimensions[r].height
-        height_px = int(round(float(h) * 96 / 72)) if h else 28
+        # 엑셀 기본 행 높이(~15pt)에 가깝게; 상단 1~2행은 원본처럼 여백을 더 줌
+        if h:
+            height_px = int(round(float(h) * 96 / 72))
+        else:
+            height_px = 20
+        if r <= 2:
+            height_px = max(height_px, 20) + 12  # 세로 여백: 양식이 조금 더 내려오도록
         tds = []
         for c in range(WL_MIN_COL, WL_MAX_COL + 1):
             if (r, c) in skip: continue
@@ -1219,14 +1239,19 @@ def workbook_to_html(path: str) -> str:
             elif fname in ("바탕", "바탕체", "바탕글", "Batang", "BatangChe"): fname_css = "Batang"
             else: fname_css = fname
             
-            is_content = c == 7 and WL_CONTENT_ROWS[0] <= r <= WL_CONTENT_ROWS[-1]
-            is_client = c == 3 and WL_CLIENT_ROWS[0] <= r <= WL_CLIENT_ROWS[-1]
+            is_content = c == WL_CONTENT_COL_START and WL_CONTENT_ROWS[0] <= r <= WL_CONTENT_ROWS[-1]
+            is_client = c == WL_CLIENT_COL_START and WL_CLIENT_ROWS[0] <= r <= WL_CLIENT_ROWS[-1]
             is_body_d = c == 4 and (r in WL_NEXT_ROWS or r in WL_NOTE_ROWS)
+            is_date = (c == 3 and r == 5) or (str(cell.coordinate) == WL_DATE_CELL)
             
             fsize_pt = float(font.size or _WL_BODY_FONT_PT)
-            if is_content or is_client or is_body_d:
+            # 원본 업무일지는 바탕체 중심 — 웹에서도 본문·거래처·날짜는 14pt 바탕 고정
+            if is_content or is_client or is_body_d or is_date:
                 fname_css = "Batang"
-                fsize_pt = float(font.size or _WL_BODY_FONT_PT)
+                fsize_pt = float(_WL_BODY_FONT_PT)
+            elif fname_css in ("Malgun Gothic", "맑은 고딕") or not font.name:
+                # 빈 칸 기본 맑은고딕 대신 원본 서체(바탕)로 통일
+                fname_css = "Batang"
             
             bold = "bold" if font.bold else "normal"
             align = cell.alignment
@@ -1265,23 +1290,24 @@ def workbook_to_html(path: str) -> str:
             span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
             width_css = f"width:{span_w}px;min-width:{span_w}px;max-width:{span_w}px;" if span_w else ""
 
-            if is_content or is_client or is_body_d or is_vertical:
-                font_stack = "'Batang','BatangChe','바탕','바탕체','Apple Myungjo',serif"
-            else:
-                font_stack = f"'{html.escape(fname_css)}','Batang','BatangChe','Apple Myungjo','Malgun Gothic',serif"
+            font_stack = "'Batang','BatangChe','바탕','바탕체','Nanum Myeongjo','Apple Myungjo',serif"
                 
-            pad_css = "padding:0;" if not is_vertical else "padding:4px 1px;"
+            if is_vertical:
+                pad_css = "padding:4px 1px;"
+            elif is_content or is_client or is_body_d:
+                pad_css = "padding:2px 6px;"  # 원본 셀처럼 숨 쉴 여백
+            else:
+                pad_css = "padding:1px 4px;"
             
             if r < WL_CLIENT_ROWS[0] and not is_vertical:
                 style = (
                     f"box-sizing:border-box;{width_css}"
                     f"font-family:{font_stack};font-size:{fsize_pt}pt;font-weight:{bold};"
                     f"text-align:center; vertical-align:middle;"
-                    f"background:{fill}; {border} padding:0;"
+                    f"background:{fill}; {border} {pad_css}"
                 )
             else:
-                line_css = "line-height:1.35;" if is_vertical else "line-height:1.2;"
-                ls_css = "letter-spacing:-0.08em;" if (is_content or is_client) else ""
+                line_css = "line-height:1.35;" if is_vertical else "line-height:1.25;"
                 
                 style = (
                     f"box-sizing:border-box;{width_css}"
@@ -1290,7 +1316,7 @@ def workbook_to_html(path: str) -> str:
                     f"background:{fill};{border}"
                     f"{pad_css}white-space:{white};overflow:{overflow};"
                     f"text-overflow:{text_overflow};word-break:keep-all;"
-                    f"{line_css}{ls_css}"
+                    f"{line_css}"
                 )
             tds.append(f'<td{span} style="{style}">{esc}</td>')
         rows_html.append(f'<tr style="height:{height_px}px;box-sizing:border-box;">{"".join(tds)}</tr>')
@@ -1330,8 +1356,8 @@ def _a4_print_fit(raw_w: int, raw_h: int, *, path: str | None = None) -> float:
     excel_s = _excel_page_scale(path) if path else None
     if raw_w <= 0 or raw_h <= 0:
         return excel_s or 1.0
-    # A4 인쇄 가능 영역(px, 여백 반영) — 이전 740×1050×0.96보다 원본에 가깝게
-    fit = min(1.0, 794.0 / float(raw_w), 1123.0 / float(raw_h))
+    # A4 인쇄 가능 영역(px) — 여백 약 13~14mm(원본 pageMargins) 반영
+    fit = min(1.0, 770.0 / float(raw_w), 1080.0 / float(raw_h))
     fit = max(0.35, min(1.0, fit))
     if excel_s is not None:
         # 원본 배율을 쓰되, 한 페이지를 넘치면 살짝만 줄임
@@ -1375,7 +1401,7 @@ def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: floa
     auto_script = f"""<script>(function() {{ {fit_print_js} function goPrint() {{ try {{ wlFitToA4(); }} catch (e0) {{}} setTimeout(function() {{ try {{ window.focus(); window.print(); }} catch (e) {{}} }}, 50); }} var btn = document.getElementById('wl-print-btn'); if (btn) btn.addEventListener('click', function(ev) {{ ev.preventDefault(); goPrint(); }}); var fitBtn = document.getElementById('wl-fit-btn'); if (fitBtn) fitBtn.addEventListener('click', function(ev) {{ ev.preventDefault(); try {{ wlFitToA4(); }} catch (e1) {{}} }}); var zo = document.getElementById('wl-zoom-out'); if (zo) zo.addEventListener('click', function(ev) {{ ev.preventDefault(); wlZoomBy(0.9); }}); var zi = document.getElementById('wl-zoom-in'); if (zi) zi.addEventListener('click', function(ev) {{ ev.preventDefault(); wlZoomBy(1.1); }}); window.addEventListener('beforeprint', function() {{ try {{ wlFitToA4(); }} catch (e2) {{}} }}); function boot() {{ try {{ wlFitToA4(); }} catch (e3) {{}} {"setTimeout(goPrint, 450);" if auto_print else ""} }} if (document.readyState === 'complete') setTimeout(boot, 200); else window.addEventListener('load', function() {{ setTimeout(boot, 200); }}); }})();</script>""" if print_mode else ""
     fallback_block = f"@supports not (zoom: 1) {{ .sheet-scale {{ {scale_css_fallback} }} }}" if scale_css_fallback else ""
     
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page {{ size: A4 portrait; margin: 8mm; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"0" if print_mode else "6px"}; box-sizing:border-box; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; }} .sheet-scale {{ {scale_css} }} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }} {fallback_block} @media print {{ html, body {{ overflow:visible !important; height:auto !important; width:auto !important; margin:0 !important; padding:0 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }} .no-print, .toolbar {{ display:none !important; }} .wrap {{ overflow:hidden !important; max-width:none !important; border:none !important; margin:0 auto !important; }} .sheet-scale {{ transform:none !important; margin:0 !important; }} }}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fonts-archive/NanumMyeongjo/NanumMyeongjo.css"><style>@page {{ size: A4 portrait; margin: 14mm 13mm 14mm 13mm; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"10px 18px 14px" if not print_mode else "0"}; box-sizing:border-box; font-family:'Batang','BatangChe','바탕','바탕체','Nanum Myeongjo','Apple Myungjo',serif; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:{"12px 16px 8px" if not print_mode else "0"}; }} .sheet-scale {{ {scale_css} }} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }} {fallback_block} @media print {{ html, body {{ overflow:visible !important; height:auto !important; width:auto !important; margin:0 !important; padding:0 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }} .no-print, .toolbar {{ display:none !important; }} .wrap {{ overflow:hidden !important; max-width:none !important; border:none !important; margin:0 auto !important; padding:0 !important; }} .sheet-scale {{ transform:none !important; margin:0 !important; }} }}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     try: n = int((ent or {}).get("blank_after", default))
@@ -2158,7 +2184,7 @@ def _view_cells_key(d: date) -> str: return f"wl_view_cells_{d.isoformat()}"
 def _publish_view_cells(d: date, cells: dict) -> None:
     iso = d.isoformat()
     st.session_state[_view_cells_key(d)] = dict(cells or {})
-    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_{iso}", f"wl_left_excel_html_{iso}", f"wl_left_excel_h_{iso}"): st.session_state.pop(k, None)
+    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v16_{iso}", f"wl_left_excel_html_v16_{iso}", f"wl_left_excel_h_v16_{iso}"): st.session_state.pop(k, None)
 
 def _view_cells_for_preview(d: date) -> dict:
     key = _view_cells_key(d)
@@ -2295,10 +2321,10 @@ def _worklog_form_preview_dialog() -> None:
         return
     path = str(path)
     try:
-        scale = 0.69  # 원본.xlsx pageSetup.scale(69%)와 동일
+        scale = 0.86  # 화면 미리보기: 원본 글씨 크기에 가깝게(인쇄는 Excel 69%)
         print_html = render_worklog_view_html(path, print_mode=False, auto_print=False, scale=scale)
         _, frame_h = _scaled_view_frame_size(path, scale)
-        components.html(print_html, height=min(760, max(420, int(frame_h))), scrolling=True)
+        components.html(print_html, height=min(900, max(480, int(frame_h))), scrolling=True)
     except Exception as e:
         st.error(f"미리보기 표시 실패: {e}")
         return
@@ -2514,10 +2540,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     try:
                         cells_view = _cells_from_widgets(selected)
                         live_sig = json.dumps(cells_view, ensure_ascii=False, sort_keys=True)
-                        sig_k = f"wl_left_excel_sig_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_{selected.isoformat()}"
-                        scale_l = 0.69  # 원본 인쇄 배율과 동일(이전 0.48 과축소 해소)
+                        sig_k = f"wl_left_excel_sig_v16_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_v16_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_v16_{selected.isoformat()}"
+                        scale_l = 0.86  # 화면 미리보기: 원본 글씨 크기에 가깝게(인쇄는 69% 유지)
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
                             st.session_state[_left_path_key] = xlsx_left
@@ -2534,7 +2560,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
                                 st.session_state[html_k] = excel_html
                                 st.session_state[h_k] = fh
-                        components.html(excel_html, height=min(820, max(480, int(fh or 600))), scrolling=True)
+                        components.html(excel_html, height=min(980, max(520, int(fh or 600))), scrolling=True)
                         if st.button("크게 보기", width="stretch", key=f"wl_left_excel_big_{selected.isoformat()}"):
                             st.session_state["wl_dialog_preview_path"] = str(xlsx_left)
                             _worklog_form_preview_dialog()
