@@ -113,7 +113,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-25d · 익일/특이 커서고정 · Enter줄바꿈 · 11pt"
+_WL_UI_BUILD = "2026-08-25e · 거래처 가운데정렬 · 익일/특이 커서고정"
 
 
 # =====================================================================
@@ -145,7 +145,7 @@ _WL_LINES_CSS = """
   outline: none;
   box-sizing: border-box;
 }
-.wl-lines.client .wl-row input { background: #F8FAFC; text-align: left; }
+.wl-lines.client .wl-row input { background: #F8FAFC; text-align: center; }
 .wl-row input:focus { background: #E0F2FE; }
 .wl-row button {
   flex: 0 0 2rem;
@@ -393,7 +393,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v12",
+    "worklog_entry_lines_v13",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -1346,7 +1346,8 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
             is_vertical = is_side_label or getattr(align, "textRotation", 0) in (255, 90) or (_text_clean == "결재" and rs >= 2 and cs == 1)
 
             if is_vertical: ha, va = "center", "middle"
-            elif is_client or is_content: ha = "left"
+            elif is_client: ha, va = "center", "middle"  # 거래처 칸 항상 가운데
+            elif is_content: ha = "left"
                 
             fill = _cell_fill_color(cell) or "#FFFFFF"
             border = _border_css(cell)
