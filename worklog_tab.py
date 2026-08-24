@@ -106,8 +106,8 @@ WL_CONTENT_COL_END = 24   # X
 WL_CLIENT_COL_START = 3   # C
 WL_CLIENT_COL_END = 6     # F
 
-# 화면 미리보기 배율 (원본 Excel 편집 화면 대비 약 80%)
-_WL_PREVIEW_SCALE = 0.80
+# 화면 미리보기 배율 (폼 전체·로고가 보이도록)
+_WL_PREVIEW_SCALE = 0.75
 # Mac/웹에서 바탕체 대체 순서 (Apple Myungjo = Mac 바탕 대응)
 _WL_FONT_STACK = "'Batang','BatangChe','Apple Myungjo','Nanum Myeongjo','바탕','바탕체',serif"
 
@@ -120,7 +120,7 @@ _WL_LINES_HTML = """
 <div class="wl-lines"></div>
 """
 
-# 입력창을 엑셀 셀과 동일한 높이(31px), 여백 없는 디자인으로 반영
+# 거래처·내용 입력칸만 글씨를 줄여 한 줄이 잘리지 않게 (인쇄 글씨와 무관)
 _WL_LINES_CSS = """
 .wl-lines { display: flex; flex-direction: column; width: 100%; border: 1px solid #94A3B8; border-radius: 4px; overflow: hidden; background: #fff; box-sizing: border-box; }
 .wl-row { display: flex; align-items: center; width: 100%; border-bottom: 1px solid #E2E8F0; box-sizing: border-box; }
@@ -129,14 +129,14 @@ _WL_LINES_CSS = """
   flex: 1 1 auto;
   min-width: 0;
   width: 100%;
-  height: 31px;
-  padding: 0 8px;
+  height: 28px;
+  padding: 0 6px;
   border: none;
   background: transparent;
   color: #0F172A;
   font-family: 'Batang','BatangChe','바탕','바탕체','Nanum Myeongjo','Apple Myungjo',serif;
-  font-size: 14pt;  /* 원본 엑셀 본문(바탕체 14)과 동일 */
-  line-height: 31px;
+  font-size: 11pt;  /* 입력칸 전용: 글씨가 칸 안에 다 보이도록 */
+  line-height: 28px;
   outline: none;
   box-sizing: border-box;
 }
@@ -144,7 +144,7 @@ _WL_LINES_CSS = """
 .wl-row input:focus { background: #E0F2FE; }
 .wl-row button {
   flex: 0 0 2rem;
-  height: 31px;
+  height: 28px;
   border: none; border-left: 1px solid #E2E8F0;
   background: #F1F5F9; color: #64748B; font-size: 0.65rem;
   padding: 0;
@@ -388,7 +388,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v10",
+    "worklog_entry_lines_v11",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -1238,7 +1238,7 @@ def _scaled_view_frame_size(path: str, scale: float) -> tuple[int, int]:
 
 def _worklog_logo_bytes(xlsx_path: str | None = None) -> tuple[bytes, str, int, int] | None:
     """원본 템플릿 내장 로고(320×61) 우선. (bytes, mime, w, h)"""
-    candidates: list[tuple[str, str]] = []
+    _here = os.path.dirname(os.path.abspath(__file__))
     if xlsx_path and os.path.exists(xlsx_path):
         try:
             import zipfile
@@ -1252,6 +1252,7 @@ def _worklog_logo_bytes(xlsx_path: str | None = None) -> tuple[bytes, str, int, 
             pass
     for p, mime in (
         (os.path.join(WORKLOG_DIR, "shinil_logo.jpeg"), "image/jpeg"),
+        (os.path.join(_here, "logo.png"), "image/png"),
         ("logo.png", "image/png"),
     ):
         if os.path.exists(p):
@@ -2287,7 +2288,7 @@ def _view_cells_key(d: date) -> str: return f"wl_view_cells_{d.isoformat()}"
 def _publish_view_cells(d: date, cells: dict) -> None:
     iso = d.isoformat()
     st.session_state[_view_cells_key(d)] = dict(cells or {})
-    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v21_{iso}", f"wl_left_excel_html_v21_{iso}", f"wl_left_excel_h_v21_{iso}"): st.session_state.pop(k, None)
+    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v22_{iso}", f"wl_left_excel_html_v22_{iso}", f"wl_left_excel_h_v22_{iso}"): st.session_state.pop(k, None)
 
 def _view_cells_for_preview(d: date) -> dict:
     key = _view_cells_key(d)
@@ -2362,7 +2363,7 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     try: mtime = os.path.getmtime(abs_path)
     except OSError: mtime = 0.0
     cached, meta = st.session_state.get(cache_k), st.session_state.get(meta_k) or {}
-    cache_ver = "v21"
+    cache_ver = "v22"
     if isinstance(cached, str) and cached and meta.get("mtime") == mtime and meta.get("path") == abs_path and meta.get("ver") == cache_ver:
         stamped, preview_h = cached, int(meta.get("h") or 720)
     else:
@@ -2645,9 +2646,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     try:
                         cells_view = _cells_from_widgets(selected)
                         live_sig = json.dumps(cells_view, ensure_ascii=False, sort_keys=True)
-                        sig_k = f"wl_left_excel_sig_v21_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_v21_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_v21_{selected.isoformat()}"
+                        sig_k = f"wl_left_excel_sig_v22_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_v22_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_v22_{selected.isoformat()}"
                         scale_l = _WL_PREVIEW_SCALE
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
@@ -2665,7 +2666,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
                                 st.session_state[html_k] = excel_html
                                 st.session_state[h_k] = fh
-                        components.html(excel_html, height=min(980, max(520, int(fh or 600))), scrolling=True)
+                        components.html(excel_html, height=min(1100, max(560, int(fh or 600))), scrolling=True)
                         if st.button("크게 보기", width="stretch", key=f"wl_left_excel_big_{selected.isoformat()}"):
                             st.session_state["wl_dialog_preview_path"] = str(xlsx_left)
                             _worklog_form_preview_dialog()
