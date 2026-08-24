@@ -113,7 +113,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-25c · 바탕체(나눔명조) · 익일/특이 11pt·Enter줄바꿈"
+_WL_UI_BUILD = "2026-08-25d · 익일/특이 커서고정 · Enter줄바꿈 · 11pt"
 
 
 # =====================================================================
@@ -648,9 +648,13 @@ export default function (component) {
     emitFocus(info.key);
     emitCaret(info.key, s, en);
   };
+  // 익일업무·특이사항 textarea: keyup마다 caret emit → Streamlit rerun → 커서 점프
+  // click/focus만 추적 (특수기호 삽입용), 타이핑 중에는 emit 안 함
   const onSel = (e) => {
     const info = resolveKey(e.target);
     if (!info) return;
+    const tag = String(e.target.tagName || "").toUpperCase();
+    if (tag === "TEXTAREA") return;
     let s = 0;
     let en = 0;
     try {
@@ -684,7 +688,7 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v21",
+    "worklog_cell_nav_hook_v22",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -2911,12 +2915,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     if not isinstance(hook, dict):
                         return
                     fk = str(hook.get("focus") or "")
-                    if (
-                        fk.startswith("wl_ent_ln_")
-                        or fk.startswith("wl_ent_cl_")
-                        or fk.startswith("wl_next_area_")
-                        or fk.startswith("wl_notes_area_")
-                    ):
+                    if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
+                        # 특수기호용 active만 기록. focus 복원 키에 넣지 않음(커서 점프 방지)
+                        st.session_state["wl_active_cell_key"] = fk
+                        return
+                    if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state[f"wl_focus_ln_{iso2}"] = fk
 
@@ -2932,12 +2935,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         fk, s, e = str(obj.get("key") or ""), int(obj.get("s") or 0), int(obj.get("e") or int(obj.get("s") or 0))
                     except Exception:
                         return
-                    if (
-                        fk.startswith("wl_ent_ln_")
-                        or fk.startswith("wl_ent_cl_")
-                        or fk.startswith("wl_next_area_")
-                        or fk.startswith("wl_notes_area_")
-                    ):
+                    if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
+                        st.session_state["wl_active_cell_key"] = fk
+                        st.session_state["wl_active_cell_sel"] = (s, e)
+                        return
+                    if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state[f"wl_focus_ln_{iso2}"] = fk
                         st.session_state["wl_active_cell_sel"] = (s, e)
@@ -3064,6 +3066,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         _m = re.match(r"^wl_ent_(?:ln|cl)_\d{4}-\d{2}-\d{2}_(\d+)_", focus_key)
                         if _m: st.session_state[f"wl_exp_{iso2}_{int(_m.group(1))}"] = True
                     except Exception: pass
+                else:
+                    # 익일업무/특이사항 등은 포커스 강제 복원 금지
+                    focus_key = None
+                    focus_caret = None
 
                 # 💡 [핵심] on_enter_change 이벤트 핸들러 형식 맞춤
                 _WL_ENTER_HOOK(
