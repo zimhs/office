@@ -92,7 +92,7 @@ WORKLOG_ARCHIVE_REL = os.path.join("Desktop", "업무", "일지")
 # 💡 원본.xlsx 양식 기준 행/열 매핑 (인쇄·미리보기 일치)
 # 제목 E2 / 날짜 C5 / 내용헤더 G7 / 본문 8~39 / 익일 40~43 / 특이 44~47
 # =====================================================================
-WL_MIN_ROW, WL_MAX_ROW = 1, 52
+WL_MIN_ROW, WL_MAX_ROW = 1, 47  # 본문·익일·특이까지(원본 로고는 47행 아래 여백)
 WL_MIN_COL, WL_MAX_COL = 3, 28  # C ~ AB
 
 WL_DATE_CELL = "C5"
@@ -763,7 +763,7 @@ export default function (component) {
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v7",
+    "worklog_special_bar_v8",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -1301,11 +1301,19 @@ def workbook_to_html(path: str) -> str:
     import base64
     logo_tr = ""
     logo_path = "logo.png"
+    # 엑셀 drawing 로고와 동일하게 특이사항 직하단에 붙임(빈 행·큰 여백으로 2페이지 밀림 방지)
     if os.path.exists(logo_path):
         try:
             with open(logo_path, "rb") as img_f: b64_img = base64.b64encode(img_f.read()).decode("utf-8")
-            logo_tr = f'''<tr style="border:none; background:#fff;"><td colspan="26" style="text-align:center; padding-top:2px; padding-bottom:8px; border:none;"><img src="data:image/png;base64,{b64_img}" alt="신일가스 로고" style="height: 72px; opacity: 1.0; display:block; margin:0 auto;"></td></tr>'''
-        except Exception: pass
+            logo_tr = (
+                '<tr style="border:none;background:#fff;height:52px;">'
+                '<td colspan="26" style="text-align:center;padding:0;border:none;vertical-align:top;">'
+                f'<img src="data:image/png;base64,{b64_img}" alt="신일가스 로고" '
+                'style="height:48px;width:auto;max-width:100%;display:block;margin:0 auto;padding:0;">'
+                "</td></tr>"
+            )
+        except Exception:
+            pass
 
     return f"""
     <table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;box-sizing:border-box;">
@@ -2003,51 +2011,26 @@ def _queue_special_char(iso: str, ch: str) -> None:
 
 
 def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
-    """전체 너비 한 줄 가로 스크롤 HTML 바 + 접기. 삽입은 pending 경로."""
+    """날짜 아래: 접기 없이 한 줄 가로 스크롤. 삽입은 pending 경로."""
     del entry_count
-    show_k = f"wl_sp_show_{iso}"
-    if show_k not in st.session_state:
-        st.session_state[show_k] = True
-
     st.markdown(
         """<style>
-        div[class*="st-key-wl_sp_panel_"] {
-          width: 100% !important;
-          max-width: 100% !important;
-          margin: 0 0 0.35rem !important;
-          padding: 0 !important;
-        }
-        div[class*="st-key-wl_sp_tog_"] button {
-          min-height: 2rem !important;
-          padding: 0.2rem 0.5rem !important;
-          font-size: 0.9rem !important;
-        }
         div[class*="st-key-wl_sp_bar_"] {
           width: 100% !important;
           max-width: 100% !important;
-          margin: 0 !important;
+          margin: 0.15rem 0 0.25rem !important;
           padding: 0 !important;
         }
         div[class*="st-key-wl_sp_bar_"] iframe {
           width: 100% !important;
-          min-height: 2.45rem !important;
-          height: 2.45rem !important;
+          min-height: 2.35rem !important;
+          height: 2.35rem !important;
           border: none !important;
           display: block !important;
         }
         </style>""",
         unsafe_allow_html=True,
     )
-    open_now = bool(st.session_state.get(show_k))
-    tog_label = "특수기호 접기 ▲" if open_now else "특수기호 펼치기 ▼"
-    if st.button(tog_label, key=f"wl_sp_tog_{iso}", use_container_width=True):
-        st.session_state[show_k] = not open_now
-        open_now = bool(st.session_state.get(show_k))
-
-    if not open_now:
-        return
-
-    st.caption("←→ 스크롤 · 탭하면 바로 반영 (편집 중 칸 → 없으면 내용)")
 
     def _on_pick() -> None:
         stt = st.session_state.get(f"wl_sp_bar_{iso}") or {}
@@ -2074,13 +2057,13 @@ def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
         st.session_state[done_k] = sig
         _queue_special_char(iso, ch)
 
-    token = str(st.session_state.get(f"wl_sp_token_{iso}") or "1")
+    token = str(st.session_state.get(f"wl_sp_token_{iso}") or "2")
     _WL_SPECIAL_BAR(
         key=f"wl_sp_bar_{iso}",
         data={"iso": iso, "chars": list(_WL_SPECIAL_CHARS), "token": token},
         on_pick_change=_on_pick,
         width="stretch",
-        height=42,
+        height=40,
     )
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
@@ -2453,11 +2436,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         try: _gauge_usage = _content_row_usage(_read_editor_entries(selected))
         except Exception: _gauge_usage = _content_row_usage([])
 
-        _iso_bar = selected.isoformat()
-        _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
-        with st.container(key=f"wl_sp_panel_{_iso_bar}"):
-            _render_worklog_special_chars(_iso_bar, _n_bar)
-
         # 💡 가운데 2번째 컬럼(게이지)을 화면 상단에 스크롤 고정
         st.markdown("""
         <style>
@@ -2609,6 +2587,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
                         st.session_state["wl_do_delete_day"] = selected.isoformat()
                         _wl_rerun()
+
+            _iso_bar = selected.isoformat()
+            _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
+            _render_worklog_special_chars(_iso_bar, _n_bar)
 
             if isinstance(picked, date) and picked != selected:
                 if os.path.exists(worklog_path(picked)):
