@@ -1142,6 +1142,28 @@ def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
         return max(1, total_w), max(1, total_h)
     except Exception: return 900, 1312
 
+
+def _excel_page_scale(path: str) -> float | None:
+    """원본.xlsx pageSetup.scale(예: 69) → 0.69. 없으면 None."""
+    if load_workbook is None or not path or not os.path.exists(path):
+        return None
+    try:
+        wb = load_workbook(path, data_only=False)
+        ws = wb.active
+        sc = ws.page_setup.scale
+        wb.close()
+        if sc is None:
+            return None
+        v = float(sc)
+        if v > 1.5:  # Excel stores percent (69)
+            v = v / 100.0
+        if 0.3 <= v <= 1.5:
+            return v
+    except Exception:
+        return None
+    return None
+
+
 def _scaled_view_frame_size(path: str, scale: float) -> tuple[int, int]:
     w, h = _worklog_sheet_pixel_size(path)
     s = float(scale) if scale and scale > 0 else 1.0
@@ -1295,21 +1317,29 @@ def workbook_to_html(path: str) -> str:
     </table>
     """
 
-def _a4_print_fit(raw_w: int, raw_h: int) -> float:
-    if raw_w <= 0 or raw_h <= 0: return 1.0
-    fit = min(1.0, 740.0 / float(raw_w), 1050.0 / float(raw_h))
-    return max(0.2, min(1.0, fit * 0.96))
+def _a4_print_fit(raw_w: int, raw_h: int, *, path: str | None = None) -> float:
+    """인쇄 배율: 원본 Excel pageSetup.scale을 우선, 없으면 A4 맞춤(과축소 방지)."""
+    excel_s = _excel_page_scale(path) if path else None
+    if raw_w <= 0 or raw_h <= 0:
+        return excel_s or 1.0
+    # A4 인쇄 가능 영역(px, 여백 반영) — 이전 740×1050×0.96보다 원본에 가깝게
+    fit = min(1.0, 794.0 / float(raw_w), 1123.0 / float(raw_h))
+    fit = max(0.35, min(1.0, fit))
+    if excel_s is not None:
+        # 원본 배율을 쓰되, 한 페이지를 넘치면 살짝만 줄임
+        return max(0.35, min(excel_s, fit))
+    return fit
 
 def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: float = 0.55, auto_print: bool = False, wrap_height: str | None = None) -> str:
     sheet = workbook_to_html(path)
     raw_w, raw_h = _worklog_sheet_pixel_size(path)
-    print_fit = _a4_print_fit(raw_w, raw_h)
+    print_fit = _a4_print_fit(raw_w, raw_h, path=path)
     scaled_w, scaled_h = max(1, int(round(raw_w * print_fit))), max(1, int(round(raw_h * print_fit)))
 
     toolbar = ""
     if print_mode:
         scale = 1.0
-        toolbar = """<div class="toolbar no-print"><button type="button" id="wl-fit-btn">맞춤(줄여서)</button><button type="button" id="wl-zoom-out" class="secondary">축소</button><button type="button" id="wl-zoom-in" class="secondary">확대</button><button type="button" id="wl-print-btn">인쇄하기</button><span class="hint">맞춤으로 A4에 맞춘 뒤 축소/확대로 조절하세요.</span></div>"""
+        toolbar = """<div class="toolbar no-print"><button type="button" id="wl-fit-btn">원본배율</button><button type="button" id="wl-zoom-out" class="secondary">축소</button><button type="button" id="wl-zoom-in" class="secondary">확대</button><button type="button" id="wl-print-btn">인쇄하기</button><span class="hint">원본 Excel 인쇄 배율 기준입니다. 필요 시 축소/확대하세요.</span></div>"""
     frame_w, frame_h = _scaled_view_frame_size(path, scale)
     if print_mode:
         scale_css = f"zoom:{print_fit:.4f};width:{raw_w}px;max-width:none;"
@@ -1328,9 +1358,10 @@ def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: floa
 
     fit_print_js = f"""
         var wlZoom = 1;
+        var wlOrigFit = {print_fit:.6f};
         function wlApplyZoom(s) {{ var sheet = document.querySelector('.sheet-scale'); var wrap = document.querySelector('.wrap'); var table = document.querySelector('.wl-sheet'); if (!sheet || !wrap || !table) return; wlZoom = s; sheet.style.transform = 'none'; sheet.style.zoom = String(s); var w = Math.max(table.scrollWidth, table.offsetWidth, {raw_w}, 1); var h = Math.max(table.scrollHeight, table.offsetHeight, {raw_h}, 1); wrap.style.maxWidth = 'none'; wrap.style.width = Math.ceil(w * s) + 'px'; wrap.style.height = Math.ceil(h * s) + 'px'; wrap.style.overflow = 'hidden'; wrap.style.margin = '0 auto'; }}
-        function wlFitToA4() {{ var sheet = document.querySelector('.sheet-scale'); var wrap = document.querySelector('.wrap'); var table = document.querySelector('.wl-sheet'); if (!sheet || !wrap || !table) return; sheet.style.transform = 'none'; sheet.style.zoom = '1'; wrap.style.maxWidth = 'none'; wrap.style.overflow = 'visible'; wrap.style.width = 'auto'; wrap.style.height = 'auto'; table.style.width = '{raw_w}px'; var w = Math.max(table.scrollWidth, table.offsetWidth, 1); var h = Math.max(table.scrollHeight, table.offsetHeight, 1); var maxW = 740; var maxH = 1050; var s = Math.min(1, maxW / w, maxH / h) * 0.96; if (s < 0.25) s = 0.25; wlApplyZoom(s); }}
-        function wlZoomBy(factor) {{ var next = wlZoom * factor; if (next < 0.25) next = 0.25; if (next > 1.6) next = 1.6; wlApplyZoom(next); }}
+        function wlFitToA4() {{ wlApplyZoom(wlOrigFit); }}
+        function wlZoomBy(factor) {{ var next = wlZoom * factor; if (next < 0.35) next = 0.35; if (next > 1.6) next = 1.6; wlApplyZoom(next); }}
         try {{ window.wlFitToA4 = wlFitToA4; }} catch (e0) {{}}
     """
     auto_script = f"""<script>(function() {{ {fit_print_js} function goPrint() {{ try {{ wlFitToA4(); }} catch (e0) {{}} setTimeout(function() {{ try {{ window.focus(); window.print(); }} catch (e) {{}} }}, 50); }} var btn = document.getElementById('wl-print-btn'); if (btn) btn.addEventListener('click', function(ev) {{ ev.preventDefault(); goPrint(); }}); var fitBtn = document.getElementById('wl-fit-btn'); if (fitBtn) fitBtn.addEventListener('click', function(ev) {{ ev.preventDefault(); try {{ wlFitToA4(); }} catch (e1) {{}} }}); var zo = document.getElementById('wl-zoom-out'); if (zo) zo.addEventListener('click', function(ev) {{ ev.preventDefault(); wlZoomBy(0.9); }}); var zi = document.getElementById('wl-zoom-in'); if (zi) zi.addEventListener('click', function(ev) {{ ev.preventDefault(); wlZoomBy(1.1); }}); window.addEventListener('beforeprint', function() {{ try {{ wlFitToA4(); }} catch (e2) {{}} }}); function boot() {{ try {{ wlFitToA4(); }} catch (e3) {{}} {"setTimeout(goPrint, 450);" if auto_print else ""} }} if (document.readyState === 'complete') setTimeout(boot, 200); else window.addEventListener('load', function() {{ setTimeout(boot, 200); }}); }})();</script>""" if print_mode else ""
@@ -1972,31 +2003,57 @@ def _queue_special_char(iso: str, ch: str) -> None:
 
 
 def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
-    """맥·iPad 공통: 접기/펼치기 토글 + 8열 네이티브 버튼(기본 펼침)."""
+    """접기/펼치기 + 한 줄 가로 스크롤 네이티브 버튼(삽입 경로는 pending 유지)."""
     del entry_count
     show_k = f"wl_sp_show_{iso}"
     if show_k not in st.session_state:
         st.session_state[show_k] = True
 
     st.markdown(
-        """<style>
-        div[class*="st-key-wl_sp_tog_"] button {
+        f"""<style>
+        div[class*="st-key-wl_sp_tog_"] button {{
           min-height: 2rem !important;
           padding: 0.2rem 0.5rem !important;
           font-size: 0.9rem !important;
-        }
-        div[class*="st-key-wl_sp_grid_"] [data-testid="column"] {
-          padding: 0 2px !important;
-        }
-        div[class*="st-key-wl_sp_grid_"] button {
-          min-height: 2.4rem !important;
-          height: 2.4rem !important;
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] {{
+          width: 100% !important;
+          max-width: 100% !important;
+          margin: 0 !important;
           padding: 0 !important;
-          font-size: 1.1rem !important;
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] > div[data-testid="stVerticalBlock"],
+        div[class*="st-key-wl_sp_scroll_{iso}"] div[data-testid="stVerticalBlock"] {{
+          display: flex !important;
+          flex-direction: row !important;
+          flex-wrap: nowrap !important;
+          align-items: center !important;
+          gap: 0.2rem !important;
+          width: 100% !important;
+          max-width: 100% !important;
+          overflow-x: auto !important;
+          overflow-y: hidden !important;
+          -webkit-overflow-scrolling: touch;
+          padding: 0 0 4px !important;
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] [data-testid="stElementContainer"] {{
+          flex: 0 0 auto !important;
+          width: auto !important;
+          min-width: 2.1rem !important;
+          margin: 0 !important;
+        }}
+        div[class*="st-key-wl_sp_scroll_{iso}"] button {{
+          min-width: 2.1rem !important;
+          width: 2.1rem !important;
+          min-height: 2.1rem !important;
+          height: 2.1rem !important;
+          padding: 0 !important;
+          margin: 0 !important;
+          font-size: 1.05rem !important;
           line-height: 1 !important;
           border-radius: 0.4rem !important;
           touch-action: manipulation;
-        }
+        }}
         </style>""",
         unsafe_allow_html=True,
     )
@@ -2009,16 +2066,11 @@ def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
     if not open_now:
         return
 
-    st.caption("탭하면 바로 반영 · 편집 중 칸 → 없으면 펼친 항목 내용")
-    with st.container(key=f"wl_sp_grid_{iso}"):
-        per_row = 8
-        for row_start in range(0, len(_WL_SPECIAL_CHARS), per_row):
-            chunk = _WL_SPECIAL_CHARS[row_start : row_start + per_row]
-            cols = st.columns(per_row, gap="small")
-            for i, ch in enumerate(chunk):
-                idx = row_start + i
-                if cols[i].button(ch, key=f"wl_sp_btn_{iso}_{idx}", use_container_width=True):
-                    _queue_special_char(iso, ch)
+    st.caption("←→ 스크롤 · 탭하면 바로 반영 (편집 중 칸 → 없으면 내용)")
+    with st.container(key=f"wl_sp_scroll_{iso}"):
+        for idx, ch in enumerate(_WL_SPECIAL_CHARS):
+            if st.button(ch, key=f"wl_sp_btn_{iso}_{idx}"):
+                _queue_special_char(iso, ch)
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
     val, pos = str(val or ""), max(0, min(int(pos or 0), len(str(val or ""))))
@@ -2193,7 +2245,7 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
         try:
             doc_html = render_worklog_view_html(abs_path, print_mode=True, auto_print=True, scale=1.0)
             _, raw_h = _worklog_sheet_pixel_size(abs_path)
-            preview_h = min(920, max(420, int(raw_h * _a4_print_fit(*_worklog_sheet_pixel_size(abs_path))) + 72))
+            preview_h = min(920, max(420, int(raw_h * _a4_print_fit(*_worklog_sheet_pixel_size(abs_path), path=abs_path)) + 72))
         except Exception as e: st.error(f"인쇄 문서 준비 실패: {e}"); return
         nonce = int(st.session_state.get("wl_print_n", 0)) + 1
         st.session_state["wl_print_n"] = nonce
@@ -2226,7 +2278,7 @@ def _render_worklog_print_panel() -> bool:
     try:
         print_html = render_worklog_view_html(path, print_mode=True, auto_print=False, scale=1.0)
         _, raw_h = _worklog_sheet_pixel_size(path)
-        components.html(print_html, height=min(920, max(480, int(raw_h * _a4_print_fit(*_worklog_sheet_pixel_size(path))) + 72)), scrolling=True)
+        components.html(print_html, height=min(920, max(480, int(raw_h * _a4_print_fit(*_worklog_sheet_pixel_size(path), path=path)) + 72)), scrolling=True)
     except Exception as e: st.error(f"인쇄 미리보기 표시 실패: {e}")
     b1, b2 = st.columns(2)
     with b1:
@@ -2249,7 +2301,7 @@ def _worklog_form_preview_dialog() -> None:
         return
     path = str(path)
     try:
-        scale = 0.62
+        scale = 0.69  # 원본.xlsx pageSetup.scale(69%)와 동일
         print_html = render_worklog_view_html(path, print_mode=False, auto_print=False, scale=scale)
         _, frame_h = _scaled_view_frame_size(path, scale)
         components.html(print_html, height=min(760, max(420, int(frame_h))), scrolling=True)
@@ -2471,7 +2523,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         sig_k = f"wl_left_excel_sig_{selected.isoformat()}"
                         html_k = f"wl_left_excel_html_{selected.isoformat()}"
                         h_k = f"wl_left_excel_h_{selected.isoformat()}"
-                        scale_l = 0.48
+                        scale_l = 0.69  # 원본 인쇄 배율과 동일(이전 0.48 과축소 해소)
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
                             st.session_state[_left_path_key] = xlsx_left
