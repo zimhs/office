@@ -108,10 +108,12 @@ WL_CLIENT_COL_END = 6     # F
 
 # 화면 미리보기 배율 (폼 전체·로고가 보이도록)
 _WL_PREVIEW_SCALE = 0.75
-# Mac/웹에서 바탕체 대체 순서 (Apple Myungjo = Mac 바탕 대응)
-_WL_FONT_STACK = "'Batang','BatangChe','Apple Myungjo','Nanum Myeongjo','바탕','바탕체',serif"
+# 웹/Mac: Batang(윈도우) 미설치 → 한글 글리프가 고딕으로 떨어짐.
+# Nanum Myeongjo(CDN)를 최우선으로 두어 바탕체와 같은 명조 계열을 강제.
+_WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
+_WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-25a · 미리보기75% · 입력11pt · 로고ON"
+_WL_UI_BUILD = "2026-08-25b · 바탕체(나눔명조) · 미리보기75% · 입력11pt · 로고ON"
 
 
 # =====================================================================
@@ -124,6 +126,7 @@ _WL_LINES_HTML = """
 
 # 거래처·내용 입력칸만 글씨를 줄여 한 줄이 잘리지 않게 (인쇄 글씨와 무관)
 _WL_LINES_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');
 .wl-lines { display: flex; flex-direction: column; width: 100%; border: 1px solid #94A3B8; border-radius: 4px; overflow: hidden; background: #fff; box-sizing: border-box; }
 .wl-row { display: flex; align-items: center; width: 100%; border-bottom: 1px solid #E2E8F0; box-sizing: border-box; }
 .wl-row:last-child { border-bottom: none; }
@@ -136,7 +139,7 @@ _WL_LINES_CSS = """
   border: none;
   background: transparent;
   color: #0F172A;
-  font-family: 'Batang','BatangChe','바탕','바탕체','Nanum Myeongjo','Apple Myungjo',serif;
+  font-family: 'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕',serif !important;
   font-size: 11pt;  /* 입력칸 전용: 글씨가 칸 안에 다 보이도록 */
   line-height: 28px;
   outline: none;
@@ -390,7 +393,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v11",
+    "worklog_entry_lines_v12",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -1505,7 +1508,7 @@ def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: floa
     else:
         print_media = "@media print { html, body { overflow:visible !important; } }"
     
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap" rel="stylesheet"><style>@page {{ size: A4 portrait; margin: {page_margins}; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"6px" if not print_mode else "0"}; box-sizing:border-box; font-family:{_WL_FONT_STACK}; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:0; }} .sheet-scale {{ {scale_css} }} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK}; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }} {fallback_block} {print_media}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap" rel="stylesheet"><style>{_WL_FONT_FACE_CSS} @page {{ size: A4 portrait; margin: {page_margins}; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"6px" if not print_mode else "0"}; box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:0; }} .sheet-scale {{ {scale_css} }} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} {fallback_block} {print_media}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     try: n = int((ent or {}).get("blank_after", default))
@@ -2288,7 +2291,7 @@ def _view_cells_key(d: date) -> str: return f"wl_view_cells_{d.isoformat()}"
 def _publish_view_cells(d: date, cells: dict) -> None:
     iso = d.isoformat()
     st.session_state[_view_cells_key(d)] = dict(cells or {})
-    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v22_{iso}", f"wl_left_excel_html_v22_{iso}", f"wl_left_excel_h_v22_{iso}"): st.session_state.pop(k, None)
+    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v23_{iso}", f"wl_left_excel_html_v23_{iso}", f"wl_left_excel_h_v23_{iso}"): st.session_state.pop(k, None)
 
 def _view_cells_for_preview(d: date) -> dict:
     key = _view_cells_key(d)
@@ -2363,7 +2366,7 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     try: mtime = os.path.getmtime(abs_path)
     except OSError: mtime = 0.0
     cached, meta = st.session_state.get(cache_k), st.session_state.get(meta_k) or {}
-    cache_ver = "v22"
+    cache_ver = "v23"
     if isinstance(cached, str) and cached and meta.get("mtime") == mtime and meta.get("path") == abs_path and meta.get("ver") == cache_ver:
         stamped, preview_h = cached, int(meta.get("h") or 720)
     else:
@@ -2521,9 +2524,14 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         return
 
     # 반영 확인용 + 예전 미리보기 HTML 캐시 무효화(한 번)
+    st.markdown(
+        f"<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap'>"
+        f"<style>section.main {{ font-family:{_WL_FONT_STACK}; }}</style>",
+        unsafe_allow_html=True,
+    )
     st.caption(f"업무일지 빌드 {_WL_UI_BUILD}")
-    if not st.session_state.get("_wl_cache_bust_v22"):
-        st.session_state["_wl_cache_bust_v22"] = True
+    if not st.session_state.get("_wl_cache_bust_v23"):
+        st.session_state["_wl_cache_bust_v23"] = True
         for k in list(st.session_state.keys()):
             if not isinstance(k, str):
                 continue
@@ -2656,9 +2664,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     try:
                         cells_view = _cells_from_widgets(selected)
                         live_sig = json.dumps(cells_view, ensure_ascii=False, sort_keys=True)
-                        sig_k = f"wl_left_excel_sig_v22_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_v22_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_v22_{selected.isoformat()}"
+                        sig_k = f"wl_left_excel_sig_v23_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_v23_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_v23_{selected.isoformat()}"
                         scale_l = _WL_PREVIEW_SCALE
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
