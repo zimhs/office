@@ -110,6 +110,8 @@ WL_CLIENT_COL_END = 6     # F
 _WL_PREVIEW_SCALE = 0.75
 # Mac/웹에서 바탕체 대체 순서 (Apple Myungjo = Mac 바탕 대응)
 _WL_FONT_STACK = "'Batang','BatangChe','Apple Myungjo','Nanum Myeongjo','바탕','바탕체',serif"
+# 로컬 반영 확인용 (탭 상단에 표시)
+_WL_UI_BUILD = "2026-08-25a · 미리보기75% · 입력11pt · 로고ON"
 
 
 # =====================================================================
@@ -859,18 +861,16 @@ def _spill_all_content(cells: dict) -> dict:
     cells = _spill_column(cells, WL_NOTE_ROWS, "D")
     return cells
 
-# 💡 스마트 업데이트 로직 (바탕화면 엑셀 수정 시 알아서 캐시 갱신)
+# 💡 템플릿 준비: git의 uploaded_cache/worklog/template.xlsx 를 우선 사용
+# (예전엔 ~/Desktop/업무일지.xlsx mtime이 더 新し면 덮어써서 로고·양식 반영이 깨짐)
 def _ensure_dirs() -> None:
     os.makedirs(WORKLOG_DIR, exist_ok=True)
-    if os.path.exists(WORKLOG_TEMPLATE_SRC):
+    # Desktop 파일은 "캐시 템플릿이 없을 때만" 보충. 있으면 절대 덮어쓰지 않음.
+    if (not os.path.exists(WORKLOG_TEMPLATE)) and os.path.exists(WORKLOG_TEMPLATE_SRC):
         try:
-            src_mtime = os.path.getmtime(WORKLOG_TEMPLATE_SRC)
-            dst_mtime = os.path.getmtime(WORKLOG_TEMPLATE) if os.path.exists(WORKLOG_TEMPLATE) else 0
-            if src_mtime > dst_mtime:
-                shutil.copy2(WORKLOG_TEMPLATE_SRC, WORKLOG_TEMPLATE)
+            shutil.copy2(WORKLOG_TEMPLATE_SRC, WORKLOG_TEMPLATE)
         except Exception:
-            if not os.path.exists(WORKLOG_TEMPLATE):
-                shutil.copy2(WORKLOG_TEMPLATE_SRC, WORKLOG_TEMPLATE)
+            pass
 
 def _iter_google_drive_roots() -> list[str]:
     cloud = os.path.join(os.path.expanduser("~"), "Library", "CloudStorage")
