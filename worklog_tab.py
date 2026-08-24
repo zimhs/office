@@ -1201,12 +1201,40 @@ def _excel_page_scale(path: str) -> float | None:
     return None
 
 
+def _excel_page_margins_css(path: str) -> str:
+    """원본 pageMargins → @page margin CSS (인치). 기본 0.55in 0.51in."""
+    top = right = bottom = left = None
+    if load_workbook is not None and path and os.path.exists(path):
+        try:
+            wb = load_workbook(path, data_only=False)
+            ws = wb.active
+            pm = ws.page_margins
+            top, right, bottom, left = pm.top, pm.right, pm.bottom, pm.left
+            wb.close()
+        except Exception:
+            pass
+    # 원본.xlsx 기본값(인치)
+    t = float(top if top is not None else 0.55)
+    r = float(right if right is not None else 0.51)
+    b = float(bottom if bottom is not None else 0.55)
+    l = float(left if left is not None else 0.51)
+    return f"{t:.2f}in {r:.2f}in {b:.2f}in {l:.2f}in"
+
+
+def _excel_print_scale(path: str | None = None) -> float:
+    """인쇄 배율 = 원본 Excel pageSetup.scale 그대로(추가 축소 없음)."""
+    s = _excel_page_scale(path) if path else None
+    if s is not None:
+        return float(s)
+    return 0.69  # 원본.xlsx 기본
+
+
 def _scaled_view_frame_size(path: str, scale: float) -> tuple[int, int]:
     w, h = _worklog_sheet_pixel_size(path)
     s = float(scale) if scale and scale > 0 else 1.0
     return int(w * s) + 28, int(h * s) + 64
 
-def workbook_to_html(path: str, *, include_logo: bool = False) -> str:
+def workbook_to_html(path: str, *, include_logo: bool = False, layout_scale: float = 1.0) -> str:
     if load_workbook is None: return "<p>openpyxl 필요</p>"
     wb = load_workbook(path, data_only=False)
     ws = wb.active
@@ -1229,15 +1257,16 @@ def workbook_to_html(path: str, *, include_logo: bool = False) -> str:
 
     col_widths = []
     total_w = 0.0
+    ls = float(layout_scale) if layout_scale and layout_scale > 0 else 1.0
     for c in range(WL_MIN_COL, WL_MAX_COL + 1):
         w = _excel_col_width(ws, c)
-        px = _excel_width_to_px(w)
+        px = max(1, int(round(_excel_width_to_px(w) * ls)))
         col_widths.append(px)
         total_w += px
 
     rows_html = []
     for r in range(WL_MIN_ROW, WL_MAX_ROW + 1):
-        height_px = _excel_row_height_px(ws, r)
+        height_px = max(1, int(round(_excel_row_height_px(ws, r) * ls)))
         tds = []
         for c in range(WL_MIN_COL, WL_MAX_COL + 1):
             if (r, c) in skip: continue
@@ -1254,6 +1283,9 @@ def workbook_to_html(path: str, *, include_logo: bool = False) -> str:
             is_body_d = c == 4 and (r in WL_NEXT_ROWS or r in WL_NOTE_ROWS)
             is_date = (c == 3 and r == 5) or (str(cell.coordinate) == WL_DATE_CELL)
             font_stack, fsize_pt = _wl_cell_font(cell, is_content=is_content, is_client=is_client, is_body_d=is_body_d, is_date=is_date)
+            # 인쇄 시 Excel pageSetup.scale을 글자 pt·셀 크기에 미리 반영(브라우저 추가 축소 방지)
+            if ls != 1.0:
+                fsize_pt = round(float(fsize_pt) * ls, 2)
             font = cell.font
             bold = "bold" if font.bold else "normal"
             align = cell.alignment
@@ -1349,34 +1381,38 @@ def workbook_to_html(path: str, *, include_logo: bool = False) -> str:
     """
 
 def _a4_print_fit(raw_w: int, raw_h: int, *, path: str | None = None) -> float:
-    """인쇄 배율: 원본 Excel pageSetup.scale을 우선, 없으면 A4 맞춤(과축소 방지)."""
-    excel_s = _excel_page_scale(path) if path else None
-    if raw_w <= 0 or raw_h <= 0:
-        return excel_s or 1.0
-    # A4 인쇄 가능 영역(px) — 여백 약 13~14mm(원본 pageMargins) 반영
-    fit = min(1.0, 770.0 / float(raw_w), 1080.0 / float(raw_h))
-    fit = max(0.35, min(1.0, fit))
-    if excel_s is not None:
-        # 원본 배율을 쓰되, 한 페이지를 넘치면 살짝만 줄임
-        return max(0.35, min(excel_s, fit))
-    return fit
+    """인쇄 배율 = 원본 Excel pageSetup.scale 그대로(추가 맞춤 축소 없음)."""
+    return _excel_print_scale(path)
 
 def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: float | None = None, auto_print: bool = False, wrap_height: str | None = None) -> str:
-    sheet = workbook_to_html(path, include_logo=False)
+    # 인쇄: Excel 배율(69%)을 HTML 글씨·셀에 직접 반영 → CSS transform으로 또 줄이지 않음
+    excel_print_s = _excel_print_scale(path)
+    layout_s = float(excel_print_s) if print_mode else 1.0
+    sheet = workbook_to_html(path, include_logo=False, layout_scale=layout_s)
     raw_w, raw_h = _worklog_sheet_pixel_size(path)
-    print_fit = _a4_print_fit(raw_w, raw_h, path=path)
-    scaled_w, scaled_h = max(1, int(round(raw_w * print_fit))), max(1, int(round(raw_h * print_fit)))
+    print_fit = excel_print_s
+    # print_mode에서는 이미 layout_scale 적용된 크기
+    if print_mode:
+        scaled_w = max(1, int(round(raw_w * layout_s)))
+        scaled_h = max(1, int(round(raw_h * layout_s)))
+        page_margins = _excel_page_margins_css(path)
+        pct = int(round(excel_print_s * 100))
+    else:
+        scaled_w, scaled_h = max(1, int(round(raw_w * print_fit))), max(1, int(round(raw_h * print_fit)))
+        page_margins = "8mm"
+        pct = int(round(excel_print_s * 100))
 
     toolbar = ""
     if print_mode:
         view_scale = 1.0
-        toolbar = """<div class="toolbar no-print"><button type="button" id="wl-fit-btn">원본배율</button><button type="button" id="wl-zoom-out" class="secondary">축소</button><button type="button" id="wl-zoom-in" class="secondary">확대</button><button type="button" id="wl-print-btn">인쇄하기</button><span class="hint">원본 Excel 인쇄 배율(69%) 기준입니다. 필요 시 축소/확대하세요.</span></div>"""
+        toolbar = f"""<div class="toolbar no-print"><button type="button" id="wl-print-btn">인쇄하기</button><span class="hint">원본 Excel 인쇄 설정 그대로입니다 (배율 {pct}%, 여백 동일). 브라우저 인쇄창에서 「용지에 맞춤」을 끄세요.</span></div>"""
     else:
         view_scale = float(scale if scale is not None else _WL_PREVIEW_SCALE)
     frame_w, frame_h = _scaled_view_frame_size(path, view_scale)
     if print_mode:
-        scale_css = f"zoom:{print_fit:.4f};width:{raw_w}px;max-width:none;"
-        scale_css_fallback = f"transform:scale({print_fit:.4f});transform-origin:top left;width:{raw_w}px;"
+        # 이미 69%로 렌더됨 → 추가 zoom/transform 없음
+        scale_css = f"zoom:1;width:{scaled_w}px;max-width:none;"
+        scale_css_fallback = f"transform:none;width:{scaled_w}px;"
         wrap_h, wrap_w, wrap_overflow, body_overflow, body_h = f"{scaled_h}px", f"{scaled_w}px", "hidden", "auto", "auto"
     elif view_scale >= 1:
         scale_css = "zoom:1;width:fit-content;"
@@ -1391,42 +1427,31 @@ def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: floa
 
     fit_print_js = f"""
         var wlZoom = 1;
-        var wlOrigFit = {print_fit:.6f};
-        function wlApplyZoom(s, opts) {{
-          opts = opts || {{}};
-          var forPrint = !!opts.print;
+        var wlOrigFit = 1;
+        function wlApplyZoom(s) {{
           var sheet = document.querySelector('.sheet-scale');
           var wrap = document.querySelector('.wrap');
           var table = document.querySelector('.wl-sheet');
           if (!sheet || !wrap || !table) return;
-          wlZoom = s;
-          if (forPrint) {{
-            sheet.style.zoom = '1';
-            sheet.style.transform = 'scale(' + s + ')';
-            sheet.style.transformOrigin = 'top left';
-          }} else {{
-            sheet.style.transform = 'none';
-            sheet.style.zoom = String(s);
-          }}
-          var w = Math.max(table.scrollWidth, table.offsetWidth, {raw_w}, 1);
-          var h = Math.max(table.scrollHeight, table.offsetHeight, {raw_h}, 1);
+          wlZoom = 1;
+          sheet.style.transform = 'none';
+          sheet.style.zoom = '1';
           wrap.style.maxWidth = 'none';
-          wrap.style.width = Math.ceil(w * s) + 'px';
-          wrap.style.height = Math.ceil(h * s) + 'px';
+          wrap.style.width = '{scaled_w}px';
+          wrap.style.height = '{scaled_h}px';
           wrap.style.overflow = 'hidden';
           wrap.style.margin = '0 auto';
         }}
-        function wlFitToA4(forPrint) {{ wlApplyZoom(wlOrigFit, {{ print: !!forPrint }}); }}
-        function wlZoomBy(factor) {{ var next = wlZoom * factor; if (next < 0.35) next = 0.35; if (next > 1.6) next = 1.6; wlApplyZoom(next, {{ print: false }}); }}
+        function wlFitToA4() {{ wlApplyZoom(1); }}
         try {{ window.wlFitToA4 = wlFitToA4; }} catch (e0) {{}}
     """
     go_print_js = """
         function goPrint() {
-          try { wlFitToA4(true); } catch (e0) {}
+          try { wlFitToA4(); } catch (e0) {}
           var fire = function() {
             setTimeout(function() {
               try { window.focus(); window.print(); } catch (e) {}
-            }, 120);
+            }, 150);
           };
           if (document.fonts && document.fonts.ready) {
             document.fonts.ready.then(fire).catch(fire);
@@ -1435,16 +1460,14 @@ def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: floa
           }
         }
     """
-    auto_script = f"""<script>(function() {{ {fit_print_js} {go_print_js} var btn = document.getElementById('wl-print-btn'); if (btn) btn.addEventListener('click', function(ev) {{ ev.preventDefault(); goPrint(); }}); var fitBtn = document.getElementById('wl-fit-btn'); if (fitBtn) fitBtn.addEventListener('click', function(ev) {{ ev.preventDefault(); try {{ wlFitToA4(false); }} catch (e1) {{}} }}); var zo = document.getElementById('wl-zoom-out'); if (zo) zo.addEventListener('click', function(ev) {{ ev.preventDefault(); wlZoomBy(0.9); }}); var zi = document.getElementById('wl-zoom-in'); if (zi) zi.addEventListener('click', function(ev) {{ ev.preventDefault(); wlZoomBy(1.1); }}); window.addEventListener('beforeprint', function() {{ try {{ wlFitToA4(true); }} catch (e2) {{}} }}); window.addEventListener('afterprint', function() {{ try {{ wlFitToA4(false); }} catch (e4) {{}} }}); function boot() {{ try {{ wlFitToA4(false); }} catch (e3) {{}} {"setTimeout(goPrint, 500);" if auto_print else ""} }} if (document.readyState === 'complete') setTimeout(boot, 250); else window.addEventListener('load', function() {{ setTimeout(boot, 250); }}); }})();</script>""" if print_mode else ""
+    auto_script = f"""<script>(function() {{ {fit_print_js} {go_print_js} var btn = document.getElementById('wl-print-btn'); if (btn) btn.addEventListener('click', function(ev) {{ ev.preventDefault(); goPrint(); }}); window.addEventListener('beforeprint', function() {{ try {{ wlFitToA4(); }} catch (e2) {{}} }}); function boot() {{ try {{ wlFitToA4(); }} catch (e3) {{}} {"setTimeout(goPrint, 500);" if auto_print else ""} }} if (document.readyState === 'complete') setTimeout(boot, 250); else window.addEventListener('load', function() {{ setTimeout(boot, 250); }}); }})();</script>""" if print_mode else ""
     fallback_block = f"@supports not (zoom: 1) {{ .sheet-scale {{ {scale_css_fallback} }} }}" if scale_css_fallback else ""
-    print_media = ""
     if print_mode:
-        pf = print_fit
-        print_media = f"""@media print {{ html, body {{ overflow:visible !important; height:auto !important; width:auto !important; margin:0 !important; padding:0 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }} .no-print, .toolbar {{ display:none !important; }} .wrap {{ overflow:hidden !important; max-width:none !important; width:{scaled_w}px !important; height:{scaled_h}px !important; border:none !important; margin:0 auto !important; padding:0 !important; }} .sheet-scale {{ zoom:1 !important; transform:scale({pf:.6f}) !important; transform-origin:top left !important; width:{raw_w}px !important; margin:0 !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ font-family:{_WL_FONT_STACK} !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }} }}"""
+        print_media = f"""@media print {{ html, body {{ overflow:visible !important; height:auto !important; width:auto !important; margin:0 !important; padding:0 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }} .no-print, .toolbar {{ display:none !important; }} .wrap {{ overflow:visible !important; max-width:none !important; width:{scaled_w}px !important; height:auto !important; border:none !important; margin:0 auto !important; padding:0 !important; }} .sheet-scale {{ zoom:1 !important; transform:none !important; width:{scaled_w}px !important; margin:0 !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ font-family:{_WL_FONT_STACK} !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }} }}"""
     else:
         print_media = "@media print { html, body { overflow:visible !important; } }"
     
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap" rel="stylesheet"><style>@page {{ size: A4 portrait; margin: 8mm; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"6px" if not print_mode else "0"}; box-sizing:border-box; font-family:{_WL_FONT_STACK}; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:0; }} .sheet-scale {{ {scale_css} }} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK}; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }} {fallback_block} {print_media}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap" rel="stylesheet"><style>@page {{ size: A4 portrait; margin: {page_margins}; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"6px" if not print_mode else "0"}; box-sizing:border-box; font-family:{_WL_FONT_STACK}; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:0; }} .sheet-scale {{ {scale_css} }} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK}; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; }} {fallback_block} {print_media}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     try: n = int((ent or {}).get("blank_after", default))
@@ -2302,7 +2325,7 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     try: mtime = os.path.getmtime(abs_path)
     except OSError: mtime = 0.0
     cached, meta = st.session_state.get(cache_k), st.session_state.get(meta_k) or {}
-    cache_ver = "v19"
+    cache_ver = "v20"
     if isinstance(cached, str) and cached and meta.get("mtime") == mtime and meta.get("path") == abs_path and meta.get("ver") == cache_ver:
         stamped, preview_h = cached, int(meta.get("h") or 720)
     else:
