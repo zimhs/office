@@ -89,16 +89,17 @@ WORKLOG_TEMPLATE_SRC = os.path.expanduser("~/Desktop/업무일지.xlsx")
 WORKLOG_ARCHIVE_REL = os.path.join("Desktop", "업무", "일지")
 
 # =====================================================================
-# 💡 다음.xlsx 기준 행(Row) 범위 업데이트 (10행부터 시작하도록 원본 완벽 동기화)
+# 💡 원본.xlsx 양식 기준 행/열 매핑 (인쇄·미리보기 일치)
+# 제목 E2 / 날짜 C5 / 내용헤더 G7 / 본문 8~39 / 익일 40~43 / 특이 44~47
 # =====================================================================
-WL_MIN_ROW, WL_MAX_ROW = 1, 51
+WL_MIN_ROW, WL_MAX_ROW = 1, 52
 WL_MIN_COL, WL_MAX_COL = 3, 28  # C ~ AB
 
-# 내용 3칸 및 상단 여백 2칸이 추가된 최신 구조 반영
-WL_CLIENT_ROWS = list(range(10, 44))  # 10행 ~ 43행 (총 34줄)
-WL_CONTENT_ROWS = list(range(10, 44)) # 10행 ~ 43행 (총 34줄)
-WL_NEXT_ROWS = list(range(44, 48))   # 44행 ~ 47행 (총 4줄)
-WL_NOTE_ROWS = list(range(48, 52))   # 48행 ~ 51행 (총 4줄)
+WL_DATE_CELL = "C5"
+WL_CLIENT_ROWS = list(range(8, 40))   # 8행 ~ 39행 (총 32줄)
+WL_CONTENT_ROWS = list(range(8, 40))  # 8행 ~ 39행 (총 32줄)
+WL_NEXT_ROWS = list(range(40, 44))    # 40행 ~ 43행 (총 4줄)
+WL_NOTE_ROWS = list(range(44, 48))    # 44행 ~ 47행 (총 4줄)
 
 WL_CONTENT_COL_START = 7  # G
 WL_CONTENT_COL_END = 24   # X
@@ -789,7 +790,7 @@ def _char_units(ch: str) -> int:
 def _display_units(s: str) -> int: return sum(_char_units(ch) for ch in (s or ""))
 
 _WL_BODY_FONT_NAME = "바탕체"
-_WL_BODY_FONT_PT = 17.0
+_WL_BODY_FONT_PT = 14.0  # 원본.xlsx 본문 글자 크기와 동일
 
 def _set_body_font(cell) -> None:
     try: cell.font = cell.font.copy(name=_WL_BODY_FONT_NAME, size=float(_WL_BODY_FONT_PT))
@@ -956,8 +957,8 @@ def read_worklog_cells(d: date) -> dict:
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
         v = ws.cell(r, 4).value
         cells[f"D{r}"] = "" if v is None else str(v)
-    c7 = ws["C7"].value
-    if c7 is not None and not str(c7).startswith("="): cells["date"] = str(c7)
+    c_date = ws[WL_DATE_CELL].value
+    if c_date is not None and not str(c_date).startswith("="): cells["date"] = str(c_date)
     wb.close()
     return cells
 
@@ -971,7 +972,7 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
     wb = load_workbook(path)
     ws = wb.active
     if force_template: _clear_content_cells(ws)
-    try: ws["C7"].value = cells.get("date") or format_worklog_date(d)
+    try: ws[WL_DATE_CELL].value = cells.get("date") or format_worklog_date(d)
     except AttributeError: pass
 
     for r in WL_CLIENT_ROWS:
