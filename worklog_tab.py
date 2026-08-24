@@ -2520,6 +2520,16 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         else: st.error(f"템플릿 준비 실패: {e}")
         return
 
+    # 반영 확인용 + 예전 미리보기 HTML 캐시 무효화(한 번)
+    st.caption(f"업무일지 빌드 {_WL_UI_BUILD}")
+    if not st.session_state.get("_wl_cache_bust_v22"):
+        st.session_state["_wl_cache_bust_v22"] = True
+        for k in list(st.session_state.keys()):
+            if not isinstance(k, str):
+                continue
+            if k.startswith("wl_left_excel_html_") or k.startswith("wl_left_excel_sig_") or k.startswith("wl_print_html_cache_"):
+                st.session_state.pop(k, None)
+
     @st.fragment
     def _worklog_main() -> None:
         if "worklog_selected" not in st.session_state: st.session_state["worklog_selected"] = date.today()
