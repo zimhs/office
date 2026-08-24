@@ -683,29 +683,29 @@ _WL_SPECIAL_BAR_CSS = """
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
-  padding: 2px 1px 4px;
+  padding: 2px 2px 6px;
   box-sizing: border-box;
 }
 .wl-sp button {
   flex: 0 0 auto;
-  min-width: 1.85rem;
-  width: 1.85rem;
-  height: 1.85rem;
+  min-width: 2.1rem;
+  width: 2.1rem;
+  height: 2.1rem;
   margin: 0;
   padding: 0;
   border: 1px solid #cbd5e1;
-  border-radius: 0.35rem;
-  background: #f8fafc;
+  border-radius: 0.4rem;
+  background: #ffffff;
   color: #0f172a;
-  font-size: 0.95rem;
-  line-height: 1.85rem;
+  font-size: 1.05rem;
+  line-height: 2.1rem;
   text-align: center;
   cursor: pointer;
   touch-action: manipulation;
@@ -763,7 +763,7 @@ export default function (component) {
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v6",
+    "worklog_special_bar_v7",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -1304,7 +1304,7 @@ def workbook_to_html(path: str) -> str:
     if os.path.exists(logo_path):
         try:
             with open(logo_path, "rb") as img_f: b64_img = base64.b64encode(img_f.read()).decode("utf-8")
-            logo_tr = f'''<tr style="border:none; background:#fff;"><td colspan="26" style="text-align:center; padding-top:25px; padding-bottom:25px; border:none;"><img src="data:image/png;base64,{b64_img}" alt="신일가스 로고" style="height: 85px; opacity: 1.0;"></td></tr>'''
+            logo_tr = f'''<tr style="border:none; background:#fff;"><td colspan="26" style="text-align:center; padding-top:2px; padding-bottom:8px; border:none;"><img src="data:image/png;base64,{b64_img}" alt="신일가스 로고" style="height: 72px; opacity: 1.0; display:block; margin:0 auto;"></td></tr>'''
         except Exception: pass
 
     return f"""
@@ -2003,57 +2003,38 @@ def _queue_special_char(iso: str, ch: str) -> None:
 
 
 def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
-    """접기/펼치기 + 한 줄 가로 스크롤 네이티브 버튼(삽입 경로는 pending 유지)."""
+    """전체 너비 한 줄 가로 스크롤 HTML 바 + 접기. 삽입은 pending 경로."""
     del entry_count
     show_k = f"wl_sp_show_{iso}"
     if show_k not in st.session_state:
         st.session_state[show_k] = True
 
     st.markdown(
-        f"""<style>
-        div[class*="st-key-wl_sp_tog_"] button {{
+        """<style>
+        div[class*="st-key-wl_sp_panel_"] {
+          width: 100% !important;
+          max-width: 100% !important;
+          margin: 0 0 0.35rem !important;
+          padding: 0 !important;
+        }
+        div[class*="st-key-wl_sp_tog_"] button {
           min-height: 2rem !important;
           padding: 0.2rem 0.5rem !important;
           font-size: 0.9rem !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] {{
+        }
+        div[class*="st-key-wl_sp_bar_"] {
           width: 100% !important;
           max-width: 100% !important;
           margin: 0 !important;
           padding: 0 !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] > div[data-testid="stVerticalBlock"],
-        div[class*="st-key-wl_sp_scroll_{iso}"] div[data-testid="stVerticalBlock"] {{
-          display: flex !important;
-          flex-direction: row !important;
-          flex-wrap: nowrap !important;
-          align-items: center !important;
-          gap: 0.2rem !important;
+        }
+        div[class*="st-key-wl_sp_bar_"] iframe {
           width: 100% !important;
-          max-width: 100% !important;
-          overflow-x: auto !important;
-          overflow-y: hidden !important;
-          -webkit-overflow-scrolling: touch;
-          padding: 0 0 4px !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] [data-testid="stElementContainer"] {{
-          flex: 0 0 auto !important;
-          width: auto !important;
-          min-width: 2.1rem !important;
-          margin: 0 !important;
-        }}
-        div[class*="st-key-wl_sp_scroll_{iso}"] button {{
-          min-width: 2.1rem !important;
-          width: 2.1rem !important;
-          min-height: 2.1rem !important;
-          height: 2.1rem !important;
-          padding: 0 !important;
-          margin: 0 !important;
-          font-size: 1.05rem !important;
-          line-height: 1 !important;
-          border-radius: 0.4rem !important;
-          touch-action: manipulation;
-        }}
+          min-height: 2.45rem !important;
+          height: 2.45rem !important;
+          border: none !important;
+          display: block !important;
+        }
         </style>""",
         unsafe_allow_html=True,
     )
@@ -2067,10 +2048,40 @@ def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
         return
 
     st.caption("←→ 스크롤 · 탭하면 바로 반영 (편집 중 칸 → 없으면 내용)")
-    with st.container(key=f"wl_sp_scroll_{iso}"):
-        for idx, ch in enumerate(_WL_SPECIAL_CHARS):
-            if st.button(ch, key=f"wl_sp_btn_{iso}_{idx}"):
-                _queue_special_char(iso, ch)
+
+    def _on_pick() -> None:
+        stt = st.session_state.get(f"wl_sp_bar_{iso}") or {}
+        raw = stt.get("pick") if isinstance(stt, dict) else getattr(stt, "pick", None)
+        if not raw:
+            return
+        ch = ""
+        try:
+            if isinstance(raw, str) and raw.startswith("{"):
+                obj = json.loads(raw)
+                ch = str(obj.get("ch") or "")
+                sig = f"{ch}\0{obj.get('t')}"
+            else:
+                ch = str(raw)
+                sig = f"{ch}\0plain"
+        except Exception:
+            ch = str(raw or "")
+            sig = f"{ch}\0err"
+        if not ch:
+            return
+        done_k = f"wl_sp_pick_done_{iso}"
+        if st.session_state.get(done_k) == sig:
+            return
+        st.session_state[done_k] = sig
+        _queue_special_char(iso, ch)
+
+    token = str(st.session_state.get(f"wl_sp_token_{iso}") or "1")
+    _WL_SPECIAL_BAR(
+        key=f"wl_sp_bar_{iso}",
+        data={"iso": iso, "chars": list(_WL_SPECIAL_CHARS), "token": token},
+        on_pick_change=_on_pick,
+        width="stretch",
+        height=42,
+    )
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
     val, pos = str(val or ""), max(0, min(int(pos or 0), len(str(val or ""))))
@@ -2442,6 +2453,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         try: _gauge_usage = _content_row_usage(_read_editor_entries(selected))
         except Exception: _gauge_usage = _content_row_usage([])
 
+        _iso_bar = selected.isoformat()
+        _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
+        with st.container(key=f"wl_sp_panel_{_iso_bar}"):
+            _render_worklog_special_chars(_iso_bar, _n_bar)
+
         # 💡 가운데 2번째 컬럼(게이지)을 화면 상단에 스크롤 고정
         st.markdown("""
         <style>
@@ -2593,10 +2609,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
                         st.session_state["wl_do_delete_day"] = selected.isoformat()
                         _wl_rerun()
-
-            _iso_bar = selected.isoformat()
-            _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
-            _render_worklog_special_chars(_iso_bar, _n_bar)
 
             if isinstance(picked, date) and picked != selected:
                 if os.path.exists(worklog_path(picked)):
