@@ -1006,6 +1006,8 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
             cell = ws.cell(r, 3)
             cell.value = (cells.get(f"C{r}", "") or None)
             _set_body_font(cell)
+            try: cell.alignment = cell.alignment.copy(horizontal="center", vertical="center", wrapText=False)
+            except Exception: pass
         except AttributeError: pass
     for r in WL_CONTENT_ROWS:
         try:
@@ -2306,7 +2308,7 @@ def _view_cells_key(d: date) -> str: return f"wl_view_cells_{d.isoformat()}"
 def _publish_view_cells(d: date, cells: dict) -> None:
     iso = d.isoformat()
     st.session_state[_view_cells_key(d)] = dict(cells or {})
-    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v23_{iso}", f"wl_left_excel_html_v23_{iso}", f"wl_left_excel_h_v23_{iso}"): st.session_state.pop(k, None)
+    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v24_{iso}", f"wl_left_excel_html_v24_{iso}", f"wl_left_excel_h_v24_{iso}"): st.session_state.pop(k, None)
 
 def _view_cells_for_preview(d: date) -> dict:
     key = _view_cells_key(d)
@@ -2381,7 +2383,7 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     try: mtime = os.path.getmtime(abs_path)
     except OSError: mtime = 0.0
     cached, meta = st.session_state.get(cache_k), st.session_state.get(meta_k) or {}
-    cache_ver = "v23"
+    cache_ver = "v24"
     if isinstance(cached, str) and cached and meta.get("mtime") == mtime and meta.get("path") == abs_path and meta.get("ver") == cache_ver:
         stamped, preview_h = cached, int(meta.get("h") or 720)
     else:
@@ -2545,8 +2547,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         unsafe_allow_html=True,
     )
     st.caption(f"업무일지 빌드 {_WL_UI_BUILD}")
-    if not st.session_state.get("_wl_cache_bust_v23"):
-        st.session_state["_wl_cache_bust_v23"] = True
+    if not st.session_state.get("_wl_cache_bust_v24"):
+        st.session_state["_wl_cache_bust_v24"] = True
         for k in list(st.session_state.keys()):
             if not isinstance(k, str):
                 continue
@@ -2679,9 +2681,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     try:
                         cells_view = _cells_from_widgets(selected)
                         live_sig = json.dumps(cells_view, ensure_ascii=False, sort_keys=True)
-                        sig_k = f"wl_left_excel_sig_v23_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_v23_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_v23_{selected.isoformat()}"
+                        sig_k = f"wl_left_excel_sig_v24_{selected.isoformat()}"
+                        html_k = f"wl_left_excel_html_v24_{selected.isoformat()}"
+                        h_k = f"wl_left_excel_h_v24_{selected.isoformat()}"
                         scale_l = _WL_PREVIEW_SCALE
                         if st.session_state.get(sig_k) != live_sig:
                             xlsx_left = _prepare_excel_preview(selected, cells_view)
