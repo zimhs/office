@@ -4180,13 +4180,11 @@ def filter_df_by_selected_client(df, selected_client):
         return df.loc[client == sel].copy()
 
     orig = df["거래처_원본"].astype(str).str.strip()
-    parent_names = _client_parent_name_set(df)
     sel_base = sel.rstrip(".")
-    # 부모명으로 선택된 경우 → 원본 기준 합산
-    if sel in parent_names or sel_base in parent_names:
-        mask = (orig == sel) | (orig.str.rstrip(".") == sel_base)
-        return df.loc[mask].copy()
-    # 종속처 등 표시명 → 정확 일치
+    # 원본 일치 = 부모 합산 (unique 집합 구성 없이 벡터 마스크만 — 필터 변경 가속)
+    parent_mask = (orig == sel) | (orig.str.rstrip(".") == sel_base)
+    if parent_mask.any():
+        return df.loc[parent_mask].copy()
     return df.loc[client == sel].copy()
 
 
@@ -4421,29 +4419,18 @@ def _dash_pivot_cache_key(
     )
 
 
-def _dash_compute_pivot_bundle(df_base, df_client_filtered, df_f, full_df, all_months):
-    """필터 조합별 피벗·지표 (세션 캐시용 — 거래처 재선택 시 즉시 복원)."""
+def _dash_base_pivot_cache_key(start_date, end_date, sales_meta, manual_token):
+    """날짜·원본데이터만 바뀌는 공통 피벗 키 (담당자/거래처/품목 변경과 무관)."""
+    return ("base", str(start_date), str(end_date), sales_meta, manual_token)
+
+
+def _dash_compute_base_pivot_bundle(df_base, full_df, all_months):
+    """df_base 기준 공통 피벗·전체 지표 (필터 거래처 변경 시 재사용)."""
     raw_years = sorted(full_df["연도"].unique()) if "연도" in full_df.columns else ["2026"]
     years = sorted(raw_years, reverse=True)
     desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
     pivot_m_total = cached_get_yearly_monthly_pivot(df_base, all_months, years)
-    client_item_qty_pivot = cached_client_item_qty_pivot(
-        df_client_filtered, years, all_months
-    )
-    sales_p, qty_p, unit_price_p = cached_tab3_pivots(df_f, years, all_months)
     staff_pivot = cached_staff_pivot(df_base, desired_order)
-    detail_cols = [
-        "매출일_dt",
-        "담당자",
-        "거래처",
-        "품목명",
-        "출고량",
-        "단가",
-        "매출액",
-    ]
-    df_detail = (
-        df_f[detail_cols] if not df_f.empty else pd.DataFrame(columns=detail_cols)
-    )
     df_total_monthly = df_base.groupby(df_base["매출일_dt"].dt.to_period("M"))[
         "매출액"
     ].sum()
@@ -4475,6 +4462,38 @@ def _dash_compute_pivot_bundle(df_base, df_client_filtered, df_f, full_df, all_m
         avg_monthly_sales_total = 0.0
         avg_rate_total = 0.0
         latest_month_str_total = "-"
+    return {
+        "years": years,
+        "desired_order": desired_order,
+        "pivot_m_total": pivot_m_total,
+        "staff_pivot": staff_pivot,
+        "cur_month_sales_total": cur_month_sales_total,
+        "prev_month_sales_total": prev_month_sales_total,
+        "mom_rate_total": mom_rate_total,
+        "avg_monthly_sales_total": avg_monthly_sales_total,
+        "avg_rate_total": avg_rate_total,
+        "latest_month_str_total": latest_month_str_total,
+    }
+
+
+def _dash_compute_client_pivot_bundle(df_client_filtered, df_f, years, all_months):
+    """거래처·품목 필터 결과 피벗·거래처 지표."""
+    client_item_qty_pivot = cached_client_item_qty_pivot(
+        df_client_filtered, years, all_months
+    )
+    sales_p, qty_p, unit_price_p = cached_tab3_pivots(df_f, years, all_months)
+    detail_cols = [
+        "매출일_dt",
+        "담당자",
+        "거래처",
+        "품목명",
+        "출고량",
+        "단가",
+        "매출액",
+    ]
+    df_detail = (
+        df_f[detail_cols] if not df_f.empty else pd.DataFrame(columns=detail_cols)
+    )
     if not df_client_filtered.empty:
         df_client_monthly = (
             df_client_filtered.groupby(
@@ -4510,21 +4529,11 @@ def _dash_compute_pivot_bundle(df_base, df_client_filtered, df_f, full_df, all_m
         avg_rate_client = 0.0
         latest_month_str_client = "-"
     return {
-        "years": years,
-        "desired_order": desired_order,
-        "pivot_m_total": pivot_m_total,
         "client_item_qty_pivot": client_item_qty_pivot,
         "sales_p": sales_p,
         "qty_p": qty_p,
         "unit_price_p": unit_price_p,
-        "staff_pivot": staff_pivot,
         "df_detail": df_detail,
-        "cur_month_sales_total": cur_month_sales_total,
-        "prev_month_sales_total": prev_month_sales_total,
-        "mom_rate_total": mom_rate_total,
-        "avg_monthly_sales_total": avg_monthly_sales_total,
-        "avg_rate_total": avg_rate_total,
-        "latest_month_str_total": latest_month_str_total,
         "cur_month_sales_client": cur_month_sales_client,
         "prev_month_sales_client": prev_month_sales_client,
         "mom_rate_client": mom_rate_client,
@@ -4532,6 +4541,17 @@ def _dash_compute_pivot_bundle(df_base, df_client_filtered, df_f, full_df, all_m
         "avg_rate_client": avg_rate_client,
         "latest_month_str_client": latest_month_str_client,
     }
+
+
+def _dash_compute_pivot_bundle(df_base, df_client_filtered, df_f, full_df, all_months):
+    """필터 조합별 피벗·지표 (세션 캐시용 — 거래처 재선택 시 즉시 복원)."""
+    base = _dash_compute_base_pivot_bundle(df_base, full_df, all_months)
+    client = _dash_compute_client_pivot_bundle(
+        df_client_filtered, df_f, base["years"], all_months
+    )
+    out = dict(base)
+    out.update(client)
+    return out
 
 
 # ==========================================
@@ -9358,10 +9378,20 @@ if not full_df.empty:
         fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1.15, 1.35, 1.15])
         start_date = fc1.text_input("📅 조회 시작", "200101", key="dash_filter_start")
         end_date = fc2.text_input("📅 조회 종료", "261231", key="dash_filter_end")
-        start_dt, end_dt = _dash_parse_filter_dates(start_date, end_date)
-        df_base_opts = full_df[
-            (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
-        ]
+        # 날짜 슬라이스: 담당자·거래처·품목만 바꿀 때 재필터하지 않음 (로직 동일, 로딩만 감소)
+        _date_slice_sig = (
+            start_date,
+            end_date,
+            sales_file_meta,
+            _manual_staff_map_cache_token(),
+        )
+        if st.session_state.get("_dash_date_slice_sig") != _date_slice_sig:
+            st.session_state["_dash_date_slice_sig"] = _date_slice_sig
+            start_dt, end_dt = _dash_parse_filter_dates(start_date, end_date)
+            st.session_state["_dash_date_slice_df"] = full_df[
+                (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
+            ]
+        df_base_opts = st.session_state.get("_dash_date_slice_df", full_df)
         _staff_opts = _dash_staff_opts_from(df_base_opts)
         _prev_staff = st.session_state.get("dash_filter_staff", [])
         if isinstance(_prev_staff, list) and _prev_staff:
@@ -9435,16 +9465,27 @@ if not full_df.empty:
         df_staff_filtered = (
             df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base
         )
-        df_client_filtered = (
-            filter_df_by_selected_client(df_staff_filtered, selected_client)
-            if selected_client != "전체 거래처"
-            else df_staff_filtered
-        )
+        # df_staff_for_opts 와 동일 조건 → 거래처 필터 1회만 (중복 연산 제거, 결과 동일)
+        df_client_filtered = df_client_for_opts
         df_f = (
             df_client_filtered[df_client_filtered["품목명"].isin(selected_item)]
             if selected_item
             else df_client_filtered
         )
+        _manual_tok = _manual_staff_map_cache_token()
+        # 공통(날짜) 피벗: 거래처·담당자·품목 변경 시 재사용
+        _base_ck = _dash_base_pivot_cache_key(
+            start_date, end_date, sales_file_meta, _manual_tok
+        )
+        _base_store = st.session_state.setdefault("_dash_base_pivot_store", {})
+        if _base_ck not in _base_store:
+            _base_store[_base_ck] = _dash_compute_base_pivot_bundle(
+                df_base, full_df, all_months
+            )
+            while len(_base_store) > 8:
+                _base_store.pop(next(iter(_base_store)))
+        _bb = _base_store[_base_ck]
+        # 거래처·품목 피벗만 필터 조합별 캐시
         _pivot_ck = _dash_pivot_cache_key(
             selected_client,
             selected_staff,
@@ -9452,16 +9493,18 @@ if not full_df.empty:
             start_date,
             end_date,
             sales_file_meta,
-            _manual_staff_map_cache_token(),
+            _manual_tok,
         )
         _pivot_store = st.session_state.setdefault("_dash_pivot_store", {})
         if _pivot_ck not in _pivot_store:
-            _pivot_store[_pivot_ck] = _dash_compute_pivot_bundle(
-                df_base, df_client_filtered, df_f, full_df, all_months
+            _pivot_store[_pivot_ck] = _dash_compute_client_pivot_bundle(
+                df_client_filtered, df_f, _bb["years"], all_months
             )
-            while len(_pivot_store) > 24:
+            while len(_pivot_store) > 32:
                 _pivot_store.pop(next(iter(_pivot_store)))
-        _pb = _pivot_store[_pivot_ck]
+        _cb = _pivot_store[_pivot_ck]
+        _pb = dict(_bb)
+        _pb.update(_cb)
         years = _pb["years"]
         desired_order = _pb["desired_order"]
         pivot_m_total = _pb["pivot_m_total"]
@@ -9629,16 +9672,14 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
         "🔎 시장조사",
     ]
 )
-if is_touch_ui():
-    # iPad: 거래처 변경 rerun마다 components.html 재주입하면 로딩이 되살아남
-    if st.session_state.get("_ipad_sticky_ver") != 30:
-        inject_sticky_tabs_script()
-        inject_ipad_plotly_controls()
-        st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 30
-else:
+# sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
+_STICKY_INJECT_VER = 31
+if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
+    st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
+    st.session_state["_ipad_sticky_injected"] = True
+    st.session_state["_ipad_sticky_ver"] = 30
 # Tab 1: 📌 영업 종합 요약
 with tab1:
     t1_c1, t1_c2 = st.columns([4, 1])
