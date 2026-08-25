@@ -45,6 +45,21 @@ def _wl_quiet_ui() -> bool:
     except Exception: return True
 
 
+def _wl_is_streamlit_cloud() -> bool:
+    try:
+        env = (os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT") or "").strip().lower()
+        if env == "cloud":
+            return True
+    except Exception:
+        pass
+    try:
+        if os.path.abspath(os.getcwd()).startswith("/mount/src"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _wl_is_ipad_ui() -> bool:
     """iPad/touch UI — app.is_touch_ui()와 동일 기준. 맥·데스크톱 브라우저는 False."""
     try:
@@ -114,7 +129,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26f · Cloud상태표시 + gist id 확인"
+_WL_UI_BUILD = "2026-08-26g · Cloud 즉시 Gist 동기화"
 
 
 # =====================================================================
@@ -2931,11 +2946,14 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         _cs = cloud_sync_status(WORKLOG_DIR)
         if not _cs.get("token"):
-            st.caption("☁ Cloud: **미연동** — `.streamlit/secrets.toml` 에 `github_token` 넣고 Streamlit 재시작")
+            if _wl_is_streamlit_cloud():
+                st.caption("☁ Gist **미연동** — Streamlit Cloud **Settings → Secrets** 에 `github_token`, `worklog_gist_id` 필요")
+            else:
+                st.caption("☁ Cloud: **미연동** — `.streamlit/secrets.toml` 에 `github_token` 넣고 Streamlit 재시작")
         elif _cs.get("gist_id"):
-            st.caption(f"☁ Cloud **연동됨** · `worklog_gist_id = \"{_cs['gist_id']}\"` (Cloud secrets에도 동일하게)")
+            st.caption(f"☁ Gist **연동됨** · `worklog_gist_id = \"{_cs['gist_id']}\"`")
         else:
-            st.caption("☁ Cloud: 토큰 OK · **저장**하면 gist id 생성 → secrets에 `worklog_gist_id` 추가")
+            st.caption("☁ Gist: 토큰 OK · **저장**하면 gist id 생성")
     except Exception:
         pass
     if not st.session_state.get("_wl_cache_bust_v24"):
@@ -2962,13 +2980,16 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             _now = time.time()
             _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
             _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
+            _on_cloud = _wl_is_streamlit_cloud()
+            _sync_iv = 15 if _on_cloud else 90
             _wl_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
             _remote_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
-            if _force or (_now - _prev >= 90):
+            if _force or (_now - _prev >= _sync_iv):
                 st.session_state["_wl_drive_sync_ts"] = _now
-                _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR, force=_force)
+                if not _on_cloud:
+                    _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR, force=_force)
                 try:
-                    _remote_sync = sync_worklog_remote(WORKLOG_DIR, force=False)
+                    _remote_sync = sync_worklog_remote(WORKLOG_DIR, force=_force)
                 except Exception as _re:
                     _remote_sync = {
                         "ok": False,
@@ -2980,8 +3001,13 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             _copied_n = len((_wl_sync or {}).get("copied") or []) + len((_remote_sync or {}).get("copied") or [])
             if _copied_n:
                 _invalidate_saved_dates_cache()
-                if not _wl_quiet_ui():
-                    st.caption(f"일지 동기화 · {_copied_n}개 (Drive/Cloud)")
+                st.caption(f"일지 동기화 · {_copied_n}개" + (" (Gist)" if _on_cloud else " (Drive/Cloud)"))
+            elif _on_cloud and isinstance(_remote_sync, dict) and _remote_sync.get("error") and not _remote_sync.get("skipped"):
+                st.warning(f"Gist 동기화 실패: {_remote_sync.get('error')}")
+            if _on_cloud and remote_sync_configured():
+                if st.button("↻ Gist에서 일지 가져오기", key="wl_gist_pull_btn", width="stretch"):
+                    st.session_state["_wl_drive_sync_force"] = True
+                    _wl_rerun()
             _conflicts = []
             for _src in (_wl_sync, _remote_sync):
                 if isinstance(_src, dict):
