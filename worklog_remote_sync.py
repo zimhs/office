@@ -250,24 +250,24 @@ def ensure_worklog_gist(local_dir: str = "./uploaded_cache/worklog") -> Tuple[Op
 def push_worklog_day_remote(
     local_path: str,
     local_dir: str = "./uploaded_cache/worklog",
-) -> Optional[str]:
-    """저장 직후 일자 파일을 Gist에 올림. 성공 시 gist id."""
+) -> Tuple[Optional[str], Optional[str]]:
+    """저장 직후 일자 파일을 Gist에 올림. (gist_id, error)"""
     if not local_path or not os.path.isfile(local_path):
-        return None
+        return None, "일지 파일 없음"
     name = os.path.basename(local_path)
     if not _is_day_file(name):
-        return None
+        return None, "일자 xlsx 아님"
     token = resolve_github_token()
     if not token:
-        return None
+        return None, "github_token 없음"
     gid, err = ensure_worklog_gist(local_dir)
     if not gid:
-        return None
+        return None, err or "Gist 생성/조회 실패"
     try:
         with open(local_path, "rb") as f:
             raw = f.read()
-    except OSError:
-        return None
+    except OSError as e:
+        return None, f"파일 읽기 실패: {e}"
     sha = _sha256_bytes(raw)
     try:
         mtime = os.path.getmtime(local_path)
@@ -276,7 +276,7 @@ def push_worklog_day_remote(
 
     gist, gerr = _fetch_gist(token, gid)
     if gist is None:
-        return None
+        return None, gerr or "Gist fetch 실패"
     files_meta = gist.get("files") or {}
     manifest = _load_manifest(files_meta)
     files_map = dict(manifest.get("files") or {})
@@ -299,11 +299,31 @@ def push_worklog_day_remote(
             timeout=_TIMEOUT,
         )
         if r.status_code not in (200, 201):
-            return None
+            return None, f"Gist 업로드 실패 {r.status_code}: {(r.text or '')[:200]}"
         remember_gist_id(gid, local_dir)
-        return gid
-    except Exception:
-        return None
+        return gid, None
+    except Exception as e:
+        return None, str(e)
+
+
+def cloud_sync_status(local_dir: str = "./uploaded_cache/worklog") -> dict:
+    """UI용 Cloud 연동 상태."""
+    tok = resolve_github_token()
+    gid = resolve_gist_id(local_dir)
+    gid_file = _gist_id_path(local_dir)
+    gid_from_file = ""
+    try:
+        if os.path.isfile(gid_file):
+            gid_from_file = (open(gid_file, encoding="utf-8").read() or "").strip()
+    except OSError:
+        pass
+    effective_gid = gid or gid_from_file
+    return {
+        "token": bool(tok),
+        "gist_id": effective_gid,
+        "gist_file": gid_file if os.path.isfile(gid_file) else "",
+        "ready": bool(tok and effective_gid),
+    }
 
 
 def sync_worklog_remote(
@@ -381,9 +401,9 @@ def sync_worklog_remote(
         rem_ok = rem is not None and f"{name}{_B64_SUFFIX}" in files_meta
 
         if loc_ok and not rem_ok:
-            if push_worklog_day_remote(loc, local_dir):
+            gid, perr = push_worklog_day_remote(loc, local_dir)
+            if gid:
                 copied.append(f"→Cloud:{name}")
-                # push 후 manifest 갱신을 위해 다음 루프용으로 gist 재사용은 생략(개별 push)
             continue
 
         if rem_ok and not loc_ok:
@@ -416,7 +436,8 @@ def sync_worklog_remote(
 
         if force:
             # force: 로컬 우선 푸시
-            if push_worklog_day_remote(loc, local_dir):
+            gid, _ = push_worklog_day_remote(loc, local_dir)
+            if gid:
                 copied.append(f"→Cloud!:{name}")
             continue
 
@@ -480,8 +501,10 @@ def resolve_remote_conflict(
         return None
     loc = os.path.join(local_dir, name)
     if prefer == "local":
-        if os.path.isfile(loc) and push_worklog_day_remote(loc, local_dir):
-            return loc
+        if os.path.isfile(loc):
+            gid, _ = push_worklog_day_remote(loc, local_dir)
+            if gid:
+                return loc
         return None
     token = resolve_github_token()
     gid = resolve_gist_id(local_dir)

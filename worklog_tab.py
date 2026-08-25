@@ -114,7 +114,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26e · 로컬↔클라우드 양방향(Gist+Drive)"
+_WL_UI_BUILD = "2026-08-26f · Cloud상태표시 + gist id 확인"
 
 
 # =====================================================================
@@ -1384,6 +1384,7 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = True) -> str:
     st.session_state.pop("wl_last_drive_month_path", None)
     st.session_state.pop("wl_last_drive_conflict", None)
     st.session_state.pop("wl_last_cloud_gist", None)
+    st.session_state.pop("wl_last_cloud_err", None)
     st.session_state.pop("wl_last_archive_sheet", None)
     try:
         archive = upsert_worklog_archive_sheet(d, path)
@@ -1409,11 +1410,15 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = True) -> str:
         from worklog_remote_sync import push_worklog_day_remote, resolve_github_token
 
         if resolve_github_token():
-            gid = push_worklog_day_remote(path, WORKLOG_DIR)
+            gid, cerr = push_worklog_day_remote(path, WORKLOG_DIR)
             if gid:
                 st.session_state["wl_last_cloud_gist"] = gid
-    except Exception:
-        pass
+            elif cerr:
+                st.session_state["wl_last_cloud_err"] = cerr
+        else:
+            st.session_state["wl_last_cloud_err"] = "github_token 없음 (secrets.toml 확인)"
+    except Exception as e:
+        st.session_state["wl_last_cloud_err"] = str(e)
     return path
 
 def delete_worklog_day(d: date) -> list[str]:
@@ -2921,6 +2926,18 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         unsafe_allow_html=True,
     )
     st.caption(f"업무일지 빌드 {_WL_UI_BUILD}")
+    try:
+        from worklog_remote_sync import cloud_sync_status
+
+        _cs = cloud_sync_status(WORKLOG_DIR)
+        if not _cs.get("token"):
+            st.caption("☁ Cloud: **미연동** — `.streamlit/secrets.toml` 에 `github_token` 넣고 Streamlit 재시작")
+        elif _cs.get("gist_id"):
+            st.caption(f"☁ Cloud **연동됨** · `worklog_gist_id = \"{_cs['gist_id']}\"` (Cloud secrets에도 동일하게)")
+        else:
+            st.caption("☁ Cloud: 토큰 OK · **저장**하면 gist id 생성 → secrets에 `worklog_gist_id` 추가")
+    except Exception:
+        pass
     if not st.session_state.get("_wl_cache_bust_v24"):
         st.session_state["_wl_cache_bust_v24"] = True
         for k in list(st.session_state.keys()):
@@ -3284,7 +3301,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             if isinstance(pending, dict):
                 ents = pending.get("entries") or [{"client": "", "content": ""}]
                 _seed_entry_widgets(ents, pending.get("next") or "", pending.get("notes") or "")
-                if pending.get("msg"): st.success(pending["msg"])
+                if pending.get("msg"):
+                    if pending.get("cloud_err"):
+                        st.warning(pending["msg"])
+                    else:
+                        st.success(pending["msg"])
 
             add_clicked = st.session_state.pop(f"wl_do_add_{iso}", False)
             del_idx = st.session_state.pop(f"wl_do_del_{iso}", None)
@@ -3524,6 +3545,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             drv = st.session_state.get("wl_last_drive_path") or ""
                             mdrv = st.session_state.get("wl_last_drive_month_path") or ""
                             gist = st.session_state.get("wl_last_cloud_gist") or ""
+                            cerr = st.session_state.get("wl_last_cloud_err") or ""
                             msg = f"저장 완료: {os.path.basename(path)}"
                             if arch and not _wl_quiet_ui():
                                 _sh = st.session_state.get("wl_last_archive_sheet") or d.isoformat()
@@ -3533,22 +3555,17 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             if mdrv and not _wl_quiet_ui():
                                 msg += f" · Drive일지/{d.year}"
                             if gist:
-                                msg += " · Cloud동기화"
-                                if not st.session_state.get("_wl_gist_id_shown"):
-                                    st.session_state["_wl_gist_id_shown"] = True
-                                    st.session_state["_wl_new_gist_notice"] = gist
+                                msg += f" · Cloud OK (gist `{gist}`)"
+                            elif cerr:
+                                msg += f" · Cloud 실패: {cerr}"
                             elif not _wl_quiet_ui():
-                                try:
-                                    from worklog_remote_sync import resolve_github_token
-                                    if not resolve_github_token():
-                                        msg += " · (Cloud미연동: secrets에 github_token)"
-                                except Exception:
-                                    pass
+                                msg += " · Cloud미연동: secrets에 github_token"
                             st.session_state[f"wl_pending_sync_{iso2}"] = {
                                 "entries": packed_entries,
                                 "next": "\n".join(nd),
                                 "notes": "\n".join(nt),
                                 "msg": msg,
+                                "cloud_err": cerr,
                             }
                             st.session_state["_wl_drive_sync_force"] = True
                             _wl_rerun()
@@ -3557,14 +3574,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             st.error("저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요.")
                         else:
                             st.error(f"저장 실패: {e}")
-
-                _new_gist = st.session_state.pop("_wl_new_gist_notice", None)
-                if _new_gist and not _wl_quiet_ui():
-                    st.success(
-                        f"Cloud 양방향 Gist 준비됨: `{_new_gist}` — "
-                        "Streamlit Cloud secrets 에 `worklog_gist_id` 와 같은 `github_token` 을 넣으면 "
-                        "Cloud에서 저장한 일지도 로컬에서 바로 보입니다."
-                    )
 
                 focus_key = st.session_state.pop(f"wl_focus_ln_{iso2}", None)
                 focus_caret = st.session_state.pop(f"wl_focus_caret_{iso2}", None)
