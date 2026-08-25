@@ -319,18 +319,40 @@ def _is_worklog_day_file(name: str) -> bool:
     return bool(_WORKLOG_DAY_RE.match(name))
 
 
+def resolve_drive_worklog_archive_dir(year: Optional[int] = None) -> Optional[str]:
+    """Drive worklog/일지[/YYYY] — 월별xlsx를 맥·클라우드 Drive로 공유."""
+    root = resolve_drive_worklog_dir()
+    if not root:
+        return None
+    path = os.path.join(root, "일지")
+    if year is not None:
+        path = os.path.join(path, str(int(year)))
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError:
+        return None
+
+
 def sync_worklog_bidirectional(
     local_dir: str = "./uploaded_cache/worklog",
     *,
     force: bool = False,
 ) -> dict:
-    """로컬 uploaded_cache/worklog ↔ Drive dashboard 복사본/worklog (mtime 최신 우선).
+    """로컬 uploaded_cache/worklog ↔ Drive dashboard 복사본/worklog.
 
+    일자 파일: 한쪽만 있으면 복사. 양쪽이 다르면 conflicts에 넣고 자동 덮어쓰지 않음.
     맥: Drive 마운트로 양방향. 클라우드: Drive 경로 없으면 skipped.
     """
     global _WL_SYNC_DONE
     if _WL_SYNC_DONE and not force:
-        return {"ok": True, "skipped": True, "copied": [], "source": None}
+        return {
+            "ok": True,
+            "skipped": True,
+            "copied": [],
+            "conflicts": [],
+            "source": None,
+        }
     drive_dir = resolve_drive_worklog_dir()
     if not drive_dir:
         _WL_SYNC_DONE = True
@@ -338,10 +360,12 @@ def sync_worklog_bidirectional(
             "ok": True,
             "skipped": True,
             "copied": [],
+            "conflicts": [],
             "source": None,
             "note": "Drive worklog 없음(클라우드·로컬만)",
         }
     copied: List[str] = []
+    conflicts: List[str] = []
     try:
         os.makedirs(local_dir, exist_ok=True)
         names = set()
@@ -375,12 +399,9 @@ def sync_worklog_bidirectional(
                 continue
             if abs(lm - dm) < 1.0 and ls == ds:
                 continue
-            if lm >= dm:
-                if _atomic_copy(loc, drv):
-                    copied.append(f"→Drive:{name}")
-            else:
-                if _atomic_copy(drv, loc):
-                    copied.append(f"←Drive:{name}")
+            # 양쪽 모두 있고 내용/시간이 다르면 자동 덮어쓰지 않음 (충돌 안내)
+            conflicts.append(name)
+            continue
         loc_t = os.path.join(local_dir, "template.xlsx")
         drv_t = os.path.join(drive_dir, "template.xlsx")
         if os.path.isfile(loc_t) and not os.path.isfile(drv_t):
@@ -390,13 +411,20 @@ def sync_worklog_bidirectional(
             if _atomic_copy(drv_t, loc_t):
                 copied.append("←Drive:template.xlsx")
         _WL_SYNC_DONE = True
-        return {"ok": True, "skipped": False, "copied": copied, "source": drive_dir}
+        return {
+            "ok": True,
+            "skipped": False,
+            "copied": copied,
+            "conflicts": conflicts,
+            "source": drive_dir,
+        }
     except Exception as e:
         _WL_SYNC_DONE = True
         return {
             "ok": False,
             "skipped": False,
             "copied": copied,
+            "conflicts": conflicts,
             "source": drive_dir,
             "error": str(e),
         }
@@ -405,8 +433,14 @@ def sync_worklog_bidirectional(
 def push_worklog_day_to_drive(
     local_path: str,
     local_dir: str = "./uploaded_cache/worklog",
+    *,
+    force: bool = False,
 ) -> Optional[str]:
-    """저장 직후 해당일 xlsx를 Drive worklog에 복사. 실패 시 None."""
+    """저장 직후 해당일 xlsx를 Drive worklog에 복사.
+
+    force=False 이고 Drive 쪽이 더 최신이면 덮어쓰지 않고 None 반환
+    (호출측에서 충돌 안내). force=True 이면 강제 복사.
+    """
     drive_dir = resolve_drive_worklog_dir()
     if not drive_dir or not local_path or not os.path.isfile(local_path):
         return None
@@ -414,6 +448,74 @@ def push_worklog_day_to_drive(
     if not _is_worklog_day_file(name):
         return None
     dst = os.path.join(drive_dir, name)
+    if (not force) and os.path.isfile(dst):
+        try:
+            lm, dm = os.path.getmtime(local_path), os.path.getmtime(dst)
+            ls, ds = os.path.getsize(local_path), os.path.getsize(dst)
+            if abs(lm - dm) >= 1.0 or ls != ds:
+                # 기존 Drive 파일이 더 최신이면 충돌로 간주
+                if dm > lm + 1.0:
+                    return None
+        except OSError:
+            pass
     if _atomic_copy(local_path, dst):
         return dst
+    return None
+
+
+def push_worklog_month_archive_to_drive(
+    local_month_path: str,
+    *,
+    year: Optional[int] = None,
+    force: bool = False,
+) -> Optional[str]:
+    """월별 N월.xlsx 를 Drive worklog/일지/YYYY/ 로 복사 (로컬↔클라우드 공용)."""
+    if not local_month_path or not os.path.isfile(local_month_path):
+        return None
+    name = os.path.basename(local_month_path)
+    if not name.endswith("월.xlsx"):
+        return None
+    y = year
+    if y is None:
+        parent = os.path.basename(os.path.dirname(local_month_path))
+        if parent.isdigit() and len(parent) == 4:
+            y = int(parent)
+    drv_dir = resolve_drive_worklog_archive_dir(y)
+    if not drv_dir:
+        return None
+    dst = os.path.join(drv_dir, name)
+    if (not force) and os.path.isfile(dst):
+        try:
+            lm, dm = os.path.getmtime(local_month_path), os.path.getmtime(dst)
+            ls, ds = os.path.getsize(local_month_path), os.path.getsize(dst)
+            if abs(lm - dm) >= 1.0 or ls != ds:
+                if dm > lm + 1.0:
+                    return None
+        except OSError:
+            pass
+    if _atomic_copy(local_month_path, dst):
+        return dst
+    return None
+
+
+def resolve_drive_conflict(
+    name: str,
+    local_dir: str = "./uploaded_cache/worklog",
+    *,
+    prefer: str = "local",
+) -> Optional[str]:
+    """충돌 일자 파일을 prefer(local|drive) 쪽으로 맞춤. 성공 시 대상 경로."""
+    if not _is_worklog_day_file(name):
+        return None
+    drive_dir = resolve_drive_worklog_dir()
+    if not drive_dir:
+        return None
+    loc = os.path.join(local_dir, name)
+    drv = os.path.join(drive_dir, name)
+    if prefer == "drive":
+        if os.path.isfile(drv) and _atomic_copy(drv, loc):
+            return loc
+        return None
+    if os.path.isfile(loc) and _atomic_copy(loc, drv):
+        return drv
     return None
