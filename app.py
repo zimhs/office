@@ -4045,57 +4045,86 @@ def _dedupe_sales_file_meta(file_meta):
     return out
 
 
-# 가스코아산. 비고 → 종속 거래처명 (예: 동희 → 가스코아산(동희))
-_GASCO_PARENT_CLIENT = "가스코아산."
-_GASCO_NOTE_SKIP_RE = re.compile(
+# 비고(종속 거래처) → 개별 검색용 거래처명 (예: 태광산업가스 + 영신쿼츠 → 태광산업가스(영신쿼츠))
+_REMARK_SUBCLIENT_SKIP_RE = re.compile(
     r"이관|변경|출고|회수|반납|정리|차액|으로|부터|까지|취소|오류|수정|"
-    r"미검|공병|대납|직접|고객사|용기|고압|일반으로|합계|이월"
+    r"미검|공병|대납|직접|고객사|용기|고압|일반으로|합계|이월|"
+    r"거래분|전자어음|입금|반품|상계|가수|물품대|임대료|실린더|벌크|본사|"
+    r"여수|운반|운임|수수료|보증|회수"
+)
+_REMARK_QTY_RE = re.compile(r"\d[\d,]*\s*(?:kg|KG|톤|t|T|L|리터)\b")
+_REMARK_GAS_ONLY_RE = re.compile(
+    r"^(?:O2|N2|AR|CO2|AIR|He|HE|LO2|LN2|LPG)(?:\s*[,/·+]?\s*(?:O2|N2|AR|CO2|AIR|He|HE|LO2|LN2|LPG|\d[\d,]*\s*(?:kg|L)?))*\s*$",
+    re.I,
 )
 
 
-def _is_gascocoasan_subclient_note(note):
-    """비고가 실거래처명인지 (메모·업무문구 제외)."""
+def _is_remark_subclient_note(note):
+    """비고가 실거래처(종속처)명인지 — kg·거래분·가스목록·업무메모 제외."""
     s = str(note or "").strip()
     if not s or s.lower() in ("nan", "none", "-", "없음"):
         return False
-    if _GASCO_NOTE_SKIP_RE.search(s):
+    if _REMARK_SUBCLIENT_SKIP_RE.search(s):
+        return False
+    if _REMARK_QTY_RE.search(s):
+        return False
+    if _REMARK_GAS_ONLY_RE.match(s):
         return False
     if len(s) < 2:
         return False
-    if re.fullmatch(r"[\d\s./\-]+", s):
+    # 순수 숫자·날짜·기호만
+    if re.fullmatch(r"[\d\s./\-~,]+", s):
+        return False
+    # 날짜+이름 (예: 12/8 권기훈) — 연구원이력 메모로 보고 제외
+    if re.match(r"^\d{1,2}/\d{1,2}\b", s):
         return False
     return True
 
 
-def expand_gascocoasan_remark_clients(df):
-    """가스코아산. + 비고(종속처) → 거래처명 '가스코아산(종속처)'로 분리.
+def _remark_parent_base_name(client_name):
+    """부모 거래처 표시용 베이스 (끝 점 제거). 이미 괄호형이면 None(중첩 분리 안 함)."""
+    s = str(client_name or "").strip()
+    if not s or s.lower() in ("nan", "none"):
+        return None
+    # ERP에 이미 가스코아산(대창) 형태면 비고로 한 번 더 쪼개지 않음
+    if re.search(r"\([^)]+\)\s*$", s):
+        return None
+    base = s.rstrip(".").strip()
+    return base or None
 
-    담당자 필터에서 '가스코아산' 지정 시 종속처가 각각 검색·선택되도록
-    해당 행 담당자를 '가스코아산'으로 묶는다. 비고 없는 행은 '가스코아산.' 유지.
+
+def expand_remark_subclients(df):
+    """모든 거래처: 비고가 종속처명이면 '부모(비고)'로 분리해 상단 거래처 검색 가능하게.
+
+    - 비고 없거나 메모성 비고 → 원 거래처명 유지
+    - 이미 '거래처(xxx)' 형태 → 추가 분리 안 함
+    - 가스코아산* 행은 담당자 '가스코아산'으로 묶어 담당자 필터와 맞춤
     """
     if df is None or df.empty or "거래처" not in df.columns:
         return df if df is not None else pd.DataFrame()
     out = df.copy()
-    client = out["거래처"].fillna("").astype(str).str.strip()
-    parent_mask = client == _GASCO_PARENT_CLIENT
-    if not parent_mask.any():
-        # ERP 기등록 가스코아산(xxx)만 있는 경우: 미지정이면 담당자 가스코아산
+    if "비고" not in out.columns:
+        # 비고 없어도 가스코아산(xxx) 미지정 → 담당자 보정
         if "담당자" in out.columns:
+            client = out["거래처"].astype(str).str.strip()
             named = client.str.match(r"^가스코아산\(.+\)$", na=False)
             unassigned = out["담당자"].astype(str).str.strip().isin(
                 ["", "nan", "None", "NaN", "미지정", "담당자없음"]
             )
             out.loc[named & unassigned, "담당자"] = "가스코아산"
         return out
-    if "비고" in out.columns:
-        note = out["비고"].fillna("").astype(str).str.strip()
-        sub_mask = parent_mask & note.map(_is_gascocoasan_subclient_note)
-        if sub_mask.any():
-            out.loc[sub_mask, "거래처"] = "가스코아산(" + note.loc[sub_mask] + ")"
+
+    client = out["거래처"].fillna("").astype(str).str.strip()
+    note = out["비고"].fillna("").astype(str).str.strip()
+    base = client.map(_remark_parent_base_name)
+    ok_note = note.map(_is_remark_subclient_note)
+    sub_mask = base.notna() & ok_note
+    if sub_mask.any():
+        out.loc[sub_mask, "거래처"] = base.loc[sub_mask] + "(" + note.loc[sub_mask] + ")"
+
     if "담당자" in out.columns:
         client2 = out["거래처"].astype(str).str.strip()
-        # 부모(가스코아산.) + 분리/기등록 가스코아산(xxx)
-        gasco_mask = (client2 == _GASCO_PARENT_CLIENT) | client2.str.match(
+        gasco_mask = (client2 == "가스코아산.") | client2.str.match(
             r"^가스코아산\(.+\)$", na=False
         )
         out.loc[gasco_mask, "담당자"] = "가스코아산"
@@ -4195,8 +4224,8 @@ def _parse_sales_uploaded_tuples(file_tuples):
             _blank_client = ~df["거래처"].map(_is_valid_client_name)
             if _blank_client.any():
                 df.loc[_blank_client, "거래처"] = EMPTY_CLIENT_LABEL
-            # 가스코아산. 비고 종속처 → 개별 거래처명으로 분리
-            df = expand_gascocoasan_remark_clients(df)
+            # 비고 종속처 → 개별 거래처명으로 분리 (전 거래처)
+            df = expand_remark_subclients(df)
             df = normalize_items_vectorized(df)
             df = df.dropna(subset=["매출일_dt"])
             df["연도"] = df["매출일_dt"].dt.year.astype(str)
@@ -4281,7 +4310,7 @@ def _apply_manual_staff_mapping(df):
 
 
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=6):
+def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=7):
     return _parse_sales_uploaded_tuples(file_tuples)
 
 
@@ -4296,7 +4325,7 @@ def _manual_staff_map_cache_token():
 
 
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=6):
+def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=7):
     """파일명·경로·mtime·size만 캐시 키로 사용.
     새로고침마다 ~10MB CSV를 읽어 해싱하던 비용을 제거(파싱 결과는 동일).
     manual_map_token / parse_version: 매핑·파서 변경 시 캐시 무효화."""
@@ -9186,7 +9215,7 @@ def get_fast_processed_full_df(meta_data, staff_token, ind_dict):
     """필터 클릭 시 매번 발생하는 무거운 텍스트 연산(정규식, 매핑)을 1회로 압축"""
     # 1. 유저의 기존 고급 로드 기능 완벽 유지
     temp_df = (
-        load_uploaded_files_from_meta(meta_data, staff_token, 6)
+        load_uploaded_files_from_meta(meta_data, staff_token, 7)
         if meta_data else pd.DataFrame()
     )
     
