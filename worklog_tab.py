@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import calendar
 import html
+import io
 import json
 import os
 import platform
@@ -113,7 +114,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-25e · 거래처 가운데정렬 · 익일/특이 커서고정"
+_WL_UI_BUILD = "2026-08-26e · 로컬↔클라우드 양방향(Gist+Drive)"
 
 
 # =====================================================================
@@ -922,12 +923,352 @@ def resolve_worklog_archive_root() -> str | None:
     return None
 
 def worklog_archive_path(d: date) -> str | None:
+    """호환용: 월별 통합 파일 경로 (…/일지/2026/8월.xlsx)."""
+    return worklog_archive_month_path(d)
+
+
+def worklog_archive_year_dir(d: date) -> str | None:
+    """연도 폴더: …/일지/2026"""
     root = resolve_worklog_archive_root()
-    if not root: return None
-    month_dir = os.path.join(root, str(d.year), f"{d.month}월")
-    try: os.makedirs(month_dir, exist_ok=True)
-    except OSError: return None
-    return os.path.join(month_dir, f"{d.isoformat()}.xlsx")
+    if not root:
+        return None
+    year_dir = os.path.join(root, str(d.year))
+    try:
+        os.makedirs(year_dir, exist_ok=True)
+    except OSError:
+        return None
+    return year_dir
+
+
+def worklog_archive_month_dir(d: date) -> str | None:
+    """구버전 월 하위폴더(…/2026/8월). 레거시 정리용."""
+    year_dir = worklog_archive_year_dir(d)
+    if not year_dir:
+        return None
+    return os.path.join(year_dir, f"{d.month}월")
+
+
+def worklog_archive_month_path(d: date) -> str | None:
+    """달이 바뀌면 9월.xlsx 신규. 경로: …/일지/2026/8월.xlsx (연도 폴더 직하)."""
+    year_dir = worklog_archive_year_dir(d)
+    if not year_dir:
+        return None
+    return os.path.join(year_dir, f"{d.month}월.xlsx")
+
+
+def _cleanup_legacy_day_archive_files(d: date, month_path: str | None) -> None:
+    """예전 일자별 xlsx·구 월폴더 안 일자파일을 정리."""
+    year_dir = worklog_archive_year_dir(d)
+    candidates: list[str] = []
+    if year_dir:
+        candidates.append(os.path.join(year_dir, f"{d.isoformat()}.xlsx"))
+        # 구경로: …/2026/8월/YYYY-MM-DD.xlsx , …/2026/8월/8월.xlsx
+        old_month_dir = os.path.join(year_dir, f"{d.month}월")
+        candidates.append(os.path.join(old_month_dir, f"{d.isoformat()}.xlsx"))
+        candidates.append(os.path.join(old_month_dir, f"{d.month}월.xlsx"))
+    month_abs = os.path.abspath(month_path) if month_path else ""
+    for path in candidates:
+        try:
+            if month_abs and os.path.abspath(path) == month_abs:
+                continue
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+    # 구 월 폴더가 비면 제거
+    if year_dir:
+        old_month_dir = os.path.join(year_dir, f"{d.month}월")
+        try:
+            if os.path.isdir(old_month_dir) and not os.listdir(old_month_dir):
+                os.rmdir(old_month_dir)
+        except OSError:
+            pass
+
+
+def worklog_archive_sheet_title(d: date) -> str:
+    """월별 파일 안 워크시트명 = 날짜 (YYYY-MM-DD)."""
+    return d.isoformat()
+
+
+def worklog_date_exists_in_archive(d: date) -> bool:
+    """월별 xlsx에 해당 날짜 시트가 있는지 (구 일자파일 포함)."""
+    title = worklog_archive_sheet_title(d)
+    month_path = worklog_archive_month_path(d)
+    if month_path and os.path.exists(month_path) and load_workbook is not None:
+        try:
+            wb = load_workbook(month_path, read_only=True)
+            try:
+                if title in wb.sheetnames:
+                    return True
+            finally:
+                wb.close()
+        except Exception:
+            pass
+    year_dir = worklog_archive_year_dir(d)
+    if year_dir:
+        for p in (
+            os.path.join(year_dir, f"{d.isoformat()}.xlsx"),
+            os.path.join(year_dir, f"{d.month}월", f"{d.isoformat()}.xlsx"),
+            os.path.join(year_dir, f"{d.month}월", f"{d.month}월.xlsx"),
+        ):
+            if not os.path.exists(p):
+                continue
+            if p.endswith(f"{d.month}월.xlsx") and load_workbook is not None:
+                try:
+                    wb = load_workbook(p, read_only=True)
+                    try:
+                        if title in wb.sheetnames:
+                            return True
+                    finally:
+                        wb.close()
+                except Exception:
+                    pass
+            elif os.path.basename(p) == f"{d.isoformat()}.xlsx":
+                return True
+    return False
+
+
+def worklog_date_exists_on_drive(d: date) -> bool:
+    try:
+        from drive_autoload import resolve_drive_worklog_archive_dir, resolve_drive_worklog_dir
+
+        drv = resolve_drive_worklog_dir()
+        if drv and os.path.isfile(os.path.join(drv, f"{d.isoformat()}.xlsx")):
+            return True
+        # Drive에 올린 월별 통합 파일 시트도 존재로 간주
+        arch_dir = resolve_drive_worklog_archive_dir(d.year)
+        if not arch_dir or load_workbook is None:
+            return False
+        month_p = os.path.join(arch_dir, f"{d.month}월.xlsx")
+        if not os.path.isfile(month_p):
+            return False
+        title = worklog_archive_sheet_title(d)
+        wb = load_workbook(month_p, read_only=True)
+        try:
+            return title in wb.sheetnames
+        finally:
+            wb.close()
+    except Exception:
+        return False
+
+
+def detect_worklog_date_presence(d: date) -> dict:
+    """로컬 캐시·월별보관·Drive 에 해당 날짜 일지 존재 여부."""
+    local = os.path.isfile(worklog_path(d))
+    archive = worklog_date_exists_in_archive(d)
+    drive = worklog_date_exists_on_drive(d)
+    locs: list[str] = []
+    if local:
+        locs.append("로컬 캐시")
+    if archive:
+        locs.append(f"월별파일({d.month}월.xlsx)")
+    if drive:
+        locs.append("클라우드 Drive")
+    return {
+        "local": local,
+        "archive": archive,
+        "drive": drive,
+        "any": bool(local or archive or drive),
+        "locations": locs,
+    }
+
+
+def _clone_worksheet_to_workbook(src_ws, dst_wb, title: str):
+    """날짜일지 시트를 월별 통합 파일로 복사 (셀·서식·병합·행열·인쇄·이미지)."""
+    from copy import copy as _cpy
+
+    if title in dst_wb.sheetnames:
+        del dst_wb[title]
+    dst = dst_wb.create_sheet(title)
+
+    for key, md in src_ws.column_dimensions.items():
+        if md.width is not None:
+            dst.column_dimensions[key].width = md.width
+    for key, md in src_ws.row_dimensions.items():
+        if md.height is not None:
+            dst.row_dimensions[key].height = md.height
+
+    for row in src_ws.iter_rows():
+        for cell in row:
+            new_cell = dst.cell(row=cell.row, column=cell.column, value=cell.value)
+            try:
+                if cell.has_style:
+                    new_cell.font = _cpy(cell.font)
+                    new_cell.border = _cpy(cell.border)
+                    new_cell.fill = _cpy(cell.fill)
+                    new_cell.number_format = cell.number_format
+                    new_cell.protection = _cpy(cell.protection)
+                    new_cell.alignment = _cpy(cell.alignment)
+            except Exception:
+                pass
+
+    try:
+        for mr in list(src_ws.merged_cells.ranges):
+            dst.merge_cells(str(mr))
+    except Exception:
+        pass
+
+    try:
+        dst.print_area = src_ws.print_area
+    except Exception:
+        pass
+    try:
+        sp, dp = src_ws.page_setup, dst.page_setup
+        for attr in (
+            "orientation",
+            "fitToPage",
+            "fitToWidth",
+            "fitToHeight",
+            "scale",
+            "paperSize",
+            "pageOrder",
+        ):
+            try:
+                setattr(dp, attr, getattr(sp, attr))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        dst.page_margins = _cpy(src_ws.page_margins)
+    except Exception:
+        pass
+    try:
+        dst.print_title_rows = src_ws.print_title_rows
+        dst.print_title_cols = src_ws.print_title_cols
+    except Exception:
+        pass
+    try:
+        dst.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
+    except Exception:
+        pass
+
+    # 로고 등 이미지
+    try:
+        from openpyxl.drawing.image import Image as XLImage
+
+        for img in list(getattr(src_ws, "_images", []) or []):
+            try:
+                data = img._data()
+                bio = io.BytesIO(data)
+                new_img = XLImage(bio)
+                if getattr(img, "width", None):
+                    new_img.width = img.width
+                if getattr(img, "height", None):
+                    new_img.height = img.height
+                if getattr(img, "anchor", None) is not None:
+                    new_img.anchor = img.anchor
+                dst.add_image(new_img)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return dst
+
+
+def _migrate_legacy_month_workbook(d: date, month_path: str) -> None:
+    """구경로 …/2026/8월/8월.xlsx → …/2026/8월.xlsx 로 1회 이동."""
+    if not month_path:
+        return
+    if os.path.exists(month_path):
+        return
+    year_dir = worklog_archive_year_dir(d)
+    if not year_dir:
+        return
+    legacy_month = os.path.join(year_dir, f"{d.month}월", f"{d.month}월.xlsx")
+    if not os.path.exists(legacy_month):
+        return
+    try:
+        os.makedirs(os.path.dirname(month_path), exist_ok=True)
+        shutil.move(legacy_month, month_path)
+    except OSError:
+        try:
+            shutil.copy2(legacy_month, month_path)
+            os.remove(legacy_month)
+        except OSError:
+            pass
+
+
+def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str) -> str | None:
+    """일자 파일을 월별 xlsx의 날짜 시트로 반영. 달이 바뀌면 N월.xlsx 신규 생성."""
+    if load_workbook is None:
+        return None
+    month_path = worklog_archive_month_path(d)
+    if not month_path or not day_xlsx_path or not os.path.exists(day_xlsx_path):
+        return None
+    _migrate_legacy_month_workbook(d, month_path)
+    sheet_title = worklog_archive_sheet_title(d)
+    day_wb = load_workbook(day_xlsx_path)
+    try:
+        src_ws = day_wb.active
+        if os.path.exists(month_path):
+            month_wb = load_workbook(month_path)
+        else:
+            from openpyxl import Workbook
+
+            month_wb = Workbook()
+            # 기본 빈 시트 제거 (날짜 시트만 유지)
+            if month_wb.sheetnames:
+                default = month_wb.active
+                default.title = "_tmp_remove_"
+        try:
+            _clone_worksheet_to_workbook(src_ws, month_wb, sheet_title)
+            if "_tmp_remove_" in month_wb.sheetnames:
+                del month_wb["_tmp_remove_"]
+            # 시트 이름 날짜순 정렬에 가깝게 재배치
+            names = [n for n in month_wb.sheetnames if n != sheet_title]
+            names.append(sheet_title)
+            names.sort()
+            for i, name in enumerate(names):
+                month_wb.move_sheet(name, offset=i - month_wb.sheetnames.index(name))
+            month_wb.save(month_path)
+        finally:
+            month_wb.close()
+    finally:
+        day_wb.close()
+
+    # 예전 일자별 파일·구 월폴더 경로 정리
+    _cleanup_legacy_day_archive_files(d, month_path)
+    return month_path
+
+
+def delete_worklog_archive_sheet(d: date) -> str | None:
+    """월별 파일에서 해당 날짜 시트 삭제. 시트가 없으면 파일 삭제."""
+    if load_workbook is None:
+        return None
+    month_path = worklog_archive_month_path(d)
+    if not month_path:
+        return None
+    removed = None
+    # 레거시 일자 파일도 삭제
+    _cleanup_legacy_day_archive_files(d, month_path)
+    if not os.path.exists(month_path):
+        return removed
+    sheet_title = worklog_archive_sheet_title(d)
+    try:
+        wb = load_workbook(month_path)
+        try:
+            if sheet_title in wb.sheetnames:
+                del wb[sheet_title]
+                removed = month_path
+            remaining = [n for n in wb.sheetnames if n and not n.startswith("_")]
+            if not remaining:
+                wb.close()
+                try:
+                    os.remove(month_path)
+                except OSError:
+                    pass
+                return month_path
+            wb.save(month_path)
+        finally:
+            try:
+                wb.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return removed
+
 
 def worklog_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"{d.isoformat()}.xlsx")
 
@@ -1028,7 +1369,11 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
     wb.save(path)
     wb.close()
 
-def save_worklog_cells(d: date, cells: dict) -> str:
+def save_worklog_cells(d: date, cells: dict, *, force: bool = True) -> str:
+    """저장: 로컬 캐시 + 월별 일지 + Drive + (가능하면) Cloud Gist.
+
+    force 기본 True — 사용자가 저장을 눌렀으면 원격도 이 내용으로 맞춤.
+    """
     path = worklog_path(d)
     cells = _spill_all_content(cells)
     write_cells_to_path(path, d, cells, force_template=True)
@@ -1036,17 +1381,39 @@ def save_worklog_cells(d: date, cells: dict) -> str:
     st.session_state.pop("wl_last_archive_path", None)
     st.session_state.pop("wl_last_archive_err", None)
     st.session_state.pop("wl_last_drive_path", None)
+    st.session_state.pop("wl_last_drive_month_path", None)
+    st.session_state.pop("wl_last_drive_conflict", None)
+    st.session_state.pop("wl_last_cloud_gist", None)
+    st.session_state.pop("wl_last_archive_sheet", None)
     try:
-        archive = worklog_archive_path(d)
+        archive = upsert_worklog_archive_sheet(d, path)
         if archive:
-            shutil.copy2(path, archive)
             st.session_state["wl_last_archive_path"] = archive
-    except Exception as e: st.session_state["wl_last_archive_err"] = str(e)
+            st.session_state["wl_last_archive_sheet"] = worklog_archive_sheet_title(d)
+    except Exception as e:
+        st.session_state["wl_last_archive_err"] = str(e)
     try:
-        from drive_autoload import push_worklog_day_to_drive
-        drv = push_worklog_day_to_drive(path, WORKLOG_DIR)
-        if drv: st.session_state["wl_last_drive_path"] = drv
-    except Exception: pass
+        from drive_autoload import push_worklog_day_to_drive, push_worklog_month_archive_to_drive
+
+        drv = push_worklog_day_to_drive(path, WORKLOG_DIR, force=True)
+        if drv:
+            st.session_state["wl_last_drive_path"] = drv
+        arch_path = st.session_state.get("wl_last_archive_path")
+        if arch_path and os.path.isfile(arch_path):
+            mdrv = push_worklog_month_archive_to_drive(arch_path, year=d.year, force=True)
+            if mdrv:
+                st.session_state["wl_last_drive_month_path"] = mdrv
+    except Exception:
+        pass
+    try:
+        from worklog_remote_sync import push_worklog_day_remote, resolve_github_token
+
+        if resolve_github_token():
+            gid = push_worklog_day_remote(path, WORKLOG_DIR)
+            if gid:
+                st.session_state["wl_last_cloud_gist"] = gid
+    except Exception:
+        pass
     return path
 
 def delete_worklog_day(d: date) -> list[str]:
@@ -1068,6 +1435,13 @@ def delete_worklog_day(d: date) -> list[str]:
         if os.path.exists(path):
             try: os.remove(path); removed.append(os.path.basename(path))
             except OSError: pass
+    # 월별 통합 파일에서 해당 날짜 시트 제거
+    try:
+        arch = delete_worklog_archive_sheet(d)
+        if arch:
+            removed.append(f"{os.path.basename(arch)}#{iso}")
+    except Exception:
+        pass
     _invalidate_saved_dates_cache()
     _clear_date_widget_state(d)
     empty = [{"client": "", "content": "", "lines": [], "blank_after": 1}]
@@ -2562,26 +2936,119 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         try:
             from drive_autoload import sync_worklog_bidirectional
+            from worklog_remote_sync import (
+                remote_sync_configured,
+                resolve_gist_id,
+                sync_worklog_remote,
+            )
+
             _now = time.time()
             _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
             _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
+            _wl_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
+            _remote_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
             if _force or (_now - _prev >= 90):
                 st.session_state["_wl_drive_sync_ts"] = _now
-                _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR)
-            else: _wl_sync = {"ok": True, "skipped": True, "copied": []}
-            if isinstance(_wl_sync, dict) and _wl_sync.get("ok") and not _wl_sync.get("skipped") and _wl_sync.get("copied"):
+                _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR, force=_force)
+                try:
+                    _remote_sync = sync_worklog_remote(WORKLOG_DIR, force=False)
+                except Exception as _re:
+                    _remote_sync = {
+                        "ok": False,
+                        "skipped": False,
+                        "copied": [],
+                        "conflicts": [],
+                        "error": str(_re),
+                    }
+            _copied_n = len((_wl_sync or {}).get("copied") or []) + len((_remote_sync or {}).get("copied") or [])
+            if _copied_n:
                 _invalidate_saved_dates_cache()
-                if not _wl_quiet_ui(): st.caption(f"Drive 업무일지 동기화 · {len(_wl_sync.get('copied') or [])}개")
-            elif isinstance(_wl_sync, dict) and _wl_sync.get("skipped") and _wl_quiet_ui():
-                if not st.session_state.get("_wl_cloud_sync_hint"):
-                    st.session_state["_wl_cloud_sync_hint"] = True
-                    st.caption("Cloud 공용 저장소에 저장됩니다. 맥에서도 같은 주소로 열면 일지가 맞습니다.")
-            elif isinstance(_wl_sync, dict) and _wl_sync.get("skipped") and not _wl_quiet_ui():
-                if not st.session_state.get("_wl_local_cloud_hint"):
-                    st.session_state["_wl_local_cloud_hint"] = True
-                    _u = os.environ.get("DASHBOARD_CLOUD_URL") or "https://office-g8ryabkapprkpjmfwa5aypw.streamlit.app"
-                    st.info(f"로컬 Streamlit입니다. 아이패드와 일지를 맞추려면 사이드바 **Cloud에서 열기**로 접속하세요.\n\n{_u}")
-        except Exception: pass
+                if not _wl_quiet_ui():
+                    st.caption(f"일지 동기화 · {_copied_n}개 (Drive/Cloud)")
+            _conflicts = []
+            for _src in (_wl_sync, _remote_sync):
+                if isinstance(_src, dict):
+                    for _c in (_src.get("conflicts") or []):
+                        if _c not in _conflicts:
+                            _conflicts.append(_c)
+            if _conflicts:
+                st.session_state["_wl_sync_conflicts"] = _conflicts
+            if st.session_state.get("_wl_sync_conflicts"):
+                _cf = list(st.session_state.get("_wl_sync_conflicts") or [])
+                st.warning(
+                    "로컬·클라우드 일지가 다릅니다(자동 덮어쓰기 안 함): "
+                    + ", ".join(_cf[:8])
+                    + ("…" if len(_cf) > 8 else "")
+                )
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    if st.button("이 기기 → 클라우드", key="wl_cf_push_local", width="stretch", help="이 기기 내용으로 Drive·Cloud를 맞춥니다."):
+                        try:
+                            from drive_autoload import resolve_drive_conflict
+                            from worklog_remote_sync import resolve_remote_conflict
+
+                            for name in list(_cf):
+                                try:
+                                    resolve_drive_conflict(name, WORKLOG_DIR, prefer="local")
+                                except Exception:
+                                    pass
+                                try:
+                                    resolve_remote_conflict(name, WORKLOG_DIR, prefer="local")
+                                except Exception:
+                                    pass
+                            st.session_state.pop("_wl_sync_conflicts", None)
+                            st.session_state["_wl_drive_sync_force"] = True
+                            _invalidate_saved_dates_cache()
+                            _wl_rerun()
+                        except Exception as e:
+                            st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
+                with c2:
+                    if st.button("클라우드 → 이 기기", key="wl_cf_pull_drive", width="stretch", help="Cloud·Drive 내용으로 이 기기를 맞춥니다."):
+                        try:
+                            from drive_autoload import resolve_drive_conflict
+                            from worklog_remote_sync import resolve_remote_conflict
+
+                            for name in list(_cf):
+                                try:
+                                    resolve_remote_conflict(name, WORKLOG_DIR, prefer="cloud")
+                                except Exception:
+                                    pass
+                                try:
+                                    resolve_drive_conflict(name, WORKLOG_DIR, prefer="drive")
+                                except Exception:
+                                    pass
+                            st.session_state.pop("_wl_sync_conflicts", None)
+                            st.session_state["_wl_drive_sync_force"] = True
+                            _invalidate_saved_dates_cache()
+                            _wl_rerun()
+                        except Exception as e:
+                            st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
+                with c3:
+                    if st.button("나중에", key="wl_cf_dismiss", width="stretch"):
+                        st.session_state.pop("_wl_sync_conflicts", None)
+                        _wl_rerun()
+            elif not remote_sync_configured():
+                if not st.session_state.get("_wl_remote_setup_hint"):
+                    st.session_state["_wl_remote_setup_hint"] = True
+                    if _wl_quiet_ui():
+                        st.caption("Cloud↔로컬 양방향: secrets에 github_token 을 넣으면 저장 시 서로 보입니다.")
+                    else:
+                        st.info(
+                            "로컬↔Cloud 양방향 연동: `.streamlit/secrets.toml` 에 "
+                            "`github_token` (및 선택 `worklog_gist_id`) 을 넣으세요. "
+                            "첫 저장 시 Gist가 만들어지고, 같은 값을 Cloud secrets에도 넣으면 "
+                            "한쪽 저장이 다른쪽에 바로 보입니다."
+                        )
+            else:
+                _gid = resolve_gist_id(WORKLOG_DIR)
+                if _gid and not st.session_state.get("_wl_remote_ready_hint"):
+                    st.session_state["_wl_remote_ready_hint"] = True
+                    st.caption(f"로컬↔Cloud 양방향 연동 활성 · gist {_gid[:8]}…")
+                elif not _gid and not st.session_state.get("_wl_remote_first_save_hint"):
+                    st.session_state["_wl_remote_first_save_hint"] = True
+                    st.caption("양방향 연동: 한 번 저장하면 Cloud Gist가 생성됩니다. 생성된 id를 Cloud secrets의 worklog_gist_id 에 넣으세요.")
+        except Exception:
+            pass
 
         if st.session_state.pop("wl_do_delete_day", None) == selected.isoformat(): delete_worklog_day(selected)
 
@@ -3043,24 +3510,61 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 [x.strip() for x in str(st.session_state.get(f"wl_next_area_{iso2}", "") or "").splitlines() if x.strip()],
                                 [x.strip() for x in str(st.session_state.get(f"wl_notes_area_{iso2}", "") or "").splitlines() if x.strip()],
                             )
-                            path = save_worklog_cells(d, cells)
+                            # 저장 = 이 기기 + Drive + Cloud(Gist) 모두 현재 내용으로 맞춤
+                            path = save_worklog_cells(d, cells, force=True)
                             _publish_view_cells(d, cells)
                             packed_entries = _grouped_entries_from_cells(cells)
-                            if not packed_entries: packed_entries = [{"client": "", "content": "", "lines": []}]
+                            if not packed_entries:
+                                packed_entries = [{"client": "", "content": "", "lines": []}]
                             _, nd, nt = _entries_from_cells(cells)
                             st.session_state[_entries_key(d)] = packed_entries
                             st.session_state[_next_key(d)] = "\n".join(nd)
                             st.session_state[_notes_key(d)] = "\n".join(nt)
                             arch = (st.session_state.get("wl_last_archive_path") or "")
                             drv = st.session_state.get("wl_last_drive_path") or ""
+                            mdrv = st.session_state.get("wl_last_drive_month_path") or ""
+                            gist = st.session_state.get("wl_last_cloud_gist") or ""
                             msg = f"저장 완료: {os.path.basename(path)}"
-                            if arch and not _wl_quiet_ui(): msg += f" · 일지/{d.year}/{os.path.basename(arch)}"
-                            if drv: msg += " · Drive 복사본/worklog"
-                            st.session_state[f"wl_pending_sync_{iso2}"] = {"entries": packed_entries, "next": "\n".join(nd), "notes": "\n".join(nt), "msg": msg}
+                            if arch and not _wl_quiet_ui():
+                                _sh = st.session_state.get("wl_last_archive_sheet") or d.isoformat()
+                                msg += f" · 일지/{d.year}/{os.path.basename(arch)}#{_sh}"
+                            if drv:
+                                msg += " · Drive"
+                            if mdrv and not _wl_quiet_ui():
+                                msg += f" · Drive일지/{d.year}"
+                            if gist:
+                                msg += " · Cloud동기화"
+                                if not st.session_state.get("_wl_gist_id_shown"):
+                                    st.session_state["_wl_gist_id_shown"] = True
+                                    st.session_state["_wl_new_gist_notice"] = gist
+                            elif not _wl_quiet_ui():
+                                try:
+                                    from worklog_remote_sync import resolve_github_token
+                                    if not resolve_github_token():
+                                        msg += " · (Cloud미연동: secrets에 github_token)"
+                                except Exception:
+                                    pass
+                            st.session_state[f"wl_pending_sync_{iso2}"] = {
+                                "entries": packed_entries,
+                                "next": "\n".join(nd),
+                                "notes": "\n".join(nt),
+                                "msg": msg,
+                            }
+                            st.session_state["_wl_drive_sync_force"] = True
                             _wl_rerun()
                     except Exception as e:
-                        if _wl_quiet_ui(): st.error("저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요.")
-                        else: st.error(f"저장 실패: {e}")
+                        if _wl_quiet_ui():
+                            st.error("저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요.")
+                        else:
+                            st.error(f"저장 실패: {e}")
+
+                _new_gist = st.session_state.pop("_wl_new_gist_notice", None)
+                if _new_gist and not _wl_quiet_ui():
+                    st.success(
+                        f"Cloud 양방향 Gist 준비됨: `{_new_gist}` — "
+                        "Streamlit Cloud secrets 에 `worklog_gist_id` 와 같은 `github_token` 을 넣으면 "
+                        "Cloud에서 저장한 일지도 로컬에서 바로 보입니다."
+                    )
 
                 focus_key = st.session_state.pop(f"wl_focus_ln_{iso2}", None)
                 focus_caret = st.session_state.pop(f"wl_focus_caret_{iso2}", None)

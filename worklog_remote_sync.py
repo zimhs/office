@@ -1,0 +1,495 @@
+"""로컬 Streamlit ↔ Streamlit Cloud 업무일지 양방향 동기화 (GitHub Gist).
+
+Drive 마운트는 맥 로컬에만 있으므로, 클라우드와 맞추려면 secrets의
+github_token + worklog_gist_id 로 Secret Gist에 일자 xlsx를 올리고 받습니다.
+
+설정 (.streamlit/secrets.toml 또는 환경변수):
+  github_token / GITHUB_TOKEN / WORKLOG_GITHUB_TOKEN
+  worklog_gist_id / WORKLOG_GIST_ID  (없으면 첫 저장 시 자동 생성)
+
+주의: GitHub Secret Gist는 Discover에 안 보일 뿐, URL(id) 알면 읽을 수 있습니다.
+      gist id·token 은 커밋하지 마세요.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import re
+import subprocess
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+import requests
+
+_DAY_RE = re.compile(r"^20\d{2}-\d{2}-\d{2}\.xlsx$")
+_GIST_API = "https://api.github.com/gists"
+_MANIFEST = "_worklog_manifest.json"
+_B64_SUFFIX = ".b64"
+_GIST_ID_FILE = ".worklog_gist_id"
+_TIMEOUT = 45
+
+
+def _is_day_file(name: str) -> bool:
+    return bool(name) and bool(_DAY_RE.match(name))
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_file(path: str) -> Optional[str]:
+    try:
+        with open(path, "rb") as f:
+            return _sha256_bytes(f.read())
+    except OSError:
+        return None
+
+
+def _secret_get(*keys: str) -> str:
+    try:
+        import streamlit as st
+
+        secrets = getattr(st, "secrets", None)
+        if secrets is None:
+            return ""
+        for k in keys:
+            try:
+                if hasattr(secrets, "get"):
+                    v = secrets.get(k)
+                else:
+                    v = secrets[k]
+            except Exception:
+                v = None
+            if v is not None and str(v).strip():
+                return str(v).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def resolve_github_token() -> str:
+    """Gist 동기화용 토큰. ghs_(GitHub App) 는 gist 권한이 없는 경우가 많아 제외."""
+    candidates = []
+    for k in ("WORKLOG_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            candidates.append(v)
+    v = _secret_get("worklog_github_token", "github_token", "GITHUB_TOKEN")
+    if v:
+        candidates.append(v)
+    try:
+        r = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if r.returncode == 0 and (r.stdout or "").strip():
+            candidates.append((r.stdout or "").strip())
+    except Exception:
+        pass
+    for tok in candidates:
+        # GitHub App installation tokens (ghs_) usually cannot manage gists
+        if tok.startswith("ghs_"):
+            continue
+        return tok
+    return ""
+
+
+def _gist_id_path(local_dir: str) -> str:
+    return os.path.join(local_dir, _GIST_ID_FILE)
+
+
+def resolve_gist_id(local_dir: str = "./uploaded_cache/worklog") -> str:
+    for k in ("WORKLOG_GIST_ID", "WORKLOG_GIST"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            return v
+    v = _secret_get("worklog_gist_id", "WORKLOG_GIST_ID")
+    if v:
+        return v
+    path = _gist_id_path(local_dir)
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                got = (f.read() or "").strip()
+                if got:
+                    return got
+    except OSError:
+        pass
+    # 맥 Drive worklog 에도 id 를 두면 다른 맥 로컬이 같은 gist 를 씀
+    try:
+        from drive_autoload import resolve_drive_worklog_dir
+
+        drv = resolve_drive_worklog_dir()
+        if drv:
+            p = os.path.join(drv, _GIST_ID_FILE)
+            if os.path.isfile(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    got = (f.read() or "").strip()
+                    if got:
+                        return got
+    except Exception:
+        pass
+    return ""
+
+
+def remember_gist_id(gist_id: str, local_dir: str = "./uploaded_cache/worklog") -> None:
+    if not gist_id:
+        return
+    try:
+        os.makedirs(local_dir, exist_ok=True)
+        with open(_gist_id_path(local_dir), "w", encoding="utf-8") as f:
+            f.write(gist_id.strip() + "\n")
+    except OSError:
+        pass
+    try:
+        from drive_autoload import resolve_drive_worklog_dir
+
+        drv = resolve_drive_worklog_dir()
+        if drv:
+            with open(os.path.join(drv, _GIST_ID_FILE), "w", encoding="utf-8") as f:
+                f.write(gist_id.strip() + "\n")
+    except Exception:
+        pass
+
+
+def remote_sync_configured(local_dir: str = "./uploaded_cache/worklog") -> bool:
+    return bool(resolve_github_token())
+
+
+def remote_sync_ready(local_dir: str = "./uploaded_cache/worklog") -> bool:
+    return bool(resolve_github_token() and resolve_gist_id(local_dir))
+
+
+def _headers(token: str) -> Dict[str, str]:
+    return {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _encode_file(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def _decode_file(text: str) -> bytes:
+    return base64.b64decode(text.encode("ascii"), validate=False)
+
+
+def _load_manifest(files: Dict[str, Any]) -> Dict[str, Any]:
+    meta = files.get(_MANIFEST) or {}
+    content = meta.get("content") if isinstance(meta, dict) else None
+    if not content:
+        return {}
+    try:
+        return json.loads(content)
+    except Exception:
+        return {}
+
+
+def _fetch_gist(token: str, gist_id: str) -> Tuple[Optional[dict], Optional[str]]:
+    try:
+        r = requests.get(
+            f"{_GIST_API}/{gist_id}",
+            headers=_headers(token),
+            timeout=_TIMEOUT,
+        )
+        if r.status_code != 200:
+            return None, f"gist GET {r.status_code}: {(r.text or '')[:180]}"
+        return r.json(), None
+    except Exception as e:
+        return None, str(e)
+
+
+def ensure_worklog_gist(local_dir: str = "./uploaded_cache/worklog") -> Tuple[Optional[str], Optional[str]]:
+    """gist id 반환. 없으면 생성. (id, error)"""
+    token = resolve_github_token()
+    if not token:
+        return None, "github_token 없음"
+    gid = resolve_gist_id(local_dir)
+    if gid:
+        return gid, None
+    payload = {
+        "description": "office worklog sync (local ↔ streamlit cloud)",
+        "public": False,
+        "files": {
+            _MANIFEST: {
+                "content": json.dumps({"version": 1, "files": {}}, ensure_ascii=False, indent=2)
+            },
+            "README.md": {
+                "content": (
+                    "Streamlit 업무일지 양방향 동기화용 Secret Gist.\n"
+                    "이 파일·gist id 를 공개 저장소에 커밋하지 마세요.\n"
+                )
+            },
+        },
+    }
+    try:
+        r = requests.post(
+            _GIST_API,
+            headers=_headers(token),
+            json=payload,
+            timeout=_TIMEOUT,
+        )
+        if r.status_code not in (200, 201):
+            return None, f"gist 생성 실패 {r.status_code}: {(r.text or '')[:180]}"
+        data = r.json()
+        gid = str(data.get("id") or "").strip()
+        if not gid:
+            return None, "gist id 없음"
+        remember_gist_id(gid, local_dir)
+        return gid, None
+    except Exception as e:
+        return None, str(e)
+
+
+def push_worklog_day_remote(
+    local_path: str,
+    local_dir: str = "./uploaded_cache/worklog",
+) -> Optional[str]:
+    """저장 직후 일자 파일을 Gist에 올림. 성공 시 gist id."""
+    if not local_path or not os.path.isfile(local_path):
+        return None
+    name = os.path.basename(local_path)
+    if not _is_day_file(name):
+        return None
+    token = resolve_github_token()
+    if not token:
+        return None
+    gid, err = ensure_worklog_gist(local_dir)
+    if not gid:
+        return None
+    try:
+        with open(local_path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    sha = _sha256_bytes(raw)
+    try:
+        mtime = os.path.getmtime(local_path)
+    except OSError:
+        mtime = time.time()
+
+    gist, gerr = _fetch_gist(token, gid)
+    if gist is None:
+        return None
+    files_meta = gist.get("files") or {}
+    manifest = _load_manifest(files_meta)
+    files_map = dict(manifest.get("files") or {})
+    files_map[name] = {"sha256": sha, "mtime": float(mtime), "updated_at": time.time()}
+    manifest = {"version": 1, "files": files_map}
+
+    body = {
+        "files": {
+            f"{name}{_B64_SUFFIX}": {"content": _encode_file(raw)},
+            _MANIFEST: {
+                "content": json.dumps(manifest, ensure_ascii=False, indent=2),
+            },
+        }
+    }
+    try:
+        r = requests.patch(
+            f"{_GIST_API}/{gid}",
+            headers=_headers(token),
+            json=body,
+            timeout=_TIMEOUT,
+        )
+        if r.status_code not in (200, 201):
+            return None
+        remember_gist_id(gid, local_dir)
+        return gid
+    except Exception:
+        return None
+
+
+def sync_worklog_remote(
+    local_dir: str = "./uploaded_cache/worklog",
+    *,
+    force: bool = False,
+) -> dict:
+    """Gist ↔ 로컬 uploaded_cache/worklog 동기화.
+
+    - 로컬만 있음 → push
+    - 원격만 있음 → pull
+    - 둘 다 있고 sha 다름 → conflicts (자동 덮어쓰기 안 함)
+    """
+    token = resolve_github_token()
+    if not token:
+        return {
+            "ok": True,
+            "skipped": True,
+            "copied": [],
+            "conflicts": [],
+            "note": "github_token 없음(로컬 Drive만 가능)",
+        }
+    gid, err = ensure_worklog_gist(local_dir)
+    if not gid:
+        return {
+            "ok": False,
+            "skipped": False,
+            "copied": [],
+            "conflicts": [],
+            "error": err or "gist 없음",
+        }
+
+    gist, gerr = _fetch_gist(token, gid)
+    if gist is None:
+        return {
+            "ok": False,
+            "skipped": False,
+            "copied": [],
+            "conflicts": [],
+            "error": gerr or "gist fetch 실패",
+            "gist_id": gid,
+        }
+
+    try:
+        os.makedirs(local_dir, exist_ok=True)
+    except OSError:
+        pass
+
+    files_meta = gist.get("files") or {}
+    manifest = _load_manifest(files_meta)
+    remote_files: Dict[str, Any] = dict(manifest.get("files") or {})
+
+    # manifest 없이 b64만 있는 경우도 인식
+    for fname, meta in files_meta.items():
+        if not isinstance(fname, str) or not fname.endswith(_B64_SUFFIX):
+            continue
+        day = fname[: -len(_B64_SUFFIX)]
+        if _is_day_file(day) and day not in remote_files:
+            remote_files[day] = {"sha256": "", "mtime": 0.0}
+
+    local_names = set()
+    try:
+        local_names.update(n for n in os.listdir(local_dir) if _is_day_file(n))
+    except OSError:
+        pass
+
+    copied: List[str] = []
+    conflicts: List[str] = []
+    names = set(local_names) | set(remote_files.keys())
+
+    for name in sorted(names):
+        loc = os.path.join(local_dir, name)
+        loc_ok = os.path.isfile(loc)
+        rem = remote_files.get(name)
+        rem_ok = rem is not None and f"{name}{_B64_SUFFIX}" in files_meta
+
+        if loc_ok and not rem_ok:
+            if push_worklog_day_remote(loc, local_dir):
+                copied.append(f"→Cloud:{name}")
+                # push 후 manifest 갱신을 위해 다음 루프용으로 gist 재사용은 생략(개별 push)
+            continue
+
+        if rem_ok and not loc_ok:
+            if _pull_one(files_meta, name, loc):
+                copied.append(f"←Cloud:{name}")
+                try:
+                    rm = float((rem or {}).get("mtime") or 0)
+                    if rm > 0:
+                        os.utime(loc, (rm, rm))
+                except OSError:
+                    pass
+            continue
+
+        if not (loc_ok and rem_ok):
+            continue
+
+        local_sha = _sha256_file(loc) or ""
+        remote_sha = str((rem or {}).get("sha256") or "")
+        if remote_sha and local_sha and local_sha == remote_sha:
+            continue
+        # sha 없으면 내용 비교
+        if not remote_sha:
+            try:
+                b64 = (files_meta.get(f"{name}{_B64_SUFFIX}") or {}).get("content") or ""
+                remote_sha = _sha256_bytes(_decode_file(b64)) if b64 else ""
+            except Exception:
+                remote_sha = ""
+        if remote_sha and local_sha == remote_sha:
+            continue
+
+        if force:
+            # force: 로컬 우선 푸시
+            if push_worklog_day_remote(loc, local_dir):
+                copied.append(f"→Cloud!:{name}")
+            continue
+
+        try:
+            lm = os.path.getmtime(loc)
+        except OSError:
+            lm = 0.0
+        rm = float((rem or {}).get("mtime") or 0)
+        # 1초 이상 차이나면 충돌로 안내 (자동 병합 없음)
+        if abs(lm - rm) < 1.0 and local_sha and remote_sha and local_sha != remote_sha:
+            conflicts.append(name)
+        elif local_sha != remote_sha:
+            conflicts.append(name)
+
+    remember_gist_id(gid, local_dir)
+    return {
+        "ok": True,
+        "skipped": False,
+        "copied": copied,
+        "conflicts": conflicts,
+        "gist_id": gid,
+        "source": f"gist:{gid}",
+    }
+
+
+def _pull_one(files_meta: dict, name: str, dest: str) -> bool:
+    meta = files_meta.get(f"{name}{_B64_SUFFIX}") or {}
+    content = meta.get("content") if isinstance(meta, dict) else None
+    if not content:
+        return False
+    try:
+        raw = _decode_file(content)
+    except Exception:
+        return False
+    parent = os.path.dirname(dest)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = dest + ".downloading"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(raw)
+        os.replace(tmp, dest)
+        return True
+    except OSError:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def resolve_remote_conflict(
+    name: str,
+    local_dir: str = "./uploaded_cache/worklog",
+    *,
+    prefer: str = "local",
+) -> Optional[str]:
+    """충돌 일자: prefer=local 이면 push, drive/cloud 이면 pull."""
+    if not _is_day_file(name):
+        return None
+    loc = os.path.join(local_dir, name)
+    if prefer == "local":
+        if os.path.isfile(loc) and push_worklog_day_remote(loc, local_dir):
+            return loc
+        return None
+    token = resolve_github_token()
+    gid = resolve_gist_id(local_dir)
+    if not token or not gid:
+        return None
+    gist, _ = _fetch_gist(token, gid)
+    if not gist:
+        return None
+    if _pull_one(gist.get("files") or {}, name, loc):
+        return loc
+    return None
