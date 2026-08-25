@@ -86,6 +86,25 @@ class SalesNoiseFilterTest(unittest.TestCase):
         self.assertEqual(len(sub), 1)
         self.assertEqual(float(sub.iloc[0]["출고량"]), 80.0)
 
+    def test_parent_selection_aggregates_subclients(self):
+        csv_text = """영업담당자,거래처,매출일,품목명,출고량,단가,매출액,비고
+김담당,가스코아산.,08/04,"CO2 (kg, Bulk)",100,220,22000,동희
+김담당,가스코아산.,08/05,"N2 (kg, Bulk)",50,200,10000,성우하이텍
+김담당,가스코아산.,08/06,"AR (kg, Bulk)",10,300,3000,
+"""
+        sales_df = load_uploaded_files_from_bytes([("202608.csv", csv_text.encode("utf-8-sig"))])
+        self.assertIn("거래처_원본", sales_df.columns)
+        parent = filter_df_by_selected_client(sales_df, "가스코아산.")
+        child = filter_df_by_selected_client(sales_df, "가스코아산(동희)")
+        self.assertEqual(len(parent), 3)  # 종속 2 + 부모잔여 1
+        self.assertEqual(float(parent["출고량"].sum()), 160.0)
+        self.assertEqual(len(child), 1)
+        self.assertEqual(float(child["출고량"].sum()), 100.0)
+        opts = list_filter_client_options(sales_df)
+        self.assertIn("가스코아산.", opts)
+        self.assertIn("가스코아산(동희)", opts)
+        self.assertIn("가스코아산(성우하이텍)", opts)
+
 
 if __name__ == "__main__":
     unittest.main()

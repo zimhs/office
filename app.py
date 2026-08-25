@@ -4096,6 +4096,7 @@ def _remark_parent_base_name(client_name):
 def expand_remark_subclients(df):
     """모든 거래처: 비고가 종속처명이면 '부모(비고)'로 분리해 상단 거래처 검색 가능하게.
 
+    - 거래처_원본: 분리 전 부모명 (부모 선택 시 종속 합산용)
     - 비고 없거나 메모성 비고 → 원 거래처명 유지
     - 이미 '거래처(xxx)' 형태 → 추가 분리 안 함
     - 가스코아산* 행은 담당자 '가스코아산'으로 묶어 담당자 필터와 맞춤
@@ -4103,8 +4104,17 @@ def expand_remark_subclients(df):
     if df is None or df.empty or "거래처" not in df.columns:
         return df if df is not None else pd.DataFrame()
     out = df.copy()
+    out["거래처"] = out["거래처"].fillna("").astype(str).str.strip()
+    # 원본은 최초 1회만 고정 (재호출 안전)
+    if "거래처_원본" not in out.columns:
+        out["거래처_원본"] = out["거래처"]
+    else:
+        blank_orig = out["거래처_원본"].isna() | (
+            out["거래처_원본"].astype(str).str.strip() == ""
+        )
+        out.loc[blank_orig, "거래처_원본"] = out.loc[blank_orig, "거래처"]
+
     if "비고" not in out.columns:
-        # 비고 없어도 가스코아산(xxx) 미지정 → 담당자 보정
         if "담당자" in out.columns:
             client = out["거래처"].astype(str).str.strip()
             named = client.str.match(r"^가스코아산\(.+\)$", na=False)
@@ -4114,7 +4124,7 @@ def expand_remark_subclients(df):
             out.loc[named & unassigned, "담당자"] = "가스코아산"
         return out
 
-    client = out["거래처"].fillna("").astype(str).str.strip()
+    client = out["거래처"]
     note = out["비고"].fillna("").astype(str).str.strip()
     base = client.map(_remark_parent_base_name)
     ok_note = note.map(_is_remark_subclient_note)
@@ -4129,6 +4139,55 @@ def expand_remark_subclients(df):
         )
         out.loc[gasco_mask, "담당자"] = "가스코아산"
     return out
+
+
+def _client_parent_name_set(df):
+    """거래처_원본 기준 부모명 집합 (점 유무 정규화 포함)."""
+    if df is None or df.empty:
+        return set()
+    col = "거래처_원본" if "거래처_원본" in df.columns else "거래처"
+    s = df[col].dropna().astype(str).str.strip()
+    names = set(s.unique())
+    names |= set(s.str.rstrip(".").unique())
+    names.discard("")
+    return names
+
+
+def list_filter_client_options(df):
+    """상단 거래처 목록: 분리된 종속명 + 부모명(전부 종속 분리돼도 부모 유지)."""
+    if df is None or df.empty or "거래처" not in df.columns:
+        return []
+    names = set(df["거래처"].dropna().astype(str).str.strip().unique())
+    if "거래처_원본" in df.columns:
+        names |= set(df["거래처_원본"].dropna().astype(str).str.strip().unique())
+    names.discard("")
+    return sorted(names)
+
+
+def filter_df_by_selected_client(df, selected_client):
+    """거래처 필터.
+
+    - 종속처(부모(비고)) 선택 → 해당 행만
+    - 부모(거래처_원본) 선택 → 부모 + 모든 종속 합산(총매출)
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    if not selected_client or selected_client == "전체 거래처":
+        return df
+    sel = str(selected_client).strip()
+    client = df["거래처"].astype(str).str.strip()
+    if "거래처_원본" not in df.columns:
+        return df.loc[client == sel].copy()
+
+    orig = df["거래처_원본"].astype(str).str.strip()
+    parent_names = _client_parent_name_set(df)
+    sel_base = sel.rstrip(".")
+    # 부모명으로 선택된 경우 → 원본 기준 합산
+    if sel in parent_names or sel_base in parent_names:
+        mask = (orig == sel) | (orig.str.rstrip(".") == sel_base)
+        return df.loc[mask].copy()
+    # 종속처 등 표시명 → 정확 일치
+    return df.loc[client == sel].copy()
 
 
 def _parse_sales_uploaded_tuples(file_tuples):
@@ -4224,7 +4283,7 @@ def _parse_sales_uploaded_tuples(file_tuples):
             _blank_client = ~df["거래처"].map(_is_valid_client_name)
             if _blank_client.any():
                 df.loc[_blank_client, "거래처"] = EMPTY_CLIENT_LABEL
-            # 비고 종속처 → 개별 거래처명으로 분리 (전 거래처)
+            # 비고 종속처 → 개별 거래처명으로 분리 (전 거래처). 원본은 거래처_원본에 보존
             df = expand_remark_subclients(df)
             df = normalize_items_vectorized(df)
             df = df.dropna(subset=["매출일_dt"])
@@ -4310,7 +4369,7 @@ def _apply_manual_staff_mapping(df):
 
 
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=7):
+def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=8):
     return _parse_sales_uploaded_tuples(file_tuples)
 
 
@@ -4325,7 +4384,7 @@ def _manual_staff_map_cache_token():
 
 
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=7):
+def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=8):
     """파일명·경로·mtime·size만 캐시 키로 사용.
     새로고침마다 ~10MB CSV를 읽어 해싱하던 비용을 제거(파싱 결과는 동일).
     manual_map_token / parse_version: 매핑·파서 변경 시 캐시 무효화."""
@@ -9215,7 +9274,7 @@ def get_fast_processed_full_df(meta_data, staff_token, ind_dict):
     """필터 클릭 시 매번 발생하는 무거운 텍스트 연산(정규식, 매핑)을 1회로 압축"""
     # 1. 유저의 기존 고급 로드 기능 완벽 유지
     temp_df = (
-        load_uploaded_files_from_meta(meta_data, staff_token, 7)
+        load_uploaded_files_from_meta(meta_data, staff_token, 8)
         if meta_data else pd.DataFrame()
     )
     
@@ -9325,7 +9384,7 @@ if not full_df.empty:
                 st.session_state["_dash_client_opts_tuple"] = ()
             else:
                 st.session_state["_dash_client_opts_tuple"] = tuple(
-                    df_staff_for_opts["거래처"].astype(str).unique()
+                    list_filter_client_options(df_staff_for_opts)
                 )
         all_clients = sorted(st.session_state.get("_dash_client_opts_tuple", ()))
         # 단일 선택 + 태그 X로 원복 (selectbox는 지우기 불가 → multiselect max 1)
@@ -9353,7 +9412,7 @@ if not full_df.empty:
         # 하위 로직·엑셀 시그니처 호환용
         st.session_state["dash_filter_client"] = selected_client
         df_client_for_opts = (
-            df_staff_for_opts[df_staff_for_opts["거래처"] == selected_client]
+            filter_df_by_selected_client(df_staff_for_opts, selected_client)
             if selected_client != "전체 거래처"
             else df_staff_for_opts
         )
@@ -9377,7 +9436,7 @@ if not full_df.empty:
             df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base
         )
         df_client_filtered = (
-            df_staff_filtered[df_staff_filtered["거래처"] == selected_client]
+            filter_df_by_selected_client(df_staff_filtered, selected_client)
             if selected_client != "전체 거래처"
             else df_staff_filtered
         )
