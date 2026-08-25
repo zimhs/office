@@ -48,6 +48,24 @@ class SalesNoiseFilterTest(unittest.TestCase):
         self.assertEqual(len(sales_df), 1)
         self.assertEqual(sales_df.iloc[0]["품목명"], "CO2 (kg, Bulk)")
 
+    def test_gascocoasan_bigo_splits_to_subclients(self):
+        csv_text = """영업담당자,거래처,매출일,품목명,출고량,단가,매출액,비고
+담당자없음,가스코아산.,08/04,"CO2 (kg, Bulk)",100,220,22000,동희
+담당자없음,가스코아산.,08/05,"N2 (kg, Bulk)",50,200,10000,성우하이텍
+담당자없음,가스코아산.,08/06,"AR (kg, Bulk)",10,300,3000,
+담당자없음,가스코아산.,08/07,"O2 (kg, Bulk)",1,100,100,미검공병출고
+"""
+        sales_df = load_uploaded_files_from_bytes([("202608.csv", csv_text.encode("utf-8-sig"))])
+        clients = set(sales_df["거래처"].astype(str))
+        self.assertIn("가스코아산(동희)", clients)
+        self.assertIn("가스코아산(성우하이텍)", clients)
+        self.assertIn("가스코아산.", clients)  # 비고 없음·업무메모는 부모 유지
+        self.assertNotIn("가스코아산(미검공병출고)", clients)
+        sub = sales_df[sales_df["거래처"] == "가스코아산(동희)"]
+        self.assertEqual(len(sub), 1)
+        self.assertEqual(sub.iloc[0]["담당자"], "가스코아산")
+        self.assertEqual(float(sub.iloc[0]["출고량"]), 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()

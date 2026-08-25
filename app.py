@@ -4045,6 +4045,63 @@ def _dedupe_sales_file_meta(file_meta):
     return out
 
 
+# 가스코아산. 비고 → 종속 거래처명 (예: 동희 → 가스코아산(동희))
+_GASCO_PARENT_CLIENT = "가스코아산."
+_GASCO_NOTE_SKIP_RE = re.compile(
+    r"이관|변경|출고|회수|반납|정리|차액|으로|부터|까지|취소|오류|수정|"
+    r"미검|공병|대납|직접|고객사|용기|고압|일반으로|합계|이월"
+)
+
+
+def _is_gascocoasan_subclient_note(note):
+    """비고가 실거래처명인지 (메모·업무문구 제외)."""
+    s = str(note or "").strip()
+    if not s or s.lower() in ("nan", "none", "-", "없음"):
+        return False
+    if _GASCO_NOTE_SKIP_RE.search(s):
+        return False
+    if len(s) < 2:
+        return False
+    if re.fullmatch(r"[\d\s./\-]+", s):
+        return False
+    return True
+
+
+def expand_gascocoasan_remark_clients(df):
+    """가스코아산. + 비고(종속처) → 거래처명 '가스코아산(종속처)'로 분리.
+
+    담당자 필터에서 '가스코아산' 지정 시 종속처가 각각 검색·선택되도록
+    해당 행 담당자를 '가스코아산'으로 묶는다. 비고 없는 행은 '가스코아산.' 유지.
+    """
+    if df is None or df.empty or "거래처" not in df.columns:
+        return df if df is not None else pd.DataFrame()
+    out = df.copy()
+    client = out["거래처"].fillna("").astype(str).str.strip()
+    parent_mask = client == _GASCO_PARENT_CLIENT
+    if not parent_mask.any():
+        # ERP 기등록 가스코아산(xxx)만 있는 경우: 미지정이면 담당자 가스코아산
+        if "담당자" in out.columns:
+            named = client.str.match(r"^가스코아산\(.+\)$", na=False)
+            unassigned = out["담당자"].astype(str).str.strip().isin(
+                ["", "nan", "None", "NaN", "미지정", "담당자없음"]
+            )
+            out.loc[named & unassigned, "담당자"] = "가스코아산"
+        return out
+    if "비고" in out.columns:
+        note = out["비고"].fillna("").astype(str).str.strip()
+        sub_mask = parent_mask & note.map(_is_gascocoasan_subclient_note)
+        if sub_mask.any():
+            out.loc[sub_mask, "거래처"] = "가스코아산(" + note.loc[sub_mask] + ")"
+    if "담당자" in out.columns:
+        client2 = out["거래처"].astype(str).str.strip()
+        # 부모(가스코아산.) + 분리/기등록 가스코아산(xxx)
+        gasco_mask = (client2 == _GASCO_PARENT_CLIENT) | client2.str.match(
+            r"^가스코아산\(.+\)$", na=False
+        )
+        out.loc[gasco_mask, "담당자"] = "가스코아산"
+    return out
+
+
 def _parse_sales_uploaded_tuples(file_tuples):
     """매출 CSV 바이트 튜플 → DataFrame (캐시 없음, 순수 파싱)."""
     if not file_tuples:
@@ -4105,6 +4162,7 @@ def _parse_sales_uploaded_tuples(file_tuples):
             c_qty = find_col(["출고량", "수량", "출고"], ["액", "금액", "단가"])
             c_price = find_col(["단가", "단 가", "판매단가", "공급단가"], ["액", "금액", "수량", "량"])
             c_date = find_col(["매출일자", "매출일", "일자", "날짜", "출고일"])
+            c_note = find_col(["비고", "적요", "메모", "특이사항"], ["코드", "ID"])
             rename_dict = {}
             if c_client: rename_dict[c_client] = "거래처"
             if c_item: rename_dict[c_item] = "품목명"
@@ -4113,6 +4171,7 @@ def _parse_sales_uploaded_tuples(file_tuples):
             if c_qty: rename_dict[c_qty] = "출고량"
             if c_price: rename_dict[c_price] = "단가"
             if c_date: rename_dict[c_date] = "매출일자_raw"
+            if c_note: rename_dict[c_note] = "비고"
             df = df.rename(columns=rename_dict)
             df = _drop_sales_noise_rows(df)
             for req in ["거래처", "품목명", "담당자"]:
@@ -4136,6 +4195,8 @@ def _parse_sales_uploaded_tuples(file_tuples):
             _blank_client = ~df["거래처"].map(_is_valid_client_name)
             if _blank_client.any():
                 df.loc[_blank_client, "거래처"] = EMPTY_CLIENT_LABEL
+            # 가스코아산. 비고 종속처 → 개별 거래처명으로 분리
+            df = expand_gascocoasan_remark_clients(df)
             df = normalize_items_vectorized(df)
             df = df.dropna(subset=["매출일_dt"])
             df["연도"] = df["매출일_dt"].dt.year.astype(str)
@@ -4220,7 +4281,7 @@ def _apply_manual_staff_mapping(df):
 
 
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=5):
+def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=6):
     return _parse_sales_uploaded_tuples(file_tuples)
 
 
@@ -4235,7 +4296,7 @@ def _manual_staff_map_cache_token():
 
 
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=5):
+def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=6):
     """파일명·경로·mtime·size만 캐시 키로 사용.
     새로고침마다 ~10MB CSV를 읽어 해싱하던 비용을 제거(파싱 결과는 동일).
     manual_map_token / parse_version: 매핑·파서 변경 시 캐시 무효화."""
@@ -9125,7 +9186,7 @@ def get_fast_processed_full_df(meta_data, staff_token, ind_dict):
     """필터 클릭 시 매번 발생하는 무거운 텍스트 연산(정규식, 매핑)을 1회로 압축"""
     # 1. 유저의 기존 고급 로드 기능 완벽 유지
     temp_df = (
-        load_uploaded_files_from_meta(meta_data, staff_token, 5)
+        load_uploaded_files_from_meta(meta_data, staff_token, 6)
         if meta_data else pd.DataFrame()
     )
     
