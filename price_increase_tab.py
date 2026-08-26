@@ -521,9 +521,15 @@ def _format_c38_price_lines(items: list[dict]) -> str:
 
 
 def _unmerge_row(ws, row: int) -> None:
-    for mr in list(ws.merged_cells.ranges):
-        if mr.min_row == row and mr.max_row == row:
-            ws.unmerge_cells(str(mr))
+    merged = [mr for mr in list(ws.merged_cells.ranges) if mr.min_row <= row <= mr.max_row]
+    for mr in merged:
+        try:
+            ws.merged_cells.ranges.remove(mr)
+        except Exception:
+            try:
+                ws.unmerge_cells(str(mr))
+            except Exception:
+                pass
 
 
 def _shrink_letter_body_for_table(ws, n_items: int) -> None:
@@ -552,17 +558,25 @@ def _write_price_adjust_table(ws, items: list[dict], effective: str) -> None:
     n = len(clean)
     _shrink_letter_body_for_table(ws, max(n, 1))
 
-    # 기존 대상품목/금액/시행일 병합 해제 (36~40)
-    for r in range(36, 41):
-        _unmerge_row(ws, r)
-        for c in range(3, 28):
-            cell = ws.cell(r, c)
-            cell.value = None
-
     need_rows = 1 + max(n, 1) + 1  # header + data + 시행일
     avail = 5  # rows 36..40
     if need_rows > avail:
-        ws.insert_rows(41, need_rows - avail)
+        try:
+            ws.insert_rows(41, need_rows - avail)
+        except Exception:
+            # 삽입 실패 시 품목 수를 가용 칸에 맞춤
+            clean = clean[: max(1, avail - 2)]
+            n = len(clean)
+            need_rows = 1 + max(n, 1) + 1
+
+    table_end = 35 + need_rows  # inclusive-ish
+    for r in range(36, table_end + 1):
+        _unmerge_row(ws, r)
+        for c in range(3, 28):
+            try:
+                ws.cell(r, c).value = None
+            except Exception:
+                pass
 
     thin = Border(
         left=Side(style="thin", color="64748B"),
@@ -571,21 +585,25 @@ def _write_price_adjust_table(ws, items: list[dict], effective: str) -> None:
         bottom=Side(style="thin", color="64748B"),
     )
     header_fill = PatternFill("solid", fgColor="0F766E") if PatternFill else None
-    # 열: C=제품명, H=기존단가, M=인상단가, R=비고
     spans = {"제품명": (3, 7), "기존단가": (8, 12), "인상단가": (13, 17), "비고": (18, 27)}
 
     header_row = 36
     for title, (c1, c2) in spans.items():
-        if c2 > c1:
-            ws.merge_cells(start_row=header_row, start_column=c1, end_row=header_row, end_column=c2)
+        try:
+            if c2 > c1:
+                ws.merge_cells(start_row=header_row, start_column=c1, end_row=header_row, end_column=c2)
+        except Exception:
+            pass
         cell = ws.cell(header_row, c1, title)
         cell.font = Font(name="맑은 고딕", size=10, bold=True, color="FFFFFF")
         cell.alignment = Alignment(horizontal="center", vertical="center")
         if header_fill is not None:
             cell.fill = header_fill
-        cell.border = thin
         for c in range(c1, c2 + 1):
-            ws.cell(header_row, c).border = thin
+            try:
+                ws.cell(header_row, c).border = thin
+            except Exception:
+                pass
     ws.row_dimensions[header_row].height = 18
 
     data_start = 37
@@ -599,29 +617,37 @@ def _write_price_adjust_table(ws, items: list[dict], effective: str) -> None:
             "비고": str(it.get("비고") or ""),
         }
         for title, (c1, c2) in spans.items():
-            if c2 > c1:
-                ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
+            try:
+                if c2 > c1:
+                    ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
+            except Exception:
+                pass
             cell = ws.cell(r, c1, vals[title])
             cell.font = Font(name="맑은 고딕", size=10)
             cell.alignment = Alignment(
                 horizontal="center" if title != "제품명" else "left",
                 vertical="center",
             )
-            cell.border = thin
             for c in range(c1, c2 + 1):
-                ws.cell(r, c).border = thin
+                try:
+                    ws.cell(r, c).border = thin
+                except Exception:
+                    pass
         ws.row_dimensions[r].height = 18
 
     eff_row = data_start + len(rows_src)
     _unmerge_row(ws, eff_row)
-    ws.merge_cells(start_row=eff_row, start_column=3, end_row=eff_row, end_column=27)
-    ws.cell(
+    try:
+        ws.merge_cells(start_row=eff_row, start_column=3, end_row=eff_row, end_column=27)
+    except Exception:
+        pass
+    cell = ws.cell(
         eff_row,
         3,
         f"                           • 시행 일자 : {_format_korean_effective(effective)}",
     )
-    ws.cell(eff_row, 3).font = Font(name="맑은 고딕", size=10)
-    ws.cell(eff_row, 3).alignment = Alignment(vertical="center")
+    cell.font = Font(name="맑은 고딕", size=10)
+    cell.alignment = Alignment(vertical="center")
     ws.row_dimensions[eff_row].height = 18
 
 
