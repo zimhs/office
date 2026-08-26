@@ -26,6 +26,7 @@ import requests
 _DAY_RE = re.compile(r"^20\d{2}-\d{2}-\d{2}\.xlsx$")
 _GIST_API = "https://api.github.com/gists"
 _MANIFEST = "_worklog_manifest.json"
+_DELETED_MANIFEST = "_worklog_deleted.json"
 _B64_SUFFIX = ".b64"
 _GIST_ID_FILE = ".worklog_gist_id"
 _TIMEOUT = 45
@@ -189,6 +190,58 @@ def _load_manifest(files: Dict[str, Any]) -> Dict[str, Any]:
         return json.loads(content)
     except Exception:
         return {}
+
+
+def _deleted_manifest_path(local_dir: str) -> str:
+    return os.path.join(local_dir, _DELETED_MANIFEST)
+
+
+def _load_deleted_days(local_dir: str) -> Dict[str, float]:
+    path = _deleted_manifest_path(local_dir)
+    try:
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                out: Dict[str, float] = {}
+                for k, v in raw.items():
+                    iso = str(k).replace(".xlsx", "")
+                    if _is_day_file(f"{iso}.xlsx"):
+                        out[iso] = float(v)
+                return out
+    except Exception:
+        pass
+    return {}
+
+
+def _save_deleted_days(local_dir: str, deleted: Dict[str, float]) -> None:
+    try:
+        os.makedirs(local_dir, exist_ok=True)
+        with open(_deleted_manifest_path(local_dir), "w", encoding="utf-8") as f:
+            json.dump(deleted, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def mark_worklog_day_deleted(iso: str, local_dir: str = "./uploaded_cache/worklog") -> None:
+    """로컬 삭제 표시 — Gist/Drive 동기화가 구 파일을 되살리지 않게."""
+    if not iso or not _is_day_file(f"{iso}.xlsx"):
+        return
+    deleted = _load_deleted_days(local_dir)
+    deleted[iso] = time.time()
+    _save_deleted_days(local_dir, deleted)
+
+
+def clear_worklog_day_deleted(iso: str, local_dir: str = "./uploaded_cache/worklog") -> None:
+    deleted = _load_deleted_days(local_dir)
+    if iso in deleted:
+        del deleted[iso]
+        _save_deleted_days(local_dir, deleted)
+
+
+def is_worklog_day_deleted(name: str, local_dir: str = "./uploaded_cache/worklog") -> bool:
+    iso = name.replace(".xlsx", "") if name.endswith(".xlsx") else name
+    return iso in _load_deleted_days(local_dir)
 
 
 def _fetch_gist(token: str, gist_id: str) -> Tuple[Optional[dict], Optional[str]]:
@@ -407,6 +460,11 @@ def sync_worklog_remote(
             continue
 
         if rem_ok and not loc_ok:
+            # 로컬에서 삭제한 날짜는 pull 금지 — Gist에서도 제거
+            if is_worklog_day_deleted(name, local_dir):
+                if delete_worklog_day_remote(name, local_dir)[0]:
+                    copied.append(f"☁삭제:{name}")
+                continue
             if _pull_one(files_meta, name, loc):
                 copied.append(f"←Cloud:{name}")
                 try:
@@ -461,6 +519,57 @@ def sync_worklog_remote(
         "gist_id": gid,
         "source": f"gist:{gid}",
     }
+
+
+def delete_worklog_day_remote(
+    day: str | date,
+    local_dir: str = "./uploaded_cache/worklog",
+) -> Tuple[bool, Optional[str]]:
+    """Gist에서 일자 xlsx 제거. (ok, error)"""
+    if isinstance(day, date):
+        name = f"{day.isoformat()}.xlsx"
+    else:
+        name = str(day or "")
+        if not name.endswith(".xlsx"):
+            name = f"{name}.xlsx"
+    if not _is_day_file(name):
+        return False, "일자 xlsx 아님"
+    token = resolve_github_token()
+    if not token:
+        return False, "github_token 없음"
+    gid = resolve_gist_id(local_dir)
+    if not gid:
+        return False, "gist 없음"
+    gist, gerr = _fetch_gist(token, gid)
+    if gist is None:
+        return False, gerr or "Gist fetch 실패"
+    files_meta = gist.get("files") or {}
+    b64_name = f"{name}{_B64_SUFFIX}"
+    if b64_name not in files_meta and name not in (dict(_load_manifest(files_meta).get("files") or {})):
+        clear_worklog_day_deleted(name.replace(".xlsx", ""), local_dir)
+        return True, None
+    manifest = _load_manifest(files_meta)
+    files_map = dict(manifest.get("files") or {})
+    files_map.pop(name, None)
+    manifest = {"version": 1, "files": files_map}
+    patch_files: Dict[str, Any] = {
+        _MANIFEST: {"content": json.dumps(manifest, ensure_ascii=False, indent=2)},
+    }
+    if b64_name in files_meta:
+        patch_files[b64_name] = None
+    try:
+        r = requests.patch(
+            f"{_GIST_API}/{gid}",
+            headers=_headers(token),
+            json={"files": patch_files},
+            timeout=_TIMEOUT,
+        )
+        if r.status_code not in (200, 201):
+            return False, f"Gist 삭제 실패 {r.status_code}: {(r.text or '')[:200]}"
+        clear_worklog_day_deleted(name.replace(".xlsx", ""), local_dir)
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def _pull_one(files_meta: dict, name: str, dest: str) -> bool:

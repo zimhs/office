@@ -387,6 +387,18 @@ def sync_worklog_bidirectional(
                     copied.append(f"→Drive:{name}")
                 continue
             if drv_ok and not loc_ok:
+                try:
+                    from worklog_remote_sync import is_worklog_day_deleted
+
+                    if is_worklog_day_deleted(name, local_dir):
+                        try:
+                            os.remove(drv)
+                            copied.append(f"Drive삭제:{name}")
+                        except OSError:
+                            pass
+                        continue
+                except Exception:
+                    pass
                 if _atomic_copy(drv, loc):
                     copied.append(f"←Drive:{name}")
                 continue
@@ -496,6 +508,23 @@ def push_worklog_month_archive_to_drive(
     if _atomic_copy(local_month_path, dst):
         return dst
     return None
+
+
+def delete_worklog_day_from_drive(d: date, local_dir: str = "./uploaded_cache/worklog") -> list[str]:
+    """Drive worklog 폴더에서 해당 일자 xlsx 삭제."""
+    removed: List[str] = []
+    drive_dir = resolve_drive_worklog_dir()
+    if not drive_dir:
+        return removed
+    name = f"{d.isoformat()}.xlsx"
+    path = os.path.join(drive_dir, name)
+    if os.path.isfile(path):
+        try:
+            os.remove(path)
+            removed.append(name)
+        except OSError:
+            pass
+    return removed
 
 
 def resolve_drive_conflict(

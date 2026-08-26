@@ -136,7 +136,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26p · 입력안정·요약깜빡최소"
+_WL_UI_BUILD = "2026-08-26q · 삭제후Cloud/Drive부활차단"
 
 
 # =====================================================================
@@ -1426,6 +1426,11 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = True) -> str:
     cells = _spill_all_content(cells)
     write_cells_to_path(path, d, cells, force_template=True)
     _invalidate_saved_dates_cache()
+    try:
+        from worklog_remote_sync import clear_worklog_day_deleted
+        clear_worklog_day_deleted(d.isoformat(), WORKLOG_DIR)
+    except Exception:
+        pass
     st.session_state.pop("wl_last_archive_path", None)
     st.session_state.pop("wl_last_archive_err", None)
     st.session_state.pop("wl_last_drive_path", None)
@@ -1495,6 +1500,31 @@ def delete_worklog_day(d: date) -> list[str]:
             removed.append(f"{os.path.basename(arch)}#{iso}")
     except Exception:
         pass
+    # Cloud/Drive에서도 삭제 — 동기화가 구 파일을 되살리는 원인
+    cloud_note = ""
+    try:
+        from worklog_remote_sync import delete_worklog_day_remote, mark_worklog_day_deleted
+
+        mark_worklog_day_deleted(iso, WORKLOG_DIR)
+        ok, cerr = delete_worklog_day_remote(d, WORKLOG_DIR)
+        if ok:
+            removed.append(f"Cloud:{iso}.xlsx")
+        elif cerr and cerr not in ("github_token 없음", "gist 없음"):
+            cloud_note = f" Cloud:{cerr}"
+    except Exception as e:
+        try:
+            from worklog_remote_sync import mark_worklog_day_deleted
+            mark_worklog_day_deleted(iso, WORKLOG_DIR)
+        except Exception:
+            pass
+        cloud_note = f" Cloud:{e}"
+    try:
+        from drive_autoload import delete_worklog_day_from_drive
+
+        for dn in delete_worklog_day_from_drive(d, WORKLOG_DIR):
+            removed.append(f"Drive:{dn}")
+    except Exception:
+        pass
     _invalidate_saved_dates_cache()
     _clear_date_widget_state(d)
     empty = [{"client": "", "content": "", "lines": [], "blank_after": 1}]
@@ -1503,9 +1533,11 @@ def delete_worklog_day(d: date) -> list[str]:
     st.session_state[_next_key(d)] = ""
     st.session_state[_notes_key(d)] = ""
     st.session_state[f"wl_entry_count_{iso}"] = 1
-    st.session_state[f"wl_pending_sync_{iso}"] = {"entries": empty, "next": "", "notes": "", "msg": f"삭제 완료" + (f": {', '.join(removed)}" if removed else " (저장본 없음, 입력만 초기화)")}
+    msg = f"삭제 완료" + (f": {', '.join(removed)}" if removed else " (저장본 없음, 입력만 초기화)") + cloud_note
+    st.session_state[f"wl_pending_sync_{iso}"] = {"entries": empty, "next": "", "notes": "", "msg": msg}
     try: _publish_view_cells(d, _empty_cells(d))
     except Exception: st.session_state.pop(_view_cells_key(d), None)
+    st.session_state["_wl_drive_sync_ts"] = time.time()
     return removed
 
 def reassign_worklog_date(old: date, new: date) -> str:
@@ -3290,7 +3322,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                 with st.popover("삭제", width="content", key="wl_del_day_open"):
                     st.caption("이 날짜 일지 전체 삭제")
                     if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
-                        st.session_state["wl_do_delete_day"] = selected.isoformat()
+                        delete_worklog_day(selected)
                         st.rerun()
 
             _iso_bar = selected.isoformat()
@@ -3715,10 +3747,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     if "worklog_selected" not in st.session_state:
         st.session_state["worklog_selected"] = date.today()
     selected: date = st.session_state["worklog_selected"]
-
-    if st.session_state.pop("wl_do_delete_day", None) == selected.isoformat():
-        delete_worklog_day(selected)
-        selected = st.session_state.get("worklog_selected") or selected
 
     _prepare_worklog_day_state(selected)
 
