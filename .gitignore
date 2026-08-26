@@ -52,6 +52,9 @@ uploaded_cache/price_increase/drafts/
 uploaded_cache/price_increase/*.xlsx
 !uploaded_cache/price_increase/탄산단가인상공문.xlsx
 !uploaded_cache/price_increase/.gitkeep
+!uploaded_cache/price_increase/fonts/
+!uploaded_cache/price_increase/fonts/**
+uploaded_cache/price_increase/fonts/wqy-microhei.ttf
 
 uploaded_cache/worklog/*.xlsx
 !uploaded_cache/worklog/template.xlsx

@@ -35,12 +35,23 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26r · fpdf2폴백미리보기"
+PI_UI_BUILD = "2026-08-26s · 한글폰트자동설치"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
     os.path.join(PI_FONTS_DIR, "NanumGothic.ttf"),
     os.path.join(PI_FONTS_DIR, "wqy-microhei.ttf"),
+    # macOS
+    "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+    "/Library/Fonts/AppleGothic.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+    "/Library/Fonts/NanumGothic.ttf",
+    "/Library/Fonts/NanumGothicBold.ttf",
+    os.path.expanduser("~/Library/Fonts/NanumGothic.ttf"),
+    os.path.expanduser("~/Library/Fonts/NotoSansKR-Regular.ttf"),
+    os.path.expanduser("~/Library/Fonts/AppleGothic.ttf"),
+    # Linux
     "/usr/share/fonts/truetype/noto/NotoSansKR-Regular.ttf",
     "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
     "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
@@ -1249,7 +1260,7 @@ def _ensure_kr_font_ttf() -> str:
         if low.endswith(".ttf") or low.endswith(".otf"):
             return path
         if low.endswith(".ttc"):
-            out = os.path.join(PI_FONTS_DIR, "wqy-microhei.ttf")
+            out = os.path.join(PI_FONTS_DIR, "kr-from-ttc.ttf")
             if os.path.isfile(out) and os.path.getsize(out) > 1000:
                 return out
             try:
@@ -1257,34 +1268,51 @@ def _ensure_kr_font_ttf() -> str:
 
                 ttc = TTCollection(path)
                 ttc.fonts[0].save(out)
-                if os.path.isfile(out):
+                if os.path.isfile(out) and os.path.getsize(out) > 1000:
                     return out
             except Exception:
                 continue
-    # Cloud 등 시스템 폰트 없을 때: NanumGothic 다운로드
+    # 시스템/캐시 없을 때 NanumGothic 자동 다운로드
     dl = os.path.join(PI_FONTS_DIR, "NanumGothic.ttf")
-    if os.path.isfile(dl) and os.path.getsize(dl) > 1000:
+    if os.path.isfile(dl) and os.path.getsize(dl) > 100_000:
         return dl
     urls = (
-        "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic%5Bwght%5D.ttf",
         "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/nanumgothic/NanumGothic-Regular.ttf",
-        "https://raw.githubusercontent.com/googlefonts/nanum-gothic/main/fonts/ttf/NanumGothic-Regular.ttf",
+        "https://cdn.jsdelivr.net/npm/@fontsource/nanum-gothic@5.0.0/files/nanum-gothic-korean-400-normal.woff",
+        "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf",
     )
     try:
         import urllib.request
 
         for url in urls:
+            # woff는 fpdf2 미지원 — ttf/otf만
+            if url.lower().endswith(".woff") or url.lower().endswith(".woff2"):
+                continue
+            tmp = dl + ".part"
             try:
-                urllib.request.urlretrieve(url, dl)
-                if os.path.isfile(dl) and os.path.getsize(dl) > 1000:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = resp.read()
+                if not data or len(data) < 100_000:
+                    continue
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                os.replace(tmp, dl)
+                if os.path.isfile(dl) and os.path.getsize(dl) > 100_000:
                     return dl
             except Exception:
+                try:
+                    if os.path.isfile(tmp):
+                        os.remove(tmp)
+                except Exception:
+                    pass
                 continue
     except Exception:
         pass
     raise RuntimeError(
         "한글 PDF 폰트를 찾을 수 없습니다. "
-        f"`{PI_FONTS_DIR}`에 NotoSansKR-Regular.ttf 또는 NanumGothic.ttf 를 두세요."
+        f"`{PI_FONTS_DIR}`에 NotoSansKR-Regular.ttf 또는 NanumGothic.ttf 를 두세요. "
+        "또는 `python3 -m pip install -r requirements.txt` 후 앱을 재시작하세요."
     )
 
 
