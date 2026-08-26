@@ -36,7 +36,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26ab · 버튼로딩안정화"
+PI_UI_BUILD = "2026-08-26ac · 인라인미리보기"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -1959,16 +1959,15 @@ def _pi_letter_preview_dialog() -> None:
             )
 
 
-def _open_letter_preview_dialog(
+def _prepare_letter_preview(
     *,
     letter_kwargs: dict,
     letter_body: str,
     pdf_name: str,
     xlsx_name: str,
 ) -> None:
-    """PDF·엑셀 생성 후 dialog 팝업 오픈."""
+    """PDF·엑셀 생성 후 인라인 미리보기용 session 상태만 채움 (팝업 없음)."""
     st.session_state.pop("pi_pdf_error", None)
-    pdf_bytes = None
     try:
         pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
         st.session_state["pi_pdf_bytes"] = pdf_bytes
@@ -1980,7 +1979,6 @@ def _open_letter_preview_dialog(
             "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
             f"(원인: {e})"
         )
-    xlsx = None
     try:
         xlsx = _build_letter_bytes(**letter_kwargs)
         st.session_state["pi_dl_bytes"] = xlsx
@@ -1999,6 +1997,22 @@ def _open_letter_preview_dialog(
         "items": list(letter_kwargs.get("items") or []),
     }
     st.session_state.pop("pi_preview_force", None)
+
+
+def _open_letter_preview_dialog(
+    *,
+    letter_kwargs: dict,
+    letter_body: str,
+    pdf_name: str,
+    xlsx_name: str,
+) -> None:
+    """PDF·엑셀 생성 후 dialog 팝업 오픈 (크게 보기용)."""
+    _prepare_letter_preview(
+        letter_kwargs=letter_kwargs,
+        letter_body=letter_body,
+        pdf_name=pdf_name,
+        xlsx_name=xlsx_name,
+    )
     _pi_letter_preview_dialog()
 
 
@@ -2606,14 +2620,14 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     st.caption("단가적용 생략 · 1. 공문내용만 사용합니다. (표 데이터는 유지됨)")
 
             with col_left:
-                st.markdown("##### 공문 보기")
+                st.markdown("##### 미리보기")
                 p1, p2, p3 = st.columns([1, 1, 1])
                 with p1:
                     do_preview = st.button(
                         "엑셀 미리보기",
                         use_container_width=True,
                         key="pi_left_preview",
-                        help="업체 전송용 공문 PDF를 팝업으로 엽니다. 메일 첨부와 동일합니다.",
+                        help="업체 전송용 공문 PDF를 이 화면에 표시합니다. 메일 첨부와 동일합니다.",
                     )
                 with p2:
                     do_send = st.button(
@@ -2646,17 +2660,15 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 mode = st.session_state.get("pi_left_mode") or "summary"
 
                 if do_preview:
-                    _open_letter_preview_dialog(
+                    _prepare_letter_preview(
                         letter_kwargs=letter_kwargs,
                         letter_body=letter_body,
                         pdf_name=pdf_name,
                         xlsx_name=xlsx_name,
                     )
                     mode = "pdf"
-                    if st.session_state.get("pi_pdf_bytes"):
-                        st.success("미리보기 팝업을 열었습니다.")
-                    else:
-                        st.warning("PDF 생성에 실패하여 보조 양식으로 열었습니다.")
+                    if not st.session_state.get("pi_pdf_bytes") and st.session_state.get("pi_pdf_error"):
+                        st.warning("PDF 생성에 실패했습니다. 아래 안내를 확인하세요.")
 
                 if mode in ("pdf", "excel"):
                     pdf_bytes = st.session_state.get("pi_pdf_bytes")
@@ -2674,14 +2686,21 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                                 f"(원인: {e})"
                             )
                             pdf_bytes = None
+                    if not xlsx:
+                        try:
+                            xlsx = _build_letter_bytes(**letter_kwargs)
+                            st.session_state["pi_dl_bytes"] = xlsx
+                            st.session_state["pi_dl_name"] = xlsx_name
+                        except Exception:
+                            xlsx = st.session_state.get("pi_dl_bytes")
                     if items_now:
-                        st.caption("업체 전송 양식(PDF) · 단가표 포함 · 「엑셀 미리보기」로 팝업 재오픈")
+                        st.caption("업체 전송 양식(PDF) · 단가표 포함")
                     else:
-                        st.caption("업체 전송 양식(PDF) · 본문만(단가표 없음) · 「엑셀 미리보기」로 팝업 재오픈")
+                        st.caption("업체 전송 양식(PDF) · 본문만(단가표 없음)")
+                    # 미리보기 안 버튼: 크게 보기 / PDF / 엑셀
                     b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
-                    if pdf_bytes:
-                        _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
-                        with b_big:
+                    with b_big:
+                        if pdf_bytes:
                             if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
                                 try:
                                     _open_letter_preview_dialog(
@@ -2691,12 +2710,8 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                                         xlsx_name=xlsx_name,
                                     )
                                 except Exception as e:
-                                    st.error(f"팝업 실패: {e}")
-                    elif st.session_state.get("pi_pdf_error"):
-                        st.error(str(st.session_state.get("pi_pdf_error")))
-                        if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
-                            _pi_letter_preview_dialog()
-                        with b_big:
+                                    st.error(f"크게 보기 실패: {e}")
+                        elif st.session_state.get("pi_pdf_error"):
                             if st.button("설치 가이드 보기", use_container_width=True, key="pi_pdf_help"):
                                 st.info("로컬: python3 -m pip install -r requirements.txt / Cloud: 재배포")
                     with b_dl1:
@@ -2719,6 +2734,12 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                                 key="pi_single_dl_xlsx",
                                 use_container_width=True,
                             )
+                    if pdf_bytes:
+                        _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
+                    elif st.session_state.get("pi_pdf_error"):
+                        st.error(str(st.session_state.get("pi_pdf_error")))
+                        if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
+                            _pi_letter_preview_dialog()
                 else:
                     _render_pi_left_summary(
                         client=client,
