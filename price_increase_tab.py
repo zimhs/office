@@ -802,7 +802,9 @@ def _items_key(client: str) -> str:
     return f"pi_items_{_norm_name(client) or 'none'}"
 
 
-def _init_items_from_prices(client: str, price_df: pd.DataFrame, pct: float) -> list[dict]:
+def _init_items_from_prices(client: str, price_df: pd.DataFrame, pct: float = 0.0) -> list[dict]:
+    """거래처 선택 시: 거래 품목명 + 마지막 거래 단가. 인상단가는 일단 동일(계산 UI에서 적용)."""
+    del pct  # 공문·초기표에 %를 자동 반영하지 않음
     items = []
     for _, row in price_df.iterrows():
         old = float(row.get("기존단가") or 0)
@@ -810,7 +812,7 @@ def _init_items_from_prices(client: str, price_df: pd.DataFrame, pct: float) -> 
             {
                 "품목명": str(row.get("품목명") or ""),
                 "기존단가": old,
-                "인상적용단가": default_increase_price(old, pct),
+                "인상적용단가": old,
                 "비고": "",
                 "최근매출일": str(row.get("최근매출일") or ""),
             }
@@ -895,8 +897,22 @@ def _apply_pct_to_items(items: list[dict], pct: float) -> list[dict]:
     return out
 
 
+def _apply_amount_to_items(items: list[dict], amount: float) -> list[dict]:
+    out = []
+    for it in items:
+        old = float(it.get("기존단가") or 0)
+        row = dict(it)
+        row["인상적용단가"] = apply_increase_by_amount(old, amount)
+        out.append(row)
+    return out
+
+
 def _default_letter_title() -> str:
     return "액체탄산 공급단가 인상 협조 요청의 건"
+
+
+def _default_doc_no(client: str = "") -> str:
+    return _format_doc_no(client, "")
 
 
 def _default_mail_body(client: str, effective: str, items: list[dict]) -> str:
@@ -927,6 +943,11 @@ def _build_letter_bytes(
     effective: str,
     contact: str,
     items: list[dict],
+    doc_no: str = "",
+    send_date: Optional[date] = None,
+    letter_paras: Optional[dict[str, str]] = None,
+    c37_override: str = "",
+    c38_override: str = "",
 ) -> bytes:
     tpl = resolve_letter_template()
     return fill_letter_workbook(
@@ -938,6 +959,11 @@ def _build_letter_bytes(
         effective=effective,
         contact=contact,
         items=items,
+        doc_no=doc_no,
+        send_date=send_date,
+        letter_paras=letter_paras,
+        c37_override=c37_override,
+        c38_override=c38_override,
     )
 
 
@@ -949,30 +975,51 @@ def _render_items_table(
 ) -> list[dict]:
     st.markdown("##### 기존거래제품명 · 단가 ➠ 인상단가")
     st.caption(
-        "아래 표에서 **내용 수정** · 행 끝 **🗑로 칸(행) 삭제** · **➕로 행 추가**가 가능합니다. "
-        "거래처별로 편집 내용이 유지됩니다."
+        "거래처 선택 시 **거래 품목·마지막 거래 단가**가 자동 반영됩니다. "
+        "표에서 내용 수정·행 삭제(🗑)·추가(➕) 가능. "
+        "**적용 % / 인상금액은 표 계산용이며 공문에는 표시되지 않습니다.**"
     )
 
-    c_pct, c_apply, c_reload = st.columns([1.2, 1, 1.2])
-    with c_pct:
-        pct = st.number_input(
-            "인상률(%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=float(pct_default),
-            step=0.5,
-            key=f"{editor_key}_pct",
-        )
+    mode = st.radio(
+        "인상 적용 방식",
+        ["퍼센테이지(%)", "인상금액(원)"],
+        horizontal=True,
+        key=f"{editor_key}_mode",
+        help="선택한 방식으로 기존단가에 적용해 인상단가를 자동 계산합니다. 공문에는 들어가지 않습니다.",
+    )
+    c_val, c_apply, c_reload = st.columns([1.4, 1.1, 1.2])
+    with c_val:
+        if mode.startswith("퍼센트"):
+            apply_val = st.number_input(
+                "적용 퍼센테이지(%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(pct_default),
+                step=0.5,
+                key=f"{editor_key}_pct",
+            )
+        else:
+            apply_val = st.number_input(
+                "인상금액(원)",
+                min_value=0.0,
+                max_value=1_000_000.0,
+                value=float(st.session_state.get(f"{editor_key}_amt", 0.0)),
+                step=100.0,
+                key=f"{editor_key}_amt",
+            )
     with c_apply:
         st.write("")
-        if st.button("인상률 일괄 적용", key=f"{editor_key}_apply_pct", use_container_width=True):
+        if st.button("인상단가에 적용", key=f"{editor_key}_apply", use_container_width=True, type="primary"):
             base = st.session_state.get(editor_key, items)
-            st.session_state[editor_key] = _apply_pct_to_items(base, pct)
+            if mode.startswith("퍼센트"):
+                st.session_state[editor_key] = _apply_pct_to_items(base, apply_val)
+            else:
+                st.session_state[editor_key] = _apply_amount_to_items(base, apply_val)
             _bump_editor_widget(editor_key)
             st.rerun()
     with c_reload:
         st.write("")
-        if st.button("매출단가 다시 불러오기", key=f"{editor_key}_reload", use_container_width=True):
+        if st.button("매출 최종단가 다시 불러오기", key=f"{editor_key}_reload", use_container_width=True):
             st.session_state.pop(editor_key, None)
             _bump_editor_widget(editor_key)
             st.rerun()
@@ -994,20 +1041,20 @@ def _render_items_table(
             ),
             "단가": st.column_config.NumberColumn(
                 "단가",
-                help="기존 단가(원)",
+                help="마지막 거래 단가(원)",
                 min_value=0.0,
                 format="%.1f",
                 width="small",
             ),
             "단가흐름": st.column_config.TextColumn(
                 "단가 ➠ 인상단가",
-                help="자동 표시 (단가·인상단가 수정 시 반영)",
+                help="자동 표시",
                 disabled=True,
                 width="medium",
             ),
             "인상단가": st.column_config.NumberColumn(
                 "인상단가",
-                help="인상 적용 단가(원)",
+                help="인상 적용 단가(원) — 직접 수정 가능",
                 min_value=0.0,
                 format="%.1f",
                 width="small",
@@ -1020,7 +1067,6 @@ def _render_items_table(
         key=_editor_widget_key(editor_key),
     )
 
-    # 단가흐름 갱신 (편집 반영 표시용) — 저장 키는 제품명/단가/인상단가
     if (
         edited is not None
         and not edited.empty
@@ -1062,6 +1108,60 @@ def _render_items_table(
             preview += f" 외 {len(result) - 5}건"
         st.caption(f"현재 {len(result)}개 품목 — {preview}")
     return result
+
+
+def _render_letter_content_editor(client: str, items: list[dict], effective_s: str) -> dict:
+    """공문 양식은 유지, 내용만 수정. 기본값=단가인상공문."""
+    st.markdown("##### 📄 공문 내용 (양식 유지 · 내용 편집)")
+    st.caption("기본 내용은 **단가인상공문(탄산)** 입니다. 레이아웃·로고는 그대로이고 아래 텍스트만 바뀝니다.")
+
+    d1, d2 = st.columns(2)
+    with d1:
+        doc_no = st.text_input(
+            "문서번호",
+            value=_default_doc_no(client),
+            key="pi_letter_doc_no",
+        )
+    with d2:
+        send_date = st.date_input("발송일자", value=date.today(), key="pi_letter_send_date")
+
+    with st.expander("공문 본문 문단 편집", expanded=False):
+        if "pi_letter_paras" not in st.session_state:
+            st.session_state["pi_letter_paras"] = dict(_DEFAULT_LETTER_PARAS)
+        paras = st.session_state["pi_letter_paras"]
+        for coord in sorted(paras.keys(), key=lambda x: (int(x[1:]), x[0])):
+            paras[coord] = st.text_area(
+                f"본문 {coord}",
+                value=paras[coord],
+                height=68,
+                key=f"pi_para_{coord}",
+            )
+        st.session_state["pi_letter_paras"] = paras
+        if st.button("본문 기본값(단가인상공문)으로 되돌리기", key="pi_paras_reset"):
+            st.session_state["pi_letter_paras"] = dict(_DEFAULT_LETTER_PARAS)
+            for coord in _DEFAULT_LETTER_PARAS:
+                st.session_state.pop(f"pi_para_{coord}", None)
+            st.rerun()
+
+    auto_c37 = _format_c37_target_items(items)
+    auto_c38 = _format_c38_price_lines(items)
+    with st.expander("단가 조정 내용 문구 (자동 생성 · 필요 시 수정)", expanded=True):
+        c37 = st.text_area("대상 품목 줄", value=auto_c37, height=60, key="pi_c37")
+        c38 = st.text_area(
+            "단가 인상 금액 줄 (기존단가→인상단가만 표시, 적용%/금액 미포함)",
+            value=auto_c38,
+            height=60,
+            key="pi_c38",
+        )
+        st.caption(f"시행 일자: {_format_korean_effective(effective_s)}")
+
+    return {
+        "doc_no": doc_no,
+        "send_date": send_date,
+        "letter_paras": dict(st.session_state.get("pi_letter_paras", _DEFAULT_LETTER_PARAS)),
+        "c37_override": c37,
+        "c38_override": c38,
+    }
 
 
 def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
@@ -1202,6 +1302,8 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             if not items:
                 st.warning("품목이 없습니다. 표에서 행을 추가하거나 매출 데이터를 확인하세요.")
 
+            letter_meta = _render_letter_content_editor(client, items, effective_s)
+
             body = st.text_area(
                 "메일 본문",
                 value=_default_mail_body(client, effective_s, items),
@@ -1210,16 +1312,22 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             )
 
             dl_name = f"단가인상_{client}_{date.today().strftime('%Y%m%d')}.xlsx"
+            letter_kwargs = dict(
+                client=client,
+                email=email,
+                title=title,
+                body=body,
+                effective=effective_s,
+                contact=contact,
+                items=items,
+                doc_no=letter_meta.get("doc_no") or "",
+                send_date=letter_meta.get("send_date"),
+                letter_paras=letter_meta.get("letter_paras"),
+                c37_override=letter_meta.get("c37_override") or "",
+                c38_override=letter_meta.get("c38_override") or "",
+            )
             if items:
-                xlsx = _build_letter_bytes(
-                    client=client,
-                    email=email,
-                    title=title,
-                    body=body,
-                    effective=effective_s,
-                    contact=contact,
-                    items=items,
-                )
+                xlsx = _build_letter_bytes(**letter_kwargs)
                 st.download_button(
                     "📥 공문 엑셀 미리보기",
                     data=xlsx,
@@ -1234,15 +1342,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 elif not smtp_cfg.get("ready"):
                     st.error("SMTP secrets 미설정")
                 else:
-                    xlsx = _build_letter_bytes(
-                        client=client,
-                        email=email,
-                        title=title,
-                        body=body,
-                        effective=effective_s,
-                        contact=contact,
-                        items=items,
-                    )
+                    xlsx = _build_letter_bytes(**letter_kwargs)
                     ok, msg = send_mail_smtp(
                         to_addr=email,
                         subject=title,
@@ -1262,23 +1362,65 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     )
                     (st.success if ok else st.error)(msg)
 
-    # ── 일괄 발송 ──
+    # ── 일괄 발송 (담당자 단위 · 거래처는 한 곳씩 개별 공문) ──
     with tab_bulk:
-        st.caption("담당자별 거래처 선택 → 거래처별 최근 단가로 공문 생성·발송")
-        b_staff = st.selectbox("담당자", ["전체"] + list_staff_options(sales_df), key="pi_bulk_staff")
-        bulk_clients = list_clients_for_staff(sales_df, b_staff)
-        pct_bulk = st.number_input(
-            "공통 인상률(%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=float(st.session_state.get("pi_global_pct", 5.0)),
-            step=0.5,
-            key="pi_bulk_pct",
+        st.caption(
+            "담당자를 먼저 고른 뒤, 해당 담당자 거래처를 **기본 전체 선택**합니다. "
+            "제외할 곳만 체크 해제하세요. 발송은 **한 거래처씩** 개별 공문으로 진행됩니다. "
+            "(회사 전체 일괄 발송은 없습니다.)"
         )
-        st.session_state["pi_global_pct"] = pct_bulk
+        staff_list = list_staff_options(sales_df)
+        if not staff_list:
+            st.warning("담당자 목록이 없습니다. 매출 데이터를 확인하세요.")
+            b_staff = ""
+        else:
+            b_staff = st.selectbox(
+                "담당자 (필수)",
+                staff_list,
+                key="pi_bulk_staff",
+                help="일괄은 담당자 단위입니다. 전체 거래처 일괄은 지원하지 않습니다.",
+            )
+        bulk_clients = list_clients_for_staff(sales_df, b_staff) if b_staff else []
+
+        mode_bulk = st.radio(
+            "공통 인상 적용 (표 계산용 · 공문에 %/금액 미표시)",
+            ["퍼센테이지(%)", "인상금액(원)"],
+            horizontal=True,
+            key="pi_bulk_mode",
+        )
+        if mode_bulk.startswith("퍼센트"):
+            pct_bulk = st.number_input(
+                "공통 적용 퍼센테이지(%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(st.session_state.get("pi_global_pct", 5.0)),
+                step=0.5,
+                key="pi_bulk_pct",
+            )
+            amt_bulk = 0.0
+            st.session_state["pi_global_pct"] = pct_bulk
+        else:
+            amt_bulk = st.number_input(
+                "공통 인상금액(원)",
+                min_value=0.0,
+                max_value=1_000_000.0,
+                value=0.0,
+                step=100.0,
+                key="pi_bulk_amt",
+            )
+            pct_bulk = 0.0
+
         title_bulk = st.text_input("공통 제목", value=_default_letter_title(), key="pi_bulk_title")
         eff_bulk = st.date_input("공통 시행일", value=date.today().replace(day=1), key="pi_bulk_eff")
         eff_bulk_s = eff_bulk.strftime("%Y-%m-%d") if hasattr(eff_bulk, "strftime") else str(eff_bulk)
+
+        # 담당자 바뀌면 선택 위젯 리셋 → 다시 전체 선택
+        prev_staff = st.session_state.get("pi_bulk_staff_prev")
+        if prev_staff != b_staff:
+            st.session_state["pi_bulk_staff_prev"] = b_staff
+            st.session_state.pop("pi_bulk_select", None)
+            ver = int(st.session_state.get("pi_bulk_sel_ver", 0)) + 1
+            st.session_state["pi_bulk_sel_ver"] = ver
 
         rows = []
         for cl in bulk_clients:
@@ -1286,22 +1428,52 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             last = last_sent_for_client(cl, log_df)
             rows.append(
                 {
-                    "발송": bool(em),
+                    "발송": True,  # 담당자 내 거래처 전체 선택 기본
                     "거래처": cl,
-                    "이메일": em,
+                    "이메일": em or "(미등록)",
                     "유형": classify_client_kind(cl, sales_df),
                     "최근발송일": last.get("date", "") if last else "",
                     "최근제목": last.get("subject", "") if last else "",
                 }
             )
         bulk_df = pd.DataFrame(rows)
-        if bulk_df.empty:
+        if not b_staff:
+            st.info("담당자를 선택하세요.")
+        elif bulk_df.empty:
             st.info("해당 담당자 거래처가 없습니다.")
         else:
+            sel1, sel2, sel3 = st.columns(3)
+            with sel1:
+                if st.button("담당자 거래처 전체 선택", key="pi_bulk_all_on", use_container_width=True):
+                    st.session_state["pi_bulk_force_all"] = True
+                    st.session_state["pi_bulk_force_none"] = False
+                    st.session_state["pi_bulk_sel_ver"] = int(st.session_state.get("pi_bulk_sel_ver", 0)) + 1
+                    st.session_state.pop("pi_bulk_select", None)
+                    st.rerun()
+            with sel2:
+                if st.button("전체 제외", key="pi_bulk_all_off", use_container_width=True):
+                    st.session_state["pi_bulk_force_all"] = False
+                    st.session_state["pi_bulk_force_none"] = True
+                    st.session_state["pi_bulk_sel_ver"] = int(st.session_state.get("pi_bulk_sel_ver", 0)) + 1
+                    st.session_state.pop("pi_bulk_select", None)
+                    st.rerun()
+            with sel3:
+                st.caption("체크 해제로 개별 제외")
+
+            if st.session_state.get("pi_bulk_force_none"):
+                bulk_df["발송"] = False
+            elif st.session_state.get("pi_bulk_force_all", True):
+                bulk_df["발송"] = True
+            # force 플래그는 한 번 반영 후 유지 위해 데이터에만 적용; 위젯 키는 ver로 갱신
+
             edited_bulk = st.data_editor(
                 bulk_df,
                 column_config={
-                    "발송": st.column_config.CheckboxColumn("발송", default=True),
+                    "발송": st.column_config.CheckboxColumn(
+                        "발송",
+                        help="기본 전체 선택. 제외할 거래처만 체크 해제",
+                        default=True,
+                    ),
                     "거래처": st.column_config.TextColumn("거래처", disabled=True),
                     "이메일": st.column_config.TextColumn("이메일", disabled=True),
                     "유형": st.column_config.TextColumn("유형", disabled=True),
@@ -1310,17 +1482,30 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 },
                 hide_index=True,
                 use_container_width=True,
-                key="pi_bulk_select",
+                key=f"pi_bulk_select_v{int(st.session_state.get('pi_bulk_sel_ver', 0))}",
             )
-            targets = edited_bulk[(edited_bulk["발송"] == True) & (edited_bulk["이메일"] != "")]  # noqa: E712
-            st.caption(f"발송 대상: **{len(targets)}** / {len(bulk_df)} (이메일 있는 곳만 체크 가능)")
+            # 발송 체크된 곳 — 이메일은 실제 발송 시 검증 (한 거래처씩)
+            checked = edited_bulk[edited_bulk["발송"] == True].copy()  # noqa: E712
+            has_mail = checked["이메일"].astype(str).str.contains("@", na=False)
+            targets = checked[has_mail]
+            no_mail = checked[~has_mail]
+            st.caption(
+                f"담당자 **{b_staff}** · 선택 {len(checked)}/{len(bulk_df)}곳 "
+                f"· 발송가능(메일) **{len(targets)}**곳 · 메일미등록 {len(no_mail)}곳"
+            )
+            if not no_mail.empty:
+                st.warning(
+                    "메일 미등록 거래처는 건너뜁니다: "
+                    + ", ".join(no_mail["거래처"].astype(str).head(8).tolist())
+                    + (" …" if len(no_mail) > 8 else "")
+                )
 
             confirm = st.checkbox(
-                f"위 {len(targets)}곳에 공문 메일을 발송합니다 (되돌릴 수 없음)",
+                f"선택 거래처를 **한 곳씩** 개별 공문으로 발송합니다 ({len(targets)}곳, 되돌릴 수 없음)",
                 key="pi_bulk_confirm",
             )
             if st.button(
-                "📧 일괄 발송 실행",
+                "📧 담당자 일괄 발송 (거래처별 개별)",
                 type="primary",
                 key="pi_bulk_send",
                 disabled=not confirm or targets.empty,
@@ -1329,13 +1514,19 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     st.error("SMTP secrets 미설정")
                 else:
                     prog = st.progress(0.0)
+                    status = st.empty()
                     results: list[str] = []
                     n = len(targets)
                     for i, (_, row) in enumerate(targets.iterrows()):
                         cl = str(row["거래처"])
-                        em = str(row["이메일"])
+                        em = str(row["이메일"]).strip()
+                        status.info(f"({i + 1}/{n}) **{cl}** 개별 공문 발송 중…")
                         pdf = latest_unit_prices(sales_df, cl)
-                        items_b = _init_items_from_prices(cl, pdf, pct_bulk)
+                        items_b = _init_items_from_prices(cl, pdf, 0.0)
+                        if mode_bulk.startswith("퍼센트"):
+                            items_b = _apply_pct_to_items(items_b, pct_bulk)
+                        else:
+                            items_b = _apply_amount_to_items(items_b, amt_bulk)
                         body_b = _default_mail_body(cl, eff_bulk_s, items_b)
                         dl = f"단가인상_{cl}_{date.today().strftime('%Y%m%d')}.xlsx"
                         xlsx_b = _build_letter_bytes(
@@ -1360,15 +1551,16 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             subject=title_bulk,
                             ok=ok,
                             mode="bulk",
-                            staff=b_staff if b_staff != "전체" else "",
+                            staff=b_staff,
                             items=len(items_b),
                             msg=msg,
                         )
                         results.append(f"{'✅' if ok else '❌'} {cl}: {msg}")
                         prog.progress((i + 1) / max(n, 1))
+                    status.empty()
                     for line in results:
                         st.write(line)
-                    st.success(f"일괄 발송 완료 ({n}건)")
+                    st.success(f"담당자 [{b_staff}] 거래처별 개별 발송 완료 ({n}건)")
 
     # ── 발송 이력 ──
     with tab_hist:
