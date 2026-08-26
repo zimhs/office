@@ -36,7 +36,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26aa · 메일UTF8·NBSP정리"
+PI_UI_BUILD = "2026-08-26ab · 버튼로딩안정화"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -82,6 +82,19 @@ def _ensure_dirs() -> None:
     os.makedirs(PI_DRAFTS, exist_ok=True)
 
 
+def _pi_rerun(*, full: bool = False) -> None:
+    """버튼·저장 후 갱신. 기본은 공문 fragment만(전체 앱 로딩 생략).
+
+    dialog 닫기 등 앱 전역 상태가 필요할 때만 full=True.
+    """
+    if full:
+        st.rerun()
+    try:
+        st.rerun(scope="fragment")
+    except TypeError:
+        st.rerun()
+
+
 def _secret_get(*keys: str) -> str:
     try:
         secrets = getattr(st, "secrets", None)
@@ -119,9 +132,9 @@ def _core_name(s: Any) -> str:
     return t
 
 
-def load_mail_contacts(path: str = PI_MAIL_CSV) -> pd.DataFrame:
-    if not os.path.isfile(path):
-        return pd.DataFrame(columns=["거래처", "이메일", "비고"])
+@st.cache_data(show_spinner=False)
+def _load_mail_contacts_cached(path: str, mtime: float) -> pd.DataFrame:
+    """mtime을 키에 넣어 파일 변경 시에만 다시 읽음."""
     try:
         df = pd.read_csv(path, encoding="utf-8-sig")
     except Exception:
@@ -130,6 +143,16 @@ def load_mail_contacts(path: str = PI_MAIL_CSV) -> pd.DataFrame:
         except Exception:
             return pd.DataFrame(columns=["거래처", "이메일", "비고"])
     return _normalize_mail_df(df)
+
+
+def load_mail_contacts(path: str = PI_MAIL_CSV) -> pd.DataFrame:
+    if not os.path.isfile(path):
+        return pd.DataFrame(columns=["거래처", "이메일", "비고"])
+    try:
+        mtime = float(os.path.getmtime(path))
+    except OSError:
+        mtime = 0.0
+    return _load_mail_contacts_cached(path, mtime)
 
 
 def _normalize_mail_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -172,6 +195,10 @@ def _normalize_mail_df(df: pd.DataFrame) -> pd.DataFrame:
 def save_mail_contacts(df: pd.DataFrame, path: str = PI_MAIL_CSV) -> None:
     _ensure_dirs()
     df.to_csv(path, index=False, encoding="utf-8-sig")
+    try:
+        _load_mail_contacts_cached.clear()
+    except Exception:
+        pass
 
 
 def lookup_email(client: str, mail_df: pd.DataFrame) -> str:
@@ -311,11 +338,27 @@ def classify_client_kind(name: str, sales_df: pd.DataFrame) -> str:
 
 
 def latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataFrame:
-    """거래처 선택 시 최근 적용 단가 (품목별)."""
+    """거래처 선택 시 최근 적용 단가 (품목별). session 캐시로 반복 계산·일괄 발송 부하 완화."""
     empty = pd.DataFrame(columns=["품목명", "기존단가", "최근매출일", "출고량합"])
     if sales_df is None or sales_df.empty or not client:
         return empty
-    df = sales_df.copy()
+    token = str(st.session_state.get("pi_sales_cache_token") or "")
+    bucket = st.session_state.setdefault("_pi_unit_price_cache", {})
+    if bucket.get("_token") != token:
+        bucket.clear()
+        bucket["_token"] = token
+    cached = bucket.get(client)
+    if isinstance(cached, pd.DataFrame):
+        return cached.copy()
+    out = _compute_latest_unit_prices(sales_df, client)
+    bucket[client] = out
+    return out.copy()
+
+
+def _compute_latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataFrame:
+    """거래처별 최근 단가 실계산 (캐시 미스 시)."""
+    empty = pd.DataFrame(columns=["품목명", "기존단가", "최근매출일", "출고량합"])
+    df = sales_df
     # 부모 선택 시 종속 포함
     if "거래처_원본" in df.columns:
         m = (df["거래처"].astype(str).str.strip() == client) | (
@@ -365,8 +408,7 @@ def latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataFrame:
         )
     if not rows:
         return empty
-    out = pd.DataFrame(rows).sort_values("출고량합", ascending=False).reset_index(drop=True)
-    return out
+    return pd.DataFrame(rows).sort_values("출고량합", ascending=False).reset_index(drop=True)
 
 
 def default_increase_price(old: float, pct: float) -> float:
@@ -1131,15 +1173,18 @@ def append_sent_log(
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     except OSError:
         pass
+    try:
+        _load_sent_log_cached.clear()
+    except Exception:
+        pass
 
 
-def load_sent_log() -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def _load_sent_log_cached(path: str, mtime: float) -> pd.DataFrame:
     cols = ["ts", "date", "client", "email", "subject", "ok", "mode", "staff", "items", "msg"]
-    if not os.path.isfile(PI_SENT_LOG):
-        return pd.DataFrame(columns=cols)
     rows = []
     try:
-        with open(PI_SENT_LOG, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -1161,6 +1206,17 @@ def load_sent_log() -> pd.DataFrame:
     if "subject" not in df.columns:
         df["subject"] = ""
     return df[cols]
+
+
+def load_sent_log() -> pd.DataFrame:
+    cols = ["ts", "date", "client", "email", "subject", "ok", "mode", "staff", "items", "msg"]
+    if not os.path.isfile(PI_SENT_LOG):
+        return pd.DataFrame(columns=cols)
+    try:
+        mtime = float(os.path.getmtime(PI_SENT_LOG))
+    except OSError:
+        mtime = 0.0
+    return _load_sent_log_cached(PI_SENT_LOG, mtime)
 
 
 def last_sent_for_client(client: str, log_df: Optional[pd.DataFrame] = None) -> dict:
@@ -1970,7 +2026,8 @@ def _pi_mail_compose_dialog() -> None:
     c1, c2 = st.columns(2)
     with c1:
         if st.button("닫기", use_container_width=True, key="pi_mail_compose_close"):
-            st.rerun()
+            st.session_state.pop("pi_mail_draft", None)
+            _pi_rerun(full=True)
     with c2:
         do_final = st.button(
             "최종 발송",
@@ -2104,13 +2161,13 @@ def _render_items_table(
             else:
                 st.session_state[editor_key] = _apply_amount_to_items(base, apply_val)
             _bump_editor_widget(editor_key)
-            st.rerun()
+            _pi_rerun()
     with c_reload:
         st.write("")
         if st.button("매출 최종단가 다시 불러오기", key=f"{editor_key}_reload", use_container_width=True):
             st.session_state.pop(editor_key, None)
             _bump_editor_widget(editor_key)
-            st.rerun()
+            _pi_rerun()
 
     if editor_key not in st.session_state:
         st.session_state[editor_key] = items
@@ -2142,17 +2199,17 @@ def _render_items_table(
             cleaned = _items_from_editor_df(edited)
             st.session_state[editor_key] = cleaned
             _bump_editor_widget(editor_key)
-            st.rerun()
+            _pi_rerun()
     with b2:
         if st.button("표 초기화(전체 삭제)", key=f"{editor_key}_clear", use_container_width=True):
             st.session_state[editor_key] = []
             _bump_editor_widget(editor_key)
-            st.rerun()
+            _pi_rerun()
     with b3:
         if st.button("표 내용 저장", key=f"{editor_key}_save", type="primary", use_container_width=True):
             st.session_state[editor_key] = _items_from_editor_df(edited)
             st.success("품목표 저장됨 (거래처별 유지)")
-            st.rerun()
+            # session_state에 이미 반영됨 — 전체/fragment rerun 없이 확인 메시지만 표시
 
     result = _items_from_editor_df(edited)
     st.session_state[editor_key] = result
@@ -2345,7 +2402,7 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
             chosen = st.selectbox("유사 연락처", pick_labels, key=f"pi_mail_pick_{_norm_name(client)}")
             if chosen in pick_map and st.session_state.get("pi_single_email") != pick_map[chosen]:
                 st.session_state["pi_single_email"] = pick_map[chosen]
-                st.rerun()
+                _pi_rerun()
         all_labels = ["— 전체 연락처 선택 —"]
         all_map: dict[str, str] = {}
         if mail_df is not None and not mail_df.empty:
@@ -2360,7 +2417,7 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
             chosen_all = st.selectbox("전체 연락처", all_labels, key=f"pi_mail_all_{_norm_name(client)}")
             if chosen_all in all_map and st.session_state.get("pi_single_email") != all_map[chosen_all]:
                 st.session_state["pi_single_email"] = all_map[chosen_all]
-                st.rerun()
+                _pi_rerun()
         quick = st.text_input("직접 입력 후 이 거래처에 저장", key="pi_quick_email")
         if st.button("연락처에 저장", key="pi_quick_save"):
             q = str(quick or "").strip()
@@ -2371,7 +2428,7 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
                 save_mail_contacts(out)
                 st.session_state["pi_single_email"] = q
                 st.success(f"{client} → {q} 저장됨")
-                st.rerun()
+                _pi_rerun()
             else:
                 st.error("올바른 이메일을 입력하세요.")
     return str(st.session_state.get("pi_single_email") or email or "")
@@ -2406,7 +2463,7 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
                         add = pd.DataFrame([{"거래처": n, "이메일": e, "비고": ""}])
                         out = pd.concat([mail_df, add], ignore_index=True)
                         save_mail_contacts(out)
-                        st.rerun()
+                        _pi_rerun()
     return mail_df
 
 
@@ -2425,9 +2482,17 @@ def _render_smtp_bar() -> dict:
     return cfg
 
 
+@st.fragment
 def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "") -> None:
-    """공문 탭 — 업무일지형 좌우 레이아웃 · 개별·일괄·이력."""
+    """공문 탭 — 업무일지형 좌우 레이아웃 · 개별·일괄·이력.
+
+    fragment: 저장·버튼 클릭 시 공문 탭만 갱신(다른 탭·사이드바 전체 로딩 생략).
+    """
     _ensure_dirs()
+    # 매출 스냅샷 토큰 — 바뀌면 단가 캐시 무효화
+    _n = 0 if sales_df is None else int(len(sales_df))
+    st.session_state["pi_sales_cache_token"] = f"{latest_update_str}|{_n}"
+
     st.markdown(
         "<div class='sub-header dashboard-tab-panel-head'>📨 공문</div>",
         unsafe_allow_html=True,
@@ -2508,7 +2573,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 with bbar1:
                     if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
                         st.session_state[body_key] = _default_letter_body_text()
-                        st.rerun()
+                        _pi_rerun()
                 with bbar2:
                     st.caption("미리보기·메일은 PDF(업체 전송 양식)")
                 st.text_area(
@@ -2561,7 +2626,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 with p3:
                     if st.button("요약 보기", use_container_width=True, key="pi_left_summary_btn"):
                         st.session_state["pi_left_mode"] = "summary"
-                        st.rerun()
+                        _pi_rerun()
 
                 letter_kwargs, letter_body, items_now, effective_s = _collect_letter_kwargs(
                     client=client,
@@ -2778,14 +2843,14 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     st.session_state["pi_bulk_force_none"] = False
                     st.session_state["pi_bulk_sel_ver"] = int(st.session_state.get("pi_bulk_sel_ver", 0)) + 1
                     st.session_state.pop("pi_bulk_select", None)
-                    st.rerun()
+                    _pi_rerun()
             with sel2:
                 if st.button("전체 제외", key="pi_bulk_all_off", use_container_width=True):
                     st.session_state["pi_bulk_force_all"] = False
                     st.session_state["pi_bulk_force_none"] = True
                     st.session_state["pi_bulk_sel_ver"] = int(st.session_state.get("pi_bulk_sel_ver", 0)) + 1
                     st.session_state.pop("pi_bulk_select", None)
-                    st.rerun()
+                    _pi_rerun()
             with sel3:
                 st.caption("체크 해제로 개별 제외")
 
