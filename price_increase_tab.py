@@ -34,7 +34,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26i · 메일유사매칭·업로드안내"
+PI_UI_BUILD = "2026-08-26j · 유사연락처목록선택→메일반영"
 
 # 기본 공문 후보 (캐시 원본 우선)
 _TEMPLATE_CANDIDATES = (
@@ -190,34 +190,57 @@ def lookup_email_with_meta(client: str, mail_df: pd.DataFrame) -> tuple[str, str
     return "", ""
 
 
-def suggest_mail_matches(client: str, mail_df: pd.DataFrame, limit: int = 5) -> list[dict]:
-    """매칭 실패 시 비슷한 연락처 후보."""
+def suggest_mail_matches(client: str, mail_df: pd.DataFrame, limit: int = 30) -> list[dict]:
+    """비슷한 연락처 후보 (사용자가 목록에서 선택)."""
     if not client or mail_df is None or mail_df.empty:
         return []
     core = _core_name(client)
-    prefix = core[:2] if len(core) >= 2 else core
+    prefix2 = core[:2] if len(core) >= 2 else core
+    prefix3 = core[:3] if len(core) >= 3 else core
     rows: list[dict] = []
+    seen: set[str] = set()
     for _, row in mail_df.iterrows():
-        raw = str(row.get("거래처") or "")
+        raw = str(row.get("거래처") or "").strip()
         c = _core_name(raw)
         em = str(row.get("이메일") or "").strip()
-        if not em:
+        if not em or not raw:
             continue
-        if prefix and prefix in c:
+        uid = f"{raw}|{em}"
+        if uid in seen:
+            continue
+        keep = False
+        if prefix3 and prefix3 in c:
+            keep = True
+        elif prefix2 and c.startswith(prefix2):
+            keep = True
+        elif core and c and (core in c or c in core):
+            keep = True
+        if keep:
+            seen.add(uid)
             rows.append({"거래처": raw, "이메일": em})
-        elif any(tok and tok in c for tok in ("가스",) if len(core) >= 4):
-            # too broad — skip
-            pass
-    # 더 가까운 순: 공통 접두 길이
-    def _pref(r: dict) -> int:
+
+    def _pref(r: dict) -> tuple[int, int]:
         a, b = core, _core_name(r["거래처"])
         i = 0
         while i < min(len(a), len(b)) and a[i] == b[i]:
             i += 1
-        return i
+        # 포함이면 가산
+        contain = 1 if (a in b or b in a) else 0
+        return (contain, i)
 
     rows.sort(key=_pref, reverse=True)
     return rows[:limit]
+
+
+def exact_mail_match(client: str, mail_df: pd.DataFrame) -> tuple[str, str]:
+    """이름 정규화 후 완전 일치만."""
+    if not client or mail_df is None or mail_df.empty:
+        return "", ""
+    key = _norm_name(client)
+    for _, row in mail_df.iterrows():
+        if _norm_name(row.get("거래처")) == key:
+            return str(row.get("이메일") or "").strip(), str(row.get("거래처") or "")
+    return "", ""
 
 
 def list_staff_options(sales_df: pd.DataFrame) -> list[str]:
@@ -1320,28 +1343,67 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             else:
                 st.caption("최근 발송 이력 없음")
 
-            email_default, matched_as = lookup_email_with_meta(client, mail_df)
-            # 거래처 바뀌면 수신메일 자동 갱신 (key 고정이면 value가 무시되는 Streamlit 특성 보정)
+            # 수신메일: 완전일치만 자동. 유사는 목록에서 사용자가 선택
+            exact_email, _exact_name = exact_mail_match(client, mail_df)
             if st.session_state.get("pi_email_client") != client:
                 st.session_state["pi_email_client"] = client
-                st.session_state["pi_single_email"] = email_default
-            email = st.text_input("수신 이메일", key="pi_single_email")
-            if email_default:
-                if matched_as and _norm_name(matched_as) != _norm_name(client):
-                    st.caption(f"연락처 자동반영: `{email_default}` ← 연락처명 **{matched_as}** (유사 매칭)")
-                else:
-                    st.caption(f"연락처 자동반영: `{email_default}`")
-            else:
-                st.warning(
-                    f"**{client}** 과 같은 이름이 메일 연락처에 없습니다. "
-                    "엑셀에 있어도 **📇 메일 연락처 관리**에 CSV로 업로드해야 반영됩니다. "
-                    "이름이 `대영가스상사` / `대영가스상`처럼 다르면 매칭이 안 될 수 있습니다."
+                st.session_state["pi_single_email"] = exact_email
+
+            cands = suggest_mail_matches(client, mail_df, limit=40)
+            pick_labels = ["— 연락처에서 선택 —"]
+            pick_map: dict[str, str] = {}
+            for row in cands:
+                label = f"{row['거래처']}  ·  {row['이메일']}"
+                pick_labels.append(label)
+                pick_map[label] = str(row["이메일"])
+
+            all_labels = ["— 전체 연락처에서 선택 —"]
+            all_map: dict[str, str] = {}
+            if mail_df is not None and not mail_df.empty:
+                for _, row in mail_df.sort_values("거래처").iterrows():
+                    nm = str(row.get("거래처") or "").strip()
+                    em = str(row.get("이메일") or "").strip()
+                    if not nm or not em:
+                        continue
+                    lab = f"{nm}  ·  {em}"
+                    all_labels.append(lab)
+                    all_map[lab] = em
+
+            st.markdown("##### 수신 이메일")
+            if exact_email:
+                st.caption(f"연락처 이름 일치 → 자동반영: `{exact_email}`")
+            elif cands:
+                st.caption(
+                    f"유사 이름이 **{len(cands)}**건 있습니다. "
+                    "아래에서 **해당 업체를 선택**하면 메일이 채워집니다."
                 )
-                cands = suggest_mail_matches(client, mail_df)
-                if cands:
-                    st.caption("비슷한 연락처 후보 (클릭 대신 아래 표에서 확인 후 수신이메일에 직접 넣거나 저장):")
-                    st.dataframe(pd.DataFrame(cands), use_container_width=True, hide_index=True)
-                with st.expander("이 거래처 메일 바로 저장", expanded=True):
+            else:
+                st.caption("유사 연락처가 없습니다. 전체 목록에서 고르거나 직접 입력하세요.")
+
+            if len(pick_labels) > 1:
+                chosen = st.selectbox(
+                    "유사 연락처에서 선택",
+                    pick_labels,
+                    key=f"pi_mail_pick_{_norm_name(client)}",
+                )
+                if chosen in pick_map:
+                    st.session_state["pi_single_email"] = pick_map[chosen]
+                    st.success(f"선택됨 → `{pick_map[chosen]}`")
+
+            if len(all_labels) > 1:
+                with st.expander("전체 연락처에서 선택", expanded=not cands and not exact_email):
+                    chosen_all = st.selectbox(
+                        "전체 연락처",
+                        all_labels,
+                        key=f"pi_mail_all_{_norm_name(client)}",
+                    )
+                    if chosen_all in all_map:
+                        st.session_state["pi_single_email"] = all_map[chosen_all]
+                        st.info(f"전체목록 선택 → `{all_map[chosen_all]}`")
+
+            email = st.text_input("수신 이메일 (확인·수정)", key="pi_single_email")
+            if not str(email or "").strip():
+                with st.expander("이 거래처 메일 직접 저장", expanded=False):
                     quick = st.text_input("저장할 이메일", key="pi_quick_email")
                     if st.button("연락처에 저장", key="pi_quick_save"):
                         q = str(quick or "").strip()
@@ -1355,6 +1417,8 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             st.rerun()
                         else:
                             st.error("올바른 이메일을 입력하세요.")
+            if mail_df is None or mail_df.empty:
+                st.warning("메일 연락처 CSV가 비어 있습니다. 위 **📇 메일 연락처 관리**에서 업로드하세요.")
 
             r2c1, r2c2, r2c3 = st.columns([2, 1, 1])
             with r2c1:
