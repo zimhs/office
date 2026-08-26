@@ -908,24 +908,77 @@ def smtp_status_label(cfg: Optional[dict] = None) -> str:
     return f"연동됨 · {cfg.get('user')} → {cfg.get('host')}:{cfg.get('port')}"
 
 
+def _smtp_ssl_contexts() -> list[ssl.SSLContext]:
+    """기본 검증 → (실패 시) 검증 완화. Mac/프록시 self-signed 체인 대응."""
+    contexts: list[ssl.SSLContext] = []
+    try:
+        contexts.append(ssl.create_default_context())
+    except Exception:
+        pass
+    # secrets로 강제 완화
+    relax = (_secret_get("smtp_ssl_verify", "SMTP_SSL_VERIFY") or "1").strip().lower()
+    if relax in ("0", "false", "no", "off"):
+        return [ssl._create_unverified_context()]
+    unverified = ssl._create_unverified_context()
+    if not contexts:
+        contexts.append(unverified)
+    else:
+        contexts.append(unverified)
+    return contexts
+
+
+def _smtp_run(
+    cfg: dict,
+    *,
+    timeout: int = 45,
+    send_fn: Optional[Any] = None,
+) -> tuple[bool, str]:
+    """로그인(+선택 발송). CERTIFICATE_VERIFY_FAILED 시 검증 완화로 1회 재시도."""
+    host, port = cfg["host"], int(cfg["port"])
+    user, password = cfg["user"], cfg["password"]
+    use_ssl = bool(cfg.get("ssl") or port == 465)
+    last_err: Optional[BaseException] = None
+    contexts = _smtp_ssl_contexts()
+    for i, context in enumerate(contexts):
+        try:
+            if use_ssl:
+                with smtplib.SMTP_SSL(host, port, context=context, timeout=timeout) as server:
+                    server.login(user, password)
+                    if send_fn is not None:
+                        send_fn(server)
+            else:
+                with smtplib.SMTP(host, port, timeout=timeout) as server:
+                    server.ehlo()
+                    server.starttls(context=context)
+                    server.ehlo()
+                    server.login(user, password)
+                    if send_fn is not None:
+                        send_fn(server)
+            note = ""
+            if i > 0:
+                note = " (SSL 인증서 검증 완화로 연결)"
+            return True, note
+        except smtplib.SMTPAuthenticationError:
+            raise
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            # 인증서 문제만 다음 컨텍스트로 재시도
+            if "certificate" in msg or "cert verify" in msg or "ssl:" in msg:
+                continue
+            break
+    assert last_err is not None
+    raise last_err
+
+
 def test_smtp_connection(cfg: Optional[dict] = None) -> tuple[bool, str]:
     cfg = cfg or smtp_settings()
     if not cfg.get("ready"):
         return False, "smtp_user / smtp_password 가 secrets에 없습니다."
-    host, port = cfg["host"], int(cfg["port"])
-    user, password = cfg["user"], cfg["password"]
     try:
-        context = ssl.create_default_context()
-        if cfg.get("ssl") or port == 465:
-            with smtplib.SMTP_SSL(host, port, context=context, timeout=20) as server:
-                server.login(user, password)
-        else:
-            with smtplib.SMTP(host, port, timeout=20) as server:
-                server.ehlo()
-                server.starttls(context=context)
-                server.ehlo()
-                server.login(user, password)
-        return True, f"로그인 성공 ({host}:{port})"
+        ok, note = _smtp_run(cfg, timeout=20, send_fn=None)
+        host, port = cfg["host"], int(cfg["port"])
+        return True, f"로그인 성공 ({host}:{port}){note}"
     except smtplib.SMTPAuthenticationError:
         return (
             False,
@@ -973,24 +1026,25 @@ def send_mail_smtp(
         msg.attach(part)
 
     all_rcpt = recipients + cc_list
+
+    def _do_send(server: smtplib.SMTP) -> None:
+        server.sendmail(cfg["from_addr"], all_rcpt, msg.as_string())
+
     try:
-        context = ssl.create_default_context()
-        host, port = cfg["host"], int(cfg["port"])
-        if cfg.get("ssl") or port == 465:
-            with smtplib.SMTP_SSL(host, port, context=context, timeout=45) as server:
-                server.login(cfg["user"], cfg["password"])
-                server.sendmail(cfg["from_addr"], all_rcpt, msg.as_string())
-        else:
-            with smtplib.SMTP(host, port, timeout=45) as server:
-                server.ehlo()
-                server.starttls(context=context)
-                server.ehlo()
-                server.login(cfg["user"], cfg["password"])
-                server.sendmail(cfg["from_addr"], all_rcpt, msg.as_string())
-        return True, f"발송 완료 → {', '.join(all_rcpt)}"
+        ok, note = _smtp_run(cfg, timeout=45, send_fn=_do_send)
+        return True, f"발송 완료 → {', '.join(all_rcpt)}{note}"
     except smtplib.SMTPAuthenticationError:
         return False, "SMTP 인증 실패 — 아이디/비밀번호 또는 POP3/IMAP 사용 설정 확인"
     except Exception as e:
+        err = str(e)
+        if "CERTIFICATE_VERIFY_FAILED" in err or "certificate verify failed" in err.lower():
+            return (
+                False,
+                "발송 실패: SSL 인증서 검증 오류입니다. "
+                "Mac은 Python 인증서 설치(Install Certificates) 후 재시도하거나, "
+                "secrets에 smtp_ssl_verify = \"0\" 을 넣고 다시 보내 보세요. "
+                f"({err})",
+            )
         return False, f"발송 실패: {e}"
 
 
