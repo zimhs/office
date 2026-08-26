@@ -35,7 +35,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26q · 미리보기팝업(dialog)"
+PI_UI_BUILD = "2026-08-26r · fpdf2폴백미리보기"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -1617,11 +1617,15 @@ def _pi_letter_preview_dialog() -> None:
     xlsx_name = st.session_state.get("pi_dl_name") or "단가인상공문.xlsx"
     meta = st.session_state.get("pi_preview_meta") or {}
 
+    pdf_error = str(st.session_state.get("pi_pdf_error") or "")
     st.caption("메일 첨부와 동일한 PDF입니다. 인상율·인상금액은 포함되지 않습니다.")
     if pdf_bytes:
         _show_pdf_preview(pdf_bytes, height=720, key="pi_dialog_pdf")
     else:
-        st.error("PDF를 만들 수 없습니다. 품목·공문 입력을 확인하세요.")
+        if pdf_error:
+            st.error(pdf_error)
+        else:
+            st.error("PDF를 만들 수 없습니다. 품목·공문 입력을 확인하세요.")
 
     # PDF 뷰어가 막히는 환경 대비 — 동일 내용 HTML 양식
     if meta:
@@ -1667,9 +1671,19 @@ def _open_letter_preview_dialog(
     xlsx_name: str,
 ) -> None:
     """PDF·엑셀 생성 후 dialog 팝업 오픈."""
-    pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
-    st.session_state["pi_pdf_bytes"] = pdf_bytes
-    st.session_state["pi_pdf_name"] = pdf_name
+    st.session_state.pop("pi_pdf_error", None)
+    pdf_bytes = None
+    try:
+        pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+        st.session_state["pi_pdf_bytes"] = pdf_bytes
+        st.session_state["pi_pdf_name"] = pdf_name
+    except Exception as e:
+        st.session_state.pop("pi_pdf_bytes", None)
+        st.session_state["pi_pdf_error"] = (
+            "PDF 생성 라이브러리(fpdf2)가 현재 서버에 없어 PDF를 만들지 못했습니다. "
+            "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
+            f"(원인: {e})"
+        )
     xlsx = None
     try:
         xlsx = _build_letter_bytes(**letter_kwargs)
@@ -2193,19 +2207,17 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         st.warning("단가 적용 품목이 없습니다. 오른쪽 2. 단가적용에서 확인하세요.")
                         st.session_state["pi_left_mode"] = "summary"
                     else:
-                        try:
-                            _open_letter_preview_dialog(
-                                letter_kwargs=letter_kwargs,
-                                letter_body=letter_body,
-                                pdf_name=pdf_name,
-                                xlsx_name=xlsx_name,
-                            )
-                            mode = "pdf"
+                        _open_letter_preview_dialog(
+                            letter_kwargs=letter_kwargs,
+                            letter_body=letter_body,
+                            pdf_name=pdf_name,
+                            xlsx_name=xlsx_name,
+                        )
+                        mode = "pdf"
+                        if st.session_state.get("pi_pdf_bytes"):
                             st.success("미리보기 팝업을 열었습니다.")
-                        except Exception as e:
-                            st.error(f"미리보기 생성 실패: {e}")
-                            st.session_state["pi_left_mode"] = "summary"
-                            mode = "summary"
+                        else:
+                            st.warning("PDF 생성에 실패하여 보조 양식으로 열었습니다.")
 
                 if mode in ("pdf", "excel"):
                     if not items_now:
@@ -2219,13 +2231,18 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                                 pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
                                 st.session_state["pi_pdf_bytes"] = pdf_bytes
                                 st.session_state["pi_pdf_name"] = pdf_name
+                                st.session_state.pop("pi_pdf_error", None)
                             except Exception as e:
-                                st.error(f"PDF 표시 실패: {e}")
+                                st.session_state["pi_pdf_error"] = (
+                                    "PDF 생성 라이브러리(fpdf2)가 현재 서버에 없어 PDF를 만들지 못했습니다. "
+                                    "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
+                                    f"(원인: {e})"
+                                )
                                 pdf_bytes = None
                         st.caption("업체 전송 양식(PDF) · 「엑셀 미리보기」로 팝업 재오픈")
+                        b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
                         if pdf_bytes:
                             _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
-                            b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
                             with b_big:
                                 if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
                                     try:
@@ -2237,7 +2254,15 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                                         )
                                     except Exception as e:
                                         st.error(f"팝업 실패: {e}")
-                            with b_dl1:
+                        elif st.session_state.get("pi_pdf_error"):
+                            st.error(str(st.session_state.get("pi_pdf_error")))
+                            if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
+                                _pi_letter_preview_dialog()
+                            with b_big:
+                                if st.button("설치 가이드 보기", use_container_width=True, key="pi_pdf_help"):
+                                    st.info("로컬: pip install -r requirements.txt / Cloud: 재배포(Requirements 재설치)")
+                        with b_dl1:
+                            if pdf_bytes:
                                 st.download_button(
                                     "📥 PDF",
                                     data=pdf_bytes,
@@ -2246,16 +2271,16 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                                     key="pi_single_dl_pdf",
                                     use_container_width=True,
                                 )
-                            with b_dl2:
-                                if xlsx:
-                                    st.download_button(
-                                        "📥 엑셀",
-                                        data=xlsx,
-                                        file_name=xlsx_name,
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                        key="pi_single_dl_xlsx",
-                                        use_container_width=True,
-                                    )
+                        with b_dl2:
+                            if xlsx:
+                                st.download_button(
+                                    "📥 엑셀",
+                                    data=xlsx,
+                                    file_name=xlsx_name,
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="pi_single_dl_xlsx",
+                                    use_container_width=True,
+                                )
                 else:
                     _render_pi_left_summary(
                         client=client,
@@ -2308,7 +2333,15 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             )
                             (st.success if ok else st.error)(msg)
                         except Exception as e:
-                            st.error(f"발송 실패: {e}")
+                            msg = str(e)
+                            if "fpdf2" in msg.lower():
+                                st.error(
+                                    "발송 실패: PDF 생성 라이브러리(fpdf2)가 없습니다. "
+                                    "로컬은 `pip install -r requirements.txt`, "
+                                    "Cloud는 재배포 후 다시 시도하세요."
+                                )
+                            else:
+                                st.error(f"발송 실패: {e}")
 
     # ── 일괄 발송 (담당자 단위 · 거래처는 한 곳씩 개별 공문) ──
     with tab_bulk:
