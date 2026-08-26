@@ -35,7 +35,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26v · 하단로고·도장·헤더연하게"
+PI_UI_BUILD = "2026-08-26w · 후면첨부·2장양식"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -1458,7 +1458,11 @@ def build_letter_pdf(
     body: str = "",
     **_extra: Any,
 ) -> bytes:
-    """업체 전송용 공문 PDF (A4). 인상율/% 문구는 넣지 않음."""
+    """업체 전송용 공문 PDF (A4). 인상율/% 문구는 넣지 않음.
+
+    단가표가 1장에 안 들어가면 본문에 「후면첨부」를 적고,
+    2장에 동일 양식(헤더·하단 로고/대표자/도장/회사명)으로 단가표를 표시한다.
+    """
     del email, body  # 메일본문·주소는 PDF 헤더에 불필요
     try:
         from fpdf import FPDF
@@ -1472,16 +1476,17 @@ def build_letter_pdf(
     doc_no = _format_doc_no(client, doc_no)
     paras = letter_paras if letter_paras is not None else dict(_DEFAULT_LETTER_PARAS)
     send_s = send_date.strftime("%Y.%m.%d") if hasattr(send_date, "strftime") else str(send_date)
+    clean = [it for it in items if str(it.get("품목명") or "").strip()]
 
     class LetterPDF(FPDF):
         def footer(self) -> None:  # noqa: N802
             pass
 
     pdf = LetterPDF(orientation="P", unit="mm", format="A4")
-    pdf.set_auto_page_break(auto=True, margin=16)
+    # 페이지 넘김은 직접 제어 (푸터·양식 유지)
+    pdf.set_auto_page_break(auto=False)
     pdf.add_page()
     pdf.add_font("kr", "", font_path)
-    # bold 후보가 없으면 regular 재사용
     bold_path = font_path
     for cand in (
         font_path.replace("Regular", "Bold"),
@@ -1497,88 +1502,107 @@ def build_letter_pdf(
         pdf.add_font("kr", "B", font_path)
 
     left = 18.0
-    right = 18.0
-    usable = 210.0 - left - right
-    y = 8.0
+    usable = 210.0 - left - 18.0
+    footer_top = 248.0  # 하단 로고·대표자 시작 Y (양면 공통)
+    content_max = footer_top - 6.0
 
     def _rule_bar(y0: float, *, height: float = 1.6, gray: int = 200) -> float:
-        """원본 엑셀 가로 경계 바 — 너무 진하지 않게 연한 회색."""
         pdf.set_fill_color(gray, gray, gray)
         pdf.rect(left, y0, usable, height, style="F")
         return y0 + height
 
-    # 상단 로고 (원본: 가운데 · 크게)
-    header = imgs.get("header")
-    if header and os.path.isfile(header):
-        try:
-            logo_w = 72.0
-            pdf.image(header, x=left + (usable - logo_w) / 2.0, y=y, w=logo_w)
-            y += 26.0
-        except Exception:
+    def _draw_letterhead(*, include_meta: bool = True) -> float:
+        """상단 양식(로고·주소·문서정보). 1·2장 공통."""
+        y = 8.0
+        header = imgs.get("header")
+        if header and os.path.isfile(header):
+            try:
+                logo_w = 72.0
+                pdf.image(header, x=left + (usable - logo_w) / 2.0, y=y, w=logo_w)
+                y += 26.0
+            except Exception:
+                y += 6.0
+        else:
             y += 6.0
-    else:
-        y += 6.0
 
-    # 주소/전화 (원본 C6) — 연한 경계선
-    y = _rule_bar(y, height=1.4, gray=205)
-    pdf.set_xy(left, y + 1.2)
-    pdf.set_font("kr", "", 8)
-    addr = (
-        "우 18524 경기도 화성시 팔탄면 서해로 1327-17"
-        f"    /    전화 {contact or '031-366-0799'}    /    FAX 031-366-5633"
-    )
-    pdf.multi_cell(usable, 4.0, addr, align="C")
-    y = pdf.get_y() + 1.2
-    y = _rule_bar(y, height=1.4, gray=205)
-    y += 3.5
+        y = _rule_bar(y, height=1.4, gray=205)
+        pdf.set_xy(left, y + 1.2)
+        pdf.set_font("kr", "", 8)
+        pdf.set_text_color(30, 30, 30)
+        addr = (
+            "우 18524 경기도 화성시 팔탄면 서해로 1327-17"
+            f"    /    전화 {contact or '031-366-0799'}    /    FAX 031-366-5633"
+        )
+        pdf.multi_cell(usable, 4.0, addr, align="C")
+        y = pdf.get_y() + 1.2
+        y = _rule_bar(y, height=1.4, gray=205)
+        y += 3.5
 
-    # 문서번호~제목 (원본 C9~C12)
-    pdf.set_xy(left, y)
-    pdf.set_font("kr", "", 12)
-    meta_lines = [
-        f"문서번호 : {doc_no}",
-        f"발송일자 : {send_s}",
-        f"수    신 : {client}",
-        f"제    목 : {title}",
-    ]
-    for line in meta_lines:
-        pdf.set_x(left)
-        pdf.cell(usable, 7.0, line, new_x="LMARGIN", new_y="NEXT")
-    y = pdf.get_y() + 2.0
-    y = _rule_bar(y, height=2.0, gray=190)  # 제목 아래 경계 — 연하게
-    y += 4.0
-    pdf.set_y(y)
+        if include_meta:
+            pdf.set_xy(left, y)
+            pdf.set_font("kr", "", 12)
+            for line in (
+                f"문서번호 : {doc_no}",
+                f"발송일자 : {send_s}",
+                f"수    신 : {client}",
+                f"제    목 : {title}",
+            ):
+                pdf.set_x(left)
+                pdf.cell(usable, 7.0, line, new_x="LMARGIN", new_y="NEXT")
+            y = pdf.get_y() + 2.0
+            y = _rule_bar(y, height=2.0, gray=190)
+            y += 4.0
+        pdf.set_y(y)
+        return y
 
-    pdf.set_font("kr", "", 10)
-    body_order = list(_BODY_CELL_ORDER)
-    for coord in body_order:
-        text = str(paras.get(coord) or "")
-        if not text.strip():
-            y = pdf.get_y() + 1.5
-            pdf.set_y(y)
-            continue
-        lines = _pdf_wrap_lines(pdf, text, usable)
-        for ln in lines:
-            if pdf.get_y() > 270:
-                pdf.add_page()
-            pdf.set_x(left)
-            pdf.cell(usable, 5.0, ln, new_x="LMARGIN", new_y="NEXT")
-        # 문단 사이 약간 간격 (양식 빈 행 느낌)
-        if coord in ("C16", "C19", "C24", "C26", "C27", "C29", "C31"):
-            pdf.ln(1.2)
+    def _draw_page_footer() -> None:
+        """하단 큰 로고·대표자+도장·회사명 — 매 페이지."""
+        footer_y = footer_top
+        footer_logo = imgs.get("footer") or imgs.get("header")
+        stamp = imgs.get("stamp")
+        if footer_logo and os.path.isfile(footer_logo):
+            try:
+                pdf.image(footer_logo, x=left, y=footer_y, w=78.0)
+            except Exception:
+                pass
 
-    pdf.ln(3)
-    clean = [it for it in items if str(it.get("품목명") or "").strip()]
-    if clean:
+        rep = "대표자 : 유 봉 래"
+        pdf.set_font("kr", "B", 12)
+        pdf.set_text_color(30, 30, 30)
+        rep_w = pdf.get_string_width(rep)
+        rep_x = left + usable - max(rep_w + 4, 42)
+        rep_y = footer_y + 8.0
+        pdf.set_xy(rep_x, rep_y)
+        pdf.cell(rep_w + 2, 7, rep, align="L")
+        if stamp and os.path.isfile(stamp):
+            try:
+                stamp_x = rep_x + max(rep_w - 18, 22)
+                pdf.image(stamp, x=stamp_x, y=rep_y - 6.0, w=22.0)
+            except Exception:
+                pass
+
+        line_y = footer_y + 26.0
+        pdf.set_draw_color(180, 180, 180)
+        pdf.set_line_width(0.45)
+        pdf.line(left, line_y, left + usable, line_y)
+        pdf.set_xy(left, line_y + 3.0)
+        pdf.set_font("kr", "B", 12)
+        pdf.cell(usable, 7, "(주) 신 일 가 스", align="C")
+
+    def _draw_price_table(start_y: Optional[float] = None) -> float:
+        """단가 조정 표 + 시행일. 반환: 끝난 Y."""
+        if start_y is not None:
+            pdf.set_y(start_y)
+        col_w = [usable * 0.34, usable * 0.20, usable * 0.20, usable * 0.26]
+        headers = ["제품명", "기존단가", "인상단가", "비고"]
+        row_h = 7.0
+
         pdf.set_font("kr", "B", 11)
+        pdf.set_text_color(15, 23, 42)
         pdf.set_x(left)
         pdf.cell(usable, 7, "단가 조정 내용", align="C", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(1.5)
 
-        # 표: 제품명 | 기존단가 | 인상단가 | 비고  (인상율/% 없음)
-        col_w = [usable * 0.34, usable * 0.20, usable * 0.20, usable * 0.26]
-        headers = ["제품명", "기존단가", "인상단가", "비고"]
-        row_h = 7.0
         pdf.set_font("kr", "B", 9)
         pdf.set_fill_color(15, 118, 110)
         pdf.set_text_color(255, 255, 255)
@@ -1588,9 +1612,17 @@ def build_letter_pdf(
         pdf.ln(row_h)
         pdf.set_text_color(15, 23, 42)
         pdf.set_font("kr", "", 9)
+
         for it in clean:
-            if pdf.get_y() + row_h > 275:
+            # 2장에서도 푸터를 침범하지 않도록 페이지 넘김(양식 유지)
+            if pdf.get_y() + row_h > content_max:
+                _draw_page_footer()
                 pdf.add_page()
+                _draw_letterhead(include_meta=True)
+                pdf.set_font("kr", "B", 11)
+                pdf.set_x(left)
+                pdf.cell(usable, 7, "단가 조정 내용 (계속)", align="C", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(1.0)
                 pdf.set_font("kr", "B", 9)
                 pdf.set_fill_color(15, 118, 110)
                 pdf.set_text_color(255, 255, 255)
@@ -1600,6 +1632,7 @@ def build_letter_pdf(
                 pdf.ln(row_h)
                 pdf.set_text_color(15, 23, 42)
                 pdf.set_font("kr", "", 9)
+
             vals = [
                 str(it.get("품목명") or ""),
                 f"{float(it.get('기존단가') or 0):,.0f}",
@@ -1624,51 +1657,66 @@ def build_letter_pdf(
             new_x="LMARGIN",
             new_y="NEXT",
         )
+        return float(pdf.get_y())
 
-    # 하단: 큰 로고(좌) + 대표자·도장(우) → 연한 구분선 → 회사명 최하단
-    block_h = 28.0
-    footer_y = max(pdf.get_y() + 8, 248.0)
-    if footer_y + block_h + 14 > 285:
+    def _price_block_height() -> float:
+        """단가표 블록 예상 높이(mm)."""
+        n = max(len(clean), 1)
+        return 7.0 + 1.5 + 7.0 + 7.0 * n + 2.0 + 6.0 + 2.0
+
+    # ── 1장: 헤더 + 본문 ──
+    _draw_letterhead(include_meta=True)
+    pdf.set_font("kr", "", 10)
+    pdf.set_text_color(15, 23, 42)
+    body_order = list(_BODY_CELL_ORDER)
+    for coord in body_order:
+        text = str(paras.get(coord) or "")
+        if not text.strip():
+            pdf.set_y(pdf.get_y() + 1.5)
+            continue
+        lines = _pdf_wrap_lines(pdf, text, usable)
+        for ln in lines:
+            if pdf.get_y() + 5.0 > content_max:
+                break
+            pdf.set_x(left)
+            pdf.cell(usable, 5.0, ln, new_x="LMARGIN", new_y="NEXT")
+        if coord in ("C16", "C19", "C24", "C26", "C27", "C29", "C31"):
+            pdf.ln(1.2)
+
+    attach_to_back = False
+    if clean:
+        pdf.ln(3)
+        need = _price_block_height()
+        if pdf.get_y() + need > content_max:
+            attach_to_back = True
+            pdf.set_font("kr", "B", 12)
+            pdf.set_x(left)
+            pdf.cell(usable, 8, "※ 단가 조정 내용 : 후면첨부", align="C", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(1)
+            pdf.set_font("kr", "", 10)
+            pdf.set_x(left)
+            pdf.cell(
+                usable,
+                6,
+                f"                           • 시행 일자 : {_format_korean_effective(effective)}",
+                new_x="LMARGIN",
+                new_y="NEXT",
+            )
+        else:
+            _draw_price_table()
+
+    _draw_page_footer()
+
+    # ── 2장(+): 동일 양식 + 단가표 ──
+    if attach_to_back and clean:
         pdf.add_page()
-        footer_y = 40.0
-
-    footer_logo = imgs.get("footer") or imgs.get("header")
-    stamp = imgs.get("stamp")
-    logo_w = 78.0
-    logo_h_est = 20.0
-    if footer_logo and os.path.isfile(footer_logo):
-        try:
-            pdf.image(footer_logo, x=left, y=footer_y, w=logo_w)
-        except Exception:
-            pass
-
-    # 대표자 문구 (우측) + 도장을 이름 위에 겹침
-    rep = "대표자 : 유 봉 래"
-    pdf.set_font("kr", "B", 12)
-    rep_w = pdf.get_string_width(rep)
-    rep_x = left + usable - max(rep_w + 4, 42)
-    rep_y = footer_y + 8.0
-    pdf.set_xy(rep_x, rep_y)
-    pdf.cell(rep_w + 2, 7, rep, align="L")
-    if stamp and os.path.isfile(stamp):
-        try:
-            stamp_w = 22.0
-            # 이름(유 봉 래) 위에 도장 오버레이
-            stamp_x = rep_x + max(rep_w - 18, 22)
-            stamp_y = rep_y - 6.0
-            pdf.image(stamp, x=stamp_x, y=stamp_y, w=stamp_w)
-        except Exception:
-            pass
-
-    # 구분선(연하게) + 회사명 제일 하단
-    line_y = footer_y + max(logo_h_est, 22.0) + 4.0
-    pdf.set_draw_color(180, 180, 180)
-    pdf.set_line_width(0.45)
-    pdf.line(left, line_y, left + usable, line_y)
-    pdf.set_xy(left, line_y + 3.0)
-    pdf.set_font("kr", "B", 12)
-    pdf.set_text_color(30, 30, 30)
-    pdf.cell(usable, 7, "(주) 신 일 가 스", align="C")
+        _draw_letterhead(include_meta=True)
+        pdf.set_font("kr", "", 10)
+        pdf.set_x(left)
+        pdf.cell(usable, 6, "【후면첨부】 단가 조정 내용", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+        _draw_price_table()
+        _draw_page_footer()
 
     bio = io.BytesIO()
     pdf.output(bio)
