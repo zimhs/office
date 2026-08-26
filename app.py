@@ -9753,7 +9753,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.t
         "📈 수익성 분석",
         "📝 일일업무일지",
         "🔎 시장조사",
-        "📨 단가인상",
+        "📨 공문",
     ]
 )
 # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
@@ -12835,7 +12835,7 @@ with tab11:
         st.info("다른 탭은 정상 이용 가능합니다. 새로고침 후에도 같으면 관리자에게 오류 문구를 보내 주세요.")
 
 with tab12:
-    # 단가인상 탭 전용 — 다른 탭 블록/공유 헬퍼는 수정하지 않음.
+    # 공문 탭 전용 — 다른 탭 블록/공유 헬퍼는 수정하지 않음.
     try:
         import importlib
         import os
@@ -12855,10 +12855,10 @@ with tab12:
         _pi_tab.render_price_increase_tab(_pi_df, latest_update_str=latest_update_str)
     except ModuleNotFoundError:
         st.error(
-            "단가인상 모듈(`price_increase_tab.py`)을 찾을 수 없습니다. "
+            "공문 모듈(`price_increase_tab.py`)을 찾을 수 없습니다. "
             "배포 파일에 포함되었는지 확인해 주세요."
         )
         st.info("다른 탭은 정상 이용 가능합니다.")
     except Exception as _pi_err:
-        st.error(f"단가인상 탭 오류: {_pi_err}")
+        st.error(f"공문 탭 오류: {_pi_err}")
         st.info("다른 탭은 정상 이용 가능합니다.")
