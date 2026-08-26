@@ -136,7 +136,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26o · 칸이동요약·연결오류수정"
+_WL_UI_BUILD = "2026-08-26p · 입력안정·요약깜빡최소"
 
 
 # =====================================================================
@@ -3071,11 +3071,173 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
     return clicked
 
 
+
+def _worklog_summary_html_body(full_html: str) -> str:
+    if "<body>" in full_html:
+        return full_html.split("<body>", 1)[1].rsplit("</body>", 1)[0].strip()
+    return full_html
+
+
+def _render_worklog_summary_block(selected: date, cells: dict) -> None:
+    """요약 카드 — iframe(components.html) 대신 markdown으로 깜빡임 최소화."""
+    draft_sig = json.dumps(cells, ensure_ascii=False, sort_keys=True)
+    sum_sig_k = f"wl_sum_sig_{selected.isoformat()}"
+    sum_html_k = f"wl_sum_html_{selected.isoformat()}"
+    if st.session_state.get(sum_sig_k) != draft_sig:
+        view_html = render_readable_preview_html(selected, cells)
+        st.session_state[sum_sig_k] = draft_sig
+        st.session_state[sum_html_k] = view_html
+    else:
+        view_html = st.session_state.get(sum_html_k)
+        if not view_html:
+            view_html = render_readable_preview_html(selected, cells)
+            st.session_state[sum_html_k] = view_html
+    body = _worklog_summary_html_body(view_html)
+    st.markdown(
+        f'<div class="wl-sum-preview" style="max-height:820px;overflow-y:auto;">{body}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _prepare_worklog_day_state(selected: date) -> None:
+    """날짜별 위젯 초기화 + 저장 직후 pending 시드 (페이지 rerun 시 1회)."""
+    _init_widget_state(selected)
+    iso = selected.isoformat()
+    pending = st.session_state.pop(f"wl_pending_sync_{iso}", None)
+    if isinstance(pending, dict):
+        _seed_day_entry_widgets(
+            selected,
+            pending.get("entries") or [{"client": "", "content": ""}],
+            pending.get("next") or "",
+            pending.get("notes") or "",
+        )
+        if pending.get("msg"):
+            st.session_state[f"wl_flash_save_{iso}"] = {
+                "msg": pending["msg"],
+                "cloud_err": pending.get("cloud_err"),
+            }
+
+
+def _render_worklog_left_preview(selected: date) -> None:
+    """왼쪽 요약/엑셀 — fragment 밖에서만 그림 (타이핑 시 재실행 안 됨)."""
+    draft = _view_cells_for_preview(selected)
+    st.markdown("##### 업무일지 보기")
+    st.caption("입력은 바로 반영 · 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신")
+    p1, p2 = st.columns(2)
+    with p1:
+        do_print = st.button(
+            "엑셀 미리보기", width="stretch", key="wl_print_btn",
+            help="현재 입력을 왼쪽에 원본 엑셀 양식으로 반영합니다.",
+        )
+    with p2:
+        do_open_print = st.button(
+            "인쇄창열기", width="stretch", key="wl_open_print_btn",
+            help="브라우저 인쇄 창을 엽니다.", type="primary",
+        )
+
+    def _resolve_print_xlsx() -> str:
+        cells_dl = _cells_from_widgets(selected)
+        sig = json.dumps(cells_dl, ensure_ascii=False, sort_keys=True)
+        sig_k = f"wl_print_cells_sig_{selected.isoformat()}"
+        path_k = f"wl_print_cells_path_{selected.isoformat()}"
+        out = os.path.abspath(_prepare_excel_preview(selected, cells_dl))
+        prev_sig = st.session_state.get(sig_k)
+        prev_path = st.session_state.get(path_k) or ""
+        if prev_sig != sig or prev_path != out:
+            st.session_state.pop(f"wl_print_html_cache_{out}", None)
+            st.session_state.pop(f"wl_print_html_meta_{out}", None)
+            if prev_path and prev_path != out:
+                st.session_state.pop(f"wl_print_html_cache_{prev_path}", None)
+                st.session_state.pop(f"wl_print_html_meta_{prev_path}", None)
+        st.session_state[sig_k] = sig
+        st.session_state[path_k] = out
+        st.session_state[f"wl_left_excel_path_{selected.isoformat()}"] = out
+        return out
+
+    if do_open_print:
+        try:
+            xlsx_abs = _resolve_print_xlsx()
+            _launch_browser_print_dialog(xlsx_abs)
+        except Exception as e:
+            st.error(f"인쇄 창을 열지 못했습니다: {e}")
+
+    _left_excel_key = f"wl_left_excel_on_{selected.isoformat()}"
+    _left_path_key = f"wl_left_excel_path_{selected.isoformat()}"
+    if do_print:
+        cells_now = _cells_from_widgets(selected)
+        try:
+            _publish_view_cells(selected, cells_now)
+            xlsx_abs = _prepare_excel_preview(selected, cells_now)
+            st.session_state[_left_excel_key] = True
+            st.session_state[_left_path_key] = xlsx_abs
+            st.session_state["wl_dialog_preview_path"] = xlsx_abs
+            form_sig = json.dumps(cells_now, ensure_ascii=False)
+            st.session_state[f"wl_form_sig_v14_{selected.isoformat()}"] = form_sig
+            st.session_state["_wl_force_form_sig"] = form_sig
+            st.success("✅ 엑셀 미리보기 화면이 갱신되었습니다.")
+            draft = dict(cells_now)
+        except Exception as e:
+            st.error(f"미리보기 생성 중 오류가 발생했습니다: {e}")
+            st.session_state[_left_excel_key] = False
+
+    _show_excel_left = bool(st.session_state.get(_left_excel_key))
+    if _show_excel_left:
+        sw1, sw2 = st.columns([1, 1])
+        with sw1:
+            st.caption("원본 엑셀 양식 적용 중")
+        with sw2:
+            if st.button("요약 보기로", width="stretch", key=f"wl_left_to_summary_{selected.isoformat()}"):
+                st.session_state[_left_excel_key] = False
+                st.rerun()
+        xlsx_left = st.session_state.get(_left_path_key) or ""
+        if xlsx_left and os.path.exists(str(xlsx_left)):
+            try:
+                cells_view = _view_cells_for_preview(selected)
+                live_sig = json.dumps(cells_view, ensure_ascii=False, sort_keys=True)
+                sig_k = f"wl_left_excel_sig_v24_{selected.isoformat()}"
+                html_k = f"wl_left_excel_html_v24_{selected.isoformat()}"
+                h_k = f"wl_left_excel_h_v24_{selected.isoformat()}"
+                scale_l = _WL_PREVIEW_SCALE
+                if st.session_state.get(sig_k) != live_sig:
+                    xlsx_left = _prepare_excel_preview(selected, cells_view)
+                    st.session_state[_left_path_key] = xlsx_left
+                    st.session_state[sig_k] = live_sig
+                    excel_html = render_worklog_view_html(str(xlsx_left), print_mode=False, auto_print=False, scale=scale_l)
+                    _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
+                    st.session_state[html_k] = excel_html
+                    st.session_state[h_k] = fh
+                else:
+                    excel_html = st.session_state.get(html_k)
+                    fh = st.session_state.get(h_k)
+                    if not excel_html:
+                        excel_html = render_worklog_view_html(str(xlsx_left), print_mode=False, auto_print=False, scale=scale_l)
+                        _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
+                        st.session_state[html_k] = excel_html
+                        st.session_state[h_k] = fh
+                components.html(excel_html, height=min(1100, max(560, int(fh or 600))), scrolling=True)
+                if st.button("크게 보기", width="stretch", key=f"wl_left_excel_big_{selected.isoformat()}"):
+                    st.session_state["wl_dialog_preview_path"] = str(xlsx_left)
+                    _worklog_form_preview_dialog()
+            except Exception as e:
+                st.warning(f"엑셀 양식 표시 실패: {e}")
+                st.session_state[_left_excel_key] = False
+        else:
+            st.info("엑셀 미리보기 파일이 없습니다. 다시 「엑셀 미리보기」를 눌러 주세요.")
+    else:
+        try:
+            _render_worklog_summary_block(selected, draft)
+        except Exception as e:
+            if _wl_quiet_ui():
+                st.info("업무일지 요약을 표시하지 못했습니다. 입력 후 다시 확인해 주세요.")
+            else:
+                st.error(f"요약 보기 오류: {e}")
+
+
 def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> None:
     """칸 이동·저장 등 시점에 왼쪽 요약 스냅샷을 갱신 요청.
 
     타이핑 중에는 호출하지 않음. focus_sig가 이전과 같으면 무시.
-    중첩 fragment에서 st.rerun(full) 하지 않음 — Cached ForwardMsg MISS 방지.
+    fragment 안에서는 플래그만 세움 → 페이지 rerun으로 왼쪽 갱신.
     """
     iso = d.isoformat()
     if focus_sig is not None:
@@ -3122,14 +3284,14 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["worklog_selected"] = clicked
                         st.session_state["worklog_month"] = date(clicked.year, clicked.month, 1)
                         st.session_state["wl_date_sync"] = ""
-                        _wl_rerun()
+                        st.rerun()
             with bar_del:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
                 with st.popover("삭제", width="content", key="wl_del_day_open"):
                     st.caption("이 날짜 일지 전체 삭제")
                     if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
                         st.session_state["wl_do_delete_day"] = selected.isoformat()
-                        _wl_rerun()
+                        st.rerun()
 
             _iso_bar = selected.isoformat()
             _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
@@ -3142,16 +3304,16 @@ def _render_worklog_input_panel(selected: date) -> None:
                     st.session_state["worklog_selected"] = picked
                     st.session_state["worklog_month"] = date(picked.year, picked.month, 1)
                     st.session_state["wl_date_sync"] = ""
-                    _wl_rerun()
+                    st.rerun()
                 else:
                     try:
                         reassign_worklog_date(selected, picked)
                         st.session_state["wl_date_sync"] = ""
-                        _wl_rerun()
+                        st.rerun()
                     except FileExistsError as e:
                         st.error(str(e))
                         st.session_state["wl_date_sync"] = ""
-                        _wl_rerun()
+                        st.rerun()
 
             iso = selected.isoformat()
             ek = _entries_key(selected)
@@ -3300,7 +3462,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         st.session_state[f"wl_focus_caret_{iso2}"] = s
 
-                st.caption("다음 칸으로 이동하면 왼쪽 요약이 갱신됩니다. 「저장」·「엑셀 미리보기」로도 반영됩니다.")
+                st.caption("입력은 즉시 반영됩니다. 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신됩니다.")
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
                 _rem = _usage["remaining"]
@@ -3456,7 +3618,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                             }
                             # 저장 직후 강제 pull은 구 원격본이 로컬을 덮을 수 있음 — push는 save_worklog_cells에서 이미 함
                             st.session_state["_wl_drive_sync_ts"] = time.time()
-                            _wl_rerun()
+                            st.rerun()
                     except Exception as e:
                         if _wl_quiet_ui():
                             st.error("저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요.")
@@ -3503,9 +3665,6 @@ def _render_worklog_input_panel(selected: date) -> None:
             if _sp_msg:
                 st.caption(_sp_msg)
             _wl_entry_editor()
-            # 칸 이동 시 published 갱신 후 같은 fragment만 rerun (중첩+full 금지 → Connection error 방지)
-            if st.session_state.pop("wl_need_left_refresh", None):
-                _wl_rerun()
 
 def render_worklog_tab(latest_update_str: str = "") -> None:
     if load_workbook is None:
@@ -3552,169 +3711,31 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             if k.startswith("wl_left_excel_html_") or k.startswith("wl_left_excel_sig_") or k.startswith("wl_print_html_cache_"):
                 st.session_state.pop(k, None)
 
-    @st.fragment
-    def _worklog_main() -> None:
-        if "worklog_selected" not in st.session_state: st.session_state["worklog_selected"] = date.today()
-        selected: date = st.session_state["worklog_selected"]
 
-        try:
-            from drive_autoload import sync_worklog_bidirectional
-            from worklog_remote_sync import (
-                remote_sync_configured,
-                resolve_gist_id,
-                sync_worklog_remote,
-            )
+    if "worklog_selected" not in st.session_state:
+        st.session_state["worklog_selected"] = date.today()
+    selected: date = st.session_state["worklog_selected"]
 
-            _now = time.time()
-            _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
-            _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
-            _on_cloud = _wl_is_streamlit_cloud()
-            _sync_iv = 15 if _on_cloud else 90
-            _wl_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
-            _remote_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
-            if _force or (_now - _prev >= _sync_iv):
-                st.session_state["_wl_drive_sync_ts"] = _now
-                if not _on_cloud:
-                    _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR, force=_force)
-                try:
-                    _remote_sync = sync_worklog_remote(WORKLOG_DIR, force=_force)
-                except Exception as _re:
-                    _remote_sync = {
-                        "ok": False,
-                        "skipped": False,
-                        "copied": [],
-                        "conflicts": [],
-                        "error": str(_re),
-                    }
-            _copied_n = len((_wl_sync or {}).get("copied") or []) + len((_remote_sync or {}).get("copied") or [])
-            if _copied_n:
-                _invalidate_saved_dates_cache()
-                st.caption(f"일지 동기화 · {_copied_n}개" + (" (Gist)" if _on_cloud else " (Drive/Cloud)"))
-            elif _on_cloud and isinstance(_remote_sync, dict) and _remote_sync.get("error") and not _remote_sync.get("skipped"):
-                st.warning(f"Gist 동기화 실패: {_remote_sync.get('error')}")
-            if _on_cloud and remote_sync_configured():
-                if st.button("↻ Gist에서 일지 가져오기", key="wl_gist_pull_btn", width="stretch"):
-                    st.session_state["_wl_drive_sync_force"] = True
-                    _wl_rerun()
-            _conflicts = []
-            for _src in (_wl_sync, _remote_sync):
-                if isinstance(_src, dict):
-                    for _c in (_src.get("conflicts") or []):
-                        if _c not in _conflicts:
-                            _conflicts.append(_c)
-            if _conflicts:
-                st.session_state["_wl_sync_conflicts"] = _conflicts
-            if st.session_state.get("_wl_sync_conflicts"):
-                _cf = list(st.session_state.get("_wl_sync_conflicts") or [])
-                st.warning(
-                    "로컬·클라우드 일지가 다릅니다(자동 덮어쓰기 안 함): "
-                    + ", ".join(_cf[:8])
-                    + ("…" if len(_cf) > 8 else "")
-                )
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    if st.button("이 기기 → 클라우드", key="wl_cf_push_local", width="stretch", help="이 기기 내용으로 Drive·Cloud를 맞춥니다."):
-                        try:
-                            from drive_autoload import resolve_drive_conflict
-                            from worklog_remote_sync import resolve_remote_conflict
+    if st.session_state.pop("wl_do_delete_day", None) == selected.isoformat():
+        delete_worklog_day(selected)
+        selected = st.session_state.get("worklog_selected") or selected
 
-                            for name in list(_cf):
-                                try:
-                                    resolve_drive_conflict(name, WORKLOG_DIR, prefer="local")
-                                except Exception:
-                                    pass
-                                try:
-                                    resolve_remote_conflict(name, WORKLOG_DIR, prefer="local")
-                                except Exception:
-                                    pass
-                            st.session_state.pop("_wl_sync_conflicts", None)
-                            st.session_state["_wl_drive_sync_force"] = True
-                            _invalidate_saved_dates_cache()
-                            _wl_rerun()
-                        except Exception as e:
-                            st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
-                with c2:
-                    if st.button("클라우드 → 이 기기", key="wl_cf_pull_drive", width="stretch", help="Cloud·Drive 내용으로 이 기기를 맞춥니다."):
-                        try:
-                            from drive_autoload import resolve_drive_conflict
-                            from worklog_remote_sync import resolve_remote_conflict
+    _prepare_worklog_day_state(selected)
 
-                            for name in list(_cf):
-                                try:
-                                    resolve_remote_conflict(name, WORKLOG_DIR, prefer="cloud")
-                                except Exception:
-                                    pass
-                                try:
-                                    resolve_drive_conflict(name, WORKLOG_DIR, prefer="drive")
-                                except Exception:
-                                    pass
-                            st.session_state.pop("_wl_sync_conflicts", None)
-                            st.session_state["_wl_drive_sync_force"] = True
-                            _invalidate_saved_dates_cache()
-                            _wl_rerun()
-                        except Exception as e:
-                            st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
-                with c3:
-                    if st.button("나중에", key="wl_cf_dismiss", width="stretch"):
-                        st.session_state.pop("_wl_sync_conflicts", None)
-                        _wl_rerun()
-            elif not remote_sync_configured():
-                if not st.session_state.get("_wl_remote_setup_hint"):
-                    st.session_state["_wl_remote_setup_hint"] = True
-                    if _wl_quiet_ui():
-                        st.caption("Cloud↔로컬 양방향: secrets에 github_token 을 넣으면 저장 시 서로 보입니다.")
-                    else:
-                        st.info(
-                            "로컬↔Cloud 양방향 연동: `.streamlit/secrets.toml` 에 "
-                            "`github_token` (및 선택 `worklog_gist_id`) 을 넣으세요. "
-                            "첫 저장 시 Gist가 만들어지고, 같은 값을 Cloud secrets에도 넣으면 "
-                            "한쪽 저장이 다른쪽에 바로 보입니다."
-                        )
-            else:
-                _gid = resolve_gist_id(WORKLOG_DIR)
-                if _gid and not st.session_state.get("_wl_remote_ready_hint"):
-                    st.session_state["_wl_remote_ready_hint"] = True
-                    st.caption(f"로컬↔Cloud 양방향 연동 활성 · gist {_gid[:8]}…")
-                elif not _gid and not st.session_state.get("_wl_remote_first_save_hint"):
-                    st.session_state["_wl_remote_first_save_hint"] = True
-                    st.caption("양방향 연동: 한 번 저장하면 Cloud Gist가 생성됩니다. 생성된 id를 Cloud secrets의 worklog_gist_id 에 넣으세요.")
-        except Exception:
-            pass
+    if st.session_state.get("wl_print_panel"):
+        _render_worklog_print_panel()
+        return
 
-        if st.session_state.pop("wl_do_delete_day", None) == selected.isoformat(): delete_worklog_day(selected)
+    if st.session_state.get("wl_date_sync") != selected.isoformat():
+        st.session_state["wl_date_pick"] = selected
+        st.session_state["wl_date_sync"] = selected.isoformat()
 
-        saved = list_saved_worklog_dates()
-        _init_widget_state(selected)
-        # 저장 직후 시드를 왼쪽 draft 계산보다 먼저 적용 — 요약에 구 위젯값이 남는 문제 방지
-        _iso_early = selected.isoformat()
-        _pending_early = st.session_state.pop(f"wl_pending_sync_{_iso_early}", None)
-        if isinstance(_pending_early, dict):
-            _seed_day_entry_widgets(
-                selected,
-                _pending_early.get("entries") or [{"client": "", "content": ""}],
-                _pending_early.get("next") or "",
-                _pending_early.get("notes") or "",
-            )
-            if _pending_early.get("msg"):
-                st.session_state[f"wl_flash_save_{_iso_early}"] = {
-                    "msg": _pending_early["msg"],
-                    "cloud_err": _pending_early.get("cloud_err"),
-                }
-        # 왼쪽 요약 = 마지막 칸이동/저장/미리보기 스냅샷 (타이핑 중 live 미반영 → 깜빡임 감소)
-        draft = _view_cells_for_preview(selected)
-
-        if st.session_state.get("wl_print_panel"):
-            _render_worklog_print_panel()
-            return
-
-        if st.session_state.get("wl_date_sync") != selected.isoformat():
-            st.session_state["wl_date_pick"] = selected
-            st.session_state["wl_date_sync"] = selected.isoformat()
-
-        st.markdown("""<style>div[class*="st-key-wl_del_day_open"] button, div[class*="st-key-wl_del_day_yes"] button { font-size: 0.72rem !important; padding: 0.12rem 0.4rem !important; min-height: 1.55rem !important; }</style>""", unsafe_allow_html=True)
-
-        # 단일 fragment만 사용 — 중첩 fragment + full rerun 은 Cached ForwardMsg MISS(Connection error) 유발
-        st.markdown("""
+    st.markdown(
+        """<style>div[class*="st-key-wl_del_day_open"] button, div[class*="st-key-wl_del_day_yes"] button { font-size: 0.72rem !important; padding: 0.12rem 0.4rem !important; min-height: 1.55rem !important; }</style>""",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
         <style>
         div[data-testid="column"]:nth-of-type(2) {
             position: sticky;
@@ -3723,125 +3744,146 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             z-index: 99;
         }
         </style>
-        """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
-        col_preview, col_edit = st.columns([1, 1.14], gap="small")
+    col_preview, col_edit = st.columns([1, 1.14], gap="small")
 
-        with col_preview:
-            st.markdown("##### 업무일지 보기")
-            st.caption("글자 입력 중에는 고정 · 다음 칸으로 이동(또는 저장)하면 갱신됩니다.")
-            p1, p2 = st.columns(2)
-            with p1:
-                do_print = st.button("엑셀 미리보기", width="stretch", key="wl_print_btn", help="왼쪽 칸에 원본 엑셀 양식을 적용합니다.")
-            with p2:
-                do_open_print = st.button("인쇄창열기", width="stretch", key="wl_open_print_btn", help="브라우저 인쇄 창을 엽니다.", type="primary")
+    with col_preview:
+        _render_worklog_left_preview(selected)
 
-            def _resolve_print_xlsx() -> str:
-                cells_dl = _cells_from_widgets(selected)
-                sig = json.dumps(cells_dl, ensure_ascii=False, sort_keys=True)
-                sig_k = f"wl_print_cells_sig_{selected.isoformat()}"
-                path_k = f"wl_print_cells_path_{selected.isoformat()}"
-                # 미리보기와 동일 xlsx(일일업무일지_*_인쇄.xlsx) 사용
-                out = os.path.abspath(_prepare_excel_preview(selected, cells_dl))
-                prev_sig = st.session_state.get(sig_k)
-                prev_path = st.session_state.get(path_k) or ""
-                if prev_sig != sig or prev_path != out:
-                    st.session_state.pop(f"wl_print_html_cache_{out}", None)
-                    st.session_state.pop(f"wl_print_html_meta_{out}", None)
-                    if prev_path and prev_path != out:
-                        st.session_state.pop(f"wl_print_html_cache_{prev_path}", None)
-                        st.session_state.pop(f"wl_print_html_meta_{prev_path}", None)
-                st.session_state[sig_k] = sig
-                st.session_state[path_k] = out
-                st.session_state[f"wl_left_excel_path_{selected.isoformat()}"] = out
-                return out
+    with col_edit:
 
-            if do_open_print:
-                try:
-                    xlsx_abs = _resolve_print_xlsx()
-                    _launch_browser_print_dialog(xlsx_abs)
-                except Exception as e: st.error(f"인쇄 창을 열지 못했습니다: {e}")
+        @st.fragment
+        def _worklog_edit() -> None:
+            sel = st.session_state.get("worklog_selected") or selected
+            try:
+                from drive_autoload import sync_worklog_bidirectional
+                from worklog_remote_sync import (
+                    remote_sync_configured,
+                    resolve_gist_id,
+                    sync_worklog_remote,
+                )
 
-            _left_excel_key = f"wl_left_excel_on_{selected.isoformat()}"
-            _left_path_key = f"wl_left_excel_path_{selected.isoformat()}"
-            if do_print:
-                cells_now = _cells_from_widgets(selected)
-                try:
-                    _publish_view_cells(selected, cells_now)
-                    xlsx_abs = _prepare_excel_preview(selected, cells_now)
-                    st.session_state[_left_excel_key] = True
-                    st.session_state[_left_path_key] = xlsx_abs
-                    st.session_state["wl_dialog_preview_path"] = xlsx_abs
-                    form_sig = json.dumps(cells_now, ensure_ascii=False)
-                    st.session_state[f"wl_form_sig_v14_{selected.isoformat()}"] = form_sig
-                    st.session_state["_wl_force_form_sig"] = form_sig
-                    st.success("✅ 엑셀 미리보기 화면이 갱신되었습니다.")
-                    draft = dict(cells_now)
-                except Exception as e:
-                    st.error(f"미리보기 생성 중 오류가 발생했습니다: {e}")
-                    st.session_state[_left_excel_key] = False
-
-            _show_excel_left = bool(st.session_state.get(_left_excel_key))
-            if _show_excel_left:
-                sw1, sw2 = st.columns([1, 1])
-                with sw1: st.caption("원본 엑셀 양식 적용 중")
-                with sw2:
-                    if st.button("요약 보기로", width="stretch", key=f"wl_left_to_summary_{selected.isoformat()}"):
-                        st.session_state[_left_excel_key] = False
-                        _wl_rerun()
-                xlsx_left = st.session_state.get(_left_path_key) or ""
-                if xlsx_left and os.path.exists(str(xlsx_left)):
+                _now = time.time()
+                _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
+                _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
+                _on_cloud = _wl_is_streamlit_cloud()
+                _sync_iv = 15 if _on_cloud else 90
+                _wl_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
+                _remote_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
+                if _force or (_now - _prev >= _sync_iv):
+                    st.session_state["_wl_drive_sync_ts"] = _now
+                    if not _on_cloud:
+                        _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR, force=_force)
                     try:
-                        cells_view = _view_cells_for_preview(selected)
-                        live_sig = json.dumps(cells_view, ensure_ascii=False, sort_keys=True)
-                        sig_k = f"wl_left_excel_sig_v24_{selected.isoformat()}"
-                        html_k = f"wl_left_excel_html_v24_{selected.isoformat()}"
-                        h_k = f"wl_left_excel_h_v24_{selected.isoformat()}"
-                        scale_l = _WL_PREVIEW_SCALE
-                        if st.session_state.get(sig_k) != live_sig:
-                            xlsx_left = _prepare_excel_preview(selected, cells_view)
-                            st.session_state[_left_path_key] = xlsx_left
-                            st.session_state[sig_k] = live_sig
-                            excel_html = render_worklog_view_html(str(xlsx_left), print_mode=False, auto_print=False, scale=scale_l)
-                            _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
-                            st.session_state[html_k] = excel_html
-                            st.session_state[h_k] = fh
+                        _remote_sync = sync_worklog_remote(WORKLOG_DIR, force=_force)
+                    except Exception as _re:
+                        _remote_sync = {
+                            "ok": False,
+                            "skipped": False,
+                            "copied": [],
+                            "conflicts": [],
+                            "error": str(_re),
+                        }
+                _copied_n = len((_wl_sync or {}).get("copied") or []) + len((_remote_sync or {}).get("copied") or [])
+                if _copied_n:
+                    _invalidate_saved_dates_cache()
+                    st.caption(f"일지 동기화 · {_copied_n}개" + (" (Gist)" if _on_cloud else " (Drive/Cloud)"))
+                elif _on_cloud and isinstance(_remote_sync, dict) and _remote_sync.get("error") and not _remote_sync.get("skipped"):
+                    st.warning(f"Gist 동기화 실패: {_remote_sync.get('error')}")
+                if _on_cloud and remote_sync_configured():
+                    if st.button("↻ Gist에서 일지 가져오기", key="wl_gist_pull_btn", width="stretch"):
+                        st.session_state["_wl_drive_sync_force"] = True
+                        _wl_rerun()
+                _conflicts = []
+                for _src in (_wl_sync, _remote_sync):
+                    if isinstance(_src, dict):
+                        for _c in (_src.get("conflicts") or []):
+                            if _c not in _conflicts:
+                                _conflicts.append(_c)
+                if _conflicts:
+                    st.session_state["_wl_sync_conflicts"] = _conflicts
+                if st.session_state.get("_wl_sync_conflicts"):
+                    _cf = list(st.session_state.get("_wl_sync_conflicts") or [])
+                    st.warning(
+                        "로컬·클라우드 일지가 다릅니다(자동 덮어쓰기 안 함): "
+                        + ", ".join(_cf[:8])
+                        + ("…" if len(_cf) > 8 else "")
+                    )
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        if st.button("이 기기 → 클라우드", key="wl_cf_push_local", width="stretch", help="이 기기 내용으로 Drive·Cloud를 맞춥니다."):
+                            try:
+                                from drive_autoload import resolve_drive_conflict
+                                from worklog_remote_sync import resolve_remote_conflict
+
+                                for name in list(_cf):
+                                    try:
+                                        resolve_drive_conflict(name, WORKLOG_DIR, prefer="local")
+                                    except Exception:
+                                        pass
+                                    try:
+                                        resolve_remote_conflict(name, WORKLOG_DIR, prefer="local")
+                                    except Exception:
+                                        pass
+                                st.session_state.pop("_wl_sync_conflicts", None)
+                                st.session_state["_wl_drive_sync_force"] = True
+                                _invalidate_saved_dates_cache()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
+                    with c2:
+                        if st.button("클라우드 → 이 기기", key="wl_cf_pull_drive", width="stretch", help="Cloud·Drive 내용으로 이 기기를 맞춥니다."):
+                            try:
+                                from drive_autoload import resolve_drive_conflict
+                                from worklog_remote_sync import resolve_remote_conflict
+
+                                for name in list(_cf):
+                                    try:
+                                        resolve_remote_conflict(name, WORKLOG_DIR, prefer="cloud")
+                                    except Exception:
+                                        pass
+                                    try:
+                                        resolve_drive_conflict(name, WORKLOG_DIR, prefer="drive")
+                                    except Exception:
+                                        pass
+                                st.session_state.pop("_wl_sync_conflicts", None)
+                                st.session_state["_wl_drive_sync_force"] = True
+                                _invalidate_saved_dates_cache()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
+                    with c3:
+                        if st.button("나중에", key="wl_cf_dismiss", width="stretch"):
+                            st.session_state.pop("_wl_sync_conflicts", None)
+                            _wl_rerun()
+                elif not remote_sync_configured():
+                    if not st.session_state.get("_wl_remote_setup_hint"):
+                        st.session_state["_wl_remote_setup_hint"] = True
+                        if _wl_quiet_ui():
+                            st.caption("Cloud↔로컬 양방향: secrets에 github_token 을 넣으면 저장 시 서로 보입니다.")
                         else:
-                            excel_html = st.session_state.get(html_k)
-                            fh = st.session_state.get(h_k)
-                            if not excel_html:
-                                excel_html = render_worklog_view_html(str(xlsx_left), print_mode=False, auto_print=False, scale=scale_l)
-                                _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
-                                st.session_state[html_k] = excel_html
-                                st.session_state[h_k] = fh
-                        components.html(excel_html, height=min(1100, max(560, int(fh or 600))), scrolling=True)
-                        if st.button("크게 보기", width="stretch", key=f"wl_left_excel_big_{selected.isoformat()}"):
-                            st.session_state["wl_dialog_preview_path"] = str(xlsx_left)
-                            _worklog_form_preview_dialog()
-                    except Exception as e:
-                        st.warning(f"엑셀 양식 표시 실패: {e}")
-                        st.session_state[_left_excel_key] = False
-                else: st.info("엑셀 미리보기 파일이 없습니다. 다시 「엑셀 미리보기」를 눌러 주세요.")
-            else:
-                try:
-                    draft_sig = json.dumps(draft, ensure_ascii=False, sort_keys=True)
-                    sum_sig_k = f"wl_sum_sig_{selected.isoformat()}"
-                    sum_html_k = f"wl_sum_html_{selected.isoformat()}"
-                    if st.session_state.get(sum_sig_k) != draft_sig:
-                        view_html = render_readable_preview_html(selected, draft)
-                        st.session_state[sum_sig_k] = draft_sig
-                        st.session_state[sum_html_k] = view_html
-                    else:
-                        view_html = st.session_state.get(sum_html_k)
-                        if not view_html:
-                            view_html = render_readable_preview_html(selected, draft)
-                            st.session_state[sum_html_k] = view_html
-                    components.html(view_html, height=820, scrolling=True)
-                except Exception as e:
-                    if _wl_quiet_ui(): st.info("업무일지 요약을 표시하지 못했습니다. 입력 후 다시 확인해 주세요.")
-                    else: st.error(f"요약 보기 오류: {e}")
+                            st.info(
+                                "로컬↔Cloud 양방향 연동: `.streamlit/secrets.toml` 에 "
+                                "`github_token` (및 선택 `worklog_gist_id`) 을 넣으세요. "
+                                "첫 저장 시 Gist가 만들어지고, 같은 값을 Cloud secrets에도 넣으면 "
+                                "한쪽 저장이 다른쪽에 바로 보입니다."
+                            )
+                else:
+                    _gid = resolve_gist_id(WORKLOG_DIR)
+                    if _gid and not st.session_state.get("_wl_remote_ready_hint"):
+                        st.session_state["_wl_remote_ready_hint"] = True
+                        st.caption(f"로컬↔Cloud 양방향 연동 활성 · gist {_gid[:8]}…")
+                    elif not _gid and not st.session_state.get("_wl_remote_first_save_hint"):
+                        st.session_state["_wl_remote_first_save_hint"] = True
+                        st.caption("양방향 연동: 한 번 저장하면 Cloud Gist가 생성됩니다. 생성된 id를 Cloud secrets의 worklog_gist_id 에 넣으세요.")
+            except Exception:
+                pass
 
-        with col_edit:
-            _render_worklog_input_panel(selected)
+            _render_worklog_input_panel(sel)
+            if st.session_state.pop("wl_need_left_refresh", None):
+                st.rerun()
 
-    _worklog_main()
+        _worklog_edit()
