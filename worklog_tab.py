@@ -136,7 +136,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26v · 엑셀미리보기축소"
+_WL_UI_BUILD = "2026-08-26w · Cloud만있어도로컬저장"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1179,18 +1179,31 @@ def detect_worklog_date_presence(d: date, *, include_remote: bool = True) -> dic
 
 
 def check_worklog_save_allowed(d: date, *, had_local_at_open: bool) -> tuple[bool, str]:
-    """날짜 중복 시 후입력 저장 차단. 이미 연 로컬 파일 수정은 허용."""
+    """날짜 중복 시 후입력 저장 차단.
+
+    로컬 캐시·월별 xlsx(Desktop/업무/일지)만 차단.
+    Cloud Gist·Drive에만 있으면 맥 로컬 저장은 허용 (저장 시 로컬+아카이브 반영).
+    """
     if had_local_at_open and os.path.isfile(worklog_path(d)):
         return True, ""
-    pres = detect_worklog_date_presence(d, include_remote=True)
-    if not pres["any"]:
+    local = os.path.isfile(worklog_path(d))
+    archive = worklog_date_exists_in_archive(d) if not local else False
+    if not local and not archive:
         return True, ""
-    locs = pres.get("locations") or []
+    locs: list[str] = []
+    if local:
+        locs.append("로컬 캐시")
+    if archive:
+        root = resolve_worklog_archive_root()
+        if root:
+            locs.append(f"일지/{d.year}/{d.month}월.xlsx")
+        else:
+            locs.append(f"월별파일({d.month}월.xlsx)")
     detail = ", ".join(locs) if locs else "저장소"
     return (
         False,
         f"{d.isoformat()} 일지가 이미 있습니다 ({detail}). "
-        "선입력본을 유지합니다. 수정하려면 달력에서 해당 날짜를 선택하거나 삭제 후 다시 저장하세요.",
+        "수정하려면 달력에서 해당 날짜(•)를 선택하거나 삭제 후 다시 저장하세요.",
     )
 
 
@@ -1649,10 +1662,9 @@ def delete_worklog_day(d: date) -> list[str]:
 
 def reassign_worklog_date(old: date, new: date) -> str:
     if old == new: return "same"
-    pres = detect_worklog_date_presence(new)
-    if pres["any"]:
-        locs = ", ".join(pres.get("locations") or ["저장본"])
-        raise FileExistsError(f"{new.isoformat()} 에 이미 저장된 일지가 있습니다 ({locs}).")
+    ok, block_msg = check_worklog_save_allowed(new, had_local_at_open=False)
+    if not ok:
+        raise FileExistsError(block_msg)
     try: cells = _cells_from_widgets(old)
     except Exception: cells = read_worklog_cells(old)
     cells["date"] = format_worklog_date(new)
@@ -3292,9 +3304,36 @@ def _render_worklog_summary_block(selected: date, cells: dict) -> None:
     )
 
 
+def _try_pull_remote_worklog_day(d: date) -> bool:
+    """로컬에 없고 Gist에만 있을 때 해당 일자를 받아 달력·편집에 반영."""
+    iso = d.isoformat()
+    if os.path.isfile(worklog_path(d)):
+        return False
+    tried_k = f"wl_remote_pull_tried_{iso}"
+    if st.session_state.get(tried_k):
+        return False
+    st.session_state[tried_k] = True
+    try:
+        from worklog_remote_sync import pull_worklog_day_from_remote
+
+        if pull_worklog_day_from_remote(d, WORKLOG_DIR):
+            _invalidate_saved_dates_cache()
+            _invalidate_worklog_presence_cache(d)
+            st.session_state.pop(_boot_key(d), None)
+            st.session_state.pop(f"wl_open_ctx_{iso}", None)
+            st.session_state.pop(f"wl_remote_pull_tried_{iso}", None)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _prepare_worklog_day_state(selected: date) -> None:
     """날짜별 위젯 초기화 + 저장 직후 pending 시드 (페이지 rerun 시 1회)."""
     iso = selected.isoformat()
+    if not os.path.isfile(worklog_path(selected)):
+        if _try_pull_remote_worklog_day(selected):
+            iso = selected.isoformat()
     open_k = f"wl_open_ctx_{iso}"
     if open_k not in st.session_state:
         pres = detect_worklog_date_presence(selected, include_remote=False)
@@ -3765,7 +3804,8 @@ def _render_worklog_input_panel(selected: date) -> None:
                             )
                             open_ctx = st.session_state.get(f"wl_open_ctx_{iso2}") or {}
                             had_local = bool(open_ctx.get("had_local")) or bool(st.session_state.get(f"wl_saved_ok_{iso2}"))
-                            path = save_worklog_cells(d, cells, force=had_local, allow_overwrite=had_local)
+                            # 저장 클릭 = 로컬·아카이브·Drive·Cloud 반영 (Cloud에만 있던 날도 맥에서 저장 가능)
+                            path = save_worklog_cells(d, cells, force=True, allow_overwrite=had_local)
                             st.session_state[f"wl_saved_ok_{iso2}"] = True
                             ctx = dict(open_ctx)
                             ctx["had_local"] = True
