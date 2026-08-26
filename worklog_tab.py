@@ -136,7 +136,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26s · 요약글씨복구·로딩개선"
+_WL_UI_BUILD = "2026-08-26t · 요약칸이동갱신·뷰전환경량"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -3311,7 +3311,7 @@ def _render_worklog_left_preview(selected: date) -> None:
     """왼쪽 요약/엑셀 — fragment 밖에서만 그림 (타이핑 시 재실행 안 됨)."""
     draft = _view_cells_for_preview(selected)
     st.markdown("##### 업무일지 보기")
-    st.caption("입력은 바로 반영 · 왼쪽 요약은 저장·엑셀 미리보기·날짜 변경 시 갱신")
+    st.caption("입력은 바로 반영 · 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신")
     p1, p2 = st.columns(2)
     with p1:
         do_print = st.button(
@@ -3376,8 +3376,11 @@ def _render_worklog_left_preview(selected: date) -> None:
             st.caption("원본 엑셀 양식 적용 중")
         with sw2:
             if st.button("요약 보기로", width="stretch", key=f"wl_left_to_summary_{selected.isoformat()}"):
+                try:
+                    _publish_view_cells(selected, _cells_from_widgets(selected))
+                except Exception:
+                    pass
                 st.session_state[_left_excel_key] = False
-                st.rerun()
         xlsx_left = st.session_state.get(_left_path_key) or ""
         if xlsx_left and os.path.exists(str(xlsx_left)):
             try:
@@ -3423,7 +3426,7 @@ def _render_worklog_left_preview(selected: date) -> None:
 
 
 def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> None:
-    """저장·엑셀 미리보기 등 — 왼쪽 요약 스냅샷 갱신 (페이지 rerun 없음, 같은 런에서 반영)."""
+    """칸 이동·저장 등 — 왼쪽 요약 스냅샷 갱신 요청 (편집 fragment 종료 시 full rerun)."""
     iso = d.isoformat()
     if focus_sig is not None:
         prev = st.session_state.get(f"wl_left_focus_sig_{iso}")
@@ -3434,6 +3437,14 @@ def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> N
         _publish_view_cells(d, _cells_from_widgets(d))
     except Exception:
         pass
+    st.session_state["wl_need_left_refresh"] = True
+
+
+def _wl_finish_edit_fragment() -> None:
+    """편집 fragment 마무리 — 왼쪽 요약 갱신 필요 시 sync 생략 full rerun."""
+    if st.session_state.pop("wl_need_left_refresh", None):
+        st.session_state["wl_skip_sync_once"] = True
+        st.rerun()
 
 
 
@@ -3611,10 +3622,12 @@ def _render_worklog_input_panel(selected: date) -> None:
                     fk = str(hook.get("focus") or "")
                     if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
                         st.session_state["wl_active_cell_key"] = fk
+                        _request_left_preview_refresh(d, focus_sig=fk)
                         return
                     if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state[f"wl_focus_ln_{iso2}"] = fk
+                        _request_left_preview_refresh(d, focus_sig=fk)
 
                 def _on_caret_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
@@ -3638,7 +3651,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         st.session_state[f"wl_focus_caret_{iso2}"] = s
 
-                st.caption("입력은 즉시 반영됩니다. 왼쪽 요약은 저장·엑셀 미리보기·날짜 변경 시 갱신됩니다.")
+                st.caption("입력은 즉시 반영됩니다. 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신됩니다.")
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
                 _rem = _usage["remaining"]
@@ -3837,6 +3850,8 @@ def _render_worklog_input_panel(selected: date) -> None:
                     on_caret_change=_on_caret_trigger,
                 )
                 if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
+                    _request_left_preview_refresh(d)
+                    _wl_finish_edit_fragment()
                     _wl_rerun()
                 ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
                 if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
@@ -3859,6 +3874,8 @@ def _render_worklog_input_panel(selected: date) -> None:
 
 def _maybe_sync_worklog_remote() -> None:
     """페이지 전체 rerun 시에만 Drive/Gist 동기화 (fragment 입력 rerun 제외)."""
+    if st.session_state.pop("wl_skip_sync_once", None):
+        return
     try:
         from drive_autoload import sync_worklog_bidirectional
         from worklog_remote_sync import sync_worklog_remote
@@ -4089,7 +4106,13 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     col_preview, col_edit = st.columns([1, 1.14], gap="small")
 
     with col_preview:
-        _render_worklog_left_preview(selected)
+
+        @st.fragment
+        def _worklog_left() -> None:
+            sel = st.session_state.get("worklog_selected") or selected
+            _render_worklog_left_preview(sel)
+
+        _worklog_left()
 
     with col_edit:
         _render_worklog_sync_ui()
@@ -4098,5 +4121,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         def _worklog_edit() -> None:
             sel = st.session_state.get("worklog_selected") or selected
             _render_worklog_input_panel(sel)
+            _wl_finish_edit_fragment()
 
         _worklog_edit()
