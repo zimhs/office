@@ -136,7 +136,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26n · 칸이동시요약갱신"
+_WL_UI_BUILD = "2026-08-26o · 칸이동요약·연결오류수정"
 
 
 # =====================================================================
@@ -3075,6 +3075,7 @@ def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> N
     """칸 이동·저장 등 시점에 왼쪽 요약 스냅샷을 갱신 요청.
 
     타이핑 중에는 호출하지 않음. focus_sig가 이전과 같으면 무시.
+    중첩 fragment에서 st.rerun(full) 하지 않음 — Cached ForwardMsg MISS 방지.
     """
     iso = d.isoformat()
     if focus_sig is not None:
@@ -3082,6 +3083,11 @@ def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> N
         if prev == focus_sig:
             return
         st.session_state[f"wl_left_focus_sig_{iso}"] = focus_sig
+    now = time.time()
+    last = float(st.session_state.get("wl_left_refresh_ts") or 0)
+    if (now - last) < 0.25:
+        return
+    st.session_state["wl_left_refresh_ts"] = now
     try:
         _publish_view_cells(d, _cells_from_widgets(d))
     except Exception:
@@ -3091,7 +3097,7 @@ def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> N
 
 
 def _render_worklog_input_panel(selected: date) -> None:
-    """오른쪽 게이지+입력 (중첩 fragment). 칸 이동 시 왼쪽 요약 갱신."""
+    """오른쪽 게이지+입력. 칸 이동 시 published 스냅샷 갱신(동일 fragment rerun)."""
     saved = list_saved_worklog_dates()
     try:
         _gauge_usage = _content_row_usage(_read_editor_entries(selected))
@@ -3116,14 +3122,14 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["worklog_selected"] = clicked
                         st.session_state["worklog_month"] = date(clicked.year, clicked.month, 1)
                         st.session_state["wl_date_sync"] = ""
-                        _wl_rerun(full=True)
+                        _wl_rerun()
             with bar_del:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
                 with st.popover("삭제", width="content", key="wl_del_day_open"):
                     st.caption("이 날짜 일지 전체 삭제")
                     if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
                         st.session_state["wl_do_delete_day"] = selected.isoformat()
-                        _wl_rerun(full=True)
+                        _wl_rerun()
 
             _iso_bar = selected.isoformat()
             _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
@@ -3136,16 +3142,16 @@ def _render_worklog_input_panel(selected: date) -> None:
                     st.session_state["worklog_selected"] = picked
                     st.session_state["worklog_month"] = date(picked.year, picked.month, 1)
                     st.session_state["wl_date_sync"] = ""
-                    _wl_rerun(full=True)
+                    _wl_rerun()
                 else:
                     try:
                         reassign_worklog_date(selected, picked)
                         st.session_state["wl_date_sync"] = ""
-                        _wl_rerun(full=True)
+                        _wl_rerun()
                     except FileExistsError as e:
                         st.error(str(e))
                         st.session_state["wl_date_sync"] = ""
-                        _wl_rerun(full=True)
+                        _wl_rerun()
 
             iso = selected.isoformat()
             ek = _entries_key(selected)
@@ -3450,7 +3456,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                             }
                             # 저장 직후 강제 pull은 구 원격본이 로컬을 덮을 수 있음 — push는 save_worklog_cells에서 이미 함
                             st.session_state["_wl_drive_sync_ts"] = time.time()
-                            _wl_rerun(full=True)
+                            _wl_rerun()
                     except Exception as e:
                         if _wl_quiet_ui():
                             st.error("저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요.")
@@ -3497,9 +3503,9 @@ def _render_worklog_input_panel(selected: date) -> None:
             if _sp_msg:
                 st.caption(_sp_msg)
             _wl_entry_editor()
-            # 칸 이동으로 요청된 왼쪽 요약 갱신 (중첩 fragment → 전체 rerun)
+            # 칸 이동 시 published 갱신 후 같은 fragment만 rerun (중첩+full 금지 → Connection error 방지)
             if st.session_state.pop("wl_need_left_refresh", None):
-                _wl_rerun(full=True)
+                _wl_rerun()
 
 def render_worklog_tab(latest_update_str: str = "") -> None:
     if load_workbook is None:
@@ -3707,7 +3713,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         st.markdown("""<style>div[class*="st-key-wl_del_day_open"] button, div[class*="st-key-wl_del_day_yes"] button { font-size: 0.72rem !important; padding: 0.12rem 0.4rem !important; min-height: 1.55rem !important; }</style>""", unsafe_allow_html=True)
 
-        # 오른쪽만 중첩 fragment — 타이핑 시 왼쪽 iframe 미재삽입. 칸 이동 시 full rerun으로 요약 갱신.
+        # 단일 fragment만 사용 — 중첩 fragment + full rerun 은 Cached ForwardMsg MISS(Connection error) 유발
         st.markdown("""
         <style>
         div[data-testid="column"]:nth-of-type(2) {
@@ -3782,7 +3788,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 with sw2:
                     if st.button("요약 보기로", width="stretch", key=f"wl_left_to_summary_{selected.isoformat()}"):
                         st.session_state[_left_excel_key] = False
-                        _wl_rerun(full=True)
+                        _wl_rerun()
                 xlsx_left = st.session_state.get(_left_path_key) or ""
                 if xlsx_left and os.path.exists(str(xlsx_left)):
                     try:
@@ -3836,10 +3842,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     else: st.error(f"요약 보기 오류: {e}")
 
         with col_edit:
-            @st.fragment
-            def _worklog_edit_side() -> None:
-                d_sel = st.session_state.get("worklog_selected") or selected
-                _render_worklog_input_panel(d_sel)
-            _worklog_edit_side()
+            _render_worklog_input_panel(selected)
 
     _worklog_main()
