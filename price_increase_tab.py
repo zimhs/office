@@ -35,7 +35,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26s · 한글폰트자동설치"
+PI_UI_BUILD = "2026-08-26t · 공문헤더경계선원본맞춤"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -1482,29 +1482,42 @@ def build_letter_pdf(
     left = 18.0
     right = 18.0
     usable = 210.0 - left - right
-    y = 12.0
+    y = 10.0
 
+    def _rule_bar(y0: float, *, height: float = 3.2, gray: int = 80) -> float:
+        """원본 엑셀의 두꺼운 가로 경계 바(행 채움) 재현."""
+        pdf.set_fill_color(gray, gray, gray)
+        pdf.rect(left, y0, usable, height, style="F")
+        return y0 + height
+
+    # 상단 로고 (원본: 가운데)
     header = imgs.get("header")
     if header and os.path.isfile(header):
         try:
-            pdf.image(header, x=left + usable - 52, y=y, w=50)
+            logo_w = 48.0
+            pdf.image(header, x=left + (usable - logo_w) / 2.0, y=y, w=logo_w)
+            y += 18.0
         except Exception:
-            pass
-    pdf.set_xy(left, y + 22)
+            y += 4.0
+    else:
+        y += 4.0
+
+    # 주소/전화 (원본 C6) — 위·아래 두꺼운 경계선으로 감쌈
+    y = _rule_bar(y, height=2.6, gray=90)
+    pdf.set_xy(left, y + 1.0)
     pdf.set_font("kr", "", 8)
     addr = (
         "우 18524 경기도 화성시 팔탄면 서해로 1327-17"
-        f"    /    전화 {contact or '031-366-0799'}    /    FAX 031-366-5632"
+        f"    /    전화 {contact or '031-366-0799'}    /    FAX 031-366-5633"
     )
-    pdf.multi_cell(usable, 4.2, addr, align="C")
-    y = pdf.get_y() + 3
-    pdf.set_draw_color(15, 118, 110)
-    pdf.set_line_width(0.35)
-    pdf.line(left, y, left + usable, y)
-    y += 5
+    pdf.multi_cell(usable, 4.0, addr, align="C")
+    y = pdf.get_y() + 1.0
+    y = _rule_bar(y, height=2.6, gray=90)  # 원본 row7 회색 바
+    y += 3.5  # 원본 row8 여백
 
+    # 문서번호~제목 (원본 C9~C12) — 제목 아래 두꺼운 경계 바
     pdf.set_xy(left, y)
-    pdf.set_font("kr", "", 11)
+    pdf.set_font("kr", "", 12)
     meta_lines = [
         f"문서번호 : {doc_no}",
         f"발송일자 : {send_s}",
@@ -1513,8 +1526,11 @@ def build_letter_pdf(
     ]
     for line in meta_lines:
         pdf.set_x(left)
-        pdf.cell(usable, 6.2, line, new_x="LMARGIN", new_y="NEXT")
-    y = pdf.get_y() + 4
+        pdf.cell(usable, 7.0, line, new_x="LMARGIN", new_y="NEXT")
+    y = pdf.get_y() + 2.0  # 원본 row13 여백
+    y = _rule_bar(y, height=3.4, gray=70)  # 원본 row14 진한 가로 바
+    y += 4.0
+    pdf.set_y(y)
 
     pdf.set_font("kr", "", 10)
     body_order = list(_BODY_CELL_ORDER)
@@ -1924,14 +1940,19 @@ def _render_letter_form_preview(
     st.markdown(
         f"""
 <div style="border:1px solid #CBD5E1;border-radius:10px;padding:14px 16px;background:#fff;max-height:640px;overflow:auto;">
-  <div style="text-align:center;font-weight:800;font-size:18px;color:#0F766E;margin-bottom:10px;">단가인상공문 미리보기</div>
-  <div style="font-size:13px;line-height:1.6;color:#0F172A;">
+  <div style="text-align:center;font-weight:800;font-size:16px;color:#0F766E;margin-bottom:8px;">단가인상공문 미리보기</div>
+  <div style="height:3px;background:#5A5A5A;margin:6px 0;"></div>
+  <div style="text-align:center;font-size:11px;color:#475569;padding:4px 0;">
+    우 18524 경기도 화성시 팔탄면 서해로 1327-17 &nbsp;/&nbsp; 전화 031-366-0799 &nbsp;/&nbsp; FAX 031-366-5633
+  </div>
+  <div style="height:3px;background:#5A5A5A;margin:6px 0 10px;"></div>
+  <div style="font-size:14px;line-height:1.7;color:#0F172A;">
     <div>문서번호 : {doc_no}</div>
     <div>발송일자 : {send_s}</div>
     <div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {client}</div>
     <div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {title}</div>
   </div>
-  <hr style="border:none;border-top:1px solid #E2E8F0;margin:12px 0;"/>
+  <div style="height:4px;background:#464646;margin:12px 0;"></div>
   <div style="font-size:13px;line-height:1.55;color:#1E293B;white-space:normal;">{body_html}</div>
   <div style="margin-top:14px;font-weight:700;text-align:center;">단가 조정 내용</div>
   <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;">
