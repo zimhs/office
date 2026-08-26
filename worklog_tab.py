@@ -129,14 +129,14 @@ WL_CONTENT_COL_END = 24   # X
 WL_CLIENT_COL_START = 3   # C
 WL_CLIENT_COL_END = 6     # F
 
-# 화면 미리보기 배율 (폼 전체·로고가 보이도록)
-_WL_PREVIEW_SCALE = 0.75
+# 화면 엑셀 미리보기 배율 (인쇄 print_mode=True 와 무관 — 인쇄는 Excel pageSetup 그대로)
+_WL_PREVIEW_SCALE = 0.65
 # 웹/Mac: Batang(윈도우) 미설치 → 한글 글리프가 고딕으로 떨어짐.
 # Nanum Myeongjo(CDN)를 최우선으로 두어 바탕체와 같은 명조 계열을 강제.
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26u · 칸이동갱신경량"
+_WL_UI_BUILD = "2026-08-26v · 엑셀미리보기축소"
 
 
 class WorklogSaveBlockedError(Exception):
