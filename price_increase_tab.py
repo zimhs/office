@@ -35,7 +35,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26w · 후면첨부·2장양식"
+PI_UI_BUILD = "2026-08-26x · 메일작성후최종발송"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -1838,6 +1838,116 @@ def _open_letter_preview_dialog(
     _pi_letter_preview_dialog()
 
 
+@st.dialog("메일 작성 · 최종 발송", width="large")
+def _pi_mail_compose_dialog() -> None:
+    """메일본문 확인·수정 후 최종 발송. 바로 보내지 않음."""
+    draft = st.session_state.get("pi_mail_draft") or {}
+    to_addr = str(draft.get("to") or "")
+    pdf_name = str(draft.get("pdf_name") or "공문.pdf")
+    pdf_bytes = st.session_state.get("pi_pdf_bytes")
+    client = str(draft.get("client") or "")
+    staff = str(draft.get("staff") or "")
+    items_n = int(draft.get("items") or 0)
+
+    st.caption("바로 발송되지 않습니다. 본문을 확인·수정한 뒤 「최종 발송」을 누르세요.")
+    st.text_input("수신", value=to_addr, disabled=True, key="pi_mail_compose_to_view")
+    if "pi_mail_compose_subject" not in st.session_state:
+        st.session_state["pi_mail_compose_subject"] = str(draft.get("subject") or "")
+    if "pi_mail_compose_body" not in st.session_state:
+        st.session_state["pi_mail_compose_body"] = str(draft.get("body") or "")
+    st.text_input("메일 제목", key="pi_mail_compose_subject")
+    st.text_area("메일 본문", height=280, key="pi_mail_compose_body")
+    st.caption(f"첨부 PDF: `{pdf_name}`" + (" · 준비됨" if pdf_bytes else " · 없음(발송 불가)"))
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("닫기", use_container_width=True, key="pi_mail_compose_close"):
+            st.rerun()
+    with c2:
+        do_final = st.button(
+            "최종 발송",
+            type="primary",
+            use_container_width=True,
+            key="pi_mail_compose_send",
+            disabled=not (to_addr and pdf_bytes),
+        )
+    if do_final:
+        subject = str(st.session_state.get("pi_mail_compose_subject") or "").strip()
+        body = str(st.session_state.get("pi_mail_compose_body") or "")
+        if not subject:
+            st.error("메일 제목을 입력하세요.")
+            return
+        try:
+            ok, msg = send_mail_smtp(
+                to_addr=to_addr,
+                subject=subject,
+                body=body,
+                attachment_bytes=pdf_bytes,
+                attachment_name=pdf_name,
+            )
+            append_sent_log(
+                client=client,
+                email=to_addr,
+                subject=subject,
+                ok=ok,
+                mode="single",
+                staff=staff,
+                items=items_n,
+                msg=msg,
+            )
+            if ok:
+                st.session_state.pop("pi_mail_draft", None)
+                st.success(msg)
+            else:
+                st.error(msg)
+        except Exception as e:
+            em = str(e)
+            if "fpdf2" in em.lower():
+                st.error(
+                    "발송 실패: PDF 생성 라이브러리(fpdf2)가 없습니다. "
+                    "`python3 -m pip install -r requirements.txt` 후 재시도하세요."
+                )
+            else:
+                st.error(f"발송 실패: {e}")
+
+
+def _open_mail_compose_dialog(
+    *,
+    client: str,
+    email: str,
+    title: str,
+    body: str,
+    pdf_name: str,
+    letter_kwargs: dict,
+    staff: str = "",
+    items_n: int = 0,
+) -> None:
+    """PDF 준비 후 메일 작성 팝업 오픈 (즉시 발송 안 함)."""
+    try:
+        pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+        st.session_state["pi_pdf_bytes"] = pdf_bytes
+        st.session_state["pi_pdf_name"] = pdf_name
+        st.session_state.pop("pi_pdf_error", None)
+    except Exception as e:
+        st.session_state.pop("pi_pdf_bytes", None)
+        st.session_state["pi_pdf_error"] = str(e)
+        st.error(f"첨부 PDF 생성 실패: {e}")
+        return
+    st.session_state["pi_mail_draft"] = {
+        "to": email,
+        "subject": title,
+        "body": body,
+        "pdf_name": pdf_name,
+        "client": client,
+        "staff": staff,
+        "items": items_n,
+    }
+    # 위젯 초기값 (키로 제어)
+    st.session_state["pi_mail_compose_subject"] = title
+    st.session_state["pi_mail_compose_body"] = body
+    _pi_mail_compose_dialog()
+
+
 def _render_items_table(
     *,
     editor_key: str,
@@ -2338,7 +2448,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         type="primary",
                         use_container_width=True,
                         key="pi_left_send",
-                        help="미리보기와 동일한 PDF를 첨부해 SMTP 발송",
+                        help="메일본문 작성 팝업을 연 뒤, 최종 발송합니다.",
                     )
                 with p3:
                     if st.button("요약 보기", use_container_width=True, key="pi_left_summary_btn"):
@@ -2462,40 +2572,17 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     elif not smtp_cfg.get("ready"):
                         st.error("SMTP secrets 미설정")
                     else:
-                        try:
-                            # 미리보기와 동일 생성기 · 현재 입력 기준으로 재생성
-                            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
-                            st.session_state["pi_pdf_bytes"] = pdf_bytes
-                            st.session_state["pi_pdf_name"] = pdf_name
-                            ok, msg = send_mail_smtp(
-                                to_addr=email,
-                                subject=title,
-                                body=str(letter_kwargs.get("body") or ""),
-                                attachment_bytes=pdf_bytes,
-                                attachment_name=pdf_name,
-                            )
-                            append_sent_log(
-                                client=client,
-                                email=email,
-                                subject=title,
-                                ok=ok,
-                                mode="single",
-                                staff=staff if staff != "전체" else "",
-                                items=len(items_now),
-                                msg=msg,
-                            )
-                            (st.success if ok else st.error)(msg)
-                        except Exception as e:
-                            msg = str(e)
-                            if "fpdf2" in msg.lower():
-                                st.error(
-                                    "발송 실패: PDF 생성 라이브러리(fpdf2)가 없습니다. "
-                                    "로컬은 `python3 -m pip install -r requirements.txt`, "
-                                    "Cloud는 재배포 후 다시 시도하세요."
-                                )
-                            else:
-                                st.error(f"발송 실패: {e}")
-
+                        mail_body = _default_mail_body(client, effective_s, items_now)
+                        _open_mail_compose_dialog(
+                            client=client,
+                            email=email,
+                            title=title,
+                            body=mail_body,
+                            pdf_name=pdf_name,
+                            letter_kwargs=letter_kwargs,
+                            staff=staff if staff != "전체" else "",
+                            items_n=len(items_now),
+                        )
     # ── 일괄 발송 (담당자 단위 · 거래처는 한 곳씩 개별 공문) ──
     with tab_bulk:
         st.caption(
