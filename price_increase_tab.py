@@ -35,7 +35,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26u · 공문탭·단가선택"
+PI_UI_BUILD = "2026-08-26v · 하단로고·도장·헤더연하게"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -1499,40 +1499,40 @@ def build_letter_pdf(
     left = 18.0
     right = 18.0
     usable = 210.0 - left - right
-    y = 10.0
+    y = 8.0
 
-    def _rule_bar(y0: float, *, height: float = 3.2, gray: int = 80) -> float:
-        """원본 엑셀의 두꺼운 가로 경계 바(행 채움) 재현."""
+    def _rule_bar(y0: float, *, height: float = 1.6, gray: int = 200) -> float:
+        """원본 엑셀 가로 경계 바 — 너무 진하지 않게 연한 회색."""
         pdf.set_fill_color(gray, gray, gray)
         pdf.rect(left, y0, usable, height, style="F")
         return y0 + height
 
-    # 상단 로고 (원본: 가운데)
+    # 상단 로고 (원본: 가운데 · 크게)
     header = imgs.get("header")
     if header and os.path.isfile(header):
         try:
-            logo_w = 48.0
+            logo_w = 72.0
             pdf.image(header, x=left + (usable - logo_w) / 2.0, y=y, w=logo_w)
-            y += 18.0
+            y += 26.0
         except Exception:
-            y += 4.0
+            y += 6.0
     else:
-        y += 4.0
+        y += 6.0
 
-    # 주소/전화 (원본 C6) — 위·아래 두꺼운 경계선으로 감쌈
-    y = _rule_bar(y, height=2.6, gray=90)
-    pdf.set_xy(left, y + 1.0)
+    # 주소/전화 (원본 C6) — 연한 경계선
+    y = _rule_bar(y, height=1.4, gray=205)
+    pdf.set_xy(left, y + 1.2)
     pdf.set_font("kr", "", 8)
     addr = (
         "우 18524 경기도 화성시 팔탄면 서해로 1327-17"
         f"    /    전화 {contact or '031-366-0799'}    /    FAX 031-366-5633"
     )
     pdf.multi_cell(usable, 4.0, addr, align="C")
-    y = pdf.get_y() + 1.0
-    y = _rule_bar(y, height=2.6, gray=90)  # 원본 row7 회색 바
-    y += 3.5  # 원본 row8 여백
+    y = pdf.get_y() + 1.2
+    y = _rule_bar(y, height=1.4, gray=205)
+    y += 3.5
 
-    # 문서번호~제목 (원본 C9~C12) — 제목 아래 두꺼운 경계 바
+    # 문서번호~제목 (원본 C9~C12)
     pdf.set_xy(left, y)
     pdf.set_font("kr", "", 12)
     meta_lines = [
@@ -1544,8 +1544,8 @@ def build_letter_pdf(
     for line in meta_lines:
         pdf.set_x(left)
         pdf.cell(usable, 7.0, line, new_x="LMARGIN", new_y="NEXT")
-    y = pdf.get_y() + 2.0  # 원본 row13 여백
-    y = _rule_bar(y, height=3.4, gray=70)  # 원본 row14 진한 가로 바
+    y = pdf.get_y() + 2.0
+    y = _rule_bar(y, height=2.0, gray=190)  # 제목 아래 경계 — 연하게
     y += 4.0
     pdf.set_y(y)
 
@@ -1625,25 +1625,49 @@ def build_letter_pdf(
             new_y="NEXT",
         )
 
-    # 하단 회사명·도장
-    footer_y = max(pdf.get_y() + 10, 250)
-    if footer_y > 270:
+    # 하단: 큰 로고(좌) + 대표자·도장(우) → 연한 구분선 → 회사명 최하단
+    block_h = 28.0
+    footer_y = max(pdf.get_y() + 8, 248.0)
+    if footer_y + block_h + 14 > 285:
         pdf.add_page()
-        footer_y = 40
-    footer_logo = imgs.get("footer")
+        footer_y = 40.0
+
+    footer_logo = imgs.get("footer") or imgs.get("header")
     stamp = imgs.get("stamp")
+    logo_w = 78.0
+    logo_h_est = 20.0
     if footer_logo and os.path.isfile(footer_logo):
         try:
-            pdf.image(footer_logo, x=left, y=footer_y, w=42)
+            pdf.image(footer_logo, x=left, y=footer_y, w=logo_w)
         except Exception:
             pass
+
+    # 대표자 문구 (우측) + 도장을 이름 위에 겹침
+    rep = "대표자 : 유 봉 래"
+    pdf.set_font("kr", "B", 12)
+    rep_w = pdf.get_string_width(rep)
+    rep_x = left + usable - max(rep_w + 4, 42)
+    rep_y = footer_y + 8.0
+    pdf.set_xy(rep_x, rep_y)
+    pdf.cell(rep_w + 2, 7, rep, align="L")
     if stamp and os.path.isfile(stamp):
         try:
-            pdf.image(stamp, x=left + usable - 28, y=footer_y - 2, w=22)
+            stamp_w = 22.0
+            # 이름(유 봉 래) 위에 도장 오버레이
+            stamp_x = rep_x + max(rep_w - 18, 22)
+            stamp_y = rep_y - 6.0
+            pdf.image(stamp, x=stamp_x, y=stamp_y, w=stamp_w)
         except Exception:
             pass
-    pdf.set_xy(left, footer_y + 14)
+
+    # 구분선(연하게) + 회사명 제일 하단
+    line_y = footer_y + max(logo_h_est, 22.0) + 4.0
+    pdf.set_draw_color(180, 180, 180)
+    pdf.set_line_width(0.45)
+    pdf.line(left, line_y, left + usable, line_y)
+    pdf.set_xy(left, line_y + 3.0)
     pdf.set_font("kr", "B", 12)
+    pdf.set_text_color(30, 30, 30)
     pdf.cell(usable, 7, "(주) 신 일 가 스", align="C")
 
     bio = io.BytesIO()
@@ -1977,18 +2001,18 @@ def _render_letter_form_preview(
         f"""
 <div style="border:1px solid #CBD5E1;border-radius:10px;padding:14px 16px;background:#fff;max-height:640px;overflow:auto;">
   <div style="text-align:center;font-weight:800;font-size:16px;color:#0F766E;margin-bottom:8px;">공문 미리보기</div>
-  <div style="height:3px;background:#5A5A5A;margin:6px 0;"></div>
+  <div style="height:2px;background:#D1D5DB;margin:6px 0;"></div>
   <div style="text-align:center;font-size:11px;color:#475569;padding:4px 0;">
     우 18524 경기도 화성시 팔탄면 서해로 1327-17 &nbsp;/&nbsp; 전화 031-366-0799 &nbsp;/&nbsp; FAX 031-366-5633
   </div>
-  <div style="height:3px;background:#5A5A5A;margin:6px 0 10px;"></div>
+  <div style="height:2px;background:#D1D5DB;margin:6px 0 10px;"></div>
   <div style="font-size:14px;line-height:1.7;color:#0F172A;">
     <div>문서번호 : {doc_no}</div>
     <div>발송일자 : {send_s}</div>
     <div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {client}</div>
     <div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {title}</div>
   </div>
-  <div style="height:4px;background:#464646;margin:12px 0;"></div>
+  <div style="height:2px;background:#C4C4C4;margin:12px 0;"></div>
   <div style="font-size:13px;line-height:1.55;color:#1E293B;white-space:normal;">{body_html}</div>
   {price_block}
 </div>
