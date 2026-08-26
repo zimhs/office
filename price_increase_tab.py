@@ -35,7 +35,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26m · 단가조정내용표(제품·기존·인상·비고)"
+PI_UI_BUILD = "2026-08-26n · 업무일지형 좌우레이아웃"
 
 # 기본 공문 후보 (캐시 원본 우선)
 _TEMPLATE_CANDIDATES = (
@@ -376,6 +376,43 @@ _DEFAULT_LETTER_PARAS: dict[str, str] = {
     "C33": "5. 당사는 이번 조정을 바탕으로 더욱 철저한 품질 관리와 원활한 공급 체계를 구축하여 귀사의 기대에 보답할 것을 약속드립니다.",
     "C35": "                                      단가 조정 내용",
 }
+
+# 한 칸 공문입력 → 엑셀 본문 셀 매핑 순서 (C35 제목 제외)
+_BODY_CELL_ORDER = [
+    "C16",
+    "C18",
+    "C19",
+    "C21",
+    "C22",
+    "C23",
+    "C24",
+    "C26",
+    "C27",
+    "C29",
+    "C31",
+    "C33",
+]
+
+
+def _default_letter_body_text() -> str:
+    return "\n".join(_DEFAULT_LETTER_PARAS[c] for c in _BODY_CELL_ORDER if c in _DEFAULT_LETTER_PARAS)
+
+
+def _body_text_to_paras(text: str) -> dict[str, str]:
+    """한 칸 본문 → 양식 셀 dict. 기본 양식 제목(C35)은 유지."""
+    paras = dict(_DEFAULT_LETTER_PARAS)
+    for c in _BODY_CELL_ORDER:
+        paras[c] = ""
+    lines = [ln.rstrip() for ln in str(text or "").splitlines()]
+    if not any(ln.strip() for ln in lines):
+        return dict(_DEFAULT_LETTER_PARAS)
+    for i, line in enumerate(lines):
+        if i < len(_BODY_CELL_ORDER):
+            paras[_BODY_CELL_ORDER[i]] = line
+        else:
+            paras[_BODY_CELL_ORDER[-1]] = (paras[_BODY_CELL_ORDER[-1]] + "\n" + line).strip()
+    paras["C35"] = _DEFAULT_LETTER_PARAS.get("C35", "                                      단가 조정 내용")
+    return paras
 
 
 def ensure_default_template(path: str = PI_TEMPLATE) -> str:
@@ -1298,126 +1335,110 @@ def _render_items_table(
 
 
 def _render_letter_content_editor(client: str, items: list[dict], effective_s: str) -> dict:
-    """공문 양식은 유지, 내용만 수정. 기본값=단가인상공문."""
-    st.markdown("##### 📄 공문 내용 (양식 유지 · 내용 편집)")
-    st.caption("기본 내용은 **단가인상공문(탄산)** 입니다. 레이아웃·로고는 그대로이고 아래 텍스트만 바뀝니다.")
-
-    d1, d2 = st.columns(2)
-    with d1:
-        doc_no = st.text_input(
-            "문서번호",
-            value=_default_doc_no(client),
-            key="pi_letter_doc_no",
-        )
-    with d2:
-        send_date = st.date_input("발송일자", value=date.today(), key="pi_letter_send_date")
-
-    with st.expander("공문 본문 문단 편집", expanded=False):
-        if "pi_letter_paras" not in st.session_state:
-            st.session_state["pi_letter_paras"] = dict(_DEFAULT_LETTER_PARAS)
-        paras = st.session_state["pi_letter_paras"]
-        for coord in sorted(paras.keys(), key=lambda x: (int(x[1:]), x[0])):
-            # 품목 많으면 본문 입력칸도 낮게 (공문에서도 높이 축소와 대응)
-            h = 48 if len(items) >= 5 else (58 if len(items) >= 3 else 68)
-            paras[coord] = st.text_area(
-                f"본문 {coord}",
-                value=paras[coord],
-                height=h,
-                key=f"pi_para_{coord}",
-            )
-        st.session_state["pi_letter_paras"] = paras
-        if st.button("본문 기본값(단가인상공문)으로 되돌리기", key="pi_paras_reset"):
-            st.session_state["pi_letter_paras"] = dict(_DEFAULT_LETTER_PARAS)
-            for coord in _DEFAULT_LETTER_PARAS:
-                st.session_state.pop(f"pi_para_{coord}", None)
-            st.rerun()
-
-    with st.expander("단가 조정 내용 (공문 표 미리보기)", expanded=True):
-        st.caption("제품명 · 기존단가 · 인상단가 · 비고 — 위 표와 동일. 품목이 많으면 공문 본문 칸을 줄여 표를 넣습니다.")
-        preview = _items_df_for_editor(items)
-        st.dataframe(preview, use_container_width=True, hide_index=True)
-        st.caption(f"시행 일자: {_format_korean_effective(effective_s)}")
-
+    """호환용 — 새 레이아웃에서는 사용하지 않음."""
+    del client, items, effective_s
     return {
-        "doc_no": doc_no,
-        "send_date": send_date,
-        "letter_paras": dict(st.session_state.get("pi_letter_paras", _DEFAULT_LETTER_PARAS)),
+        "doc_no": "",
+        "send_date": date.today(),
+        "letter_paras": dict(_DEFAULT_LETTER_PARAS),
         "c37_override": "",
         "c38_override": "",
     }
 
 
-def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
-    with st.expander("📇 메일 연락처 관리", expanded=mail_df.empty):
-        st.caption(
-            f"CSV: `{PI_MAIL_CSV}` · 거래처명과 이메일을 등록해야 "
-            "**수신 이메일이 자동 반영**됩니다. (다음 주소록 CSV 내보내기 후 업로드 가능)"
-        )
-        up = st.file_uploader("연락처 CSV 업로드", type=["csv"], key="pi_mail_upload")
-        if up is not None:
-            try:
-                raw = pd.read_csv(up, encoding="utf-8-sig")
-            except Exception:
-                raw = pd.read_csv(up, encoding="cp949")
-            merged = _normalize_mail_df(raw)
-            if not merged.empty:
-                save_mail_contacts(merged)
-                st.success(f"{len(merged)}건 저장")
-                mail_df = load_mail_contacts()
-        if not mail_df.empty:
-            st.dataframe(mail_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("연락처 CSV가 없습니다. 업로드하거나 직접 입력하세요.")
-            with st.form("pi_mail_manual"):
-                n = st.text_input("거래처")
-                e = st.text_input("이메일")
-                if st.form_submit_button("추가"):
-                    if n and e:
-                        add = pd.DataFrame([{"거래처": n, "이메일": e, "비고": ""}])
-                        out = pd.concat([mail_df, add], ignore_index=True)
-                        save_mail_contacts(out)
-                        st.rerun()
-    return mail_df
-
-
-def _render_smtp_bar() -> dict:
-    cfg = smtp_settings()
-    c1, c2, c3 = st.columns([2.5, 1.2, 1.2])
-    with c1:
-        st.caption(f"SMTP · {smtp_status_label(cfg)}")
-    with c2:
-        if st.button("SMTP 연결 테스트", key="pi_smtp_test", use_container_width=True):
-            ok, msg = test_smtp_connection(cfg)
-            (st.success if ok else st.error)(msg)
-    with c3:
-        tpl = resolve_letter_template()
-        st.caption(f"양식: `{os.path.basename(tpl)}`")
-    return cfg
-
-
-def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "") -> None:
-    """단가인상 탭 — 개별·일괄 발송, 품목표, 발송 이력."""
-    _ensure_dirs()
+def _render_pi_left_summary(
+    *,
+    client: str,
+    email: str,
+    title: str,
+    effective_s: str,
+    items: list[dict],
+    last: Optional[dict],
+    letter_body: str,
+) -> None:
+    """왼쪽: 요약 보기 (업무일지 요약 칸에 해당)."""
     st.markdown(
-        "<div class='sub-header dashboard-tab-panel-head'>📨 단가인상 공문</div>",
+        f"""
+<div style="border:1px solid #E2E8F0;border-radius:12px;padding:14px 16px;background:linear-gradient(180deg,#F8FAFC,#fff);">
+  <div style="font-size:13px;color:#64748B;margin-bottom:6px;">요약</div>
+  <div style="font-size:16px;font-weight:700;color:#0F172A;">{client}</div>
+  <div style="margin-top:8px;font-size:13px;color:#334155;line-height:1.55;">
+    <div>수신 메일: <b>{email or "(미입력)"}</b></div>
+    <div>제목: {title}</div>
+    <div>시행일: {_format_korean_effective(effective_s)}</div>
+    <div>품목: {len(items)}건</div>
+  </div>
+</div>
+""",
         unsafe_allow_html=True,
     )
-    cap = f"빌드 {PI_UI_BUILD}"
-    if latest_update_str:
-        cap += f" · 매출 {latest_update_str}"
-    st.caption(cap)
+    if last:
+        st.caption(f"최근 발송: {last.get('date')} · {last.get('subject') or '-'}")
+    else:
+        st.caption("최근 발송 이력 없음")
+    st.markdown("###### 단가 조정 표")
+    st.dataframe(_items_df_for_editor(items), use_container_width=True, hide_index=True)
+    with st.expander("공문 본문 미리보기", expanded=False):
+        st.text(letter_body or "(본문 없음)")
 
-    mail_df = load_mail_contacts()
-    log_df = load_sent_log()
-    smtp_cfg = _render_smtp_bar()
-    mail_df = _render_mail_settings_expander(mail_df)
 
-    tab_single, tab_bulk, tab_hist = st.tabs(["개별 발송", "일괄 발송", "발송 이력"])
+def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
+    exact_email, _ = exact_mail_match(client, mail_df)
+    if st.session_state.get("pi_email_client") != client:
+        st.session_state["pi_email_client"] = client
+        st.session_state["pi_single_email"] = exact_email
+    email = st.text_input("수신 이메일", key="pi_single_email")
+    if exact_email:
+        st.caption(f"연락처 자동반영: `{exact_email}`")
+    elif mail_df is None or mail_df.empty:
+        st.caption("연락처 CSV 없음 · 직접 입력하거나 위 메일 연락처에서 업로드")
+    else:
+        st.caption("이름 불일치 시 아래에서 선택")
+    need_pick = not bool(exact_email) and mail_df is not None and not mail_df.empty
+    with st.expander("연락처에서 메일 고르기", expanded=False if exact_email else need_pick):
+        cands = suggest_mail_matches(client, mail_df, limit=40)
+        if cands:
+            pick_labels = ["— 유사 연락처 선택 —"] + [f"{r['거래처']}  ·  {r['이메일']}" for r in cands]
+            pick_map = {f"{r['거래처']}  ·  {r['이메일']}": str(r["이메일"]) for r in cands}
+            chosen = st.selectbox("유사 연락처", pick_labels, key=f"pi_mail_pick_{_norm_name(client)}")
+            if chosen in pick_map and st.session_state.get("pi_single_email") != pick_map[chosen]:
+                st.session_state["pi_single_email"] = pick_map[chosen]
+                st.rerun()
+        all_labels = ["— 전체 연락처 선택 —"]
+        all_map: dict[str, str] = {}
+        if mail_df is not None and not mail_df.empty:
+            for _, row in mail_df.sort_values("거래처").iterrows():
+                nm = str(row.get("거래처") or "").strip()
+                em = str(row.get("이메일") or "").strip()
+                if nm and em:
+                    lab = f"{nm}  ·  {em}"
+                    all_labels.append(lab)
+                    all_map[lab] = em
+        if len(all_labels) > 1:
+            chosen_all = st.selectbox("전체 연락처", all_labels, key=f"pi_mail_all_{_norm_name(client)}")
+            if chosen_all in all_map and st.session_state.get("pi_single_email") != all_map[chosen_all]:
+                st.session_state["pi_single_email"] = all_map[chosen_all]
+                st.rerun()
+        quick = st.text_input("직접 입력 후 이 거래처에 저장", key="pi_quick_email")
+        if st.button("연락처에 저장", key="pi_quick_save"):
+            q = str(quick or "").strip()
+            if q and "@" in q:
+                add = pd.DataFrame([{"거래처": client, "이메일": q, "비고": ""}])
+                out = pd.concat([mail_df, add], ignore_index=True) if not mail_df.empty else add
+                out = out.drop_duplicates(subset=["거래처"], keep="last")
+                save_mail_contacts(out)
+                st.session_state["pi_single_email"] = q
+                st.success(f"{client} → {q} 저장됨")
+                st.rerun()
+            else:
+                st.error("올바른 이메일을 입력하세요.")
+    return str(st.session_state.get("pi_single_email") or email or "")
 
-    # ── 개별 발송 ──
+
+    # ── 개별 발송 (업무일지형: 왼쪽 요약·미리보기·메일 / 오른쪽 공문·단가) ──
     with tab_single:
         staff_opts = ["전체"] + list_staff_options(sales_df)
-        r1c1, r1c2, r1c3 = st.columns([1.2, 2, 1.5])
+        r1c1, r1c2, r1c3 = st.columns([1.2, 2, 1.2])
         with r1c1:
             staff = st.selectbox("담당자", staff_opts, key="pi_single_staff")
         clients = list_clients_for_staff(sales_df, staff)
@@ -1428,192 +1449,189 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             st.caption(f"유형: **{kind}**" if kind else "")
 
         if not client:
-            st.info("거래처를 선택하세요.")
+            st.info("담당자·거래처를 선택하세요.")
         else:
             last = last_sent_for_client(client, log_df)
-            if last:
-                st.caption(
-                    f"최근 발송: **{last.get('date')}** · 제목: {last.get('subject') or '-'} "
-                    f"({last.get('email') or '-'})"
-                )
-            else:
-                st.caption("최근 발송 이력 없음")
+            email = _render_email_row(client, mail_df)
 
-            # 수신메일: 거래처 선택만으로 충분. 이름 일치 시 자동반영.
-            # 유사/전체 연락처 선택은 필요할 때만(불일치) expander로 숨김.
-            exact_email, _exact_name = exact_mail_match(client, mail_df)
-            if st.session_state.get("pi_email_client") != client:
-                st.session_state["pi_email_client"] = client
-                st.session_state["pi_single_email"] = exact_email
-
-            email = st.text_input("수신 이메일", key="pi_single_email")
-            if exact_email:
-                st.caption(f"연락처 자동반영: `{exact_email}`")
-            elif mail_df is None or mail_df.empty:
-                st.warning("메일 연락처가 없습니다. 위 **📇 메일 연락처 관리**에서 CSV 업로드하세요.")
-            else:
-                st.caption("연락처 이름과 거래처명이 다릅니다. 필요하면 아래에서 메일을 고르세요.")
-
-            need_pick = not bool(exact_email) and mail_df is not None and not mail_df.empty
-            with st.expander("연락처에서 메일 고르기 (이름 다를 때만)", expanded=need_pick):
-                cands = suggest_mail_matches(client, mail_df, limit=40)
-                if cands:
-                    pick_labels = ["— 유사 연락처 선택 —"] + [
-                        f"{r['거래처']}  ·  {r['이메일']}" for r in cands
-                    ]
-                    pick_map = {
-                        f"{r['거래처']}  ·  {r['이메일']}": str(r["이메일"]) for r in cands
-                    }
-                    chosen = st.selectbox(
-                        "유사 연락처",
-                        pick_labels,
-                        key=f"pi_mail_pick_{_norm_name(client)}",
-                    )
-                    if chosen in pick_map and st.session_state.get("pi_single_email") != pick_map[chosen]:
-                        st.session_state["pi_single_email"] = pick_map[chosen]
-                        st.rerun()
-
-                all_labels = ["— 전체 연락처 선택 —"]
-                all_map: dict[str, str] = {}
-                for _, row in mail_df.sort_values("거래처").iterrows():
-                    nm = str(row.get("거래처") or "").strip()
-                    em = str(row.get("이메일") or "").strip()
-                    if nm and em:
-                        lab = f"{nm}  ·  {em}"
-                        all_labels.append(lab)
-                        all_map[lab] = em
-                if len(all_labels) > 1:
-                    chosen_all = st.selectbox(
-                        "전체 연락처",
-                        all_labels,
-                        key=f"pi_mail_all_{_norm_name(client)}",
-                    )
-                    if (
-                        chosen_all in all_map
-                        and st.session_state.get("pi_single_email") != all_map[chosen_all]
-                    ):
-                        st.session_state["pi_single_email"] = all_map[chosen_all]
-                        st.rerun()
-
-                quick = st.text_input("직접 입력 후 이 거래처에 저장", key="pi_quick_email")
-                if st.button("연락처에 저장", key="pi_quick_save"):
-                    q = str(quick or "").strip()
-                    if q and "@" in q:
-                        add = pd.DataFrame([{"거래처": client, "이메일": q, "비고": ""}])
-                        out = pd.concat([mail_df, add], ignore_index=True) if not mail_df.empty else add
-                        out = out.drop_duplicates(subset=["거래처"], keep="last")
-                        save_mail_contacts(out)
-                        st.session_state["pi_single_email"] = q
-                        st.success(f"{client} → {q} 저장됨")
-                        st.rerun()
-                    else:
-                        st.error("올바른 이메일을 입력하세요.")
-
-            r2c1, r2c2, r2c3 = st.columns([2, 1, 1])
-            with r2c1:
-                title = st.text_input(
-                    "메일·공문 제목",
-                    value=_default_letter_title(),
-                    key="pi_single_title",
-                )
-            with r2c2:
-                effective = st.date_input(
-                    "시행일",
-                    value=date.today().replace(day=1),
-                    key="pi_single_eff",
-                )
-            with r2c3:
-                contact = st.text_input("문의", value="031-366-0799", key="pi_single_contact")
-            effective_s = (
-                effective.strftime("%Y-%m-%d")
-                if hasattr(effective, "strftime")
-                else str(effective)
-            )
-
-            # 거래처·공문 입력 하단: 기존거래제품명 / 단가 ➠ 인상단가 편집 표
             price_df = latest_unit_prices(sales_df, client)
             pct_key = "pi_global_pct"
             if pct_key not in st.session_state:
                 st.session_state[pct_key] = 5.0
             items_key = _items_key(client)
-            # 거래처별 session_state 유지 — 재선택 시에도 편집 내용 보존
             if items_key not in st.session_state:
                 st.session_state[items_key] = _init_items_from_prices(
                     client, price_df, st.session_state[pct_key]
                 )
             st.session_state["pi_last_client"] = client
 
-            items = _render_items_table(
-                editor_key=items_key,
-                items=st.session_state[items_key],
-                pct_default=st.session_state[pct_key],
-            )
-            st.session_state[pct_key] = float(
-                st.session_state.get(f"{items_key}_pct", st.session_state[pct_key])
-            )
+            # 공문 본문 키 (거래처별)
+            body_key = f"pi_letter_body_{_norm_name(client)}"
+            if body_key not in st.session_state:
+                st.session_state[body_key] = _default_letter_body_text()
+            if st.session_state.get("pi_body_client") != client:
+                st.session_state["pi_body_client"] = client
+                if body_key not in st.session_state:
+                    st.session_state[body_key] = _default_letter_body_text()
 
-            if not items:
-                st.warning("품목이 없습니다. 표에서 행을 추가하거나 매출 데이터를 확인하세요.")
+            col_left, col_right = st.columns([1, 1], gap="medium")
 
-            letter_meta = _render_letter_content_editor(client, items, effective_s)
+            # ── 오른쪽 입력 먼저 그려 값을 확보한 뒤 왼쪽에서 사용 (Streamlit 순서는 좌→우)
+            # 실제로는 왼쪽부터 렌더되므로, 입력은 session_state에 두고 왼쪽은 현재 state 요약
 
-            body = st.text_area(
-                "메일 본문",
-                value=_default_mail_body(client, effective_s, items),
-                height=160,
-                key="pi_single_body",
-            )
+            with col_left:
+                st.markdown("##### 공문 보기")
+                p1, p2 = st.columns(2)
+                with p1:
+                    do_preview = st.button(
+                        "엑셀 미리보기",
+                        use_container_width=True,
+                        key="pi_left_preview",
+                        help="오른쪽 입력·단가를 공문 양식에 적용합니다.",
+                    )
+                with p2:
+                    do_send = st.button(
+                        "메일보내기",
+                        type="primary",
+                        use_container_width=True,
+                        key="pi_left_send",
+                        help="업무일지 「인쇄창열기」에 해당 · SMTP로 발송",
+                    )
 
-            dl_name = f"단가인상_{client}_{date.today().strftime('%Y%m%d')}.xlsx"
-            letter_kwargs = dict(
-                client=client,
-                email=email,
-                title=title,
-                body=body,
-                effective=effective_s,
-                contact=contact,
-                items=items,
-                doc_no=letter_meta.get("doc_no") or "",
-                send_date=letter_meta.get("send_date"),
-                letter_paras=letter_meta.get("letter_paras"),
-                c37_override=letter_meta.get("c37_override") or "",
-                c38_override=letter_meta.get("c38_override") or "",
-            )
-            if items:
-                xlsx = _build_letter_bytes(**letter_kwargs)
-                st.download_button(
-                    "📥 공문 엑셀 미리보기",
-                    data=xlsx,
-                    file_name=dl_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="pi_single_dl",
+                title = st.session_state.get("pi_single_title") or _default_letter_title()
+                effective = st.session_state.get("pi_single_eff") or date.today().replace(day=1)
+                effective_s = (
+                    effective.strftime("%Y-%m-%d")
+                    if hasattr(effective, "strftime")
+                    else str(effective)
+                )
+                contact = st.session_state.get("pi_single_contact") or "031-366-0799"
+                doc_no = st.session_state.get("pi_letter_doc_no") or _default_doc_no(client)
+                send_date = st.session_state.get("pi_letter_send_date") or date.today()
+                letter_body = st.session_state.get(body_key) or _default_letter_body_text()
+                items = st.session_state.get(items_key) or []
+
+                _render_pi_left_summary(
+                    client=client,
+                    email=email,
+                    title=title,
+                    effective_s=effective_s,
+                    items=items,
+                    last=last,
+                    letter_body=letter_body,
                 )
 
-            if st.button("📧 공문 메일 발송", type="primary", key="pi_single_send", disabled=not items):
-                if not email:
-                    st.error("수신 이메일을 입력하세요.")
-                elif not smtp_cfg.get("ready"):
-                    st.error("SMTP secrets 미설정")
-                else:
-                    xlsx = _build_letter_bytes(**letter_kwargs)
-                    ok, msg = send_mail_smtp(
-                        to_addr=email,
-                        subject=title,
-                        body=body,
-                        attachment_bytes=xlsx,
-                        attachment_name=dl_name,
+                letter_paras = _body_text_to_paras(letter_body)
+                mail_body = _default_mail_body(client, effective_s, items)
+                dl_name = f"단가인상_{client}_{date.today().strftime('%Y%m%d')}.xlsx"
+                letter_kwargs = dict(
+                    client=client,
+                    email=email,
+                    title=title,
+                    body=mail_body,
+                    effective=effective_s,
+                    contact=contact,
+                    items=items,
+                    doc_no=doc_no,
+                    send_date=send_date if isinstance(send_date, date) else date.today(),
+                    letter_paras=letter_paras,
+                )
+
+                if do_preview or st.session_state.get("pi_show_dl"):
+                    if not items:
+                        st.warning("단가 적용 품목이 없습니다. 오른쪽 2. 단가적용에서 확인하세요.")
+                    else:
+                        try:
+                            xlsx = _build_letter_bytes(**letter_kwargs)
+                            st.session_state["pi_show_dl"] = True
+                            st.session_state["pi_dl_bytes"] = xlsx
+                            st.session_state["pi_dl_name"] = dl_name
+                            st.success("공문 양식에 반영했습니다. 아래에서 다운로드하세요.")
+                        except Exception as e:
+                            st.error(f"미리보기 생성 실패: {e}")
+                if st.session_state.get("pi_show_dl") and st.session_state.get("pi_dl_bytes"):
+                    st.download_button(
+                        "📥 공문 엑셀 다운로드",
+                        data=st.session_state["pi_dl_bytes"],
+                        file_name=st.session_state.get("pi_dl_name") or dl_name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="pi_single_dl",
+                        use_container_width=True,
                     )
-                    append_sent_log(
-                        client=client,
-                        email=email,
-                        subject=title,
-                        ok=ok,
-                        mode="single",
-                        staff=staff if staff != "전체" else "",
-                        items=len(items),
-                        msg=msg,
-                    )
-                    (st.success if ok else st.error)(msg)
+
+                if do_send:
+                    if not items:
+                        st.error("품목이 없습니다.")
+                    elif not email:
+                        st.error("수신 이메일을 입력하세요.")
+                    elif not smtp_cfg.get("ready"):
+                        st.error("SMTP secrets 미설정")
+                    else:
+                        try:
+                            xlsx = _build_letter_bytes(**letter_kwargs)
+                            ok, msg = send_mail_smtp(
+                                to_addr=email,
+                                subject=title,
+                                body=mail_body,
+                                attachment_bytes=xlsx,
+                                attachment_name=dl_name,
+                            )
+                            append_sent_log(
+                                client=client,
+                                email=email,
+                                subject=title,
+                                ok=ok,
+                                mode="single",
+                                staff=staff if staff != "전체" else "",
+                                items=len(items),
+                                msg=msg,
+                            )
+                            (st.success if ok else st.error)(msg)
+                        except Exception as e:
+                            st.error(f"발송 실패: {e}")
+
+            with col_right:
+                st.markdown("##### 공문 입력")
+                m1, m2 = st.columns(2)
+                with m1:
+                    st.text_input("문서번호", value=_default_doc_no(client), key="pi_letter_doc_no")
+                with m2:
+                    st.date_input("발송일자", value=date.today(), key="pi_letter_send_date")
+                m3, m4, m5 = st.columns([2, 1, 1])
+                with m3:
+                    st.text_input("제목", value=_default_letter_title(), key="pi_single_title")
+                with m4:
+                    st.date_input("시행일", value=date.today().replace(day=1), key="pi_single_eff")
+                with m5:
+                    st.text_input("문의", value="031-366-0799", key="pi_single_contact")
+
+                st.markdown("**1. 공문내용**")
+                st.caption("업무일지 입력처럼 한 칸에 작성 · 기본은 단가인상공문 양식")
+                bbar1, bbar2 = st.columns([1, 1])
+                with bbar1:
+                    if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
+                        st.session_state[body_key] = _default_letter_body_text()
+                        st.rerun()
+                with bbar2:
+                    st.caption("양식 레이아웃·로고는 엑셀 원본 유지")
+                st.text_area(
+                    "공문 본문",
+                    height=300,
+                    key=body_key,
+                    label_visibility="collapsed",
+                )
+
+                st.markdown("**2. 단가적용**")
+                items = _render_items_table(
+                    editor_key=items_key,
+                    items=st.session_state[items_key],
+                    pct_default=st.session_state[pct_key],
+                )
+                st.session_state[pct_key] = float(
+                    st.session_state.get(f"{items_key}_pct", st.session_state[pct_key])
+                )
+                if not items:
+                    st.warning("품목이 없습니다. 표를 추가하거나 매출을 확인하세요.")
 
     # ── 일괄 발송 (담당자 단위 · 거래처는 한 곳씩 개별 공문) ──
     with tab_bulk:
