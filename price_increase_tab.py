@@ -893,20 +893,18 @@ def _render_items_table(
     with c_apply:
         st.write("")
         if st.button("인상률 일괄 적용", key=f"{editor_key}_apply_pct", use_container_width=True):
-            st.session_state[f"{editor_key}_items"] = _apply_pct_to_items(
-                st.session_state.get(f"{editor_key}_items", items), pct
-            )
+            st.session_state[editor_key] = _apply_pct_to_items(st.session_state.get(editor_key, items), pct)
             st.rerun()
     with c_reload:
         st.write("")
         if st.button("매출단가 다시 불러오기", key=f"{editor_key}_reload", use_container_width=True):
-            st.session_state.pop(f"{editor_key}_items", None)
+            st.session_state.pop(editor_key, None)
             st.rerun()
 
-    if f"{editor_key}_items" not in st.session_state:
-        st.session_state[f"{editor_key}_items"] = items
+    if editor_key not in st.session_state:
+        st.session_state[editor_key] = items
 
-    cur_items = st.session_state[f"{editor_key}_items"]
+    cur_items = st.session_state[editor_key]
     edit_df = _items_df_for_editor(cur_items)
 
     edited = st.data_editor(
@@ -939,16 +937,16 @@ def _render_items_table(
         if st.button("선택 행 삭제", key=f"{editor_key}_drop", use_container_width=True):
             kept = edited[edited["삭제"] != True].copy()  # noqa: E712
             kept["삭제"] = False
-            st.session_state[f"{editor_key}_items"] = _items_from_editor_df(kept)
+            st.session_state[editor_key] = _items_from_editor_df(kept)
             st.rerun()
     with b2:
         if st.button("표 내용 저장", key=f"{editor_key}_save", type="primary", use_container_width=True):
-            st.session_state[f"{editor_key}_items"] = _items_from_editor_df(edited)
+            st.session_state[editor_key] = _items_from_editor_df(edited)
             st.success("품목표 저장됨")
             st.rerun()
 
     result = _items_from_editor_df(edited)
-    st.session_state[f"{editor_key}_items"] = result
+    st.session_state[editor_key] = result
     return result
 
 
@@ -1056,11 +1054,10 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 st.session_state["pi_last_client"] = client
 
             items = _render_items_table(
-                editor_key=f"pi_single_{_norm_name(client)}",
+                editor_key=items_key,
                 items=st.session_state[items_key],
                 pct_default=st.session_state[pct_key],
             )
-            st.session_state[items_key] = items
 
             if not items:
                 st.warning("품목이 없습니다. 표에서 추가하거나 매출 데이터를 확인하세요.")
