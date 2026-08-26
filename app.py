@@ -9740,7 +9740,7 @@ except ImportError:
 except Exception as exc:
     st.sidebar.error(f"PPT 생성 오류: {exc}")
 # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
     [
         "📌 영업 종합 요약",
         "🏢 거래처 분석",
@@ -9753,6 +9753,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(
         "📈 수익성 분석",
         "📝 일일업무일지",
         "🔎 시장조사",
+        "📨 단가인상",
     ]
 )
 # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
@@ -12832,3 +12833,32 @@ with tab11:
     except Exception as _mr_err:
         st.error(f"시장조사 탭 오류: {_mr_err}")
         st.info("다른 탭은 정상 이용 가능합니다. 새로고침 후에도 같으면 관리자에게 오류 문구를 보내 주세요.")
+
+with tab12:
+    # 단가인상 탭 전용 — 다른 탭 블록/공유 헬퍼는 수정하지 않음.
+    try:
+        import importlib
+        import os
+        import sys
+
+        import price_increase_tab as _pi_tab
+
+        _pi_path = getattr(_pi_tab, "__file__", None) or ""
+        _pi_mtime = os.path.getmtime(_pi_path) if _pi_path and os.path.exists(_pi_path) else 0
+        if "_pi_mod_mtime" not in st.session_state:
+            st.session_state["_pi_mod_mtime"] = _pi_mtime
+        elif st.session_state.get("_pi_mod_mtime") != _pi_mtime:
+            _pi_tab = importlib.reload(_pi_tab)
+            st.session_state["_pi_mod_mtime"] = _pi_mtime
+            sys.modules["price_increase_tab"] = _pi_tab
+        _pi_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+        _pi_tab.render_price_increase_tab(_pi_df, latest_update_str=latest_update_str)
+    except ModuleNotFoundError:
+        st.error(
+            "단가인상 모듈(`price_increase_tab.py`)을 찾을 수 없습니다. "
+            "배포 파일에 포함되었는지 확인해 주세요."
+        )
+        st.info("다른 탭은 정상 이용 가능합니다.")
+    except Exception as _pi_err:
+        st.error(f"단가인상 탭 오류: {_pi_err}")
+        st.info("다른 탭은 정상 이용 가능합니다.")
