@@ -130,7 +130,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26j · 저장후구값덮어쓰기차단"
+_WL_UI_BUILD = "2026-08-26k · 저장후CCv2인스턴스갱신"
 
 
 # =====================================================================
@@ -811,12 +811,37 @@ _WL_SPECIAL_BAR = st.components.v2.component(
     js=_WL_SPECIAL_BAR_JS,
 )
 
-def _entry_lines_comp_key(iso: str, entry_i: int) -> str: return f"wl_lines_comp_{iso}_{entry_i}"
+def _entry_lines_inst_key(iso: str, entry_i: int) -> str: return f"wl_lines_inst_{iso}_{entry_i}"
+def _entry_clients_inst_key(iso: str, entry_i: int) -> str: return f"wl_clients_inst_{iso}_{entry_i}"
+
+def _entry_lines_comp_key(iso: str, entry_i: int) -> str:
+    # 인스턴스 번호로 CCv2 위젯을 재마운트 — 동일 키에 남은 구 result.lines 부활 차단
+    g = int(st.session_state.get(_entry_lines_inst_key(iso, entry_i), 0) or 0)
+    return f"wl_lines_comp_{iso}_{entry_i}_i{g}"
+
 def _entry_lines_rev_key(iso: str, entry_i: int) -> str: return f"wl_ent_rev_{iso}_{entry_i}"
 def _entry_lines_live_key(iso: str, entry_i: int) -> str: return f"wl_lines_live_{iso}_{entry_i}"
-def _entry_clients_comp_key(iso: str, entry_i: int) -> str: return f"wl_clients_comp_{iso}_{entry_i}"
+
+def _entry_clients_comp_key(iso: str, entry_i: int) -> str:
+    g = int(st.session_state.get(_entry_clients_inst_key(iso, entry_i), 0) or 0)
+    return f"wl_clients_comp_{iso}_{entry_i}_i{g}"
+
 def _entry_clients_rev_key(iso: str, entry_i: int) -> str: return f"wl_clients_rev_{iso}_{entry_i}"
 def _entry_clients_live_key(iso: str, entry_i: int) -> str: return f"wl_clients_live_{iso}_{entry_i}"
+
+def _bump_entry_lines_comp_inst(iso: str, entry_i: int) -> None:
+    st.session_state.pop(_entry_lines_comp_key(iso, entry_i), None)
+    st.session_state.pop(f"wl_lines_comp_{iso}_{entry_i}", None)  # legacy key
+    st.session_state.pop(f"wl_lines_user_edit_{iso}_{entry_i}", None)
+    k = _entry_lines_inst_key(iso, entry_i)
+    st.session_state[k] = int(st.session_state.get(k, 0) or 0) + 1
+
+def _bump_entry_clients_comp_inst(iso: str, entry_i: int) -> None:
+    st.session_state.pop(_entry_clients_comp_key(iso, entry_i), None)
+    st.session_state.pop(f"wl_clients_comp_{iso}_{entry_i}", None)  # legacy key
+    st.session_state.pop(f"wl_clients_user_edit_{iso}_{entry_i}", None)
+    k = _entry_clients_inst_key(iso, entry_i)
+    st.session_state[k] = int(st.session_state.get(k, 0) or 0) + 1
 
 def _scrub_dummy_label(val: str) -> str:
     s = (val or "").strip()
@@ -2181,8 +2206,9 @@ def _pick_editor_out_lines(
     return session_n
 
 
-def _apply_entry_lines(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None, bump_gen: bool = False) -> None:
+def _apply_entry_lines(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None, bump_gen: bool = False, remount_comp: bool = False) -> None:
     if bump_gen: _bump_entry_line_gen(iso, entry_i)
+    if remount_comp: _bump_entry_lines_comp_inst(iso, entry_i)
     chunks = [str(x or "") for x in (lines or [])]
     if not chunks or chunks[-1] != "": chunks.append("")
     old = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
@@ -2240,7 +2266,8 @@ def _set_comp_clients_state(iso: str, entry_i: int, chunks: list[str], *, focus_
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, int(fj))
     st.session_state[_entry_clients_live_key(iso, entry_i)] = list(chunks)
 
-def _apply_entry_clients(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None) -> None:
+def _apply_entry_clients(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None, remount_comp: bool = False) -> None:
+    if remount_comp: _bump_entry_clients_comp_inst(iso, entry_i)
     chunks = [str(x or "") for x in (lines or [])]
     if not chunks or chunks[-1] != "": chunks.append("")
     old = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
@@ -2272,7 +2299,7 @@ def _seed_entry_clients(iso: str, entry_i: int, client: str | list[str]) -> None
     fj = max(0, len(chunks) - 1)
     for j, line in enumerate(chunks):
         if _display_units(line) >= max_u: fj = min(j + 1, len(chunks))
-    _apply_entry_clients(iso, entry_i, chunks, focus_j=fj)
+    _apply_entry_clients(iso, entry_i, chunks, focus_j=fj, remount_comp=True)
 
 def _insert_client_after(iso: str, entry_i: int, line_j: int) -> None:
     cur = _clients_from_widgets(iso, entry_i, keep_trailing_empty=True)
@@ -2722,7 +2749,7 @@ def _seed_entry_lines(iso: str, entry_i: int, content: str, *, focus_j: int | No
         fj = max(0, len(chunks) - 1)
         for j, line in enumerate(chunks):
             if _display_units(line) >= max_u: fj = min(j + 1, len(chunks))
-    _apply_entry_lines(iso, entry_i, chunks, focus_j=fj)
+    _apply_entry_lines(iso, entry_i, chunks, focus_j=fj, remount_comp=True)
 
 def _read_editor_entries(d: date) -> list[dict]:
     iso = d.isoformat()
@@ -2764,6 +2791,52 @@ def _cells_from_widgets(d: date) -> dict:
     notes_raw = str(st.session_state.get(ok) or st.session_state.get(_notes_key(d), "") or "")
     return _pack_entries_to_cells(d, entries, [x.strip() for x in next_raw.splitlines() if x.strip()], [x.strip() for x in notes_raw.splitlines() if x.strip()])
 
+def _seed_day_entry_widgets(d: date, entries_list: list[dict], next_txt: str, notes_txt: str) -> None:
+    """저장/추가/삭제 후 입력 위젯을 entries 기준으로 다시 심는다. CCv2 인스턴스 키도 갱신."""
+    iso = d.isoformat()
+    ek = _entries_key(d)
+    old_n = int(st.session_state.get(f"wl_entry_count_{iso}", 0) or 0)
+    for i in range(max(old_n, len(entries_list)) + 2):
+        st.session_state.pop(f"wl_ent_c_{iso}_{i}", None)
+        st.session_state.pop(f"wl_ent_t_{iso}_{i}", None)
+        st.session_state.pop(f"wl_ent_gap_{iso}_{i}", None)
+        st.session_state.pop(f"wl_exp_{iso}_{i}", None)
+        st.session_state.pop(_entry_lines_comp_key(iso, i), None)
+        st.session_state.pop(f"wl_lines_comp_{iso}_{i}", None)
+        st.session_state.pop(_entry_lines_rev_key(iso, i), None)
+        st.session_state.pop(_entry_lines_live_key(iso, i), None)
+        st.session_state.pop(f"wl_force_comp_lines_{iso}_{i}", None)
+        st.session_state.pop(f"wl_lines_user_edit_{iso}_{i}", None)
+        st.session_state.pop(_entry_clients_comp_key(iso, i), None)
+        st.session_state.pop(f"wl_clients_comp_{iso}_{i}", None)
+        st.session_state.pop(_entry_clients_rev_key(iso, i), None)
+        st.session_state.pop(_entry_clients_live_key(iso, i), None)
+        st.session_state.pop(f"wl_force_comp_clients_{iso}_{i}", None)
+        st.session_state.pop(f"wl_clients_user_edit_{iso}_{i}", None)
+        old_lc = int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0)
+        for j in range(old_lc + 3): st.session_state.pop(_entry_line_key(iso, i, j), None)
+        st.session_state.pop(_entry_line_count_key(iso, i), None)
+        old_cc = int(st.session_state.get(_entry_client_count_key(iso, i), 0) or 0)
+        for j in range(old_cc + 3): st.session_state.pop(_entry_client_key(iso, i, j), None)
+        st.session_state.pop(_entry_client_count_key(iso, i), None)
+    st.session_state.pop(f"wl_next_area_{iso}", None)
+    st.session_state.pop(f"wl_notes_area_{iso}", None)
+    st.session_state[ek] = entries_list
+    st.session_state[f"wl_entry_count_{iso}"] = len(entries_list)
+    for i, ent in enumerate(entries_list):
+        clines = ent.get("client_lines")
+        if isinstance(clines, list) and clines: _seed_entry_clients(iso, i, clines)
+        else: _seed_entry_clients(iso, i, ent.get("client") or "")
+        st.session_state[f"wl_ent_gap_{iso}_{i}"] = _entry_blank_after(ent, 1)
+        lines = ent.get("lines")
+        if isinstance(lines, list): _apply_entry_lines(iso, i, [str(x or "") for x in lines], remount_comp=True)
+        else: _seed_entry_lines(iso, i, ent.get("content") or "")
+    st.session_state[f"wl_next_area_{iso}"] = next_txt
+    st.session_state[f"wl_notes_area_{iso}"] = notes_txt
+    st.session_state[_next_key(d)] = next_txt
+    st.session_state[_notes_key(d)] = notes_txt
+
+
 def _view_cells_key(d: date) -> str: return f"wl_view_cells_{d.isoformat()}"
 
 def _publish_view_cells(d: date, cells: dict) -> None:
@@ -2783,11 +2856,11 @@ def _view_cells_for_preview(d: date) -> dict:
 
 def _clear_date_widget_state(d: date) -> None:
     iso = d.isoformat()
-    prefixes = (f"wl_ent_c_{iso}_", f"wl_ent_t_{iso}_", f"wl_ent_gap_{iso}_", f"wl_ent_ln_{iso}_", f"wl_ent_lc_{iso}_", f"wl_ent_gen_{iso}_", f"wl_ent_cl_{iso}_", f"wl_ent_clc_{iso}_", f"wl_ent_rev_{iso}_", f"wl_lines_comp_{iso}_", f"wl_lines_live_{iso}_", f"wl_clients_comp_{iso}_", f"wl_clients_live_{iso}_", f"wl_clients_rev_{iso}_", f"wl_exp_{iso}_", f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_save_btn_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}")
+    prefixes = (f"wl_ent_c_{iso}_", f"wl_ent_t_{iso}_", f"wl_ent_gap_{iso}_", f"wl_ent_ln_{iso}_", f"wl_ent_lc_{iso}_", f"wl_ent_gen_{iso}_", f"wl_ent_cl_{iso}_", f"wl_ent_clc_{iso}_", f"wl_ent_rev_{iso}_", f"wl_lines_comp_{iso}_", f"wl_lines_live_{iso}_", f"wl_lines_inst_{iso}_", f"wl_clients_comp_{iso}_", f"wl_clients_live_{iso}_", f"wl_clients_inst_{iso}_", f"wl_clients_rev_{iso}_", f"wl_force_comp_lines_{iso}_", f"wl_force_comp_clients_{iso}_", f"wl_lines_user_edit_{iso}_", f"wl_clients_user_edit_{iso}_", f"wl_exp_{iso}_", f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_save_btn_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}")
     for k in list(st.session_state.keys()):
         if not isinstance(k, str): continue
         if k in prefixes or any(k.startswith(p) for p in prefixes if p.endswith("_")): del st.session_state[k]
-        elif k in {f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_pending_sync_{iso}", f"wl_do_add_{iso}", f"wl_do_del_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}"}: del st.session_state[k]
+        elif k in {f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_pending_sync_{iso}", f"wl_do_add_{iso}", f"wl_do_del_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}"}: del st.session_state[k]
 
 def _preview_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"_preview_{d.isoformat()}.xlsx")
 
@@ -3164,7 +3237,27 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
         saved = list_saved_worklog_dates()
         _init_widget_state(selected)
-        draft = _cells_from_widgets(selected)
+        # 저장 직후 시드를 왼쪽 draft 계산보다 먼저 적용 — 요약에 구 위젯값이 남는 문제 방지
+        _iso_early = selected.isoformat()
+        _pending_early = st.session_state.pop(f"wl_pending_sync_{_iso_early}", None)
+        if isinstance(_pending_early, dict):
+            _seed_day_entry_widgets(
+                selected,
+                _pending_early.get("entries") or [{"client": "", "content": ""}],
+                _pending_early.get("next") or "",
+                _pending_early.get("notes") or "",
+            )
+            if _pending_early.get("msg"):
+                st.session_state[f"wl_flash_save_{_iso_early}"] = {
+                    "msg": _pending_early["msg"],
+                    "cloud_err": _pending_early.get("cloud_err"),
+                }
+        # 저장본이 있으면 왼쪽 요약은 published 스냅샷 우선 (위젯 CCv2 잔상과 분리)
+        _published = st.session_state.get(_view_cells_key(selected))
+        if isinstance(_published, dict) and _published and isinstance(_pending_early, dict):
+            draft = dict(_published)
+        else:
+            draft = _cells_from_widgets(selected)
 
         if st.session_state.get("wl_print_panel"):
             _render_worklog_print_panel()
@@ -3359,47 +3452,14 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             if ek not in st.session_state or not st.session_state[ek]: st.session_state[ek] = [{"client": "", "content": ""}]
 
             def _seed_entry_widgets(entries_list: list[dict], next_txt: str, notes_txt: str) -> None:
-                old_n = int(st.session_state.get(f"wl_entry_count_{iso}", 0) or 0)
-                for i in range(max(old_n, len(entries_list)) + 2):
-                    st.session_state.pop(f"wl_ent_c_{iso}_{i}", None)
-                    st.session_state.pop(f"wl_ent_t_{iso}_{i}", None)
-                    st.session_state.pop(f"wl_ent_gap_{iso}_{i}", None)
-                    st.session_state.pop(f"wl_exp_{iso}_{i}", None)
-                    st.session_state.pop(_entry_lines_comp_key(iso, i), None)
-                    st.session_state.pop(_entry_lines_rev_key(iso, i), None)
-                    st.session_state.pop(_entry_lines_live_key(iso, i), None)
-                    old_lc = int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0)
-                    for j in range(old_lc + 3): st.session_state.pop(_entry_line_key(iso, i, j), None)
-                    st.session_state.pop(_entry_line_count_key(iso, i), None)
-                    old_cc = int(st.session_state.get(_entry_client_count_key(iso, i), 0) or 0)
-                    for j in range(old_cc + 3): st.session_state.pop(_entry_client_key(iso, i, j), None)
-                    st.session_state.pop(_entry_client_count_key(iso, i), None)
-                st.session_state.pop(f"wl_next_area_{iso}", None)
-                st.session_state.pop(f"wl_notes_area_{iso}", None)
-                st.session_state[ek] = entries_list
-                st.session_state[f"wl_entry_count_{iso}"] = len(entries_list)
-                for i, ent in enumerate(entries_list):
-                    clines = ent.get("client_lines")
-                    if isinstance(clines, list) and clines: _seed_entry_clients(iso, i, clines)
-                    else: _seed_entry_clients(iso, i, ent.get("client") or "")
-                    st.session_state[f"wl_ent_gap_{iso}_{i}"] = _entry_blank_after(ent, 1)
-                    lines = ent.get("lines")
-                    if isinstance(lines, list): _apply_entry_lines(iso, i, [str(x or "") for x in lines])
-                    else: _seed_entry_lines(iso, i, ent.get("content") or "")
-                st.session_state[f"wl_next_area_{iso}"] = next_txt
-                st.session_state[f"wl_notes_area_{iso}"] = notes_txt
-                st.session_state[_next_key(selected)] = next_txt
-                st.session_state[_notes_key(selected)] = notes_txt
+                _seed_day_entry_widgets(selected, entries_list, next_txt, notes_txt)
 
-            pending = st.session_state.pop(f"wl_pending_sync_{iso}", None)
-            if isinstance(pending, dict):
-                ents = pending.get("entries") or [{"client": "", "content": ""}]
-                _seed_entry_widgets(ents, pending.get("next") or "", pending.get("notes") or "")
-                if pending.get("msg"):
-                    if pending.get("cloud_err"):
-                        st.warning(pending["msg"])
-                    else:
-                        st.success(pending["msg"])
+            flash = st.session_state.pop(f"wl_flash_save_{iso}", None)
+            if isinstance(flash, dict) and flash.get("msg"):
+                if flash.get("cloud_err"):
+                    st.warning(flash["msg"])
+                else:
+                    st.success(flash["msg"])
 
             add_clicked = st.session_state.pop(f"wl_do_add_{iso}", False)
             del_idx = st.session_state.pop(f"wl_do_del_{iso}", None)
@@ -3427,7 +3487,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         else: _seed_entry_clients(iso, i, ent.get("client") or "")
                     if int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0) <= 0:
                         lines0 = ent.get("lines")
-                        if isinstance(lines0, list): _apply_entry_lines(iso, i, [str(x or "") for x in lines0])
+                        if isinstance(lines0, list): _apply_entry_lines(iso, i, [str(x or "") for x in lines0], remount_comp=True)
                         else: _seed_entry_lines(iso, i, ent.get("content") or "")
                 st.session_state[f"wl_entry_count_{iso}"] = len(entries)
                 nk = f"wl_next_area_{iso}"
@@ -3545,16 +3605,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         client_now = str(st.session_state.get(f"wl_ent_c_{iso2}_{i}", "") or "").strip()
                         if client_now: client_now = client_now.splitlines()[0].strip()
                     body_now = _content_from_entry_lines(iso2, i).strip().replace("\n", " ")
-                    # 라벨용: 위젯이 비어 보여도 entries/live에 값이 있으면 반영 (비어 있음 오표시 방지)
-                    if not client_now and not body_now:
-                        _stored_lab = st.session_state.get(_entries_key(d)) or []
-                        if i < len(_stored_lab) and isinstance(_stored_lab[i], dict):
-                            _sc = str(_stored_lab[i].get("client") or "").strip()
-                            if _sc:
-                                client_now = _sc.splitlines()[0].strip()
-                            _sb = str(_stored_lab[i].get("content") or "").strip().replace("\n", " ")
-                            if _sb:
-                                body_now = _sb[:24] + ("…" if len(_sb) > 24 else "")
+                    # 라벨은 현재 위젯/live만 사용 — stored 폴백은 지운 뒤에도 구제목 잔존/비어있음 오표시 원인
                     if len(body_now) > 24: body_now = body_now[:24] + "…"
                     label = f"항목 {i + 1}"
                     if client_now: label += f" · {client_now}"
@@ -3581,7 +3632,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             lines0 = None
                             stored_e = st.session_state.get(_entries_key(d)) or []
                             if i < len(stored_e) and isinstance(stored_e[i].get("lines"), list): lines0 = stored_e[i].get("lines")
-                            if isinstance(lines0, list): _apply_entry_lines(iso2, i, [str(x or "") for x in lines0])
+                            if isinstance(lines0, list): _apply_entry_lines(iso2, i, [str(x or "") for x in lines0], remount_comp=True)
                             else: _seed_entry_lines(iso2, i, str(st.session_state.get(f"wl_ent_t_{iso2}_{i}", "") or ""))
                                 
                         if i == 0:
