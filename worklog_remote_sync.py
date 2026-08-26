@@ -362,6 +362,39 @@ def worklog_date_exists_on_cloud(
     return name in list_gist_day_names(local_dir)
 
 
+def pull_worklog_day_from_remote(
+    day: date | str,
+    local_dir: str = "./uploaded_cache/worklog",
+) -> bool:
+    """Gist에 있는 일자 xlsx를 로컬 캐시로 받음. (성공 True)"""
+    from datetime import date as _date
+
+    if isinstance(day, _date):
+        name = f"{day.isoformat()}.xlsx"
+    else:
+        name = str(day or "")
+        if not name.endswith(".xlsx"):
+            name = f"{name}.xlsx"
+    if not _is_day_file(name):
+        return False
+    if is_worklog_day_deleted(name.replace(".xlsx", ""), local_dir):
+        return False
+    loc = os.path.join(local_dir, name)
+    if os.path.isfile(loc):
+        return False
+    token = resolve_github_token()
+    gid = resolve_gist_id(local_dir)
+    if not token or not gid:
+        return False
+    gist, _ = _fetch_gist(token, gid)
+    if gist is None:
+        return False
+    if not _pull_one(gist.get("files") or {}, name, loc):
+        return False
+    invalidate_gist_days_cache()
+    return True
+
+
 def push_worklog_day_remote(
     local_path: str,
     local_dir: str = "./uploaded_cache/worklog",
