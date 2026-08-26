@@ -130,7 +130,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26i · 저장시구값복원방지"
+_WL_UI_BUILD = "2026-08-26j · 저장후구값덮어쓰기차단"
 
 
 # =====================================================================
@@ -411,7 +411,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v14",
+    "worklog_entry_lines_v15",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -2139,6 +2139,48 @@ def _set_comp_lines_state(iso: str, entry_i: int, chunks: list[str], *, focus_j:
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, int(fj))
     st.session_state[_entry_lines_live_key(iso, entry_i)] = list(chunks)
 
+
+def _norm_editor_lines(lines: list | None) -> list[str]:
+    out = [str(x or "") for x in (lines or [])]
+    if not out or out[-1] != "":
+        out = list(out) + [""]
+    return out
+
+
+def _result_lines_list(result: Any) -> list[str] | None:
+    if result is None:
+        return None
+    if hasattr(result, "lines") and isinstance(result.lines, list):
+        return _norm_editor_lines(result.lines)
+    if isinstance(result, dict) and isinstance(result.get("lines"), list):
+        return _norm_editor_lines(result.get("lines"))
+    return None
+
+
+def _pick_editor_out_lines(
+    *,
+    session_lines: list[str],
+    result: Any,
+    forced: Any,
+    changed_key: str,
+) -> list[str]:
+    """CCv2 result.lines가 저장/시드 이후 구값으로 session을 덮지 않게 선택.
+
+    - forced(프로그램 시드) 우선
+    - 사용자 편집 콜백이 난 런만 result 채택
+    - 그 외에는 session(live) 유지 ← 저장 후 구값 부활 차단
+    """
+    session_n = _norm_editor_lines(session_lines)
+    if isinstance(forced, list):
+        st.session_state.pop(changed_key, None)
+        return _norm_editor_lines(forced)
+    user_changed = bool(st.session_state.pop(changed_key, None))
+    result_n = _result_lines_list(result)
+    if user_changed and result_n is not None:
+        return result_n
+    return session_n
+
+
 def _apply_entry_lines(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None, bump_gen: bool = False) -> None:
     if bump_gen: _bump_entry_line_gen(iso, entry_i)
     chunks = [str(x or "") for x in (lines or [])]
@@ -2313,6 +2355,7 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
         cur = st.session_state.get(ck)
         if isinstance(cur, dict) and isinstance(cur.get("lines"), list):
             synced = [str(x or "") for x in cur.get("lines") or []]
+            st.session_state[f"wl_clients_user_edit_{iso}_{entry_i}"] = True
             st.session_state[live_key] = synced
             st.session_state[_entry_client_count_key(iso, entry_i)] = len(synced)
             for j, line in enumerate(synced): st.session_state[_entry_client_key(iso, entry_i, j)] = line
@@ -2333,17 +2376,13 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
         on_focus_change=_on_clients_focus_change
     )
     
-    out_lines = lines
     forced = st.session_state.pop(f"wl_force_comp_clients_{iso}_{entry_i}", None)
-    if isinstance(forced, list):
-        out_lines = [str(x or "") for x in forced]
-    elif hasattr(result, "lines") and isinstance(result.lines, list):
-        out_lines = result.lines
-    elif isinstance(result, dict) and isinstance(result.get("lines"), list):
-        out_lines = result.get("lines")
-    out = [str(x or "") for x in out_lines]
-
-    if not out or out[-1] != "": out = list(out) + [""]
+    out = _pick_editor_out_lines(
+        session_lines=lines,
+        result=result,
+        forced=forced,
+        changed_key=f"wl_clients_user_edit_{iso}_{entry_i}",
+    )
     st.session_state[live_key] = out
     old = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
     for j in range(max(old, len(out)) + 3): st.session_state.pop(_entry_client_key(iso, entry_i, j), None)
@@ -2376,6 +2415,7 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
         cur = st.session_state.get(ck)
         if isinstance(cur, dict) and isinstance(cur.get("lines"), list):
             synced = [str(x or "") for x in cur.get("lines") or []]
+            st.session_state[f"wl_lines_user_edit_{iso}_{entry_i}"] = True
             st.session_state[live_key] = synced
             st.session_state[_entry_line_count_key(iso, entry_i)] = len(synced)
             for j, line in enumerate(synced): st.session_state[_entry_line_key(iso, entry_i, j)] = line
@@ -2396,17 +2436,13 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
         on_focus_change=_on_lines_focus_change
     )
     
-    out_lines = lines
     forced = st.session_state.pop(f"wl_force_comp_lines_{iso}_{entry_i}", None)
-    if isinstance(forced, list):
-        out_lines = [str(x or "") for x in forced]
-    elif hasattr(result, "lines") and isinstance(result.lines, list):
-        out_lines = result.lines
-    elif isinstance(result, dict) and isinstance(result.get("lines"), list):
-        out_lines = result.get("lines")
-    out = [str(x or "") for x in out_lines]
-    
-    if not out or out[-1] != "": out = list(out) + [""]
+    out = _pick_editor_out_lines(
+        session_lines=lines,
+        result=result,
+        forced=forced,
+        changed_key=f"wl_lines_user_edit_{iso}_{entry_i}",
+    )
     st.session_state[live_key] = out
     old = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
     for j in range(max(old, len(out)) + 3): st.session_state.pop(_entry_line_key(iso, entry_i, j), None)
@@ -3509,6 +3545,16 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                         client_now = str(st.session_state.get(f"wl_ent_c_{iso2}_{i}", "") or "").strip()
                         if client_now: client_now = client_now.splitlines()[0].strip()
                     body_now = _content_from_entry_lines(iso2, i).strip().replace("\n", " ")
+                    # 라벨용: 위젯이 비어 보여도 entries/live에 값이 있으면 반영 (비어 있음 오표시 방지)
+                    if not client_now and not body_now:
+                        _stored_lab = st.session_state.get(_entries_key(d)) or []
+                        if i < len(_stored_lab) and isinstance(_stored_lab[i], dict):
+                            _sc = str(_stored_lab[i].get("client") or "").strip()
+                            if _sc:
+                                client_now = _sc.splitlines()[0].strip()
+                            _sb = str(_stored_lab[i].get("content") or "").strip().replace("\n", " ")
+                            if _sb:
+                                body_now = _sb[:24] + ("…" if len(_sb) > 24 else "")
                     if len(body_now) > 24: body_now = body_now[:24] + "…"
                     label = f"항목 {i + 1}"
                     if client_now: label += f" · {client_now}"
@@ -3649,7 +3695,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                                 "msg": msg,
                                 "cloud_err": cerr,
                             }
-                            st.session_state["_wl_drive_sync_force"] = True
+                            # 저장 직후 강제 pull은 구 원격본이 로컬을 덮을 수 있음 — push는 save_worklog_cells에서 이미 함
+                            st.session_state["_wl_drive_sync_ts"] = time.time()
                             _wl_rerun()
                     except Exception as e:
                         if _wl_quiet_ui():
