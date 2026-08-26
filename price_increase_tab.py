@@ -36,7 +36,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26ac · 인라인미리보기"
+PI_UI_BUILD = "2026-08-26ad · 품목선택적용"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -1275,6 +1275,7 @@ def _init_items_from_prices(client: str, price_df: pd.DataFrame, pct: float = 0.
         old = float(row.get("기존단가") or 0)
         items.append(
             {
+                "선택": True,
                 "품목명": str(row.get("품목명") or ""),
                 "기존단가": old,
                 "인상적용단가": old,
@@ -1285,14 +1286,30 @@ def _init_items_from_prices(client: str, price_df: pd.DataFrame, pct: float = 0.
     return items
 
 
+def _normalize_items_selection(items: list[dict]) -> list[dict]:
+    """기존 session 품목에 선택 플래그가 없으면 기본 True."""
+    out: list[dict] = []
+    for it in items or []:
+        row = dict(it)
+        row["선택"] = bool(row.get("선택", True))
+        out.append(row)
+    return out
+
+
+def _selected_items(items: list[dict]) -> list[dict]:
+    """공문·요율 적용 대상: 선택 체크된 품목만."""
+    return [it for it in (items or []) if bool(it.get("선택", True))]
+
+
 def _items_df_for_editor(items: list[dict]) -> pd.DataFrame:
-    """편집용 표: 제품명 · 기존단가 · 인상단가 · 비고."""
+    """편집용 표: 선택 · 제품명 · 기존단가 · 인상단가 · 비고."""
     rows = []
-    for it in items:
+    for it in _normalize_items_selection(items):
         old = float(it.get("기존단가") or 0)
         new = float(it.get("인상적용단가") or 0)
         rows.append(
             {
+                "선택": bool(it.get("선택", True)),
                 "제품명": str(it.get("품목명") or ""),
                 "기존단가": old,
                 "인상단가": new,
@@ -1300,7 +1317,7 @@ def _items_df_for_editor(items: list[dict]) -> pd.DataFrame:
             }
         )
     if not rows:
-        return pd.DataFrame(columns=["제품명", "기존단가", "인상단가", "비고"])
+        return pd.DataFrame(columns=["선택", "제품명", "기존단가", "인상단가", "비고"])
     return pd.DataFrame(rows)
 
 
@@ -1323,8 +1340,12 @@ def _items_from_editor_df(df: pd.DataFrame) -> list[dict]:
         else:
             old = row.get("단가")
         new = row.get("인상단가") if "인상단가" in row.index else row.get("인상적용단가")
+        selected = True
+        if "선택" in row.index:
+            selected = bool(row.get("선택"))
         out.append(
             {
+                "선택": selected,
                 "품목명": name,
                 "기존단가": float(old or 0),
                 "인상적용단가": float(new or 0),
@@ -1350,21 +1371,27 @@ def _bump_editor_widget(editor_key: str) -> None:
     st.session_state.pop(f"{editor_key}_editor", None)
 
 
-def _apply_pct_to_items(items: list[dict], pct: float) -> list[dict]:
+def _apply_pct_to_items(items: list[dict], pct: float, *, only_selected: bool = True) -> list[dict]:
     out = []
-    for it in items:
-        old = float(it.get("기존단가") or 0)
+    for it in _normalize_items_selection(items):
         row = dict(it)
+        if only_selected and not bool(row.get("선택", True)):
+            out.append(row)
+            continue
+        old = float(row.get("기존단가") or 0)
         row["인상적용단가"] = default_increase_price(old, pct)
         out.append(row)
     return out
 
 
-def _apply_amount_to_items(items: list[dict], amount: float) -> list[dict]:
+def _apply_amount_to_items(items: list[dict], amount: float, *, only_selected: bool = True) -> list[dict]:
     out = []
-    for it in items:
-        old = float(it.get("기존단가") or 0)
+    for it in _normalize_items_selection(items):
         row = dict(it)
+        if only_selected and not bool(row.get("선택", True)):
+            out.append(row)
+            continue
+        old = float(row.get("기존단가") or 0)
         row["인상적용단가"] = apply_increase_by_amount(old, amount)
         out.append(row)
     return out
@@ -2135,7 +2162,7 @@ def _render_items_table(
 ) -> list[dict]:
     st.markdown("##### 단가 조정 내용")
     st.caption(
-        "공문에는 **제품명 · 기존단가 · 인상단가 · 비고** 표로 들어갑니다. "
+        "「선택」체크한 제품만 요율 적용·공문 단가표에 들어갑니다. "
         "거래처 선택 시 품목·최종단가 자동 반영. %/인상금액은 계산용(공문 미표시)."
     )
 
@@ -2144,7 +2171,7 @@ def _render_items_table(
         ["퍼센테이지(%)", "인상금액(원)"],
         horizontal=True,
         key=f"{editor_key}_mode",
-        help="선택한 방식으로 기존단가에 적용해 인상단가를 자동 계산합니다. 공문에는 들어가지 않습니다.",
+        help="선택한(체크) 제품에만 적용해 인상단가를 계산합니다. 공문에는 %/금액이 들어가지 않습니다.",
     )
     c_val, c_apply, c_reload = st.columns([1.4, 1.1, 1.2])
     with c_val:
@@ -2169,11 +2196,11 @@ def _render_items_table(
     with c_apply:
         st.write("")
         if st.button("인상단가에 적용", key=f"{editor_key}_apply", use_container_width=True, type="primary"):
-            base = st.session_state.get(editor_key, items)
+            base = _normalize_items_selection(st.session_state.get(editor_key, items))
             if mode.startswith("퍼센트"):
-                st.session_state[editor_key] = _apply_pct_to_items(base, apply_val)
+                st.session_state[editor_key] = _apply_pct_to_items(base, apply_val, only_selected=True)
             else:
-                st.session_state[editor_key] = _apply_amount_to_items(base, apply_val)
+                st.session_state[editor_key] = _apply_amount_to_items(base, apply_val, only_selected=True)
             _bump_editor_widget(editor_key)
             _pi_rerun()
     with c_reload:
@@ -2184,7 +2211,9 @@ def _render_items_table(
             _pi_rerun()
 
     if editor_key not in st.session_state:
-        st.session_state[editor_key] = items
+        st.session_state[editor_key] = _normalize_items_selection(items)
+    else:
+        st.session_state[editor_key] = _normalize_items_selection(st.session_state[editor_key])
 
     cur_items = st.session_state[editor_key]
     edit_df = _items_df_for_editor(cur_items)
@@ -2192,6 +2221,12 @@ def _render_items_table(
     edited = st.data_editor(
         edit_df,
         column_config={
+            "선택": st.column_config.CheckboxColumn(
+                "선택",
+                help="체크한 제품만 요율 적용 · 공문 단가표에 포함",
+                default=True,
+                width="small",
+            ),
             "제품명": st.column_config.TextColumn("제품명", width="medium"),
             "기존단가": st.column_config.NumberColumn(
                 "기존단가", min_value=0.0, format="%.1f", width="small"
@@ -2201,6 +2236,7 @@ def _render_items_table(
             ),
             "비고": st.column_config.TextColumn("비고", width="small"),
         },
+        column_order=["선택", "제품명", "기존단가", "인상단가", "비고"],
         num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
@@ -2225,16 +2261,20 @@ def _render_items_table(
             st.success("품목표 저장됨 (거래처별 유지)")
             # session_state에 이미 반영됨 — 전체/fragment rerun 없이 확인 메시지만 표시
 
-    result = _items_from_editor_df(edited)
+    result = _normalize_items_selection(_items_from_editor_df(edited))
     st.session_state[editor_key] = result
+    chosen = _selected_items(result)
     if result:
         preview = " · ".join(
             f"{it['품목명']} {float(it['기존단가']):,.0f}➠{float(it['인상적용단가']):,.0f}"
-            for it in result[:5]
+            for it in chosen[:5]
         )
-        if len(result) > 5:
-            preview += f" 외 {len(result) - 5}건"
-        st.caption(f"현재 {len(result)}개 품목 — {preview}")
+        if len(chosen) > 5:
+            preview += f" 외 {len(chosen) - 5}건"
+        st.caption(
+            f"전체 {len(result)}개 · 공문 반영 {len(chosen)}개"
+            + (f" — {preview}" if chosen else " — (선택 없음)")
+        )
     return result
 
 
@@ -2377,7 +2417,8 @@ def _collect_letter_kwargs(
     if not isinstance(send_date, date):
         send_date = date.today()
     letter_body = str(st.session_state.get(body_key) or _default_letter_body_text())
-    items = list(st.session_state.get(items_key) or [])
+    items_all = _normalize_items_selection(list(st.session_state.get(items_key) or []))
+    items = _selected_items(items_all)
     letter_paras = _body_text_to_paras(letter_body)
     mail_body = _default_mail_body(client, effective_s, items)
     kwargs = dict(
@@ -2406,9 +2447,8 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
     elif mail_df is None or mail_df.empty:
         st.caption("연락처 CSV 없음 · 직접 입력하거나 위 메일 연락처에서 업로드")
     else:
-        st.caption("이름 불일치 시 아래에서 선택")
-    need_pick = not bool(exact_email) and mail_df is not None and not mail_df.empty
-    with st.expander("연락처에서 메일 고르기", expanded=False if exact_email else need_pick):
+        st.caption("이름 불일치 시 「연락처에서 메일 고르기」에서 선택")
+    with st.expander("연락처에서 메일 고르기", expanded=False):
         cands = suggest_mail_matches(client, mail_df, limit=40)
         if cands:
             pick_labels = ["— 유사 연락처 선택 —"] + [f"{r['거래처']}  ·  {r['이메일']}" for r in cands]
