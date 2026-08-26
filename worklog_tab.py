@@ -136,7 +136,11 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26q · 삭제후Cloud/Drive부활차단"
+_WL_UI_BUILD = "2026-08-26r · 날짜중복차단·요약깜박임개선"
+
+
+class WorklogSaveBlockedError(Exception):
+    """이미 저장된 날짜에 후입력 저장 시도."""
 
 
 # =====================================================================
@@ -1100,25 +1104,70 @@ def worklog_date_exists_on_drive(d: date) -> bool:
         return False
 
 
+def worklog_date_exists_on_cloud(d: date) -> bool:
+    try:
+        from worklog_remote_sync import worklog_date_exists_on_cloud as _cloud_exists
+
+        return bool(_cloud_exists(d, WORKLOG_DIR))
+    except Exception:
+        return False
+
+
 def detect_worklog_date_presence(d: date) -> dict:
-    """로컬 캐시·월별보관·Drive 에 해당 날짜 일지 존재 여부."""
+    """로컬 캐시·월별보관·Drive·Cloud Gist 에 해당 날짜 일지 존재 여부."""
     local = os.path.isfile(worklog_path(d))
     archive = worklog_date_exists_in_archive(d)
     drive = worklog_date_exists_on_drive(d)
+    cloud = worklog_date_exists_on_cloud(d)
     locs: list[str] = []
     if local:
         locs.append("로컬 캐시")
     if archive:
-        locs.append(f"월별파일({d.month}월.xlsx)")
+        root = resolve_worklog_archive_root()
+        if root:
+            locs.append(f"일지/{d.year}/{d.month}월.xlsx")
+        else:
+            locs.append(f"월별파일({d.month}월.xlsx)")
     if drive:
-        locs.append("클라우드 Drive")
+        locs.append("Drive worklog")
+    if cloud:
+        locs.append("Cloud Gist")
     return {
         "local": local,
         "archive": archive,
         "drive": drive,
-        "any": bool(local or archive or drive),
+        "cloud": cloud,
+        "any": bool(local or archive or drive or cloud),
         "locations": locs,
     }
+
+
+def check_worklog_save_allowed(d: date, *, had_local_at_open: bool) -> tuple[bool, str]:
+    """날짜 중복 시 후입력 저장 차단. 이미 연 로컬 파일 수정은 허용."""
+    pres = detect_worklog_date_presence(d)
+    if not pres["any"]:
+        return True, ""
+    if had_local_at_open and pres["local"]:
+        return True, ""
+    locs = pres.get("locations") or []
+    detail = ", ".join(locs) if locs else "저장소"
+    return (
+        False,
+        f"{d.isoformat()} 일지가 이미 있습니다 ({detail}). "
+        "선입력본을 유지합니다. 수정하려면 달력에서 해당 날짜를 선택하거나 삭제 후 다시 저장하세요.",
+    )
+
+
+def describe_worklog_archive_target(d: date) -> str:
+    """UI용 저장 경로 설명 (Desktop/업무/일지/YYYY/N월.xlsx#YYYY-MM-DD)."""
+    root = resolve_worklog_archive_root()
+    month_path = worklog_archive_month_path(d)
+    if root and month_path:
+        return f"{root}/{d.year}/{d.month}월.xlsx#{worklog_archive_sheet_title(d)}"
+    if month_path:
+        return f"{month_path}#{worklog_archive_sheet_title(d)}"
+    home = os.path.expanduser("~")
+    return f"{home}/Desktop/업무/일지/{d.year}/{d.month}월.xlsx#{worklog_archive_sheet_title(d)}"
 
 
 def _clone_worksheet_to_workbook(src_ws, dst_wb, title: str):
@@ -1237,15 +1286,17 @@ def _migrate_legacy_month_workbook(d: date, month_path: str) -> None:
             pass
 
 
-def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str) -> str | None:
+def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite: bool = True) -> str | None:
     """일자 파일을 월별 xlsx의 날짜 시트로 반영. 달이 바뀌면 N월.xlsx 신규 생성."""
     if load_workbook is None:
         return None
     month_path = worklog_archive_month_path(d)
     if not month_path or not day_xlsx_path or not os.path.exists(day_xlsx_path):
         return None
-    _migrate_legacy_month_workbook(d, month_path)
     sheet_title = worklog_archive_sheet_title(d)
+    if not allow_overwrite and worklog_date_exists_in_archive(d):
+        return month_path if os.path.exists(month_path) else None
+    _migrate_legacy_month_workbook(d, month_path)
     day_wb = load_workbook(day_xlsx_path)
     try:
         src_ws = day_wb.active
@@ -1417,11 +1468,15 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
     wb.save(path)
     wb.close()
 
-def save_worklog_cells(d: date, cells: dict, *, force: bool = True) -> str:
+def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overwrite: bool = False) -> str:
     """저장: 로컬 캐시 + 월별 일지 + Drive + (가능하면) Cloud Gist.
 
-    force 기본 True — 사용자가 저장을 눌렀으면 원격도 이 내용으로 맞춤.
+    allow_overwrite=False(기본) — 해당 날짜가 이미 있으면 후입력 저장 차단.
+    force=True — Drive/Cloud push 시 원격 덮어쓰기(기존 일지 수정 시).
     """
+    ok, block_msg = check_worklog_save_allowed(d, had_local_at_open=allow_overwrite)
+    if not ok:
+        raise WorklogSaveBlockedError(block_msg)
     path = worklog_path(d)
     cells = _spill_all_content(cells)
     write_cells_to_path(path, d, cells, force_template=True)
@@ -1439,22 +1494,28 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = True) -> str:
     st.session_state.pop("wl_last_cloud_gist", None)
     st.session_state.pop("wl_last_cloud_err", None)
     st.session_state.pop("wl_last_archive_sheet", None)
+    st.session_state.pop("wl_last_archive_target", None)
     try:
-        archive = upsert_worklog_archive_sheet(d, path)
+        archive = upsert_worklog_archive_sheet(d, path, allow_overwrite=allow_overwrite or force)
         if archive:
             st.session_state["wl_last_archive_path"] = archive
             st.session_state["wl_last_archive_sheet"] = worklog_archive_sheet_title(d)
+            st.session_state["wl_last_archive_target"] = describe_worklog_archive_target(d)
     except Exception as e:
         st.session_state["wl_last_archive_err"] = str(e)
     try:
         from drive_autoload import push_worklog_day_to_drive, push_worklog_month_archive_to_drive
 
-        drv = push_worklog_day_to_drive(path, WORKLOG_DIR, force=True)
+        drv = push_worklog_day_to_drive(path, WORKLOG_DIR, force=force)
         if drv:
             st.session_state["wl_last_drive_path"] = drv
+        elif not force:
+            pres = detect_worklog_date_presence(d)
+            if pres.get("drive"):
+                st.session_state["wl_last_drive_conflict"] = d.isoformat()
         arch_path = st.session_state.get("wl_last_archive_path")
         if arch_path and os.path.isfile(arch_path):
-            mdrv = push_worklog_month_archive_to_drive(arch_path, year=d.year, force=True)
+            mdrv = push_worklog_month_archive_to_drive(arch_path, year=d.year, force=force)
             if mdrv:
                 st.session_state["wl_last_drive_month_path"] = mdrv
     except Exception:
@@ -1463,7 +1524,7 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = True) -> str:
         from worklog_remote_sync import push_worklog_day_remote, resolve_github_token
 
         if resolve_github_token():
-            gid, cerr = push_worklog_day_remote(path, WORKLOG_DIR)
+            gid, cerr = push_worklog_day_remote(path, WORKLOG_DIR, force=force)
             if gid:
                 st.session_state["wl_last_cloud_gist"] = gid
             elif cerr:
@@ -1527,6 +1588,8 @@ def delete_worklog_day(d: date) -> list[str]:
         pass
     _invalidate_saved_dates_cache()
     _clear_date_widget_state(d)
+    st.session_state.pop(f"wl_open_ctx_{iso}", None)
+    st.session_state.pop(f"wl_saved_ok_{iso}", None)
     empty = [{"client": "", "content": "", "lines": [], "blank_after": 1}]
     st.session_state[_boot_key(d)] = True
     st.session_state[_entries_key(d)] = empty
@@ -1542,13 +1605,16 @@ def delete_worklog_day(d: date) -> list[str]:
 
 def reassign_worklog_date(old: date, new: date) -> str:
     if old == new: return "same"
-    if os.path.exists(worklog_path(new)): raise FileExistsError(f"{new.isoformat()} 에 이미 저장된 일지가 있습니다.")
+    pres = detect_worklog_date_presence(new)
+    if pres["any"]:
+        locs = ", ".join(pres.get("locations") or ["저장본"])
+        raise FileExistsError(f"{new.isoformat()} 에 이미 저장된 일지가 있습니다 ({locs}).")
     try: cells = _cells_from_widgets(old)
     except Exception: cells = read_worklog_cells(old)
     cells["date"] = format_worklog_date(new)
     old_saved = os.path.exists(worklog_path(old))
     if old_saved or any(str(cells.get(f"G{r}", "") or "").strip() or str(cells.get(f"C{r}", "") or "").strip() for r in WL_CONTENT_ROWS) or any(str(cells.get(f"D{r}", "") or "").strip() for r in WL_NEXT_ROWS + WL_NOTE_ROWS):
-        save_worklog_cells(new, cells)
+        save_worklog_cells(new, cells, force=False, allow_overwrite=False)
     if old_saved:
         for path in (worklog_path(old), _preview_path(old), _print_xlsx_path(old)):
             if os.path.exists(path):
@@ -2904,7 +2970,7 @@ def _clear_date_widget_state(d: date) -> None:
     for k in list(st.session_state.keys()):
         if not isinstance(k, str): continue
         if k in prefixes or any(k.startswith(p) for p in prefixes if p.endswith("_")): del st.session_state[k]
-        elif k in {f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_pending_sync_{iso}", f"wl_do_add_{iso}", f"wl_do_del_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}"}: del st.session_state[k]
+        elif k in {f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_pending_sync_{iso}", f"wl_do_add_{iso}", f"wl_do_del_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}", f"wl_open_ctx_{iso}", f"wl_saved_ok_{iso}"}: del st.session_state[k]
 
 def _preview_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"_preview_{d.isoformat()}.xlsx")
 
@@ -3133,8 +3199,12 @@ def _render_worklog_summary_block(selected: date, cells: dict) -> None:
 
 def _prepare_worklog_day_state(selected: date) -> None:
     """날짜별 위젯 초기화 + 저장 직후 pending 시드 (페이지 rerun 시 1회)."""
-    _init_widget_state(selected)
     iso = selected.isoformat()
+    open_k = f"wl_open_ctx_{iso}"
+    if open_k not in st.session_state:
+        pres = detect_worklog_date_presence(selected)
+        st.session_state[open_k] = {"had_local": bool(pres.get("local")), "presence": pres}
+    _init_widget_state(selected)
     pending = st.session_state.pop(f"wl_pending_sync_{iso}", None)
     if isinstance(pending, dict):
         _seed_day_entry_widgets(
@@ -3154,7 +3224,7 @@ def _render_worklog_left_preview(selected: date) -> None:
     """왼쪽 요약/엑셀 — fragment 밖에서만 그림 (타이핑 시 재실행 안 됨)."""
     draft = _view_cells_for_preview(selected)
     st.markdown("##### 업무일지 보기")
-    st.caption("입력은 바로 반영 · 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신")
+    st.caption("입력은 바로 반영 · 왼쪽 요약은 저장·엑셀 미리보기·날짜 변경 시 갱신")
     p1, p2 = st.columns(2)
     with p1:
         do_print = st.button(
@@ -3266,27 +3336,17 @@ def _render_worklog_left_preview(selected: date) -> None:
 
 
 def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> None:
-    """칸 이동·저장 등 시점에 왼쪽 요약 스냅샷을 갱신 요청.
-
-    타이핑 중에는 호출하지 않음. focus_sig가 이전과 같으면 무시.
-    fragment 안에서는 플래그만 세움 → 페이지 rerun으로 왼쪽 갱신.
-    """
+    """저장·엑셀 미리보기 등 — 왼쪽 요약 스냅샷 갱신 (페이지 rerun 없음, 같은 런에서 반영)."""
     iso = d.isoformat()
     if focus_sig is not None:
         prev = st.session_state.get(f"wl_left_focus_sig_{iso}")
         if prev == focus_sig:
             return
         st.session_state[f"wl_left_focus_sig_{iso}"] = focus_sig
-    now = time.time()
-    last = float(st.session_state.get("wl_left_refresh_ts") or 0)
-    if (now - last) < 0.25:
-        return
-    st.session_state["wl_left_refresh_ts"] = now
     try:
         _publish_view_cells(d, _cells_from_widgets(d))
     except Exception:
         pass
-    st.session_state["wl_need_left_refresh"] = True
 
 
 
@@ -3463,14 +3523,11 @@ def _render_worklog_input_panel(selected: date) -> None:
                         return
                     fk = str(hook.get("focus") or "")
                     if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
-                        # 특수기호용 active만 기록. focus 복원 키에 넣지 않음(커서 점프 방지)
                         st.session_state["wl_active_cell_key"] = fk
-                        _request_left_preview_refresh(d, focus_sig=fk)
                         return
                     if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state[f"wl_focus_ln_{iso2}"] = fk
-                        _request_left_preview_refresh(d, focus_sig=fk)
 
                 def _on_caret_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
@@ -3494,7 +3551,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         st.session_state[f"wl_focus_caret_{iso2}"] = s
 
-                st.caption("입력은 즉시 반영됩니다. 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신됩니다.")
+                st.caption("입력은 즉시 반영됩니다. 왼쪽 요약은 저장·엑셀 미리보기·날짜 변경 시 갱신됩니다.")
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
                 _rem = _usage["remaining"]
@@ -3596,8 +3653,13 @@ def _render_worklog_input_panel(selected: date) -> None:
                                 [x.strip() for x in next_txt.splitlines() if x.strip()],
                                 [x.strip() for x in notes_txt.splitlines() if x.strip()],
                             )
-                            # 저장 = 이 기기 + Drive + Cloud(Gist) 모두 현재 내용으로 맞춤
-                            path = save_worklog_cells(d, cells, force=True)
+                            open_ctx = st.session_state.get(f"wl_open_ctx_{iso2}") or {}
+                            had_local = bool(open_ctx.get("had_local")) or bool(st.session_state.get(f"wl_saved_ok_{iso2}"))
+                            path = save_worklog_cells(d, cells, force=had_local, allow_overwrite=had_local)
+                            st.session_state[f"wl_saved_ok_{iso2}"] = True
+                            ctx = dict(open_ctx)
+                            ctx["had_local"] = True
+                            st.session_state[f"wl_open_ctx_{iso2}"] = ctx
                             _publish_view_cells(d, cells)
                             # 시드는 방금 읽은 입력값 그대로 — cells 왕복으로 구형/변형 값이 되살아나지 않게
                             seed_entries = []
@@ -3623,12 +3685,16 @@ def _render_worklog_input_panel(selected: date) -> None:
                             st.session_state[_next_key(d)] = next_txt
                             st.session_state[_notes_key(d)] = notes_txt
                             arch = (st.session_state.get("wl_last_archive_path") or "")
+                            arch_target = st.session_state.get("wl_last_archive_target") or describe_worklog_archive_target(d)
                             drv = st.session_state.get("wl_last_drive_path") or ""
                             mdrv = st.session_state.get("wl_last_drive_month_path") or ""
                             gist = st.session_state.get("wl_last_cloud_gist") or ""
                             cerr = st.session_state.get("wl_last_cloud_err") or ""
+                            drv_cf = st.session_state.get("wl_last_drive_conflict") or ""
                             msg = f"저장 완료: {os.path.basename(path)}"
-                            if arch and not _wl_quiet_ui():
+                            if arch_target and not _wl_quiet_ui():
+                                msg += f" · {arch_target}"
+                            elif arch and not _wl_quiet_ui():
                                 _sh = st.session_state.get("wl_last_archive_sheet") or d.isoformat()
                                 msg += f" · 일지/{d.year}/{os.path.basename(arch)}#{_sh}"
                             if drv:
@@ -3637,10 +3703,14 @@ def _render_worklog_input_panel(selected: date) -> None:
                                 msg += f" · Drive일지/{d.year}"
                             if gist:
                                 msg += f" · Cloud OK (gist `{gist}`)"
+                            elif cerr == "duplicate_date":
+                                msg += " · Cloud: 선입력본 유지(덮어쓰기 안 함)"
                             elif cerr:
                                 msg += f" · Cloud 실패: {cerr}"
                             elif not _wl_quiet_ui():
                                 msg += " · Cloud미연동: secrets에 github_token"
+                            if drv_cf and not drv:
+                                msg += f" · Drive: 선입력본 유지({drv_cf})"
                             st.session_state[f"wl_pending_sync_{iso2}"] = {
                                 "entries": seed_entries,
                                 "next": next_txt,
@@ -3651,6 +3721,8 @@ def _render_worklog_input_panel(selected: date) -> None:
                             # 저장 직후 강제 pull은 구 원격본이 로컬을 덮을 수 있음 — push는 save_worklog_cells에서 이미 함
                             st.session_state["_wl_drive_sync_ts"] = time.time()
                             st.rerun()
+                    except WorklogSaveBlockedError as e:
+                        st.error(str(e))
                     except Exception as e:
                         if _wl_quiet_ui():
                             st.error("저장에 실패했습니다. 입력 내용을 확인한 뒤 다시 시도해 주세요.")
@@ -3678,7 +3750,6 @@ def _render_worklog_input_panel(selected: date) -> None:
                     on_caret_change=_on_caret_trigger,
                 )
                 if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
-                    _request_left_preview_refresh(d)
                     _wl_rerun()
                 ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
                 if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
@@ -3720,6 +3791,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         unsafe_allow_html=True,
     )
     st.caption(f"업무일지 빌드 {_WL_UI_BUILD}")
+    _arch_root = resolve_worklog_archive_root()
+    if _arch_root:
+        st.caption(f"월별 저장 경로: `{_arch_root}/{{연도}}/{{N}}월.xlsx` (날짜=시트명)")
+    else:
+        st.caption("월별 저장 경로: `Desktop/업무/일지/{연도}/{N}월.xlsx` (Google Drive 동기화 시 「다른 컴퓨터/내 컴퓨터/Desktop/업무/일지」)")
     try:
         from worklog_remote_sync import cloud_sync_status
 
@@ -3911,7 +3987,5 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 pass
 
             _render_worklog_input_panel(sel)
-            if st.session_state.pop("wl_need_left_refresh", None):
-                st.rerun()
 
         _worklog_edit()
