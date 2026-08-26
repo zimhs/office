@@ -12,6 +12,7 @@ import smtplib
 import ssl
 from copy import copy
 from datetime import date, datetime
+from email.header import Header
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -35,7 +36,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26x · 메일작성후최종발송"
+PI_UI_BUILD = "2026-08-26aa · 메일UTF8·NBSP정리"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -886,8 +887,13 @@ def smtp_settings() -> dict:
         "mail_app_password",
         "daum_mail_password",
     )
+    # 복사 붙여넣기 NBSP 등 제거 (Gmail 앱 비밀번호에서 자주 발생)
+    user = str(user or "").replace("\xa0", "").replace("\u200b", "").strip()
+    password = str(password or "").replace("\xa0", "").replace("\u200b", "").replace(" ", "").strip()
     from_addr = _secret_get("smtp_from", "SMTP_FROM") or user
     from_name = _secret_get("smtp_from_name", "SMTP_FROM_NAME") or "신일가스"
+    from_addr = str(from_addr or "").replace("\xa0", "").strip()
+    from_name = str(from_name or "신일가스").replace("\xa0", " ").strip()
     return {
         "provider": provider,
         "host": host,
@@ -988,6 +994,18 @@ def test_smtp_connection(cfg: Optional[dict] = None) -> tuple[bool, str]:
         return False, str(e)
 
 
+def _mail_clean_text(value: Any, *, keep_newlines: bool = False) -> str:
+    """복사/붙여넣기 NBSP(\\xa0) 등 비가시 문자 제거 — ascii encode 오류 방지."""
+    text = str(value or "")
+    # non-breaking space 및 zero-width 문자
+    for ch in ("\xa0", "\u202f", "\u2007", "\u200b", "\u200c", "\u200d", "\ufeff"):
+        text = text.replace(ch, " " if ch in ("\xa0", "\u202f", "\u2007") else "")
+    if keep_newlines:
+        # 본문: 줄바꿈 유지, 양끝만 정리
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
 def send_mail_smtp(
     *,
     to_addr: str,
@@ -1002,39 +1020,67 @@ def send_mail_smtp(
         return (
             False,
             "메일 미연동: `.streamlit/secrets.toml` 또는 Cloud Secrets에 "
-            "smtp_user / smtp_password 를 넣으세요. (다음: smtp.daum.net:465)",
+            "smtp_user / smtp_password 를 넣으세요. (Gmail: smtp.gmail.com:465)",
         )
     if not to_addr:
         return False, "수신 메일 없음"
 
-    recipients = [a.strip() for a in re.split(r"[;,]", to_addr) if a.strip()]
-    cc_list = [a.strip() for a in re.split(r"[;,]", cc or "") if a.strip()]
+    # secrets·본문에 섞인 NBSP 정리 (앱 비밀번호 복사 시 자주 발생)
+    from_name = _mail_clean_text(cfg.get("from_name") or "신일가스")
+    from_addr = _mail_clean_text(cfg.get("from_addr") or cfg.get("user") or "")
+    user = _mail_clean_text(cfg.get("user") or "")
+    password = _mail_clean_text(cfg.get("password") or "")
+    cfg = dict(cfg)
+    cfg["user"] = user
+    cfg["password"] = password
+    cfg["from_addr"] = from_addr
+    cfg["from_name"] = from_name
+
+    subject = _mail_clean_text(subject)
+    body = _mail_clean_text(body, keep_newlines=True)
+    to_addr = _mail_clean_text(to_addr)
+    cc = _mail_clean_text(cc)
+    attachment_name = _mail_clean_text(attachment_name) or "letter.pdf"
+
+    recipients = [a for a in re.split(r"[;,]", to_addr) if a]
+    cc_list = [a for a in re.split(r"[;,]", cc or "") if a]
 
     msg = MIMEMultipart()
-    msg["From"] = formataddr((cfg["from_name"], cfg["from_addr"]))
+    # 한글 From/Subject는 Header로 UTF-8 인코딩 (ascii codec 오류 방지)
+    msg["From"] = formataddr((str(Header(from_name, "utf-8")), from_addr))
     msg["To"] = ", ".join(recipients)
     if cc_list:
         msg["Cc"] = ", ".join(cc_list)
-    msg["Subject"] = subject
+    msg["Subject"] = str(Header(subject, "utf-8"))
     msg.attach(MIMEText(body, "plain", "utf-8"))
     if attachment_bytes:
-        # 한글 파일명 안전 처리
         safe_name = attachment_name or "letter.pdf"
         subtype = "pdf" if str(safe_name).lower().endswith(".pdf") else "octet-stream"
-        part = MIMEApplication(attachment_bytes, _subtype=subtype, Name=safe_name)
-        part.add_header("Content-Disposition", "attachment", filename=safe_name)
+        part = MIMEApplication(attachment_bytes, _subtype=subtype)
+        # RFC2231 파일명 (한글 첨부명)
+        part.add_header(
+            "Content-Disposition",
+            "attachment",
+            filename=("utf-8", "", safe_name),
+        )
         msg.attach(part)
 
     all_rcpt = recipients + cc_list
 
     def _do_send(server: smtplib.SMTP) -> None:
-        server.sendmail(cfg["from_addr"], all_rcpt, msg.as_string())
+        # as_string()의 기본 ascii 인코딩을 피하기 위해 bytes로 전송
+        server.sendmail(from_addr, all_rcpt, msg.as_bytes())
 
     try:
         ok, note = _smtp_run(cfg, timeout=45, send_fn=_do_send)
         return True, f"발송 완료 → {', '.join(all_rcpt)}{note}"
     except smtplib.SMTPAuthenticationError:
-        return False, "SMTP 인증 실패 — 아이디/비밀번호 또는 POP3/IMAP 사용 설정 확인"
+        return (
+            False,
+            "SMTP 인증 실패 — Gmail은 앱 비밀번호(16자리)를 쓰세요. "
+            "secrets의 smtp_password를 다시 붙여넣고(공백/특수공백 주의), "
+            "https://myaccount.google.com/apppasswords",
+        )
     except Exception as e:
         err = str(e)
         if "CERTIFICATE_VERIFY_FAILED" in err or "certificate verify failed" in err.lower():
@@ -1043,6 +1089,14 @@ def send_mail_smtp(
                 "발송 실패: SSL 인증서 검증 오류입니다. "
                 "Mac은 Python 인증서 설치(Install Certificates) 후 재시도하거나, "
                 "secrets에 smtp_ssl_verify = \"0\" 을 넣고 다시 보내 보세요. "
+                f"({err})",
+            )
+        if "ascii" in err.lower() and "encode" in err.lower():
+            return (
+                False,
+                "발송 실패: 문자 인코딩 오류입니다. "
+                "메일 제목/본문 또는 secrets(비밀번호)에 특수 공백이 있는지 확인하고 "
+                "앱 비밀번호를 다시 입력해 주세요. "
                 f"({err})",
             )
         return False, f"발송 실패: {e}"
