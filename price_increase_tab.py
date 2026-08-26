@@ -1435,6 +1435,73 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
     return str(st.session_state.get("pi_single_email") or email or "")
 
 
+def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
+    with st.expander("📇 메일 연락처 관리", expanded=mail_df.empty):
+        st.caption(
+            f"CSV: `{PI_MAIL_CSV}` · 거래처명과 이메일을 등록해야 "
+            "**수신 이메일이 자동 반영**됩니다. (다음 주소록 CSV 내보내기 후 업로드 가능)"
+        )
+        up = st.file_uploader("연락처 CSV 업로드", type=["csv"], key="pi_mail_upload")
+        if up is not None:
+            try:
+                raw = pd.read_csv(up, encoding="utf-8-sig")
+            except Exception:
+                raw = pd.read_csv(up, encoding="cp949")
+            merged = _normalize_mail_df(raw)
+            if not merged.empty:
+                save_mail_contacts(merged)
+                st.success(f"{len(merged)}건 저장")
+                mail_df = load_mail_contacts()
+        if not mail_df.empty:
+            st.dataframe(mail_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("연락처 CSV가 없습니다. 업로드하거나 직접 입력하세요.")
+            with st.form("pi_mail_manual"):
+                n = st.text_input("거래처")
+                e = st.text_input("이메일")
+                if st.form_submit_button("추가"):
+                    if n and e:
+                        add = pd.DataFrame([{"거래처": n, "이메일": e, "비고": ""}])
+                        out = pd.concat([mail_df, add], ignore_index=True)
+                        save_mail_contacts(out)
+                        st.rerun()
+    return mail_df
+
+
+def _render_smtp_bar() -> dict:
+    cfg = smtp_settings()
+    c1, c2, c3 = st.columns([2.5, 1.2, 1.2])
+    with c1:
+        st.caption(f"SMTP · {smtp_status_label(cfg)}")
+    with c2:
+        if st.button("SMTP 연결 테스트", key="pi_smtp_test", use_container_width=True):
+            ok, msg = test_smtp_connection(cfg)
+            (st.success if ok else st.error)(msg)
+    with c3:
+        tpl = resolve_letter_template()
+        st.caption(f"양식: `{os.path.basename(tpl)}`")
+    return cfg
+
+
+def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "") -> None:
+    """단가인상 탭 — 업무일지형 좌우 레이아웃 · 개별·일괄·이력."""
+    _ensure_dirs()
+    st.markdown(
+        "<div class='sub-header dashboard-tab-panel-head'>📨 단가인상 공문</div>",
+        unsafe_allow_html=True,
+    )
+    cap = f"빌드 {PI_UI_BUILD}"
+    if latest_update_str:
+        cap += f" · 매출 {latest_update_str}"
+    st.caption(cap)
+
+    mail_df = load_mail_contacts()
+    log_df = load_sent_log()
+    smtp_cfg = _render_smtp_bar()
+    mail_df = _render_mail_settings_expander(mail_df)
+
+    tab_single, tab_bulk, tab_hist = st.tabs(["개별 발송", "일괄 발송", "발송 이력"])
+
     # ── 개별 발송 (업무일지형: 왼쪽 요약·미리보기·메일 / 오른쪽 공문·단가) ──
     with tab_single:
         staff_opts = ["전체"] + list_staff_options(sales_df)
