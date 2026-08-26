@@ -136,7 +136,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26t · 요약칸이동갱신·뷰전환경량"
+_WL_UI_BUILD = "2026-08-26u · 칸이동갱신경량"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -3037,7 +3037,15 @@ def _view_cells_key(d: date) -> str: return f"wl_view_cells_{d.isoformat()}"
 
 def _publish_view_cells(d: date, cells: dict) -> None:
     iso = d.isoformat()
-    st.session_state[_view_cells_key(d)] = dict(cells or {})
+    cells = dict(cells or {})
+    prev = st.session_state.get(_view_cells_key(d))
+    if isinstance(prev, dict):
+        try:
+            if json.dumps(prev, ensure_ascii=False, sort_keys=True) == json.dumps(cells, ensure_ascii=False, sort_keys=True):
+                return
+        except Exception:
+            pass
+    st.session_state[_view_cells_key(d)] = cells
     for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v24_{iso}", f"wl_left_excel_html_v24_{iso}", f"wl_left_excel_h_v24_{iso}"): st.session_state.pop(k, None)
 
 def _view_cells_for_preview(d: date) -> dict:
@@ -3426,7 +3434,7 @@ def _render_worklog_left_preview(selected: date) -> None:
 
 
 def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> None:
-    """칸 이동·저장 등 — 왼쪽 요약 스냅샷 갱신 요청 (편집 fragment 종료 시 full rerun)."""
+    """칸 이동·저장 등 — 왼쪽 요약 스냅샷 갱신 (fragment rerun만, 전체 앱 rerun 없음)."""
     iso = d.isoformat()
     if focus_sig is not None:
         prev = st.session_state.get(f"wl_left_focus_sig_{iso}")
@@ -3437,14 +3445,16 @@ def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> N
         _publish_view_cells(d, _cells_from_widgets(d))
     except Exception:
         pass
+    # 엑셀 미리보기 모드면 iframe 갱신 생략 (요약 보기로 돌아올 때 publish 반영)
+    if st.session_state.get(f"wl_left_excel_on_{iso}"):
+        return
     st.session_state["wl_need_left_refresh"] = True
 
 
 def _wl_finish_edit_fragment() -> None:
-    """편집 fragment 마무리 — 왼쪽 요약 갱신 필요 시 sync 생략 full rerun."""
+    """편집 fragment 마무리 — 왼쪽 요약 갱신 시 fragment만 rerun (전체 앱·sync 생략)."""
     if st.session_state.pop("wl_need_left_refresh", None):
-        st.session_state["wl_skip_sync_once"] = True
-        st.rerun()
+        _wl_rerun()
 
 
 
@@ -3852,7 +3862,8 @@ def _render_worklog_input_panel(selected: date) -> None:
                 if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
                     _request_left_preview_refresh(d)
                     _wl_finish_edit_fragment()
-                    _wl_rerun()
+                    if not st.session_state.get("wl_need_left_refresh"):
+                        _wl_rerun()
                 ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
                 if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
                     _insert_line_after(iso2, int(ins_after[0]), int(ins_after[1]))
@@ -4103,24 +4114,16 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         unsafe_allow_html=True,
     )
 
-    col_preview, col_edit = st.columns([1, 1.14], gap="small")
+    _render_worklog_sync_ui()
 
-    with col_preview:
-
-        @st.fragment
-        def _worklog_left() -> None:
-            sel = st.session_state.get("worklog_selected") or selected
+    @st.fragment
+    def _worklog_body() -> None:
+        sel: date = st.session_state.get("worklog_selected") or selected
+        col_preview, col_edit = st.columns([1, 1.14], gap="small")
+        with col_preview:
             _render_worklog_left_preview(sel)
-
-        _worklog_left()
-
-    with col_edit:
-        _render_worklog_sync_ui()
-
-        @st.fragment
-        def _worklog_edit() -> None:
-            sel = st.session_state.get("worklog_selected") or selected
+        with col_edit:
             _render_worklog_input_panel(sel)
-            _wl_finish_edit_fragment()
+        _wl_finish_edit_fragment()
 
-        _worklog_edit()
+    _worklog_body()
