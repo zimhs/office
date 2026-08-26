@@ -35,7 +35,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26x · 메일작성후최종발송"
+PI_UI_BUILD = "2026-08-26z · 발송성공실패확인문구"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -1931,38 +1931,85 @@ def _pi_mail_compose_dialog() -> None:
         if not subject:
             st.error("메일 제목을 입력하세요.")
             return
-        try:
-            ok, msg = send_mail_smtp(
-                to_addr=to_addr,
-                subject=subject,
-                body=body,
-                attachment_bytes=pdf_bytes,
-                attachment_name=pdf_name,
-            )
-            append_sent_log(
-                client=client,
-                email=to_addr,
-                subject=subject,
-                ok=ok,
-                mode="single",
-                staff=staff,
-                items=items_n,
-                msg=msg,
-            )
-            if ok:
-                st.session_state.pop("pi_mail_draft", None)
-                st.success(msg)
-            else:
-                st.error(msg)
-        except Exception as e:
-            em = str(e)
-            if "fpdf2" in em.lower():
-                st.error(
-                    "발송 실패: PDF 생성 라이브러리(fpdf2)가 없습니다. "
-                    "`python3 -m pip install -r requirements.txt` 후 재시도하세요."
+        with st.spinner("메일 발송 중… 잠시만 기다려 주세요."):
+            try:
+                ok, msg = send_mail_smtp(
+                    to_addr=to_addr,
+                    subject=subject,
+                    body=body,
+                    attachment_bytes=pdf_bytes,
+                    attachment_name=pdf_name,
                 )
-            else:
-                st.error(f"발송 실패: {e}")
+            except Exception as e:
+                ok = False
+                em = str(e)
+                if "fpdf2" in em.lower():
+                    msg = (
+                        "발송 실패: PDF 생성 라이브러리(fpdf2)가 없습니다. "
+                        "`python3 -m pip install -r requirements.txt` 후 재시도하세요."
+                    )
+                else:
+                    msg = f"발송 실패: {e}"
+        append_sent_log(
+            client=client,
+            email=to_addr,
+            subject=subject,
+            ok=ok,
+            mode="single",
+            staff=staff,
+            items=items_n,
+            msg=msg,
+        )
+        st.session_state["pi_mail_result"] = {
+            "ok": bool(ok),
+            "msg": str(msg),
+            "to": to_addr,
+            "subject": subject,
+            "client": client,
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "pdf_name": pdf_name,
+        }
+        if ok:
+            st.session_state.pop("pi_mail_draft", None)
+            st.success(f"✅ 보내기 완료: {msg}")
+            st.rerun()
+        else:
+            st.error(f"❌ 전송 실패: {msg}")
+            st.warning("실패 내용을 확인한 뒤 다시 「최종 발송」을 눌러 주세요.")
+
+
+def _render_mail_result_banner() -> None:
+    """최종 발송 성공/실패 확인 문구 (팝업 밖 메인 화면)."""
+    result = st.session_state.get("pi_mail_result")
+    if not isinstance(result, dict) or not result:
+        return
+    ok = bool(result.get("ok"))
+    ts = str(result.get("ts") or "")
+    to_addr = str(result.get("to") or "")
+    subject = str(result.get("subject") or "")
+    client = str(result.get("client") or "")
+    msg = str(result.get("msg") or "")
+    pdf_name = str(result.get("pdf_name") or "")
+    if ok:
+        st.success(
+            f"✅ **보내기 완료** ({ts})\n\n"
+            f"- 거래처: {client}\n"
+            f"- 수신: `{to_addr}`\n"
+            f"- 제목: {subject}\n"
+            f"- 첨부: `{pdf_name}`\n"
+            f"- 결과: {msg}"
+        )
+    else:
+        st.error(
+            f"❌ **전송 실패** ({ts})\n\n"
+            f"- 거래처: {client}\n"
+            f"- 수신: `{to_addr}`\n"
+            f"- 제목: {subject}\n"
+            f"- 결과: {msg}"
+        )
+    if st.button("확인 문구 닫기", key="pi_mail_result_dismiss"):
+        st.session_state.pop("pi_mail_result", None)
+        st.rerun()
 
 
 def _open_mail_compose_dialog(
@@ -2392,6 +2439,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
 
     # ── 개별 발송 (업무일지형: 왼쪽 요약·미리보기·메일 / 오른쪽 공문·단가) ──
     with tab_single:
+        _render_mail_result_banner()
         staff_opts = ["전체"] + list_staff_options(sales_df)
         r1c1, r1c2, r1c3 = st.columns([1.2, 2, 1.2])
         with r1c1:
