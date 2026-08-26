@@ -34,13 +34,13 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26d · 품목표·탄산공문·일괄발송"
+PI_UI_BUILD = "2026-08-26e · 편집가능품목표(단가➠인상단가)·일괄발송"
 
-# 기본 공문 후보 (사용자 지정 원본)
+# 기본 공문 후보 (캐시 원본 우선)
 _TEMPLATE_CANDIDATES = (
-    "탄산단가인상공문.xlsx",
-    os.path.join("uploaded_cache", "price_increase", "탄산단가인상공문.xlsx"),
     os.path.join(PI_DIR, "탄산단가인상공문.xlsx"),
+    os.path.join("uploaded_cache", "price_increase", "탄산단가인상공문.xlsx"),
+    "탄산단가인상공문.xlsx",
     os.path.expanduser("~/Desktop/탄산단가인상공문.xlsx"),
     os.path.expanduser("~/Desktop/업무/탄산단가인상공문.xlsx"),
     os.path.expanduser("~/Desktop/dashboard/탄산단가인상공문.xlsx"),
@@ -265,6 +265,31 @@ def default_increase_price(old: float, pct: float) -> float:
         return float(old or 0)
 
 
+def apply_increase_by_amount(old: float, amount: float) -> float:
+    try:
+        return round(float(old) + float(amount), 1)
+    except Exception:
+        return float(old or 0)
+
+
+# 탄산단가인상공문 기본 본문 (양식 셀 유지, 내용만 편집)
+_DEFAULT_LETTER_PARAS: dict[str, str] = {
+    "C16": "1.귀사의 무궁한 발전을 기원하며, 평소 당사에 보내주시는 신뢰와 협력에 깊은 감사를 드립니다.",
+    "C18": "2.당사는 귀사와의 지속적인 파트너십 유지를 최우선 가치로 삼아, 대내외적인 원가 상승 압박 속에서도 경영 ",
+    "C19": "효율화를 통해 단가 인상을 최대한 억제해 왔습니다.",
+    "C21": "3.그러나 최근 지정학적 리스크 심화와 글로벌 에너지 공급망의 불안정성으로 인해 당사가 감내할 수 있는 . ",
+    "C22": "임계치를 상회하는 제조 원가 상승이 발생하였습니다.",
+    "C23": "이에 안정적인 품질 유지와 지속 가능한 공급 체계 확보를 위해 부득이하게 아래와 같이 단가 인상을 요청드리오니 널리 양해하여 ",
+    "C24": "양해하여 주시기 바랍니다. ",
+    "C26": "4. 주요 인상 요인 분석",
+    "C27": "• 중동 분쟁 장기화에 따른 에너지 비용 급등: 중동 지역의 지정학적 불안정 지속으로 국제 유가 및 천연가스 가격의 변동성이 확대되었으며, 탄산 원료 가스(Raw Gas) 수급 비용 및 생산 설비 가동 에너지 비용이 급격히 상승함.",
+    "C29": "• 원료 가스 확보 단가 및 제조 원가 상승: 석유화학 플랜트 가동률 변화와 원료 공급원의 제한적 수급 상황이 맞물려 원료 가스 매입 단가가 폭등하였으며, 정제 및 액화 과정의 부자재 가격 상승이 직접적인 원가 부담으로 작용함.",
+    "C31": "• 물류망 불안정에 따른 운반비 가중: 유가 상승 및 요소수 등 차량 유지비 증가로 인해 내륙 운송 단가가 상향 평준화되었으며, 특히 특수 고압 탱크로리 운영비용 상승이 전체 공급가에 심대한 영향을 미침.",
+    "C33": "5. 당사는 이번 조정을 바탕으로 더욱 철저한 품질 관리와 원활한 공급 체계를 구축하여 귀사의 기대에 보답할 것을 약속드립니다.",
+    "C35": "                                      단가 조정 내용",
+}
+
+
 def ensure_default_template(path: str = PI_TEMPLATE) -> str:
     """원본 공문 양식이 없으면 기본 양식 생성."""
     _ensure_dirs()
@@ -416,14 +441,30 @@ def _fill_real_template_cells(
     items: list[dict],
     doc_no: str,
     send_date: Optional[date] = None,
+    letter_paras: Optional[dict[str, str]] = None,
+    c37_override: str = "",
+    c38_override: str = "",
 ) -> None:
+    """양식(레이아웃·로고)은 유지하고 내용 셀만 채움. 적용%/인상금액 숫자는 공문에 넣지 않음."""
     send_date = send_date or date.today()
     ws["C9"].value = f"문서번호 : {doc_no}"
     ws["C10"].value = f"발송일자 : {send_date.strftime('%Y.%m.%d')}"
     ws["C11"].value = f"수    신 : {client}"
     ws["C12"].value = f"제    목 : {title}"
-    ws["C37"].value = _format_c37_target_items(items)
-    ws["C38"].value = _format_c38_price_lines(items)
+    paras = letter_paras if letter_paras is not None else _DEFAULT_LETTER_PARAS
+    for coord, text in paras.items():
+        if coord in ws:
+            ws[coord].value = text
+    ws["C37"].value = (
+        c37_override.strip()
+        if str(c37_override or "").strip()
+        else _format_c37_target_items(items)
+    )
+    ws["C38"].value = (
+        c38_override.strip()
+        if str(c38_override or "").strip()
+        else _format_c38_price_lines(items)
+    )
     ws["C39"].value = f"                           • 시행 일자 : {_format_korean_effective(effective)}"
 
 
@@ -438,14 +479,18 @@ def fill_letter_workbook(
     contact: str,
     items: list[dict],
     doc_no: str = "",
+    send_date: Optional[date] = None,
+    letter_paras: Optional[dict[str, str]] = None,
+    c37_override: str = "",
+    c38_override: str = "",
 ) -> bytes:
     if load_workbook is None:
         raise RuntimeError("openpyxl 필요")
     ensure_default_template(template_path)
     wb = load_workbook(template_path)
     ws = wb.active
-    today = date.today()
-    today_s = today.strftime("%Y-%m-%d")
+    today = send_date or date.today()
+    today_s = today.strftime("%Y-%m-%d") if hasattr(today, "strftime") else str(today)[:10]
     doc_no = _format_doc_no(client, doc_no)
 
     if _is_real_letter_template(ws):
@@ -456,7 +501,10 @@ def fill_letter_workbook(
             effective=effective,
             items=items,
             doc_no=doc_no,
-            send_date=today,
+            send_date=today if isinstance(today, date) else date.today(),
+            letter_paras=letter_paras,
+            c37_override=c37_override,
+            c38_override=c38_override,
         )
     else:
         mapping = {
@@ -771,24 +819,23 @@ def _init_items_from_prices(client: str, price_df: pd.DataFrame, pct: float) -> 
 
 
 def _items_df_for_editor(items: list[dict]) -> pd.DataFrame:
+    """편집용 표: 기존거래제품명 · 단가 · 인상단가 (칸 추가/삭제·내용 수정)."""
     rows = []
     for it in items:
         old = float(it.get("기존단가") or 0)
         new = float(it.get("인상적용단가") or 0)
         rows.append(
             {
-                "삭제": False,
-                "품목명": str(it.get("품목명") or ""),
-                "기존단가": old,
+                "기존거래제품명": str(it.get("품목명") or ""),
+                "단가": old,
                 "단가흐름": f"{old:,.0f} ➠ {new:,.0f}",
-                "인상적용단가": new,
+                "인상단가": new,
                 "비고": str(it.get("비고") or ""),
-                "최근매출일": str(it.get("최근매출일") or ""),
             }
         )
     if not rows:
         return pd.DataFrame(
-            columns=["삭제", "품목명", "기존단가", "단가흐름", "인상적용단가", "비고", "최근매출일"]
+            columns=["기존거래제품명", "단가", "단가흐름", "인상단가", "비고"]
         )
     return pd.DataFrame(rows)
 
@@ -798,21 +845,44 @@ def _items_from_editor_df(df: pd.DataFrame) -> list[dict]:
         return []
     out: list[dict] = []
     for _, row in df.iterrows():
-        if row.get("삭제") is True:
-            continue
-        name = str(row.get("품목명") or "").strip()
+        # 구버전 컬럼명(품목명/기존단가/인상적용단가)도 허용
+        name = str(
+            row.get("기존거래제품명")
+            if "기존거래제품명" in row.index
+            else row.get("품목명")
+            or ""
+        ).strip()
         if not name:
             continue
+        if row.get("삭제") is True:
+            continue
+        old = row.get("단가") if "단가" in row.index else row.get("기존단가")
+        new = row.get("인상단가") if "인상단가" in row.index else row.get("인상적용단가")
         out.append(
             {
                 "품목명": name,
-                "기존단가": float(row.get("기존단가") or 0),
-                "인상적용단가": float(row.get("인상적용단가") or 0),
+                "기존단가": float(old or 0),
+                "인상적용단가": float(new or 0),
                 "비고": str(row.get("비고") or ""),
                 "최근매출일": str(row.get("최근매출일") or ""),
             }
         )
     return out
+
+
+def _editor_widget_key(editor_key: str) -> str:
+    ver = int(st.session_state.get(f"{editor_key}_ver", 0))
+    return f"{editor_key}_editor_v{ver}"
+
+
+def _bump_editor_widget(editor_key: str) -> None:
+    """data_editor 위젯 상태를 강제로 갱신 (일괄적용·삭제·재불러오기)."""
+    vk = f"{editor_key}_ver"
+    st.session_state[vk] = int(st.session_state.get(vk, 0)) + 1
+    # 이전 위젯 키 잔여 상태 제거
+    prev = int(st.session_state[vk]) - 1
+    st.session_state.pop(f"{editor_key}_editor_v{prev}", None)
+    st.session_state.pop(f"{editor_key}_editor", None)
 
 
 def _apply_pct_to_items(items: list[dict], pct: float) -> list[dict]:
@@ -877,8 +947,11 @@ def _render_items_table(
     items: list[dict],
     pct_default: float,
 ) -> list[dict]:
-    st.markdown("##### 📋 품목·단가 (편집·삭제·추가)")
-    st.caption("기존 거래 품목명 · 기존단가 · 인상적용단가(➠). 행 끝 ➕로 추가, 🗑로 삭제, 또는 **삭제** 체크 후 아래 버튼.")
+    st.markdown("##### 기존거래제품명 · 단가 ➠ 인상단가")
+    st.caption(
+        "아래 표에서 **내용 수정** · 행 끝 **🗑로 칸(행) 삭제** · **➕로 행 추가**가 가능합니다. "
+        "거래처별로 편집 내용이 유지됩니다."
+    )
 
     c_pct, c_apply, c_reload = st.columns([1.2, 1, 1.2])
     with c_pct:
@@ -893,12 +966,15 @@ def _render_items_table(
     with c_apply:
         st.write("")
         if st.button("인상률 일괄 적용", key=f"{editor_key}_apply_pct", use_container_width=True):
-            st.session_state[editor_key] = _apply_pct_to_items(st.session_state.get(editor_key, items), pct)
+            base = st.session_state.get(editor_key, items)
+            st.session_state[editor_key] = _apply_pct_to_items(base, pct)
+            _bump_editor_widget(editor_key)
             st.rerun()
     with c_reload:
         st.write("")
         if st.button("매출단가 다시 불러오기", key=f"{editor_key}_reload", use_container_width=True):
             st.session_state.pop(editor_key, None)
+            _bump_editor_widget(editor_key)
             st.rerun()
 
     if editor_key not in st.session_state:
@@ -910,43 +986,81 @@ def _render_items_table(
     edited = st.data_editor(
         edit_df,
         column_config={
-            "삭제": st.column_config.CheckboxColumn("삭제", help="체크 후 「선택 행 삭제」"),
-            "품목명": st.column_config.TextColumn("기존 거래 제품명", required=True),
-            "기존단가": st.column_config.NumberColumn("기존단가(원)", min_value=0.0, format="%.1f"),
-            "단가흐름": st.column_config.TextColumn("단가 ➠", disabled=True),
-            "인상적용단가": st.column_config.NumberColumn("인상적용단가(원)", min_value=0.0, format="%.1f"),
-            "비고": st.column_config.TextColumn("비고"),
-            "최근매출일": st.column_config.TextColumn("최근매출일", disabled=True),
+            "기존거래제품명": st.column_config.TextColumn(
+                "기존거래제품명",
+                help="기존 거래 제품명 (직접 수정·추가 가능)",
+                required=False,
+                width="medium",
+            ),
+            "단가": st.column_config.NumberColumn(
+                "단가",
+                help="기존 단가(원)",
+                min_value=0.0,
+                format="%.1f",
+                width="small",
+            ),
+            "단가흐름": st.column_config.TextColumn(
+                "단가 ➠ 인상단가",
+                help="자동 표시 (단가·인상단가 수정 시 반영)",
+                disabled=True,
+                width="medium",
+            ),
+            "인상단가": st.column_config.NumberColumn(
+                "인상단가",
+                help="인상 적용 단가(원)",
+                min_value=0.0,
+                format="%.1f",
+                width="small",
+            ),
+            "비고": st.column_config.TextColumn("비고", width="small"),
         },
         num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
-        key=f"{editor_key}_editor",
+        key=_editor_widget_key(editor_key),
     )
 
-    # 단가흐름 갱신 (편집 반영)
-    if not edited.empty and "기존단가" in edited.columns and "인상적용단가" in edited.columns:
+    # 단가흐름 갱신 (편집 반영 표시용) — 저장 키는 제품명/단가/인상단가
+    if (
+        edited is not None
+        and not edited.empty
+        and "단가" in edited.columns
+        and "인상단가" in edited.columns
+    ):
         edited = edited.copy()
         edited["단가흐름"] = edited.apply(
-            lambda r: f"{float(r.get('기존단가') or 0):,.0f} ➠ {float(r.get('인상적용단가') or 0):,.0f}",
+            lambda r: f"{float(r.get('단가') or 0):,.0f} ➠ {float(r.get('인상단가') or 0):,.0f}",
             axis=1,
         )
 
-    b1, b2 = st.columns(2)
+    b1, b2, b3 = st.columns(3)
     with b1:
-        if st.button("선택 행 삭제", key=f"{editor_key}_drop", use_container_width=True):
-            kept = edited[edited["삭제"] != True].copy()  # noqa: E712
-            kept["삭제"] = False
-            st.session_state[editor_key] = _items_from_editor_df(kept)
+        if st.button("빈 행 모두 제거", key=f"{editor_key}_drop_empty", use_container_width=True):
+            cleaned = _items_from_editor_df(edited)
+            st.session_state[editor_key] = cleaned
+            _bump_editor_widget(editor_key)
             st.rerun()
     with b2:
+        if st.button("표 초기화(전체 삭제)", key=f"{editor_key}_clear", use_container_width=True):
+            st.session_state[editor_key] = []
+            _bump_editor_widget(editor_key)
+            st.rerun()
+    with b3:
         if st.button("표 내용 저장", key=f"{editor_key}_save", type="primary", use_container_width=True):
             st.session_state[editor_key] = _items_from_editor_df(edited)
-            st.success("품목표 저장됨")
+            st.success("품목표 저장됨 (거래처별 유지)")
             st.rerun()
 
     result = _items_from_editor_df(edited)
     st.session_state[editor_key] = result
+    if result:
+        preview = " · ".join(
+            f"{it['품목명']} {float(it['기존단가']):,.0f}➠{float(it['인상적용단가']):,.0f}"
+            for it in result[:5]
+        )
+        if len(result) > 5:
+            preview += f" 외 {len(result) - 5}건"
+        st.caption(f"현재 {len(result)}개 품목 — {preview}")
     return result
 
 
@@ -1042,34 +1156,52 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             email_default = lookup_email(client, mail_df)
             email = st.text_input("수신 이메일", value=email_default, key="pi_single_email")
 
+            r2c1, r2c2, r2c3 = st.columns([2, 1, 1])
+            with r2c1:
+                title = st.text_input(
+                    "메일·공문 제목",
+                    value=_default_letter_title(),
+                    key="pi_single_title",
+                )
+            with r2c2:
+                effective = st.date_input(
+                    "시행일",
+                    value=date.today().replace(day=1),
+                    key="pi_single_eff",
+                )
+            with r2c3:
+                contact = st.text_input("문의", value="031-366-0799", key="pi_single_contact")
+            effective_s = (
+                effective.strftime("%Y-%m-%d")
+                if hasattr(effective, "strftime")
+                else str(effective)
+            )
+
+            # 거래처·공문 입력 하단: 기존거래제품명 / 단가 ➠ 인상단가 편집 표
             price_df = latest_unit_prices(sales_df, client)
             pct_key = "pi_global_pct"
             if pct_key not in st.session_state:
                 st.session_state[pct_key] = 5.0
             items_key = _items_key(client)
-            if items_key not in st.session_state or st.session_state.get("pi_last_client") != client:
+            # 거래처별 session_state 유지 — 재선택 시에도 편집 내용 보존
+            if items_key not in st.session_state:
                 st.session_state[items_key] = _init_items_from_prices(
                     client, price_df, st.session_state[pct_key]
                 )
-                st.session_state["pi_last_client"] = client
+            st.session_state["pi_last_client"] = client
 
             items = _render_items_table(
                 editor_key=items_key,
                 items=st.session_state[items_key],
                 pct_default=st.session_state[pct_key],
             )
+            st.session_state[pct_key] = float(
+                st.session_state.get(f"{items_key}_pct", st.session_state[pct_key])
+            )
 
             if not items:
-                st.warning("품목이 없습니다. 표에서 추가하거나 매출 데이터를 확인하세요.")
+                st.warning("품목이 없습니다. 표에서 행을 추가하거나 매출 데이터를 확인하세요.")
 
-            r2c1, r2c2, r2c3 = st.columns([2, 1, 1])
-            with r2c1:
-                title = st.text_input("메일·공문 제목", value=_default_letter_title(), key="pi_single_title")
-            with r2c2:
-                effective = st.date_input("시행일", value=date.today().replace(day=1), key="pi_single_eff")
-            with r2c3:
-                contact = st.text_input("문의", value="031-366-0799", key="pi_single_contact")
-            effective_s = effective.strftime("%Y-%m-%d") if hasattr(effective, "strftime") else str(effective)
             body = st.text_area(
                 "메일 본문",
                 value=_default_mail_body(client, effective_s, items),
