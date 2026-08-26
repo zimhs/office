@@ -300,11 +300,47 @@ def ensure_worklog_gist(local_dir: str = "./uploaded_cache/worklog") -> Tuple[Op
         return None, str(e)
 
 
+def worklog_date_exists_on_cloud(
+    d,
+    local_dir: str = "./uploaded_cache/worklog",
+) -> bool:
+    """Gist manifest에 해당 일자 xlsx가 있는지."""
+    from datetime import date as _date
+
+    if isinstance(d, _date):
+        name = f"{d.isoformat()}.xlsx"
+    else:
+        name = str(d or "")
+        if not name.endswith(".xlsx"):
+            name = f"{name}.xlsx"
+    if not _is_day_file(name):
+        return False
+    token = resolve_github_token()
+    if not token:
+        return False
+    gid = resolve_gist_id(local_dir)
+    if not gid:
+        return False
+    gist, gerr = _fetch_gist(token, gid)
+    if gist is None:
+        return False
+    files_meta = gist.get("files") or {}
+    if f"{name}{_B64_SUFFIX}" in files_meta:
+        return True
+    manifest = _load_manifest(files_meta)
+    return name in (manifest.get("files") or {})
+
+
 def push_worklog_day_remote(
     local_path: str,
     local_dir: str = "./uploaded_cache/worklog",
+    *,
+    force: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """저장 직후 일자 파일을 Gist에 올림. (gist_id, error)"""
+    """저장 직후 일자 파일을 Gist에 올림. (gist_id, error)
+
+    force=False 이고 Gist에 이미 해당 일자가 있으면 덮어쓰지 않음 (선입력 우선).
+    """
     if not local_path or not os.path.isfile(local_path):
         return None, "일지 파일 없음"
     name = os.path.basename(local_path)
@@ -316,6 +352,17 @@ def push_worklog_day_remote(
     gid, err = ensure_worklog_gist(local_dir)
     if not gid:
         return None, err or "Gist 생성/조회 실패"
+    if not force:
+        gist_peek, _ = _fetch_gist(token, gid)
+        if gist_peek is not None:
+            files_meta = gist_peek.get("files") or {}
+            manifest = _load_manifest(files_meta)
+            rem_ok = (
+                f"{name}{_B64_SUFFIX}" in files_meta
+                or name in (manifest.get("files") or {})
+            )
+            if rem_ok:
+                return gid, "duplicate_date"
     try:
         with open(local_path, "rb") as f:
             raw = f.read()
