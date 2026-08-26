@@ -34,7 +34,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26g · 개별·담당자별일괄(거래처별)·무손실격리"
+PI_UI_BUILD = "2026-08-26h · 수신메일 거래처자동반영"
 
 # 기본 공문 후보 (캐시 원본 우선)
 _TEMPLATE_CANDIDATES = (
@@ -1254,7 +1254,32 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 st.caption("최근 발송 이력 없음")
 
             email_default = lookup_email(client, mail_df)
-            email = st.text_input("수신 이메일", value=email_default, key="pi_single_email")
+            # 거래처 바뀌면 수신메일 자동 갱신 (key 고정이면 value가 무시되는 Streamlit 특성 보정)
+            if st.session_state.get("pi_email_client") != client:
+                st.session_state["pi_email_client"] = client
+                st.session_state["pi_single_email"] = email_default
+            email = st.text_input("수신 이메일", key="pi_single_email")
+            if email_default:
+                st.caption(f"연락처 자동반영: `{email_default}`")
+            else:
+                st.caption(
+                    "연락처에 이 거래처 메일이 없습니다. "
+                    "위에 **📇 메일 연락처 관리**에서 CSV 업로드하거나, 여기에 직접 입력하세요."
+                )
+                with st.expander("이 거래처 메일 바로 저장", expanded=False):
+                    quick = st.text_input("저장할 이메일", key="pi_quick_email")
+                    if st.button("연락처에 저장", key="pi_quick_save"):
+                        q = str(quick or "").strip()
+                        if q and "@" in q:
+                            add = pd.DataFrame([{"거래처": client, "이메일": q, "비고": ""}])
+                            out = pd.concat([mail_df, add], ignore_index=True) if not mail_df.empty else add
+                            out = out.drop_duplicates(subset=["거래처"], keep="last")
+                            save_mail_contacts(out)
+                            st.session_state["pi_single_email"] = q
+                            st.success(f"{client} → {q} 저장됨")
+                            st.rerun()
+                        else:
+                            st.error("올바른 이메일을 입력하세요.")
 
             r2c1, r2c2, r2c3 = st.columns([2, 1, 1])
             with r2c1:
