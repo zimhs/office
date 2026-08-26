@@ -13,6 +13,7 @@ import subprocess
 import time
 from datetime import date
 from functools import lru_cache
+from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -129,7 +130,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26g · Cloud 즉시 Gist 동기화"
+_WL_UI_BUILD = "2026-08-26h · 특수기호 삽입복구"
 
 
 # =====================================================================
@@ -803,7 +804,7 @@ export default function (component) {
 """
 
 _WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v8",
+    "worklog_special_bar_v9",
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
@@ -2529,21 +2530,25 @@ def _insert_special_char_auto(iso: str, ch: str, entry_count: int) -> bool:
     return True
 
 
-def _process_pending_special_char(iso: str, entry_count: int) -> None:
+def _process_pending_special_char(iso: str, entry_count: int) -> bool:
+    """pending 특수기호 삽입. 성공하면 True(호출측에서 fragment rerun 권장)."""
     pending = st.session_state.pop(f"wl_pending_sp_{iso}", None)
     if not pending:
-        return
+        return False
     ch = str(pending or "")
     if not ch:
-        return
+        return False
     try:
         if _insert_special_char_auto(iso, ch, entry_count):
             st.session_state["wl_special_msg"] = f"「{ch}」삽입"
-        else:
-            st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
+            # 바 리마운트(동일 기호 연속 클릭 인식)
+            st.session_state[f"wl_sp_token_{iso}"] = str(int(time.time() * 1000) % 1_000_000_000)
+            return True
+        st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
     except StreamlitAPIException:
         # 재시도 루프 방지 — pending을 되돌리지 않음
         st.session_state["wl_special_msg"] = "특수기호 적용에 실패했습니다. 칸을 선택한 뒤 다시 눌러 주세요."
+    return False
 
 
 def _queue_special_char(iso: str, ch: str) -> None:
@@ -2554,9 +2559,39 @@ def _queue_special_char(iso: str, ch: str) -> None:
     st.session_state[f"wl_pending_sp_{iso}"] = ch
 
 
-def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
-    """날짜 아래: 접기 없이 한 줄 가로 스크롤. 삽입은 pending 경로."""
-    del entry_count
+def _parse_special_pick_raw(raw: Any) -> tuple[str, str]:
+    """컴포넌트 pick 트리거 → (문자, dedupe signature)."""
+    if raw is None:
+        return "", ""
+    try:
+        if isinstance(raw, str) and raw.startswith("{"):
+            obj = json.loads(raw)
+            ch = str(obj.get("ch") or "")
+            sig = f"{ch}\0{obj.get('t')}"
+            return ch, sig
+        ch = str(raw)
+        return ch, f"{ch}\0plain"
+    except Exception:
+        ch = str(raw or "")
+        return ch, f"{ch}\0err"
+
+
+def _consume_special_pick(iso: str, raw: Any) -> None:
+    """pick 한 번만 pending에 넣고, 동일 시그니처 중복은 무시."""
+    ch, sig = _parse_special_pick_raw(raw)
+    if not ch or not sig:
+        return
+    done_k = f"wl_sp_pick_done_{iso}"
+    if st.session_state.get(done_k) == sig:
+        return
+    st.session_state[done_k] = sig
+    _queue_special_char(iso, ch)
+
+
+def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> bool:
+    """날짜 아래: 접기 없이 한 줄 가로 스크롤. 삽입은 pending 경로.
+    특수기호를 방금 넣었으면 True (호출측에서 fragment rerun).
+    """
     st.markdown(
         """<style>
         div[class*="st-key-wl_sp_bar_"] {
@@ -2577,38 +2612,33 @@ def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> None:
     )
 
     def _on_pick() -> None:
-        stt = st.session_state.get(f"wl_sp_bar_{iso}") or {}
-        raw = stt.get("pick") if isinstance(stt, dict) else getattr(stt, "pick", None)
-        if not raw:
-            return
-        ch = ""
-        try:
-            if isinstance(raw, str) and raw.startswith("{"):
-                obj = json.loads(raw)
-                ch = str(obj.get("ch") or "")
-                sig = f"{ch}\0{obj.get('t')}"
-            else:
-                ch = str(raw)
-                sig = f"{ch}\0plain"
-        except Exception:
-            ch = str(raw or "")
-            sig = f"{ch}\0err"
-        if not ch:
-            return
-        done_k = f"wl_sp_pick_done_{iso}"
-        if st.session_state.get(done_k) == sig:
-            return
-        st.session_state[done_k] = sig
-        _queue_special_char(iso, ch)
+        # 콜백 시점에는 session_state 뷰가 비어 있을 수 있어 반환값 경로를 우선한다.
+        # 여기선 보조로 한 번 더 시도.
+        stt = st.session_state.get(f"wl_sp_bar_{iso}")
+        raw = None
+        if isinstance(stt, dict):
+            raw = stt.get("pick")
+        else:
+            raw = getattr(stt, "pick", None) if stt is not None else None
+        _consume_special_pick(iso, raw)
 
     token = str(st.session_state.get(f"wl_sp_token_{iso}") or "2")
-    _WL_SPECIAL_BAR(
+    result = _WL_SPECIAL_BAR(
         key=f"wl_sp_bar_{iso}",
         data={"iso": iso, "chars": list(_WL_SPECIAL_CHARS), "token": token},
         on_pick_change=_on_pick,
         width="stretch",
         height=40,
     )
+    # 주 경로: 컴포넌트 반환값의 trigger(pick) — 콜백보다 안정적
+    raw = None
+    if result is not None:
+        raw = getattr(result, "pick", None)
+        if raw is None and isinstance(result, dict):
+            raw = result.get("pick")
+    _consume_special_pick(iso, raw)
+    # 바로 삽입해 내용 칸에 반영 (이후 fragment rerun으로 UI 확정)
+    return _process_pending_special_char(iso, entry_count)
 
 def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
     val, pos = str(val or ""), max(0, min(int(pos or 0), len(str(val or ""))))
@@ -3267,7 +3297,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
             _iso_bar = selected.isoformat()
             _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
-            _render_worklog_special_chars(_iso_bar, _n_bar)
+            if _render_worklog_special_chars(_iso_bar, _n_bar):
+                _wl_rerun()
 
             if isinstance(picked, date) and picked != selected:
                 if os.path.exists(worklog_path(picked)):
@@ -3632,7 +3663,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                     _wl_rerun()
 
             _n_now = int(st.session_state.get(f"wl_entry_count_{iso}", 1) or 1)
-            _process_pending_special_char(iso, _n_now)
+            # 날짜변경 등으로 위쪽 처리가 스킵된 pending 대비
+            if _process_pending_special_char(iso, _n_now):
+                _wl_rerun()
             _sp_msg = st.session_state.pop("wl_special_msg", None)
             if _sp_msg:
                 st.caption(_sp_msg)
