@@ -46,6 +46,13 @@ uploaded_cache/**
 !uploaded_cache/worklog/template.xlsx
 uploaded_cache/worklog/.worklog_gist_id
 uploaded_cache/.dashboard_cache_gist_id
+!uploaded_cache/price_increase/
+uploaded_cache/price_increase/mail_contacts.csv
+uploaded_cache/price_increase/drafts/
+uploaded_cache/price_increase/*.xlsx
+!uploaded_cache/price_increase/탄산단가인상공문.xlsx
+!uploaded_cache/price_increase/.gitkeep
+
 uploaded_cache/worklog/*.xlsx
 !uploaded_cache/worklog/template.xlsx
 uploaded_cache/worklog/*.b64
