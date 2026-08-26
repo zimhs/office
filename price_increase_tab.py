@@ -823,7 +823,10 @@ def fill_letter_workbook(
 
 def resolve_letter_template() -> str:
     """탄산단가인상공문.xlsx 우선, 없으면 기본 생성 양식."""
-    custom = st.session_state.get("pi_template_path")
+    try:
+        custom = st.session_state.get("pi_template_path")
+    except Exception:
+        custom = None
     if custom and os.path.isfile(custom):
         return custom
     for p in _TEMPLATE_CANDIDATES:
@@ -1258,9 +1261,30 @@ def _ensure_kr_font_ttf() -> str:
                     return out
             except Exception:
                 continue
+    # Cloud 등 시스템 폰트 없을 때: NanumGothic 다운로드
+    dl = os.path.join(PI_FONTS_DIR, "NanumGothic.ttf")
+    if os.path.isfile(dl) and os.path.getsize(dl) > 1000:
+        return dl
+    urls = (
+        "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic%5Bwght%5D.ttf",
+        "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/nanumgothic/NanumGothic-Regular.ttf",
+        "https://raw.githubusercontent.com/googlefonts/nanum-gothic/main/fonts/ttf/NanumGothic-Regular.ttf",
+    )
+    try:
+        import urllib.request
+
+        for url in urls:
+            try:
+                urllib.request.urlretrieve(url, dl)
+                if os.path.isfile(dl) and os.path.getsize(dl) > 1000:
+                    return dl
+            except Exception:
+                continue
+    except Exception:
+        pass
     raise RuntimeError(
         "한글 PDF 폰트를 찾을 수 없습니다. "
-        f"`{PI_FONTS_DIR}`에 NotoSansKR-Regular.ttf 등을 두세요."
+        f"`{PI_FONTS_DIR}`에 NotoSansKR-Regular.ttf 또는 NanumGothic.ttf 를 두세요."
     )
 
 
