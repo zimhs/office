@@ -34,7 +34,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26e · 편집가능품목표(단가➠인상단가)·일괄발송"
+PI_UI_BUILD = "2026-08-26g · 개별·담당자별일괄(거래처별)·무손실격리"
 
 # 기본 공문 후보 (캐시 원본 우선)
 _TEMPLATE_CANDIDATES = (
