@@ -35,7 +35,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26s · 한글폰트자동설치"
+PI_UI_BUILD = "2026-08-26u · 공문탭·단가선택"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -742,10 +742,27 @@ def _fill_real_template_cells(
     for coord, text in paras.items():
         if coord in ws:
             ws[coord].value = text
-    # C35 제목 유지, 아래를 표로
-    if not str(ws["C35"].value or "").strip():
-        ws["C35"].value = "                                      단가 조정 내용"
-    _write_price_adjust_table(ws, items, effective)
+    # C35 이하 단가표: 품목이 있을 때만 (공문 종류에 따라 선택)
+    clean_items = [it for it in items if str(it.get("품목명") or "").strip()]
+    if clean_items:
+        if not str(ws["C35"].value or "").strip():
+            ws["C35"].value = "                                      단가 조정 내용"
+        _write_price_adjust_table(ws, clean_items, effective)
+    else:
+        # 단가표 미사용 — 양식 기본 단가 문구/표 자리를 비움
+        for coord in ("C35", "C36", "C37", "C38", "C39", "C40"):
+            try:
+                if coord in ws:
+                    ws[coord].value = ""
+            except Exception:
+                pass
+        for r in range(35, 41):
+            _unmerge_row(ws, r)
+            for c in range(3, 28):
+                try:
+                    ws.cell(r, c).value = None
+                except Exception:
+                    pass
 
 
 def fill_letter_workbook(
@@ -1482,29 +1499,42 @@ def build_letter_pdf(
     left = 18.0
     right = 18.0
     usable = 210.0 - left - right
-    y = 12.0
+    y = 10.0
 
+    def _rule_bar(y0: float, *, height: float = 3.2, gray: int = 80) -> float:
+        """원본 엑셀의 두꺼운 가로 경계 바(행 채움) 재현."""
+        pdf.set_fill_color(gray, gray, gray)
+        pdf.rect(left, y0, usable, height, style="F")
+        return y0 + height
+
+    # 상단 로고 (원본: 가운데)
     header = imgs.get("header")
     if header and os.path.isfile(header):
         try:
-            pdf.image(header, x=left + usable - 52, y=y, w=50)
+            logo_w = 48.0
+            pdf.image(header, x=left + (usable - logo_w) / 2.0, y=y, w=logo_w)
+            y += 18.0
         except Exception:
-            pass
-    pdf.set_xy(left, y + 22)
+            y += 4.0
+    else:
+        y += 4.0
+
+    # 주소/전화 (원본 C6) — 위·아래 두꺼운 경계선으로 감쌈
+    y = _rule_bar(y, height=2.6, gray=90)
+    pdf.set_xy(left, y + 1.0)
     pdf.set_font("kr", "", 8)
     addr = (
         "우 18524 경기도 화성시 팔탄면 서해로 1327-17"
-        f"    /    전화 {contact or '031-366-0799'}    /    FAX 031-366-5632"
+        f"    /    전화 {contact or '031-366-0799'}    /    FAX 031-366-5633"
     )
-    pdf.multi_cell(usable, 4.2, addr, align="C")
-    y = pdf.get_y() + 3
-    pdf.set_draw_color(15, 118, 110)
-    pdf.set_line_width(0.35)
-    pdf.line(left, y, left + usable, y)
-    y += 5
+    pdf.multi_cell(usable, 4.0, addr, align="C")
+    y = pdf.get_y() + 1.0
+    y = _rule_bar(y, height=2.6, gray=90)  # 원본 row7 회색 바
+    y += 3.5  # 원본 row8 여백
 
+    # 문서번호~제목 (원본 C9~C12) — 제목 아래 두꺼운 경계 바
     pdf.set_xy(left, y)
-    pdf.set_font("kr", "", 11)
+    pdf.set_font("kr", "", 12)
     meta_lines = [
         f"문서번호 : {doc_no}",
         f"발송일자 : {send_s}",
@@ -1513,8 +1543,11 @@ def build_letter_pdf(
     ]
     for line in meta_lines:
         pdf.set_x(left)
-        pdf.cell(usable, 6.2, line, new_x="LMARGIN", new_y="NEXT")
-    y = pdf.get_y() + 4
+        pdf.cell(usable, 7.0, line, new_x="LMARGIN", new_y="NEXT")
+    y = pdf.get_y() + 2.0  # 원본 row13 여백
+    y = _rule_bar(y, height=3.4, gray=70)  # 원본 row14 진한 가로 바
+    y += 4.0
+    pdf.set_y(y)
 
     pdf.set_font("kr", "", 10)
     body_order = list(_BODY_CELL_ORDER)
@@ -1535,63 +1568,62 @@ def build_letter_pdf(
             pdf.ln(1.2)
 
     pdf.ln(3)
-    pdf.set_font("kr", "B", 11)
-    pdf.set_x(left)
-    pdf.cell(usable, 7, "단가 조정 내용", align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(1.5)
-
-    # 표: 제품명 | 기존단가 | 인상단가 | 비고  (인상율/% 없음)
-    col_w = [usable * 0.34, usable * 0.20, usable * 0.20, usable * 0.26]
-    headers = ["제품명", "기존단가", "인상단가", "비고"]
-    row_h = 7.0
-    pdf.set_font("kr", "B", 9)
-    pdf.set_fill_color(15, 118, 110)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_x(left)
-    for i, h in enumerate(headers):
-        pdf.cell(col_w[i], row_h, h, border=1, fill=True, align="C")
-    pdf.ln(row_h)
-    pdf.set_text_color(15, 23, 42)
-    pdf.set_font("kr", "", 9)
     clean = [it for it in items if str(it.get("품목명") or "").strip()]
-    rows_src = clean if clean else [{"품목명": "-", "기존단가": 0, "인상적용단가": 0, "비고": ""}]
-    for it in rows_src:
-        if pdf.get_y() + row_h > 275:
-            pdf.add_page()
-            pdf.set_font("kr", "B", 9)
-            pdf.set_fill_color(15, 118, 110)
-            pdf.set_text_color(255, 255, 255)
-            pdf.set_x(left)
-            for i, h in enumerate(headers):
-                pdf.cell(col_w[i], row_h, h, border=1, fill=True, align="C")
-            pdf.ln(row_h)
-            pdf.set_text_color(15, 23, 42)
-            pdf.set_font("kr", "", 9)
-        vals = [
-            str(it.get("품목명") or ""),
-            f"{float(it.get('기존단가') or 0):,.0f}",
-            f"{float(it.get('인상적용단가') or 0):,.0f}",
-            str(it.get("비고") or ""),
-        ]
-        aligns = ["L", "C", "C", "L"]
+    if clean:
+        pdf.set_font("kr", "B", 11)
         pdf.set_x(left)
-        for i, v in enumerate(vals):
-            # 너무 긴 셀 텍스트 자르기
-            while v and pdf.get_string_width(v) > col_w[i] - 2:
-                v = v[:-1]
-            pdf.cell(col_w[i], row_h, v, border=1, align=aligns[i])
-        pdf.ln(row_h)
+        pdf.cell(usable, 7, "단가 조정 내용", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(1.5)
 
-    pdf.ln(2)
-    pdf.set_font("kr", "", 10)
-    pdf.set_x(left)
-    pdf.cell(
-        usable,
-        6,
-        f"                           • 시행 일자 : {_format_korean_effective(effective)}",
-        new_x="LMARGIN",
-        new_y="NEXT",
-    )
+        # 표: 제품명 | 기존단가 | 인상단가 | 비고  (인상율/% 없음)
+        col_w = [usable * 0.34, usable * 0.20, usable * 0.20, usable * 0.26]
+        headers = ["제품명", "기존단가", "인상단가", "비고"]
+        row_h = 7.0
+        pdf.set_font("kr", "B", 9)
+        pdf.set_fill_color(15, 118, 110)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_x(left)
+        for i, h in enumerate(headers):
+            pdf.cell(col_w[i], row_h, h, border=1, fill=True, align="C")
+        pdf.ln(row_h)
+        pdf.set_text_color(15, 23, 42)
+        pdf.set_font("kr", "", 9)
+        for it in clean:
+            if pdf.get_y() + row_h > 275:
+                pdf.add_page()
+                pdf.set_font("kr", "B", 9)
+                pdf.set_fill_color(15, 118, 110)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_x(left)
+                for i, h in enumerate(headers):
+                    pdf.cell(col_w[i], row_h, h, border=1, fill=True, align="C")
+                pdf.ln(row_h)
+                pdf.set_text_color(15, 23, 42)
+                pdf.set_font("kr", "", 9)
+            vals = [
+                str(it.get("품목명") or ""),
+                f"{float(it.get('기존단가') or 0):,.0f}",
+                f"{float(it.get('인상적용단가') or 0):,.0f}",
+                str(it.get("비고") or ""),
+            ]
+            aligns = ["L", "C", "C", "L"]
+            pdf.set_x(left)
+            for i, v in enumerate(vals):
+                while v and pdf.get_string_width(v) > col_w[i] - 2:
+                    v = v[:-1]
+                pdf.cell(col_w[i], row_h, v, border=1, align=aligns[i])
+            pdf.ln(row_h)
+
+        pdf.ln(2)
+        pdf.set_font("kr", "", 10)
+        pdf.set_x(left)
+        pdf.cell(
+            usable,
+            6,
+            f"                           • 시행 일자 : {_format_korean_effective(effective)}",
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
 
     # 하단 회사명·도장
     footer_y = max(pdf.get_y() + 10, 250)
@@ -1887,8 +1919,11 @@ def _render_pi_left_summary(
         st.caption(f"최근 발송: {last.get('date')} · {last.get('subject') or '-'}")
     else:
         st.caption("최근 발송 이력 없음")
-    st.markdown("###### 단가 조정 표")
-    st.dataframe(_items_df_for_editor(items), use_container_width=True, hide_index=True)
+    if items:
+        st.markdown("###### 단가 조정 표")
+        st.dataframe(_items_df_for_editor(items), use_container_width=True, hide_index=True)
+    else:
+        st.caption("단가표 없음 · 공문 본문만 발송")
     with st.expander("공문 본문 미리보기", expanded=False):
         st.text(letter_body or "(본문 없음)")
 
@@ -1921,18 +1956,9 @@ def _render_letter_form_preview(
         for line in str(letter_body or "").splitlines()
     )
     send_s = send_date.strftime("%Y.%m.%d") if hasattr(send_date, "strftime") else str(send_date)
-    st.markdown(
-        f"""
-<div style="border:1px solid #CBD5E1;border-radius:10px;padding:14px 16px;background:#fff;max-height:640px;overflow:auto;">
-  <div style="text-align:center;font-weight:800;font-size:18px;color:#0F766E;margin-bottom:10px;">단가인상공문 미리보기</div>
-  <div style="font-size:13px;line-height:1.6;color:#0F172A;">
-    <div>문서번호 : {doc_no}</div>
-    <div>발송일자 : {send_s}</div>
-    <div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {client}</div>
-    <div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {title}</div>
-  </div>
-  <hr style="border:none;border-top:1px solid #E2E8F0;margin:12px 0;"/>
-  <div style="font-size:13px;line-height:1.55;color:#1E293B;white-space:normal;">{body_html}</div>
+    price_block = ""
+    if any(str(it.get("품목명") or "").strip() for it in items):
+        price_block = f"""
   <div style="margin-top:14px;font-weight:700;text-align:center;">단가 조정 내용</div>
   <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;">
     <thead>
@@ -1946,6 +1972,25 @@ def _render_letter_form_preview(
     <tbody>{rows_html}</tbody>
   </table>
   <div style="margin-top:10px;font-size:13px;">• 시행 일자 : {_format_korean_effective(effective_s)}</div>
+"""
+    st.markdown(
+        f"""
+<div style="border:1px solid #CBD5E1;border-radius:10px;padding:14px 16px;background:#fff;max-height:640px;overflow:auto;">
+  <div style="text-align:center;font-weight:800;font-size:16px;color:#0F766E;margin-bottom:8px;">공문 미리보기</div>
+  <div style="height:3px;background:#5A5A5A;margin:6px 0;"></div>
+  <div style="text-align:center;font-size:11px;color:#475569;padding:4px 0;">
+    우 18524 경기도 화성시 팔탄면 서해로 1327-17 &nbsp;/&nbsp; 전화 031-366-0799 &nbsp;/&nbsp; FAX 031-366-5633
+  </div>
+  <div style="height:3px;background:#5A5A5A;margin:6px 0 10px;"></div>
+  <div style="font-size:14px;line-height:1.7;color:#0F172A;">
+    <div>문서번호 : {doc_no}</div>
+    <div>발송일자 : {send_s}</div>
+    <div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {client}</div>
+    <div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {title}</div>
+  </div>
+  <div style="height:4px;background:#464646;margin:12px 0;"></div>
+  <div style="font-size:13px;line-height:1.55;color:#1E293B;white-space:normal;">{body_html}</div>
+  {price_block}
 </div>
 """,
         unsafe_allow_html=True,
@@ -2091,10 +2136,10 @@ def _render_smtp_bar() -> dict:
 
 
 def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "") -> None:
-    """단가인상 탭 — 업무일지형 좌우 레이아웃 · 개별·일괄·이력."""
+    """공문 탭 — 업무일지형 좌우 레이아웃 · 개별·일괄·이력."""
     _ensure_dirs()
     st.markdown(
-        "<div class='sub-header dashboard-tab-panel-head'>📨 단가인상 공문</div>",
+        "<div class='sub-header dashboard-tab-panel-head'>📨 공문</div>",
         unsafe_allow_html=True,
     )
     cap = f"빌드 {PI_UI_BUILD}"
@@ -2168,7 +2213,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     st.text_input("문의", value="031-366-0799", key="pi_single_contact")
 
                 st.markdown("**1. 공문내용**")
-                st.caption("업무일지 입력처럼 한 칸에 작성 · 기본은 단가인상공문 양식")
+                st.caption("업무일지 입력처럼 한 칸에 작성 · 기본은 단가인상공문 양식 · 다른 공문도 여기서 수정 가능")
                 bbar1, bbar2 = st.columns([1, 1])
                 with bbar1:
                     if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
@@ -2183,17 +2228,27 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     label_visibility="collapsed",
                 )
 
-                st.markdown("**2. 단가적용**")
-                items = _render_items_table(
-                    editor_key=items_key,
-                    items=st.session_state[items_key],
-                    pct_default=st.session_state[pct_key],
+                include_price = st.checkbox(
+                    "2. 단가적용 포함 (선택)",
+                    value=bool(st.session_state.get("pi_include_price", True)),
+                    key="pi_include_price",
+                    help="체크 해제 시 단가표 없이 1. 공문내용만으로 미리보기·발송합니다.",
                 )
-                st.session_state[pct_key] = float(
-                    st.session_state.get(f"{items_key}_pct", st.session_state[pct_key])
-                )
-                if not items:
-                    st.warning("품목이 없습니다. 표를 추가하거나 매출을 확인하세요.")
+                if include_price:
+                    st.caption("단가표가 공문에 들어갑니다. 필요 없으면 위 체크를 해제하세요.")
+                    items = _render_items_table(
+                        editor_key=items_key,
+                        items=st.session_state[items_key],
+                        pct_default=st.session_state[pct_key],
+                    )
+                    st.session_state[pct_key] = float(
+                        st.session_state.get(f"{items_key}_pct", st.session_state[pct_key])
+                    )
+                    if not items:
+                        st.info("품목이 비어 있으면 단가표 없이 본문만 발송됩니다.")
+                else:
+                    items = list(st.session_state.get(items_key) or [])
+                    st.caption("단가적용 생략 · 1. 공문내용만 사용합니다. (표 데이터는 유지됨)")
 
             with col_left:
                 st.markdown("##### 공문 보기")
@@ -2224,91 +2279,91 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     body_key=body_key,
                     items_key=items_key,
                 )
+                # 선택 해제 시 단가표를 공문/메일에 넣지 않음
+                if not st.session_state.get("pi_include_price", True):
+                    letter_kwargs = dict(letter_kwargs)
+                    letter_kwargs["items"] = []
+                    items_now = []
                 title = str(letter_kwargs.get("title") or "")
                 day_tag = date.today().strftime("%Y%m%d")
-                pdf_name = f"단가인상_{client}_{day_tag}.pdf"
-                xlsx_name = f"단가인상_{client}_{day_tag}.xlsx"
+                pdf_name = f"공문_{client}_{day_tag}.pdf"
+                xlsx_name = f"공문_{client}_{day_tag}.xlsx"
                 mode = st.session_state.get("pi_left_mode") or "summary"
 
                 if do_preview:
-                    if not items_now:
-                        st.warning("단가 적용 품목이 없습니다. 오른쪽 2. 단가적용에서 확인하세요.")
-                        st.session_state["pi_left_mode"] = "summary"
+                    _open_letter_preview_dialog(
+                        letter_kwargs=letter_kwargs,
+                        letter_body=letter_body,
+                        pdf_name=pdf_name,
+                        xlsx_name=xlsx_name,
+                    )
+                    mode = "pdf"
+                    if st.session_state.get("pi_pdf_bytes"):
+                        st.success("미리보기 팝업을 열었습니다.")
                     else:
-                        _open_letter_preview_dialog(
-                            letter_kwargs=letter_kwargs,
-                            letter_body=letter_body,
-                            pdf_name=pdf_name,
-                            xlsx_name=xlsx_name,
-                        )
-                        mode = "pdf"
-                        if st.session_state.get("pi_pdf_bytes"):
-                            st.success("미리보기 팝업을 열었습니다.")
-                        else:
-                            st.warning("PDF 생성에 실패하여 보조 양식으로 열었습니다.")
+                        st.warning("PDF 생성에 실패하여 보조 양식으로 열었습니다.")
 
                 if mode in ("pdf", "excel"):
-                    if not items_now:
-                        st.warning("단가 적용 품목이 없습니다. 오른쪽 2. 단가적용에서 확인하세요.")
-                        st.session_state["pi_left_mode"] = "summary"
+                    pdf_bytes = st.session_state.get("pi_pdf_bytes")
+                    xlsx = st.session_state.get("pi_dl_bytes")
+                    if not pdf_bytes:
+                        try:
+                            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+                            st.session_state["pi_pdf_bytes"] = pdf_bytes
+                            st.session_state["pi_pdf_name"] = pdf_name
+                            st.session_state.pop("pi_pdf_error", None)
+                        except Exception as e:
+                            st.session_state["pi_pdf_error"] = (
+                                "PDF 생성 라이브러리(fpdf2)가 현재 서버에 없어 PDF를 만들지 못했습니다. "
+                                "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
+                                f"(원인: {e})"
+                            )
+                            pdf_bytes = None
+                    if items_now:
+                        st.caption("업체 전송 양식(PDF) · 단가표 포함 · 「엑셀 미리보기」로 팝업 재오픈")
                     else:
-                        pdf_bytes = st.session_state.get("pi_pdf_bytes")
-                        xlsx = st.session_state.get("pi_dl_bytes")
-                        if not pdf_bytes:
-                            try:
-                                pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
-                                st.session_state["pi_pdf_bytes"] = pdf_bytes
-                                st.session_state["pi_pdf_name"] = pdf_name
-                                st.session_state.pop("pi_pdf_error", None)
-                            except Exception as e:
-                                st.session_state["pi_pdf_error"] = (
-                                    "PDF 생성 라이브러리(fpdf2)가 현재 서버에 없어 PDF를 만들지 못했습니다. "
-                                    "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
-                                    f"(원인: {e})"
-                                )
-                                pdf_bytes = None
-                        st.caption("업체 전송 양식(PDF) · 「엑셀 미리보기」로 팝업 재오픈")
-                        b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
+                        st.caption("업체 전송 양식(PDF) · 본문만(단가표 없음) · 「엑셀 미리보기」로 팝업 재오픈")
+                    b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
+                    if pdf_bytes:
+                        _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
+                        with b_big:
+                            if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
+                                try:
+                                    _open_letter_preview_dialog(
+                                        letter_kwargs=letter_kwargs,
+                                        letter_body=letter_body,
+                                        pdf_name=pdf_name,
+                                        xlsx_name=xlsx_name,
+                                    )
+                                except Exception as e:
+                                    st.error(f"팝업 실패: {e}")
+                    elif st.session_state.get("pi_pdf_error"):
+                        st.error(str(st.session_state.get("pi_pdf_error")))
+                        if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
+                            _pi_letter_preview_dialog()
+                        with b_big:
+                            if st.button("설치 가이드 보기", use_container_width=True, key="pi_pdf_help"):
+                                st.info("로컬: python3 -m pip install -r requirements.txt / Cloud: 재배포")
+                    with b_dl1:
                         if pdf_bytes:
-                            _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
-                            with b_big:
-                                if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
-                                    try:
-                                        _open_letter_preview_dialog(
-                                            letter_kwargs=letter_kwargs,
-                                            letter_body=letter_body,
-                                            pdf_name=pdf_name,
-                                            xlsx_name=xlsx_name,
-                                        )
-                                    except Exception as e:
-                                        st.error(f"팝업 실패: {e}")
-                        elif st.session_state.get("pi_pdf_error"):
-                            st.error(str(st.session_state.get("pi_pdf_error")))
-                            if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
-                                _pi_letter_preview_dialog()
-                            with b_big:
-                                if st.button("설치 가이드 보기", use_container_width=True, key="pi_pdf_help"):
-                                    st.info("로컬: pip install -r requirements.txt / Cloud: 재배포(Requirements 재설치)")
-                        with b_dl1:
-                            if pdf_bytes:
-                                st.download_button(
-                                    "📥 PDF",
-                                    data=pdf_bytes,
-                                    file_name=pdf_name,
-                                    mime="application/pdf",
-                                    key="pi_single_dl_pdf",
-                                    use_container_width=True,
-                                )
-                        with b_dl2:
-                            if xlsx:
-                                st.download_button(
-                                    "📥 엑셀",
-                                    data=xlsx,
-                                    file_name=xlsx_name,
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    key="pi_single_dl_xlsx",
-                                    use_container_width=True,
-                                )
+                            st.download_button(
+                                "📥 PDF",
+                                data=pdf_bytes,
+                                file_name=pdf_name,
+                                mime="application/pdf",
+                                key="pi_single_dl_pdf",
+                                use_container_width=True,
+                            )
+                    with b_dl2:
+                        if xlsx:
+                            st.download_button(
+                                "📥 엑셀",
+                                data=xlsx,
+                                file_name=xlsx_name,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="pi_single_dl_xlsx",
+                                use_container_width=True,
+                            )
                 else:
                     _render_pi_left_summary(
                         client=client,
@@ -2330,9 +2385,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         )
 
                 if do_send:
-                    if not items_now:
-                        st.error("품목이 없습니다.")
-                    elif not email:
+                    if not email:
                         st.error("수신 이메일을 입력하세요.")
                     elif not smtp_cfg.get("ready"):
                         st.error("SMTP secrets 미설정")
@@ -2365,7 +2418,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             if "fpdf2" in msg.lower():
                                 st.error(
                                     "발송 실패: PDF 생성 라이브러리(fpdf2)가 없습니다. "
-                                    "로컬은 `pip install -r requirements.txt`, "
+                                    "로컬은 `python3 -m pip install -r requirements.txt`, "
                                     "Cloud는 재배포 후 다시 시도하세요."
                                 )
                             else:
