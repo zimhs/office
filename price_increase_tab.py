@@ -864,15 +864,15 @@ def resolve_letter_template() -> str:
 
 
 def smtp_settings() -> dict:
-    """다음메일(Daum) SMTP 기본. secrets로 덮어씀."""
-    provider = (_secret_get("smtp_provider", "SMTP_PROVIDER") or "daum").strip().lower()
+    """Gmail SMTP 기본. secrets로 덮어씀. (daum/naver도 가능)"""
+    provider = (_secret_get("smtp_provider", "SMTP_PROVIDER") or "gmail").strip().lower()
     defaults = {
+        "gmail": {"host": "smtp.gmail.com", "port": 465, "ssl": True},
         "daum": {"host": "smtp.daum.net", "port": 465, "ssl": True},
         "kakao": {"host": "smtp.daum.net", "port": 465, "ssl": True},
         "naver": {"host": "smtp.naver.com", "port": 465, "ssl": True},
-        "gmail": {"host": "smtp.gmail.com", "port": 465, "ssl": True},
     }
-    base = dict(defaults.get(provider, defaults["daum"]))
+    base = dict(defaults.get(provider, defaults["gmail"]))
     host = _secret_get("smtp_host", "SMTP_HOST") or base["host"]
     port_s = _secret_get("smtp_port", "SMTP_PORT")
     port = int(port_s) if port_s else int(base["port"])
@@ -982,7 +982,10 @@ def test_smtp_connection(cfg: Optional[dict] = None) -> tuple[bool, str]:
     except smtplib.SMTPAuthenticationError:
         return (
             False,
-            "로그인 실패 — 다음메일: 메일설정→POP3/IMAP 사용 ON, 아이디는 전체메일(예: id@daum.net)",
+            "로그인 실패 — Gmail은 일반 비밀번호가 아니라 "
+            "앱 비밀번호(16자리)가 필요합니다. "
+            "Google 계정 → 보안 → 2단계 인증 ON → 앱 비밀번호 생성 후 smtp_password에 넣으세요. "
+            "(https://myaccount.google.com/apppasswords)",
         )
     except Exception as e:
         return False, str(e)
@@ -1002,7 +1005,7 @@ def send_mail_smtp(
         return (
             False,
             "메일 미연동: `.streamlit/secrets.toml` 또는 Cloud Secrets에 "
-            "smtp_user / smtp_password 를 넣으세요. (다음: smtp.daum.net:465)",
+            "smtp_user / smtp_password 를 넣으세요. (Gmail: smtp.gmail.com:465, 앱 비밀번호 필요)",
         )
     if not to_addr:
         return False, "수신 메일 없음"
@@ -1034,7 +1037,11 @@ def send_mail_smtp(
         ok, note = _smtp_run(cfg, timeout=45, send_fn=_do_send)
         return True, f"발송 완료 → {', '.join(all_rcpt)}{note}"
     except smtplib.SMTPAuthenticationError:
-        return False, "SMTP 인증 실패 — 아이디/비밀번호 또는 POP3/IMAP 사용 설정 확인"
+        return (
+            False,
+            "SMTP 인증 실패 — Gmail 앱 비밀번호(16자리)와 smtp_user(전체 주소)를 확인하세요. "
+            "https://myaccount.google.com/apppasswords",
+        )
     except Exception as e:
         err = str(e)
         if "CERTIFICATE_VERIFY_FAILED" in err or "certificate verify failed" in err.lower():
