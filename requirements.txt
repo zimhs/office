@@ -1,4 +1,5 @@
 streamlit
+streamlit[pdf]
 pandas
 numpy
 openpyxl
@@ -10,3 +11,4 @@ kaleido
 requests
 beautifulsoup4
 opendartreader>=0.3.2
+fpdf2

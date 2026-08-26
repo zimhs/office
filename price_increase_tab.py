@@ -35,7 +35,18 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26o · 엑셀미리보기적용수정"
+PI_UI_BUILD = "2026-08-26p · PDF미리보기·메일첨부"
+PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
+_KR_FONT_CANDIDATES = (
+    os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
+    os.path.join(PI_FONTS_DIR, "NanumGothic.ttf"),
+    os.path.join(PI_FONTS_DIR, "wqy-microhei.ttf"),
+    "/usr/share/fonts/truetype/noto/NotoSansKR-Regular.ttf",
+    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+    "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+)
 
 # 기본 공문 후보 (캐시 원본 우선)
 _TEMPLATE_CANDIDATES = (
@@ -899,7 +910,7 @@ def send_mail_smtp(
     subject: str,
     body: str,
     attachment_bytes: Optional[bytes] = None,
-    attachment_name: str = "단가인상공문.xlsx",
+    attachment_name: str = "단가인상공문.pdf",
     cc: str = "",
 ) -> tuple[bool, str]:
     cfg = smtp_settings()
@@ -924,8 +935,9 @@ def send_mail_smtp(
     msg.attach(MIMEText(body, "plain", "utf-8"))
     if attachment_bytes:
         # 한글 파일명 안전 처리
-        safe_name = attachment_name or "letter.xlsx"
-        part = MIMEApplication(attachment_bytes, Name=safe_name)
+        safe_name = attachment_name or "letter.pdf"
+        subtype = "pdf" if str(safe_name).lower().endswith(".pdf") else "octet-stream"
+        part = MIMEApplication(attachment_bytes, _subtype=subtype, Name=safe_name)
         part.add_header("Content-Disposition", "attachment", filename=safe_name)
         msg.attach(part)
 
@@ -1220,6 +1232,363 @@ def _build_letter_bytes(
         letter_paras=letter_paras,
         c37_override=c37_override,
         c38_override=c38_override,
+    )
+
+
+def _ensure_kr_font_ttf() -> str:
+    """한글 TTF 경로. TTC면 첫 폰트를 캐시 폴더에 풀어 씀."""
+    _ensure_dirs()
+    os.makedirs(PI_FONTS_DIR, exist_ok=True)
+    for path in _KR_FONT_CANDIDATES:
+        if not path or not os.path.isfile(path):
+            continue
+        low = path.lower()
+        if low.endswith(".ttf") or low.endswith(".otf"):
+            return path
+        if low.endswith(".ttc"):
+            out = os.path.join(PI_FONTS_DIR, "wqy-microhei.ttf")
+            if os.path.isfile(out) and os.path.getsize(out) > 1000:
+                return out
+            try:
+                from fontTools.ttLib import TTCollection
+
+                ttc = TTCollection(path)
+                ttc.fonts[0].save(out)
+                if os.path.isfile(out):
+                    return out
+            except Exception:
+                continue
+    raise RuntimeError(
+        "한글 PDF 폰트를 찾을 수 없습니다. "
+        f"`{PI_FONTS_DIR}`에 NotoSansKR-Regular.ttf 등을 두세요."
+    )
+
+
+def _extract_template_images(template_path: str) -> dict[str, str]:
+    """양식 xlsx 이미지 → PNG 캐시. header / footer / stamp."""
+    out: dict[str, str] = {}
+    os.makedirs(PI_FONTS_DIR, exist_ok=True)
+    cached = {
+        "header": os.path.join(PI_FONTS_DIR, "logo_header.png"),
+        "footer": os.path.join(PI_FONTS_DIR, "logo_footer.png"),
+        "stamp": os.path.join(PI_FONTS_DIR, "stamp.png"),
+    }
+    if all(os.path.isfile(p) for p in cached.values()):
+        return cached
+    if load_workbook is None or not os.path.isfile(template_path):
+        return {k: v for k, v in cached.items() if os.path.isfile(v)}
+    try:
+        from PIL import Image as PILImage
+
+        wb = load_workbook(template_path)
+        ws = wb.active
+        blobs: list[bytes] = []
+        for img in getattr(ws, "_images", []) or []:
+            try:
+                blobs.append(img._data())
+            except Exception:
+                continue
+        wb.close()
+        # 크기 기준으로 분류: 가로 긴 로고 2개 + 정사각 도장
+        decoded: list[tuple[int, int, bytes, str]] = []
+        for raw in blobs:
+            ext = "png"
+            if raw[:6] in (b"GIF87a", b"GIF89a"):
+                ext = "gif"
+            elif raw[:2] == b"\xff\xd8":
+                ext = "jpg"
+            elif raw[:8] == b"\x89PNG\r\n\x1a\n":
+                ext = "png"
+            else:
+                continue
+            tmp = os.path.join(PI_FONTS_DIR, f"_tmp_img.{ext}")
+            with open(tmp, "wb") as f:
+                f.write(raw)
+            im = PILImage.open(tmp).convert("RGBA")
+            decoded.append((im.width, im.height, raw, ext))
+            im.close()
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        logos = sorted(
+            [d for d in decoded if d[0] >= d[1] * 1.5],
+            key=lambda x: -(x[0] * x[1]),
+        )
+        stamps = sorted(
+            [d for d in decoded if d[0] < d[1] * 1.5],
+            key=lambda x: -(x[0] * x[1]),
+        )
+        mapping = []
+        if logos:
+            mapping.append(("header", logos[0]))
+        if len(logos) > 1:
+            mapping.append(("footer", logos[1]))
+        elif logos:
+            mapping.append(("footer", logos[0]))
+        if stamps:
+            mapping.append(("stamp", stamps[0]))
+        for key, (w, h, raw, ext) in mapping:
+            path = cached[key]
+            if ext == "png":
+                with open(path, "wb") as f:
+                    f.write(raw)
+            else:
+                tmp = os.path.join(PI_FONTS_DIR, f"_conv.{ext}")
+                with open(tmp, "wb") as f:
+                    f.write(raw)
+                PILImage.open(tmp).convert("RGBA").save(path)
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            out[key] = path
+            del w, h
+    except Exception:
+        pass
+    for k, v in cached.items():
+        if k not in out and os.path.isfile(v):
+            out[k] = v
+    return out
+
+
+def _pdf_wrap_lines(pdf, text: str, max_w: float) -> list[str]:
+    """폭에 맞춰 줄바꿈 (공백·한글 혼합)."""
+    t = str(text or "").replace("\t", " ")
+    if not t.strip():
+        return [""]
+    out: list[str] = []
+    for para in t.split("\n"):
+        if not para:
+            out.append("")
+            continue
+        line = ""
+        for ch in para:
+            trial = line + ch
+            if pdf.get_string_width(trial) <= max_w:
+                line = trial
+            else:
+                if line:
+                    out.append(line)
+                line = ch
+        out.append(line)
+    return out if out else [""]
+
+
+def build_letter_pdf(
+    *,
+    client: str,
+    title: str,
+    effective: str,
+    items: list[dict],
+    doc_no: str = "",
+    send_date: Optional[date] = None,
+    letter_paras: Optional[dict[str, str]] = None,
+    contact: str = "031-366-0799",
+    email: str = "",
+    body: str = "",
+    **_extra: Any,
+) -> bytes:
+    """업체 전송용 공문 PDF (A4). 인상율/% 문구는 넣지 않음."""
+    del email, body  # 메일본문·주소는 PDF 헤더에 불필요
+    try:
+        from fpdf import FPDF
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError("fpdf2 패키지가 필요합니다. pip install fpdf2") from e
+
+    font_path = _ensure_kr_font_ttf()
+    tpl = resolve_letter_template()
+    imgs = _extract_template_images(tpl)
+    send_date = send_date or date.today()
+    doc_no = _format_doc_no(client, doc_no)
+    paras = letter_paras if letter_paras is not None else dict(_DEFAULT_LETTER_PARAS)
+    send_s = send_date.strftime("%Y.%m.%d") if hasattr(send_date, "strftime") else str(send_date)
+
+    class LetterPDF(FPDF):
+        def footer(self) -> None:  # noqa: N802
+            pass
+
+    pdf = LetterPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.add_page()
+    pdf.add_font("kr", "", font_path)
+    # bold 후보가 없으면 regular 재사용
+    bold_path = font_path
+    for cand in (
+        font_path.replace("Regular", "Bold"),
+        os.path.join(PI_FONTS_DIR, "NotoSansKR-Bold.ttf"),
+        os.path.join(PI_FONTS_DIR, "NanumGothicBold.ttf"),
+    ):
+        if cand != font_path and os.path.isfile(cand):
+            bold_path = cand
+            break
+    try:
+        pdf.add_font("kr", "B", bold_path)
+    except Exception:
+        pdf.add_font("kr", "B", font_path)
+
+    left = 18.0
+    right = 18.0
+    usable = 210.0 - left - right
+    y = 12.0
+
+    header = imgs.get("header")
+    if header and os.path.isfile(header):
+        try:
+            pdf.image(header, x=left + usable - 52, y=y, w=50)
+        except Exception:
+            pass
+    pdf.set_xy(left, y + 22)
+    pdf.set_font("kr", "", 8)
+    addr = (
+        "우 18524 경기도 화성시 팔탄면 서해로 1327-17"
+        f"    /    전화 {contact or '031-366-0799'}    /    FAX 031-366-5632"
+    )
+    pdf.multi_cell(usable, 4.2, addr, align="C")
+    y = pdf.get_y() + 3
+    pdf.set_draw_color(15, 118, 110)
+    pdf.set_line_width(0.35)
+    pdf.line(left, y, left + usable, y)
+    y += 5
+
+    pdf.set_xy(left, y)
+    pdf.set_font("kr", "", 11)
+    meta_lines = [
+        f"문서번호 : {doc_no}",
+        f"발송일자 : {send_s}",
+        f"수    신 : {client}",
+        f"제    목 : {title}",
+    ]
+    for line in meta_lines:
+        pdf.set_x(left)
+        pdf.cell(usable, 6.2, line, new_x="LMARGIN", new_y="NEXT")
+    y = pdf.get_y() + 4
+
+    pdf.set_font("kr", "", 10)
+    body_order = list(_BODY_CELL_ORDER)
+    for coord in body_order:
+        text = str(paras.get(coord) or "")
+        if not text.strip():
+            y = pdf.get_y() + 1.5
+            pdf.set_y(y)
+            continue
+        lines = _pdf_wrap_lines(pdf, text, usable)
+        for ln in lines:
+            if pdf.get_y() > 270:
+                pdf.add_page()
+            pdf.set_x(left)
+            pdf.cell(usable, 5.0, ln, new_x="LMARGIN", new_y="NEXT")
+        # 문단 사이 약간 간격 (양식 빈 행 느낌)
+        if coord in ("C16", "C19", "C24", "C26", "C27", "C29", "C31"):
+            pdf.ln(1.2)
+
+    pdf.ln(3)
+    pdf.set_font("kr", "B", 11)
+    pdf.set_x(left)
+    pdf.cell(usable, 7, "단가 조정 내용", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1.5)
+
+    # 표: 제품명 | 기존단가 | 인상단가 | 비고  (인상율/% 없음)
+    col_w = [usable * 0.34, usable * 0.20, usable * 0.20, usable * 0.26]
+    headers = ["제품명", "기존단가", "인상단가", "비고"]
+    row_h = 7.0
+    pdf.set_font("kr", "B", 9)
+    pdf.set_fill_color(15, 118, 110)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_x(left)
+    for i, h in enumerate(headers):
+        pdf.cell(col_w[i], row_h, h, border=1, fill=True, align="C")
+    pdf.ln(row_h)
+    pdf.set_text_color(15, 23, 42)
+    pdf.set_font("kr", "", 9)
+    clean = [it for it in items if str(it.get("품목명") or "").strip()]
+    rows_src = clean if clean else [{"품목명": "-", "기존단가": 0, "인상적용단가": 0, "비고": ""}]
+    for it in rows_src:
+        if pdf.get_y() + row_h > 275:
+            pdf.add_page()
+            pdf.set_font("kr", "B", 9)
+            pdf.set_fill_color(15, 118, 110)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_x(left)
+            for i, h in enumerate(headers):
+                pdf.cell(col_w[i], row_h, h, border=1, fill=True, align="C")
+            pdf.ln(row_h)
+            pdf.set_text_color(15, 23, 42)
+            pdf.set_font("kr", "", 9)
+        vals = [
+            str(it.get("품목명") or ""),
+            f"{float(it.get('기존단가') or 0):,.0f}",
+            f"{float(it.get('인상적용단가') or 0):,.0f}",
+            str(it.get("비고") or ""),
+        ]
+        aligns = ["L", "C", "C", "L"]
+        pdf.set_x(left)
+        for i, v in enumerate(vals):
+            # 너무 긴 셀 텍스트 자르기
+            while v and pdf.get_string_width(v) > col_w[i] - 2:
+                v = v[:-1]
+            pdf.cell(col_w[i], row_h, v, border=1, align=aligns[i])
+        pdf.ln(row_h)
+
+    pdf.ln(2)
+    pdf.set_font("kr", "", 10)
+    pdf.set_x(left)
+    pdf.cell(
+        usable,
+        6,
+        f"                           • 시행 일자 : {_format_korean_effective(effective)}",
+        new_x="LMARGIN",
+        new_y="NEXT",
+    )
+
+    # 하단 회사명·도장
+    footer_y = max(pdf.get_y() + 10, 250)
+    if footer_y > 270:
+        pdf.add_page()
+        footer_y = 40
+    footer_logo = imgs.get("footer")
+    stamp = imgs.get("stamp")
+    if footer_logo and os.path.isfile(footer_logo):
+        try:
+            pdf.image(footer_logo, x=left, y=footer_y, w=42)
+        except Exception:
+            pass
+    if stamp and os.path.isfile(stamp):
+        try:
+            pdf.image(stamp, x=left + usable - 28, y=footer_y - 2, w=22)
+        except Exception:
+            pass
+    pdf.set_xy(left, footer_y + 14)
+    pdf.set_font("kr", "B", 12)
+    pdf.cell(usable, 7, "(주) 신 일 가 스", align="C")
+
+    bio = io.BytesIO()
+    pdf.output(bio)
+    return bio.getvalue()
+
+
+def _build_letter_pdf_bytes(**kwargs: Any) -> bytes:
+    """session kwargs → 업체 전송용 PDF."""
+    return build_letter_pdf(**kwargs)
+
+
+def _show_pdf_preview(pdf_bytes: bytes, *, height: int = 640, key: str = "pi_pdf_view") -> None:
+    """st.pdf 우선, 실패 시 iframe 임베드."""
+    if not pdf_bytes:
+        st.warning("PDF가 비어 있습니다.")
+        return
+    try:
+        st.pdf(pdf_bytes, height=height, key=key)
+        return
+    except Exception:
+        pass
+    import base64
+
+    b64 = base64.b64encode(pdf_bytes).decode("ascii")
+    st.markdown(
+        f'<iframe src="data:application/pdf;base64,{b64}" '
+        f'width="100%" height="{height}" style="border:1px solid #CBD5E1;border-radius:8px;"></iframe>',
+        unsafe_allow_html=True,
     )
 
 
@@ -1664,7 +2033,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         st.session_state[body_key] = _default_letter_body_text()
                         st.rerun()
                 with bbar2:
-                    st.caption("양식 레이아웃·로고는 엑셀 원본 유지")
+                    st.caption("미리보기·메일은 PDF(업체 전송 양식)")
                 st.text_area(
                     "공문 본문",
                     height=300,
@@ -1689,10 +2058,10 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 p1, p2, p3 = st.columns([1, 1, 1])
                 with p1:
                     do_preview = st.button(
-                        "엑셀 미리보기",
+                        "PDF 미리보기",
                         use_container_width=True,
                         key="pi_left_preview",
-                        help="오른쪽 입력·단가를 공문 양식에 적용해 왼쪽에 보여 줍니다.",
+                        help="업체 전송용 공문 PDF를 생성해 왼쪽에 표시합니다. 메일 첨부와 동일합니다.",
                     )
                 with p2:
                     do_send = st.button(
@@ -1700,7 +2069,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         type="primary",
                         use_container_width=True,
                         key="pi_left_send",
-                        help="업무일지 「인쇄창열기」에 해당 · SMTP로 발송",
+                        help="미리보기와 동일한 PDF를 첨부해 SMTP 발송",
                     )
                 with p3:
                     if st.button("요약 보기", use_container_width=True, key="pi_left_summary_btn"):
@@ -1708,7 +2077,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         st.rerun()
 
                 if do_preview:
-                    st.session_state["pi_left_mode"] = "excel"
+                    st.session_state["pi_left_mode"] = "pdf"
                     st.session_state["pi_preview_force"] = True
 
                 letter_kwargs, letter_body, items_now, effective_s = _collect_letter_kwargs(
@@ -1718,43 +2087,54 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     items_key=items_key,
                 )
                 title = str(letter_kwargs.get("title") or "")
-                doc_no = str(letter_kwargs.get("doc_no") or "")
-                send_date = letter_kwargs.get("send_date") or date.today()
-                dl_name = f"단가인상_{client}_{date.today().strftime('%Y%m%d')}.xlsx"
+                day_tag = date.today().strftime("%Y%m%d")
+                pdf_name = f"단가인상_{client}_{day_tag}.pdf"
+                xlsx_name = f"단가인상_{client}_{day_tag}.xlsx"
                 mode = st.session_state.get("pi_left_mode") or "summary"
 
-                if mode == "excel" or st.session_state.get("pi_preview_force"):
+                if mode in ("pdf", "excel") or st.session_state.get("pi_preview_force"):
                     if not items_now:
                         st.warning("단가 적용 품목이 없습니다. 오른쪽 2. 단가적용에서 확인하세요.")
                         st.session_state["pi_left_mode"] = "summary"
                     else:
                         try:
-                            xlsx = _build_letter_bytes(**letter_kwargs)
-                            st.session_state["pi_dl_bytes"] = xlsx
-                            st.session_state["pi_dl_name"] = dl_name
+                            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+                            st.session_state["pi_pdf_bytes"] = pdf_bytes
+                            st.session_state["pi_pdf_name"] = pdf_name
+                            xlsx = None
+                            try:
+                                xlsx = _build_letter_bytes(**letter_kwargs)
+                                st.session_state["pi_dl_bytes"] = xlsx
+                                st.session_state["pi_dl_name"] = xlsx_name
+                            except Exception:
+                                pass
                             st.session_state["pi_show_dl"] = True
-                            st.session_state["pi_left_mode"] = "excel"
+                            st.session_state["pi_left_mode"] = "pdf"
                             st.session_state.pop("pi_preview_force", None)
-                            st.caption("원본 엑셀 양식 적용 중 · 아래는 화면 미리보기")
-                            _render_letter_form_preview(
-                                client=client,
-                                title=title,
-                                doc_no=doc_no,
-                                send_date=send_date if isinstance(send_date, date) else date.today(),
-                                effective_s=effective_s,
-                                letter_body=letter_body,
-                                items=items_now,
-                            )
-                            st.download_button(
-                                "📥 공문 엑셀 다운로드",
-                                data=xlsx,
-                                file_name=dl_name,
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key="pi_single_dl",
-                                use_container_width=True,
-                            )
+                            st.caption("업체 전송 양식(PDF) · 메일 첨부와 동일")
+                            _show_pdf_preview(pdf_bytes, height=640, key="pi_pdf_preview")
+                            d1, d2 = st.columns(2)
+                            with d1:
+                                st.download_button(
+                                    "📥 공문 PDF 다운로드",
+                                    data=pdf_bytes,
+                                    file_name=pdf_name,
+                                    mime="application/pdf",
+                                    key="pi_single_dl_pdf",
+                                    use_container_width=True,
+                                )
+                            with d2:
+                                if xlsx:
+                                    st.download_button(
+                                        "📥 엑셀(참고) 다운로드",
+                                        data=xlsx,
+                                        file_name=xlsx_name,
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        key="pi_single_dl_xlsx",
+                                        use_container_width=True,
+                                    )
                         except Exception as e:
-                            st.error(f"미리보기 생성 실패: {e}")
+                            st.error(f"PDF 미리보기 생성 실패: {e}")
                             st.session_state["pi_left_mode"] = "summary"
                 else:
                     _render_pi_left_summary(
@@ -1766,13 +2146,13 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         last=last,
                         letter_body=letter_body,
                     )
-                    if st.session_state.get("pi_show_dl") and st.session_state.get("pi_dl_bytes"):
+                    if st.session_state.get("pi_pdf_bytes"):
                         st.download_button(
-                            "📥 최근 생성 공문 다운로드",
-                            data=st.session_state["pi_dl_bytes"],
-                            file_name=st.session_state.get("pi_dl_name") or dl_name,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="pi_single_dl_keep",
+                            "📥 최근 생성 PDF 다운로드",
+                            data=st.session_state["pi_pdf_bytes"],
+                            file_name=st.session_state.get("pi_pdf_name") or pdf_name,
+                            mime="application/pdf",
+                            key="pi_single_dl_pdf_keep",
                             use_container_width=True,
                         )
 
@@ -1785,13 +2165,16 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         st.error("SMTP secrets 미설정")
                     else:
                         try:
-                            xlsx = _build_letter_bytes(**letter_kwargs)
+                            # 미리보기와 동일 생성기 · 현재 입력 기준으로 재생성
+                            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+                            st.session_state["pi_pdf_bytes"] = pdf_bytes
+                            st.session_state["pi_pdf_name"] = pdf_name
                             ok, msg = send_mail_smtp(
                                 to_addr=email,
                                 subject=title,
                                 body=str(letter_kwargs.get("body") or ""),
-                                attachment_bytes=xlsx,
-                                attachment_name=dl_name,
+                                attachment_bytes=pdf_bytes,
+                                attachment_name=pdf_name,
                             )
                             append_sent_log(
                                 client=client,
@@ -1973,8 +2356,8 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         else:
                             items_b = _apply_amount_to_items(items_b, amt_bulk)
                         body_b = _default_mail_body(cl, eff_bulk_s, items_b)
-                        dl = f"단가인상_{cl}_{date.today().strftime('%Y%m%d')}.xlsx"
-                        xlsx_b = _build_letter_bytes(
+                        dl = f"단가인상_{cl}_{date.today().strftime('%Y%m%d')}.pdf"
+                        pdf_b = _build_letter_pdf_bytes(
                             client=cl,
                             email=em,
                             title=title_bulk,
@@ -1982,12 +2365,13 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             effective=eff_bulk_s,
                             contact="031-366-0799",
                             items=items_b,
+                            letter_paras=dict(_DEFAULT_LETTER_PARAS),
                         )
                         ok, msg = send_mail_smtp(
                             to_addr=em,
                             subject=title_bulk,
                             body=body_b,
-                            attachment_bytes=xlsx_b,
+                            attachment_bytes=pdf_b,
                             attachment_name=dl,
                         )
                         append_sent_log(
