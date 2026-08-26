@@ -300,6 +300,50 @@ def ensure_worklog_gist(local_dir: str = "./uploaded_cache/worklog") -> Tuple[Op
         return None, str(e)
 
 
+_GIST_DAYS_CACHE: Dict[str, Any] = {"ts": 0.0, "gid": "", "names": set()}
+
+
+def invalidate_gist_days_cache() -> None:
+    _GIST_DAYS_CACHE["ts"] = 0.0
+    _GIST_DAYS_CACHE["gid"] = ""
+    _GIST_DAYS_CACHE["names"] = set()
+
+
+def list_gist_day_names(
+    local_dir: str = "./uploaded_cache/worklog",
+    *,
+    max_age: float = 120.0,
+) -> set[str]:
+    """Gist manifest 일자 파일명 집합 (캐시, API 호출 최소화)."""
+    token = resolve_github_token()
+    gid = resolve_gist_id(local_dir)
+    if not token or not gid:
+        return set()
+    now = time.time()
+    cache = _GIST_DAYS_CACHE
+    if (
+        cache.get("gid") == gid
+        and (now - float(cache.get("ts") or 0)) < max_age
+        and isinstance(cache.get("names"), set)
+    ):
+        return set(cache["names"])
+    gist, _ = _fetch_gist(token, gid)
+    if gist is None:
+        return set()
+    files_meta = gist.get("files") or {}
+    manifest = _load_manifest(files_meta)
+    names: set[str] = set(manifest.get("files") or {})
+    for fname in files_meta:
+        if isinstance(fname, str) and fname.endswith(_B64_SUFFIX):
+            day = fname[: -len(_B64_SUFFIX)]
+            if _is_day_file(day):
+                names.add(day)
+    cache["ts"] = now
+    cache["gid"] = gid
+    cache["names"] = names
+    return set(names)
+
+
 def worklog_date_exists_on_cloud(
     d,
     local_dir: str = "./uploaded_cache/worklog",
@@ -315,20 +359,7 @@ def worklog_date_exists_on_cloud(
             name = f"{name}.xlsx"
     if not _is_day_file(name):
         return False
-    token = resolve_github_token()
-    if not token:
-        return False
-    gid = resolve_gist_id(local_dir)
-    if not gid:
-        return False
-    gist, gerr = _fetch_gist(token, gid)
-    if gist is None:
-        return False
-    files_meta = gist.get("files") or {}
-    if f"{name}{_B64_SUFFIX}" in files_meta:
-        return True
-    manifest = _load_manifest(files_meta)
-    return name in (manifest.get("files") or {})
+    return name in list_gist_day_names(local_dir)
 
 
 def push_worklog_day_remote(
@@ -352,17 +383,8 @@ def push_worklog_day_remote(
     gid, err = ensure_worklog_gist(local_dir)
     if not gid:
         return None, err or "Gist 생성/조회 실패"
-    if not force:
-        gist_peek, _ = _fetch_gist(token, gid)
-        if gist_peek is not None:
-            files_meta = gist_peek.get("files") or {}
-            manifest = _load_manifest(files_meta)
-            rem_ok = (
-                f"{name}{_B64_SUFFIX}" in files_meta
-                or name in (manifest.get("files") or {})
-            )
-            if rem_ok:
-                return gid, "duplicate_date"
+    if not force and name in list_gist_day_names(local_dir):
+        return gid, "duplicate_date"
     try:
         with open(local_path, "rb") as f:
             raw = f.read()
@@ -401,6 +423,7 @@ def push_worklog_day_remote(
         if r.status_code not in (200, 201):
             return None, f"Gist 업로드 실패 {r.status_code}: {(r.text or '')[:200]}"
         remember_gist_id(gid, local_dir)
+        invalidate_gist_days_cache()
         return gid, None
     except Exception as e:
         return None, str(e)

@@ -136,7 +136,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26r · 날짜중복차단·요약깜박임개선"
+_WL_UI_BUILD = "2026-08-26s · 요약글씨복구·로딩개선"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1042,42 +1042,64 @@ def worklog_archive_sheet_title(d: date) -> str:
     return d.isoformat()
 
 
+def _invalidate_worklog_presence_cache(d: date | None = None) -> None:
+    """날짜 존재 캐시 무효화 (저장·삭제 후)."""
+    if d is not None:
+        iso = d.isoformat()
+        st.session_state.pop(f"wl_arch_exists_{iso}", None)
+        st.session_state.pop(f"wl_presence_{iso}", None)
+        return
+    for k in list(st.session_state.keys()):
+        if isinstance(k, str) and (k.startswith("wl_arch_exists_") or k.startswith("wl_presence_")):
+            st.session_state.pop(k, None)
+
+
 def worklog_date_exists_in_archive(d: date) -> bool:
     """월별 xlsx에 해당 날짜 시트가 있는지 (구 일자파일 포함)."""
+    iso = d.isoformat()
+    ck = f"wl_arch_exists_{iso}"
+    cached = st.session_state.get(ck)
+    if isinstance(cached, bool):
+        return cached
     title = worklog_archive_sheet_title(d)
+    found = False
     month_path = worklog_archive_month_path(d)
     if month_path and os.path.exists(month_path) and load_workbook is not None:
         try:
             wb = load_workbook(month_path, read_only=True)
             try:
                 if title in wb.sheetnames:
-                    return True
+                    found = True
             finally:
                 wb.close()
         except Exception:
             pass
-    year_dir = worklog_archive_year_dir(d)
-    if year_dir:
-        for p in (
-            os.path.join(year_dir, f"{d.isoformat()}.xlsx"),
-            os.path.join(year_dir, f"{d.month}월", f"{d.isoformat()}.xlsx"),
-            os.path.join(year_dir, f"{d.month}월", f"{d.month}월.xlsx"),
-        ):
-            if not os.path.exists(p):
-                continue
-            if p.endswith(f"{d.month}월.xlsx") and load_workbook is not None:
-                try:
-                    wb = load_workbook(p, read_only=True)
+    if not found:
+        year_dir = worklog_archive_year_dir(d)
+        if year_dir:
+            for p in (
+                os.path.join(year_dir, f"{d.isoformat()}.xlsx"),
+                os.path.join(year_dir, f"{d.month}월", f"{d.isoformat()}.xlsx"),
+                os.path.join(year_dir, f"{d.month}월", f"{d.month}월.xlsx"),
+            ):
+                if not os.path.exists(p):
+                    continue
+                if p.endswith(f"{d.month}월.xlsx") and load_workbook is not None:
                     try:
-                        if title in wb.sheetnames:
-                            return True
-                    finally:
-                        wb.close()
-                except Exception:
-                    pass
-            elif os.path.basename(p) == f"{d.isoformat()}.xlsx":
-                return True
-    return False
+                        wb = load_workbook(p, read_only=True)
+                        try:
+                            if title in wb.sheetnames:
+                                found = True
+                                break
+                        finally:
+                            wb.close()
+                    except Exception:
+                        pass
+                elif os.path.basename(p) == f"{d.isoformat()}.xlsx":
+                    found = True
+                    break
+    st.session_state[ck] = found
+    return found
 
 
 def worklog_date_exists_on_drive(d: date) -> bool:
@@ -1113,12 +1135,24 @@ def worklog_date_exists_on_cloud(d: date) -> bool:
         return False
 
 
-def detect_worklog_date_presence(d: date) -> dict:
-    """로컬 캐시·월별보관·Drive·Cloud Gist 에 해당 날짜 일지 존재 여부."""
+def detect_worklog_date_presence(d: date, *, include_remote: bool = True) -> dict:
+    """로컬 캐시·월별보관·(선택) Drive·Cloud Gist 에 해당 날짜 일지 존재 여부."""
+    iso = d.isoformat()
+    cache_k = f"wl_presence_{iso}_{'all' if include_remote else 'fast'}"
+    cached = st.session_state.get(cache_k)
+    if isinstance(cached, dict):
+        return cached
     local = os.path.isfile(worklog_path(d))
-    archive = worklog_date_exists_in_archive(d)
-    drive = worklog_date_exists_on_drive(d)
-    cloud = worklog_date_exists_on_cloud(d)
+    archive = False
+    drive = False
+    cloud = False
+    if not local:
+        archive = worklog_date_exists_in_archive(d)
+        if include_remote:
+            if not archive:
+                drive = worklog_date_exists_on_drive(d)
+            if not archive and not drive:
+                cloud = worklog_date_exists_on_cloud(d)
     locs: list[str] = []
     if local:
         locs.append("로컬 캐시")
@@ -1132,7 +1166,7 @@ def detect_worklog_date_presence(d: date) -> dict:
         locs.append("Drive worklog")
     if cloud:
         locs.append("Cloud Gist")
-    return {
+    out = {
         "local": local,
         "archive": archive,
         "drive": drive,
@@ -1140,14 +1174,16 @@ def detect_worklog_date_presence(d: date) -> dict:
         "any": bool(local or archive or drive or cloud),
         "locations": locs,
     }
+    st.session_state[cache_k] = out
+    return out
 
 
 def check_worklog_save_allowed(d: date, *, had_local_at_open: bool) -> tuple[bool, str]:
     """날짜 중복 시 후입력 저장 차단. 이미 연 로컬 파일 수정은 허용."""
-    pres = detect_worklog_date_presence(d)
-    if not pres["any"]:
+    if had_local_at_open and os.path.isfile(worklog_path(d)):
         return True, ""
-    if had_local_at_open and pres["local"]:
+    pres = detect_worklog_date_presence(d, include_remote=True)
+    if not pres["any"]:
         return True, ""
     locs = pres.get("locations") or []
     detail = ", ".join(locs) if locs else "저장소"
@@ -1481,9 +1517,11 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
     cells = _spill_all_content(cells)
     write_cells_to_path(path, d, cells, force_template=True)
     _invalidate_saved_dates_cache()
+    _invalidate_worklog_presence_cache(d)
     try:
-        from worklog_remote_sync import clear_worklog_day_deleted
+        from worklog_remote_sync import clear_worklog_day_deleted, invalidate_gist_days_cache
         clear_worklog_day_deleted(d.isoformat(), WORKLOG_DIR)
+        invalidate_gist_days_cache()
     except Exception:
         pass
     st.session_state.pop("wl_last_archive_path", None)
@@ -1587,6 +1625,12 @@ def delete_worklog_day(d: date) -> list[str]:
     except Exception:
         pass
     _invalidate_saved_dates_cache()
+    _invalidate_worklog_presence_cache(d)
+    try:
+        from worklog_remote_sync import invalidate_gist_days_cache
+        invalidate_gist_days_cache()
+    except Exception:
+        pass
     _clear_date_widget_state(d)
     st.session_state.pop(f"wl_open_ctx_{iso}", None)
     st.session_state.pop(f"wl_saved_ok_{iso}", None)
@@ -2195,6 +2239,40 @@ def _entries_from_cells(cells: dict) -> tuple[list[tuple[str, str]], list[str], 
     notes = [x for x in [(cells.get(f"D{r}") or "").strip() for r in WL_NOTE_ROWS] if x]
     return rows, next_day, notes
 
+_WL_SUMMARY_PREVIEW_CSS = (
+    "@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');"
+    " .wl-sum-preview { font-family:'Pretendard','Apple SD Gothic Neo',sans-serif; color:#0F172A; }"
+    " .wl-sum-preview .card { background:linear-gradient(180deg,#F8FAFC 0%,#FFFFFF 48px); border:1px solid #E2E8F0;"
+    " border-radius:14px; box-shadow:0 1px 2px rgba(15,23,42,.04); overflow:hidden; }"
+    " .wl-sum-preview .head { padding:16px 18px 14px; border-bottom:1px solid #E2E8F0;"
+    " background:linear-gradient(135deg,#0F766E 0%,#0E7490 55%,#0369A1 100%); color:#fff; }"
+    " .wl-sum-preview .head .title { font-size:18px; font-weight:750; letter-spacing:-.02em; }"
+    " .wl-sum-preview .head .sub { margin-top:4px; font-size:13px; opacity:.92; }"
+    " .wl-sum-preview .sec { padding:14px 16px 8px; }"
+    " .wl-sum-preview .sec h3 { margin:0 0 10px; font-size:12px; font-weight:700; letter-spacing:.06em;"
+    " color:#64748B; text-transform:uppercase; }"
+    " .wl-sum-preview .item { display:flex; gap:12px; align-items:flex-start; padding:12px; margin-bottom:8px;"
+    " background:#fff; border:1px solid #E2E8F0; border-radius:10px; }"
+    " .wl-sum-preview .idx { flex:0 0 28px; height:28px; border-radius:8px; background:#CCFBF1; color:#0F766E;"
+    " font-weight:700; font-size:13px; display:flex; align-items:center; justify-content:center; }"
+    " .wl-sum-preview .client { font-size:15px; font-weight:700; color:#134E4A; margin-bottom:4px; white-space:pre-wrap; }"
+    " .wl-sum-preview .content { font-size:14px; line-height:1.55; color:#334155; white-space:pre-wrap; word-break:break-word; }"
+    " .wl-sum-preview .muted { color:#94A3B8; font-weight:500; }"
+    " .wl-sum-preview .empty { padding:18px; text-align:center; color:#94A3B8; font-size:13px;"
+    " border:1px dashed #CBD5E1; border-radius:10px; background:#F8FAFC; }"
+    " .wl-sum-preview .panel { margin:0 16px 14px; padding:12px 14px; border-radius:12px; border:1px solid #E2E8F0; background:#fff; }"
+    " .wl-sum-preview .panel.next { border-left:4px solid #2563EB; }"
+    " .wl-sum-preview .panel.note { border-left:4px solid #D97706; }"
+    " .wl-sum-preview .panel h3 { margin:0 0 8px; font-size:13px; font-weight:700; color:#1E293B; }"
+    " .wl-sum-preview .line { display:flex; gap:8px; align-items:flex-start; padding:6px 0; font-size:14px;"
+    " line-height:1.5; color:#334155; border-bottom:1px solid #F1F5F9; }"
+    " .wl-sum-preview .line:last-child { border-bottom:none; }"
+    " .wl-sum-preview .dot { width:7px; height:7px; margin-top:7px; border-radius:50%; background:#94A3B8; flex:0 0 auto; }"
+    " .wl-sum-preview .panel.next .dot { background:#2563EB; }"
+    " .wl-sum-preview .panel.note .dot { background:#D97706; }"
+    " .wl-sum-preview .foot { padding:10px 16px 14px; font-size:11px; color:#94A3B8; }"
+)
+
 def render_readable_preview_html(d: date, cells: dict) -> str:
     rows, next_day, notes = _entries_from_cells(cells)
     date_label = html.escape(cells.get("date") or format_worklog_date(d))
@@ -2207,7 +2285,15 @@ def render_readable_preview_html(d: date, cells: dict) -> str:
         work_html = "".join(work_items)
     else: work_html = "<div class='empty'>등록된 업무 내용이 없습니다.</div>"
     def _lines(items: list[str], empty_msg: str) -> str: return "".join(f"<div class='line'><span class='dot'></span><span>{html.escape(x)}</span></div>" for x in items) if items else f"<div class='empty'>{empty_msg}</div>"
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css'); html, body {{ margin:0; padding:0; background:transparent; }} body {{ font-family:'Pretendard', 'Apple SD Gothic Neo', sans-serif; color:#0F172A; padding:4px; }} .card {{ background:linear-gradient(180deg, #F8FAFC 0%, #FFFFFF 48px); border:1px solid #E2E8F0; border-radius:14px; box-shadow:0 1px 2px rgba(15,23,42,.04); overflow:hidden; }} .head {{ padding:16px 18px 14px; border-bottom:1px solid #E2E8F0; background:linear-gradient(135deg, #0F766E 0%, #0E7490 55%, #0369A1 100%); color:#fff; }} .head .title {{ font-size:18px; font-weight:750; letter-spacing:-.02em; }} .head .sub {{ margin-top:4px; font-size:13px; opacity:.92; }} .sec {{ padding:14px 16px 8px; }} .sec h3 {{ margin:0 0 10px; font-size:12px; font-weight:700; letter-spacing:.06em; color:#64748B; text-transform:uppercase; }} .item {{ display:flex; gap:12px; align-items:flex-start; padding:12px 12px; margin-bottom:8px; background:#fff; border:1px solid #E2E8F0; border-radius:10px; }} .item:hover {{ border-color:#99F6E4; background:#F0FDFA; }} .idx {{ flex:0 0 28px; height:28px; border-radius:8px; background:#CCFBF1; color:#0F766E; font-weight:700; font-size:13px; display:flex; align-items:center; justify-content:center; }} .client {{ font-size:15px; font-weight:700; color:#134E4A; margin-bottom:4px; white-space:pre-wrap; }} .content {{ font-size:14px; line-height:1.55; color:#334155; white-space:pre-wrap; word-break:break-word; }} .muted {{ color:#94A3B8; font-weight:500; }} .empty {{ padding:18px; text-align:center; color:#94A3B8; font-size:13px; border:1px dashed #CBD5E1; border-radius:10px; background:#F8FAFC; }} .panel {{ margin:0 16px 14px; padding:12px 14px; border-radius:12px; border:1px solid #E2E8F0; background:#fff; }} .panel.next {{ border-left:4px solid #2563EB; }} .panel.note {{ border-left:4px solid #D97706; }} .panel h3 {{ margin:0 0 8px; font-size:13px; font-weight:700; color:#1E293B; }} .line {{ display:flex; gap:8px; align-items:flex-start; padding:6px 0; font-size:14px; line-height:1.5; color:#334155; border-bottom:1px solid #F1F5F9; }} .line:last-child {{ border-bottom:none; }} .dot {{ width:7px; height:7px; margin-top:7px; border-radius:50%; background:#94A3B8; flex:0 0 auto; }} .panel.next .dot {{ background:#2563EB; }} .panel.note .dot {{ background:#D97706; }} .foot {{ padding:10px 16px 14px; font-size:11px; color:#94A3B8; }}</style></head><body><div class="card"><div class="head"><div class="title">일일업무일지</div><div class="sub">{date_label}</div></div><div class="sec"><h3>거래처 · 내용</h3>{work_html}</div><div class="panel next"><h3>익일업무</h3>{_lines(next_day, "익일업무 없음")}</div><div class="panel note"><h3>특 이 사 항</h3>{_lines(notes, "특이사 항 없음")}</div><div class="foot">인쇄는 상단 「인쇄창열기」를 사용하세요.</div></div></body></html>"""
+    _iframe_css = _WL_SUMMARY_PREVIEW_CSS.replace(".wl-sum-preview ", "") + " html, body { margin:0; padding:0; background:transparent; } body { padding:4px; }"
+    return (
+        f'<!DOCTYPE html><html><head><meta charset="utf-8"><style>{_iframe_css}</style></head><body>'
+        f'<div class="card"><div class="head"><div class="title">일일업무일지</div><div class="sub">{date_label}</div></div>'
+        f'<div class="sec"><h3>거래처 · 내용</h3>{work_html}</div>'
+        f'<div class="panel next"><h3>익일업무</h3>{_lines(next_day, "익일업무 없음")}</div>'
+        f'<div class="panel note"><h3>특 이 사 항</h3>{_lines(notes, "특이사항 없음")}</div>'
+        f'<div class="foot">인쇄는 상단 「인쇄창열기」를 사용하세요.</div></div></body></html>'
+    )
 
 def _entries_key(d: date) -> str: return f"wl_entries_{d.isoformat()}"
 def _next_key(d: date) -> str: return f"wl_next_{d.isoformat()}"
@@ -3192,6 +3278,7 @@ def _render_worklog_summary_block(selected: date, cells: dict) -> None:
             st.session_state[sum_html_k] = view_html
     body = _worklog_summary_html_body(view_html)
     st.markdown(
+        f'<style>{_WL_SUMMARY_PREVIEW_CSS}</style>'
         f'<div class="wl-sum-preview" style="max-height:820px;overflow-y:auto;">{body}</div>',
         unsafe_allow_html=True,
     )
@@ -3202,7 +3289,7 @@ def _prepare_worklog_day_state(selected: date) -> None:
     iso = selected.isoformat()
     open_k = f"wl_open_ctx_{iso}"
     if open_k not in st.session_state:
-        pres = detect_worklog_date_presence(selected)
+        pres = detect_worklog_date_presence(selected, include_remote=False)
         st.session_state[open_k] = {"had_local": bool(pres.get("local")), "presence": pres}
     _init_widget_state(selected)
     pending = st.session_state.pop(f"wl_pending_sync_{iso}", None)
@@ -3769,6 +3856,152 @@ def _render_worklog_input_panel(selected: date) -> None:
                 st.caption(_sp_msg)
             _wl_entry_editor()
 
+
+def _maybe_sync_worklog_remote() -> None:
+    """페이지 전체 rerun 시에만 Drive/Gist 동기화 (fragment 입력 rerun 제외)."""
+    try:
+        from drive_autoload import sync_worklog_bidirectional
+        from worklog_remote_sync import sync_worklog_remote
+
+        _now = time.time()
+        _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
+        _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
+        _on_cloud = _wl_is_streamlit_cloud()
+        _sync_iv = 15 if _on_cloud else 120
+        if not (_force or (_now - _prev >= _sync_iv)):
+            return
+        st.session_state["_wl_drive_sync_ts"] = _now
+        _wl_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
+        _remote_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
+        if not _on_cloud:
+            _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR, force=_force)
+        try:
+            _remote_sync = sync_worklog_remote(WORKLOG_DIR, force=_force)
+        except Exception as _re:
+            _remote_sync = {
+                "ok": False,
+                "skipped": False,
+                "copied": [],
+                "conflicts": [],
+                "error": str(_re),
+            }
+        st.session_state["_wl_last_wl_sync"] = _wl_sync
+        st.session_state["_wl_last_remote_sync"] = _remote_sync
+        _conflicts: list[str] = []
+        for _src in (_wl_sync, _remote_sync):
+            if isinstance(_src, dict):
+                for _c in (_src.get("conflicts") or []):
+                    if _c not in _conflicts:
+                        _conflicts.append(_c)
+        if _conflicts:
+            st.session_state["_wl_sync_conflicts"] = _conflicts
+        _copied_n = len((_wl_sync or {}).get("copied") or []) + len((_remote_sync or {}).get("copied") or [])
+        if _copied_n:
+            _invalidate_saved_dates_cache()
+            try:
+                from worklog_remote_sync import invalidate_gist_days_cache
+                invalidate_gist_days_cache()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _render_worklog_sync_ui() -> None:
+    """동기화 결과·충돌 안내 (fragment 밖)."""
+    try:
+        from worklog_remote_sync import remote_sync_configured, resolve_gist_id
+
+        _on_cloud = _wl_is_streamlit_cloud()
+        _wl_sync = st.session_state.get("_wl_last_wl_sync") or {}
+        _remote_sync = st.session_state.get("_wl_last_remote_sync") or {}
+        _copied_n = len((_wl_sync or {}).get("copied") or []) + len((_remote_sync or {}).get("copied") or [])
+        if _copied_n:
+            st.caption(f"일지 동기화 · {_copied_n}개" + (" (Gist)" if _on_cloud else " (Drive/Cloud)"))
+        elif _on_cloud and isinstance(_remote_sync, dict) and _remote_sync.get("error") and not _remote_sync.get("skipped"):
+            st.warning(f"Gist 동기화 실패: {_remote_sync.get('error')}")
+        if _on_cloud and remote_sync_configured():
+            if st.button("↻ Gist에서 일지 가져오기", key="wl_gist_pull_btn", width="stretch"):
+                st.session_state["_wl_drive_sync_force"] = True
+                st.rerun()
+        if st.session_state.get("_wl_sync_conflicts"):
+            _cf = list(st.session_state.get("_wl_sync_conflicts") or [])
+            st.warning(
+                "로컬·클라우드 일지가 다릅니다(자동 덮어쓰기 안 함): "
+                + ", ".join(_cf[:8])
+                + ("…" if len(_cf) > 8 else "")
+            )
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                if st.button("이 기기 → 클라우드", key="wl_cf_push_local", width="stretch", help="이 기기 내용으로 Drive·Cloud를 맞춥니다."):
+                    try:
+                        from drive_autoload import resolve_drive_conflict
+                        from worklog_remote_sync import resolve_remote_conflict
+
+                        for name in list(_cf):
+                            try:
+                                resolve_drive_conflict(name, WORKLOG_DIR, prefer="local")
+                            except Exception:
+                                pass
+                            try:
+                                resolve_remote_conflict(name, WORKLOG_DIR, prefer="local")
+                            except Exception:
+                                pass
+                        st.session_state.pop("_wl_sync_conflicts", None)
+                        st.session_state["_wl_drive_sync_force"] = True
+                        _invalidate_saved_dates_cache()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
+            with c2:
+                if st.button("클라우드 → 이 기기", key="wl_cf_pull_drive", width="stretch", help="Cloud·Drive 내용으로 이 기기를 맞춥니다."):
+                    try:
+                        from drive_autoload import resolve_drive_conflict
+                        from worklog_remote_sync import resolve_remote_conflict
+
+                        for name in list(_cf):
+                            try:
+                                resolve_remote_conflict(name, WORKLOG_DIR, prefer="cloud")
+                            except Exception:
+                                pass
+                            try:
+                                resolve_drive_conflict(name, WORKLOG_DIR, prefer="drive")
+                            except Exception:
+                                pass
+                        st.session_state.pop("_wl_sync_conflicts", None)
+                        st.session_state["_wl_drive_sync_force"] = True
+                        _invalidate_saved_dates_cache()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
+            with c3:
+                if st.button("나중에", key="wl_cf_dismiss", width="stretch"):
+                    st.session_state.pop("_wl_sync_conflicts", None)
+                    st.rerun()
+        elif not remote_sync_configured():
+            if not st.session_state.get("_wl_remote_setup_hint"):
+                st.session_state["_wl_remote_setup_hint"] = True
+                if _wl_quiet_ui():
+                    st.caption("Cloud↔로컬 양방향: secrets에 github_token 을 넣으면 저장 시 서로 보입니다.")
+                else:
+                    st.info(
+                        "로컬↔Cloud 양방향 연동: `.streamlit/secrets.toml` 에 "
+                        "`github_token` (및 선택 `worklog_gist_id`) 을 넣으세요. "
+                        "첫 저장 시 Gist가 만들어지고, 같은 값을 Cloud secrets에도 넣으면 "
+                        "한쪽 저장이 다른쪽에 바로 보입니다."
+                    )
+        else:
+            _gid = resolve_gist_id(WORKLOG_DIR)
+            if _gid and not st.session_state.get("_wl_remote_ready_hint"):
+                st.session_state["_wl_remote_ready_hint"] = True
+                st.caption(f"로컬↔Cloud 양방향 연동 활성 · gist {_gid[:8]}…")
+            elif not _gid and not st.session_state.get("_wl_remote_first_save_hint"):
+                st.session_state["_wl_remote_first_save_hint"] = True
+                st.caption("양방향 연동: 한 번 저장하면 Cloud Gist가 생성됩니다. 생성된 id를 Cloud secrets의 worklog_gist_id 에 넣으세요.")
+    except Exception:
+        pass
+
+
 def render_worklog_tab(latest_update_str: str = "") -> None:
     if load_workbook is None:
         st.error("openpyxl 이 필요합니다. `pip install openpyxl` 후 다시 실행하세요.")
@@ -3825,6 +4058,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     selected: date = st.session_state["worklog_selected"]
 
     _prepare_worklog_day_state(selected)
+    _maybe_sync_worklog_remote()
 
     if st.session_state.get("wl_print_panel"):
         _render_worklog_print_panel()
@@ -3858,134 +4092,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         _render_worklog_left_preview(selected)
 
     with col_edit:
+        _render_worklog_sync_ui()
 
         @st.fragment
         def _worklog_edit() -> None:
             sel = st.session_state.get("worklog_selected") or selected
-            try:
-                from drive_autoload import sync_worklog_bidirectional
-                from worklog_remote_sync import (
-                    remote_sync_configured,
-                    resolve_gist_id,
-                    sync_worklog_remote,
-                )
-
-                _now = time.time()
-                _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
-                _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
-                _on_cloud = _wl_is_streamlit_cloud()
-                _sync_iv = 15 if _on_cloud else 90
-                _wl_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
-                _remote_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
-                if _force or (_now - _prev >= _sync_iv):
-                    st.session_state["_wl_drive_sync_ts"] = _now
-                    if not _on_cloud:
-                        _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR, force=_force)
-                    try:
-                        _remote_sync = sync_worklog_remote(WORKLOG_DIR, force=_force)
-                    except Exception as _re:
-                        _remote_sync = {
-                            "ok": False,
-                            "skipped": False,
-                            "copied": [],
-                            "conflicts": [],
-                            "error": str(_re),
-                        }
-                _copied_n = len((_wl_sync or {}).get("copied") or []) + len((_remote_sync or {}).get("copied") or [])
-                if _copied_n:
-                    _invalidate_saved_dates_cache()
-                    st.caption(f"일지 동기화 · {_copied_n}개" + (" (Gist)" if _on_cloud else " (Drive/Cloud)"))
-                elif _on_cloud and isinstance(_remote_sync, dict) and _remote_sync.get("error") and not _remote_sync.get("skipped"):
-                    st.warning(f"Gist 동기화 실패: {_remote_sync.get('error')}")
-                if _on_cloud and remote_sync_configured():
-                    if st.button("↻ Gist에서 일지 가져오기", key="wl_gist_pull_btn", width="stretch"):
-                        st.session_state["_wl_drive_sync_force"] = True
-                        _wl_rerun()
-                _conflicts = []
-                for _src in (_wl_sync, _remote_sync):
-                    if isinstance(_src, dict):
-                        for _c in (_src.get("conflicts") or []):
-                            if _c not in _conflicts:
-                                _conflicts.append(_c)
-                if _conflicts:
-                    st.session_state["_wl_sync_conflicts"] = _conflicts
-                if st.session_state.get("_wl_sync_conflicts"):
-                    _cf = list(st.session_state.get("_wl_sync_conflicts") or [])
-                    st.warning(
-                        "로컬·클라우드 일지가 다릅니다(자동 덮어쓰기 안 함): "
-                        + ", ".join(_cf[:8])
-                        + ("…" if len(_cf) > 8 else "")
-                    )
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        if st.button("이 기기 → 클라우드", key="wl_cf_push_local", width="stretch", help="이 기기 내용으로 Drive·Cloud를 맞춥니다."):
-                            try:
-                                from drive_autoload import resolve_drive_conflict
-                                from worklog_remote_sync import resolve_remote_conflict
-
-                                for name in list(_cf):
-                                    try:
-                                        resolve_drive_conflict(name, WORKLOG_DIR, prefer="local")
-                                    except Exception:
-                                        pass
-                                    try:
-                                        resolve_remote_conflict(name, WORKLOG_DIR, prefer="local")
-                                    except Exception:
-                                        pass
-                                st.session_state.pop("_wl_sync_conflicts", None)
-                                st.session_state["_wl_drive_sync_force"] = True
-                                _invalidate_saved_dates_cache()
-                                st.rerun()
-                            except Exception as e:
-                                st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
-                    with c2:
-                        if st.button("클라우드 → 이 기기", key="wl_cf_pull_drive", width="stretch", help="Cloud·Drive 내용으로 이 기기를 맞춥니다."):
-                            try:
-                                from drive_autoload import resolve_drive_conflict
-                                from worklog_remote_sync import resolve_remote_conflict
-
-                                for name in list(_cf):
-                                    try:
-                                        resolve_remote_conflict(name, WORKLOG_DIR, prefer="cloud")
-                                    except Exception:
-                                        pass
-                                    try:
-                                        resolve_drive_conflict(name, WORKLOG_DIR, prefer="drive")
-                                    except Exception:
-                                        pass
-                                st.session_state.pop("_wl_sync_conflicts", None)
-                                st.session_state["_wl_drive_sync_force"] = True
-                                _invalidate_saved_dates_cache()
-                                st.rerun()
-                            except Exception as e:
-                                st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
-                    with c3:
-                        if st.button("나중에", key="wl_cf_dismiss", width="stretch"):
-                            st.session_state.pop("_wl_sync_conflicts", None)
-                            _wl_rerun()
-                elif not remote_sync_configured():
-                    if not st.session_state.get("_wl_remote_setup_hint"):
-                        st.session_state["_wl_remote_setup_hint"] = True
-                        if _wl_quiet_ui():
-                            st.caption("Cloud↔로컬 양방향: secrets에 github_token 을 넣으면 저장 시 서로 보입니다.")
-                        else:
-                            st.info(
-                                "로컬↔Cloud 양방향 연동: `.streamlit/secrets.toml` 에 "
-                                "`github_token` (및 선택 `worklog_gist_id`) 을 넣으세요. "
-                                "첫 저장 시 Gist가 만들어지고, 같은 값을 Cloud secrets에도 넣으면 "
-                                "한쪽 저장이 다른쪽에 바로 보입니다."
-                            )
-                else:
-                    _gid = resolve_gist_id(WORKLOG_DIR)
-                    if _gid and not st.session_state.get("_wl_remote_ready_hint"):
-                        st.session_state["_wl_remote_ready_hint"] = True
-                        st.caption(f"로컬↔Cloud 양방향 연동 활성 · gist {_gid[:8]}…")
-                    elif not _gid and not st.session_state.get("_wl_remote_first_save_hint"):
-                        st.session_state["_wl_remote_first_save_hint"] = True
-                        st.caption("양방향 연동: 한 번 저장하면 Cloud Gist가 생성됩니다. 생성된 id를 Cloud secrets의 worklog_gist_id 에 넣으세요.")
-            except Exception:
-                pass
-
             _render_worklog_input_panel(sel)
 
         _worklog_edit()
