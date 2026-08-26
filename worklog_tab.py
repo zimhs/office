@@ -130,7 +130,7 @@ _WL_PREVIEW_SCALE = 0.75
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26h · 특수기호 삽입복구"
+_WL_UI_BUILD = "2026-08-26i · 저장시구값복원방지"
 
 
 # =====================================================================
@@ -309,7 +309,8 @@ export default function (component) {
         let j0 = j;
         let v = cur[j0] || "";
         if (displayUnits(v) <= maxU) {
-          if (mode === "blur" || mode === "force") emit(cur, null);
+          // type/composition도 Python에 동기화 — 저장 클릭 시 직전 입력이 누락되지 않게
+          if (mode === "blur" || mode === "force" || mode === "type") emit(cur, null);
           else localOnly(cur);
           return;
         }
@@ -410,7 +411,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v13",
+    "worklog_entry_lines_v14",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -2715,8 +2716,8 @@ def _read_editor_entries(d: date) -> list[dict]:
             blank_after = _entry_blank_after(stored[i], 1)
         else:
             client, content, blank_after, lines, client_lines = "", "", 1, [], []
-        if i == 0 and not client and not content and len(stored) > 0:
-            client, content, client_lines, lines = str(stored[0].get("client") or ""), str(stored[0].get("content") or ""), stored[0].get("client_lines") or [], stored[0].get("lines") or []
+        # 주의: 위젯이 비어 있다고 해서 stored(이전 저장값)로 되살리지 않음.
+        # 사용자가 지운 뒤 저장하면 구값이 되살아나던 원인이었음.
         out.append({"client": client, "client_lines": client_lines, "content": content, "lines": lines, "blank_after": blank_after})
     return out or [{"client": "", "client_lines": [], "content": "", "lines": [], "blank_after": 1}]
 
@@ -2746,11 +2747,11 @@ def _view_cells_for_preview(d: date) -> dict:
 
 def _clear_date_widget_state(d: date) -> None:
     iso = d.isoformat()
-    prefixes = (f"wl_ent_c_{iso}_", f"wl_ent_t_{iso}_", f"wl_ent_gap_{iso}_", f"wl_ent_ln_{iso}_", f"wl_ent_lc_{iso}_", f"wl_ent_gen_{iso}_", f"wl_ent_cl_{iso}_", f"wl_ent_clc_{iso}_", f"wl_ent_rev_{iso}_", f"wl_lines_comp_{iso}_", f"wl_lines_live_{iso}_", f"wl_clients_comp_{iso}_", f"wl_clients_live_{iso}_", f"wl_clients_rev_{iso}_", f"wl_exp_{iso}_", f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_save_btn_{iso}", f"wl_focus_ln_{iso}")
+    prefixes = (f"wl_ent_c_{iso}_", f"wl_ent_t_{iso}_", f"wl_ent_gap_{iso}_", f"wl_ent_ln_{iso}_", f"wl_ent_lc_{iso}_", f"wl_ent_gen_{iso}_", f"wl_ent_cl_{iso}_", f"wl_ent_clc_{iso}_", f"wl_ent_rev_{iso}_", f"wl_lines_comp_{iso}_", f"wl_lines_live_{iso}_", f"wl_clients_comp_{iso}_", f"wl_clients_live_{iso}_", f"wl_clients_rev_{iso}_", f"wl_exp_{iso}_", f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_save_btn_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}")
     for k in list(st.session_state.keys()):
         if not isinstance(k, str): continue
         if k in prefixes or any(k.startswith(p) for p in prefixes if p.endswith("_")): del st.session_state[k]
-        elif k in {f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_pending_sync_{iso}", f"wl_do_add_{iso}", f"wl_do_del_{iso}", f"wl_focus_ln_{iso}"}: del st.session_state[k]
+        elif k in {f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_pending_sync_{iso}", f"wl_do_add_{iso}", f"wl_do_del_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}"}: del st.session_state[k]
 
 def _preview_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"_preview_{d.isoformat()}.xlsx")
 
@@ -3403,6 +3404,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 iso2 = d.isoformat()
                 n = int(st.session_state.get(f"wl_entry_count_{iso2}", 1) or 1)
                 max_u = _content_line_units()
+                # 저장은 2단계: 버튼 → flush 후 다음 런에서 실제 저장 (직전 입력 누락/구값 복원 방지)
+                do_save = bool(st.session_state.pop(f"wl_do_save_{iso2}", None))
 
                 _force_open = st.session_state.pop(f"wl_force_expand_{iso2}", None)
                 if isinstance(_force_open, int): st.session_state[f"wl_exp_{iso2}_{_force_open}"] = True
@@ -3577,27 +3580,49 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
 
                 if st.button("저장", type="primary", width="stretch", key=f"wl_save_btn_{iso2}"):
+                    # 클릭 직후 한 번 더 그려 입력 컴포넌트 값을 확정한 뒤 저장
+                    st.session_state[f"wl_do_save_{iso2}"] = True
+                    _wl_rerun()
+                elif do_save:
                     try:
                         entries_now = _read_editor_entries(d)
                         usage_now = _content_row_usage(entries_now)
                         if usage_now.get("overflow"):
                             st.error(f"내용칸 용량 초과: {usage_now['used']}/{usage_now['total']}행. 칸을 줄이거나 항목 사이 빈 칸 수를 낮춘 뒤 다시 저장하세요.")
                         else:
+                            next_txt = str(st.session_state.get(f"wl_next_area_{iso2}", "") or "")
+                            notes_txt = str(st.session_state.get(f"wl_notes_area_{iso2}", "") or "")
                             cells = _pack_entries_to_cells(
                                 d, entries_now,
-                                [x.strip() for x in str(st.session_state.get(f"wl_next_area_{iso2}", "") or "").splitlines() if x.strip()],
-                                [x.strip() for x in str(st.session_state.get(f"wl_notes_area_{iso2}", "") or "").splitlines() if x.strip()],
+                                [x.strip() for x in next_txt.splitlines() if x.strip()],
+                                [x.strip() for x in notes_txt.splitlines() if x.strip()],
                             )
                             # 저장 = 이 기기 + Drive + Cloud(Gist) 모두 현재 내용으로 맞춤
                             path = save_worklog_cells(d, cells, force=True)
                             _publish_view_cells(d, cells)
-                            packed_entries = _grouped_entries_from_cells(cells)
-                            if not packed_entries:
-                                packed_entries = [{"client": "", "content": "", "lines": []}]
-                            _, nd, nt = _entries_from_cells(cells)
-                            st.session_state[_entries_key(d)] = packed_entries
-                            st.session_state[_next_key(d)] = "\n".join(nd)
-                            st.session_state[_notes_key(d)] = "\n".join(nt)
+                            # 시드는 방금 읽은 입력값 그대로 — cells 왕복으로 구형/변형 값이 되살아나지 않게
+                            seed_entries = []
+                            for ent in entries_now:
+                                lines = ent.get("lines")
+                                if not isinstance(lines, list):
+                                    lines = _chunk_text(str(ent.get("content") or ""), _content_line_units()) or []
+                                clines = ent.get("client_lines")
+                                if not isinstance(clines, list):
+                                    clines = _entry_client_lines(ent)
+                                seed_entries.append(
+                                    {
+                                        "client": str(ent.get("client") or ""),
+                                        "client_lines": list(clines),
+                                        "content": str(ent.get("content") or ""),
+                                        "lines": [str(x or "") for x in lines],
+                                        "blank_after": _entry_blank_after(ent, 1),
+                                    }
+                                )
+                            if not seed_entries:
+                                seed_entries = [{"client": "", "content": "", "lines": [], "client_lines": [], "blank_after": 1}]
+                            st.session_state[_entries_key(d)] = seed_entries
+                            st.session_state[_next_key(d)] = next_txt
+                            st.session_state[_notes_key(d)] = notes_txt
                             arch = (st.session_state.get("wl_last_archive_path") or "")
                             drv = st.session_state.get("wl_last_drive_path") or ""
                             mdrv = st.session_state.get("wl_last_drive_month_path") or ""
@@ -3618,9 +3643,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                             elif not _wl_quiet_ui():
                                 msg += " · Cloud미연동: secrets에 github_token"
                             st.session_state[f"wl_pending_sync_{iso2}"] = {
-                                "entries": packed_entries,
-                                "next": "\n".join(nd),
-                                "notes": "\n".join(nt),
+                                "entries": seed_entries,
+                                "next": next_txt,
+                                "notes": notes_txt,
                                 "msg": msg,
                                 "cloud_err": cerr,
                             }
