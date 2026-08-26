@@ -97,6 +97,12 @@ except Exception:  # pragma: no cover
     sync_drive_copy_into_cache = None  # type: ignore
     sync_cache_to_drive_copy = None  # type: ignore
 
+try:
+    from cache_remote_sync import cache_remote_configured, sync_cache_remote
+except Exception:  # pragma: no cover
+    cache_remote_configured = None  # type: ignore
+    sync_cache_remote = None  # type: ignore
+
 
 def _is_local_macos() -> bool:
     """로컬 맥에서 streamlit run 중일 때만 True (Notes 자동화 가능)."""
@@ -8820,6 +8826,44 @@ if isinstance(_drive_autoload_res, dict):
         st.sidebar.warning(
             f"Drive 자동로드 실패: {_drive_autoload_res.get('error') or '알 수 없음'}"
         )
+
+# Cloud 재부팅: Gist 최신 캐시를 git 시드보다 우선 (사이드바 CSV·매출)
+_cache_remote_res = None
+if sync_cache_remote is not None and cache_remote_configured():
+    try:
+        _cache_remote_res = sync_cache_remote(
+            CACHE_DIR,
+            prefer_remote=_is_streamlit_cloud(),
+        )
+    except Exception as _cre:
+        _cache_remote_res = {"ok": False, "error": str(_cre), "copied": []}
+    if isinstance(_cache_remote_res, dict) and _cache_remote_res.get("copied"):
+        _ncr = len(_cache_remote_res.get("copied") or [])
+        st.sidebar.caption(
+            f"Gist 캐시 동기화 · {_ncr}개"
+            + (" (Cloud 최신 반영)" if _is_streamlit_cloud() else "")
+        )
+        if _is_streamlit_cloud() and not st.session_state.get("_gist_cache_boot_rerun"):
+            st.session_state["_gist_cache_boot_rerun"] = True
+            st.rerun()
+    elif (
+        isinstance(_cache_remote_res, dict)
+        and _cache_remote_res.get("error")
+        and _is_streamlit_cloud()
+    ):
+        st.sidebar.warning(f"Gist 캐시: {_cache_remote_res.get('error')}")
+    elif (
+        isinstance(_drive_autoload_res, dict)
+        and _drive_autoload_res.get("copied")
+        and not _is_streamlit_cloud()
+    ):
+        try:
+            sync_cache_remote(CACHE_DIR, force=True)
+        except Exception:
+            pass
+elif _is_streamlit_cloud() and cache_remote_configured is not None and not cache_remote_configured():
+    st.sidebar.caption("Gist 캐시: secrets에 github_token (+ dashboard_cache_gist_id)")
+
 address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
 industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)", type=["csv"])
 debt_file_up = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
@@ -9239,9 +9283,22 @@ if _drive_upload_hit and sync_cache_to_drive_copy is not None:
 elif not _drive_upload_hit:
     st.session_state.pop("_drive_synced_this_upload", None)
 
+if _drive_upload_hit and sync_cache_remote is not None and cache_remote_configured():
+    try:
+        _push_res = sync_cache_remote(CACHE_DIR, force=True)
+        if isinstance(_push_res, dict) and _push_res.get("copied"):
+            st.session_state["_gist_cache_push_msg"] = len(_push_res.get("copied") or [])
+    except Exception:
+        pass
+
 if st.sidebar.button("☁️ Drive 복사본으로 동기화", help="맥 캐시 → Google Drive dashboard 복사본"):
     st.session_state.pop("_drive_synced_this_upload", None)
     _run_cache_to_drive_sync(force=True)
+    if sync_cache_remote is not None and cache_remote_configured():
+        try:
+            sync_cache_remote(CACHE_DIR, force=True)
+        except Exception:
+            pass
     st.rerun()
 
 _drive_out = st.session_state.pop("_drive_sync_out_msg", None)
@@ -9253,6 +9310,32 @@ if isinstance(_drive_out, dict):
         st.sidebar.caption("Drive 경로 없음 — 맥에서 Google Drive 앱 확인")
     elif not _drive_out.get("ok"):
         st.sidebar.warning(f"Drive 동기화 실패: {_drive_out.get('error') or '알 수 없음'}")
+
+_gist_push_n = st.session_state.pop("_gist_cache_push_msg", None)
+if isinstance(_gist_push_n, int) and _gist_push_n > 0:
+    st.sidebar.caption(f"Gist 캐시 업로드 · {_gist_push_n}개 (Cloud 재부팅 시 반영)")
+
+if _is_streamlit_cloud() and sync_cache_remote is not None and cache_remote_configured():
+    if st.sidebar.button(
+        "↻ Gist에서 데이터 가져오기",
+        help="맥·Cloud 최신 사이드바 CSV/매출을 Gist에서 다시 받습니다.",
+    ):
+        try:
+            _gr = sync_cache_remote(CACHE_DIR, prefer_remote=True)
+            if isinstance(_gr, dict) and _gr.get("copied"):
+                try:
+                    load_uploaded_files_from_meta.clear()
+                    load_uploaded_files_from_bytes.clear()
+                except Exception:
+                    pass
+                st.session_state.pop("_gist_cache_boot_rerun", None)
+                st.rerun()
+            elif isinstance(_gr, dict) and _gr.get("error"):
+                st.sidebar.warning(str(_gr.get("error")))
+            else:
+                st.sidebar.caption("Gist: 이미 최신입니다.")
+        except Exception as _ge:
+            st.sidebar.warning(str(_ge))
 
 if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     for p in [addr_cache_path, industry_cache_path, debt_cache_path, 

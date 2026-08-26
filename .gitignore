@@ -45,6 +45,7 @@ uploaded_cache/**
 !uploaded_cache/worklog/
 !uploaded_cache/worklog/template.xlsx
 uploaded_cache/worklog/.worklog_gist_id
+uploaded_cache/.dashboard_cache_gist_id
 uploaded_cache/worklog/*.xlsx
 !uploaded_cache/worklog/template.xlsx
 uploaded_cache/worklog/*.b64
