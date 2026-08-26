@@ -24,17 +24,18 @@ import streamlit as st
 
 try:
     from openpyxl import Workbook, load_workbook
-    from openpyxl.styles import Alignment, Border, Font, Side
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 except Exception:  # pragma: no cover
     Workbook = None  # type: ignore
     load_workbook = None  # type: ignore
+    PatternFill = None  # type: ignore
 
 PI_DIR = os.path.join("uploaded_cache", "price_increase")
 PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26k · 유사연락처선택숨김"
+PI_UI_BUILD = "2026-08-26m · 단가조정내용표(제품·기존·인상·비고)"
 
 # 기본 공문 후보 (캐시 원본 우선)
 _TEMPLATE_CANDIDATES = (
@@ -519,6 +520,145 @@ def _format_c38_price_lines(items: list[dict]) -> str:
     return f"                           • 단가 인상 금액 : {body} "
 
 
+def _unmerge_row(ws, row: int) -> None:
+    from openpyxl.utils import range_boundaries
+
+    merged = [mr for mr in list(ws.merged_cells.ranges) if mr.min_row <= row <= mr.max_row]
+    for mr in merged:
+        rng = str(mr)
+        try:
+            min_c, min_r, max_c, max_r = range_boundaries(rng)
+            for r in range(min_r, max_r + 1):
+                for c in range(min_c, max_c + 1):
+                    if (r, c) not in ws._cells:
+                        ws.cell(row=r, column=c, value=None)
+            ws.unmerge_cells(rng)
+        except Exception:
+            try:
+                ws.merged_cells.ranges.remove(mr)
+            except Exception:
+                pass
+
+
+def _shrink_letter_body_for_table(ws, n_items: int) -> None:
+    """표 칸이 모자라면 공문 본문 문단 행 높이를 줄임."""
+    if n_items <= 2:
+        return
+    # 본문·인상요인 구간 압축
+    for r in range(16, 34):
+        h = ws.row_dimensions[r].height
+        if h is None:
+            continue
+        if n_items >= 5:
+            ws.row_dimensions[r].height = max(8, float(h) * 0.55)
+        elif n_items >= 3:
+            ws.row_dimensions[r].height = max(10, float(h) * 0.75)
+    if n_items >= 5:
+        for coord in ("C27", "C29", "C31"):
+            v = ws[coord].value
+            if isinstance(v, str) and len(v) > 50:
+                ws[coord].value = v[:50].rstrip() + "…"
+
+
+def _write_price_adjust_table(ws, items: list[dict], effective: str) -> None:
+    """단가 조정 내용: 제품명 | 기존단가 | 인상단가 | 비고 표."""
+    clean = [it for it in items if str(it.get("품목명") or "").strip()]
+    n = len(clean)
+    _shrink_letter_body_for_table(ws, max(n, 1))
+
+    need_rows = 1 + max(n, 1) + 1  # header + data + 시행일
+    avail = 5  # rows 36..40
+    if need_rows > avail:
+        try:
+            ws.insert_rows(41, need_rows - avail)
+        except Exception:
+            # 삽입 실패 시 품목 수를 가용 칸에 맞춤
+            clean = clean[: max(1, avail - 2)]
+            n = len(clean)
+            need_rows = 1 + max(n, 1) + 1
+
+    table_end = 35 + need_rows  # inclusive-ish
+    for r in range(36, table_end + 1):
+        _unmerge_row(ws, r)
+        for c in range(3, 28):
+            try:
+                ws.cell(r, c).value = None
+            except Exception:
+                pass
+
+    thin = Border(
+        left=Side(style="thin", color="64748B"),
+        right=Side(style="thin", color="64748B"),
+        top=Side(style="thin", color="64748B"),
+        bottom=Side(style="thin", color="64748B"),
+    )
+    header_fill = PatternFill("solid", fgColor="0F766E") if PatternFill else None
+    spans = {"제품명": (3, 7), "기존단가": (8, 12), "인상단가": (13, 17), "비고": (18, 27)}
+
+    header_row = 36
+    for title, (c1, c2) in spans.items():
+        try:
+            if c2 > c1:
+                ws.merge_cells(start_row=header_row, start_column=c1, end_row=header_row, end_column=c2)
+        except Exception:
+            pass
+        cell = ws.cell(header_row, c1, title)
+        cell.font = Font(name="맑은 고딕", size=10, bold=True, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        if header_fill is not None:
+            cell.fill = header_fill
+        for c in range(c1, c2 + 1):
+            try:
+                ws.cell(header_row, c).border = thin
+            except Exception:
+                pass
+    ws.row_dimensions[header_row].height = 18
+
+    data_start = 37
+    rows_src = clean if clean else [{"품목명": "-", "기존단가": 0, "인상적용단가": 0, "비고": ""}]
+    for i, it in enumerate(rows_src):
+        r = data_start + i
+        vals = {
+            "제품명": str(it.get("품목명") or ""),
+            "기존단가": f"{float(it.get('기존단가') or 0):,.0f}",
+            "인상단가": f"{float(it.get('인상적용단가') or 0):,.0f}",
+            "비고": str(it.get("비고") or ""),
+        }
+        for title, (c1, c2) in spans.items():
+            try:
+                if c2 > c1:
+                    ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
+            except Exception:
+                pass
+            cell = ws.cell(r, c1, vals[title])
+            cell.font = Font(name="맑은 고딕", size=10)
+            cell.alignment = Alignment(
+                horizontal="center" if title != "제품명" else "left",
+                vertical="center",
+            )
+            for c in range(c1, c2 + 1):
+                try:
+                    ws.cell(r, c).border = thin
+                except Exception:
+                    pass
+        ws.row_dimensions[r].height = 18
+
+    eff_row = data_start + len(rows_src)
+    _unmerge_row(ws, eff_row)
+    try:
+        ws.merge_cells(start_row=eff_row, start_column=3, end_row=eff_row, end_column=27)
+    except Exception:
+        pass
+    cell = ws.cell(
+        eff_row,
+        3,
+        f"                           • 시행 일자 : {_format_korean_effective(effective)}",
+    )
+    cell.font = Font(name="맑은 고딕", size=10)
+    cell.alignment = Alignment(vertical="center")
+    ws.row_dimensions[eff_row].height = 18
+
+
 def _fill_real_template_cells(
     ws,
     *,
@@ -532,7 +672,8 @@ def _fill_real_template_cells(
     c37_override: str = "",
     c38_override: str = "",
 ) -> None:
-    """양식(레이아웃·로고)은 유지하고 내용 셀만 채움. 적용%/인상금액 숫자는 공문에 넣지 않음."""
+    """양식(레이아웃·로고)은 유지하고 내용 셀만 채움. 단가조정은 표로 기록."""
+    del c37_override, c38_override  # 문구 대신 표 사용
     send_date = send_date or date.today()
     ws["C9"].value = f"문서번호 : {doc_no}"
     ws["C10"].value = f"발송일자 : {send_date.strftime('%Y.%m.%d')}"
@@ -542,17 +683,10 @@ def _fill_real_template_cells(
     for coord, text in paras.items():
         if coord in ws:
             ws[coord].value = text
-    ws["C37"].value = (
-        c37_override.strip()
-        if str(c37_override or "").strip()
-        else _format_c37_target_items(items)
-    )
-    ws["C38"].value = (
-        c38_override.strip()
-        if str(c38_override or "").strip()
-        else _format_c38_price_lines(items)
-    )
-    ws["C39"].value = f"                           • 시행 일자 : {_format_korean_effective(effective)}"
+    # C35 제목 유지, 아래를 표로
+    if not str(ws["C35"].value or "").strip():
+        ws["C35"].value = "                                      단가 조정 내용"
+    _write_price_adjust_table(ws, items, effective)
 
 
 def fill_letter_workbook(
@@ -908,24 +1042,21 @@ def _init_items_from_prices(client: str, price_df: pd.DataFrame, pct: float = 0.
 
 
 def _items_df_for_editor(items: list[dict]) -> pd.DataFrame:
-    """편집용 표: 기존거래제품명 · 단가 · 인상단가 (칸 추가/삭제·내용 수정)."""
+    """편집용 표: 제품명 · 기존단가 · 인상단가 · 비고."""
     rows = []
     for it in items:
         old = float(it.get("기존단가") or 0)
         new = float(it.get("인상적용단가") or 0)
         rows.append(
             {
-                "기존거래제품명": str(it.get("품목명") or ""),
-                "단가": old,
-                "단가흐름": f"{old:,.0f} ➠ {new:,.0f}",
+                "제품명": str(it.get("품목명") or ""),
+                "기존단가": old,
                 "인상단가": new,
                 "비고": str(it.get("비고") or ""),
             }
         )
     if not rows:
-        return pd.DataFrame(
-            columns=["기존거래제품명", "단가", "단가흐름", "인상단가", "비고"]
-        )
+        return pd.DataFrame(columns=["제품명", "기존단가", "인상단가", "비고"])
     return pd.DataFrame(rows)
 
 
@@ -934,18 +1065,19 @@ def _items_from_editor_df(df: pd.DataFrame) -> list[dict]:
         return []
     out: list[dict] = []
     for _, row in df.iterrows():
-        # 구버전 컬럼명(품목명/기존단가/인상적용단가)도 허용
-        name = str(
-            row.get("기존거래제품명")
-            if "기존거래제품명" in row.index
-            else row.get("품목명")
-            or ""
-        ).strip()
+        name = ""
+        for k in ("제품명", "기존거래제품명", "품목명"):
+            if k in row.index and str(row.get(k) or "").strip():
+                name = str(row.get(k) or "").strip()
+                break
         if not name:
             continue
         if row.get("삭제") is True:
             continue
-        old = row.get("단가") if "단가" in row.index else row.get("기존단가")
+        if "기존단가" in row.index:
+            old = row.get("기존단가")
+        else:
+            old = row.get("단가")
         new = row.get("인상단가") if "인상단가" in row.index else row.get("인상적용단가")
         out.append(
             {
@@ -1060,11 +1192,10 @@ def _render_items_table(
     items: list[dict],
     pct_default: float,
 ) -> list[dict]:
-    st.markdown("##### 기존거래제품명 · 단가 ➠ 인상단가")
+    st.markdown("##### 단가 조정 내용")
     st.caption(
-        "거래처 선택 시 **거래 품목·마지막 거래 단가**가 자동 반영됩니다. "
-        "표에서 내용 수정·행 삭제(🗑)·추가(➕) 가능. "
-        "**적용 % / 인상금액은 표 계산용이며 공문에는 표시되지 않습니다.**"
+        "공문에는 **제품명 · 기존단가 · 인상단가 · 비고** 표로 들어갑니다. "
+        "거래처 선택 시 품목·최종단가 자동 반영. %/인상금액은 계산용(공문 미표시)."
     )
 
     mode = st.radio(
@@ -1120,31 +1251,12 @@ def _render_items_table(
     edited = st.data_editor(
         edit_df,
         column_config={
-            "기존거래제품명": st.column_config.TextColumn(
-                "기존거래제품명",
-                help="기존 거래 제품명 (직접 수정·추가 가능)",
-                required=False,
-                width="medium",
-            ),
-            "단가": st.column_config.NumberColumn(
-                "단가",
-                help="마지막 거래 단가(원)",
-                min_value=0.0,
-                format="%.1f",
-                width="small",
-            ),
-            "단가흐름": st.column_config.TextColumn(
-                "단가 ➠ 인상단가",
-                help="자동 표시",
-                disabled=True,
-                width="medium",
+            "제품명": st.column_config.TextColumn("제품명", width="medium"),
+            "기존단가": st.column_config.NumberColumn(
+                "기존단가", min_value=0.0, format="%.1f", width="small"
             ),
             "인상단가": st.column_config.NumberColumn(
-                "인상단가",
-                help="인상 적용 단가(원) — 직접 수정 가능",
-                min_value=0.0,
-                format="%.1f",
-                width="small",
+                "인상단가", min_value=0.0, format="%.1f", width="small"
             ),
             "비고": st.column_config.TextColumn("비고", width="small"),
         },
@@ -1153,18 +1265,6 @@ def _render_items_table(
         use_container_width=True,
         key=_editor_widget_key(editor_key),
     )
-
-    if (
-        edited is not None
-        and not edited.empty
-        and "단가" in edited.columns
-        and "인상단가" in edited.columns
-    ):
-        edited = edited.copy()
-        edited["단가흐름"] = edited.apply(
-            lambda r: f"{float(r.get('단가') or 0):,.0f} ➠ {float(r.get('인상단가') or 0):,.0f}",
-            axis=1,
-        )
 
     b1, b2, b3 = st.columns(3)
     with b1:
@@ -1217,10 +1317,12 @@ def _render_letter_content_editor(client: str, items: list[dict], effective_s: s
             st.session_state["pi_letter_paras"] = dict(_DEFAULT_LETTER_PARAS)
         paras = st.session_state["pi_letter_paras"]
         for coord in sorted(paras.keys(), key=lambda x: (int(x[1:]), x[0])):
+            # 품목 많으면 본문 입력칸도 낮게 (공문에서도 높이 축소와 대응)
+            h = 48 if len(items) >= 5 else (58 if len(items) >= 3 else 68)
             paras[coord] = st.text_area(
                 f"본문 {coord}",
                 value=paras[coord],
-                height=68,
+                height=h,
                 key=f"pi_para_{coord}",
             )
         st.session_state["pi_letter_paras"] = paras
@@ -1230,24 +1332,18 @@ def _render_letter_content_editor(client: str, items: list[dict], effective_s: s
                 st.session_state.pop(f"pi_para_{coord}", None)
             st.rerun()
 
-    auto_c37 = _format_c37_target_items(items)
-    auto_c38 = _format_c38_price_lines(items)
-    with st.expander("단가 조정 내용 문구 (자동 생성 · 필요 시 수정)", expanded=True):
-        c37 = st.text_area("대상 품목 줄", value=auto_c37, height=60, key="pi_c37")
-        c38 = st.text_area(
-            "단가 인상 금액 줄 (기존단가→인상단가만 표시, 적용%/금액 미포함)",
-            value=auto_c38,
-            height=60,
-            key="pi_c38",
-        )
+    with st.expander("단가 조정 내용 (공문 표 미리보기)", expanded=True):
+        st.caption("제품명 · 기존단가 · 인상단가 · 비고 — 위 표와 동일. 품목이 많으면 공문 본문 칸을 줄여 표를 넣습니다.")
+        preview = _items_df_for_editor(items)
+        st.dataframe(preview, use_container_width=True, hide_index=True)
         st.caption(f"시행 일자: {_format_korean_effective(effective_s)}")
 
     return {
         "doc_no": doc_no,
         "send_date": send_date,
         "letter_paras": dict(st.session_state.get("pi_letter_paras", _DEFAULT_LETTER_PARAS)),
-        "c37_override": c37,
-        "c38_override": c38,
+        "c37_override": "",
+        "c38_override": "",
     }
 
 
