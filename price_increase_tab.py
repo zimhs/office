@@ -35,7 +35,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-26p · PDF미리보기·메일첨부"
+PI_UI_BUILD = "2026-08-26q · 미리보기팝업(dialog)"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -1597,23 +1597,99 @@ def _build_letter_pdf_bytes(**kwargs: Any) -> bytes:
 
 
 def _show_pdf_preview(pdf_bytes: bytes, *, height: int = 640, key: str = "pi_pdf_view") -> None:
-    """st.pdf 우선, 실패 시 iframe 임베드."""
+    """st.pdf 우선, 실패 시 HTML 양식 + 다운로드로 폴백."""
     if not pdf_bytes:
         st.warning("PDF가 비어 있습니다.")
         return
     try:
         st.pdf(pdf_bytes, height=height, key=key)
         return
-    except Exception:
-        pass
-    import base64
+    except Exception as e:
+        st.caption(f"PDF 뷰어 표시 실패 → 아래 양식·다운로드로 확인 ({e})")
 
-    b64 = base64.b64encode(pdf_bytes).decode("ascii")
-    st.markdown(
-        f'<iframe src="data:application/pdf;base64,{b64}" '
-        f'width="100%" height="{height}" style="border:1px solid #CBD5E1;border-radius:8px;"></iframe>',
-        unsafe_allow_html=True,
-    )
+
+@st.dialog("단가인상공문 미리보기 (업체 전송 양식)", width="large")
+def _pi_letter_preview_dialog() -> None:
+    """업무일지처럼 큰 팝업으로 업체 전송용 PDF를 보여 줌."""
+    pdf_bytes = st.session_state.get("pi_pdf_bytes")
+    pdf_name = st.session_state.get("pi_pdf_name") or "단가인상공문.pdf"
+    xlsx = st.session_state.get("pi_dl_bytes")
+    xlsx_name = st.session_state.get("pi_dl_name") or "단가인상공문.xlsx"
+    meta = st.session_state.get("pi_preview_meta") or {}
+
+    st.caption("메일 첨부와 동일한 PDF입니다. 인상율·인상금액은 포함되지 않습니다.")
+    if pdf_bytes:
+        _show_pdf_preview(pdf_bytes, height=720, key="pi_dialog_pdf")
+    else:
+        st.error("PDF를 만들 수 없습니다. 품목·공문 입력을 확인하세요.")
+
+    # PDF 뷰어가 막히는 환경 대비 — 동일 내용 HTML 양식
+    if meta:
+        with st.expander("화면 양식(보조)", expanded=not bool(pdf_bytes)):
+            _render_letter_form_preview(
+                client=str(meta.get("client") or ""),
+                title=str(meta.get("title") or ""),
+                doc_no=str(meta.get("doc_no") or ""),
+                send_date=meta.get("send_date") or date.today(),
+                effective_s=str(meta.get("effective") or ""),
+                letter_body=str(meta.get("letter_body") or ""),
+                items=list(meta.get("items") or []),
+            )
+
+    d1, d2 = st.columns(2)
+    with d1:
+        if pdf_bytes:
+            st.download_button(
+                "📥 공문 PDF 다운로드",
+                data=pdf_bytes,
+                file_name=pdf_name,
+                mime="application/pdf",
+                use_container_width=True,
+                key="pi_dialog_dl_pdf",
+            )
+    with d2:
+        if xlsx:
+            st.download_button(
+                "📥 엑셀(참고) 다운로드",
+                data=xlsx,
+                file_name=xlsx_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="pi_dialog_dl_xlsx",
+            )
+
+
+def _open_letter_preview_dialog(
+    *,
+    letter_kwargs: dict,
+    letter_body: str,
+    pdf_name: str,
+    xlsx_name: str,
+) -> None:
+    """PDF·엑셀 생성 후 dialog 팝업 오픈."""
+    pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+    st.session_state["pi_pdf_bytes"] = pdf_bytes
+    st.session_state["pi_pdf_name"] = pdf_name
+    xlsx = None
+    try:
+        xlsx = _build_letter_bytes(**letter_kwargs)
+        st.session_state["pi_dl_bytes"] = xlsx
+        st.session_state["pi_dl_name"] = xlsx_name
+    except Exception:
+        st.session_state.pop("pi_dl_bytes", None)
+    st.session_state["pi_show_dl"] = True
+    st.session_state["pi_left_mode"] = "pdf"
+    st.session_state["pi_preview_meta"] = {
+        "client": letter_kwargs.get("client") or "",
+        "title": letter_kwargs.get("title") or "",
+        "doc_no": letter_kwargs.get("doc_no") or "",
+        "send_date": letter_kwargs.get("send_date") or date.today(),
+        "effective": letter_kwargs.get("effective") or "",
+        "letter_body": letter_body,
+        "items": list(letter_kwargs.get("items") or []),
+    }
+    st.session_state.pop("pi_preview_force", None)
+    _pi_letter_preview_dialog()
 
 
 def _render_items_table(
@@ -2082,10 +2158,10 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 p1, p2, p3 = st.columns([1, 1, 1])
                 with p1:
                     do_preview = st.button(
-                        "PDF 미리보기",
+                        "엑셀 미리보기",
                         use_container_width=True,
                         key="pi_left_preview",
-                        help="업체 전송용 공문 PDF를 생성해 왼쪽에 표시합니다. 메일 첨부와 동일합니다.",
+                        help="업체 전송용 공문 PDF를 팝업으로 엽니다. 메일 첨부와 동일합니다.",
                     )
                 with p2:
                     do_send = st.button(
@@ -2100,10 +2176,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         st.session_state["pi_left_mode"] = "summary"
                         st.rerun()
 
-                if do_preview:
-                    st.session_state["pi_left_mode"] = "pdf"
-                    st.session_state["pi_preview_force"] = True
-
                 letter_kwargs, letter_body, items_now, effective_s = _collect_letter_kwargs(
                     client=client,
                     email=email,
@@ -2116,50 +2188,74 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 xlsx_name = f"단가인상_{client}_{day_tag}.xlsx"
                 mode = st.session_state.get("pi_left_mode") or "summary"
 
-                if mode in ("pdf", "excel") or st.session_state.get("pi_preview_force"):
+                if do_preview:
                     if not items_now:
                         st.warning("단가 적용 품목이 없습니다. 오른쪽 2. 단가적용에서 확인하세요.")
                         st.session_state["pi_left_mode"] = "summary"
                     else:
                         try:
-                            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
-                            st.session_state["pi_pdf_bytes"] = pdf_bytes
-                            st.session_state["pi_pdf_name"] = pdf_name
-                            xlsx = None
+                            _open_letter_preview_dialog(
+                                letter_kwargs=letter_kwargs,
+                                letter_body=letter_body,
+                                pdf_name=pdf_name,
+                                xlsx_name=xlsx_name,
+                            )
+                            mode = "pdf"
+                            st.success("미리보기 팝업을 열었습니다.")
+                        except Exception as e:
+                            st.error(f"미리보기 생성 실패: {e}")
+                            st.session_state["pi_left_mode"] = "summary"
+                            mode = "summary"
+
+                if mode in ("pdf", "excel"):
+                    if not items_now:
+                        st.warning("단가 적용 품목이 없습니다. 오른쪽 2. 단가적용에서 확인하세요.")
+                        st.session_state["pi_left_mode"] = "summary"
+                    else:
+                        pdf_bytes = st.session_state.get("pi_pdf_bytes")
+                        xlsx = st.session_state.get("pi_dl_bytes")
+                        if not pdf_bytes:
                             try:
-                                xlsx = _build_letter_bytes(**letter_kwargs)
-                                st.session_state["pi_dl_bytes"] = xlsx
-                                st.session_state["pi_dl_name"] = xlsx_name
-                            except Exception:
-                                pass
-                            st.session_state["pi_show_dl"] = True
-                            st.session_state["pi_left_mode"] = "pdf"
-                            st.session_state.pop("pi_preview_force", None)
-                            st.caption("업체 전송 양식(PDF) · 메일 첨부와 동일")
-                            _show_pdf_preview(pdf_bytes, height=640, key="pi_pdf_preview")
-                            d1, d2 = st.columns(2)
-                            with d1:
+                                pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+                                st.session_state["pi_pdf_bytes"] = pdf_bytes
+                                st.session_state["pi_pdf_name"] = pdf_name
+                            except Exception as e:
+                                st.error(f"PDF 표시 실패: {e}")
+                                pdf_bytes = None
+                        st.caption("업체 전송 양식(PDF) · 「엑셀 미리보기」로 팝업 재오픈")
+                        if pdf_bytes:
+                            _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
+                            b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
+                            with b_big:
+                                if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
+                                    try:
+                                        _open_letter_preview_dialog(
+                                            letter_kwargs=letter_kwargs,
+                                            letter_body=letter_body,
+                                            pdf_name=pdf_name,
+                                            xlsx_name=xlsx_name,
+                                        )
+                                    except Exception as e:
+                                        st.error(f"팝업 실패: {e}")
+                            with b_dl1:
                                 st.download_button(
-                                    "📥 공문 PDF 다운로드",
+                                    "📥 PDF",
                                     data=pdf_bytes,
                                     file_name=pdf_name,
                                     mime="application/pdf",
                                     key="pi_single_dl_pdf",
                                     use_container_width=True,
                                 )
-                            with d2:
+                            with b_dl2:
                                 if xlsx:
                                     st.download_button(
-                                        "📥 엑셀(참고) 다운로드",
+                                        "📥 엑셀",
                                         data=xlsx,
                                         file_name=xlsx_name,
                                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                         key="pi_single_dl_xlsx",
                                         use_container_width=True,
                                     )
-                        except Exception as e:
-                            st.error(f"PDF 미리보기 생성 실패: {e}")
-                            st.session_state["pi_left_mode"] = "summary"
                 else:
                     _render_pi_left_summary(
                         client=client,
