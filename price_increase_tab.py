@@ -521,13 +521,21 @@ def _format_c38_price_lines(items: list[dict]) -> str:
 
 
 def _unmerge_row(ws, row: int) -> None:
+    from openpyxl.utils import range_boundaries
+
     merged = [mr for mr in list(ws.merged_cells.ranges) if mr.min_row <= row <= mr.max_row]
     for mr in merged:
+        rng = str(mr)
         try:
-            ws.merged_cells.ranges.remove(mr)
+            min_c, min_r, max_c, max_r = range_boundaries(rng)
+            for r in range(min_r, max_r + 1):
+                for c in range(min_c, max_c + 1):
+                    if (r, c) not in ws._cells:
+                        ws.cell(row=r, column=c, value=None)
+            ws.unmerge_cells(rng)
         except Exception:
             try:
-                ws.unmerge_cells(str(mr))
+                ws.merged_cells.ranges.remove(mr)
             except Exception:
                 pass
 
