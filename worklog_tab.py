@@ -136,7 +136,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26w · Cloud만있어도로컬저장"
+_WL_UI_BUILD = "2026-08-26y · 워크시트일+인쇄레이아웃"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1038,8 +1038,36 @@ def _cleanup_legacy_day_archive_files(d: date, month_path: str | None) -> None:
 
 
 def worklog_archive_sheet_title(d: date) -> str:
-    """월별 파일 안 워크시트명 = 날짜 (YYYY-MM-DD)."""
+    """월별 파일 안 워크시트명 = 일 (예: 27)."""
+    return str(d.day)
+
+
+def _worklog_archive_legacy_sheet_title(d: date) -> str:
+    """구버전 워크시트명 (YYYY-MM-DD). 존재·삭제 조회용."""
     return d.isoformat()
+
+
+def _worklog_archive_sheet_titles_for_lookup(d: date) -> tuple[str, ...]:
+    """현재(일) + 레거시(YYYY-MM-DD) 워크시트명."""
+    cur = worklog_archive_sheet_title(d)
+    leg = _worklog_archive_legacy_sheet_title(d)
+    return (cur,) if cur == leg else (cur, leg)
+
+
+def _resolve_archive_sheet_name(sheetnames: list[str] | tuple[str, ...], d: date) -> str | None:
+    for title in _worklog_archive_sheet_titles_for_lookup(d):
+        if title in sheetnames:
+            return title
+    return None
+
+
+def _archive_sheet_sort_key(name: str) -> tuple:
+    if name.isdigit():
+        return (0, int(name))
+    try:
+        return (1, date.fromisoformat(name))
+    except ValueError:
+        return (2, name)
 
 
 def _invalidate_worklog_presence_cache(d: date | None = None) -> None:
@@ -1061,14 +1089,14 @@ def worklog_date_exists_in_archive(d: date) -> bool:
     cached = st.session_state.get(ck)
     if isinstance(cached, bool):
         return cached
-    title = worklog_archive_sheet_title(d)
+    titles = _worklog_archive_sheet_titles_for_lookup(d)
     found = False
     month_path = worklog_archive_month_path(d)
     if month_path and os.path.exists(month_path) and load_workbook is not None:
         try:
             wb = load_workbook(month_path, read_only=True)
             try:
-                if title in wb.sheetnames:
+                if _resolve_archive_sheet_name(wb.sheetnames, d):
                     found = True
             finally:
                 wb.close()
@@ -1088,7 +1116,7 @@ def worklog_date_exists_in_archive(d: date) -> bool:
                     try:
                         wb = load_workbook(p, read_only=True)
                         try:
-                            if title in wb.sheetnames:
+                            if _resolve_archive_sheet_name(wb.sheetnames, d):
                                 found = True
                                 break
                         finally:
@@ -1116,10 +1144,9 @@ def worklog_date_exists_on_drive(d: date) -> bool:
         month_p = os.path.join(arch_dir, f"{d.month}월.xlsx")
         if not os.path.isfile(month_p):
             return False
-        title = worklog_archive_sheet_title(d)
         wb = load_workbook(month_p, read_only=True)
         try:
-            return title in wb.sheetnames
+            return _resolve_archive_sheet_name(wb.sheetnames, d) is not None
         finally:
             wb.close()
     except Exception:
@@ -1208,7 +1235,7 @@ def check_worklog_save_allowed(d: date, *, had_local_at_open: bool) -> tuple[boo
 
 
 def describe_worklog_archive_target(d: date) -> str:
-    """UI용 저장 경로 설명 (Desktop/업무/일지/YYYY/N월.xlsx#YYYY-MM-DD)."""
+    """UI용 저장 경로 설명 (Desktop/업무/일지/YYYY/N월.xlsx#일)."""
     root = resolve_worklog_archive_root()
     month_path = worklog_archive_month_path(d)
     if root and month_path:
@@ -1219,77 +1246,54 @@ def describe_worklog_archive_target(d: date) -> str:
     return f"{home}/Desktop/업무/일지/{d.year}/{d.month}월.xlsx#{worklog_archive_sheet_title(d)}"
 
 
-def _clone_worksheet_to_workbook(src_ws, dst_wb, title: str):
-    """날짜일지 시트를 월별 통합 파일로 복사 (셀·서식·병합·행열·인쇄·이미지)."""
+def _copy_worksheet_cross_workbook(src_ws, dst_ws) -> None:
+    """다른 통합문서 간 시트 복사 — openpyxl WorksheetCopy + 인쇄·화면 설정."""
     from copy import copy as _cpy
 
-    if title in dst_wb.sheetnames:
-        del dst_wb[title]
-    dst = dst_wb.create_sheet(title)
+    for (row, col), source_cell in src_ws._cells.items():
+        target_cell = dst_ws.cell(column=col, row=row)
+        target_cell._value = source_cell._value
+        target_cell.data_type = source_cell.data_type
+        if source_cell.has_style:
+            target_cell._style = _cpy(source_cell._style)
+        if source_cell.hyperlink:
+            target_cell._hyperlink = _cpy(source_cell.hyperlink)
+        if source_cell.comment:
+            target_cell.comment = _cpy(source_cell.comment)
 
-    for key, md in src_ws.column_dimensions.items():
-        if md.width is not None:
-            dst.column_dimensions[key].width = md.width
-    for key, md in src_ws.row_dimensions.items():
-        if md.height is not None:
-            dst.row_dimensions[key].height = md.height
+    for attr in ("row_dimensions", "column_dimensions"):
+        src_dims = getattr(src_ws, attr)
+        dst_dims = getattr(dst_ws, attr)
+        for key, dim in src_dims.items():
+            dst_dims[key] = _cpy(dim)
+            dst_dims[key].worksheet = dst_ws
 
-    for row in src_ws.iter_rows():
-        for cell in row:
-            new_cell = dst.cell(row=cell.row, column=cell.column, value=cell.value)
-            try:
-                if cell.has_style:
-                    new_cell.font = _cpy(cell.font)
-                    new_cell.border = _cpy(cell.border)
-                    new_cell.fill = _cpy(cell.fill)
-                    new_cell.number_format = cell.number_format
-                    new_cell.protection = _cpy(cell.protection)
-                    new_cell.alignment = _cpy(cell.alignment)
-            except Exception:
-                pass
-
-    try:
-        for mr in list(src_ws.merged_cells.ranges):
-            dst.merge_cells(str(mr))
-    except Exception:
-        pass
+    dst_ws.sheet_format = _cpy(src_ws.sheet_format)
+    dst_ws.sheet_properties = _cpy(src_ws.sheet_properties)
+    dst_ws.merged_cells = _cpy(src_ws.merged_cells)
+    dst_ws.page_margins = _cpy(src_ws.page_margins)
+    dst_ws.page_setup = _cpy(src_ws.page_setup)
+    dst_ws.print_options = _cpy(src_ws.print_options)
 
     try:
-        dst.print_area = src_ws.print_area
+        dst_ws.print_area = src_ws.print_area
     except Exception:
         pass
     try:
-        sp, dp = src_ws.page_setup, dst.page_setup
-        for attr in (
-            "orientation",
-            "fitToPage",
-            "fitToWidth",
-            "fitToHeight",
-            "scale",
-            "paperSize",
-            "pageOrder",
-        ):
-            try:
-                setattr(dp, attr, getattr(sp, attr))
-            except Exception:
-                pass
+        dst_ws.print_title_rows = src_ws.print_title_rows
+        dst_ws.print_title_cols = src_ws.print_title_cols
     except Exception:
         pass
     try:
-        dst.page_margins = _cpy(src_ws.page_margins)
+        dst_ws.sheet_view = _cpy(src_ws.sheet_view)
     except Exception:
         pass
     try:
-        dst.print_title_rows = src_ws.print_title_rows
-        dst.print_title_cols = src_ws.print_title_cols
-    except Exception:
-        pass
-    try:
-        dst.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
+        if getattr(src_ws, "views", None):
+            dst_ws.views = _cpy(src_ws.views)
     except Exception:
         pass
 
-    # 로고 등 이미지
     try:
         from openpyxl.drawing.image import Image as XLImage
 
@@ -1304,11 +1308,19 @@ def _clone_worksheet_to_workbook(src_ws, dst_wb, title: str):
                     new_img.height = img.height
                 if getattr(img, "anchor", None) is not None:
                     new_img.anchor = img.anchor
-                dst.add_image(new_img)
+                dst_ws.add_image(new_img)
             except Exception:
                 continue
     except Exception:
         pass
+
+
+def _clone_worksheet_to_workbook(src_ws, dst_wb, title: str):
+    """날짜일지 시트를 월별 통합 파일로 복사 (원본 인쇄·열 너비·화면 배율 유지)."""
+    if title in dst_wb.sheetnames:
+        del dst_wb[title]
+    dst = dst_wb.create_sheet(title)
+    _copy_worksheet_cross_workbook(src_ws, dst)
     return dst
 
 
@@ -1343,30 +1355,42 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
     if not month_path or not day_xlsx_path or not os.path.exists(day_xlsx_path):
         return None
     sheet_title = worklog_archive_sheet_title(d)
+    legacy_title = _worklog_archive_legacy_sheet_title(d)
     if not allow_overwrite and worklog_date_exists_in_archive(d):
         return month_path if os.path.exists(month_path) else None
     _migrate_legacy_month_workbook(d, month_path)
+
+    # 첫 월 파일: 일지 xlsx를 그대로 복사 → 인쇄 미리보기·열 너비 100% 유지
+    if not os.path.exists(month_path):
+        shutil.copy2(day_xlsx_path, month_path)
+        month_wb = load_workbook(month_path)
+        try:
+            ws = month_wb.active
+            if ws.title != sheet_title:
+                ws.title = sheet_title
+            month_wb.save(month_path)
+        finally:
+            month_wb.close()
+        _cleanup_legacy_day_archive_files(d, month_path)
+        return month_path
+
     day_wb = load_workbook(day_xlsx_path)
     try:
         src_ws = day_wb.active
-        if os.path.exists(month_path):
-            month_wb = load_workbook(month_path)
-        else:
-            from openpyxl import Workbook
-
-            month_wb = Workbook()
-            # 기본 빈 시트 제거 (날짜 시트만 유지)
-            if month_wb.sheetnames:
-                default = month_wb.active
-                default.title = "_tmp_remove_"
+        month_wb = load_workbook(month_path)
         try:
+            # 레거시 YYYY-MM-DD 시트 → 일(27) 시트로 통일
+            if legacy_title != sheet_title and legacy_title in month_wb.sheetnames:
+                del month_wb[legacy_title]
             _clone_worksheet_to_workbook(src_ws, month_wb, sheet_title)
-            if "_tmp_remove_" in month_wb.sheetnames:
-                del month_wb["_tmp_remove_"]
-            # 시트 이름 날짜순 정렬에 가깝게 재배치
-            names = [n for n in month_wb.sheetnames if n != sheet_title]
+            # 시트 이름 일자순 정렬 (일-only·레거시 ISO 모두)
+            names = [
+                n
+                for n in month_wb.sheetnames
+                if n != sheet_title and not n.startswith("_")
+            ]
             names.append(sheet_title)
-            names.sort()
+            names.sort(key=_archive_sheet_sort_key)
             for i, name in enumerate(names):
                 month_wb.move_sheet(name, offset=i - month_wb.sheetnames.index(name))
             month_wb.save(month_path)
@@ -1392,13 +1416,13 @@ def delete_worklog_archive_sheet(d: date) -> str | None:
     _cleanup_legacy_day_archive_files(d, month_path)
     if not os.path.exists(month_path):
         return removed
-    sheet_title = worklog_archive_sheet_title(d)
     try:
         wb = load_workbook(month_path)
         try:
-            if sheet_title in wb.sheetnames:
-                del wb[sheet_title]
-                removed = month_path
+            for sheet_title in _worklog_archive_sheet_titles_for_lookup(d):
+                if sheet_title in wb.sheetnames:
+                    del wb[sheet_title]
+                    removed = month_path
             remaining = [n for n in wb.sheetnames if n and not n.startswith("_")]
             if not remaining:
                 wb.close()
@@ -3845,7 +3869,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                             if arch_target and not _wl_quiet_ui():
                                 msg += f" · {arch_target}"
                             elif arch and not _wl_quiet_ui():
-                                _sh = st.session_state.get("wl_last_archive_sheet") or d.isoformat()
+                                _sh = st.session_state.get("wl_last_archive_sheet") or worklog_archive_sheet_title(d)
                                 msg += f" · 일지/{d.year}/{os.path.basename(arch)}#{_sh}"
                             if drv:
                                 msg += " · Drive"
