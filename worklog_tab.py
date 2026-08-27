@@ -137,7 +137,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-27a · 삭제로딩개선"
+_WL_UI_BUILD = "2026-08-27b · 엑셀선(병합)복구"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1248,7 +1248,11 @@ def describe_worklog_archive_target(d: date) -> str:
 
 
 def _copy_worksheet_cross_workbook(src_ws, dst_ws) -> None:
-    """다른 통합문서 간 시트 복사 — openpyxl WorksheetCopy + 인쇄·화면 설정."""
+    """다른 통합문서 간 시트 복사 — openpyxl WorksheetCopy + 인쇄·화면 설정.
+
+    merged_cells 객체 shallow copy / _style 일괄 복사는 Excel에서 병합·테두리가
+    깨지므로, 셀 서식은 속성별 copy 후 merge_cells()로 병합을 다시 적용한다.
+    """
     from copy import copy as _cpy
 
     for (row, col), source_cell in src_ws._cells.items():
@@ -1256,7 +1260,15 @@ def _copy_worksheet_cross_workbook(src_ws, dst_ws) -> None:
         target_cell._value = source_cell._value
         target_cell.data_type = source_cell.data_type
         if source_cell.has_style:
-            target_cell._style = _cpy(source_cell._style)
+            try:
+                target_cell.font = _cpy(source_cell.font)
+                target_cell.border = _cpy(source_cell.border)
+                target_cell.fill = _cpy(source_cell.fill)
+                target_cell.number_format = source_cell.number_format
+                target_cell.protection = _cpy(source_cell.protection)
+                target_cell.alignment = _cpy(source_cell.alignment)
+            except Exception:
+                pass
         if source_cell.hyperlink:
             target_cell._hyperlink = _cpy(source_cell.hyperlink)
         if source_cell.comment:
@@ -1271,7 +1283,6 @@ def _copy_worksheet_cross_workbook(src_ws, dst_ws) -> None:
 
     dst_ws.sheet_format = _cpy(src_ws.sheet_format)
     dst_ws.sheet_properties = _cpy(src_ws.sheet_properties)
-    dst_ws.merged_cells = _cpy(src_ws.merged_cells)
     dst_ws.page_margins = _cpy(src_ws.page_margins)
     dst_ws.page_setup = _cpy(src_ws.page_setup)
     dst_ws.print_options = _cpy(src_ws.print_options)
@@ -1292,6 +1303,13 @@ def _copy_worksheet_cross_workbook(src_ws, dst_ws) -> None:
     try:
         if getattr(src_ws, "views", None):
             dst_ws.views = _cpy(src_ws.views)
+    except Exception:
+        pass
+
+    # 병합은 셀·서식 복사 후 마지막에 적용 (merged_cells shallow copy 금지)
+    try:
+        for mr in list(src_ws.merged_cells.ranges):
+            dst_ws.merge_cells(str(mr))
     except Exception:
         pass
 
