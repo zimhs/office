@@ -72,3 +72,7 @@ uploaded_cache/market_research/_merged_frame.pkl
 uploaded_cache/market_research/_merged_frame.sig
 uploaded_cache/market_research/_merged_frame.pkl.tmp
 worklog_tab.py.final_*
+
+# 로컬 원클릭 백업 (Mac dashboard 폴더)
+백업/snapshots/**
+!백업/README.txt
