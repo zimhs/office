@@ -9703,6 +9703,8 @@ if not full_df.empty:
         _item_picked = fc5.selectbox("📦 품목명", options=_item_opts, key="dash_filter_items_sb_new")
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
+        # 반영 확인용(앱 빌드). 업무일지·공문 생략 최적화 포함 여부.
+        st.caption("필터 빌드 2026-08-27j · 필터시중탭생략")
 
         df_base = df_base_opts
         df_staff_filtered = (
