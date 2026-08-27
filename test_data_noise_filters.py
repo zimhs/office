@@ -106,5 +106,32 @@ class SalesNoiseFilterTest(unittest.TestCase):
         self.assertIn("가스코아산(성우하이텍)", opts)
 
 
+class IndustryStaffMapTest(unittest.TestCase):
+    def test_poem_maps_to_kim_from_industry_csv(self):
+        """업체대분류 영업담당자: 포엠주식회사 → 김혁수 (월별 매출에 담당자 열 없어도)."""
+        ind_path = os.path.join(os.path.dirname(__file__), "uproad", "업체대분류.csv")
+        if not os.path.exists(ind_path):
+            ind_path = os.path.join(os.path.dirname(__file__), "uploaded_cache", "industry.csv")
+        if not os.path.exists(ind_path):
+            self.skipTest("업체대분류.csv 없음")
+        with open(ind_path, "rb") as f:
+            staff_map = load_industry_staff_map(f.read())
+        self.assertEqual(staff_map.get("포엠주식회사"), "김혁수")
+        df = pd.DataFrame(
+            {
+                "거래처": ["포엠주식회사", "포엠주식회사"],
+                "담당자": ["미지정", "미지정"],
+            }
+        )
+        out = _apply_industry_staff_mapping(df, staff_map)
+        self.assertTrue((out["담당자"] == "김혁수").all())
+        # 이미 지정된 담당자는 덮지 않음
+        kept = _apply_industry_staff_mapping(
+            pd.DataFrame({"거래처": ["포엠주식회사"], "담당자": ["박철수"]}),
+            staff_map,
+        )
+        self.assertEqual(kept.iloc[0]["담당자"], "박철수")
+
+
 if __name__ == "__main__":
     unittest.main()

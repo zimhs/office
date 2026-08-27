@@ -3881,28 +3881,128 @@ def _drop_sales_noise_rows(df):
     if "품목명" in df.columns:
         noise |= df["품목명"].astype(str).str.contains(r"이월\s*미수|\[이월", na=False)
     return df.loc[~noise].copy()
+_INVALID_INDUSTRY_STAFF = frozenset(
+    {
+        "",
+        "nan",
+        "none",
+        "nat",
+        "미지정",
+        "담당자없음",
+        "지정안함",
+        "없음",
+        "거래종료",
+    }
+)
+
+
+def _read_industry_csv_bytes(industry_bytes):
+    """업체대분류 CSV → DataFrame (encoding 시도)."""
+    if not industry_bytes:
+        return None
+    for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
+        try:
+            temp_ind = pd.read_csv(
+                io.BytesIO(industry_bytes),
+                encoding=enc,
+                on_bad_lines="skip",
+                engine="python",
+            )
+            temp_ind.columns = temp_ind.columns.astype(str).str.strip()
+            return temp_ind
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            return None
+    return None
+
+
 @st.cache_data(show_spinner="업종 분류 데이터를 읽어오는 중입니다...")
 def load_industry_file(industry_bytes):
     if not industry_bytes:
         return {}
     try:
-        for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
-            try:
-                temp_ind = pd.read_csv(io.BytesIO(industry_bytes), encoding=enc, on_bad_lines='skip', engine='python')
-                temp_ind.columns = temp_ind.columns.astype(str).str.strip()
-                
-                c_client = next((c for c in temp_ind.columns if "거래처" in c or "상호" in c), None)
-                c_ind = next((c for c in temp_ind.columns if "분류" in c or "업종" in c), None)
-                
-                if c_client and c_ind:
-                    temp_ind = temp_ind.dropna(subset=[c_client, c_ind])
-                    return temp_ind.astype(str).set_index(c_client)[c_ind].to_dict()
-                break
-            except UnicodeDecodeError:
-                continue
+        temp_ind = _read_industry_csv_bytes(industry_bytes)
+        if temp_ind is None or temp_ind.empty:
+            return {}
+        c_client = next((c for c in temp_ind.columns if "거래처" in c or "상호" in c), None)
+        c_ind = next((c for c in temp_ind.columns if "분류" in c or "업종" in c), None)
+        if c_client and c_ind:
+            temp_ind = temp_ind.dropna(subset=[c_client, c_ind])
+            return temp_ind.astype(str).set_index(c_client)[c_ind].to_dict()
     except Exception:
         pass
     return {}
+
+
+@st.cache_data(show_spinner=False)
+def load_industry_staff_map(industry_bytes):
+    """업체대분류 CSV의 영업담당자 → {거래처: 담당자}.
+
+    월별 매출(202607 등)에 담당자 열이 없어도 '담당거래처'가 담당자 필터에 잡히도록 함.
+    예: 포엠주식회사 → 김혁수
+    """
+    if not industry_bytes:
+        return {}
+    try:
+        temp_ind = _read_industry_csv_bytes(industry_bytes)
+        if temp_ind is None or temp_ind.empty:
+            return {}
+        c_client = next((c for c in temp_ind.columns if "거래처" in c or "상호" in c), None)
+        c_staff = next(
+            (
+                c
+                for c in temp_ind.columns
+                if any(k in c for k in ("영업담당", "담당자", "영업사원"))
+            ),
+            None,
+        )
+        if not c_client or not c_staff:
+            return {}
+        out = {}
+        for _, row in temp_ind.iterrows():
+            client = str(row.get(c_client, "")).strip()
+            staff = str(row.get(c_staff, "")).strip() if pd.notna(row.get(c_staff)) else ""
+            if not client or client in ("nan", "None"):
+                continue
+            if not staff or staff.lower() in _INVALID_INDUSTRY_STAFF:
+                continue
+            out[client] = staff
+            # 끝점 없는 표기도 같이 매칭
+            bare = client.rstrip(".")
+            if bare and bare not in out:
+                out[bare] = staff
+        return out
+    except Exception:
+        return {}
+
+
+def _apply_industry_staff_mapping(df, staff_map: dict | None):
+    """매출에서 담당자를 못 찾은(미지정) 행만 업체대분류 영업담당자로 채움. 기존 지정·수동매핑은 보존."""
+    if df is None or df.empty or not staff_map:
+        return df if df is not None else pd.DataFrame()
+    if "거래처" not in df.columns:
+        return df
+    out = df.copy()
+    if "담당자" not in out.columns:
+        out["담당자"] = "미지정"
+    out["담당자"] = out["담당자"].fillna("미지정").astype(str).str.strip()
+    mask = out["담당자"].isin(
+        ["미지정", "", "nan", "None", "NaN", "담당자없음", "지정안함", "없음"]
+    )
+    if not mask.any():
+        return out
+    mapped = out.loc[mask, "거래처"].astype(str).str.strip().map(staff_map)
+    if "거래처_원본" in out.columns:
+        mapped_orig = (
+            out.loc[mask, "거래처_원본"].astype(str).str.strip().map(staff_map)
+        )
+        mapped = mapped.where(mapped.notna(), mapped_orig)
+    fill_mask = mapped.notna() & mapped.astype(str).str.strip().ne("")
+    if fill_mask.any():
+        idx = mapped.index[fill_mask]
+        out.loc[idx, "담당자"] = mapped.loc[idx].astype(str).str.strip()
+    return out
 def dedupe_debt_client_gubun(df):
     """동일 거래처·구분은 1행만 유지. 월 합계 절댓값이 큰 행 우선."""
     if df is None or df.empty:
@@ -4428,6 +4528,169 @@ def _dash_pivot_cache_key(
 def _dash_base_pivot_cache_key(start_date, end_date, sales_meta, manual_token):
     """날짜·원본데이터만 바뀌는 공통 피벗 키 (담당자/거래처/품목 변경과 무관)."""
     return ("base", str(start_date), str(end_date), sales_meta, manual_token)
+
+
+# 상단 필터 rerun 시 무거운 탭(업무일지·시장조사·공문) 생략용 — 탭 인덱스 = st.tabs 순서
+_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER = 9, 10, 11
+
+
+def _dash_top_filter_sig_now() -> tuple:
+    return (
+        st.session_state.get("dash_filter_staff_sb_new"),
+        st.session_state.get("dash_filter_client_selectbox"),
+        st.session_state.get("dash_filter_items_sb_new"),
+        st.session_state.get("dash_filter_start"),
+        st.session_state.get("dash_filter_end"),
+    )
+
+
+def _dash_note_filter_change_for_heavy_tabs() -> bool:
+    """상단 필터가 바뀐 run이면 True. heavy 탭 defer 판단용 플래그도 갱신."""
+    sig = _dash_top_filter_sig_now()
+    prev = st.session_state.get("_dash_filter_sig_heavy")
+    changed = prev is not None and prev != sig
+    st.session_state["_dash_filter_sig_heavy"] = sig
+    st.session_state["_dash_filter_changed_flag"] = changed
+    return changed
+
+
+def _dash_active_tab_idx() -> int | None:
+    """JS가 심은 cookie dash_active_tab (0-based). 없으면 None."""
+    try:
+        cookies = getattr(st.context, "cookies", None)
+        if cookies is None:
+            return None
+        raw = cookies.get("dash_active_tab")
+        if raw is None:
+            return None
+        return int(str(raw).strip())
+    except Exception:
+        return None
+
+
+def _dash_backup_session_keys(store_key: str, prefixes: tuple[str, ...]) -> None:
+    bak: dict = {}
+    for k, v in list(st.session_state.items()):
+        if not isinstance(k, str) or k == store_key:
+            continue
+        if any(k.startswith(p) for p in prefixes):
+            bak[k] = v
+    st.session_state[store_key] = bak
+
+
+def _dash_restore_session_keys(store_key: str) -> None:
+    bak = st.session_state.get(store_key)
+    if not isinstance(bak, dict):
+        return
+    for k, v in bak.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
+    """상단 필터 rerun이면 업무일지·시장조사·공문 UI를 생략.
+
+    이 탭들은 상단 영업 필터를 쓰지 않음. 필터 변경마다 같이 그리면
+    (업무일지·공문 추가 이후) 체감 로딩이 급증함.
+    - force remount / 「화면 불러오기」→ 즉시 복원
+    - 활성 탭이 해당 heavy 탭이면(쿠키) 생략하지 않음(화면이 비지 않게)
+    - 필터 변경 후 미복원이면 다음 rerun에서도 stub 유지(필터 계속 빠릿)
+    """
+    mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
+    if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
+        mounted[tab_idx] = True
+        return False
+    if st.session_state.get("_dash_filter_changed_flag"):
+        active = _dash_active_tab_idx()
+        if active is not None and int(active) == int(tab_idx):
+            mounted[tab_idx] = True
+            return False
+        mounted[tab_idx] = False
+        return True
+    # 필터 변경이 아닌 rerun: 이전에 생략했으면 stub 유지(복원 버튼/탭 전환 자동클릭까지)
+    if mounted.get(tab_idx, True) is False:
+        return True
+    mounted[tab_idx] = True
+    return False
+
+
+def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: tuple[str, ...]) -> None:
+    _dash_backup_session_keys(backup_key, prefixes)
+    st.caption(
+        f"{title}: 상단 필터와 무관해 편집 UI를 생략했습니다(입력값 보존). "
+        "이 탭을 쓰면 「화면 불러오기」또는 탭을 다시 눌러 주세요."
+    )
+    if st.button(f"{title} 화면 불러오기", key=f"_dash_reload_tab_{tab_idx}", width="stretch"):
+        st.session_state[f"_dash_force_tab_{tab_idx}"] = True
+        st.rerun()
+
+
+def inject_dash_active_tab_cookie_script() -> None:
+    """메인 탭 선택 → cookie + deferred stub 자동 「화면 불러오기」.
+
+    Streamlit components.html 은 rerun 마다 DOM에서 사라지므로 매 run 재주입.
+    """
+    components.html(
+        """
+        <script>
+        (function () {
+          var doc = window.parent.document;
+          var COOKIE = 'dash_active_tab';
+          function mainTabList() {
+            var lists = doc.querySelectorAll('[role="tablist"]');
+            var best = null, bestN = 0;
+            for (var i = 0; i < lists.length; i++) {
+              var n = lists[i].querySelectorAll('[role="tab"]').length;
+              if (n >= 12 && n > bestN) { bestN = n; best = lists[i]; }
+              else if (n > bestN) { bestN = n; best = lists[i]; }
+            }
+            return best;
+          }
+          function clickRemount() {
+            var buttons = doc.querySelectorAll('button');
+            for (var b = 0; b < buttons.length; b++) {
+              var t = (buttons[b].innerText || buttons[b].textContent || '');
+              if (t.indexOf('화면 불러오기') >= 0) {
+                try { buttons[b].click(); } catch (eClick) {}
+                return true;
+              }
+            }
+            return false;
+          }
+          function writeIdx() {
+            try {
+              var list = mainTabList();
+              if (!list) return;
+              var tabs = list.querySelectorAll('[role="tab"]');
+              var idx = -1;
+              for (var i = 0; i < tabs.length; i++) {
+                if (tabs[i].getAttribute('aria-selected') === 'true') { idx = i; break; }
+              }
+              if (idx < 0) return;
+              doc.cookie = COOKIE + '=' + idx + '; path=/; max-age=31536000; SameSite=Lax';
+              // 업무일지(9)·시장조사(10)·공문(11): stub이면 자동 복원
+              if (idx >= 9 && idx <= 11) {
+                setTimeout(clickRemount, 40);
+              }
+            } catch (e1) {}
+          }
+          if (!doc.__dashActiveTabCookieReady) {
+            doc.__dashActiveTabCookieReady = true;
+            doc.addEventListener('click', function (ev) {
+              try {
+                var t = ev.target && ev.target.closest && ev.target.closest('[role="tab"]');
+                if (t) setTimeout(writeIdx, 30);
+              } catch (e2) {}
+            }, true);
+          }
+          writeIdx();
+          setTimeout(writeIdx, 120);
+          setTimeout(writeIdx, 600);
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 
 def _dash_compute_base_pivot_bundle(df_base, full_df, all_months):
@@ -9355,6 +9618,7 @@ if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     st.rerun()
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
+industry_staff_map = load_industry_staff_map(ind_bytes) if ind_bytes else {}
 debt_df = load_debt_file(debt_bytes) if debt_bytes else pd.DataFrame()
 if not debt_df.empty:
     debt_df = dedupe_debt_client_gubun(debt_df)
@@ -9373,7 +9637,7 @@ df_vaporizer = load_equipment_file(vaporizer_bytes, vaporizer_name) if vaporizer
 df_integrated = load_equipment_file(int_bytes, int_name) if int_bytes else pd.DataFrame()
 # ===== [초고속 데이터 전처리 캐시 엔진 (기존 로직 100% 무손실 보존)] =====
 @st.cache_data(show_spinner=False)
-def get_fast_processed_full_df(meta_data, staff_token, ind_dict):
+def get_fast_processed_full_df(meta_data, staff_token, ind_dict, ind_staff_dict=None):
     """필터 클릭 시 매번 발생하는 무거운 텍스트 연산(정규식, 매핑)을 1회로 압축"""
     # 1. 유저의 기존 고급 로드 기능 완벽 유지
     temp_df = (
@@ -9383,6 +9647,8 @@ def get_fast_processed_full_df(meta_data, staff_token, ind_dict):
     
     # 2. 무거운 데이터 정제 작업을 캐시 안으로 이동 (한 번만 실행됨)
     if not temp_df.empty:
+        # 업체대분류 영업담당자 → 미지정만 채움 (월별 CSV에 담당자 열 없을 때 담당거래처 누락 방지)
+        temp_df = _apply_industry_staff_mapping(temp_df, ind_staff_dict or {})
         temp_df = _apply_manual_staff_mapping(temp_df)
         _client_s = temp_df["거래처"].astype(str).str.strip()
         mask_closed = _client_s.str.match(r"^[zZ]", na=False)
@@ -9392,11 +9658,23 @@ def get_fast_processed_full_df(meta_data, staff_token, ind_dict):
         is_deposit_row = temp_df["품목명"].astype(str).str.contains("입금", na=False)
         temp_df = temp_df[~is_deposit_row].copy()
         temp_df["업종"] = temp_df["거래처"].map(ind_dict).fillna("미분류")
+        # 업종 매핑은 원본명 기준으로도 보강 (종속처 포엠주식회사(카드결재) 등)
+        if "거래처_원본" in temp_df.columns:
+            miss = temp_df["업종"].eq("미분류")
+            if miss.any():
+                temp_df.loc[miss, "업종"] = (
+                    temp_df.loc[miss, "거래처_원본"].map(ind_dict).fillna("미분류")
+                )
         
     return temp_df
 
 # 단 0.01초 만에 메모리에서 정제 완료된 데이터를 즉시 꺼내옴
-full_df = get_fast_processed_full_df(sales_file_meta, _manual_staff_map_cache_token(), industry_dict)
+full_df = get_fast_processed_full_df(
+    sales_file_meta,
+    _manual_staff_map_cache_token(),
+    industry_dict,
+    industry_staff_map,
+)
 # ====================================================================
 target_items = [
     "CO2 (kg, Bulk)",
@@ -9475,22 +9753,27 @@ if not full_df.empty:
                 (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
             ]
         df_base_opts = st.session_state.get("_dash_date_slice_df", full_df)
-        _staff_opts = _dash_staff_opts_from(df_base_opts)
-        _prev_staff = st.session_state.get("dash_filter_staff", [])
-        if isinstance(_prev_staff, list) and _prev_staff:
-            _kept_staff = [x for x in _prev_staff if x in _staff_opts]
-            if _kept_staff != _prev_staff:
-                st.session_state["dash_filter_staff"] = _kept_staff
-        # 👤 담당자 선택 (불편한 multiselect 버리고 selectbox로 교체 + 호환성 유지)
+        # 담당자 옵션: 날짜 슬라이스(+행수) 동일하면 재계산 생략. 빈 캐시로 고착되지 않게 행수 포함.
+        _staff_opts_sig = (_date_slice_sig, int(len(df_base_opts)))
+        if st.session_state.get("_dash_staff_opts_sig") != _staff_opts_sig:
+            st.session_state["_dash_staff_opts_sig"] = _staff_opts_sig
+            st.session_state["_dash_staff_opts_list"] = _dash_staff_opts_from(df_base_opts)
+        _staff_opts = list(st.session_state.get("_dash_staff_opts_list") or [])
+        # 👤 담당자 — index=0 고정 금지(선택값이 매번 '전체'로 풀리며 전체 재계산·로딩 유발)
         _staff_opts_with_all = ["전체 담당자"] + _staff_opts
-        _staff_picked = fc3.selectbox("👤 담당자", options=_staff_opts_with_all, index=0, key="dash_filter_staff_sb_new")
+        _staff_cur = st.session_state.get("dash_filter_staff_sb_new")
+        if _staff_cur not in _staff_opts_with_all:
+            st.session_state["dash_filter_staff_sb_new"] = "전체 담당자"
+        _staff_picked = fc3.selectbox("👤 담당자", options=_staff_opts_with_all, key="dash_filter_staff_sb_new")
         selected_staff = [] if _staff_picked == "전체 담당자" else [_staff_picked]
+        # 구 리스트 키와 동기화(다른 로직 호환, 위젯 키는 건드리지 않음)
+        st.session_state["dash_filter_staff"] = list(selected_staff)
         df_staff_for_opts = (
             df_base_opts[df_base_opts["담당자"].isin(selected_staff)]
             if selected_staff
             else df_base_opts
         )
-        _client_opts_sig = (start_date, end_date, tuple(selected_staff or ()))
+        _client_opts_sig = (start_date, end_date, tuple(selected_staff or ()), int(len(df_staff_for_opts)))
         if st.session_state.get("_dash_client_opts_sig") != _client_opts_sig:
             st.session_state["_dash_client_opts_sig"] = _client_opts_sig
             if df_staff_for_opts.empty:
@@ -9499,50 +9782,53 @@ if not full_df.empty:
                 st.session_state["_dash_client_opts_tuple"] = tuple(
                     list_filter_client_options(df_staff_for_opts)
                 )
-        all_clients = sorted(st.session_state.get("_dash_client_opts_tuple", ()))
-        # 단일 선택 + 태그 X로 원복 (selectbox는 지우기 불가 → multiselect max 1)
-        # 구 selectbox 키 문자열 → 새 리스트 키로 1회 이관
-        if "dash_filter_client_ms" not in st.session_state:
-            _old_c = st.session_state.get("dash_filter_client", "전체 거래처")
-            if isinstance(_old_c, str) and _old_c and _old_c != "전체 거래처" and _old_c in all_clients:
-                st.session_state["dash_filter_client_ms"] = [_old_c]
-            else:
-                st.session_state["dash_filter_client_ms"] = []
-        _prev_clients = st.session_state.get("dash_filter_client_ms", [])
-        if isinstance(_prev_clients, list) and _prev_clients:
-            _kept_c = [x for x in _prev_clients if x in all_clients]
-            if _kept_c != _prev_clients:
-                st.session_state["dash_filter_client_ms"] = _kept_c
-        # 🏢 거래처 선택 (기형적인 multiselect 버리고 1초 타자 가능한 selectbox로 순정 복구)
+        all_clients = list(st.session_state.get("_dash_client_opts_tuple", ()))
+        # 업체대분류 담당거래처도 목록에 포함(조회기간에 매출이 없어도 검색 가능)
+        if selected_staff and industry_staff_map:
+            _ind_clients = {
+                c
+                for c, s in industry_staff_map.items()
+                if s in selected_staff and c and not str(c).startswith(("z", "Z"))
+            }
+            if _ind_clients:
+                all_clients = sorted(set(all_clients) | _ind_clients)
+        # 🏢 거래처 — 옵션에 없는 이전 선택만 '전체'로, 유효 선택은 유지
         client_options_with_all = ["전체 거래처"] + all_clients
-        
+        _client_cur = st.session_state.get("dash_filter_client_selectbox")
+        if _client_cur not in client_options_with_all:
+            st.session_state["dash_filter_client_selectbox"] = "전체 거래처"
         selected_client = fc4.selectbox(
             "🏢 거래처",
             options=client_options_with_all,
-            index=0,
-            key="dash_filter_client_selectbox"
+            key="dash_filter_client_selectbox",
         )
-        # 하위 로직·엑셀 시그니처 호환용
         st.session_state["dash_filter_client"] = selected_client
         df_client_for_opts = (
             filter_df_by_selected_client(df_staff_for_opts, selected_client)
             if selected_client != "전체 거래처"
             else df_staff_for_opts
         )
-        available_items = (
-            sorted(df_client_for_opts["품목명"].astype(str).unique())
-            if not df_client_for_opts.empty
-            else []
-        )
-        _prev_items = st.session_state.get("dash_filter_items", [])
-        if isinstance(_prev_items, list) and _prev_items:
-            _kept = [x for x in _prev_items if x in available_items]
-            if _kept != _prev_items:
-                st.session_state["dash_filter_items"] = _kept
-        # 📦 품목명 선택 (불편한 multiselect 버리고 selectbox로 교체 + 호환성 유지)
+        # 품목 옵션 캐시 (담당자+거래처+행수)
+        _item_opts_sig = (_client_opts_sig, selected_client, int(len(df_client_for_opts)))
+        if st.session_state.get("_dash_item_opts_sig") != _item_opts_sig:
+            st.session_state["_dash_item_opts_sig"] = _item_opts_sig
+            if df_client_for_opts.empty or "품목명" not in df_client_for_opts.columns:
+                st.session_state["_dash_item_opts_tuple"] = ()
+            else:
+                st.session_state["_dash_item_opts_tuple"] = tuple(
+                    sorted(df_client_for_opts["품목명"].astype(str).unique())
+                )
+        available_items = list(st.session_state.get("_dash_item_opts_tuple", ()))
+        # 📦 품목명 — 유효 선택 유지 (index=0 제거)
         _item_opts = ["전체 품목"] + available_items
-        _item_picked = fc5.selectbox("📦 품목명", options=_item_opts, index=0, key="dash_filter_items_sb_new")
+        _item_cur = st.session_state.get("dash_filter_items_sb_new")
+        if _item_cur not in _item_opts:
+            st.session_state["dash_filter_items_sb_new"] = "전체 품목"
+        _item_picked = fc5.selectbox("📦 품목명", options=_item_opts, key="dash_filter_items_sb_new")
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
+        st.session_state["dash_filter_items"] = list(selected_item)
+        # 반영 확인용(앱 빌드). 업무일지·공문 생략 최적화 포함 여부.
+        st.caption("필터 빌드 2026-08-27j · 필터시중탭생략")
 
         df_base = df_base_opts
         df_staff_filtered = (
@@ -9620,12 +9906,13 @@ filtered_debt_df = pd.DataFrame()
 if not debt_df.empty:
     if selected_staff:
         valid_staff_clients = full_df[full_df["담당자"].isin(selected_staff)]["거래처"].unique()
-        staff_debt_df = debt_df[debt_df["거래처"].isin(valid_staff_clients)].copy()
+        staff_debt_df = debt_df[debt_df["거래처"].isin(valid_staff_clients)]
     else:
-        staff_debt_df = debt_df.copy()
-    filtered_debt_df = staff_debt_df.copy()
+        staff_debt_df = debt_df
     if selected_client != "전체 거래처":
-        filtered_debt_df = filtered_debt_df[filtered_debt_df["거래처"] == selected_client].copy()
+        filtered_debt_df = staff_debt_df[staff_debt_df["거래처"] == selected_client]
+    else:
+        filtered_debt_df = staff_debt_df
 client_addr_raw = resolve_client_address(selected_client, addr_dict)
 if not client_addr_raw:
     client_addr = "등록된 주소 정보가 없습니다."
@@ -9740,6 +10027,7 @@ except ImportError:
 except Exception as exc:
     st.sidebar.error(f"PPT 생성 오류: {exc}")
 # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
+_dash_note_filter_change_for_heavy_tabs()
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
     [
         "📌 영업 종합 요약",
@@ -9757,13 +10045,15 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.t
     ]
 )
 # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
-_STICKY_INJECT_VER = 31
+# 활성 탭 cookie 스크립트는 height=0·가벼움 → 매 run 재주입(탭 전환 추적·stub 자동복원)
+_STICKY_INJECT_VER = 33
 if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
     st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
     st.session_state["_ipad_sticky_injected"] = True
     st.session_state["_ipad_sticky_ver"] = 30
+inject_dash_active_tab_cookie_script()
 # Tab 1: 📌 영업 종합 요약
 with tab1:
     t1_c1, t1_c2 = st.columns([4, 1])
@@ -12776,22 +13066,36 @@ with tab10:
     # 업무일지 탭 전용 — 다른 탭과 공유 상태/헬퍼를 쓰지 않음.
     # 파일 mtime 변경 시에만 reload (매번 reload 금지 → 달력/저장 로딩 감소).
     # 로드 실패 시에도 다른 탭은 유지.
+    # 상단 필터 변경 시(다른 탭 사용 중) 무거운 UI 생략 → 예전처럼 필터가 빠릿하게.
     try:
-        import importlib
-        import os
-        import sys
+        if _dash_should_defer_heavy_tab(_DASH_TAB_WORKLOG):
+            _dash_defer_heavy_stub(
+                "📝 일일업무일지",
+                _DASH_TAB_WORKLOG,
+                "_dash_bak_worklog",
+                ("wl_", "worklog_", "wl_date_pick"),
+            )
+        else:
+            _dash_restore_session_keys("_dash_bak_worklog")
+            import importlib
+            import os
+            import sys
 
-        import worklog_tab as _worklog_tab
+            import worklog_tab as _worklog_tab
 
-        _wl_path = getattr(_worklog_tab, "__file__", None) or ""
-        _wl_mtime = os.path.getmtime(_wl_path) if _wl_path and os.path.exists(_wl_path) else 0
-        if "_wl_mod_mtime" not in st.session_state:
-            st.session_state["_wl_mod_mtime"] = _wl_mtime
-        elif st.session_state.get("_wl_mod_mtime") != _wl_mtime:
-            _worklog_tab = importlib.reload(_worklog_tab)
-            st.session_state["_wl_mod_mtime"] = _wl_mtime
-            sys.modules["worklog_tab"] = _worklog_tab
-        _worklog_tab.render_worklog_tab(latest_update_str)
+            _wl_path = getattr(_worklog_tab, "__file__", None) or ""
+            _wl_mtime = os.path.getmtime(_wl_path) if _wl_path and os.path.exists(_wl_path) else 0
+            if "_wl_mod_mtime" not in st.session_state:
+                st.session_state["_wl_mod_mtime"] = _wl_mtime
+            elif st.session_state.get("_wl_mod_mtime") != _wl_mtime:
+                _worklog_tab = importlib.reload(_worklog_tab)
+                st.session_state["_wl_mod_mtime"] = _wl_mtime
+                sys.modules["worklog_tab"] = _worklog_tab
+            _worklog_tab.render_worklog_tab(latest_update_str)
+            _dash_backup_session_keys(
+                "_dash_bak_worklog",
+                ("wl_", "worklog_", "wl_date_pick"),
+            )
     except ModuleNotFoundError:
         st.error(
             "일일업무일지 모듈(`worklog_tab.py`)을 찾을 수 없습니다. "
@@ -12809,21 +13113,31 @@ with tab10:
 with tab11:
     # 시장조사 탭 전용 — 다른 탭과 공유 상태/헬퍼를 쓰지 않음.
     try:
-        import importlib
-        import os
-        import sys
+        if _dash_should_defer_heavy_tab(_DASH_TAB_MARKET):
+            _dash_defer_heavy_stub(
+                "🔎 시장조사",
+                _DASH_TAB_MARKET,
+                "_dash_bak_market",
+                ("mr_", "market_"),
+            )
+        else:
+            _dash_restore_session_keys("_dash_bak_market")
+            import importlib
+            import os
+            import sys
 
-        import market_research_tab as _mr_tab
+            import market_research_tab as _mr_tab
 
-        _mr_path = getattr(_mr_tab, "__file__", None) or ""
-        _mr_mtime = os.path.getmtime(_mr_path) if _mr_path and os.path.exists(_mr_path) else 0
-        if "_mr_mod_mtime" not in st.session_state:
-            st.session_state["_mr_mod_mtime"] = _mr_mtime
-        elif st.session_state.get("_mr_mod_mtime") != _mr_mtime:
-            _mr_tab = importlib.reload(_mr_tab)
-            st.session_state["_mr_mod_mtime"] = _mr_mtime
-            sys.modules["market_research_tab"] = _mr_tab
-        _mr_tab.render_market_research_tab(latest_update_str)
+            _mr_path = getattr(_mr_tab, "__file__", None) or ""
+            _mr_mtime = os.path.getmtime(_mr_path) if _mr_path and os.path.exists(_mr_path) else 0
+            if "_mr_mod_mtime" not in st.session_state:
+                st.session_state["_mr_mod_mtime"] = _mr_mtime
+            elif st.session_state.get("_mr_mod_mtime") != _mr_mtime:
+                _mr_tab = importlib.reload(_mr_tab)
+                st.session_state["_mr_mod_mtime"] = _mr_mtime
+                sys.modules["market_research_tab"] = _mr_tab
+            _mr_tab.render_market_research_tab(latest_update_str)
+            _dash_backup_session_keys("_dash_bak_market", ("mr_", "market_"))
     except ModuleNotFoundError:
         st.error(
             "시장조사 모듈(`market_research_tab.py`)을 찾을 수 없습니다. "
@@ -12837,22 +13151,32 @@ with tab11:
 with tab12:
     # 공문 탭 전용 — 다른 탭 블록/공유 헬퍼는 수정하지 않음.
     try:
-        import importlib
-        import os
-        import sys
+        if _dash_should_defer_heavy_tab(_DASH_TAB_LETTER):
+            _dash_defer_heavy_stub(
+                "📨 공문",
+                _DASH_TAB_LETTER,
+                "_dash_bak_letter",
+                ("pi_",),
+            )
+        else:
+            _dash_restore_session_keys("_dash_bak_letter")
+            import importlib
+            import os
+            import sys
 
-        import price_increase_tab as _pi_tab
+            import price_increase_tab as _pi_tab
 
-        _pi_path = getattr(_pi_tab, "__file__", None) or ""
-        _pi_mtime = os.path.getmtime(_pi_path) if _pi_path and os.path.exists(_pi_path) else 0
-        if "_pi_mod_mtime" not in st.session_state:
-            st.session_state["_pi_mod_mtime"] = _pi_mtime
-        elif st.session_state.get("_pi_mod_mtime") != _pi_mtime:
-            _pi_tab = importlib.reload(_pi_tab)
-            st.session_state["_pi_mod_mtime"] = _pi_mtime
-            sys.modules["price_increase_tab"] = _pi_tab
-        _pi_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
-        _pi_tab.render_price_increase_tab(_pi_df, latest_update_str=latest_update_str)
+            _pi_path = getattr(_pi_tab, "__file__", None) or ""
+            _pi_mtime = os.path.getmtime(_pi_path) if _pi_path and os.path.exists(_pi_path) else 0
+            if "_pi_mod_mtime" not in st.session_state:
+                st.session_state["_pi_mod_mtime"] = _pi_mtime
+            elif st.session_state.get("_pi_mod_mtime") != _pi_mtime:
+                _pi_tab = importlib.reload(_pi_tab)
+                st.session_state["_pi_mod_mtime"] = _pi_mtime
+                sys.modules["price_increase_tab"] = _pi_tab
+            _pi_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+            _pi_tab.render_price_increase_tab(_pi_df, latest_update_str=latest_update_str)
+            _dash_backup_session_keys("_dash_bak_letter", ("pi_",))
     except ModuleNotFoundError:
         st.error(
             "공문 모듈(`price_increase_tab.py`)을 찾을 수 없습니다. "
