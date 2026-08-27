@@ -4544,6 +4544,14 @@ def _dash_top_filter_sig_now() -> tuple:
     )
 
 
+def _dash_peek_filter_changed() -> bool:
+    """note 호출 전에도 필터 변경 여부 확인 (Gist sync 스킵용)."""
+    prev = st.session_state.get("_dash_filter_sig_heavy")
+    if prev is None:
+        return False
+    return prev != _dash_top_filter_sig_now()
+
+
 def _dash_note_filter_change_for_heavy_tabs() -> bool:
     """상단 필터가 바뀐 run이면 True. heavy 탭 defer 판단용 플래그도 갱신."""
     sig = _dash_top_filter_sig_now()
@@ -4588,48 +4596,31 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """상단 필터 rerun이면 업무일지·시장조사·공문 UI를 생략.
-
-    이 탭들은 상단 영업 필터를 쓰지 않음. 필터 변경마다 같이 그리면
-    (업무일지·공문 추가 이후) 체감 로딩이 급증함.
-    - force remount / 「화면 불러오기」→ 즉시 복원
-    - 활성 탭이 해당 heavy 탭이면(쿠키) 생략하지 않음(화면이 비지 않게)
-    - 필터 변경 후 미복원이면 다음 rerun에서도 stub 유지(필터 계속 빠릿)
-    """
+    """탭 UI 생략 비활성 — 요청에 따라 모든 탭을 항상 렌더(활성 처리)."""
+    # 필터 로딩 최적화는 Gist skip·피벗 캐시 등으로만 유지. 탭 stub 하지 않음.
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
-    if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
-        mounted[tab_idx] = True
-        return False
-    if st.session_state.get("_dash_filter_changed_flag"):
-        active = _dash_active_tab_idx()
-        if active is not None and int(active) == int(tab_idx):
-            mounted[tab_idx] = True
-            return False
-        mounted[tab_idx] = False
-        return True
-    # 필터 변경이 아닌 rerun: 이전에 생략했으면 stub 유지(복원 버튼/탭 전환 자동클릭까지)
-    if mounted.get(tab_idx, True) is False:
-        return True
     mounted[tab_idx] = True
+    st.session_state.pop(f"_dash_force_tab_{tab_idx}", None)
     return False
 
 
-def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: tuple[str, ...]) -> None:
-    _dash_backup_session_keys(backup_key, prefixes)
-    st.caption(
-        f"{title}: 상단 필터와 무관해 편집 UI를 생략했습니다(입력값 보존). "
-        "이 탭을 쓰면 「화면 불러오기」또는 탭을 다시 눌러 주세요."
-    )
-    if st.button(f"{title} 화면 불러오기", key=f"_dash_reload_tab_{tab_idx}", width="stretch"):
-        st.session_state[f"_dash_force_tab_{tab_idx}"] = True
-        st.rerun()
+def _dash_defer_heavy_stub(
+    title: str,
+    tab_idx: int,
+    backup_key: str = "",
+    prefixes: tuple[str, ...] = (),
+) -> None:
+    """호환용 no-op (탭은 항상 활성 렌더)."""
+    return
+
+
+def _dash_need_client_pivot_bundle() -> bool:
+    """모든 탭 활성 렌더 → 클라이언트 피벗 항상 계산."""
+    return True
 
 
 def inject_dash_active_tab_cookie_script() -> None:
-    """메인 탭 선택 → cookie + deferred stub 자동 「화면 불러오기」.
-
-    Streamlit components.html 은 rerun 마다 DOM에서 사라지므로 매 run 재주입.
-    """
+    """메인 탭 선택 → cookie + deferred stub 자동 「화면 불러오기」."""
     components.html(
         """
         <script>
@@ -4647,7 +4638,12 @@ def inject_dash_active_tab_cookie_script() -> None:
             return best;
           }
           function clickRemount() {
-            var buttons = doc.querySelectorAll('button');
+            // 현재 보이는 탭 패널 안의 「화면 불러오기」만 클릭 (다른 탭 stub 오클릭 방지)
+            var panel =
+              doc.querySelector('[role="tabpanel"]:not([hidden])') ||
+              doc.querySelector('[data-baseweb="tab-panel"]:not([hidden])');
+            var scope = panel || doc;
+            var buttons = scope.querySelectorAll('button');
             for (var b = 0; b < buttons.length; b++) {
               var t = (buttons[b].innerText || buttons[b].textContent || '');
               if (t.indexOf('화면 불러오기') >= 0) {
@@ -4668,10 +4664,7 @@ def inject_dash_active_tab_cookie_script() -> None:
               }
               if (idx < 0) return;
               doc.cookie = COOKIE + '=' + idx + '; path=/; max-age=31536000; SameSite=Lax';
-              // 업무일지(9)·시장조사(10)·공문(11): stub이면 자동 복원
-              if (idx >= 9 && idx <= 11) {
-                setTimeout(clickRemount, 40);
-              }
+              // 전체 탭 활성 렌더 — stub 자동복원 클릭 없음
             } catch (e1) {}
           }
           if (!doc.__dashActiveTabCookieReady) {
@@ -4685,7 +4678,6 @@ def inject_dash_active_tab_cookie_script() -> None:
           }
           writeIdx();
           setTimeout(writeIdx, 120);
-          setTimeout(writeIdx, 600);
         })();
         </script>
         """,
@@ -9091,8 +9083,14 @@ if isinstance(_drive_autoload_res, dict):
         )
 
 # Cloud 재부팅: Gist 최신 캐시를 git 시드보다 우선 (사이드바 CSV·매출)
+# 상단 필터만 바뀐 rerun에서는 Gist pull 생략 → 검색/지정 체감 로딩 개선
 _cache_remote_res = None
-if sync_cache_remote is not None and cache_remote_configured():
+_skip_gist_on_filter = _dash_peek_filter_changed()
+if (
+    sync_cache_remote is not None
+    and cache_remote_configured()
+    and not _skip_gist_on_filter
+):
     try:
         _cache_remote_res = sync_cache_remote(
             CACHE_DIR,
@@ -9124,6 +9122,8 @@ if sync_cache_remote is not None and cache_remote_configured():
             sync_cache_remote(CACHE_DIR, force=True)
         except Exception:
             pass
+elif _skip_gist_on_filter:
+    pass
 elif _is_streamlit_cloud() and cache_remote_configured is not None and not cache_remote_configured():
     st.sidebar.caption("Gist 캐시: secrets에 github_token (+ dashboard_cache_gist_id)")
 
@@ -9785,11 +9785,15 @@ if not full_df.empty:
         all_clients = list(st.session_state.get("_dash_client_opts_tuple", ()))
         # 업체대분류 담당거래처도 목록에 포함(조회기간에 매출이 없어도 검색 가능)
         if selected_staff and industry_staff_map:
-            _ind_clients = {
-                c
-                for c, s in industry_staff_map.items()
-                if s in selected_staff and c and not str(c).startswith(("z", "Z"))
-            }
+            _ind_staff_key = ("_ind_clients", tuple(selected_staff))
+            if st.session_state.get("_dash_ind_clients_sig") != _ind_staff_key:
+                st.session_state["_dash_ind_clients_sig"] = _ind_staff_key
+                st.session_state["_dash_ind_clients_set"] = {
+                    c
+                    for c, s in industry_staff_map.items()
+                    if s in selected_staff and c and not str(c).startswith(("z", "Z"))
+                }
+            _ind_clients = st.session_state.get("_dash_ind_clients_set") or set()
             if _ind_clients:
                 all_clients = sorted(set(all_clients) | _ind_clients)
         # 🏢 거래처 — 옵션에 없는 이전 선택만 '전체'로, 유효 선택은 유지
@@ -9827,8 +9831,10 @@ if not full_df.empty:
         _item_picked = fc5.selectbox("📦 품목명", options=_item_opts, key="dash_filter_items_sb_new")
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
-        # 반영 확인용(앱 빌드). 업무일지·공문 생략 최적화 포함 여부.
-        st.caption("필터 빌드 2026-08-27j · 필터시중탭생략")
+        # 필터 변경 플래그를 피벗/탭 전에 확정 (lazy pivot · 탭 defer)
+        _dash_note_filter_change_for_heavy_tabs()
+        # 반영 확인용(앱 빌드)
+        st.caption("필터 빌드 2026-08-27m · 전체탭활성")
 
         df_base = df_base_opts
         df_staff_filtered = (
@@ -9854,7 +9860,7 @@ if not full_df.empty:
             while len(_base_store) > 8:
                 _base_store.pop(next(iter(_base_store)))
         _bb = _base_store[_base_ck]
-        # 거래처·품목 피벗만 필터 조합별 캐시
+        # 거래처·품목 피벗: 활성 탭이 거래처/품목/담당자가 아니면 생략(캐시 hit는 그대로)
         _pivot_ck = _dash_pivot_cache_key(
             selected_client,
             selected_staff,
@@ -9865,13 +9871,30 @@ if not full_df.empty:
             _manual_tok,
         )
         _pivot_store = st.session_state.setdefault("_dash_pivot_store", {})
-        if _pivot_ck not in _pivot_store:
-            _pivot_store[_pivot_ck] = _dash_compute_client_pivot_bundle(
+        if _pivot_ck in _pivot_store:
+            _cb = _pivot_store[_pivot_ck]
+        elif _dash_need_client_pivot_bundle():
+            _cb = _dash_compute_client_pivot_bundle(
                 df_client_filtered, df_f, _bb["years"], all_months
             )
+            _pivot_store[_pivot_ck] = _cb
             while len(_pivot_store) > 32:
                 _pivot_store.pop(next(iter(_pivot_store)))
-        _cb = _pivot_store[_pivot_ck]
+        else:
+            # 빈 placeholder — 해당 탭 진입 시 다시 계산
+            _cb = {
+                "client_item_qty_pivot": pd.DataFrame(),
+                "sales_p": pd.DataFrame(),
+                "qty_p": pd.DataFrame(),
+                "unit_price_p": pd.DataFrame(),
+                "df_detail": pd.DataFrame(),
+                "cur_month_sales_client": 0.0,
+                "prev_month_sales_client": 0.0,
+                "mom_rate_client": 0.0,
+                "avg_monthly_sales_client": 0.0,
+                "avg_rate_client": 0.0,
+                "latest_month_str_client": "-",
+            }
         _pb = dict(_bb)
         _pb.update(_cb)
         years = _pb["years"]
@@ -10026,8 +10049,7 @@ except ImportError:
     st.sidebar.warning("PPT 내보내기: `pip install python-pptx kaleido` 설치 후 이용하세요.")
 except Exception as exc:
     st.sidebar.error(f"PPT 생성 오류: {exc}")
-# 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
-_dash_note_filter_change_for_heavy_tabs()
+# 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 플래그는 필터 블록에서 이미 기록.
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
     [
         "📌 영업 종합 요약",
@@ -10046,639 +10068,635 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.t
 )
 # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
 # 활성 탭 cookie 스크립트는 height=0·가벼움 → 매 run 재주입(탭 전환 추적·stub 자동복원)
-_STICKY_INJECT_VER = 33
+_STICKY_INJECT_VER = 35
 if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
     st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
     st.session_state["_ipad_sticky_injected"] = True
     st.session_state["_ipad_sticky_ver"] = 30
-inject_dash_active_tab_cookie_script()
+# 탭 cookie는 유지(향후용). 자동 「화면 불러오기」는 전체탭활성으로 불필요 → 주입 축소
+if st.session_state.get("_dash_active_tab_cookie_on") != 2:
+    inject_dash_active_tab_cookie_script()
+    st.session_state["_dash_active_tab_cookie_on"] = 2
 # Tab 1: 📌 영업 종합 요약
 with tab1:
-    t1_c1, t1_c2 = st.columns([4, 1])
-    t1_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 주요 실적 지표</div>", unsafe_allow_html=True)
-    t1_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-
-    m1, m2, m3, m4 = st.columns(4)
-
-    tot_sales_val = df_base["매출액"].sum() * 1.1 / 10000 if not df_base.empty else 0.0
-    cur_sales_val = cur_month_sales_total / 10000
-    m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
-    m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_total})</div><div class='metric-value'>{cur_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
-    m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_total < 0 else '#2563EB'};'>{mom_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
-    m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_total < 0 else '#2563EB'};'>{avg_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
-    st.markdown("<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 연도별 월 매출 추이</div>", unsafe_allow_html=True)
-    col_left, col_right = st.columns([1, 1])
-
-    with col_left:
-        pivot_m_total_disp = get_display_df_with_sum(pivot_m_total, "연간 합계")
-        st.dataframe(style_with_sum(pivot_m_total_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
-    with col_right:
-        render_plotly_chart(
-            create_stacked_bar_chart(pivot_m_total, title_text=""),
-            use_container_width=True, key="tab1_total_chart"
-        )
-    
-    st.markdown("---")
-    st.markdown("<div class='sub-header dashboard-tab-panel-head'>📦 주요 4대 품목 상세 분석</div>", unsafe_allow_html=True)
-
-    sel_col1, sel_col2 = st.columns([1, 1])
-    with sel_col1:
-        selected_target_item = st.radio("🔍 분석할 품목 선택", target_items, horizontal=True, key="overall_item_radio")
-    with sel_col2:
-        selected_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="overall_metric_radio")
-    
-    item_pivot = cached_get_item_pivot(df_base, selected_target_item, selected_metric, all_months, years)
-    week_year_pivot = cached_get_item_month_week_year(
-        df_base, selected_target_item, selected_metric, all_months, years
-    )
-
-    if "비중" in selected_metric:
-        y_suf, y_fmt, _fmt_kind, _cmap = "%", ",.1f", "pct", "Purples"
-    elif "출고량" in selected_metric:
-        y_suf, y_fmt, _fmt_kind, _cmap = " 천kg", ",.1f", "qty", "Greens"
+    if _dash_should_defer_heavy_tab(0):
+        _dash_defer_heavy_stub('📌 영업 종합 요약', 0)
     else:
-        y_suf, y_fmt, _fmt_kind, _cmap = " 만원", ",.0f", "amt", "Blues"
+        t1_c1, t1_c2 = st.columns([4, 1])
+        t1_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 주요 실적 지표</div>", unsafe_allow_html=True)
+        t1_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
 
-    # 상단「연도별 월 매출 추이」와 동일: 좌 표 / 우 그래프 1:1
-    # iPad 표는 render_month_expandable_week_table 내부에서 가로 스크롤로 숫자 표시
-    i_col_left, i_col_right = st.columns([1, 1])
-    with i_col_left:
-        render_month_expandable_week_table(
-            item_pivot,
-            week_year_pivot,
-            fmt_kind=_fmt_kind,
-            cmap_name=_cmap,
-            height=460,
+        m1, m2, m3, m4 = st.columns(4)
+
+        tot_sales_val = df_base["매출액"].sum() * 1.1 / 10000 if not df_base.empty else 0.0
+        cur_sales_val = cur_month_sales_total / 10000
+        m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
+        m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_total})</div><div class='metric-value'>{cur_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
+        m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_total < 0 else '#2563EB'};'>{mom_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
+        m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_total < 0 else '#2563EB'};'>{avg_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
+        st.markdown("<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 연도별 월 매출 추이</div>", unsafe_allow_html=True)
+        col_left, col_right = st.columns([1, 1])
+
+        with col_left:
+            pivot_m_total_disp = get_display_df_with_sum(pivot_m_total, "연간 합계")
+            st.dataframe(style_with_sum(pivot_m_total_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
+        with col_right:
+            render_plotly_chart(
+                create_stacked_bar_chart(pivot_m_total, title_text=""),
+                use_container_width=True, key="tab1_total_chart"
+            )
+    
+        st.markdown("---")
+        st.markdown("<div class='sub-header dashboard-tab-panel-head'>📦 주요 4대 품목 상세 분석</div>", unsafe_allow_html=True)
+
+        sel_col1, sel_col2 = st.columns([1, 1])
+        with sel_col1:
+            selected_target_item = st.radio("🔍 분석할 품목 선택", target_items, horizontal=True, key="overall_item_radio")
+        with sel_col2:
+            selected_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="overall_metric_radio")
+    
+        item_pivot = cached_get_item_pivot(df_base, selected_target_item, selected_metric, all_months, years)
+        week_year_pivot = cached_get_item_month_week_year(
+            df_base, selected_target_item, selected_metric, all_months, years
         )
-    with i_col_right:
-        render_plotly_chart(
-            create_stacked_bar_chart(
+
+        if "비중" in selected_metric:
+            y_suf, y_fmt, _fmt_kind, _cmap = "%", ",.1f", "pct", "Purples"
+        elif "출고량" in selected_metric:
+            y_suf, y_fmt, _fmt_kind, _cmap = " 천kg", ",.1f", "qty", "Greens"
+        else:
+            y_suf, y_fmt, _fmt_kind, _cmap = " 만원", ",.0f", "amt", "Blues"
+
+        # 상단「연도별 월 매출 추이」와 동일: 좌 표 / 우 그래프 1:1
+        # iPad 표는 render_month_expandable_week_table 내부에서 가로 스크롤로 숫자 표시
+        i_col_left, i_col_right = st.columns([1, 1])
+        with i_col_left:
+            render_month_expandable_week_table(
                 item_pivot,
-                title_text="",
-                y_suffix=y_suf,
-                y_format=y_fmt,
-            ),
-            use_container_width=True,
-            key="tab1_item_chart",
-        )
+                week_year_pivot,
+                fmt_kind=_fmt_kind,
+                cmap_name=_cmap,
+                height=460,
+            )
+        with i_col_right:
+            render_plotly_chart(
+                create_stacked_bar_chart(
+                    item_pivot,
+                    title_text="",
+                    y_suffix=y_suf,
+                    y_format=y_fmt,
+                ),
+                use_container_width=True,
+                key="tab1_item_chart",
+            )
 
-    st.markdown("---")
-    st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
+        st.markdown("---")
+        st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
 
-    if "업종" in df_base.columns:
-        available_industries = sorted(list(df_base["업종"].unique()))
+        if "업종" in df_base.columns:
+            available_industries = sorted(list(df_base["업종"].unique()))
     
-        if len(available_industries) == 1 and available_industries[0] == "미분류":
-            st.info("💡 현재 모든 거래처가 '미분류' 상태입니다. 왼쪽 사이드바에서 '🏢 거래처 업종 분류 (CSV)' 파일을 업로드하시면 정확한 업종별 상세 분석이 가능합니다.")
+            if len(available_industries) == 1 and available_industries[0] == "미분류":
+                st.info("💡 현재 모든 거래처가 '미분류' 상태입니다. 왼쪽 사이드바에서 '🏢 거래처 업종 분류 (CSV)' 파일을 업로드하시면 정확한 업종별 상세 분석이 가능합니다.")
         
-        if available_industries:
-            ind_col1, ind_col2 = st.columns([1, 1])
-            with ind_col1:
-                selected_industry = st.selectbox("🔍 분석할 업종(분류) 선택", available_industries, key="industry_selectbox")
-            with ind_col2:
-                selected_ind_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="industry_metric_radio")
+            if available_industries:
+                ind_col1, ind_col2 = st.columns([1, 1])
+                with ind_col1:
+                    selected_industry = st.selectbox("🔍 분석할 업종(분류) 선택", available_industries, key="industry_selectbox")
+                with ind_col2:
+                    selected_ind_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="industry_metric_radio")
         
-            ind_pivot = cached_get_industry_pivot(df_base, selected_industry, selected_ind_metric, all_months, years)
+                ind_pivot = cached_get_industry_pivot(df_base, selected_industry, selected_ind_metric, all_months, years)
             
-            i_col_left2, i_col_right2 = st.columns([1, 1])
-            with i_col_left2:
-                st.caption("💡 표의 행(월)을 클릭하면 아래 '업종별 매출 비중' 도넛 차트의 기준 월이 변경됩니다.")
-                ind_pivot_disp = get_display_df_with_sum(ind_pivot, "연간 합계")
+                i_col_left2, i_col_right2 = st.columns([1, 1])
+                with i_col_left2:
+                    st.caption("💡 표의 행(월)을 클릭하면 아래 '업종별 매출 비중' 도넛 차트의 기준 월이 변경됩니다.")
+                    ind_pivot_disp = get_display_df_with_sum(ind_pivot, "연간 합계")
                 
-                # 표에 on_select 추가하여 클릭 감지
-                if "비중" in selected_ind_metric:
-                    ind_ev = st.dataframe(style_with_sum(ind_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key="ind_table_pct")
-                    y_suf_i, y_fmt_i = "%", ",.1f"
-                elif "출고량" in selected_ind_metric:
-                    # 🟢 소수점 1자리(1f)와 '천' 단위가 적용된 부분입니다!
-                    ind_ev = st.dataframe(style_with_sum(ind_pivot_disp, "{:,.1f}", "Greens", axis=None), use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key="ind_table_qty")
-                    y_suf_i, y_fmt_i = " 천", ",.1f"
-                else:
-                    ind_ev = st.dataframe(style_with_sum(ind_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key="ind_table_amt")
-                    y_suf_i, y_fmt_i = " 만원", ",.0f"
+                    # 표에 on_select 추가하여 클릭 감지
+                    if "비중" in selected_ind_metric:
+                        ind_ev = st.dataframe(style_with_sum(ind_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key="ind_table_pct")
+                        y_suf_i, y_fmt_i = "%", ",.1f"
+                    elif "출고량" in selected_ind_metric:
+                        # 🟢 소수점 1자리(1f)와 '천' 단위가 적용된 부분입니다!
+                        ind_ev = st.dataframe(style_with_sum(ind_pivot_disp, "{:,.1f}", "Greens", axis=None), use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key="ind_table_qty")
+                        y_suf_i, y_fmt_i = " 천", ",.1f"
+                    else:
+                        ind_ev = st.dataframe(style_with_sum(ind_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key="ind_table_amt")
+                        y_suf_i, y_fmt_i = " 만원", ",.0f"
                     
-                # 행(월) 클릭 시 도넛 차트 월(top30_month) 강제 업데이트
-                if ind_ev and ind_ev.selection.rows:
-                    sel_idx = ind_ev.selection.rows[0]
-                    sel_month = ind_pivot_disp.index[sel_idx]
+                    # 행(월) 클릭 시 도넛 차트 월(top30_month) 강제 업데이트
+                    if ind_ev and ind_ev.selection.rows:
+                        sel_idx = ind_ev.selection.rows[0]
+                        sel_month = ind_pivot_disp.index[sel_idx]
                     
-                    if sel_month in all_months and st.session_state.get("top30_month") != sel_month:
-                        st.session_state["top30_month"] = sel_month
-                        try:
-                            st.query_params["top30_month"] = sel_month
-                        except Exception:
-                            pass
-                        st.rerun()
+                        if sel_month in all_months and st.session_state.get("top30_month") != sel_month:
+                            st.session_state["top30_month"] = sel_month
+                            try:
+                                st.query_params["top30_month"] = sel_month
+                            except Exception:
+                                pass
+                            st.rerun()
                         
-            with i_col_right2:
-                render_plotly_chart(
-                    create_stacked_bar_chart(
-                        ind_pivot, 
-                        title_text="", 
-                        y_suffix=y_suf_i, 
-                        y_format=y_fmt_i
-                    ),
-                    use_container_width=True, key="tab1_industry_chart"
-                )
-            st.markdown("<br>", unsafe_allow_html=True)
-            with st.expander(f"📂 [{selected_industry}] 소속 거래처 상세 데이터 파보기 (클릭하여 펼치기)", expanded=False):
-                df_ind_detail = df_base[df_base["업종"] == selected_industry]
+                with i_col_right2:
+                    render_plotly_chart(
+                        create_stacked_bar_chart(
+                            ind_pivot, 
+                            title_text="", 
+                            y_suffix=y_suf_i, 
+                            y_format=y_fmt_i
+                        ),
+                        use_container_width=True, key="tab1_industry_chart"
+                    )
+                st.markdown("<br>", unsafe_allow_html=True)
+                with st.expander(f"📂 [{selected_industry}] 소속 거래처 상세 데이터 파보기 (클릭하여 펼치기)", expanded=False):
+                    df_ind_detail = df_base[df_base["업종"] == selected_industry]
             
-                if not df_ind_detail.empty:
-                    ind_client_pivot = df_ind_detail.pivot_table(index="거래처", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+                    if not df_ind_detail.empty:
+                        ind_client_pivot = df_ind_detail.pivot_table(index="거래처", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
                 
-                    avail_years_ind = sorted([y for y in ind_client_pivot.columns if str(y).isdigit()])
-                    ind_client_pivot = ind_client_pivot.reindex(columns=avail_years_ind, fill_value=0)
-                    ind_client_pivot["총 누적매출"] = ind_client_pivot.sum(axis=1)
-                    ind_client_pivot = ind_client_pivot.sort_values(by="총 누적매출", ascending=False)
+                        avail_years_ind = sorted([y for y in ind_client_pivot.columns if str(y).isdigit()])
+                        ind_client_pivot = ind_client_pivot.reindex(columns=avail_years_ind, fill_value=0)
+                        ind_client_pivot["총 누적매출"] = ind_client_pivot.sum(axis=1)
+                        ind_client_pivot = ind_client_pivot.sort_values(by="총 누적매출", ascending=False)
                 
-                    ind_client_pivot_disp = get_display_df_with_sum(ind_client_pivot, "합계")
-                    st.dataframe(style_with_sum(ind_client_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=280)
+                        ind_client_pivot_disp = get_display_df_with_sum(ind_client_pivot, "합계")
+                        st.dataframe(style_with_sum(ind_client_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=280)
                 
-                    st.markdown("<hr style='margin: 15px 0px; border-top: 1px dashed #E2E8F0;'>", unsafe_allow_html=True)
+                        st.markdown("<hr style='margin: 15px 0px; border-top: 1px dashed #E2E8F0;'>", unsafe_allow_html=True)
                 
-                    ind_clients = sorted(df_ind_detail["거래처"].unique())
+                        ind_clients = sorted(df_ind_detail["거래처"].unique())
                 
-                    c1, c2, c3 = st.columns([1, 1, 1])
-                    with c1:
-                        sel_ind_client = st.selectbox(f"🏢 [{selected_industry}] 거래처 선택", ind_clients, key="ind_client_sel")
-                    with c2:
-                        client_items = sorted(df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]["품목명"].unique())
-                        sel_ind_item = st.selectbox("📦 품목 선택", client_items if client_items else ["없음"], key="ind_item_sel")
-                    with c3:
-                        sel_ind_sub_metric = st.radio("📊 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="ind_sub_metric")
+                        c1, c2, c3 = st.columns([1, 1, 1])
+                        with c1:
+                            sel_ind_client = st.selectbox(f"🏢 [{selected_industry}] 거래처 선택", ind_clients, key="ind_client_sel")
+                        with c2:
+                            client_items = sorted(df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]["품목명"].unique())
+                            sel_ind_item = st.selectbox("📦 품목 선택", client_items if client_items else ["없음"], key="ind_item_sel")
+                        with c3:
+                            sel_ind_sub_metric = st.radio("📊 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="ind_sub_metric")
                 
-                    if client_items:
-                        df_target_client = df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]
-                        sub_item_pivot = cached_get_item_pivot(df_target_client, sel_ind_item, sel_ind_sub_metric, all_months, years)
+                        if client_items:
+                            df_target_client = df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]
+                            sub_item_pivot = cached_get_item_pivot(df_target_client, sel_ind_item, sel_ind_sub_metric, all_months, years)
                     
-                        sc1, sc2 = st.columns([1, 1])
-                        with sc1:
-                            sub_item_pivot_disp = get_display_df_with_sum(sub_item_pivot, "연간 합계")
-                            if "비중" in sel_ind_sub_metric:
-                                st.dataframe(style_with_sum(sub_item_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=410)
-                                y_suf_sub, y_fmt_sub = "%", ",.1f"
-                            elif "출고량" in sel_ind_sub_metric:
-                                if sel_ind_item in target_items:
-                                    y_suf_sub, y_fmt_sub = " 천kg", ",.1f"
-                                elif "LPG" in str(sel_ind_item).upper():
-                                    y_suf_sub, y_fmt_sub = " kg", ",.0f"
+                            sc1, sc2 = st.columns([1, 1])
+                            with sc1:
+                                sub_item_pivot_disp = get_display_df_with_sum(sub_item_pivot, "연간 합계")
+                                if "비중" in sel_ind_sub_metric:
+                                    st.dataframe(style_with_sum(sub_item_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=410)
+                                    y_suf_sub, y_fmt_sub = "%", ",.1f"
+                                elif "출고량" in sel_ind_sub_metric:
+                                    if sel_ind_item in target_items:
+                                        y_suf_sub, y_fmt_sub = " 천kg", ",.1f"
+                                    elif "LPG" in str(sel_ind_item).upper():
+                                        y_suf_sub, y_fmt_sub = " kg", ",.0f"
+                                    else:
+                                        y_suf_sub, y_fmt_sub = " 개(병)", ",.0f"
+                                    st.dataframe(style_with_sum(sub_item_pivot_disp, f"{{:{y_fmt_sub}}}", "Greens", axis=None), use_container_width=True, height=410)
                                 else:
-                                    y_suf_sub, y_fmt_sub = " 개(병)", ",.0f"
-                                st.dataframe(style_with_sum(sub_item_pivot_disp, f"{{:{y_fmt_sub}}}", "Greens", axis=None), use_container_width=True, height=410)
-                            else:
-                                st.dataframe(style_with_sum(sub_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=410)
-                                y_suf_sub, y_fmt_sub = " 만원", ",.0f"
+                                    st.dataframe(style_with_sum(sub_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=410)
+                                    y_suf_sub, y_fmt_sub = " 만원", ",.0f"
                             
-                        with sc2:
-                            render_plotly_chart(
-                                create_stacked_bar_chart(sub_item_pivot, title_text="", y_suffix=y_suf_sub, y_format=y_fmt_sub),
-                                use_container_width=True, key="ind_client_sub_chart"
-                            )
-    st.markdown("---")
-    st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 당해년도 상위 30위 거래처 실적 (1월~12월) 및 업종 비중 · 월 헤더 클릭</div>", unsafe_allow_html=True)
-
-    if not df_base.empty:
-        current_year_str = str(df_base["연도"].max())
-        df_curr_year = df_base[df_base["연도"] == current_year_str]
-        if not df_curr_year.empty:
-            latest_dt = df_curr_year["매출일_dt"].max()
-            latest_m = latest_dt.strftime("%m월")
-            # 월 선택 → 해당 월 순위·도넛만 변경 (집계 로직 무손실)
-            inject_top30_month_bridge()
-            if "top30_month" not in st.session_state:
-                st.session_state["top30_month"] = latest_m
-            try:
-                qp_m = st.query_params.get("top30_month", None)
-                if isinstance(qp_m, list):
-                    qp_m = qp_m[0] if qp_m else None
-                if qp_m is not None:
-                    qp_m = urllib.parse.unquote(str(qp_m))
-                    if qp_m in all_months:
-                        st.session_state["top30_month"] = qp_m
-            except Exception:
-                pass
-            if st.session_state.get("top30_month") not in all_months:
-                st.session_state["top30_month"] = latest_m
-            rank_m = st.session_state["top30_month"]
-            rank_month_label = f"{current_year_str}년 {rank_m}"
-            # top30-section-flag: iPad CSS 스택용 마커 (맥 레이아웃/데이터 무손실)
-            # 상단 연도별 월매출 표·그래프와 동일: 1:1 열, 높이 460
-            _TOP30_H = 460
-            with st.container():
-                st.markdown("<div class='top30-section-flag' style='display:none'></div>", unsafe_allow_html=True)
-                p_col1, p_col2 = st.columns([1, 1])
-                with p_col1:
-                    st.markdown(
-                        f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
-                        f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
-                        f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
-                        f"{'← 월 선택 또는 표 헤더 클릭' if is_touch_ui() else '← 월 버튼 또는 표 헤더 클릭'}"
-                        f"</span></div>",
-                        unsafe_allow_html=True,
-                    )
-                    # 맥: 이전 가로 월버튼 / iPad(touch_ui=1): 현재 selectbox
-                    if is_touch_ui():
-                        _m_idx = all_months.index(rank_m) if rank_m in all_months else 0
-                        picked_m = st.selectbox(
-                            "기준 월",
-                            all_months,
-                            index=_m_idx,
-                            key="top30_month_select",
-                            label_visibility="collapsed",
-                        )
-                        if picked_m != st.session_state.get("top30_month"):
-                            st.session_state["top30_month"] = picked_m
-                            try:
-                                st.query_params["top30_month"] = picked_m
-                            except Exception:
-                                pass
-                            st.rerun()
-                    else:
-                        m_cols = st.columns(12, gap="small")
-                        _clicked_m = None
-                        for _i, _m in enumerate(all_months):
-                            with m_cols[_i]:
-                                if st.button(
-                                    _m,
-                                    key=f"top30_month_btn_{_m}",
-                                    type="primary" if _m == rank_m else "secondary",
-                                    width="stretch",
-                                ):
-                                    _clicked_m = _m
-                        if _clicked_m:
-                            st.session_state["top30_month"] = _clicked_m
-                            try:
-                                st.query_params["top30_month"] = _clicked_m
-                            except Exception:
-                                pass
-                            st.rerun()
-                    rank_m = st.session_state["top30_month"]
-                    rank_month_label = f"{current_year_str}년 {rank_m}"
-                
-                    pvt_curr = df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
-                    pvt_curr = pvt_curr.reindex(columns=all_months, fill_value=0)
-                
-                    if rank_m in pvt_curr.columns:
-                        pvt_curr = pvt_curr.sort_values(by=rank_m, ascending=False)
-                    top30_pvt = pvt_curr.head(30).reset_index()
-                
-                    top30_pvt.index = range(1, len(top30_pvt) + 1)
-                
-                    top30_pvt_disp = get_display_df_with_sum(top30_pvt, sum_label="합계", text_cols=["거래처"])
-                
-                    fmt_dict = {m: "{:,.0f}" for m in all_months}
-                    styled_top30 = style_with_sum(top30_pvt_disp, fmt_dict, "Blues", subset_cols=all_months, axis=0)
-                
-                    if rank_m in all_months:
-                        styled_top30 = styled_top30.apply(
-                            lambda s: ['color: #B91C1C; font-weight: bold; background-color: #DBEAFE;'] * len(s),
-                            subset=[rank_m],
-                            axis=0
-                        )
-                
-                    render_frozen_styler_html(
-                        styled_top30,
-                        height=_TOP30_H,
-                        freeze_left_n=2,
-                        freeze_widths=[44, 160],
-                        clickable_cols=all_months,
-                        query_param="top30_month",
-                        active_col=rank_m,
-                    )
-                with p_col2:
-                    st.markdown(
-                        f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
-                        f"🍩 [{rank_month_label}] 업종별 매출 비중</div>",
-                        unsafe_allow_html=True,
-                    )
-                    # 왼쪽 월 선택 줄과 높이를 맞춰 표·그래프 상단 정렬
-                    _ctrl_h = 42 if is_touch_ui() else 40
-                    st.markdown(
-                        f"<div style='height:{_ctrl_h}px;margin:0 0 8px;' aria-hidden='true'></div>",
-                        unsafe_allow_html=True,
-                    )
-                
-                    df_rank_month = df_curr_year[df_curr_year["월"] == rank_m]
-                    ind_sales = df_rank_month.groupby("업종")["매출액"].sum().reset_index()
-                    ind_sales = ind_sales[ind_sales["매출액"] > 0]
-                
-                    if ind_sales.empty:
-                        st.info(f"{rank_month_label} 업종별 매출 데이터가 없습니다.")
-                    else:
-                        fig_donut = px.pie(
-                            ind_sales, 
-                            values='매출액', 
-                            names='업종', 
-                            hole=0.4,
-                            color_discrete_sequence=px.colors.qualitative.Pastel
-                        )
-                        fig_donut.update_traces(
-                            textposition='inside',
-                            textinfo='percent+label',
-                            textfont_size=12,
-                        )
-                        fig_donut.update_layout(
-                            showlegend=True,
-                            legend=dict(
-                                orientation="h",
-                                yanchor="top",
-                                y=-0.02,
-                                xanchor="center",
-                                x=0.5,
-                                font=dict(size=11),
-                            ),
-                            margin=dict(l=8, r=8, t=8, b=72),
-                            height=_TOP30_H,
-                            autosize=True,
-                            paper_bgcolor="rgba(0,0,0,0)",
-                            plot_bgcolor="rgba(0,0,0,0)",
-                        )
-                        render_plotly_chart(
-                            fig_donut,
-                            key=f"top30_donut_{rank_m}",
-                            height=_TOP30_H,
-                        )
-        else:
-            st.info("당해년도 매출 데이터가 없습니다.")
-    st.markdown("---")
-    if not df_base.empty and '매출일_dt' in df_base.columns:
-        latest_period = df_base["매출일_dt"].dt.to_period("M").max()
-        prev_period = latest_period - 1
-    
-        curr_m_label = latest_period.strftime("%m월")
-        prev_m_label = prev_period.strftime("%m월")
-    
-        st.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📊 전월 대비 실적 증감 및 신규/이탈 분석 ({prev_m_label} vs {curr_m_label})</div>", unsafe_allow_html=True)
-    
-        df_prev = df_base[df_base["매출일_dt"].dt.to_period("M") == prev_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{prev_m_label} 매출"})
-        df_curr = df_base[df_base["매출일_dt"].dt.to_period("M") == latest_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{curr_m_label} 매출"})
-        df_diff = pd.merge(df_prev, df_curr, on="거래처", how="outer").fillna(0)
-        df_diff["매출 증감액"] = df_diff[f"{curr_m_label} 매출"] - df_diff[f"{prev_m_label} 매출"]
-    
-        df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] = (df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] * 1.1) / 10000
-        top_gains = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff["매출 증감액"] > 0)].sort_values(by="매출 증감액", ascending=False).head(10)
-        top_drops = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] > 0) & (df_diff["매출 증감액"] < 0)].sort_values(by="매출 증감액", ascending=True).head(10)
-        new_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] == 0) & (df_diff[f"{curr_m_label} 매출"] > 0)].sort_values(by=f"{curr_m_label} 매출", ascending=False)
-        lost_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] == 0)].sort_values(by=f"{prev_m_label} 매출", ascending=False)
-        mom_view = st.radio(
-            "전월 대비 분석 보기",
-            ["🚀 상승 Top 10", "📉 하락 Top 10", "🎉 신규/재개 거래처", "⚠️ 미거래/이탈 의심"],
-            horizontal=True,
-            key="tab1_mom_view",
-            label_visibility="collapsed",
-        )
-        if mom_view == "🚀 상승 Top 10":
-            st.markdown(f"**🔥 기존 거래처 중 매출이 가장 많이 [상승]한 10곳 (단위: 만원, VAT 포함)**")
-            if top_gains.empty:
-                st.info("해당 조건에 맞는 상승 거래처가 없습니다.")
-            else:
-                st.dataframe(
-                    top_gains.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
-                    .apply(lambda s: ['color: #2563EB; font-weight: bold;' if v > 0 else '' for v in s], subset=['매출 증감액']),
-                    use_container_width=True, hide_index=True, height=min(420, 38 + len(top_gains) * 35)
-                )
-        elif mom_view == "📉 하락 Top 10":
-            st.markdown(f"**📉 기존 거래처 중 매출이 가장 많이 [하락]한 10곳 (단위: 만원, VAT 포함)**")
-            if top_drops.empty:
-                st.info("해당 조건에 맞는 하락 거래처가 없습니다.")
-            else:
-                st.dataframe(
-                    top_drops.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
-                    .apply(lambda s: ['color: #B91C1C; font-weight: bold;' if v < 0 else '' for v in s], subset=['매출 증감액']),
-                    use_container_width=True, hide_index=True, height=min(420, 38 + len(top_drops) * 35)
-                )
-        elif mom_view == "🎉 신규/재개 거래처":
-            st.markdown(f"**🎉 {prev_m_label}엔 거래가 없었으나 {curr_m_label}에 새롭게 매출이 발생한 곳 (총 {len(new_clients)}곳, 단위: 만원, VAT 포함)**")
-            if new_clients.empty:
-                st.info("신규/재개 거래처가 없습니다.")
-            else:
-                st.dataframe(
-                    new_clients[["거래처", f"{curr_m_label} 매출"]].style.format({f"{curr_m_label} 매출": "{:,.0f}"}),
-                    use_container_width=True, hide_index=True, height=min(480, 38 + len(new_clients) * 35)
-                )
-        else:
-            st.markdown(f"**⚠️ {prev_m_label}엔 매출이 있었으나 {curr_m_label}엔 거래가 없는 곳 (총 {len(lost_clients)}곳, 단위: 만원, VAT 포함)**")
-            if lost_clients.empty:
-                st.info("미거래/이탈 의심 거래처가 없습니다.")
-            else:
-                st.dataframe(
-                    lost_clients[["거래처", f"{prev_m_label} 매출"]].style.format({f"{prev_m_label} 매출": "{:,.0f}"}),
-                    use_container_width=True, hide_index=True, height=min(480, 38 + len(lost_clients) * 35)
-                )
-
-# Tab 2: 🏢 거래처 분석
-with tab2:
-    t2_c1, t2_c2 = st.columns([4, 1])
-    t2_c1.markdown(f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
-    t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-
-    if "show_corp_info" not in st.session_state:
-        st.session_state.show_corp_info = False
-
-    # [핵심 패치] 거래처 필터를 바꿀 때 기업정보 창이 열려있으면 자동으로 닫아서 API 무한 로딩(프리징) 완벽 방지
-    if "last_opened_client" not in st.session_state:
-        st.session_state.last_opened_client = selected_client
-    if st.session_state.show_corp_info and st.session_state.last_opened_client != selected_client:
-        st.session_state.show_corp_info = False
-    st.session_state.last_opened_client = selected_client
-
-    # 가로 넓은 직사각형 버튼 — 글씨 한 줄로 박스 안에
-    with st.container(key="tab2_action_btns"):
-        btn_c1, btn_c2, btn_c3 = st.columns([2.4, 2.0, 1.8], gap="medium")
-        with btn_c1:
-            _notes_addr = (
-                client_addr
-                if client_addr and client_addr != "등록된 주소 정보가 없습니다."
-                else None
-            )
-            _notes_disabled = selected_client == "전체 거래처"
-            if _is_local_macos():
-                if st.button(
-                    "📝 macOS 메모에서 노트 열기/생성",
-                    key="btn_notes",
-                    width="stretch",
-                    disabled=_notes_disabled,
-                    help="특정 거래처를 선택하세요." if _notes_disabled else "메모「거래처」폴더에서 같은 거래처명 노트를 엽니다.",
-                ):
-                    with st.spinner("메모「거래처」폴더에서 같은 거래처명을 찾는 중..."):
-                        _notes_res = open_macos_notes_folder(
-                            selected_client,
-                            dart_api_key,
-                            df_integrated,
-                            address=_notes_addr,
-                        )
-                    st.session_state["_tab2_loaded_note"] = {
-                        **_notes_res,
-                        "client": selected_client,
-                    }
-                _loaded = st.session_state.get("_tab2_loaded_note") or {}
-                if _loaded.get("client") == selected_client:
-                    if _loaded.get("ok"):
-                        st.success(_loaded.get("msg") or "메모를 열었습니다.")
-                        _body = str(_loaded.get("body") or "").strip()
-                        _title = _loaded.get("matched_name") or selected_client
-                        with st.expander(f"불러온 메모 · {_title}", expanded=True):
-                            if _body:
-                                st.text_area(
-                                    "메모 본문",
-                                    value=_body,
-                                    height=220,
-                                    key=f"tab2_loaded_note_body_{selected_client}",
-                                    label_visibility="collapsed",
+                            with sc2:
+                                render_plotly_chart(
+                                    create_stacked_bar_chart(sub_item_pivot, title_text="", y_suffix=y_suf_sub, y_format=y_fmt_sub),
+                                    use_container_width=True, key="ind_client_sub_chart"
                                 )
-                            else:
-                                st.caption("노트는 열렸지만 본문을 읽지 못했습니다.")
-                    elif _loaded.get("msg"):
-                        st.error(_loaded.get("msg"))
-            else:
-                _notes_label = "📝 거래처 메모 · 내보내기"
-                with st.popover(
-                    _notes_label,
-                    width="stretch",
-                    disabled=_notes_disabled,
-                    help="특정 거래처를 선택하세요." if _notes_disabled else None,
-                ):
-                    if not _notes_disabled:
-                        # [핵심 패치] 팝오버를 열자마자 API를 긁어와 무한 로딩에 빠지는 현상 방지
-                        if st.button("🚀 메모 데이터 수집/생성 (클릭)", key="btn_gen_memo_export", use_container_width=True):
-                            with st.spinner("DART/팩토리온/네이버 조회 중..."):
-                                _, _n_plain, _n_html, _n_fname = prepare_client_note_export(
-                                    selected_client,
-                                    dart_api_key,
-                                    df_integrated,
-                                    address=_notes_addr,
-                                )
-                                st.session_state["_ready_note_export"] = {
-                                    "client": selected_client,
-                                    "plain": _n_plain,
-                                    "html": _n_html,
-                                    "fname": _n_fname
-                                }
-                        
-                        _note_cache = st.session_state.get("_ready_note_export", {})
-                        if _note_cache.get("client") == selected_client:
-                            st.success("✅ 메모가 준비되었습니다!")
-                            st.caption(
-                                "Cloud·iPad에서는 아래 **다운로드·복사·공유**로 메모 앱에 넣을 수 있습니다."
+        st.markdown("---")
+        st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 당해년도 상위 30위 거래처 실적 (1월~12월) 및 업종 비중 · 월 헤더 클릭</div>", unsafe_allow_html=True)
+
+        if not df_base.empty:
+            current_year_str = str(df_base["연도"].max())
+            df_curr_year = df_base[df_base["연도"] == current_year_str]
+            if not df_curr_year.empty:
+                latest_dt = df_curr_year["매출일_dt"].max()
+                latest_m = latest_dt.strftime("%m월")
+                # 월 선택 → 해당 월 순위·도넛만 변경 (집계 로직 무손실)
+                inject_top30_month_bridge()
+                if "top30_month" not in st.session_state:
+                    st.session_state["top30_month"] = latest_m
+                try:
+                    qp_m = st.query_params.get("top30_month", None)
+                    if isinstance(qp_m, list):
+                        qp_m = qp_m[0] if qp_m else None
+                    if qp_m is not None:
+                        qp_m = urllib.parse.unquote(str(qp_m))
+                        if qp_m in all_months:
+                            st.session_state["top30_month"] = qp_m
+                except Exception:
+                    pass
+                if st.session_state.get("top30_month") not in all_months:
+                    st.session_state["top30_month"] = latest_m
+                rank_m = st.session_state["top30_month"]
+                rank_month_label = f"{current_year_str}년 {rank_m}"
+                # top30-section-flag: iPad CSS 스택용 마커 (맥 레이아웃/데이터 무손실)
+                # 상단 연도별 월매출 표·그래프와 동일: 1:1 열, 높이 460
+                _TOP30_H = 460
+                with st.container():
+                    st.markdown("<div class='top30-section-flag' style='display:none'></div>", unsafe_allow_html=True)
+                    p_col1, p_col2 = st.columns([1, 1])
+                    with p_col1:
+                        st.markdown(
+                            f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
+                            f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
+                            f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
+                            f"{'← 월 선택 또는 표 헤더 클릭' if is_touch_ui() else '← 월 버튼 또는 표 헤더 클릭'}"
+                            f"</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                        # 맥: 이전 가로 월버튼 / iPad(touch_ui=1): 현재 selectbox
+                        if is_touch_ui():
+                            _m_idx = all_months.index(rank_m) if rank_m in all_months else 0
+                            picked_m = st.selectbox(
+                                "기준 월",
+                                all_months,
+                                index=_m_idx,
+                                key="top30_month_select",
+                                label_visibility="collapsed",
                             )
-                            st.download_button(
-                                "HTML 파일 다운로드",
-                                data=_note_cache["html"].encode("utf-8"),
-                                file_name=_note_cache["fname"],
-                                mime="text/html",
-                                key="tab2_notes_download",
-                                use_container_width=True,
-                            )
-                            st.caption("Mac: 다운로드 후 Safari로 열어 전체 선택 → 메모에 붙여넣기.")
-                            _render_tab2_note_share_html(_note_cache["plain"], selected_client)
+                            if picked_m != st.session_state.get("top30_month"):
+                                st.session_state["top30_month"] = picked_m
+                                try:
+                                    st.query_params["top30_month"] = picked_m
+                                except Exception:
+                                    pass
+                                st.rerun()
                         else:
-                            st.info("👆 위 버튼을 눌러 기업 정보를 먼저 수집하세요.")
-        with btn_c2:
-            btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
-            if st.button(btn_label, key="btn_dart_info", width="stretch"):
-                st.session_state.show_corp_info = not st.session_state.show_corp_info
-        with btn_c3:
-            # 주소록 주소 우선, 없으면 거래처명으로 카카오맵 검색
-            if selected_client and selected_client != "전체 거래처":
-                kakao_q = client_addr if client_addr != "등록된 주소 정보가 없습니다." else selected_client
-                kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(kakao_q)}"
-                st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url, width="stretch")
+                            m_cols = st.columns(12, gap="small")
+                            _clicked_m = None
+                            for _i, _m in enumerate(all_months):
+                                with m_cols[_i]:
+                                    if st.button(
+                                        _m,
+                                        key=f"top30_month_btn_{_m}",
+                                        type="primary" if _m == rank_m else "secondary",
+                                        width="stretch",
+                                    ):
+                                        _clicked_m = _m
+                            if _clicked_m:
+                                st.session_state["top30_month"] = _clicked_m
+                                try:
+                                    st.query_params["top30_month"] = _clicked_m
+                                except Exception:
+                                    pass
+                                st.rerun()
+                        rank_m = st.session_state["top30_month"]
+                        rank_month_label = f"{current_year_str}년 {rank_m}"
+                
+                        pvt_curr = df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+                        pvt_curr = pvt_curr.reindex(columns=all_months, fill_value=0)
+                
+                        if rank_m in pvt_curr.columns:
+                            pvt_curr = pvt_curr.sort_values(by=rank_m, ascending=False)
+                        top30_pvt = pvt_curr.head(30).reset_index()
+                
+                        top30_pvt.index = range(1, len(top30_pvt) + 1)
+                
+                        top30_pvt_disp = get_display_df_with_sum(top30_pvt, sum_label="합계", text_cols=["거래처"])
+                
+                        fmt_dict = {m: "{:,.0f}" for m in all_months}
+                        styled_top30 = style_with_sum(top30_pvt_disp, fmt_dict, "Blues", subset_cols=all_months, axis=0)
+                
+                        if rank_m in all_months:
+                            styled_top30 = styled_top30.apply(
+                                lambda s: ['color: #B91C1C; font-weight: bold; background-color: #DBEAFE;'] * len(s),
+                                subset=[rank_m],
+                                axis=0
+                            )
+                
+                        render_frozen_styler_html(
+                            styled_top30,
+                            height=_TOP30_H,
+                            freeze_left_n=2,
+                            freeze_widths=[44, 160],
+                            clickable_cols=all_months,
+                            query_param="top30_month",
+                            active_col=rank_m,
+                        )
+                    with p_col2:
+                        st.markdown(
+                            f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
+                            f"🍩 [{rank_month_label}] 업종별 매출 비중</div>",
+                            unsafe_allow_html=True,
+                        )
+                        # 왼쪽 월 선택 줄과 높이를 맞춰 표·그래프 상단 정렬
+                        _ctrl_h = 42 if is_touch_ui() else 40
+                        st.markdown(
+                            f"<div style='height:{_ctrl_h}px;margin:0 0 8px;' aria-hidden='true'></div>",
+                            unsafe_allow_html=True,
+                        )
+                
+                        df_rank_month = df_curr_year[df_curr_year["월"] == rank_m]
+                        ind_sales = df_rank_month.groupby("업종")["매출액"].sum().reset_index()
+                        ind_sales = ind_sales[ind_sales["매출액"] > 0]
+                
+                        if ind_sales.empty:
+                            st.info(f"{rank_month_label} 업종별 매출 데이터가 없습니다.")
+                        else:
+                            fig_donut = px.pie(
+                                ind_sales, 
+                                values='매출액', 
+                                names='업종', 
+                                hole=0.4,
+                                color_discrete_sequence=px.colors.qualitative.Pastel
+                            )
+                            fig_donut.update_traces(
+                                textposition='inside',
+                                textinfo='percent+label',
+                                textfont_size=12,
+                            )
+                            fig_donut.update_layout(
+                                showlegend=True,
+                                legend=dict(
+                                    orientation="h",
+                                    yanchor="top",
+                                    y=-0.02,
+                                    xanchor="center",
+                                    x=0.5,
+                                    font=dict(size=11),
+                                ),
+                                margin=dict(l=8, r=8, t=8, b=72),
+                                height=_TOP30_H,
+                                autosize=True,
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                plot_bgcolor="rgba(0,0,0,0)",
+                            )
+                            render_plotly_chart(
+                                fig_donut,
+                                key=f"top30_donut_{rank_m}",
+                                height=_TOP30_H,
+                            )
             else:
-                st.button(
-                    "🗺️ 카카오맵에서 주소 보기",
-                    disabled=True,
-                    key="btn_kakao_disabled",
-                    width="stretch",
-                    help="사이드바에서 특정 거래처를 선택하세요.",
-                )
-            # 버튼 바로 아래 주소 표시 (tab2 전용, 버튼과 동일 폭·글자크기)
-            _addr_color = "#64748B" if client_addr == "등록된 주소 정보가 없습니다." else "#334155"
-            st.markdown(
-                f"<div class='tab2-kakao-addr' style='color:{_addr_color};'>"
-                f"📍 {html.escape(client_addr)}</div>",
-                unsafe_allow_html=True,
+                st.info("당해년도 매출 데이터가 없습니다.")
+        st.markdown("---")
+        if not df_base.empty and '매출일_dt' in df_base.columns:
+            latest_period = df_base["매출일_dt"].dt.to_period("M").max()
+            prev_period = latest_period - 1
+    
+            curr_m_label = latest_period.strftime("%m월")
+            prev_m_label = prev_period.strftime("%m월")
+    
+            st.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📊 전월 대비 실적 증감 및 신규/이탈 분석 ({prev_m_label} vs {curr_m_label})</div>", unsafe_allow_html=True)
+    
+            df_prev = df_base[df_base["매출일_dt"].dt.to_period("M") == prev_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{prev_m_label} 매출"})
+            df_curr = df_base[df_base["매출일_dt"].dt.to_period("M") == latest_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{curr_m_label} 매출"})
+            df_diff = pd.merge(df_prev, df_curr, on="거래처", how="outer").fillna(0)
+            df_diff["매출 증감액"] = df_diff[f"{curr_m_label} 매출"] - df_diff[f"{prev_m_label} 매출"]
+    
+            df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] = (df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] * 1.1) / 10000
+            top_gains = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff["매출 증감액"] > 0)].sort_values(by="매출 증감액", ascending=False).head(10)
+            top_drops = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] > 0) & (df_diff["매출 증감액"] < 0)].sort_values(by="매출 증감액", ascending=True).head(10)
+            new_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] == 0) & (df_diff[f"{curr_m_label} 매출"] > 0)].sort_values(by=f"{curr_m_label} 매출", ascending=False)
+            lost_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] == 0)].sort_values(by=f"{prev_m_label} 매출", ascending=False)
+            mom_view = st.radio(
+                "전월 대비 분석 보기",
+                ["🚀 상승 Top 10", "📉 하락 Top 10", "🎉 신규/재개 거래처", "⚠️ 미거래/이탈 의심"],
+                horizontal=True,
+                key="tab1_mom_view",
+                label_visibility="collapsed",
             )
+            if mom_view == "🚀 상승 Top 10":
+                st.markdown(f"**🔥 기존 거래처 중 매출이 가장 많이 [상승]한 10곳 (단위: 만원, VAT 포함)**")
+                if top_gains.empty:
+                    st.info("해당 조건에 맞는 상승 거래처가 없습니다.")
+                else:
+                    st.dataframe(
+                        top_gains.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
+                        .apply(lambda s: ['color: #2563EB; font-weight: bold;' if v > 0 else '' for v in s], subset=['매출 증감액']),
+                        use_container_width=True, hide_index=True, height=min(420, 38 + len(top_gains) * 35)
+                    )
+            elif mom_view == "📉 하락 Top 10":
+                st.markdown(f"**📉 기존 거래처 중 매출이 가장 많이 [하락]한 10곳 (단위: 만원, VAT 포함)**")
+                if top_drops.empty:
+                    st.info("해당 조건에 맞는 하락 거래처가 없습니다.")
+                else:
+                    st.dataframe(
+                        top_drops.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
+                        .apply(lambda s: ['color: #B91C1C; font-weight: bold;' if v < 0 else '' for v in s], subset=['매출 증감액']),
+                        use_container_width=True, hide_index=True, height=min(420, 38 + len(top_drops) * 35)
+                    )
+            elif mom_view == "🎉 신규/재개 거래처":
+                st.markdown(f"**🎉 {prev_m_label}엔 거래가 없었으나 {curr_m_label}에 새롭게 매출이 발생한 곳 (총 {len(new_clients)}곳, 단위: 만원, VAT 포함)**")
+                if new_clients.empty:
+                    st.info("신규/재개 거래처가 없습니다.")
+                else:
+                    st.dataframe(
+                        new_clients[["거래처", f"{curr_m_label} 매출"]].style.format({f"{curr_m_label} 매출": "{:,.0f}"}),
+                        use_container_width=True, hide_index=True, height=min(480, 38 + len(new_clients) * 35)
+                    )
+            else:
+                st.markdown(f"**⚠️ {prev_m_label}엔 매출이 있었으나 {curr_m_label}엔 거래가 없는 곳 (총 {len(lost_clients)}곳, 단위: 만원, VAT 포함)**")
+                if lost_clients.empty:
+                    st.info("미거래/이탈 의심 거래처가 없습니다.")
+                else:
+                    st.dataframe(
+                        lost_clients[["거래처", f"{prev_m_label} 매출"]].style.format({f"{prev_m_label} 매출": "{:,.0f}"}),
+                        use_container_width=True, hide_index=True, height=min(480, 38 + len(lost_clients) * 35)
+                    )
 
-    # 목록에 없는 거래처도 기업정보만 조회 가능 (상단 필터·매출 집계는 변경 없음)
-    _ov_c1, _ov_c2 = st.columns([1.4, 1], gap="small")
-    with _ov_c1:
-        _corp_name_override = st.text_input(
-            "목록 외 상호 (기업정보 조회용)",
-            key="tab2_corp_name_override",
-            placeholder="예: OO산업 — 비우면 상단 선택 거래처 사용",
-            help="매출 목록에 없어도 상호를 입력하면 기업 기본/재무·공장등록을 조회합니다.",
-        )
-    with _ov_c2:
-        _corp_addr_override = st.text_input(
-            "주소 힌트 (선택)",
-            key="tab2_corp_addr_override",
-            placeholder="동명 구분 · 예: 평택시 서탄면",
-        )
-    _corp_query_name = str(_corp_name_override or "").strip()
-    if not _corp_query_name and selected_client and selected_client != "전체 거래처":
-        _corp_query_name = str(selected_client).strip()
-    _corp_query_is_override = bool(str(_corp_name_override or "").strip())
+    # Tab 2: 🏢 거래처 분석
+with tab2:
+    if _dash_should_defer_heavy_tab(1):
+        _dash_defer_heavy_stub('🏢 거래처 분석', 1)
+    else:
+        t2_c1, t2_c2 = st.columns([4, 1])
+        t2_c1.markdown(f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
+        t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
 
-    if st.session_state.show_corp_info:
-        if not _corp_query_name:
-            st.info(
-                "상단에서 거래처를 선택하거나, 위에 **목록 외 상호**를 입력한 뒤 "
-                "기업정보를 다시 열어 주세요."
-            )
-        else:
-            if _corp_query_is_override:
-                st.caption(
-                    f"목록 외 조회: **{_corp_query_name}** "
-                    "(상단 매출 필터와 별개 · 기업정보만)"
-                )
-            _addr_for_lookup = None
-            if str(_corp_addr_override or "").strip():
-                _addr_for_lookup = str(_corp_addr_override).strip()
-            elif not _corp_query_is_override:
-                _addr_for_lookup = (
+        if "show_corp_info" not in st.session_state:
+            st.session_state.show_corp_info = False
+
+        # [핵심 패치] 거래처 필터를 바꿀 때 기업정보 창이 열려있으면 자동으로 닫아서 API 무한 로딩(프리징) 완벽 방지
+        if "last_opened_client" not in st.session_state:
+            st.session_state.last_opened_client = selected_client
+        if st.session_state.show_corp_info and st.session_state.last_opened_client != selected_client:
+            st.session_state.show_corp_info = False
+        st.session_state.last_opened_client = selected_client
+
+        # 가로 넓은 직사각형 버튼 — 글씨 한 줄로 박스 안에
+        with st.container(key="tab2_action_btns"):
+            btn_c1, btn_c2, btn_c3 = st.columns([2.4, 2.0, 1.8], gap="medium")
+            with btn_c1:
+                _notes_addr = (
                     client_addr
                     if client_addr and client_addr != "등록된 주소 정보가 없습니다."
                     else None
                 )
-            else:
-                # 목록 외 상호: 주소록에 같은 이름이 있으면 활용
-                _ov_addr = resolve_client_address(_corp_query_name, addr_dict)
-                if _ov_addr and _ov_addr != "등록된 주소 정보가 없습니다.":
-                    _addr_for_lookup = _ov_addr
-
-            _memo_key = (
-                str(_corp_query_name),
-                str(dart_api_key or ""),
-                str(_addr_for_lookup or ""),
-                "ov" if _corp_query_is_override else "sel",
-            )
-            _memo = st.session_state.get("_tab2_corp_memo")
-            _use_memo = (
-                isinstance(_memo, dict)
-                and _memo.get("key") == _memo_key
-                and isinstance(_memo.get("c_info"), dict)
-            )
-            _touch_corp = is_touch_ui()
-            if _use_memo:
-                c_info = dict(_memo["c_info"])
-                _latest_audit = _memo.get("latest_audit")
-                _audit_sum = dict(_memo.get("audit_sum") or {})
-                _matched = (
-                    c_info.get("matched_name")
-                    or c_info.get("clean_name")
-                    or _corp_query_name
-                )
-                _ccode = c_info.get("corp_code") or ""
-                _lookup = _ccode or _matched
-            else:
-                # 1차: 기업개요·재무만 (거래처명+주소로 동명 오매칭 완화)
-                with st.spinner("기업 정보 불러오는 중…"):
-                    c_info = get_company_info_hybrid(
-                        _corp_query_name, dart_api_key, address=_addr_for_lookup
+                _notes_disabled = selected_client == "전체 거래처"
+                if _is_local_macos():
+                    if st.button(
+                        "📝 macOS 메모에서 노트 열기/생성",
+                        key="btn_notes",
+                        width="stretch",
+                        disabled=_notes_disabled,
+                        help="특정 거래처를 선택하세요." if _notes_disabled else "메모「거래처」폴더에서 같은 거래처명 노트를 엽니다.",
+                    ):
+                        with st.spinner("메모「거래처」폴더에서 같은 거래처명을 찾는 중..."):
+                            _notes_res = open_macos_notes_folder(
+                                selected_client,
+                                dart_api_key,
+                                df_integrated,
+                                address=_notes_addr,
+                            )
+                        st.session_state["_tab2_loaded_note"] = {
+                            **_notes_res,
+                            "client": selected_client,
+                        }
+                    _loaded = st.session_state.get("_tab2_loaded_note") or {}
+                    if _loaded.get("client") == selected_client:
+                        if _loaded.get("ok"):
+                            st.success(_loaded.get("msg") or "메모를 열었습니다.")
+                            _body = str(_loaded.get("body") or "").strip()
+                            _title = _loaded.get("matched_name") or selected_client
+                            with st.expander(f"불러온 메모 · {_title}", expanded=True):
+                                if _body:
+                                    st.text_area(
+                                        "메모 본문",
+                                        value=_body,
+                                        height=220,
+                                        key=f"tab2_loaded_note_body_{selected_client}",
+                                        label_visibility="collapsed",
+                                    )
+                                else:
+                                    st.caption("노트는 열렸지만 본문을 읽지 못했습니다.")
+                        elif _loaded.get("msg"):
+                            st.error(_loaded.get("msg"))
+                else:
+                    _notes_label = "📝 거래처 메모 · 내보내기"
+                    with st.popover(
+                        _notes_label,
+                        width="stretch",
+                        disabled=_notes_disabled,
+                        help="특정 거래처를 선택하세요." if _notes_disabled else None,
+                    ):
+                        if not _notes_disabled:
+                            # [핵심 패치] 팝오버를 열자마자 API를 긁어와 무한 로딩에 빠지는 현상 방지
+                            if st.button("🚀 메모 데이터 수집/생성 (클릭)", key="btn_gen_memo_export", use_container_width=True):
+                                with st.spinner("DART/팩토리온/네이버 조회 중..."):
+                                    _, _n_plain, _n_html, _n_fname = prepare_client_note_export(
+                                        selected_client,
+                                        dart_api_key,
+                                        df_integrated,
+                                        address=_notes_addr,
+                                    )
+                                    st.session_state["_ready_note_export"] = {
+                                        "client": selected_client,
+                                        "plain": _n_plain,
+                                        "html": _n_html,
+                                        "fname": _n_fname
+                                    }
+                        
+                            _note_cache = st.session_state.get("_ready_note_export", {})
+                            if _note_cache.get("client") == selected_client:
+                                st.success("✅ 메모가 준비되었습니다!")
+                                st.caption(
+                                    "Cloud·iPad에서는 아래 **다운로드·복사·공유**로 메모 앱에 넣을 수 있습니다."
+                                )
+                                st.download_button(
+                                    "HTML 파일 다운로드",
+                                    data=_note_cache["html"].encode("utf-8"),
+                                    file_name=_note_cache["fname"],
+                                    mime="text/html",
+                                    key="tab2_notes_download",
+                                    use_container_width=True,
+                                )
+                                st.caption("Mac: 다운로드 후 Safari로 열어 전체 선택 → 메모에 붙여넣기.")
+                                _render_tab2_note_share_html(_note_cache["plain"], selected_client)
+                            else:
+                                st.info("👆 위 버튼을 눌러 기업 정보를 먼저 수집하세요.")
+            with btn_c2:
+                btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
+                if st.button(btn_label, key="btn_dart_info", width="stretch"):
+                    st.session_state.show_corp_info = not st.session_state.show_corp_info
+            with btn_c3:
+                # 주소록 주소 우선, 없으면 거래처명으로 카카오맵 검색
+                if selected_client and selected_client != "전체 거래처":
+                    kakao_q = client_addr if client_addr != "등록된 주소 정보가 없습니다." else selected_client
+                    kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(kakao_q)}"
+                    st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url, width="stretch")
+                else:
+                    st.button(
+                        "🗺️ 카카오맵에서 주소 보기",
+                        disabled=True,
+                        key="btn_kakao_disabled",
+                        width="stretch",
+                        help="사이드바에서 특정 거래처를 선택하세요.",
                     )
+                # 버튼 바로 아래 주소 표시 (tab2 전용, 버튼과 동일 폭·글자크기)
+                _addr_color = "#64748B" if client_addr == "등록된 주소 정보가 없습니다." else "#334155"
+                st.markdown(
+                    f"<div class='tab2-kakao-addr' style='color:{_addr_color};'>"
+                    f"📍 {html.escape(client_addr)}</div>",
+                    unsafe_allow_html=True,
+                )
+
+        # 목록에 없는 거래처도 기업정보만 조회 가능 (상단 필터·매출 집계는 변경 없음)
+        _ov_c1, _ov_c2 = st.columns([1.4, 1], gap="small")
+        with _ov_c1:
+            _corp_name_override = st.text_input(
+                "목록 외 상호 (기업정보 조회용)",
+                key="tab2_corp_name_override",
+                placeholder="예: OO산업 — 비우면 상단 선택 거래처 사용",
+                help="매출 목록에 없어도 상호를 입력하면 기업 기본/재무·공장등록을 조회합니다.",
+            )
+        with _ov_c2:
+            _corp_addr_override = st.text_input(
+                "주소 힌트 (선택)",
+                key="tab2_corp_addr_override",
+                placeholder="동명 구분 · 예: 평택시 서탄면",
+            )
+        _corp_query_name = str(_corp_name_override or "").strip()
+        if not _corp_query_name and selected_client and selected_client != "전체 거래처":
+            _corp_query_name = str(selected_client).strip()
+        _corp_query_is_override = bool(str(_corp_name_override or "").strip())
+
+        if st.session_state.show_corp_info:
+            if not _corp_query_name:
+                st.info(
+                    "상단에서 거래처를 선택하거나, 위에 **목록 외 상호**를 입력한 뒤 "
+                    "기업정보를 다시 열어 주세요."
+                )
+            else:
+                if _corp_query_is_override:
+                    st.caption(
+                        f"목록 외 조회: **{_corp_query_name}** "
+                        "(상단 매출 필터와 별개 · 기업정보만)"
+                    )
+                _addr_for_lookup = None
+                if str(_corp_addr_override or "").strip():
+                    _addr_for_lookup = str(_corp_addr_override).strip()
+                elif not _corp_query_is_override:
+                    _addr_for_lookup = (
+                        client_addr
+                        if client_addr and client_addr != "등록된 주소 정보가 없습니다."
+                        else None
+                    )
+                else:
+                    # 목록 외 상호: 주소록에 같은 이름이 있으면 활용
+                    _ov_addr = resolve_client_address(_corp_query_name, addr_dict)
+                    if _ov_addr and _ov_addr != "등록된 주소 정보가 없습니다.":
+                        _addr_for_lookup = _ov_addr
+
+                _memo_key = (
+                    str(_corp_query_name),
+                    str(dart_api_key or ""),
+                    str(_addr_for_lookup or ""),
+                    "ov" if _corp_query_is_override else "sel",
+                )
+                _memo = st.session_state.get("_tab2_corp_memo")
+                _use_memo = (
+                    isinstance(_memo, dict)
+                    and _memo.get("key") == _memo_key
+                    and isinstance(_memo.get("c_info"), dict)
+                )
+                _touch_corp = is_touch_ui()
+                if _use_memo:
+                    c_info = dict(_memo["c_info"])
+                    _latest_audit = _memo.get("latest_audit")
+                    _audit_sum = dict(_memo.get("audit_sum") or {})
                     _matched = (
                         c_info.get("matched_name")
                         or c_info.get("clean_name")
@@ -10686,2204 +10704,2275 @@ with tab2:
                     )
                     _ccode = c_info.get("corp_code") or ""
                     _lookup = _ccode or _matched
-                    _latest_audit = None
-                    _audit_sum = {}
-                    if dart_api_key and _lookup and OpenDartReader is not None:
-                        _years_back = 2 if _touch_corp else 4
-                        _audits = list_dart_audit_reports(
-                            _lookup, dart_api_key, years_back=_years_back
+                else:
+                    # 1차: 기업개요·재무만 (거래처명+주소로 동명 오매칭 완화)
+                    with st.spinner("기업 정보 불러오는 중…"):
+                        c_info = get_company_info_hybrid(
+                            _corp_query_name, dart_api_key, address=_addr_for_lookup
                         )
-                        if _audits:
-                            _latest_audit = _audits[0]
-                    st.session_state["_tab2_corp_memo"] = {
-                        "key": _memo_key,
-                        "c_info": dict(c_info),
-                        "latest_audit": _latest_audit,
-                        "audit_sum": {},
-                    }
-                    # 📊 DART 재무제표 표 화면에 출력하기
-                    st.markdown("##### 📊 DART 재무제표 요약")
-                    st.error(f"🕵️‍♂️ 파이썬 검색 단어: {_lookup} / 기업코드: {c_info.get('corp_code')}")
-                    if _latest_audit is not None and not _latest_audit.empty:
-                     st.dataframe(_latest_audit, use_container_width=True)
-                    else:
-                     st.info("💡 다트에 등록된 재무제표가 없는 기업(비상장 등)입니다.")
-            # 감사 본문 추출: 맥은 자동, iPad는 버튼(동일 데이터·무손실)
-            _want_audit_parse = bool(st.session_state.get("_tab2_force_audit_parse"))
-            if (
-                _latest_audit
-                and not _audit_sum
-                and dart_api_key
-                and OpenDartReader is not None
-                and (not _touch_corp or _want_audit_parse)
-            ):
-                with st.spinner("감사 주석 개요·계속기업 이슈 추출 중…"):
-                    _audit_sum = parse_dart_audit_report_summary(
-                        _latest_audit["rcept_no"], dart_api_key
-                    )
-                    if _audit_sum.get("revenue") and c_info.get("revenue") == "정보 없음":
-                        c_info["revenue"] = _audit_sum["revenue"] + " (감사보고서 추정)"
-                    if _audit_sum.get("profit") and c_info.get("profit") == "정보 없음":
-                        c_info["profit"] = _audit_sum["profit"] + " (감사보고서 추정)"
-                    # 주석 개요로 대표/업종 보강 (기존 값 있을 때는 덮지 않음)
-                    if _audit_sum.get("ceo_note") and c_info.get("ceo") in (
-                        "",
-                        "정보 없음",
-                        None,
-                    ):
-                        c_info["ceo"] = _audit_sum["ceo_note"]
-                    if _audit_sum.get("business") and c_info.get("industry") in (
-                        "",
-                        "정보 없음",
-                        None,
-                    ):
-                        c_info["industry"] = _audit_sum["business"]
-                    if (
-                        _audit_sum.get("revenue")
-                        or _audit_sum.get("profit")
-                        or _audit_sum.get("overview_ok")
-                    ):
-                        if "DART" not in str(c_info.get("source")):
-                            c_info["source"] = "DART 감사보고서 주석·본문"
-                    st.session_state["_tab2_corp_memo"] = {
-                        "key": _memo_key,
-                        "c_info": dict(c_info),
-                        "latest_audit": _latest_audit,
-                        "audit_sum": dict(_audit_sum) if _audit_sum else {},
-                    }
-                    st.session_state.pop("_tab2_force_audit_parse", None)
-                      # 📊 DART 재무제표 표 화면에 출력하기
-                    st.markdown("##### 📊 DART 재무제표 요약")
+                        _matched = (
+                            c_info.get("matched_name")
+                            or c_info.get("clean_name")
+                            or _corp_query_name
+                        )
+                        _ccode = c_info.get("corp_code") or ""
+                        _lookup = _ccode or _matched
+                        _latest_audit = None
+                        _audit_sum = {}
+                        if dart_api_key and _lookup and OpenDartReader is not None:
+                            _years_back = 2 if _touch_corp else 4
+                            _audits = list_dart_audit_reports(
+                                _lookup, dart_api_key, years_back=_years_back
+                            )
+                            if _audits:
+                                _latest_audit = _audits[0]
+                        st.session_state["_tab2_corp_memo"] = {
+                            "key": _memo_key,
+                            "c_info": dict(c_info),
+                            "latest_audit": _latest_audit,
+                            "audit_sum": {},
+                        }
+                        # 📊 DART 재무제표 표 화면에 출력하기
+                        st.markdown("##### 📊 DART 재무제표 요약")
+                        st.error(f"🕵️‍♂️ 파이썬 검색 단어: {_lookup} / 기업코드: {c_info.get('corp_code')}")
+                        if _latest_audit is not None and not _latest_audit.empty:
+                         st.dataframe(_latest_audit, use_container_width=True)
+                        else:
+                         st.info("💡 다트에 등록된 재무제표가 없는 기업(비상장 등)입니다.")
+                # 감사 본문 추출: 맥은 자동, iPad는 버튼(동일 데이터·무손실)
+                _want_audit_parse = bool(st.session_state.get("_tab2_force_audit_parse"))
+                if (
+                    _latest_audit
+                    and not _audit_sum
+                    and dart_api_key
+                    and OpenDartReader is not None
+                    and (not _touch_corp or _want_audit_parse)
+                ):
+                    with st.spinner("감사 주석 개요·계속기업 이슈 추출 중…"):
+                        _audit_sum = parse_dart_audit_report_summary(
+                            _latest_audit["rcept_no"], dart_api_key
+                        )
+                        if _audit_sum.get("revenue") and c_info.get("revenue") == "정보 없음":
+                            c_info["revenue"] = _audit_sum["revenue"] + " (감사보고서 추정)"
+                        if _audit_sum.get("profit") and c_info.get("profit") == "정보 없음":
+                            c_info["profit"] = _audit_sum["profit"] + " (감사보고서 추정)"
+                        # 주석 개요로 대표/업종 보강 (기존 값 있을 때는 덮지 않음)
+                        if _audit_sum.get("ceo_note") and c_info.get("ceo") in (
+                            "",
+                            "정보 없음",
+                            None,
+                        ):
+                            c_info["ceo"] = _audit_sum["ceo_note"]
+                        if _audit_sum.get("business") and c_info.get("industry") in (
+                            "",
+                            "정보 없음",
+                            None,
+                        ):
+                            c_info["industry"] = _audit_sum["business"]
+                        if (
+                            _audit_sum.get("revenue")
+                            or _audit_sum.get("profit")
+                            or _audit_sum.get("overview_ok")
+                        ):
+                            if "DART" not in str(c_info.get("source")):
+                                c_info["source"] = "DART 감사보고서 주석·본문"
+                        st.session_state["_tab2_corp_memo"] = {
+                            "key": _memo_key,
+                            "c_info": dict(c_info),
+                            "latest_audit": _latest_audit,
+                            "audit_sum": dict(_audit_sum) if _audit_sum else {},
+                        }
+                        st.session_state.pop("_tab2_force_audit_parse", None)
+                          # 📊 DART 재무제표 표 화면에 출력하기
+                        st.markdown("##### 📊 DART 재무제표 요약")
                     
-                    # 👉 파이썬이 무슨 단어로 검색했는지 화면에 박제하기!
-                    st.error(f"🕵️‍♂️ 파이썬 검색 단어: {_lookup} / 기업코드: {c_info.get('corp_code')}")
+                        # 👉 파이썬이 무슨 단어로 검색했는지 화면에 박제하기!
+                        st.error(f"🕵️‍♂️ 파이썬 검색 단어: {_lookup} / 기업코드: {c_info.get('corp_code')}")
                     
-                    if _latest_audit is not None and not _latest_audit.empty:
-                        st.dataframe(_latest_audit, use_container_width=True)
-                    else:
-                        st.info("💡 다트에 등록된 재무제표가 없는 기업(비상장 등)입니다.")
-            def _autosave_factory_api_key():
-                v = str(st.session_state.get("tab2_factory_api_key_input") or "").strip()
-                if not v:
-                    return
-                old = _load_factory_api_key()
-                if v == old:
-                    return
-                _persist_factory_api_key(v)
-                try:
-                    fetch_factory_registry.clear()
-                except Exception:
-                    pass
-                st.session_state.pop("_tab2_factory_memo", None)
-
-            _factory_key = _load_factory_api_key()
-            if "tab2_factory_api_key_input" not in st.session_state:
-                st.session_state["tab2_factory_api_key_input"] = _factory_key
-
-            # 공장등록 조회 (표시 전에 취합)
-            _f_memo_key = (
-                str(_corp_query_name),
-                str(_matched or ""),
-                str(_addr_for_lookup or ""),
-                str(_load_factory_api_key() or ""),
-            )
-            _f_memo = st.session_state.get("_tab2_factory_memo")
-            _f_use = (
-                isinstance(_f_memo, dict)
-                and _f_memo.get("key") == _f_memo_key
-                and isinstance(_f_memo.get("info"), dict)
-            )
-            if _f_use:
-                _f_info = dict(_f_memo["info"])
-            elif not _load_factory_api_key():
-                _f_info = {"ok": False, "error": "공장등록 API 키 없음"}
-            else:
-                with st.spinner("공장등록 정보 조회 중…"):
-                    _f_info = fetch_factory_registry(
-                        _matched or _corp_query_name,
-                        address=_addr_for_lookup,
-                        api_key=_load_factory_api_key(),
-                    )
-                st.session_state["_tab2_factory_memo"] = {
-                    "key": _f_memo_key,
-                    "info": dict(_f_info) if isinstance(_f_info, dict) else {},
-                }
-            if not isinstance(_f_info, dict):
-                _f_info = {"ok": False, "error": "공장등록 조회 실패"}
-
-            def _corp_val(*vals):
-                for v in vals:
-                    s = str(v or "").strip()
-                    if s and s not in ("정보 없음", "-", "None", "nan"):
-                        return s
-                return ""
-
-            _ceo = _corp_val(
-                c_info.get("ceo"),
-                _f_info.get("ceo"),
-                (_audit_sum or {}).get("ceo_note"),
-            )
-            _industry = _corp_val(
-                c_info.get("industry"),
-                _f_info.get("industry"),
-                (_audit_sum or {}).get("business"),
-            )
-            _addr_show = _corp_val(
-                _f_info.get("address"),
-                _addr_for_lookup,
-                (_audit_sum or {}).get("hq"),
-            )
-            _product = _corp_val(_f_info.get("product"))
-            _tel = _corp_val(_f_info.get("tel"))
-            _hp = _corp_val(_f_info.get("homepage"))
-            if _hp and not _hp.startswith("http"):
-                _hp_href = "https://" + _hp
-            else:
-                _hp_href = _hp
-            _rev = _corp_val(c_info.get("revenue")) or "정보 없음"
-            _prf = _corp_val(c_info.get("profit")) or "정보 없음"
-            _op = _corp_val((_audit_sum or {}).get("opinion"))
-            _op_color = {
-                "적정의견": "#166534",
-                "한정의견": "#A16207",
-                "부적정의견": "#B91C1C",
-                "의견거절": "#9F1239",
-            }.get(_op, "#334155")
-            _gc_issue = ((_audit_sum or {}).get("going_concern_issue") or "").strip()
-            _gc_flag = bool((_audit_sum or {}).get("going_concern_flag"))
-
-            _toolbar = st.columns([1.2, 1, 3], gap="small")
-            with _toolbar[0]:
-                if st.button("🔄 다시 조회", key="btn_refresh_corp", width="stretch"):
-                    get_company_info_hybrid.clear()
-                    list_dart_audit_reports.clear()
-                    parse_dart_audit_report_summary.clear()
+                        if _latest_audit is not None and not _latest_audit.empty:
+                            st.dataframe(_latest_audit, use_container_width=True)
+                        else:
+                            st.info("💡 다트에 등록된 재무제표가 없는 기업(비상장 등)입니다.")
+                def _autosave_factory_api_key():
+                    v = str(st.session_state.get("tab2_factory_api_key_input") or "").strip()
+                    if not v:
+                        return
+                    old = _load_factory_api_key()
+                    if v == old:
+                        return
+                    _persist_factory_api_key(v)
                     try:
                         fetch_factory_registry.clear()
                     except Exception:
                         pass
-                    try:
-                        _make_opendart_reader.clear()
-                    except Exception:
-                        pass
-                    st.session_state.pop("_opendart_last_error", None)
-                    st.session_state.pop("_tab2_corp_memo", None)
                     st.session_state.pop("_tab2_factory_memo", None)
-                    st.session_state.pop("_tab2_force_audit_parse", None)
-                    st.rerun()
-            with _toolbar[1]:
-                if _touch_corp and _latest_audit and not _audit_sum:
-                    if st.button("📄 감사추출", key="btn_parse_audit_sum", width="stretch"):
-                        st.session_state["_tab2_force_audit_parse"] = True
-                        st.rerun()
 
-            # 통합 카드 (중복 제거: 대표/업종/주소 1회)
-            _rows_basic = [
-                ("상호", html.escape(_matched or _corp_query_name)),
-                ("대표", html.escape(_ceo or "-")),
-                ("업종", html.escape(_industry or "-")),
-                ("주소", html.escape(_addr_show or "-")),
-                ("전화", html.escape(_tel or "-")),
-                (
-                    "홈페이지",
+                _factory_key = _load_factory_api_key()
+                if "tab2_factory_api_key_input" not in st.session_state:
+                    st.session_state["tab2_factory_api_key_input"] = _factory_key
+
+                # 공장등록 조회 (표시 전에 취합)
+                _f_memo_key = (
+                    str(_corp_query_name),
+                    str(_matched or ""),
+                    str(_addr_for_lookup or ""),
+                    str(_load_factory_api_key() or ""),
+                )
+                _f_memo = st.session_state.get("_tab2_factory_memo")
+                _f_use = (
+                    isinstance(_f_memo, dict)
+                    and _f_memo.get("key") == _f_memo_key
+                    and isinstance(_f_memo.get("info"), dict)
+                )
+                if _f_use:
+                    _f_info = dict(_f_memo["info"])
+                elif not _load_factory_api_key():
+                    _f_info = {"ok": False, "error": "공장등록 API 키 없음"}
+                else:
+                    with st.spinner("공장등록 정보 조회 중…"):
+                        _f_info = fetch_factory_registry(
+                            _matched or _corp_query_name,
+                            address=_addr_for_lookup,
+                            api_key=_load_factory_api_key(),
+                        )
+                    st.session_state["_tab2_factory_memo"] = {
+                        "key": _f_memo_key,
+                        "info": dict(_f_info) if isinstance(_f_info, dict) else {},
+                    }
+                if not isinstance(_f_info, dict):
+                    _f_info = {"ok": False, "error": "공장등록 조회 실패"}
+
+                def _corp_val(*vals):
+                    for v in vals:
+                        s = str(v or "").strip()
+                        if s and s not in ("정보 없음", "-", "None", "nan"):
+                            return s
+                    return ""
+
+                _ceo = _corp_val(
+                    c_info.get("ceo"),
+                    _f_info.get("ceo"),
+                    (_audit_sum or {}).get("ceo_note"),
+                )
+                _industry = _corp_val(
+                    c_info.get("industry"),
+                    _f_info.get("industry"),
+                    (_audit_sum or {}).get("business"),
+                )
+                _addr_show = _corp_val(
+                    _f_info.get("address"),
+                    _addr_for_lookup,
+                    (_audit_sum or {}).get("hq"),
+                )
+                _product = _corp_val(_f_info.get("product"))
+                _tel = _corp_val(_f_info.get("tel"))
+                _hp = _corp_val(_f_info.get("homepage"))
+                if _hp and not _hp.startswith("http"):
+                    _hp_href = "https://" + _hp
+                else:
+                    _hp_href = _hp
+                _rev = _corp_val(c_info.get("revenue")) or "정보 없음"
+                _prf = _corp_val(c_info.get("profit")) or "정보 없음"
+                _op = _corp_val((_audit_sum or {}).get("opinion"))
+                _op_color = {
+                    "적정의견": "#166534",
+                    "한정의견": "#A16207",
+                    "부적정의견": "#B91C1C",
+                    "의견거절": "#9F1239",
+                }.get(_op, "#334155")
+                _gc_issue = ((_audit_sum or {}).get("going_concern_issue") or "").strip()
+                _gc_flag = bool((_audit_sum or {}).get("going_concern_flag"))
+
+                _toolbar = st.columns([1.2, 1, 3], gap="small")
+                with _toolbar[0]:
+                    if st.button("🔄 다시 조회", key="btn_refresh_corp", width="stretch"):
+                        get_company_info_hybrid.clear()
+                        list_dart_audit_reports.clear()
+                        parse_dart_audit_report_summary.clear()
+                        try:
+                            fetch_factory_registry.clear()
+                        except Exception:
+                            pass
+                        try:
+                            _make_opendart_reader.clear()
+                        except Exception:
+                            pass
+                        st.session_state.pop("_opendart_last_error", None)
+                        st.session_state.pop("_tab2_corp_memo", None)
+                        st.session_state.pop("_tab2_factory_memo", None)
+                        st.session_state.pop("_tab2_force_audit_parse", None)
+                        st.rerun()
+                with _toolbar[1]:
+                    if _touch_corp and _latest_audit and not _audit_sum:
+                        if st.button("📄 감사추출", key="btn_parse_audit_sum", width="stretch"):
+                            st.session_state["_tab2_force_audit_parse"] = True
+                            st.rerun()
+
+                # 통합 카드 (중복 제거: 대표/업종/주소 1회)
+                _rows_basic = [
+                    ("상호", html.escape(_matched or _corp_query_name)),
+                    ("대표", html.escape(_ceo or "-")),
+                    ("업종", html.escape(_industry or "-")),
+                    ("주소", html.escape(_addr_show or "-")),
+                    ("전화", html.escape(_tel or "-")),
                     (
-                        f"<a href='{html.escape(_hp_href)}' target='_blank' rel='noopener'>"
-                        f"{html.escape(_hp)}</a>"
-                        if _hp_href
-                        else "-"
+                        "홈페이지",
+                        (
+                            f"<a href='{html.escape(_hp_href)}' target='_blank' rel='noopener'>"
+                            f"{html.escape(_hp)}</a>"
+                            if _hp_href
+                            else "-"
+                        ),
                     ),
-                ),
-            ]
-            _rows_fin = [
-                ("매출액", html.escape(_rev)),
-                ("영업이익", html.escape(_prf)),
-            ]
-            _rows_fac = []
-            if _f_info.get("ok"):
-                for lab, key in (
-                    ("주생산품", "product"),
-                    ("용지면적", "land_area"),
-                    ("건축면적", "bldg_area"),
-                    ("용도지역", "zone"),
-                    ("행정기관", "admin"),
-                    ("등록일자", "reg_date"),
-                    ("고용인원", "employees"),
-                    ("산업단지", "complex"),
-                ):
-                    vv = _corp_val(_f_info.get(key))
-                    if vv:
-                        _rows_fac.append((lab, html.escape(vv)))
-
-            def _grid_html(rows):
-                parts = ['<div class="tab2-corp-grid">']
-                for k, v in rows:
-                    parts.append(
-                        f'<div class="row"><span class="k">{html.escape(k)}</span>'
-                        f'<span class="v">{v}</span></div>'
-                    )
-                parts.append("</div>")
-                return "".join(parts)
-
-            _audit_html = ""
-            if _latest_audit:
-                _audit_html += (
-                    f'<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
-                    f'<div style="font-size:13px;margin-bottom:4px;">'
-                    f'<a href="{html.escape(_latest_audit["url"])}" target="_blank" rel="noopener">'
-                    f'{html.escape(_latest_audit["date"])} · {html.escape(_latest_audit["name"])}'
-                    f"</a></div>"
-                )
-                if _op:
-                    _audit_html += (
-                        f'<span class="tab2-corp-op" style="color:{_op_color};">'
-                        f"감사의견: {html.escape(_op)}</span>"
-                    )
-                if _gc_flag and _gc_issue:
-                    _audit_html += (
-                        f'<div style="margin-top:8px;padding:10px 12px;border:1px solid #FECACA;'
-                        f'border-radius:8px;background:#FEF2F2;color:#7F1D1D;font-size:13px;'
-                        f'line-height:1.45;">{html.escape(_gc_issue)}</div>'
-                    )
-                elif _audit_sum:
-                    _gc_cap = _corp_val((_audit_sum or {}).get("going_concern")) or "관련 문구 없음"
-                    _audit_html += (
-                        f'<div style="margin-top:6px;font-size:12px;color:#64748B;">'
-                        f"계속기업: {html.escape(_gc_cap)}</div>"
-                    )
-                _audit_html += "</div>"
-            elif dart_api_key and OpenDartReader is not None:
-                _audit_html = (
-                    '<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
-                    '<div style="font-size:12px;color:#64748B;">최근 감사보고서 공시 없음</div></div>'
-                )
-
-            _fac_html = ""
-            if _rows_fac:
-                _fac_html = (
-                    '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
-                    + _grid_html(_rows_fac)
-                    + "</div>"
-                )
-            elif _f_info.get("error") and "키 없음" not in str(_f_info.get("error")):
-                _fac_html = (
-                    '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
-                    f'<div style="font-size:12px;color:#64748B;">{html.escape(str(_f_info.get("error")))}'
-                    "</div></div>"
-                )
-
-            _src_bits = []
-            if c_info.get("source"):
-                _src_bits.append(str(c_info.get("source")))
-            if _f_info.get("ok"):
-                _src_bits.append("팩토리온")
-            _src_line = " · ".join(dict.fromkeys(_src_bits)) if _src_bits else ""
-
-            st.markdown(
-                f"""
-    <div class="tab2-corp-card">
-      <h4>🏢 {html.escape(str(_corp_query_name))}
-        <span style="font-size:12px;font-weight:500;color:#94A3B8;margin-left:8px;">
-          {html.escape(_src_line)}</span>
-      </h4>
-      <div class="sec-title">기본 · 재무</div>
-      {_grid_html(_rows_basic + _rows_fin)}
-      {_fac_html}
-      {_audit_html}
-    </div>
-    """,
-                unsafe_allow_html=True,
-            )
-
-            if (_rev == "정보 없음" or _prf == "정보 없음") and c_info.get("dart_error"):
-                st.caption(f"DART: {c_info.get('dart_error')}")
-
-            _sh = (_audit_sum or {}).get("shareholders") or []
-            if _sh:
-                with st.expander("주요 주주 · 지분율", expanded=False):
-                    st.dataframe(
-                        pd.DataFrame(_sh),
-                        width="stretch",
-                        hide_index=True,
-                        height=min(160, 38 + 28 * len(_sh)),
-                    )
-
-            with st.expander(
-                "공장등록 API 키 (자동저장)",
-                expanded=not bool(_load_factory_api_key()),
-            ):
-                st.caption(
-                    "입력 후 Enter(또는 포커스 이동) 시 자동 저장됩니다. "
-                    "Decoding 키(끝 `==`) 권장. "
-                    "([생산정보](https://www.data.go.kr/data/15087611/openapi.do) · "
-                    "[필지](https://www.data.go.kr/data/15087615/openapi.do))"
-                )
-                st.text_input(
-                    "공공데이터 일반 인증키",
-                    type="password",
-                    key="tab2_factory_api_key_input",
-                    placeholder="data.go.kr 일반 인증키",
-                    on_change=_autosave_factory_api_key,
-                    label_visibility="collapsed",
-                )
-                if _load_factory_api_key():
-                    st.caption("✓ 키가 저장되어 있습니다.")
-
-            _loc_bits = _loc_tokens_from_address(_addr_for_lookup)
-            _q_base = str(_matched)
-            _q_merged = f"{_q_base} {' '.join(_loc_bits[:2])}".strip() if _loc_bits else _q_base
-            _q = urllib.parse.quote(_q_merged)
-            _links = (c_info.get("job_links") or {}) if isinstance(c_info, dict) else {}
-            _saramin = _links.get("saramin_company") or (
-                "https://www.saramin.co.kr/zf_user/search/company?searchword=" + _q
-            )
-            st.markdown(
-                f"[DART](https://dart.fss.or.kr/) · "
-                f"[네이버 기업정보](https://search.naver.com/search.naver?query={_q}%20기업정보) · "
-                f"[사람인]({_saramin})"
-                + (
-                    f" · [팩토리온 원문]({_f_info.get('source_url')})"
-                    if _f_info.get("ok")
-                    else ""
-                )
-            )
-    m1, m2, m3, m4 = st.columns(4)
-    tot_sales_c = df_client_filtered["매출액"].sum() * 1.1 / 10000 if not df_client_filtered.empty else 0.0
-
-    cur_sales_c = cur_month_sales_client / 10000
-    m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
-    m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_client})</div><div class='metric-value'>{cur_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
-    m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_client < 0 else '#2563EB'};'>{mom_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
-    m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
-    if not df_client_filtered.empty:
-        pivot_m_client = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
-        cl, cr = st.columns([1, 1])
-        with cl:
-            pivot_m_client_disp = get_display_df_with_sum(pivot_m_client, "연간 합계")
-            st.dataframe(style_with_sum(pivot_m_client_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
-        with cr:
-            render_plotly_chart(
-                create_stacked_bar_chart(pivot_m_client, title_text=""),
-                use_container_width=True, key="tab2_client_total_chart"
-            )
-        # —— 매출 비교를 품목별 상세 분석보다 위에 배치 (tab2 전용 순서) ——
-        st.markdown("---")
-        _client_years = sorted(
-            {str(y) for y in df_client_filtered["연도"].dropna().unique()},
-            key=lambda y: int(y) if str(y).isdigit() else 0,
-        )
-        _cur_y = _client_years[-1] if _client_years else (str(years[0]) if years else None)
-        _prev_y = None
-        if _cur_y:
-            try:
-                _prev_cand = str(int(_cur_y) - 1)
-            except Exception:
-                _prev_cand = None
-            if _prev_cand and _prev_cand in _client_years:
-                _prev_y = _prev_cand
-            elif len(_client_years) >= 2:
-                _prev_y = _client_years[-2]
-        _yr_label = f"{_prev_y}·{_cur_y}" if _prev_y else str(_cur_y)
-        # 당월 기준: 미래 월 제외, 당월→과거 역순 (26년 08·07·…·01 → 25년 12·…·01)
-        _latest_dt_sales = df_client_filtered["매출일_dt"].max()
-        _cur_month = (
-            _latest_dt_sales.strftime("%m월")
-            if pd.notnull(_latest_dt_sales)
-            else all_months[0]
-        )
-        _mi = all_months.index(_cur_month) if _cur_month in all_months else 0
-        _sales_col_keys = []
-        if _cur_y:
-            _ys = str(_cur_y)[2:]
-            for i in range(_mi, -1, -1):
-                _sales_col_keys.append(f"{_ys}년 {all_months[i]}")
-        if _prev_y:
-            _ps = str(_prev_y)[2:]
-            for i in range(len(all_months) - 1, -1, -1):
-                _sales_col_keys.append(f"{_ps}년 {all_months[i]}")
-        # 오른쪽 월 그래프: 당월→01월 역순만 (미도래 월 제외)
-        _months_back = list(reversed(all_months[: _mi + 1]))
-        st.markdown(
-            f"<div class='sub-header dashboard-tab-panel-head'>"
-            f"📊 [{selected_client}] 매출 비교 ({_yr_label}, {_cur_month}→과거)</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"왼쪽: 품목별 매출(만원·VAT포함) · {_cur_y}년 {_cur_month}→과거 → {_prev_y or '전년'}년 "
-            f"(매출 많은 순) · 오른쪽: 월별 매출 비교 그래프 · 하단: 당해 년평균 매출 비중"
-        )
-        sales_two_y = cached_client_item_sales_pivot_two_years(
-            df_client_filtered, tuple(_sales_col_keys)
-        )
-        sales_month_two_y = cached_get_yearly_monthly_pivot(
-            df_client_filtered,
-            _months_back,
-            [y for y in (_cur_y, _prev_y) if y],
-        )
-        q_left, q_right = st.columns([1, 1])
-        with q_left:
-            if sales_two_y.empty:
-                st.info("전년·당해 매출 데이터가 없습니다.")
-            else:
-                # 품목별 총 매출 많은 순 내림차순 — tab2 매출 비교만
-                sales_two_y = sales_two_y.loc[
-                    sales_two_y.sum(axis=1).sort_values(ascending=False).index
                 ]
-                sales_disp = get_display_df_with_sum(sales_two_y, "합계")
-                st.dataframe(
-                    style_with_sum(sales_disp, "{:,.0f}", "Blues", axis=None),
-                    use_container_width=True,
-                    height=460,
-                )
-        with q_right:
-            if sales_month_two_y.empty or (sales_month_two_y.fillna(0) == 0).all().all():
-                st.info("전년·당해 월별 매출 데이터가 없습니다.")
-            else:
-                # 월별(당해·전년) 매출 비교 그룹 막대 — tab2 전용
-                _fig_sales_cmp = create_grouped_bar_chart(
-                    sales_month_two_y,
-                    title_text=f"월별 매출 비교 ({_yr_label}, 만원)",
-                    y_suffix="만원",
-                    y_format=",.0f",
-                )
-                render_plotly_chart(
-                    _fig_sales_cmp,
-                    use_container_width=True,
-                    key="tab2_sales_yoy_grouped",
-                )
-        # 당해 년평균(월평균) 매출 기준 품목별 비중 — 가로 막대(블루 톤)
-        if _cur_y:
-            _df_cy = df_client_filtered[
-                df_client_filtered["연도"].astype(str) == str(_cur_y)
-            ]
-            if not _df_cy.empty and "매출액" in _df_cy.columns:
-                _m_pvt = _df_cy.pivot_table(
-                    index="품목명", columns="월", values="매출액", aggfunc="sum"
-                ).fillna(0)
-                _yr_avg = _m_pvt.mean(axis=1)
-                _yr_avg = _yr_avg[_yr_avg > 0]
-                if not _yr_avg.empty:
-                    _share = (_yr_avg / _yr_avg.sum() * 100).sort_values(ascending=False)
-                    _fig_share = create_item_share_hbar(
-                        _share,
-                        title_text=f"당해({_cur_y}) 년평균 매출 기준 품목별 비중",
-                    )
-                    if _fig_share is not None:
-                        render_plotly_chart(
-                            _fig_share,
-                            use_container_width=True,
-                            key="tab2_cur_year_item_share",
+                _rows_fin = [
+                    ("매출액", html.escape(_rev)),
+                    ("영업이익", html.escape(_prf)),
+                ]
+                _rows_fac = []
+                if _f_info.get("ok"):
+                    for lab, key in (
+                        ("주생산품", "product"),
+                        ("용지면적", "land_area"),
+                        ("건축면적", "bldg_area"),
+                        ("용도지역", "zone"),
+                        ("행정기관", "admin"),
+                        ("등록일자", "reg_date"),
+                        ("고용인원", "employees"),
+                        ("산업단지", "complex"),
+                    ):
+                        vv = _corp_val(_f_info.get(key))
+                        if vv:
+                            _rows_fac.append((lab, html.escape(vv)))
+
+                def _grid_html(rows):
+                    parts = ['<div class="tab2-corp-grid">']
+                    for k, v in rows:
+                        parts.append(
+                            f'<div class="row"><span class="k">{html.escape(k)}</span>'
+                            f'<span class="v">{v}</span></div>'
                         )
-        st.markdown("---")
-        st.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
-    
-        client_available_items = sorted(df_client_filtered["품목명"].unique())
-        if client_available_items:
-            item_ratios = {}
-            if not df_client_filtered.empty:
-                latest_dt_c = df_client_filtered["매출일_dt"].max()
-                if pd.notnull(latest_dt_c):
-                    latest_ym = latest_dt_c.strftime("%Y-%m")
-                    df_cm = df_client_filtered[df_client_filtered["매출일_dt"].dt.strftime("%Y-%m") == latest_ym]
-                    tot_sales = df_cm["매출액"].sum()
-                    if tot_sales > 0:
-                        grp = df_cm.groupby("품목명")["매출액"].sum()
-                        for item, val in grp.items():
-                            item_ratios[item] = (val / tot_sales) * 100
-            def format_item_with_ratio(item_name):
-                pct = item_ratios.get(item_name, 0.0)
-                return f"{item_name} (당월 {pct:.1f}%)"
-            sel_col1_c, sel_col2_c = st.columns([1, 1])
-            with sel_col1_c:
-                selected_target_item_c = st.selectbox(
-                    "🔍 분석할 품목 선택 (전체 거래 품목)", 
-                    options=client_available_items, 
-                    format_func=format_item_with_ratio,
-                    key="client_item_selectbox"
-                )
-            with sel_col2_c:
-                selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
-            
-            client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
-        
-            i_col_left_c, i_col_right_c = st.columns([1, 1])
-            with i_col_left_c:
-                client_item_pivot_disp = get_display_df_with_sum(client_item_pivot, "연간 합계")
-                # tab2 표 색상 통일: Blues 그라데이션
-                if "비중" in selected_metric_c:
-                    st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.1f}%", "Blues", axis=None), use_container_width=True, height=460)
-                    y_suf_c, y_fmt_c = "%", ",.1f"
-                elif "출고량" in selected_metric_c:
-                    if selected_target_item_c in target_items:
-                        y_suf_c, y_fmt_c = " 천kg", ",.1f"
-                    elif "LPG" in str(selected_target_item_c).upper():
-                        y_suf_c, y_fmt_c = " kg", ",.0f"
-                    else:
-                        y_suf_c, y_fmt_c = " 개(병)", ",.0f"
-                    st.dataframe(style_with_sum(client_item_pivot_disp, f"{{:{y_fmt_c}}}", "Blues", axis=None), use_container_width=True, height=460)
-                else:
-                    st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
-                    y_suf_c, y_fmt_c = " 만원", ",.0f"
-                
-            with i_col_right_c:
-                render_plotly_chart(
-                    create_stacked_bar_chart(
-                        client_item_pivot, 
-                        title_text="", 
-                        y_suffix=y_suf_c, 
-                        y_format=y_fmt_c
-                    ),
-                    use_container_width=True, key="tab2_client_item_chart"
-                )
-# Tab 3: 📦 품목 및 단가 분석
-with tab3:
-    t3_c1, t3_c2 = st.columns([4, 1])
-    t3_c1.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
-    t3_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+                    parts.append("</div>")
+                    return "".join(parts)
 
-    latest_dt_overall = df_base["매출일_dt"].max() if not df_base.empty else None
-    target_month_col = latest_dt_overall.strftime("%y년 %m월") if pd.notnull(latest_dt_overall) else None
-    avail_years_short = [y[2:] for y in years]
-    current_year_short = str(df_base["연도"].max())[2:] if not df_base.empty else (avail_years_short[0] if avail_years_short else "26")
-
-    selected_detail_years = st.multiselect(
-        "📅 월별 상세 내역을 펼쳐볼 연도 선택 (단가표 제외)",
-        options=avail_years_short,
-        default=[current_year_short] if current_year_short in avail_years_short else avail_years_short[:1],
-        format_func=lambda x: f"20{x}년",
-        key="tab3_detail_years",
-    )
-    
-    sales_p_filtered, qty_p_filtered = cached_filter_tab3_year_columns(
-        sales_p,
-        qty_p,
-        tuple(sorted(selected_detail_years)),
-        tuple(avail_years_short),
-        tuple(all_months),
-    )
-    st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
-    render_tab3_dataframe_table(
-        sales_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_sales", table_kind="sales"
-    )
-    # 상단 담당자·품목 선택 시 → 품목별 거래처 매출 상세 (클릭 펼침)
-    if selected_staff and selected_item:
-        render_tab3_item_client_expanders(
-            df_f,
-            list(selected_item),
-            "sales",
-            years,
-            all_months,
-            selected_detail_years,
-        )
-    elif selected_item and not selected_staff:
-        st.caption("💡 거래처별 상세를 보려면 상단 고정바에서 담당자를 먼저 선택한 뒤 품목을 선택하세요.")
-    
-    st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
-    render_tab3_dataframe_table(
-        qty_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_qty", table_kind="qty"
-    )
-    if selected_staff and selected_item:
-        render_tab3_item_client_expanders(
-            df_f,
-            list(selected_item),
-            "qty",
-            years,
-            all_months,
-            selected_detail_years,
-        )
-    
-    st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (실제 원본 단가) - 전체 기간 월별 고정 표시</div>", unsafe_allow_html=True)
-    _price_sort_order = list(sales_p.index) if not sales_p.empty else None
-    _price_items = []
-    if not unit_price_p.empty:
-        if _price_sort_order:
-            _price_items = [i for i in _price_sort_order if i in unit_price_p.index]
-            _price_items += [i for i in unit_price_p.index if i not in _price_items]
-        else:
-            _price_items = list(unit_price_p.index)
-    _price_view = st.selectbox(
-        "단가 보기 품목",
-        options=["전체 품목 (월별 고정)"] + _price_items,
-        key="tab3_price_item_select",
-        help="특정 품목을 고르면 단가가 처음 적용·변동된 연월만 표시합니다.",
-    )
-    if _price_view == "전체 품목 (월별 고정)":
-        st.caption("전체 기간 월별 고정(이월) 단가입니다. 품목을 선택하면 변동 연월만 봅니다.")
-        render_tab3_dataframe_table(
-            unit_price_p,
-            "{:,.0f}",
-            target_month_col,
-            key_prefix="tab3_price",
-            table_kind="price",
-            sort_order=_price_sort_order,
-        )
-    else:
-        st.caption(
-            f"[{_price_view}] · 열=단가 최초 적용·변동 연월만 · 값=그 시점 단가 "
-            "(월별 고정/이월 표시가 아님)"
-        )
-        _chg = build_unit_price_change_pivot(
-            unit_price_p, years, all_months, item_names=[_price_view]
-        )
-        if _chg.empty:
-            st.info("이 품목의 단가 변동(또는 최초 적용) 이력이 없습니다.")
-        else:
-            _chg_fmt = {c: "{:,.0f}" for c in _chg.columns}
-            st.dataframe(
-                _chg.style.format(_chg_fmt, na_rep=""),
-                use_container_width=True,
-                height=120,
-            )
-
-    # —— 4️⃣ 거래처 선택 시: 벌크(주요) / 그외가스(부품목) 납품량 기준 사용·재고 ——
-    st.markdown(
-        "<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 18px 0 8px;'>"
-        "4️⃣ 가스 사용량 · 재고관리 (납품량 기준 · 벌크 / 그외)</div>",
-        unsafe_allow_html=True,
-    )
-    if selected_client == "전체 거래처":
-        st.info("상단에서 거래처를 선택하면 해당 거래처의 벌크·그외 가스 월/주/일 사용량을 볼 수 있습니다.")
-    elif df_client_filtered.empty:
-        st.warning("선택한 거래처의 매출·출고 데이터가 없습니다.")
-    else:
-        _u_years_all = sorted(
-            {str(y) for y in df_client_filtered["연도"].dropna().unique()},
-            key=lambda y: int(y) if str(y).isdigit() else 0,
-        )
-        _u_cur = _u_years_all[-1] if _u_years_all else (
-            str(years[-1]) if years else None
-        )
-        _u_prev = None
-        if _u_cur:
-            try:
-                _u_prev_cand = str(int(_u_cur) - 1)
-            except Exception:
-                _u_prev_cand = None
-            if _u_prev_cand and _u_prev_cand in _u_years_all:
-                _u_prev = _u_prev_cand
-            elif len(_u_years_all) >= 2:
-                _u_prev = _u_years_all[-2]
-        _u_default_years = [y for y in (_u_prev, _u_cur) if y]
-        if not _u_default_years and _u_years_all:
-            _u_default_years = _u_years_all[-1:]
-
-        st.caption(
-            "납품(출고)량으로 사용량을 산출합니다. 기본 기준기간은 **전년도 + 당해년도**이며, "
-            "연도·월을 바꿔 납품 참고 구간을 조정할 수 있습니다. "
-            "월사용량 = 총납품 ÷ 기준기간 달력 월수(미래월 제외) · 주 = 월×7/30 · 일 = 월/30."
-        )
-        _uc1, _uc2 = st.columns([1.2, 1.8])
-        with _uc1:
-            _u_sel_years = st.multiselect(
-                "📅 납품 기준 연도",
-                options=_u_years_all,
-                default=[y for y in _u_default_years if y in _u_years_all],
-                format_func=lambda x: f"{x}년",
-                key="tab3_usage_years",
-                help="기본: 전년도 + 당해년도",
-            )
-        with _uc2:
-            _u_sel_months = st.multiselect(
-                "📆 납품 기준 월 (비우면 선택 연도의 전체 월)",
-                options=all_months,
-                default=[],
-                key="tab3_usage_months",
-                help="특정 월만 보고 싶을 때 선택. 비우면 선택 연도 전체.",
-            )
-        if not _u_sel_years:
-            st.warning("기준 연도를 하나 이상 선택하세요.")
-        else:
-            _u_sum, _u_monthly, _u_meta = cached_tab3_client_gas_usage(
-                df_client_filtered,
-                tuple(_u_sel_years),
-                tuple(_u_sel_months),
-            )
-            _yr_lbl = "·".join(_u_sel_years)
-            _mo_lbl = (
-                ",".join(_u_sel_months) if _u_sel_months else "전체 월"
-            )
-            if _u_sum.empty:
-                st.info(
-                    f"[{selected_client}] {_yr_lbl} / {_mo_lbl} 구간에 "
-                    "가스 납품(출고) 실적이 없습니다."
-                )
-            else:
-                _k1, _k2, _k3, _k4 = st.columns(4)
-                _k1.markdown(
-                    f"<div class='metric-box'><div class='metric-label'>"
-                    f"기준기간</div><div class='metric-value' style='font-size:16px;'>"
-                    f"{html.escape(_yr_lbl)} · {_u_meta['n_months']}개월"
-                    f"</div></div>",
-                    unsafe_allow_html=True,
-                )
-                _k2.markdown(
-                    f"<div class='metric-box'><div class='metric-label'>"
-                    f"🛢️ 벌크 월사용량 합</div><div class='metric-value' style='color:#1D4ED8;'>"
-                    f"{_u_meta['bulk_month']:,.0f}</div></div>",
-                    unsafe_allow_html=True,
-                )
-                _k3.markdown(
-                    f"<div class='metric-box'><div class='metric-label'>"
-                    f"🧪 그외가스 월사용량 합</div><div class='metric-value' style='color:#0F766E;'>"
-                    f"{_u_meta['other_month']:,.0f}</div></div>",
-                    unsafe_allow_html=True,
-                )
-                _k4.markdown(
-                    f"<div class='metric-box'><div class='metric-label'>"
-                    f"품목 수</div><div class='metric-value'>"
-                    f"{len(_u_sum):,} 종</div></div>",
-                    unsafe_allow_html=True,
-                )
-
-                _bulk_df = _u_sum[_u_sum["구분"] == "벌크(주요)"]
-                _other_df = _u_sum[_u_sum["구분"] == "그외가스(부품목)"]
-                _left, _right = st.columns(2)
-                with _left:
-                    st.markdown(
-                        "<div style='font-size:13px;font-weight:700;color:#1E3A8A;"
-                        "margin:4px 0 8px;'>🛢️ 주요품목 · 벌크</div>",
-                        unsafe_allow_html=True,
+                _audit_html = ""
+                if _latest_audit:
+                    _audit_html += (
+                        f'<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
+                        f'<div style="font-size:13px;margin-bottom:4px;">'
+                        f'<a href="{html.escape(_latest_audit["url"])}" target="_blank" rel="noopener">'
+                        f'{html.escape(_latest_audit["date"])} · {html.escape(_latest_audit["name"])}'
+                        f"</a></div>"
                     )
-                    if _bulk_df.empty:
-                        st.caption("이 기간 벌크 납품 없음")
-                    else:
-                        for _, _r in _bulk_df.iterrows():
-                            _sub = (
-                                f"총 {_r['총납품량']:,.0f} · 납품 {_r['납품횟수']}회 · "
-                                f"간격 {_r['평균납품간격(일)']:.0f}일 · "
-                                f"최근 {_r['최근납품일']} · "
-                                f"회당≈{_r['회당평균']:,.0f} (≈{_r['예상소진(일)']:.0f}일분)"
-                            )
-                            st.markdown(
-                                _tab3_usage_inv_card_html(
-                                    str(_r["품목명"]),
-                                    _sub,
-                                    float(_r["월사용량"]),
-                                    float(_r["주사용량"]),
-                                    float(_r["일사용량"]),
-                                    accent="#1D4ED8",
-                                ),
-                                unsafe_allow_html=True,
-                            )
-                with _right:
-                    st.markdown(
-                        "<div style='font-size:13px;font-weight:700;color:#115E59;"
-                        "margin:4px 0 8px;'>🧪 부품목 · 그외 가스</div>",
-                        unsafe_allow_html=True,
+                    if _op:
+                        _audit_html += (
+                            f'<span class="tab2-corp-op" style="color:{_op_color};">'
+                            f"감사의견: {html.escape(_op)}</span>"
+                        )
+                    if _gc_flag and _gc_issue:
+                        _audit_html += (
+                            f'<div style="margin-top:8px;padding:10px 12px;border:1px solid #FECACA;'
+                            f'border-radius:8px;background:#FEF2F2;color:#7F1D1D;font-size:13px;'
+                            f'line-height:1.45;">{html.escape(_gc_issue)}</div>'
+                        )
+                    elif _audit_sum:
+                        _gc_cap = _corp_val((_audit_sum or {}).get("going_concern")) or "관련 문구 없음"
+                        _audit_html += (
+                            f'<div style="margin-top:6px;font-size:12px;color:#64748B;">'
+                            f"계속기업: {html.escape(_gc_cap)}</div>"
+                        )
+                    _audit_html += "</div>"
+                elif dart_api_key and OpenDartReader is not None:
+                    _audit_html = (
+                        '<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
+                        '<div style="font-size:12px;color:#64748B;">최근 감사보고서 공시 없음</div></div>'
                     )
-                    if _other_df.empty:
-                        st.caption("이 기간 그외 가스 납품 없음")
-                    else:
-                        for _, _r in _other_df.head(12).iterrows():
-                            _sub = (
-                                f"총 {_r['총납품량']:,.0f} · 납품 {_r['납품횟수']}회 · "
-                                f"간격 {_r['평균납품간격(일)']:.0f}일 · "
-                                f"최근 {_r['최근납품일']}"
-                            )
-                            st.markdown(
-                                _tab3_usage_inv_card_html(
-                                    str(_r["품목명"]),
-                                    _sub,
-                                    float(_r["월사용량"]),
-                                    float(_r["주사용량"]),
-                                    float(_r["일사용량"]),
-                                    accent="#0F766E",
-                                ),
-                                unsafe_allow_html=True,
-                            )
-                        if len(_other_df) > 12:
-                            st.caption(f"외 {len(_other_df) - 12}개 품목 → 아래 표 참고")
 
-                _disp_cols = [
-                    "구분",
-                    "품목명",
-                    "월사용량",
-                    "주사용량",
-                    "일사용량",
-                    "총납품량",
-                    "납품횟수",
-                    "회당평균",
-                    "평균납품간격(일)",
-                    "예상소진(일)",
-                    "최근납품일",
-                    "활성월수",
-                ]
-                _tbl = _u_sum[[c for c in _disp_cols if c in _u_sum.columns]].copy()
+                _fac_html = ""
+                if _rows_fac:
+                    _fac_html = (
+                        '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
+                        + _grid_html(_rows_fac)
+                        + "</div>"
+                    )
+                elif _f_info.get("error") and "키 없음" not in str(_f_info.get("error")):
+                    _fac_html = (
+                        '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
+                        f'<div style="font-size:12px;color:#64748B;">{html.escape(str(_f_info.get("error")))}'
+                        "</div></div>"
+                    )
+
+                _src_bits = []
+                if c_info.get("source"):
+                    _src_bits.append(str(c_info.get("source")))
+                if _f_info.get("ok"):
+                    _src_bits.append("팩토리온")
+                _src_line = " · ".join(dict.fromkeys(_src_bits)) if _src_bits else ""
+
                 st.markdown(
-                    "<div style='font-size:13px;font-weight:600;color:#334155;"
-                    "margin:12px 0 6px;'>📋 사용량 상세표</div>",
+                    f"""
+        <div class="tab2-corp-card">
+          <h4>🏢 {html.escape(str(_corp_query_name))}
+            <span style="font-size:12px;font-weight:500;color:#94A3B8;margin-left:8px;">
+              {html.escape(_src_line)}</span>
+          </h4>
+          <div class="sec-title">기본 · 재무</div>
+          {_grid_html(_rows_basic + _rows_fin)}
+          {_fac_html}
+          {_audit_html}
+        </div>
+        """,
                     unsafe_allow_html=True,
                 )
-                st.dataframe(
-                    _tbl.style.format(
-                        {
-                            "월사용량": "{:,.1f}",
-                            "주사용량": "{:,.1f}",
-                            "일사용량": "{:,.1f}",
-                            "총납품량": "{:,.0f}",
-                            "회당평균": "{:,.0f}",
-                            "평균납품간격(일)": "{:,.1f}",
-                            "예상소진(일)": "{:,.0f}",
-                        }
-                    ),
-                    use_container_width=True,
-                    height=min(420, 56 + 28 * max(len(_tbl), 1)),
-                )
 
-                # 월별 납품 추이 (벌크 우선, 없으면 상위 그외)
-                _chart_items = list(_bulk_df["품목명"]) if not _bulk_df.empty else []
-                if len(_chart_items) < 4 and not _other_df.empty:
-                    _chart_items += list(_other_df["품목명"].head(4 - len(_chart_items)))
-                if (
-                    _chart_items
-                    and not _u_monthly.empty
-                    and any(i in _u_monthly.index for i in _chart_items)
+                if (_rev == "정보 없음" or _prf == "정보 없음") and c_info.get("dart_error"):
+                    st.caption(f"DART: {c_info.get('dart_error')}")
+
+                _sh = (_audit_sum or {}).get("shareholders") or []
+                if _sh:
+                    with st.expander("주요 주주 · 지분율", expanded=False):
+                        st.dataframe(
+                            pd.DataFrame(_sh),
+                            width="stretch",
+                            hide_index=True,
+                            height=min(160, 38 + 28 * len(_sh)),
+                        )
+
+                with st.expander(
+                    "공장등록 API 키 (자동저장)",
+                    expanded=not bool(_load_factory_api_key()),
                 ):
-                    _plot = _u_monthly.reindex(
-                        [i for i in _chart_items if i in _u_monthly.index]
+                    st.caption(
+                        "입력 후 Enter(또는 포커스 이동) 시 자동 저장됩니다. "
+                        "Decoding 키(끝 `==`) 권장. "
+                        "([생산정보](https://www.data.go.kr/data/15087611/openapi.do) · "
+                        "[필지](https://www.data.go.kr/data/15087615/openapi.do))"
                     )
-                    if not _plot.empty and (_plot.fillna(0) != 0).any().any():
-                        _plot_t = _plot.T.copy()
-                        _plot_t.index.name = "연월"
-                        _melt = _plot_t.reset_index().melt(
-                            id_vars="연월", var_name="품목명", value_name="납품량"
-                        )
-                        _fig_u = px.bar(
-                            _melt,
-                            x="연월",
-                            y="납품량",
-                            color="품목명",
-                            barmode="group",
-                            title=f"[{selected_client}] 월별 납품량 추이 ({_yr_lbl})",
-                        )
-                        _fig_u.update_layout(
-                            margin=dict(l=10, r=10, t=40, b=10),
-                            paper_bgcolor="rgba(0,0,0,0)",
-                            plot_bgcolor="rgba(0,0,0,0)",
-                            legend=dict(
-                                orientation="h",
-                                yanchor="bottom",
-                                y=-0.35,
-                                x=0.5,
-                                xanchor="center",
-                            ),
-                            height=360,
-                            xaxis_title=None,
-                            yaxis_title=None,
-                        )
-                        render_plotly_chart(
-                            _fig_u,
-                            use_container_width=True,
-                            key="tab3_usage_monthly_chart",
-                        )
-
-# Tab 4: 👤 담당자 & 상세내역
-with tab4:
-    t4_c1, t4_c2 = st.columns([4, 1])
-    t4_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
-    t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-
-    if not staff_pivot.empty:
-        format_dict = {col: "{:,.0f}" for col in staff_pivot.columns if col != "매출 비중 (%)"}
-        format_dict["매출 비중 (%)"] = "{:,.1f}%"
-    
-        monthly_cols = [c for c in staff_pivot.columns if c not in ["매출 비중 (%)", "총 매출 합계 (만원)"]]
-    
-        styled_staff = (
-            staff_pivot.style.format(format_dict)
-            .background_gradient(cmap="Purples", subset=["매출 비중 (%)"])
-            .background_gradient(cmap="Oranges", subset=["총 매출 합계 (만원)"])
-            .background_gradient(cmap="Blues", subset=monthly_cols)
-        )
-        st.dataframe(styled_staff, use_container_width=True, height=350)
-    st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
-    if not df_base.empty:
-        current_year = str(df_base["연도"].max())
-        all_staffs = sorted(df_base["담당자"].unique())
-    
-        sel_staff = st.selectbox("👤 순위를 조회할 담당자 선택", all_staffs, key="ranking_staff_select")
-        ranking_pivot = cached_ranking_pivot(df_base, current_year, sel_staff, all_months)
-    
-        if not ranking_pivot.empty:
-            r_col1, r_col2 = st.columns([1.2, 1])
-        
-            with r_col1:
-                st.dataframe(
-                    ranking_pivot.style.format("{:,.0f}")
-                    .background_gradient(cmap="Blues", subset=all_months)
-                    .background_gradient(cmap="Oranges", subset=["당해 누적 (만원)"]),
-                    use_container_width=True, height=380
-                )
-            
-            with r_col2:
-                top_clients = ranking_pivot.head(10).sort_values(by="당해 누적 (만원)", ascending=True)
-            
-                fig_ranking = px.bar(
-                    top_clients.reset_index(),
-                    x="당해 누적 (만원)",
-                    y="거래처",
-                    orientation='h',
-                    text="당해 누적 (만원)",
-                    color="당해 누적 (만원)",
-                    color_continuous_scale="Blues"
-                )
-                fig_ranking.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-                fig_ranking.update_layout(
-                    xaxis_title=None,
-                    yaxis_title=None,
-                    margin=dict(l=10, r=40, t=10, b=10),
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    coloraxis_showscale=False,
-                    height=380
-                )
-                render_plotly_chart(fig_ranking, use_container_width=True, key=f"ranking_chart_{sel_staff}")
-        else:
-            st.info(f"💡 {current_year}년에 선택한 담당자({sel_staff})의 거래처 매출 실적 데이터가 없습니다.")
-    if not df_base.empty:
-        with st.expander("⚠️ 담당자 미지정 신규/누락 거래처 (직접 지정) 열기/닫기", expanded=True):
-            unassigned_df = df_base[df_base["담당자"] == "미지정"]
-            # 거래처명 없는 노이즈 행은 지정 불가 → 목록에서 제외(실거래처만 표시)
-            if not unassigned_df.empty and "거래처" in unassigned_df.columns:
-                unassigned_df = unassigned_df[unassigned_df["거래처"].map(_is_mappable_client_name)]
-        
-            custom_staffs = ["가스코아산", "거래종료"]
-            existing_staffs = [s for s in full_df["담당자"].unique() if s not in ("미지정",)]
-            combined_staffs = sorted(list(set(existing_staffs + custom_staffs)))
-        
-            all_staff_options = ["미지정"] + combined_staffs
-        
-            if not unassigned_df.empty:
-                unassigned_summary = unassigned_df.groupby("거래처").agg(
-                    최근매출일=("매출일_dt", "max"),
-                    총매출액_만원=("매출액", lambda x: sum(x) * 1.1 / 10000)
-                ).reset_index()
-            
-                unassigned_summary = unassigned_summary.sort_values(by="총매출액_만원", ascending=False)
-                unassigned_summary["최근매출일"] = unassigned_summary["최근매출일"].dt.strftime("%Y-%m-%d")
-                unassigned_summary["담당자지정"] = "미지정"
-            
-                st.warning(f"💡 자동 추론으로도 담당자를 찾을 수 없는 거래처가 총 **{len(unassigned_summary)}곳** 있습니다. 표의 **'담당자지정'** 열을 클릭하여 담당자를 선택하고 아래 저장 버튼을 누르세요.")
-            
-                edited_unassigned = st.data_editor(
-                    unassigned_summary,
-                    column_config={
-                        "거래처": st.column_config.TextColumn("거래처", disabled=True),
-                        "최근매출일": st.column_config.TextColumn("최근매출일", disabled=True),
-                        "총매출액_만원": st.column_config.NumberColumn("총매출액(만원)", disabled=True, format="%d"),
-                        "담당자지정": st.column_config.SelectboxColumn(
-                            "👤 담당자 지정 (클릭하여 변경)",
-                            help="이 거래처의 담당자를 선택하세요.",
-                            options=all_staff_options,
-                            required=True
-                        )
-                    },
-                    use_container_width=True,
-                    hide_index=True,
-                    key="unassigned_editor"
-                )
-            
-                if st.button("💾 변경된 담당자 저장 및 전체 대시보드 적용", type="primary"):
-                    changed_rows = edited_unassigned[edited_unassigned["담당자지정"] != "미지정"]
-                    if not changed_rows.empty:
-                        manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
-                        existing_map = {}
-                        if os.path.exists(manual_map_path):
-                            try:
-                                _em = pd.read_csv(manual_map_path)
-                                for _, mrow in _em.iterrows():
-                                    ck = _normalize_manual_client_key(mrow["거래처"])
-                                    if ck is None:
-                                        continue
-                                    staff = str(mrow["담당자"]).strip() if pd.notna(mrow["담당자"]) else ""
-                                    if staff:
-                                        existing_map[ck] = staff
-                            except Exception:
-                                existing_map = {}
-                        
-                        for _, row in changed_rows.iterrows():
-                            ck = _normalize_manual_client_key(row["거래처"])
-                            if ck is None:
-                                continue
-                            existing_map[ck] = row["담당자지정"]
-                        
-                        save_df = pd.DataFrame(list(existing_map.items()), columns=["거래처", "담당자"])
-                        save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
-                    
-                        st.success("✅ 담당자 지정이 완료되었습니다! 대시보드를 새로고침합니다.")
-                        load_uploaded_files_from_bytes.clear()
-                        load_uploaded_files_from_meta.clear()
-                        st.rerun()
-                    else:
-                        st.warning("저장할 담당자 지정이 없습니다.")
-            else:
-                st.success("🎉 모든 거래처에 담당자가 완벽하게 지정되어 있습니다!")
-            
-        with st.expander("🔄 이미 지정된 기존 거래처 담당자 수정/강제 변경하기 열기/닫기"):
-            assigned_df = df_base[df_base["담당자"] != "미지정"]
-            if not assigned_df.empty:
-                assigned_summary = assigned_df.groupby("거래처").agg(
-                    현재담당자=("담당자", "first"),
-                    최근매출일=("매출일_dt", "max")
-                ).reset_index()
-            
-                assigned_summary["새담당자변경"] = assigned_summary["현재담당자"]
-                assigned_summary["최근매출일"] = assigned_summary["최근매출일"].dt.strftime("%Y-%m-%d")
-            
-                all_staffs_for_edit_assign = combined_staffs + ["미지정"]
-            
-                st.info("💡 잘못 지정된 거래처나 인수인계된 거래처의 담당자를 새롭게 변경할 수 있습니다.")
-                edited_assigned = st.data_editor(
-                    assigned_summary,
-                    column_config={
-                        "거래처": st.column_config.TextColumn("거래처", disabled=True),
-                        "현재담당자": st.column_config.TextColumn("현재 담당자", disabled=True),
-                        "최근매출일": st.column_config.TextColumn("최근매출일", disabled=True),
-                        "새담당자변경": st.column_config.SelectboxColumn(
-                            "👤 새 담당자로 변경 (클릭)",
-                            options=all_staffs_for_edit_assign,
-                            required=True
-                        )
-                    },
-                    use_container_width=True,
-                    hide_index=True,
-                    key="assigned_editor"
-                )
-            
-                if st.button("💾 변경된 기존 거래처 담당자 저장", type="primary", key="save_assigned_btn"):
-                    changed_assigned = edited_assigned[edited_assigned["새담당자변경"] != edited_assigned["현재담당자"]]
-                    if not changed_assigned.empty:
-                        manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
-                        existing_map = {}
-                        if os.path.exists(manual_map_path):
-                            try:
-                                _em = pd.read_csv(manual_map_path)
-                                for _, mrow in _em.iterrows():
-                                    ck = _normalize_manual_client_key(mrow["거래처"])
-                                    if ck is None:
-                                        continue
-                                    staff = str(mrow["담당자"]).strip() if pd.notna(mrow["담당자"]) else ""
-                                    if staff:
-                                        existing_map[ck] = staff
-                            except Exception:
-                                existing_map = {}
-                        
-                        for _, row in changed_assigned.iterrows():
-                            ck = _normalize_manual_client_key(row["거래처"])
-                            if ck is None:
-                                continue
-                            existing_map[ck] = row["새담당자변경"]
-                        
-                        save_df = pd.DataFrame(list(existing_map.items()), columns=["거래처", "담당자"])
-                        save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
-                    
-                        st.success("✅ 담당자 변경이 완료되었습니다! 대시보드를 새로고침합니다.")
-                        load_uploaded_files_from_bytes.clear()
-                        load_uploaded_files_from_meta.clear()
-                        st.rerun()
-    st.markdown("<div class='sub-header dashboard-tab-panel-head'>📋 거래 상세 내역 (최신순 800건)</div>", unsafe_allow_html=True)
-    if not df_detail.empty:
-        view_detail_df = df_detail.sort_values(by="매출일_dt", ascending=False).head(800)
-    
-        styled_detail = (
-            view_detail_df
-            .style.format({
-                "출고량": "{:,.0f}",
-                "단가": "{:,.0f}",
-                "매출액": "{:,.0f}",
-                "매출일_dt": lambda t: t.strftime("%Y-%m-%d") if pd.notnull(t) else ""
-            })
-            .background_gradient(subset=["매출액"], cmap="Blues")
-        )
-        st.dataframe(styled_detail, use_container_width=True, height=600, hide_index=True)
-# Tab 5: 📌 채권 관리
-with tab5:
-    latest_month = None
-    if not filtered_debt_df.empty:
-        # 데이터가 0(없는) 달 제거 로직 추가
-        numeric_cols_temp = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
-        valid_numeric_cols = [c for c in numeric_cols_temp if filtered_debt_df[c].abs().sum() > 0]
-
-        filtered_debt_df = filtered_debt_df[["거래처", "구분"] + valid_numeric_cols]
-        numeric_cols_debt = valid_numeric_cols
-
-        if numeric_cols_debt:
-            latest_month = numeric_cols_debt[-1]
-
-    debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
-
-    t5_c1, t5_c2 = st.columns([4, 1])
-    t5_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
-    t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
-
-    _debt_chip = (
-        f"담당자 {', '.join(selected_staff)}" if selected_staff else "담당자 전체"
-    )
-    _debt_chip += (
-        f" · 거래처 {selected_client}"
-        if selected_client != "전체 거래처"
-        else " · 거래처 전체"
-    )
-    st.markdown(
-        f"<div class='dashboard-debt-filter-chip'>현재 필터: {_debt_chip}</div>",
-        unsafe_allow_html=True,
-    )
-
-    if not debt_df.empty:
-        if not filtered_debt_df.empty:
-            numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
-
-            total_outstanding = 0
-            warning_count = 0
-
-            if latest_month:
-                # 거래처별 집계 — 반복 loc 대신 groupby로 원복/지정 시 부하 완화
-                _bal = filtered_debt_df[filtered_debt_df["구분"] == "잔액"]
-                _sal = filtered_debt_df[filtered_debt_df["구분"] == "매출"]
-                if latest_month in _bal.columns and not _bal.empty:
-                    bal_by = _bal.groupby("거래처", sort=False)[latest_month].sum()
-                    sal_by = (
-                        _sal.groupby("거래처", sort=False)[latest_month].sum()
-                        if not _sal.empty and latest_month in _sal.columns
-                        else pd.Series(dtype=float)
+                    st.text_input(
+                        "공공데이터 일반 인증키",
+                        type="password",
+                        key="tab2_factory_api_key_input",
+                        placeholder="data.go.kr 일반 인증키",
+                        on_change=_autosave_factory_api_key,
+                        label_visibility="collapsed",
                     )
-                    for uc, b_val in bal_by.items():
-                        b_val = float(b_val) if pd.notna(b_val) else 0.0
-                        s_val = float(sal_by.get(uc, 0.0) or 0.0)
-                        total_outstanding += max(0.0, b_val)
-                        if b_val > 0 and b_val > s_val:
-                            warning_count += 1
+                    if _load_factory_api_key():
+                        st.caption("✓ 키가 저장되어 있습니다.")
 
-            m1, m2 = st.columns(2)
-            m1.markdown(
-                f"<div class='metric-box dashboard-debt-metric'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div>"
-                f"<div class='metric-value'>{total_outstanding:,.0f} 원</div></div>",
-                unsafe_allow_html=True,
+                _loc_bits = _loc_tokens_from_address(_addr_for_lookup)
+                _q_base = str(_matched)
+                _q_merged = f"{_q_base} {' '.join(_loc_bits[:2])}".strip() if _loc_bits else _q_base
+                _q = urllib.parse.quote(_q_merged)
+                _links = (c_info.get("job_links") or {}) if isinstance(c_info, dict) else {}
+                _saramin = _links.get("saramin_company") or (
+                    "https://www.saramin.co.kr/zf_user/search/company?searchword=" + _q
+                )
+                st.markdown(
+                    f"[DART](https://dart.fss.or.kr/) · "
+                    f"[네이버 기업정보](https://search.naver.com/search.naver?query={_q}%20기업정보) · "
+                    f"[사람인]({_saramin})"
+                    + (
+                        f" · [팩토리온 원문]({_f_info.get('source_url')})"
+                        if _f_info.get("ok")
+                        else ""
+                    )
+                )
+        m1, m2, m3, m4 = st.columns(4)
+        tot_sales_c = df_client_filtered["매출액"].sum() * 1.1 / 10000 if not df_client_filtered.empty else 0.0
+
+        cur_sales_c = cur_month_sales_client / 10000
+        m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (VAT포함)</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
+        m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_client})</div><div class='metric-value'>{cur_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
+        m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_client < 0 else '#2563EB'};'>{mom_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
+        m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
+        if not df_client_filtered.empty:
+            pivot_m_client = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
+            cl, cr = st.columns([1, 1])
+            with cl:
+                pivot_m_client_disp = get_display_df_with_sum(pivot_m_client, "연간 합계")
+                st.dataframe(style_with_sum(pivot_m_client_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
+            with cr:
+                render_plotly_chart(
+                    create_stacked_bar_chart(pivot_m_client, title_text=""),
+                    use_container_width=True, key="tab2_client_total_chart"
+                )
+            # —— 매출 비교를 품목별 상세 분석보다 위에 배치 (tab2 전용 순서) ——
+            st.markdown("---")
+            _client_years = sorted(
+                {str(y) for y in df_client_filtered["연도"].dropna().unique()},
+                key=lambda y: int(y) if str(y).isdigit() else 0,
             )
-            m2.markdown(
-                f"<div class='metric-box dashboard-debt-metric'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div>"
-                f"<div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>",
-                unsafe_allow_html=True,
-            )
-
-            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-            summary_rows = []
-            for gubun in ["이월", "익월", "매출", "수금", "잔액", "합계"]:
-                if gubun in filtered_debt_df["구분"].values:
-                    sum_vals = filtered_debt_df[filtered_debt_df["구분"] == gubun][numeric_cols].sum()
-                    row_data = {"거래처": "📌 [전체 합계]", "구분": gubun}
-                    for col in numeric_cols:
-                        row_data[col] = sum_vals[col]
-                    summary_rows.append(row_data)
-
-            if summary_rows:
-                summary_df = pd.DataFrame(summary_rows)
-                disp_debt = pd.concat([filtered_debt_df, summary_df], ignore_index=True)
-            else:
-                disp_debt = filtered_debt_df.copy()
-
-            gubun_order = {"이월": 1, "매출": 2, "수금": 3, "잔액": 4, "합계": 5}
-            disp_debt["구분순위"] = disp_debt["구분"].map(gubun_order).fillna(99)
-            client_order = {c: i for i, c in enumerate(disp_debt["거래처"].unique())}
-            disp_debt["거래처순위"] = disp_debt["거래처"].map(client_order)
-
-            disp_debt = disp_debt.sort_values(by=["거래처순위", "구분순위"]).drop(columns=["거래처순위", "구분순위"])
-
-            disp_debt = disp_debt.set_index(["거래처", "구분"])
-            debt_highlight = selected_client != "전체 거래처"
-            df_height = 520 if selected_client != "전체 거래처" else 720
-            show_cols = list(numeric_cols)
-            # 입금기준표 결제조건 → 표 맨 우측 고정 표시
-            if os.path.exists(PAYMENT_TERMS_FALLBACK) and not os.path.exists(PAYMENT_TERMS_PATH):
+            _cur_y = _client_years[-1] if _client_years else (str(years[0]) if years else None)
+            _prev_y = None
+            if _cur_y:
                 try:
-                    shutil.copy2(PAYMENT_TERMS_FALLBACK, PAYMENT_TERMS_PATH)
+                    _prev_cand = str(int(_cur_y) - 1)
                 except Exception:
-                    pass
-            payment_terms_map = load_payment_terms_map()
+                    _prev_cand = None
+                if _prev_cand and _prev_cand in _client_years:
+                    _prev_y = _prev_cand
+                elif len(_client_years) >= 2:
+                    _prev_y = _client_years[-2]
+            _yr_label = f"{_prev_y}·{_cur_y}" if _prev_y else str(_cur_y)
+            # 당월 기준: 미래 월 제외, 당월→과거 역순 (26년 08·07·…·01 → 25년 12·…·01)
+            _latest_dt_sales = df_client_filtered["매출일_dt"].max()
+            _cur_month = (
+                _latest_dt_sales.strftime("%m월")
+                if pd.notnull(_latest_dt_sales)
+                else all_months[0]
+            )
+            _mi = all_months.index(_cur_month) if _cur_month in all_months else 0
+            _sales_col_keys = []
+            if _cur_y:
+                _ys = str(_cur_y)[2:]
+                for i in range(_mi, -1, -1):
+                    _sales_col_keys.append(f"{_ys}년 {all_months[i]}")
+            if _prev_y:
+                _ps = str(_prev_y)[2:]
+                for i in range(len(all_months) - 1, -1, -1):
+                    _sales_col_keys.append(f"{_ps}년 {all_months[i]}")
+            # 오른쪽 월 그래프: 당월→01월 역순만 (미도래 월 제외)
+            _months_back = list(reversed(all_months[: _mi + 1]))
             st.markdown(
-                "<div style='font-size:14px;font-weight:700;color:#1E293B;margin:4px 0 6px;'>"
-                "📋 거래처별 채권 상세</div>",
-                unsafe_allow_html=True,
-            )
-            render_debt_interactive_table(
-                disp_debt[show_cols],
-                debt_highlight,
-                height=df_height,
-                payment_terms_map=payment_terms_map,
-            )
-            # 상세표 아래: 연체개월수 요약 — 거래처(상위검색) 무시, 담당자 필터만 적용
-            # staff 기준 메타는 cache → 거래처만 바꿔도 연체패널 재계산 부담 감소
-            if not staff_debt_df.empty:
-                _staff_num = [c for c in staff_debt_df.columns if c not in ("거래처", "구분")]
-                _staff_months = [c for c in _staff_num if staff_debt_df[c].abs().sum() > 0]
-                _rank_months = [c for c in show_cols if c in _staff_months] or _staff_months
-                render_debt_month_rank_panel(
-                    staff_debt_df,
-                    _rank_months,
-                    payment_terms_map=payment_terms_map,
-                    height=480,
-                    status_month_cols=_staff_months,
-                )
-            else:
-                render_debt_month_rank_panel(
-                    filtered_debt_df,
-                    show_cols,
-                    payment_terms_map=payment_terms_map,
-                    height=480,
-                    status_month_cols=numeric_cols,
-                )
-# Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
-with tab6:
-    t6_c1, t6_c2 = st.columns([4, 1])
-    t6_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>📍 담당자별 거래처 지도 분포 (대한민국 V-World 지도)</div>", unsafe_allow_html=True)
-    t6_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-
-    rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
-
-    map_col1, map_col2, map_col3 = st.columns([1, 1, 1])
-    with map_col1:
-        map_style_choice = st.radio(
-            "🗺️ 지도 배경 스타일 선택",
-            ["일반 지도 (V-World 한글 기본도)", "위성 지도 (V-World 고해상도 위성)"],
-            horizontal=True,
-            key="map_style_radio"
-        )
-    with map_col2:
-        all_staff_list = sorted(df_base["담당자"].unique()) if not df_base.empty else []
-        map_selected_staff = st.multiselect(
-            "👤 지도 전용 담당자 선택", 
-            options=all_staff_list, 
-            default=all_staff_list,
-            key="map_staff_multiselect"
-        )
-    with map_col3:
-        all_map_clients = sorted(df_base["거래처"].unique()) if not df_base.empty else []
-        map_selected_client = st.multiselect(
-            "🏢 특정 거래처 위치 검색", 
-            options=all_map_clients,
-            placeholder="검색할 거래처명을 입력하세요...",
-            key="map_client_multiselect"
-        )
-
-    if map_selected_client:
-        addr_display_html = "<div style='background-color: #F1F5F9; padding: 8px 12px; border-radius: 6px; border: 1px solid #CBD5E1; margin-top: 5px; margin-bottom: 15px; font-size: 13px; color: #334155;'>"
-        for sc in map_selected_client:
-            raw_a = resolve_client_address(sc, addr_dict)
-            clean_a = raw_a if raw_a else "등록된 주소 정보가 없습니다."
-            addr_display_html += f"<div>📍 <b>{sc}:</b> {clean_a}</div>"
-        addr_display_html += "</div>"
-        st.markdown(addr_display_html, unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
-    ctrl_space, ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4 = st.columns([5, 1.2, 1.2, 1.2, 1.2])
-
-    with ctrl_space:
-        st.empty()
-    with ctrl_c1:
-        btn_load_map = st.button("🗺️ 지도 새로고침/조회", type="primary", use_container_width=True)
-    with ctrl_c2:
-        btn_zoom_in = st.button("➕ 확대 (+)", use_container_width=True)
-    with ctrl_c3:
-        btn_zoom_out = st.button("➖ 축소 (-)", use_container_width=True)
-    with ctrl_c4:
-        btn_reset_map = st.button("🏠 기본 위치", use_container_width=True)
-
-    # 재시작·다른 탭 조작 시 전체 지오코딩이 돌지 않도록: 조회 버튼 후에만 로드
-    if "show_map" not in st.session_state:
-        st.session_state.show_map = False
-    if btn_load_map:
-        st.session_state.show_map = True
-        st.session_state.map_force_rebuild = True
-    if btn_zoom_in or btn_zoom_out or btn_reset_map:
-        st.session_state.show_map = True
-
-    map_filter_fp = (
-        tuple(sorted(map_selected_staff or [])),
-        tuple(sorted(map_selected_client or [])),
-    )
-
-    if not st.session_state.show_map:
-        st.info("담당자·거래처를 선택한 뒤 **지도 새로고침/조회**를 누르면 지도를 불러옵니다. (재시작 시 자동 조회하지 않아 앱이 빨라집니다)")
-    else:
-        need_rebuild = (
-            st.session_state.pop("map_force_rebuild", False)
-            or st.session_state.get("tab6_map_fp") != map_filter_fp
-            or "tab6_map_df" not in st.session_state
-        )
-
-        if need_rebuild:
-            target_map_df = df_base.copy()
-            if map_selected_client:
-                target_map_df = target_map_df[target_map_df["거래처"].isin(map_selected_client)]
-            elif map_selected_staff:
-                target_map_df = target_map_df[target_map_df["담당자"].isin(map_selected_staff)]
-
-            map_data = []
-            invalid_clients = []
-            if not target_map_df.empty:
-                unique_clients_df = target_map_df[["거래처", "담당자"]].drop_duplicates(subset=["거래처"])
-                total_cnt = len(unique_clients_df)
-                disk_cache = _load_kakao_geocode_disk()
-                dirty = [False]
-                progress_text = "주소 좌표 변환 중 (디스크 캐시 우선) 🚀"
-                my_bar = st.progress(0, text=progress_text)
-
-                for i, (_, row) in enumerate(unique_clients_df.iterrows()):
-                    c_name = row["거래처"]
-                    c_staff = row["담당자"]
-                    c_addr_raw = resolve_client_address(c_name, addr_dict)
-                    c_addr = c_addr_raw if c_addr_raw else "등록된 주소 정보가 없습니다."
-                    lat, lon = get_lat_lon_kakao_disk(c_name, c_addr, rest_api_key, disk_cache, dirty)
-                    if lat is not None and lon is not None:
-                        map_data.append(
-                            {
-                                "거래처": c_name,
-                                "담당자": c_staff,
-                                "주소": c_addr,
-                                "lat": lat,
-                                "lon": lon,
-                            }
-                        )
-                    else:
-                        invalid_clients.append(c_name)
-                    my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i + 1}/{total_cnt})")
-                my_bar.empty()
-                if dirty[0]:
-                    _save_kakao_geocode_disk(disk_cache)
-
-            st.session_state.tab6_map_df = pd.DataFrame(map_data) if map_data else pd.DataFrame()
-            st.session_state.tab6_invalid_clients = invalid_clients
-            st.session_state.tab6_map_fp = map_filter_fp
-
-        map_df = st.session_state.get("tab6_map_df", pd.DataFrame())
-        invalid_clients = st.session_state.get("tab6_invalid_clients", [])
-
-        if map_df is not None and not map_df.empty:
-            center_lat = float(map_df["lat"].mean())
-            center_lon = float(map_df["lon"].mean())
-
-            default_zoom = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
-
-            if "map_zoom" not in st.session_state or btn_reset_map or btn_load_map:
-                st.session_state.map_zoom = default_zoom
-
-            if btn_zoom_in:
-                st.session_state.map_zoom = min(st.session_state.map_zoom + 2, 20)
-            elif btn_zoom_out:
-                st.session_state.map_zoom = max(st.session_state.map_zoom - 2, 2)
-
-            vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
-            vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
-            vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
-            dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
-
-            # iPad 전용: Plotly Mapbox WebGL이 Safari에서 마커/범례를 검정으로 그림
-            # → Leaflet 원형 마커(명시 HEX)로만 우회. 맥 경로(아래 else)는 일절 변경 없음.
-            if is_touch_ui():
-                _palette = [
-                    "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
-                    "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
-                    "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#8C564B",
-                ]
-                _staffs = sorted(map_df["담당자"].astype(str).unique())
-                _cmap = {s: _palette[i % len(_palette)] for i, s in enumerate(_staffs)}
-                _pts = []
-                for _, _r in map_df.iterrows():
-                    _staff = str(_r["담당자"])
-                    _pts.append({
-                        "lat": float(_r["lat"]),
-                        "lon": float(_r["lon"]),
-                        "name": str(_r["거래처"]),
-                        "staff": _staff,
-                        "addr": str(_r.get("주소") or ""),
-                        "color": _cmap.get(_staff, "#636EFA"),
-                    })
-                _legend_html = "".join(
-                    f'<span style="display:inline-flex;align-items:center;margin:0 10px 6px 0;'
-                    f'font-size:13px;color:#334155;">'
-                    f'<span style="width:12px;height:12px;border-radius:50%;background:{_cmap[s]};'
-                    f'display:inline-block;margin-right:5px;border:1px solid #94A3B8;"></span>'
-                    f"{html.escape(s)}</span>"
-                    for s in _staffs
-                )
-                _use_sat = "일반" not in map_style_choice
-                _tiles_js = (
-                    f'L.tileLayer("{vworld_sat}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
-                    f'L.tileLayer("{vworld_hybrid}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
-                    if _use_sat
-                    else f'L.tileLayer("{vworld_base}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
-                )
-                _pts_json = json.dumps(_pts, ensure_ascii=False)
-                _leaflet_html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>
-  html, body {{ margin:0; height:100%; }}
-  #map {{ width:100%; height:560px; }}
-  .legend {{
-    padding:8px 10px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-    background:#fff; border-top:1px solid #E2E8F0;
-  }}
-</style></head>
-<body>
-<div id="map"></div>
-<div class="legend"><b>담당자</b><div style="margin-top:6px;">{_legend_html}</div></div>
-<script>
-(function() {{
-  var map = L.map("map", {{ zoomControl: true }}).setView(
-    [{float(center_lat)}, {float(center_lon)}], {int(st.session_state.map_zoom)}
-  );
-  {_tiles_js}
-  var pts = {_pts_json};
-  pts.forEach(function(p) {{
-    var m = L.circleMarker([p.lat, p.lon], {{
-      radius: 8,
-      color: "#ffffff",
-      weight: 1.5,
-      fillColor: p.color,
-      fillOpacity: 0.95
-    }});
-    m.bindPopup("<b>" + p.name + "</b><br/>담당자: " + p.staff + "<br/>" + (p.addr || ""));
-    m.addTo(map);
-  }});
-}})();
-</script>
-</body></html>"""
-                components.html(_leaflet_html, height=620, scrolling=False)
-            else:
-                fig_map = px.scatter_mapbox(
-                    map_df,
-                    lat="lat",
-                    lon="lon",
-                    color="담당자",
-                    hover_name="거래처",
-                    hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
-                    zoom=st.session_state.map_zoom,
-                    center={"lat": center_lat, "lon": center_lon},
-                    height=600
-                )
-                fig_map.update_traces(marker=dict(size=14, opacity=0.9))
-                if "일반" in map_style_choice:
-                    mapbox_layers = [
-                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
-                    ]
-                else:
-                    mapbox_layers = [
-                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
-                        {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
-                    ]
-                fig_map.update_layout(
-                    mapbox_style="white-bg",
-                    mapbox_layers=mapbox_layers,
-                    margin={"r": 0, "t": 10, "l": 0, "b": 0},
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=-0.15,
-                        xanchor="center",
-                        x=0.5
-                    )
-                )
-                render_plotly_chart(fig_map, use_container_width=True, key=dynamic_key, allow_drag=True)
-            if invalid_clients:
-                with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
-                    st.write(", ".join(invalid_clients))
-        else:
-            st.info("조건에 맞는 거래처 데이터가 없습니다.")
-# Tab 7: 🏭 설비 재고 현황
-with tab7:
-    t7_c1, t7_c2 = st.columns([4, 1])
-    t7_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 고압가스 탱크 및 기화기 재고 현황</div>", unsafe_allow_html=True)
-    with t7_c2:
-        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-        tab7_default = get_saved_date(TAB7_DATE_FILE)
-        tab7_date = st.date_input("기준일", value=tab7_default, key="tab7_date", label_visibility="collapsed")
-        if tab7_date != tab7_default:
-            set_saved_date(TAB7_DATE_FILE, tab7_date)
-    if not df_tank.empty or not df_vaporizer.empty:
-        eq_col1, eq_col2, eq_col3, eq_col4 = st.columns(4)
-    
-        with eq_col1:
-            available_branches = []
-            if not df_tank.empty and '지사' in df_tank.columns:
-                available_branches.extend(df_tank['지사'].dropna().unique())
-            if not df_vaporizer.empty and '지사' in df_vaporizer.columns:
-                available_branches.extend(df_vaporizer['지사'].dropna().unique())
-            selected_branch = st.selectbox("📍 지사 선택 (전체 조회)", ["전체 지사"] + sorted(list(set(available_branches))))
-    
-        with eq_col2:
-            selected_equip_type = st.selectbox("🛢️ 설비 종류 선택", ["전체 보기", "탱크 재고", "기화기 재고"])
-        with eq_col3:
-            selected_status = st.selectbox("📌 사용구분 필터", ["전체 상태", "유휴 장비", "거래처 사용중"])
-        with eq_col4:
-            eq_items = []
-            if not df_tank.empty and '품목' in df_tank.columns:
-                eq_items.extend(df_tank['품목'].dropna().astype(str).tolist())
-            if not df_vaporizer.empty and '기화형식' in df_vaporizer.columns:
-                eq_items.extend(df_vaporizer['기화형식'].dropna().astype(str).tolist())
-            unique_eq_items = sorted(list(set([i.strip() for i in eq_items if i.strip() != ''])))
-            selected_eq_item = st.selectbox("📦 품목/형식 선택", ["전체 품목/형식"] + unique_eq_items)
-        st.markdown("---")
-        if not df_tank.empty:
-            if '사용구분' in df_tank.columns:
-                mask_idle = df_tank['사용구분'].astype(str).str.contains('유휴')
-                df_tank.loc[mask_idle, '사용구분'] = '🟢 ' + df_tank.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-                df_tank.loc[~mask_idle, '사용구분'] = '🏢 ' + df_tank.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-        if not df_vaporizer.empty:
-            if '사용구분' in df_vaporizer.columns:
-                mask_idle_v = df_vaporizer['사용구분'].astype(str).str.contains('유휴')
-                df_vaporizer.loc[mask_idle_v, '사용구분'] = '🟢 ' + df_vaporizer.loc[mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-                df_vaporizer.loc[~mask_idle_v, '사용구분'] = '🏢 ' + df_vaporizer.loc[~mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-        if selected_equip_type in ["전체 보기", "탱크 재고"]:
-            st.markdown("<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>🛢️ 초저온 탱크 재고 현황</div>", unsafe_allow_html=True)
-            if not df_tank.empty:
-                filtered_tank = df_tank.copy()
-                if selected_branch != "전체 지사" and '지사' in filtered_tank.columns:
-                    filtered_tank = filtered_tank[filtered_tank['지사'].astype(str).str.contains(selected_branch)]
-                if selected_status != "전체 상태" and '사용구분' in filtered_tank.columns:
-                    filtered_tank = filtered_tank[filtered_tank['사용구분'].astype(str).str.contains(selected_status)]
-                if selected_eq_item != "전체 품목/형식" and '품목' in filtered_tank.columns:
-                    filtered_tank = filtered_tank[filtered_tank['품목'].astype(str).str.strip() == selected_eq_item]
-            
-                st.dataframe(filtered_tank, use_container_width=True, height=350, hide_index=True)
-        if selected_equip_type in ["전체 보기", "기화기 재고"]:
-            if selected_equip_type == "전체 보기":
-                st.markdown("<br>", unsafe_allow_html=True)
-        
-            st.markdown(f"<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>♨️ 기화기 재고 현황</div>", unsafe_allow_html=True)
-            if not df_vaporizer.empty:
-                filtered_vap = df_vaporizer.copy()
-                if selected_branch != "전체 지사" and '지사' in filtered_vap.columns:
-                    filtered_vap = filtered_vap[filtered_vap['지사'].astype(str).str.contains(selected_branch)]
-                if selected_status != "전체 상태" and '사용구분' in filtered_vap.columns:
-                    filtered_vap = filtered_vap[filtered_vap['사용구분'].astype(str).str.contains(selected_status)]
-                if selected_eq_item != "전체 품목/형식" and '기화형식' in filtered_vap.columns:
-                    filtered_vap = filtered_vap[filtered_vap['기화형식'].astype(str).str.strip() == selected_eq_item]
-            
-                st.dataframe(filtered_vap, use_container_width=True, height=350, hide_index=True)
-# Tab 8: 🛢️ 통합 탱크 재고
-with tab8:
-    t8_c1, t8_c2 = st.columns([4, 1])
-    t8_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>🛢️ 통합 고압가스 탱크 재고 현황</div>", unsafe_allow_html=True)
-    with t8_c2:
-        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-        tab8_default = get_saved_date(TAB8_DATE_FILE)
-        tab8_date = st.date_input("기준일", value=tab8_default, key="int_date", label_visibility="collapsed")
-        if tab8_date != tab8_default:
-            set_saved_date(TAB8_DATE_FILE, tab8_date)
-    
-    if not df_integrated.empty:
-        int_col1, int_col2 = st.columns(2)
-        with int_col1:
-            items = ["전체 품목"] + sorted([str(x) for x in df_integrated['품목'].dropna().unique() if str(x).strip()])
-            sel_item = st.selectbox("📦 품목 선택", items, key="int_item")
-        with int_col2:
-            statuses = ["전체 상태"] + sorted([str(x) for x in df_integrated['사용구분'].dropna().unique() if str(x).strip()])
-            sel_status = st.selectbox("📌 사용구분", statuses, key="int_status")
-        st.markdown("---")
-        df_int_filtered = df_integrated.copy()
-        if sel_item != "전체 품목":
-            df_int_filtered = df_int_filtered[df_int_filtered['품목'].astype(str) == sel_item]
-        if sel_status != "전체 상태":
-            df_int_filtered = df_int_filtered[df_int_filtered['사용구분'].astype(str) == sel_status]
-        total_tanks = len(df_int_filtered)
-        idle_tanks = len(df_int_filtered[df_int_filtered['사용구분'].astype(str).str.contains('유휴', na=False)])
-        inuse_tanks = total_tanks - idle_tanks
-    
-        k1, k2, k3 = st.columns(3)
-        k1.markdown(f"<div class='metric-box'><div class='metric-label'>총 탱크 수량</div><div class='metric-value'>{total_tanks:,} 기</div></div>", unsafe_allow_html=True)
-        k2.markdown(f"<div class='metric-box'><div class='metric-label'>🟢 유휴 장비 (대기중)</div><div class='metric-value' style='color:#059669;'>{idle_tanks:,} 기</div></div>", unsafe_allow_html=True)
-        k3.markdown(f"<div class='metric-box'><div class='metric-label'>🏢 사용/충전중</div><div class='metric-value' style='color:#2563EB;'>{inuse_tanks:,} 기</div></div>", unsafe_allow_html=True)
-        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px; margin-top: 20px;'>📋 상세 재고 데이터</div>", unsafe_allow_html=True)
-    
-        df_display = df_int_filtered.copy()
-        if '사용구분' in df_display.columns:
-            mask_idle = df_display['사용구분'].astype(str).str.contains('유휴')
-            df_display.loc[mask_idle, '사용구분'] = '🟢 ' + df_display.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-            df_display.loc[~mask_idle, '사용구분'] = '🏢 ' + df_display.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
-        st.dataframe(df_display, use_container_width=True, height=600, hide_index=True)
-    else:
-        st.warning("통합 탱크 재고 데이터가 없습니다. 폴더에 '통합탱크재고.csv'를 넣거나 왼쪽 사이드바에서 업로드해주세요.")
-# Tab 9: 📈 수익성 분석 (엑셀 함수 동일 적용)
-# 입력 변경 시 Tab9만 부분 재실행 (다른 탭·상단 로딩 생략)
-@st.fragment
-def _render_profitability_analysis_tab(latest_update_str):
-    t9_c1, t9_c2 = st.columns([4, 1])
-    t9_c1.markdown(
-        "<div class='sub-header dashboard-tab-panel-head'>📈 투자대비 수익성 분석</div>",
-        unsafe_allow_html=True,
-    )
-    t9_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-    st.caption("엑셀「수익성분석.xlsx」함수를 그대로 적용합니다. 입력값을 바꾸면 결과가 즉시 재계산됩니다.")
-    if "profit_inputs" not in st.session_state:
-        st.session_state["profit_inputs"] = load_profit_inputs()
-    p0 = st.session_state["profit_inputs"]
-    _pf_keys = [
-        "pf_name", "pf_tank_gas", "pf_tank_cap_mode",
-        "pf_tank_liters", "pf_tank_liters__comma",
-        "pf_tank_kg", "pf_tank_kg__comma", "pf_tank_spec",
-        "pf_hourly_mode", "pf_hourly_usage", "pf_hourly_nm3", "pf_operating_hours",
-        "pf_operating_days", "pf_auto_monthly",
-        "pf_tank_price", "pf_tank_price__comma", "pf_usage", "pf_usage__comma",
-        "pf_const", "pf_const__comma", "pf_vap_cap", "pf_vap_cap__comma",
-        "pf_vap_note", "pf_vap_price", "pf_vap_price__comma",
-        "pf_buy", "pf_logi", "pf_supply",
-        "pf_rate", "pf_mgmt", "pf_dep", "pf_rent", "pf_rent_n",
-        "pf_origin", "pf_dest", "pf_origin_cands", "pf_dest_cands",
-        "pf_origin_q", "pf_dest_q", "pf_origin_pick", "pf_dest_pick",
-        "pf_lkm", "pf_lfuel", "pf_leff", "pf_ltoll", "pf_lrt", "pf_lkg",
-    ]
-    # —— 입력 (물류비 계산 → 단가 순, 글씨·위젯 스타일은 단가란과 동일) ——
-    st.markdown("##### ◆ 프로젝트 / 장비 투자비")
-    c_name, c_gas = st.columns([1, 1])
-    project_name = c_name.text_input("거래처/프로젝트명", value=str(p0.get("project_name", "")), key="pf_name")
-    _gas0 = str(p0.get("tank_gas") or PROFIT_DEFAULTS["tank_gas"])
-    if _gas0 not in GAS_OPTIONS:
-        _gas0 = GAS_OPTIONS[0]
-    tank_gas = c_gas.selectbox(
-        "탱크 가스 종류",
-        GAS_OPTIONS,
-        index=GAS_OPTIONS.index(_gas0),
-        key="pf_tank_gas",
-        help="질소·알곤·산소·탄산·수소·헬륨. 내용적(L) 입력 시 kg 환산에 사용됩니다.",
-    )
-    _dens = float(GAS_DENSITY_KG_PER_L.get(tank_gas, 0.808))
-    _mode0 = str(p0.get("tank_capacity_mode") or "liters")
-    if _mode0 not in ("liters", "kg"):
-        _mode0 = "liters"
-    tank_capacity_mode = st.radio(
-        "탱크 용량 입력 방식",
-        options=["liters", "kg"],
-        index=0 if _mode0 == "liters" else 1,
-        format_func=lambda m: "내용적(L) → kg 환산" if m == "liters" else "용량(kg) 직접 입력",
-        horizontal=True,
-        key="pf_tank_cap_mode",
-        help="L로 넣거나, kg를 바로 넣을 수 있습니다.",
-    )
-    _kg0 = parse_tank_capacity_kg(p0.get("tank_spec", PROFIT_DEFAULTS["tank_spec"]))
-    _liters0 = p0.get("tank_liters")
-    if _liters0 is None or float(_liters0 or 0) <= 0:
-        _liters0 = (_kg0 / _dens) if _dens > 0 and _kg0 > 0 else float(PROFIT_DEFAULTS["tank_liters"])
-    t_l, t_k = st.columns([1, 1])
-    if tank_capacity_mode == "liters":
-        with t_l:
-            tank_liters = profit_int_comma_input(
-                "TANK 내용적 (L)",
-                key="pf_tank_liters",
-                value=_liters0,
-                help=f"{tank_gas} 밀도 {_dens:g} kg/L × 내용적(L) = 용량(kg)",
-            )
-        tank_kg = round(liters_to_tank_kg(tank_liters, tank_gas))
-        st.session_state["pf_tank_kg"] = int(tank_kg)
-        st.session_state["pf_tank_kg__comma"] = f"{int(tank_kg):,}"
-        t_k.markdown(
-            f"<div style='padding-top:0.2rem;'>"
-            f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>TANK 용량 (kg) 환산</div>"
-            f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{tank_kg:,.0f}</div>"
-            f"<div style='font-size:0.75rem;color:#64748B;'>"
-            f"{tank_gas} {_dens:g} kg/L × {float(tank_liters):,.0f} L</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    else:
-        with t_k:
-            tank_kg = profit_int_comma_input(
-                "TANK 용량 (kg) 직접입력",
-                key="pf_tank_kg",
-                value=_kg0 if _kg0 > 0 else 4900,
-                help="용량을 kg로 바로 입력합니다. 왕복횟수 계산에 사용됩니다.",
-            )
-        tank_liters = round(float(tank_kg) / _dens) if _dens > 0 else 0.0
-        st.session_state["pf_tank_liters"] = int(tank_liters)
-        st.session_state["pf_tank_liters__comma"] = f"{int(tank_liters):,}"
-        t_l.markdown(
-            f"<div style='padding-top:0.2rem;'>"
-            f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>TANK 내용적 (L) 환산</div>"
-            f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{tank_liters:,.0f}</div>"
-            f"<div style='font-size:0.75rem;color:#64748B;'>"
-            f"{float(tank_kg):,.0f} kg ÷ {tank_gas} {_dens:g} kg/L</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-    tank_spec = float(tank_kg)  # 저장·계산용 (단위: kg)
-    _nm3 = tank_kg_to_nm3(tank_kg, tank_gas)
-    _nm3_per_kg = float(GAS_NM3_PER_KG.get(tank_gas, 0))
-    st.caption(
-        f"기체환산({tank_gas}): {float(tank_kg):,.0f} kg × {_nm3_per_kg:g} Nm³/kg = "
-        f"**{_nm3:,.1f} Nm³**  ·  내용적 {float(tank_liters):,.0f} L 기준 "
-        f"{tank_liters_to_nm3(tank_liters, tank_gas):,.1f} Nm³"
-    )
-    with st.expander("각 가스별 밀도·기체환산 비교", expanded=False):
-        st.caption("동일 내용적(L)으로 가스별 kg·Nm³를 비교합니다. ★ = 현재 선택 가스. (0℃·1atm 대략값)")
-        _gas_df = pd.DataFrame(gas_conversion_rows(tank_liters, tank_kg, tank_gas))
-        _gas_df["밀도(kg/L)"] = _gas_df["밀도(kg/L)"].map(lambda x: f"{float(x):.4g}")
-        _gas_df["Nm³/kg"] = _gas_df["Nm³/kg"].map(lambda x: f"{float(x):.4g}")
-        _gas_df["내용적 기준 kg"] = _gas_df["내용적 기준 kg"].map(lambda x: f"{float(x):,.1f}")
-        _gas_df["내용적 기준 Nm³"] = _gas_df["내용적 기준 Nm³"].map(lambda x: f"{float(x):,.1f}")
-        _gas_df["현재탱크 Nm³"] = _gas_df["현재탱크 Nm³"].map(
-            lambda x: f"{float(x):,.1f}" if isinstance(x, (int, float)) else str(x)
-        )
-        st.dataframe(_gas_df, hide_index=True, width="stretch")
-    # 별도 작은 타일: 탱크 사용주기 (화면 복잡도 ↓ — 접힌 expander)
-    _nm3pkg = float(GAS_NM3_PER_KG.get(tank_gas, 0) or 0)
-    with st.expander("⏱ 탱크 사용주기 (시간당 사용량 · 가동시간)", expanded=False):
-        st.caption(
-            f"충전기준 = 탱크×80% · 사용주기 = 충전기준 ÷ (시간당kg × 일가동) · "
-            f"{tank_gas} 환산 {_nm3pkg:g} Nm³/kg"
-        )
-        # 기존 float 세션값 → 정수 (format=%d 호환)
-        for _pk in ("pf_hourly_nm3", "pf_hourly_usage", "pf_operating_hours", "pf_operating_days"):
-            if _pk in st.session_state:
-                try:
-                    st.session_state[_pk] = int(round(float(st.session_state[_pk])))
-                except Exception:
-                    pass
-        _hmode0 = str(p0.get("hourly_usage_mode") or "kg")
-        if _hmode0 not in ("nm3", "kg"):
-            _hmode0 = "kg"
-        hourly_usage_mode = st.radio(
-            "시간당 사용량 입력",
-            options=["nm3", "kg"],
-            index=0 if _hmode0 == "nm3" else 1,
-            format_func=lambda m: "루베(Nm³/h) → kg/h 환산" if m == "nm3" else "kg/h 직접 입력",
-            horizontal=True,
-            key="pf_hourly_mode",
-        )
-        _kg_h0 = float(p0.get("hourly_usage_kg", PROFIT_DEFAULTS["hourly_usage_kg"]) or 0)
-        _nm3_h0 = p0.get("hourly_usage_nm3")
-        if _nm3_h0 is None or float(_nm3_h0 or 0) <= 0:
-            _nm3_h0 = kg_per_h_to_nm3_per_h(_kg_h0, tank_gas)
-        u_a, u_b, u_o = st.columns(3)
-        if hourly_usage_mode == "nm3":
-            with u_a:
-                hourly_usage_nm3 = st.number_input(
-                    "시간당 사용량 (Nm³/h, 루베)",
-                    min_value=0,
-                    step=1,
-                    value=int(round(float(_nm3_h0))),
-                    format="%d",
-                    key="pf_hourly_nm3",
-                    help=f"{tank_gas}: kg/h = Nm³/h ÷ {_nm3pkg:g}",
-                )
-            hourly_usage_kg = nm3_per_h_to_kg_per_h(hourly_usage_nm3, tank_gas)
-            st.session_state["pf_hourly_usage"] = int(round(hourly_usage_kg))
-            u_b.markdown(
-                f"<div style='padding-top:0.2rem;'>"
-                f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>시간당 사용량 (kg/h) 환산</div>"
-                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{hourly_usage_kg:,.0f}</div>"
-                f"<div style='font-size:0.75rem;color:#64748B;'>{tank_gas} {float(hourly_usage_nm3):,.0f} Nm³/h ÷ {_nm3pkg:g}</div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            with u_b:
-                hourly_usage_kg = st.number_input(
-                    "시간당 사용량 (kg/h)",
-                    min_value=0,
-                    step=1,
-                    value=int(round(float(_kg_h0))),
-                    format="%d",
-                    key="pf_hourly_usage",
-                )
-            hourly_usage_nm3 = kg_per_h_to_nm3_per_h(hourly_usage_kg, tank_gas)
-            st.session_state["pf_hourly_nm3"] = int(round(hourly_usage_nm3))
-            u_a.markdown(
-                f"<div style='padding-top:0.2rem;'>"
-                f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>시간당 사용량 (Nm³/h) 환산</div>"
-                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{hourly_usage_nm3:,.0f}</div>"
-                f"<div style='font-size:0.75rem;color:#64748B;'>{tank_gas} {float(hourly_usage_kg):,.0f} kg/h × {_nm3pkg:g}</div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        operating_hours = u_o.number_input(
-            "일 가동시간 (h/일)",
-            min_value=0,
-            max_value=24,
-            step=1,
-            value=int(round(float(p0.get("operating_hours", PROFIT_DEFAULTS["operating_hours"])))),
-            format="%d",
-            key="pf_operating_hours",
-        )
-        d_days, d_auto = st.columns([1, 2])
-        operating_days = d_days.number_input(
-            "월 가동일수 (일/월)",
-            min_value=1,
-            max_value=31,
-            step=1,
-            value=int(round(float(p0.get("operating_days_per_month", PROFIT_DEFAULTS["operating_days_per_month"])))),
-            format="%d",
-            key="pf_operating_days",
-            help="월 사용량 = 일 사용량(시간당×일가동) × 월 가동일수. 예: 주5일≈22일, 연중무휴≈30일",
-        )
-        _cycle = compute_tank_usage_cycle(
-            tank_kg,
-            hourly_usage_kg,
-            operating_hours,
-            fill_ratio=0.8,
-            days_per_month=operating_days,
-        )
-        _monthly_est = float(_cycle.get("monthly_kg") or 0)
-        auto_monthly_from_cycle = d_auto.checkbox(
-            f"월 평균 공급량에 자동 반영 (일사용량 × {int(operating_days)}일)",
-            value=bool(p0.get("auto_monthly_from_cycle", False)),
-            key="pf_auto_monthly",
-            help="체크 시 아래 「월 평균 공급량」= 일사용량 × 월가동일수. 해제하면 직접 입력합니다.",
-        )
-        if _cycle.get("ok"):
-            c1, c2, c3, c4 = st.columns(4)
-            c1.markdown(
-                f"<div class='metric-box'><div class='metric-label'>일 사용량</div>"
-                f"<div class='metric-value' style='font-size:18px;'>{_cycle['daily_kg']:,.0f} kg/일</div></div>",
-                unsafe_allow_html=True,
-            )
-            c2.markdown(
-                f"<div class='metric-box'><div class='metric-label'>사용주기</div>"
-                f"<div class='metric-value' style='font-size:18px;color:#2563EB;'>{_cycle['cycle_days']:,.0f} 일</div></div>",
-                unsafe_allow_html=True,
-            )
-            c3.markdown(
-                f"<div class='metric-box'><div class='metric-label'>가동시간 기준</div>"
-                f"<div class='metric-value' style='font-size:18px;'>{_cycle['cycle_hours']:,.0f} h</div></div>",
-                unsafe_allow_html=True,
-            )
-            c4.markdown(
-                f"<div class='metric-box'><div class='metric-label'>월 사용량({int(operating_days)}일)</div>"
-                f"<div class='metric-value' style='font-size:18px;'>{_monthly_est:,.0f} kg</div></div>",
+                f"<div class='sub-header dashboard-tab-panel-head'>"
+                f"📊 [{selected_client}] 매출 비교 ({_yr_label}, {_cur_month}→과거)</div>",
                 unsafe_allow_html=True,
             )
             st.caption(
-                f"탱크 {float(tank_kg):,.0f} kg · 충전기준 {_cycle['charge_kg']:,.0f} kg(80%) · "
-                f"월가동 {int(operating_days)}일 · 월충전 약 {_cycle['fills_per_month']:,.0f}회 · {_cycle['message']}"
+                f"왼쪽: 품목별 매출(만원·VAT포함) · {_cur_y}년 {_cur_month}→과거 → {_prev_y or '전년'}년 "
+                f"(매출 많은 순) · 오른쪽: 월별 매출 비교 그래프 · 하단: 당해 년평균 매출 비중"
             )
-            if auto_monthly_from_cycle:
-                _mu = int(round(_monthly_est))
-                st.session_state["pf_usage"] = _mu
-                st.session_state["pf_usage__comma"] = f"{_mu:,}"
-                st.caption(
-                    f"→ 월 평균 공급량 {_mu:,} kg "
-                    f"(일 {_cycle['daily_kg']:,.0f} × {int(operating_days)}일) 자동 반영 중"
-                )
-        else:
-            st.caption(_cycle.get("message") or "입력값을 확인하세요.")
-    i1, i2, i3 = st.columns(3)
-    with i1:
-        tank_price = profit_int_comma_input(
-            "1. TANK 구입가 (원)", key="pf_tank_price", value=p0["tank_price"]
+            sales_two_y = cached_client_item_sales_pivot_two_years(
+                df_client_filtered, tuple(_sales_col_keys)
+            )
+            sales_month_two_y = cached_get_yearly_monthly_pivot(
+                df_client_filtered,
+                _months_back,
+                [y for y in (_cur_y, _prev_y) if y],
+            )
+            q_left, q_right = st.columns([1, 1])
+            with q_left:
+                if sales_two_y.empty:
+                    st.info("전년·당해 매출 데이터가 없습니다.")
+                else:
+                    # 품목별 총 매출 많은 순 내림차순 — tab2 매출 비교만
+                    sales_two_y = sales_two_y.loc[
+                        sales_two_y.sum(axis=1).sort_values(ascending=False).index
+                    ]
+                    sales_disp = get_display_df_with_sum(sales_two_y, "합계")
+                    st.dataframe(
+                        style_with_sum(sales_disp, "{:,.0f}", "Blues", axis=None),
+                        use_container_width=True,
+                        height=460,
+                    )
+            with q_right:
+                if sales_month_two_y.empty or (sales_month_two_y.fillna(0) == 0).all().all():
+                    st.info("전년·당해 월별 매출 데이터가 없습니다.")
+                else:
+                    # 월별(당해·전년) 매출 비교 그룹 막대 — tab2 전용
+                    _fig_sales_cmp = create_grouped_bar_chart(
+                        sales_month_two_y,
+                        title_text=f"월별 매출 비교 ({_yr_label}, 만원)",
+                        y_suffix="만원",
+                        y_format=",.0f",
+                    )
+                    render_plotly_chart(
+                        _fig_sales_cmp,
+                        use_container_width=True,
+                        key="tab2_sales_yoy_grouped",
+                    )
+            # 당해 년평균(월평균) 매출 기준 품목별 비중 — 가로 막대(블루 톤)
+            if _cur_y:
+                _df_cy = df_client_filtered[
+                    df_client_filtered["연도"].astype(str) == str(_cur_y)
+                ]
+                if not _df_cy.empty and "매출액" in _df_cy.columns:
+                    _m_pvt = _df_cy.pivot_table(
+                        index="품목명", columns="월", values="매출액", aggfunc="sum"
+                    ).fillna(0)
+                    _yr_avg = _m_pvt.mean(axis=1)
+                    _yr_avg = _yr_avg[_yr_avg > 0]
+                    if not _yr_avg.empty:
+                        _share = (_yr_avg / _yr_avg.sum() * 100).sort_values(ascending=False)
+                        _fig_share = create_item_share_hbar(
+                            _share,
+                            title_text=f"당해({_cur_y}) 년평균 매출 기준 품목별 비중",
+                        )
+                        if _fig_share is not None:
+                            render_plotly_chart(
+                                _fig_share,
+                                use_container_width=True,
+                                key="tab2_cur_year_item_share",
+                            )
+            st.markdown("---")
+            st.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
+    
+            client_available_items = sorted(df_client_filtered["품목명"].unique())
+            if client_available_items:
+                item_ratios = {}
+                if not df_client_filtered.empty:
+                    latest_dt_c = df_client_filtered["매출일_dt"].max()
+                    if pd.notnull(latest_dt_c):
+                        latest_ym = latest_dt_c.strftime("%Y-%m")
+                        df_cm = df_client_filtered[df_client_filtered["매출일_dt"].dt.strftime("%Y-%m") == latest_ym]
+                        tot_sales = df_cm["매출액"].sum()
+                        if tot_sales > 0:
+                            grp = df_cm.groupby("품목명")["매출액"].sum()
+                            for item, val in grp.items():
+                                item_ratios[item] = (val / tot_sales) * 100
+                def format_item_with_ratio(item_name):
+                    pct = item_ratios.get(item_name, 0.0)
+                    return f"{item_name} (당월 {pct:.1f}%)"
+                sel_col1_c, sel_col2_c = st.columns([1, 1])
+                with sel_col1_c:
+                    selected_target_item_c = st.selectbox(
+                        "🔍 분석할 품목 선택 (전체 거래 품목)", 
+                        options=client_available_items, 
+                        format_func=format_item_with_ratio,
+                        key="client_item_selectbox"
+                    )
+                with sel_col2_c:
+                    selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
+            
+                client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
+        
+                i_col_left_c, i_col_right_c = st.columns([1, 1])
+                with i_col_left_c:
+                    client_item_pivot_disp = get_display_df_with_sum(client_item_pivot, "연간 합계")
+                    # tab2 표 색상 통일: Blues 그라데이션
+                    if "비중" in selected_metric_c:
+                        st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.1f}%", "Blues", axis=None), use_container_width=True, height=460)
+                        y_suf_c, y_fmt_c = "%", ",.1f"
+                    elif "출고량" in selected_metric_c:
+                        if selected_target_item_c in target_items:
+                            y_suf_c, y_fmt_c = " 천kg", ",.1f"
+                        elif "LPG" in str(selected_target_item_c).upper():
+                            y_suf_c, y_fmt_c = " kg", ",.0f"
+                        else:
+                            y_suf_c, y_fmt_c = " 개(병)", ",.0f"
+                        st.dataframe(style_with_sum(client_item_pivot_disp, f"{{:{y_fmt_c}}}", "Blues", axis=None), use_container_width=True, height=460)
+                    else:
+                        st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
+                        y_suf_c, y_fmt_c = " 만원", ",.0f"
+                
+                with i_col_right_c:
+                    render_plotly_chart(
+                        create_stacked_bar_chart(
+                            client_item_pivot, 
+                            title_text="", 
+                            y_suffix=y_suf_c, 
+                            y_format=y_fmt_c
+                        ),
+                        use_container_width=True, key="tab2_client_item_chart"
+                    )
+    # Tab 3: 📦 품목 및 단가 분석
+with tab3:
+    if _dash_should_defer_heavy_tab(2):
+        _dash_defer_heavy_stub('📦 품목 및 단가 분석', 2)
+    else:
+        t3_c1, t3_c2 = st.columns([4, 1])
+        t3_c1.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📦 [{selected_client}] 품목별 실적 분석</div>", unsafe_allow_html=True)
+        t3_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+
+        latest_dt_overall = df_base["매출일_dt"].max() if not df_base.empty else None
+        target_month_col = latest_dt_overall.strftime("%y년 %m월") if pd.notnull(latest_dt_overall) else None
+        avail_years_short = [y[2:] for y in years]
+        current_year_short = str(df_base["연도"].max())[2:] if not df_base.empty else (avail_years_short[0] if avail_years_short else "26")
+
+        selected_detail_years = st.multiselect(
+            "📅 월별 상세 내역을 펼쳐볼 연도 선택 (단가표 제외)",
+            options=avail_years_short,
+            default=[current_year_short] if current_year_short in avail_years_short else avail_years_short[:1],
+            format_func=lambda x: f"20{x}년",
+            key="tab3_detail_years",
         )
-    with i2:
-        if auto_monthly_from_cycle and _cycle.get("ok"):
-            monthly_usage = float(st.session_state.get("pf_usage", round(_monthly_est)))
-            st.markdown(
+    
+        sales_p_filtered, qty_p_filtered = cached_filter_tab3_year_columns(
+            sales_p,
+            qty_p,
+            tuple(sorted(selected_detail_years)),
+            tuple(avail_years_short),
+            tuple(all_months),
+        )
+        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
+        render_tab3_dataframe_table(
+            sales_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_sales", table_kind="sales"
+        )
+        # 상단 담당자·품목 선택 시 → 품목별 거래처 매출 상세 (클릭 펼침)
+        if selected_staff and selected_item:
+            render_tab3_item_client_expanders(
+                df_f,
+                list(selected_item),
+                "sales",
+                years,
+                all_months,
+                selected_detail_years,
+            )
+        elif selected_item and not selected_staff:
+            st.caption("💡 거래처별 상세를 보려면 상단 고정바에서 담당자를 먼저 선택한 뒤 품목을 선택하세요.")
+    
+        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
+        render_tab3_dataframe_table(
+            qty_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_qty", table_kind="qty"
+        )
+        if selected_staff and selected_item:
+            render_tab3_item_client_expanders(
+                df_f,
+                list(selected_item),
+                "qty",
+                years,
+                all_months,
+                selected_detail_years,
+            )
+    
+        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (실제 원본 단가) - 전체 기간 월별 고정 표시</div>", unsafe_allow_html=True)
+        _price_sort_order = list(sales_p.index) if not sales_p.empty else None
+        _price_items = []
+        if not unit_price_p.empty:
+            if _price_sort_order:
+                _price_items = [i for i in _price_sort_order if i in unit_price_p.index]
+                _price_items += [i for i in unit_price_p.index if i not in _price_items]
+            else:
+                _price_items = list(unit_price_p.index)
+        _price_view = st.selectbox(
+            "단가 보기 품목",
+            options=["전체 품목 (월별 고정)"] + _price_items,
+            key="tab3_price_item_select",
+            help="특정 품목을 고르면 단가가 처음 적용·변동된 연월만 표시합니다.",
+        )
+        if _price_view == "전체 품목 (월별 고정)":
+            st.caption("전체 기간 월별 고정(이월) 단가입니다. 품목을 선택하면 변동 연월만 봅니다.")
+            render_tab3_dataframe_table(
+                unit_price_p,
+                "{:,.0f}",
+                target_month_col,
+                key_prefix="tab3_price",
+                table_kind="price",
+                sort_order=_price_sort_order,
+            )
+        else:
+            st.caption(
+                f"[{_price_view}] · 열=단가 최초 적용·변동 연월만 · 값=그 시점 단가 "
+                "(월별 고정/이월 표시가 아님)"
+            )
+            _chg = build_unit_price_change_pivot(
+                unit_price_p, years, all_months, item_names=[_price_view]
+            )
+            if _chg.empty:
+                st.info("이 품목의 단가 변동(또는 최초 적용) 이력이 없습니다.")
+            else:
+                _chg_fmt = {c: "{:,.0f}" for c in _chg.columns}
+                st.dataframe(
+                    _chg.style.format(_chg_fmt, na_rep=""),
+                    use_container_width=True,
+                    height=120,
+                )
+
+        # —— 4️⃣ 거래처 선택 시: 벌크(주요) / 그외가스(부품목) 납품량 기준 사용·재고 ——
+        st.markdown(
+            "<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 18px 0 8px;'>"
+            "4️⃣ 가스 사용량 · 재고관리 (납품량 기준 · 벌크 / 그외)</div>",
+            unsafe_allow_html=True,
+        )
+        if selected_client == "전체 거래처":
+            st.info("상단에서 거래처를 선택하면 해당 거래처의 벌크·그외 가스 월/주/일 사용량을 볼 수 있습니다.")
+        elif df_client_filtered.empty:
+            st.warning("선택한 거래처의 매출·출고 데이터가 없습니다.")
+        else:
+            _u_years_all = sorted(
+                {str(y) for y in df_client_filtered["연도"].dropna().unique()},
+                key=lambda y: int(y) if str(y).isdigit() else 0,
+            )
+            _u_cur = _u_years_all[-1] if _u_years_all else (
+                str(years[-1]) if years else None
+            )
+            _u_prev = None
+            if _u_cur:
+                try:
+                    _u_prev_cand = str(int(_u_cur) - 1)
+                except Exception:
+                    _u_prev_cand = None
+                if _u_prev_cand and _u_prev_cand in _u_years_all:
+                    _u_prev = _u_prev_cand
+                elif len(_u_years_all) >= 2:
+                    _u_prev = _u_years_all[-2]
+            _u_default_years = [y for y in (_u_prev, _u_cur) if y]
+            if not _u_default_years and _u_years_all:
+                _u_default_years = _u_years_all[-1:]
+
+            st.caption(
+                "납품(출고)량으로 사용량을 산출합니다. 기본 기준기간은 **전년도 + 당해년도**이며, "
+                "연도·월을 바꿔 납품 참고 구간을 조정할 수 있습니다. "
+                "월사용량 = 총납품 ÷ 기준기간 달력 월수(미래월 제외) · 주 = 월×7/30 · 일 = 월/30."
+            )
+            _uc1, _uc2 = st.columns([1.2, 1.8])
+            with _uc1:
+                _u_sel_years = st.multiselect(
+                    "📅 납품 기준 연도",
+                    options=_u_years_all,
+                    default=[y for y in _u_default_years if y in _u_years_all],
+                    format_func=lambda x: f"{x}년",
+                    key="tab3_usage_years",
+                    help="기본: 전년도 + 당해년도",
+                )
+            with _uc2:
+                _u_sel_months = st.multiselect(
+                    "📆 납품 기준 월 (비우면 선택 연도의 전체 월)",
+                    options=all_months,
+                    default=[],
+                    key="tab3_usage_months",
+                    help="특정 월만 보고 싶을 때 선택. 비우면 선택 연도 전체.",
+                )
+            if not _u_sel_years:
+                st.warning("기준 연도를 하나 이상 선택하세요.")
+            else:
+                _u_sum, _u_monthly, _u_meta = cached_tab3_client_gas_usage(
+                    df_client_filtered,
+                    tuple(_u_sel_years),
+                    tuple(_u_sel_months),
+                )
+                _yr_lbl = "·".join(_u_sel_years)
+                _mo_lbl = (
+                    ",".join(_u_sel_months) if _u_sel_months else "전체 월"
+                )
+                if _u_sum.empty:
+                    st.info(
+                        f"[{selected_client}] {_yr_lbl} / {_mo_lbl} 구간에 "
+                        "가스 납품(출고) 실적이 없습니다."
+                    )
+                else:
+                    _k1, _k2, _k3, _k4 = st.columns(4)
+                    _k1.markdown(
+                        f"<div class='metric-box'><div class='metric-label'>"
+                        f"기준기간</div><div class='metric-value' style='font-size:16px;'>"
+                        f"{html.escape(_yr_lbl)} · {_u_meta['n_months']}개월"
+                        f"</div></div>",
+                        unsafe_allow_html=True,
+                    )
+                    _k2.markdown(
+                        f"<div class='metric-box'><div class='metric-label'>"
+                        f"🛢️ 벌크 월사용량 합</div><div class='metric-value' style='color:#1D4ED8;'>"
+                        f"{_u_meta['bulk_month']:,.0f}</div></div>",
+                        unsafe_allow_html=True,
+                    )
+                    _k3.markdown(
+                        f"<div class='metric-box'><div class='metric-label'>"
+                        f"🧪 그외가스 월사용량 합</div><div class='metric-value' style='color:#0F766E;'>"
+                        f"{_u_meta['other_month']:,.0f}</div></div>",
+                        unsafe_allow_html=True,
+                    )
+                    _k4.markdown(
+                        f"<div class='metric-box'><div class='metric-label'>"
+                        f"품목 수</div><div class='metric-value'>"
+                        f"{len(_u_sum):,} 종</div></div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    _bulk_df = _u_sum[_u_sum["구분"] == "벌크(주요)"]
+                    _other_df = _u_sum[_u_sum["구분"] == "그외가스(부품목)"]
+                    _left, _right = st.columns(2)
+                    with _left:
+                        st.markdown(
+                            "<div style='font-size:13px;font-weight:700;color:#1E3A8A;"
+                            "margin:4px 0 8px;'>🛢️ 주요품목 · 벌크</div>",
+                            unsafe_allow_html=True,
+                        )
+                        if _bulk_df.empty:
+                            st.caption("이 기간 벌크 납품 없음")
+                        else:
+                            for _, _r in _bulk_df.iterrows():
+                                _sub = (
+                                    f"총 {_r['총납품량']:,.0f} · 납품 {_r['납품횟수']}회 · "
+                                    f"간격 {_r['평균납품간격(일)']:.0f}일 · "
+                                    f"최근 {_r['최근납품일']} · "
+                                    f"회당≈{_r['회당평균']:,.0f} (≈{_r['예상소진(일)']:.0f}일분)"
+                                )
+                                st.markdown(
+                                    _tab3_usage_inv_card_html(
+                                        str(_r["품목명"]),
+                                        _sub,
+                                        float(_r["월사용량"]),
+                                        float(_r["주사용량"]),
+                                        float(_r["일사용량"]),
+                                        accent="#1D4ED8",
+                                    ),
+                                    unsafe_allow_html=True,
+                                )
+                    with _right:
+                        st.markdown(
+                            "<div style='font-size:13px;font-weight:700;color:#115E59;"
+                            "margin:4px 0 8px;'>🧪 부품목 · 그외 가스</div>",
+                            unsafe_allow_html=True,
+                        )
+                        if _other_df.empty:
+                            st.caption("이 기간 그외 가스 납품 없음")
+                        else:
+                            for _, _r in _other_df.head(12).iterrows():
+                                _sub = (
+                                    f"총 {_r['총납품량']:,.0f} · 납품 {_r['납품횟수']}회 · "
+                                    f"간격 {_r['평균납품간격(일)']:.0f}일 · "
+                                    f"최근 {_r['최근납품일']}"
+                                )
+                                st.markdown(
+                                    _tab3_usage_inv_card_html(
+                                        str(_r["품목명"]),
+                                        _sub,
+                                        float(_r["월사용량"]),
+                                        float(_r["주사용량"]),
+                                        float(_r["일사용량"]),
+                                        accent="#0F766E",
+                                    ),
+                                    unsafe_allow_html=True,
+                                )
+                            if len(_other_df) > 12:
+                                st.caption(f"외 {len(_other_df) - 12}개 품목 → 아래 표 참고")
+
+                    _disp_cols = [
+                        "구분",
+                        "품목명",
+                        "월사용량",
+                        "주사용량",
+                        "일사용량",
+                        "총납품량",
+                        "납품횟수",
+                        "회당평균",
+                        "평균납품간격(일)",
+                        "예상소진(일)",
+                        "최근납품일",
+                        "활성월수",
+                    ]
+                    _tbl = _u_sum[[c for c in _disp_cols if c in _u_sum.columns]].copy()
+                    st.markdown(
+                        "<div style='font-size:13px;font-weight:600;color:#334155;"
+                        "margin:12px 0 6px;'>📋 사용량 상세표</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.dataframe(
+                        _tbl.style.format(
+                            {
+                                "월사용량": "{:,.1f}",
+                                "주사용량": "{:,.1f}",
+                                "일사용량": "{:,.1f}",
+                                "총납품량": "{:,.0f}",
+                                "회당평균": "{:,.0f}",
+                                "평균납품간격(일)": "{:,.1f}",
+                                "예상소진(일)": "{:,.0f}",
+                            }
+                        ),
+                        use_container_width=True,
+                        height=min(420, 56 + 28 * max(len(_tbl), 1)),
+                    )
+
+                    # 월별 납품 추이 (벌크 우선, 없으면 상위 그외)
+                    _chart_items = list(_bulk_df["품목명"]) if not _bulk_df.empty else []
+                    if len(_chart_items) < 4 and not _other_df.empty:
+                        _chart_items += list(_other_df["품목명"].head(4 - len(_chart_items)))
+                    if (
+                        _chart_items
+                        and not _u_monthly.empty
+                        and any(i in _u_monthly.index for i in _chart_items)
+                    ):
+                        _plot = _u_monthly.reindex(
+                            [i for i in _chart_items if i in _u_monthly.index]
+                        )
+                        if not _plot.empty and (_plot.fillna(0) != 0).any().any():
+                            _plot_t = _plot.T.copy()
+                            _plot_t.index.name = "연월"
+                            _melt = _plot_t.reset_index().melt(
+                                id_vars="연월", var_name="품목명", value_name="납품량"
+                            )
+                            _fig_u = px.bar(
+                                _melt,
+                                x="연월",
+                                y="납품량",
+                                color="품목명",
+                                barmode="group",
+                                title=f"[{selected_client}] 월별 납품량 추이 ({_yr_lbl})",
+                            )
+                            _fig_u.update_layout(
+                                margin=dict(l=10, r=10, t=40, b=10),
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                plot_bgcolor="rgba(0,0,0,0)",
+                                legend=dict(
+                                    orientation="h",
+                                    yanchor="bottom",
+                                    y=-0.35,
+                                    x=0.5,
+                                    xanchor="center",
+                                ),
+                                height=360,
+                                xaxis_title=None,
+                                yaxis_title=None,
+                            )
+                            render_plotly_chart(
+                                _fig_u,
+                                use_container_width=True,
+                                key="tab3_usage_monthly_chart",
+                            )
+
+    # Tab 4: 👤 담당자 & 상세내역
+with tab4:
+    if _dash_should_defer_heavy_tab(3):
+        _dash_defer_heavy_stub('👤 담당자 & 상세내역', 3, '_dash_bak_tab4', ('unassigned_', 'assigned_', 'save_assigned', 'save_unassigned'))
+    else:
+        _dash_restore_session_keys("_dash_bak_tab4")
+        t4_c1, t4_c2 = st.columns([4, 1])
+        t4_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
+        t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+
+        if not staff_pivot.empty:
+            format_dict = {col: "{:,.0f}" for col in staff_pivot.columns if col != "매출 비중 (%)"}
+            format_dict["매출 비중 (%)"] = "{:,.1f}%"
+    
+            monthly_cols = [c for c in staff_pivot.columns if c not in ["매출 비중 (%)", "총 매출 합계 (만원)"]]
+    
+            styled_staff = (
+                staff_pivot.style.format(format_dict)
+                .background_gradient(cmap="Purples", subset=["매출 비중 (%)"])
+                .background_gradient(cmap="Oranges", subset=["총 매출 합계 (만원)"])
+                .background_gradient(cmap="Blues", subset=monthly_cols)
+            )
+            st.dataframe(styled_staff, use_container_width=True, height=350)
+        st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
+        if not df_base.empty:
+            current_year = str(df_base["연도"].max())
+            all_staffs = sorted(df_base["담당자"].unique())
+    
+            sel_staff = st.selectbox("👤 순위를 조회할 담당자 선택", all_staffs, key="ranking_staff_select")
+            ranking_pivot = cached_ranking_pivot(df_base, current_year, sel_staff, all_months)
+    
+            if not ranking_pivot.empty:
+                r_col1, r_col2 = st.columns([1.2, 1])
+        
+                with r_col1:
+                    st.dataframe(
+                        ranking_pivot.style.format("{:,.0f}")
+                        .background_gradient(cmap="Blues", subset=all_months)
+                        .background_gradient(cmap="Oranges", subset=["당해 누적 (만원)"]),
+                        use_container_width=True, height=380
+                    )
+            
+                with r_col2:
+                    top_clients = ranking_pivot.head(10).sort_values(by="당해 누적 (만원)", ascending=True)
+            
+                    fig_ranking = px.bar(
+                        top_clients.reset_index(),
+                        x="당해 누적 (만원)",
+                        y="거래처",
+                        orientation='h',
+                        text="당해 누적 (만원)",
+                        color="당해 누적 (만원)",
+                        color_continuous_scale="Blues"
+                    )
+                    fig_ranking.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+                    fig_ranking.update_layout(
+                        xaxis_title=None,
+                        yaxis_title=None,
+                        margin=dict(l=10, r=40, t=10, b=10),
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        coloraxis_showscale=False,
+                        height=380
+                    )
+                    render_plotly_chart(fig_ranking, use_container_width=True, key=f"ranking_chart_{sel_staff}")
+            else:
+                st.info(f"💡 {current_year}년에 선택한 담당자({sel_staff})의 거래처 매출 실적 데이터가 없습니다.")
+        if not df_base.empty:
+            with st.expander("⚠️ 담당자 미지정 신규/누락 거래처 (직접 지정) 열기/닫기", expanded=True):
+                unassigned_df = df_base[df_base["담당자"] == "미지정"]
+                # 거래처명 없는 노이즈 행은 지정 불가 → 목록에서 제외(실거래처만 표시)
+                if not unassigned_df.empty and "거래처" in unassigned_df.columns:
+                    unassigned_df = unassigned_df[unassigned_df["거래처"].map(_is_mappable_client_name)]
+        
+                custom_staffs = ["가스코아산", "거래종료"]
+                existing_staffs = [s for s in full_df["담당자"].unique() if s not in ("미지정",)]
+                combined_staffs = sorted(list(set(existing_staffs + custom_staffs)))
+        
+                all_staff_options = ["미지정"] + combined_staffs
+        
+                if not unassigned_df.empty:
+                    unassigned_summary = unassigned_df.groupby("거래처").agg(
+                        최근매출일=("매출일_dt", "max"),
+                        총매출액_만원=("매출액", lambda x: sum(x) * 1.1 / 10000)
+                    ).reset_index()
+            
+                    unassigned_summary = unassigned_summary.sort_values(by="총매출액_만원", ascending=False)
+                    unassigned_summary["최근매출일"] = unassigned_summary["최근매출일"].dt.strftime("%Y-%m-%d")
+                    unassigned_summary["담당자지정"] = "미지정"
+            
+                    st.warning(f"💡 자동 추론으로도 담당자를 찾을 수 없는 거래처가 총 **{len(unassigned_summary)}곳** 있습니다. 표의 **'담당자지정'** 열을 클릭하여 담당자를 선택하고 아래 저장 버튼을 누르세요.")
+            
+                    edited_unassigned = st.data_editor(
+                        unassigned_summary,
+                        column_config={
+                            "거래처": st.column_config.TextColumn("거래처", disabled=True),
+                            "최근매출일": st.column_config.TextColumn("최근매출일", disabled=True),
+                            "총매출액_만원": st.column_config.NumberColumn("총매출액(만원)", disabled=True, format="%d"),
+                            "담당자지정": st.column_config.SelectboxColumn(
+                                "👤 담당자 지정 (클릭하여 변경)",
+                                help="이 거래처의 담당자를 선택하세요.",
+                                options=all_staff_options,
+                                required=True
+                            )
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                        key="unassigned_editor"
+                    )
+            
+                    if st.button("💾 변경된 담당자 저장 및 전체 대시보드 적용", type="primary"):
+                        changed_rows = edited_unassigned[edited_unassigned["담당자지정"] != "미지정"]
+                        if not changed_rows.empty:
+                            manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
+                            existing_map = {}
+                            if os.path.exists(manual_map_path):
+                                try:
+                                    _em = pd.read_csv(manual_map_path)
+                                    for _, mrow in _em.iterrows():
+                                        ck = _normalize_manual_client_key(mrow["거래처"])
+                                        if ck is None:
+                                            continue
+                                        staff = str(mrow["담당자"]).strip() if pd.notna(mrow["담당자"]) else ""
+                                        if staff:
+                                            existing_map[ck] = staff
+                                except Exception:
+                                    existing_map = {}
+                        
+                            for _, row in changed_rows.iterrows():
+                                ck = _normalize_manual_client_key(row["거래처"])
+                                if ck is None:
+                                    continue
+                                existing_map[ck] = row["담당자지정"]
+                        
+                            save_df = pd.DataFrame(list(existing_map.items()), columns=["거래처", "담당자"])
+                            save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
+                    
+                            st.success("✅ 담당자 지정이 완료되었습니다! 대시보드를 새로고침합니다.")
+                            load_uploaded_files_from_bytes.clear()
+                            load_uploaded_files_from_meta.clear()
+                            st.rerun()
+                        else:
+                            st.warning("저장할 담당자 지정이 없습니다.")
+                else:
+                    st.success("🎉 모든 거래처에 담당자가 완벽하게 지정되어 있습니다!")
+            
+            with st.expander("🔄 이미 지정된 기존 거래처 담당자 수정/강제 변경하기 열기/닫기"):
+                assigned_df = df_base[df_base["담당자"] != "미지정"]
+                if not assigned_df.empty:
+                    assigned_summary = assigned_df.groupby("거래처").agg(
+                        현재담당자=("담당자", "first"),
+                        최근매출일=("매출일_dt", "max")
+                    ).reset_index()
+            
+                    assigned_summary["새담당자변경"] = assigned_summary["현재담당자"]
+                    assigned_summary["최근매출일"] = assigned_summary["최근매출일"].dt.strftime("%Y-%m-%d")
+            
+                    all_staffs_for_edit_assign = combined_staffs + ["미지정"]
+            
+                    st.info("💡 잘못 지정된 거래처나 인수인계된 거래처의 담당자를 새롭게 변경할 수 있습니다.")
+                    edited_assigned = st.data_editor(
+                        assigned_summary,
+                        column_config={
+                            "거래처": st.column_config.TextColumn("거래처", disabled=True),
+                            "현재담당자": st.column_config.TextColumn("현재 담당자", disabled=True),
+                            "최근매출일": st.column_config.TextColumn("최근매출일", disabled=True),
+                            "새담당자변경": st.column_config.SelectboxColumn(
+                                "👤 새 담당자로 변경 (클릭)",
+                                options=all_staffs_for_edit_assign,
+                                required=True
+                            )
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                        key="assigned_editor"
+                    )
+            
+                    if st.button("💾 변경된 기존 거래처 담당자 저장", type="primary", key="save_assigned_btn"):
+                        changed_assigned = edited_assigned[edited_assigned["새담당자변경"] != edited_assigned["현재담당자"]]
+                        if not changed_assigned.empty:
+                            manual_map_path = os.path.join(CACHE_DIR, "manual_staff_mapping.csv")
+                            existing_map = {}
+                            if os.path.exists(manual_map_path):
+                                try:
+                                    _em = pd.read_csv(manual_map_path)
+                                    for _, mrow in _em.iterrows():
+                                        ck = _normalize_manual_client_key(mrow["거래처"])
+                                        if ck is None:
+                                            continue
+                                        staff = str(mrow["담당자"]).strip() if pd.notna(mrow["담당자"]) else ""
+                                        if staff:
+                                            existing_map[ck] = staff
+                                except Exception:
+                                    existing_map = {}
+                        
+                            for _, row in changed_assigned.iterrows():
+                                ck = _normalize_manual_client_key(row["거래처"])
+                                if ck is None:
+                                    continue
+                                existing_map[ck] = row["새담당자변경"]
+                        
+                            save_df = pd.DataFrame(list(existing_map.items()), columns=["거래처", "담당자"])
+                            save_df.to_csv(manual_map_path, index=False, encoding="utf-8-sig")
+                    
+                            st.success("✅ 담당자 변경이 완료되었습니다! 대시보드를 새로고침합니다.")
+                            load_uploaded_files_from_bytes.clear()
+                            load_uploaded_files_from_meta.clear()
+                            st.rerun()
+        st.markdown("<div class='sub-header dashboard-tab-panel-head'>📋 거래 상세 내역 (최신순 800건)</div>", unsafe_allow_html=True)
+        if not df_detail.empty:
+            view_detail_df = df_detail.sort_values(by="매출일_dt", ascending=False).head(800)
+    
+            styled_detail = (
+                view_detail_df
+                .style.format({
+                    "출고량": "{:,.0f}",
+                    "단가": "{:,.0f}",
+                    "매출액": "{:,.0f}",
+                    "매출일_dt": lambda t: t.strftime("%Y-%m-%d") if pd.notnull(t) else ""
+                })
+                .background_gradient(subset=["매출액"], cmap="Blues")
+            )
+            st.dataframe(styled_detail, use_container_width=True, height=600, hide_index=True)
+    # Tab 5: 📌 채권 관리
+with tab5:
+    if _dash_should_defer_heavy_tab(4):
+        _dash_defer_heavy_stub('📌 채권 관리', 4)
+    else:
+        latest_month = None
+        if not filtered_debt_df.empty:
+            # 데이터가 0(없는) 달 제거 로직 추가
+            numeric_cols_temp = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
+            valid_numeric_cols = [c for c in numeric_cols_temp if filtered_debt_df[c].abs().sum() > 0]
+
+            filtered_debt_df = filtered_debt_df[["거래처", "구분"] + valid_numeric_cols]
+            numeric_cols_debt = valid_numeric_cols
+
+            if numeric_cols_debt:
+                latest_month = numeric_cols_debt[-1]
+
+        debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
+
+        t5_c1, t5_c2 = st.columns([4, 1])
+        t5_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
+        t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
+
+        _debt_chip = (
+            f"담당자 {', '.join(selected_staff)}" if selected_staff else "담당자 전체"
+        )
+        _debt_chip += (
+            f" · 거래처 {selected_client}"
+            if selected_client != "전체 거래처"
+            else " · 거래처 전체"
+        )
+        st.markdown(
+            f"<div class='dashboard-debt-filter-chip'>현재 필터: {_debt_chip}</div>",
+            unsafe_allow_html=True,
+        )
+
+        if not debt_df.empty:
+            if not filtered_debt_df.empty:
+                numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
+
+                total_outstanding = 0
+                warning_count = 0
+
+                if latest_month:
+                    # 거래처별 집계 — 반복 loc 대신 groupby로 원복/지정 시 부하 완화
+                    _bal = filtered_debt_df[filtered_debt_df["구분"] == "잔액"]
+                    _sal = filtered_debt_df[filtered_debt_df["구분"] == "매출"]
+                    if latest_month in _bal.columns and not _bal.empty:
+                        bal_by = _bal.groupby("거래처", sort=False)[latest_month].sum()
+                        sal_by = (
+                            _sal.groupby("거래처", sort=False)[latest_month].sum()
+                            if not _sal.empty and latest_month in _sal.columns
+                            else pd.Series(dtype=float)
+                        )
+                        for uc, b_val in bal_by.items():
+                            b_val = float(b_val) if pd.notna(b_val) else 0.0
+                            s_val = float(sal_by.get(uc, 0.0) or 0.0)
+                            total_outstanding += max(0.0, b_val)
+                            if b_val > 0 and b_val > s_val:
+                                warning_count += 1
+
+                m1, m2 = st.columns(2)
+                m1.markdown(
+                    f"<div class='metric-box dashboard-debt-metric'><div class='metric-label'>총 미수금 잔액 ({latest_month} 기준)</div>"
+                    f"<div class='metric-value'>{total_outstanding:,.0f} 원</div></div>",
+                    unsafe_allow_html=True,
+                )
+                m2.markdown(
+                    f"<div class='metric-box dashboard-debt-metric'><div class='metric-label'>매출 초과 악성/지연 채권 업체 수</div>"
+                    f"<div class='metric-value' style='color:#E11D48;'>{warning_count} 곳</div></div>",
+                    unsafe_allow_html=True,
+                )
+
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                summary_rows = []
+                for gubun in ["이월", "익월", "매출", "수금", "잔액", "합계"]:
+                    if gubun in filtered_debt_df["구분"].values:
+                        sum_vals = filtered_debt_df[filtered_debt_df["구분"] == gubun][numeric_cols].sum()
+                        row_data = {"거래처": "📌 [전체 합계]", "구분": gubun}
+                        for col in numeric_cols:
+                            row_data[col] = sum_vals[col]
+                        summary_rows.append(row_data)
+
+                if summary_rows:
+                    summary_df = pd.DataFrame(summary_rows)
+                    disp_debt = pd.concat([filtered_debt_df, summary_df], ignore_index=True)
+                else:
+                    disp_debt = filtered_debt_df.copy()
+
+                gubun_order = {"이월": 1, "매출": 2, "수금": 3, "잔액": 4, "합계": 5}
+                disp_debt["구분순위"] = disp_debt["구분"].map(gubun_order).fillna(99)
+                client_order = {c: i for i, c in enumerate(disp_debt["거래처"].unique())}
+                disp_debt["거래처순위"] = disp_debt["거래처"].map(client_order)
+
+                disp_debt = disp_debt.sort_values(by=["거래처순위", "구분순위"]).drop(columns=["거래처순위", "구분순위"])
+
+                disp_debt = disp_debt.set_index(["거래처", "구분"])
+                debt_highlight = selected_client != "전체 거래처"
+                df_height = 520 if selected_client != "전체 거래처" else 720
+                show_cols = list(numeric_cols)
+                # 입금기준표 결제조건 → 표 맨 우측 고정 표시
+                if os.path.exists(PAYMENT_TERMS_FALLBACK) and not os.path.exists(PAYMENT_TERMS_PATH):
+                    try:
+                        shutil.copy2(PAYMENT_TERMS_FALLBACK, PAYMENT_TERMS_PATH)
+                    except Exception:
+                        pass
+                payment_terms_map = load_payment_terms_map()
+                st.markdown(
+                    "<div style='font-size:14px;font-weight:700;color:#1E293B;margin:4px 0 6px;'>"
+                    "📋 거래처별 채권 상세</div>",
+                    unsafe_allow_html=True,
+                )
+                render_debt_interactive_table(
+                    disp_debt[show_cols],
+                    debt_highlight,
+                    height=df_height,
+                    payment_terms_map=payment_terms_map,
+                )
+                # 상세표 아래: 연체개월수 요약 — 거래처(상위검색) 무시, 담당자 필터만 적용
+                # staff 기준 메타는 cache → 거래처만 바꿔도 연체패널 재계산 부담 감소
+                if not staff_debt_df.empty:
+                    _staff_num = [c for c in staff_debt_df.columns if c not in ("거래처", "구분")]
+                    _staff_months = [c for c in _staff_num if staff_debt_df[c].abs().sum() > 0]
+                    _rank_months = [c for c in show_cols if c in _staff_months] or _staff_months
+                    render_debt_month_rank_panel(
+                        staff_debt_df,
+                        _rank_months,
+                        payment_terms_map=payment_terms_map,
+                        height=480,
+                        status_month_cols=_staff_months,
+                    )
+                else:
+                    render_debt_month_rank_panel(
+                        filtered_debt_df,
+                        show_cols,
+                        payment_terms_map=payment_terms_map,
+                        height=480,
+                        status_month_cols=numeric_cols,
+                    )
+    # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
+with tab6:
+    if _dash_should_defer_heavy_tab(5):
+        _dash_defer_heavy_stub('📍 카카오맵', 5)
+    else:
+        t6_c1, t6_c2 = st.columns([4, 1])
+        t6_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>📍 담당자별 거래처 지도 분포 (대한민국 V-World 지도)</div>", unsafe_allow_html=True)
+        t6_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+
+        rest_api_key = "21a8c4d7312051598c2e05dba0b9c0c7"
+
+        map_col1, map_col2, map_col3 = st.columns([1, 1, 1])
+        with map_col1:
+            map_style_choice = st.radio(
+                "🗺️ 지도 배경 스타일 선택",
+                ["일반 지도 (V-World 한글 기본도)", "위성 지도 (V-World 고해상도 위성)"],
+                horizontal=True,
+                key="map_style_radio"
+            )
+        with map_col2:
+            all_staff_list = sorted(df_base["담당자"].unique()) if not df_base.empty else []
+            map_selected_staff = st.multiselect(
+                "👤 지도 전용 담당자 선택", 
+                options=all_staff_list, 
+                default=all_staff_list,
+                key="map_staff_multiselect"
+            )
+        with map_col3:
+            all_map_clients = sorted(df_base["거래처"].unique()) if not df_base.empty else []
+            map_selected_client = st.multiselect(
+                "🏢 특정 거래처 위치 검색", 
+                options=all_map_clients,
+                placeholder="검색할 거래처명을 입력하세요...",
+                key="map_client_multiselect"
+            )
+
+        if map_selected_client:
+            addr_display_html = "<div style='background-color: #F1F5F9; padding: 8px 12px; border-radius: 6px; border: 1px solid #CBD5E1; margin-top: 5px; margin-bottom: 15px; font-size: 13px; color: #334155;'>"
+            for sc in map_selected_client:
+                raw_a = resolve_client_address(sc, addr_dict)
+                clean_a = raw_a if raw_a else "등록된 주소 정보가 없습니다."
+                addr_display_html += f"<div>📍 <b>{sc}:</b> {clean_a}</div>"
+            addr_display_html += "</div>"
+            st.markdown(addr_display_html, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        ctrl_space, ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4 = st.columns([5, 1.2, 1.2, 1.2, 1.2])
+
+        with ctrl_space:
+            st.empty()
+        with ctrl_c1:
+            btn_load_map = st.button("🗺️ 지도 새로고침/조회", type="primary", use_container_width=True)
+        with ctrl_c2:
+            btn_zoom_in = st.button("➕ 확대 (+)", use_container_width=True)
+        with ctrl_c3:
+            btn_zoom_out = st.button("➖ 축소 (-)", use_container_width=True)
+        with ctrl_c4:
+            btn_reset_map = st.button("🏠 기본 위치", use_container_width=True)
+
+        # 재시작·다른 탭 조작 시 전체 지오코딩이 돌지 않도록: 조회 버튼 후에만 로드
+        if "show_map" not in st.session_state:
+            st.session_state.show_map = False
+        if btn_load_map:
+            st.session_state.show_map = True
+            st.session_state.map_force_rebuild = True
+        if btn_zoom_in or btn_zoom_out or btn_reset_map:
+            st.session_state.show_map = True
+
+        map_filter_fp = (
+            tuple(sorted(map_selected_staff or [])),
+            tuple(sorted(map_selected_client or [])),
+        )
+
+        if not st.session_state.show_map:
+            st.info("담당자·거래처를 선택한 뒤 **지도 새로고침/조회**를 누르면 지도를 불러옵니다. (재시작 시 자동 조회하지 않아 앱이 빨라집니다)")
+        else:
+            need_rebuild = (
+                st.session_state.pop("map_force_rebuild", False)
+                or st.session_state.get("tab6_map_fp") != map_filter_fp
+                or "tab6_map_df" not in st.session_state
+            )
+
+            if need_rebuild:
+                target_map_df = df_base.copy()
+                if map_selected_client:
+                    target_map_df = target_map_df[target_map_df["거래처"].isin(map_selected_client)]
+                elif map_selected_staff:
+                    target_map_df = target_map_df[target_map_df["담당자"].isin(map_selected_staff)]
+
+                map_data = []
+                invalid_clients = []
+                if not target_map_df.empty:
+                    unique_clients_df = target_map_df[["거래처", "담당자"]].drop_duplicates(subset=["거래처"])
+                    total_cnt = len(unique_clients_df)
+                    disk_cache = _load_kakao_geocode_disk()
+                    dirty = [False]
+                    progress_text = "주소 좌표 변환 중 (디스크 캐시 우선) 🚀"
+                    my_bar = st.progress(0, text=progress_text)
+
+                    for i, (_, row) in enumerate(unique_clients_df.iterrows()):
+                        c_name = row["거래처"]
+                        c_staff = row["담당자"]
+                        c_addr_raw = resolve_client_address(c_name, addr_dict)
+                        c_addr = c_addr_raw if c_addr_raw else "등록된 주소 정보가 없습니다."
+                        lat, lon = get_lat_lon_kakao_disk(c_name, c_addr, rest_api_key, disk_cache, dirty)
+                        if lat is not None and lon is not None:
+                            map_data.append(
+                                {
+                                    "거래처": c_name,
+                                    "담당자": c_staff,
+                                    "주소": c_addr,
+                                    "lat": lat,
+                                    "lon": lon,
+                                }
+                            )
+                        else:
+                            invalid_clients.append(c_name)
+                        my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i + 1}/{total_cnt})")
+                    my_bar.empty()
+                    if dirty[0]:
+                        _save_kakao_geocode_disk(disk_cache)
+
+                st.session_state.tab6_map_df = pd.DataFrame(map_data) if map_data else pd.DataFrame()
+                st.session_state.tab6_invalid_clients = invalid_clients
+                st.session_state.tab6_map_fp = map_filter_fp
+
+            map_df = st.session_state.get("tab6_map_df", pd.DataFrame())
+            invalid_clients = st.session_state.get("tab6_invalid_clients", [])
+
+            if map_df is not None and not map_df.empty:
+                center_lat = float(map_df["lat"].mean())
+                center_lon = float(map_df["lon"].mean())
+
+                default_zoom = 13 if map_selected_client and len(map_selected_client) <= 3 else 8
+
+                if "map_zoom" not in st.session_state or btn_reset_map or btn_load_map:
+                    st.session_state.map_zoom = default_zoom
+
+                if btn_zoom_in:
+                    st.session_state.map_zoom = min(st.session_state.map_zoom + 2, 20)
+                elif btn_zoom_out:
+                    st.session_state.map_zoom = max(st.session_state.map_zoom - 2, 2)
+
+                vworld_base = "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{y}.png"
+                vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
+                vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
+                dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
+
+                # iPad 전용: Plotly Mapbox WebGL이 Safari에서 마커/범례를 검정으로 그림
+                # → Leaflet 원형 마커(명시 HEX)로만 우회. 맥 경로(아래 else)는 일절 변경 없음.
+                if is_touch_ui():
+                    _palette = [
+                        "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
+                        "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
+                        "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#8C564B",
+                    ]
+                    _staffs = sorted(map_df["담당자"].astype(str).unique())
+                    _cmap = {s: _palette[i % len(_palette)] for i, s in enumerate(_staffs)}
+                    _pts = []
+                    for _, _r in map_df.iterrows():
+                        _staff = str(_r["담당자"])
+                        _pts.append({
+                            "lat": float(_r["lat"]),
+                            "lon": float(_r["lon"]),
+                            "name": str(_r["거래처"]),
+                            "staff": _staff,
+                            "addr": str(_r.get("주소") or ""),
+                            "color": _cmap.get(_staff, "#636EFA"),
+                        })
+                    _legend_html = "".join(
+                        f'<span style="display:inline-flex;align-items:center;margin:0 10px 6px 0;'
+                        f'font-size:13px;color:#334155;">'
+                        f'<span style="width:12px;height:12px;border-radius:50%;background:{_cmap[s]};'
+                        f'display:inline-block;margin-right:5px;border:1px solid #94A3B8;"></span>'
+                        f"{html.escape(s)}</span>"
+                        for s in _staffs
+                    )
+                    _use_sat = "일반" not in map_style_choice
+                    _tiles_js = (
+                        f'L.tileLayer("{vworld_sat}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                        f'L.tileLayer("{vworld_hybrid}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                        if _use_sat
+                        else f'L.tileLayer("{vworld_base}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                    )
+                    _pts_json = json.dumps(_pts, ensure_ascii=False)
+                    _leaflet_html = f"""<!DOCTYPE html>
+    <html><head><meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+      html, body {{ margin:0; height:100%; }}
+      #map {{ width:100%; height:560px; }}
+      .legend {{
+        padding:8px 10px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+        background:#fff; border-top:1px solid #E2E8F0;
+      }}
+    </style></head>
+    <body>
+    <div id="map"></div>
+    <div class="legend"><b>담당자</b><div style="margin-top:6px;">{_legend_html}</div></div>
+    <script>
+    (function() {{
+      var map = L.map("map", {{ zoomControl: true }}).setView(
+        [{float(center_lat)}, {float(center_lon)}], {int(st.session_state.map_zoom)}
+      );
+      {_tiles_js}
+      var pts = {_pts_json};
+      pts.forEach(function(p) {{
+        var m = L.circleMarker([p.lat, p.lon], {{
+          radius: 8,
+          color: "#ffffff",
+          weight: 1.5,
+          fillColor: p.color,
+          fillOpacity: 0.95
+        }});
+        m.bindPopup("<b>" + p.name + "</b><br/>담당자: " + p.staff + "<br/>" + (p.addr || ""));
+        m.addTo(map);
+      }});
+    }})();
+    </script>
+    </body></html>"""
+                    components.html(_leaflet_html, height=620, scrolling=False)
+                else:
+                    fig_map = px.scatter_mapbox(
+                        map_df,
+                        lat="lat",
+                        lon="lon",
+                        color="담당자",
+                        hover_name="거래처",
+                        hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
+                        zoom=st.session_state.map_zoom,
+                        center={"lat": center_lat, "lon": center_lon},
+                        height=600
+                    )
+                    fig_map.update_traces(marker=dict(size=14, opacity=0.9))
+                    if "일반" in map_style_choice:
+                        mapbox_layers = [
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
+                        ]
+                    else:
+                        mapbox_layers = [
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
+                            {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
+                        ]
+                    fig_map.update_layout(
+                        mapbox_style="white-bg",
+                        mapbox_layers=mapbox_layers,
+                        margin={"r": 0, "t": 10, "l": 0, "b": 0},
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.15,
+                            xanchor="center",
+                            x=0.5
+                        )
+                    )
+                    render_plotly_chart(fig_map, use_container_width=True, key=dynamic_key, allow_drag=True)
+                if invalid_clients:
+                    with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
+                        st.write(", ".join(invalid_clients))
+            else:
+                st.info("조건에 맞는 거래처 데이터가 없습니다.")
+    # Tab 7: 🏭 설비 재고 현황
+with tab7:
+    if _dash_should_defer_heavy_tab(6):
+        _dash_defer_heavy_stub('🏭 설비 재고 현황', 6)
+    else:
+        t7_c1, t7_c2 = st.columns([4, 1])
+        t7_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 고압가스 탱크 및 기화기 재고 현황</div>", unsafe_allow_html=True)
+        with t7_c2:
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            tab7_default = get_saved_date(TAB7_DATE_FILE)
+            tab7_date = st.date_input("기준일", value=tab7_default, key="tab7_date", label_visibility="collapsed")
+            if tab7_date != tab7_default:
+                set_saved_date(TAB7_DATE_FILE, tab7_date)
+        if not df_tank.empty or not df_vaporizer.empty:
+            eq_col1, eq_col2, eq_col3, eq_col4 = st.columns(4)
+    
+            with eq_col1:
+                available_branches = []
+                if not df_tank.empty and '지사' in df_tank.columns:
+                    available_branches.extend(df_tank['지사'].dropna().unique())
+                if not df_vaporizer.empty and '지사' in df_vaporizer.columns:
+                    available_branches.extend(df_vaporizer['지사'].dropna().unique())
+                selected_branch = st.selectbox("📍 지사 선택 (전체 조회)", ["전체 지사"] + sorted(list(set(available_branches))))
+    
+            with eq_col2:
+                selected_equip_type = st.selectbox("🛢️ 설비 종류 선택", ["전체 보기", "탱크 재고", "기화기 재고"])
+            with eq_col3:
+                selected_status = st.selectbox("📌 사용구분 필터", ["전체 상태", "유휴 장비", "거래처 사용중"])
+            with eq_col4:
+                eq_items = []
+                if not df_tank.empty and '품목' in df_tank.columns:
+                    eq_items.extend(df_tank['품목'].dropna().astype(str).tolist())
+                if not df_vaporizer.empty and '기화형식' in df_vaporizer.columns:
+                    eq_items.extend(df_vaporizer['기화형식'].dropna().astype(str).tolist())
+                unique_eq_items = sorted(list(set([i.strip() for i in eq_items if i.strip() != ''])))
+                selected_eq_item = st.selectbox("📦 품목/형식 선택", ["전체 품목/형식"] + unique_eq_items)
+            st.markdown("---")
+            if not df_tank.empty:
+                if '사용구분' in df_tank.columns:
+                    mask_idle = df_tank['사용구분'].astype(str).str.contains('유휴')
+                    df_tank.loc[mask_idle, '사용구분'] = '🟢 ' + df_tank.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+                    df_tank.loc[~mask_idle, '사용구분'] = '🏢 ' + df_tank.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+            if not df_vaporizer.empty:
+                if '사용구분' in df_vaporizer.columns:
+                    mask_idle_v = df_vaporizer['사용구분'].astype(str).str.contains('유휴')
+                    df_vaporizer.loc[mask_idle_v, '사용구분'] = '🟢 ' + df_vaporizer.loc[mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+                    df_vaporizer.loc[~mask_idle_v, '사용구분'] = '🏢 ' + df_vaporizer.loc[~mask_idle_v, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+            if selected_equip_type in ["전체 보기", "탱크 재고"]:
+                st.markdown("<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>🛢️ 초저온 탱크 재고 현황</div>", unsafe_allow_html=True)
+                if not df_tank.empty:
+                    filtered_tank = df_tank.copy()
+                    if selected_branch != "전체 지사" and '지사' in filtered_tank.columns:
+                        filtered_tank = filtered_tank[filtered_tank['지사'].astype(str).str.contains(selected_branch)]
+                    if selected_status != "전체 상태" and '사용구분' in filtered_tank.columns:
+                        filtered_tank = filtered_tank[filtered_tank['사용구분'].astype(str).str.contains(selected_status)]
+                    if selected_eq_item != "전체 품목/형식" and '품목' in filtered_tank.columns:
+                        filtered_tank = filtered_tank[filtered_tank['품목'].astype(str).str.strip() == selected_eq_item]
+            
+                    st.dataframe(filtered_tank, use_container_width=True, height=350, hide_index=True)
+            if selected_equip_type in ["전체 보기", "기화기 재고"]:
+                if selected_equip_type == "전체 보기":
+                    st.markdown("<br>", unsafe_allow_html=True)
+        
+                st.markdown(f"<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>♨️ 기화기 재고 현황</div>", unsafe_allow_html=True)
+                if not df_vaporizer.empty:
+                    filtered_vap = df_vaporizer.copy()
+                    if selected_branch != "전체 지사" and '지사' in filtered_vap.columns:
+                        filtered_vap = filtered_vap[filtered_vap['지사'].astype(str).str.contains(selected_branch)]
+                    if selected_status != "전체 상태" and '사용구분' in filtered_vap.columns:
+                        filtered_vap = filtered_vap[filtered_vap['사용구분'].astype(str).str.contains(selected_status)]
+                    if selected_eq_item != "전체 품목/형식" and '기화형식' in filtered_vap.columns:
+                        filtered_vap = filtered_vap[filtered_vap['기화형식'].astype(str).str.strip() == selected_eq_item]
+            
+                    st.dataframe(filtered_vap, use_container_width=True, height=350, hide_index=True)
+    # Tab 8: 🛢️ 통합 탱크 재고
+with tab8:
+    if _dash_should_defer_heavy_tab(7):
+        _dash_defer_heavy_stub('🛢️ 통합 탱크 재고', 7)
+    else:
+        t8_c1, t8_c2 = st.columns([4, 1])
+        t8_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>🛢️ 통합 고압가스 탱크 재고 현황</div>", unsafe_allow_html=True)
+        with t8_c2:
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            tab8_default = get_saved_date(TAB8_DATE_FILE)
+            tab8_date = st.date_input("기준일", value=tab8_default, key="int_date", label_visibility="collapsed")
+            if tab8_date != tab8_default:
+                set_saved_date(TAB8_DATE_FILE, tab8_date)
+    
+        if not df_integrated.empty:
+            int_col1, int_col2 = st.columns(2)
+            with int_col1:
+                items = ["전체 품목"] + sorted([str(x) for x in df_integrated['품목'].dropna().unique() if str(x).strip()])
+                sel_item = st.selectbox("📦 품목 선택", items, key="int_item")
+            with int_col2:
+                statuses = ["전체 상태"] + sorted([str(x) for x in df_integrated['사용구분'].dropna().unique() if str(x).strip()])
+                sel_status = st.selectbox("📌 사용구분", statuses, key="int_status")
+            st.markdown("---")
+            df_int_filtered = df_integrated.copy()
+            if sel_item != "전체 품목":
+                df_int_filtered = df_int_filtered[df_int_filtered['품목'].astype(str) == sel_item]
+            if sel_status != "전체 상태":
+                df_int_filtered = df_int_filtered[df_int_filtered['사용구분'].astype(str) == sel_status]
+            total_tanks = len(df_int_filtered)
+            idle_tanks = len(df_int_filtered[df_int_filtered['사용구분'].astype(str).str.contains('유휴', na=False)])
+            inuse_tanks = total_tanks - idle_tanks
+    
+            k1, k2, k3 = st.columns(3)
+            k1.markdown(f"<div class='metric-box'><div class='metric-label'>총 탱크 수량</div><div class='metric-value'>{total_tanks:,} 기</div></div>", unsafe_allow_html=True)
+            k2.markdown(f"<div class='metric-box'><div class='metric-label'>🟢 유휴 장비 (대기중)</div><div class='metric-value' style='color:#059669;'>{idle_tanks:,} 기</div></div>", unsafe_allow_html=True)
+            k3.markdown(f"<div class='metric-box'><div class='metric-label'>🏢 사용/충전중</div><div class='metric-value' style='color:#2563EB;'>{inuse_tanks:,} 기</div></div>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px; margin-top: 20px;'>📋 상세 재고 데이터</div>", unsafe_allow_html=True)
+    
+            df_display = df_int_filtered.copy()
+            if '사용구분' in df_display.columns:
+                mask_idle = df_display['사용구분'].astype(str).str.contains('유휴')
+                df_display.loc[mask_idle, '사용구분'] = '🟢 ' + df_display.loc[mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+                df_display.loc[~mask_idle, '사용구분'] = '🏢 ' + df_display.loc[~mask_idle, '사용구분'].astype(str).str.replace('🟢 ', '').str.replace('🏢 ', '')
+            st.dataframe(df_display, use_container_width=True, height=600, hide_index=True)
+        else:
+            st.warning("통합 탱크 재고 데이터가 없습니다. 폴더에 '통합탱크재고.csv'를 넣거나 왼쪽 사이드바에서 업로드해주세요.")
+    # Tab 9: 📈 수익성 분석 (엑셀 함수 동일 적용)
+    # 입력 변경 시 Tab9만 부분 재실행 (다른 탭·상단 로딩 생략)
+    @st.fragment
+    def _render_profitability_analysis_tab(latest_update_str):
+        t9_c1, t9_c2 = st.columns([4, 1])
+        t9_c1.markdown(
+            "<div class='sub-header dashboard-tab-panel-head'>📈 투자대비 수익성 분석</div>",
+            unsafe_allow_html=True,
+        )
+        t9_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+        st.caption("엑셀「수익성분석.xlsx」함수를 그대로 적용합니다. 입력값을 바꾸면 결과가 즉시 재계산됩니다.")
+        if "profit_inputs" not in st.session_state:
+            st.session_state["profit_inputs"] = load_profit_inputs()
+        p0 = st.session_state["profit_inputs"]
+        _pf_keys = [
+            "pf_name", "pf_tank_gas", "pf_tank_cap_mode",
+            "pf_tank_liters", "pf_tank_liters__comma",
+            "pf_tank_kg", "pf_tank_kg__comma", "pf_tank_spec",
+            "pf_hourly_mode", "pf_hourly_usage", "pf_hourly_nm3", "pf_operating_hours",
+            "pf_operating_days", "pf_auto_monthly",
+            "pf_tank_price", "pf_tank_price__comma", "pf_usage", "pf_usage__comma",
+            "pf_const", "pf_const__comma", "pf_vap_cap", "pf_vap_cap__comma",
+            "pf_vap_note", "pf_vap_price", "pf_vap_price__comma",
+            "pf_buy", "pf_logi", "pf_supply",
+            "pf_rate", "pf_mgmt", "pf_dep", "pf_rent", "pf_rent_n",
+            "pf_origin", "pf_dest", "pf_origin_cands", "pf_dest_cands",
+            "pf_origin_q", "pf_dest_q", "pf_origin_pick", "pf_dest_pick",
+            "pf_lkm", "pf_lfuel", "pf_leff", "pf_ltoll", "pf_lrt", "pf_lkg",
+        ]
+        # —— 입력 (물류비 계산 → 단가 순, 글씨·위젯 스타일은 단가란과 동일) ——
+        st.markdown("##### ◆ 프로젝트 / 장비 투자비")
+        c_name, c_gas = st.columns([1, 1])
+        project_name = c_name.text_input("거래처/프로젝트명", value=str(p0.get("project_name", "")), key="pf_name")
+        _gas0 = str(p0.get("tank_gas") or PROFIT_DEFAULTS["tank_gas"])
+        if _gas0 not in GAS_OPTIONS:
+            _gas0 = GAS_OPTIONS[0]
+        tank_gas = c_gas.selectbox(
+            "탱크 가스 종류",
+            GAS_OPTIONS,
+            index=GAS_OPTIONS.index(_gas0),
+            key="pf_tank_gas",
+            help="질소·알곤·산소·탄산·수소·헬륨. 내용적(L) 입력 시 kg 환산에 사용됩니다.",
+        )
+        _dens = float(GAS_DENSITY_KG_PER_L.get(tank_gas, 0.808))
+        _mode0 = str(p0.get("tank_capacity_mode") or "liters")
+        if _mode0 not in ("liters", "kg"):
+            _mode0 = "liters"
+        tank_capacity_mode = st.radio(
+            "탱크 용량 입력 방식",
+            options=["liters", "kg"],
+            index=0 if _mode0 == "liters" else 1,
+            format_func=lambda m: "내용적(L) → kg 환산" if m == "liters" else "용량(kg) 직접 입력",
+            horizontal=True,
+            key="pf_tank_cap_mode",
+            help="L로 넣거나, kg를 바로 넣을 수 있습니다.",
+        )
+        _kg0 = parse_tank_capacity_kg(p0.get("tank_spec", PROFIT_DEFAULTS["tank_spec"]))
+        _liters0 = p0.get("tank_liters")
+        if _liters0 is None or float(_liters0 or 0) <= 0:
+            _liters0 = (_kg0 / _dens) if _dens > 0 and _kg0 > 0 else float(PROFIT_DEFAULTS["tank_liters"])
+        t_l, t_k = st.columns([1, 1])
+        if tank_capacity_mode == "liters":
+            with t_l:
+                tank_liters = profit_int_comma_input(
+                    "TANK 내용적 (L)",
+                    key="pf_tank_liters",
+                    value=_liters0,
+                    help=f"{tank_gas} 밀도 {_dens:g} kg/L × 내용적(L) = 용량(kg)",
+                )
+            tank_kg = round(liters_to_tank_kg(tank_liters, tank_gas))
+            st.session_state["pf_tank_kg"] = int(tank_kg)
+            st.session_state["pf_tank_kg__comma"] = f"{int(tank_kg):,}"
+            t_k.markdown(
                 f"<div style='padding-top:0.2rem;'>"
-                f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>월 평균 공급량 (kg)</div>"
-                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{monthly_usage:,.0f}</div>"
-                f"<div style='font-size:0.75rem;color:#64748B;'>사용주기 자동반영 (직접입력은 위 체크 해제)</div>"
+                f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>TANK 용량 (kg) 환산</div>"
+                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{tank_kg:,.0f}</div>"
+                f"<div style='font-size:0.75rem;color:#64748B;'>"
+                f"{tank_gas} {_dens:g} kg/L × {float(tank_liters):,.0f} L</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
         else:
-            monthly_usage = profit_int_comma_input(
-                "월 평균 공급량 (kg)",
-                key="pf_usage",
-                value=p0["monthly_usage_kg"],
-                help="직접 입력. 사용주기에서 자동반영하려면 위 체크박스를 켜세요.",
-            )
-    with i3:
-        construction = profit_int_comma_input(
-            "3. 공사비용 (원)", key="pf_const", value=p0["construction_cost"]
-        )
-    v1, v2, v3 = st.columns(3)
-    with v1:
-        vap_cap = profit_int_comma_input(
-            "2. 기화기 용량 (Nm3/hr)", key="pf_vap_cap", value=p0["vaporizer_capacity"]
-        )
-    vap_note = v2.text_input("기화기 수량 메모", value=str(p0.get("vaporizer_qty_note", "")), key="pf_vap_note")
-    with v3:
-        vap_price = profit_int_comma_input(
-            "기화기 구입가 (원)", key="pf_vap_price", value=p0["vaporizer_price"]
-        )
-    # —— 물류비 계산 (단가 바로 위) ——
-    st.markdown("##### ◎ 물류비 계산")
-    st.caption(
-        "20톤 벌크로리 · 경유 · 통행료 5종  ·  "
-        "왕복=탱크용량×80%충전 기준 자동  ·  "
-        "((거리km × 유류비/L ÷ 연비) + 통행료) × 왕복 ÷ 월평균공급량 → 「2. 물류비」반영"
-    )
-    # 경유 시장가(오피넷) — 매월 자동 반영
-    force_diesel = st.session_state.pop("pf_diesel_force", False)
-    diesel_info = get_diesel_price_monthly(force_refresh=force_diesel)
-    month_now = datetime.date.today().strftime("%Y-%m")
-    if diesel_info.get("ok"):
-        if st.session_state.get("pf_diesel_applied_month") != month_now or force_diesel:
-            st.session_state["pf_lfuel"] = float(diesel_info["price"])
-            st.session_state["pf_diesel_applied_month"] = month_now
-    a1, a2 = st.columns(2)
-    logi_origin = a1.text_input(
-        "출발지 (주소·상호·명칭)",
-        value=str(p0.get("logi_origin", PROFIT_DEFAULTS["logi_origin"])),
-        key="pf_origin",
-        placeholder="예: 신일가스 화성공장 / 경기도 화성시 …",
-        help="상호·지점명이 여러 개면 아래에서 선택할 수 있습니다.",
-    )
-    logi_dest = a2.text_input(
-        "도착지 (주소·상호·명칭)",
-        value=str(p0.get("logi_dest", "")),
-        key="pf_dest",
-        placeholder="예: 제이아이금속 / 경북 구미시 …",
-        help="상호·지점명이 여러 개면 아래에서 선택할 수 있습니다.",
-    )
-    _oq = str(logi_origin or "").strip()
-    _dq = str(logi_dest or "").strip()
-    _o_cands = st.session_state.get("pf_origin_cands") if st.session_state.get("pf_origin_q") == _oq else []
-    _d_cands = st.session_state.get("pf_dest_cands") if st.session_state.get("pf_dest_q") == _dq else []
-    _o_cands = _o_cands or []
-    _d_cands = _d_cands or []
-    # 지점이 여러 개면 선택 UI
-    if _o_cands or _d_cands:
-        p1, p2 = st.columns(2)
-        with p1:
-            if len(_o_cands) > 1:
-                st.selectbox(
-                    f"출발 지점 선택 ({len(_o_cands)}곳)",
-                    options=list(range(len(_o_cands))),
-                    format_func=lambda i: _o_cands[i]["label"],
-                    key="pf_origin_pick",
+            with t_k:
+                tank_kg = profit_int_comma_input(
+                    "TANK 용량 (kg) 직접입력",
+                    key="pf_tank_kg",
+                    value=_kg0 if _kg0 > 0 else 4900,
+                    help="용량을 kg로 바로 입력합니다. 왕복횟수 계산에 사용됩니다.",
                 )
-            elif len(_o_cands) == 1:
-                st.caption(f"출발: {_o_cands[0]['label']}")
-        with p2:
-            if len(_d_cands) > 1:
-                st.selectbox(
-                    f"도착 지점 선택 ({len(_d_cands)}곳)",
-                    options=list(range(len(_d_cands))),
-                    format_func=lambda i: _d_cands[i]["label"],
-                    key="pf_dest_pick",
-                )
-            elif len(_d_cands) == 1:
-                st.caption(f"도착: {_d_cands[0]['label']}")
-    btn_r, btn_f = st.columns(2)
-    if btn_r.button("📍 거리·통행료 조회", key="pf_route_btn", type="secondary", width="stretch"):
-        with st.spinner("통합검색·거리·통행료 조회 중…"):
-            need_search = (
-                st.session_state.get("pf_origin_q") != _oq
-                or st.session_state.get("pf_dest_q") != _dq
-                or not st.session_state.get("pf_origin_cands")
-                or not st.session_state.get("pf_dest_cands")
+            tank_liters = round(float(tank_kg) / _dens) if _dens > 0 else 0.0
+            st.session_state["pf_tank_liters"] = int(tank_liters)
+            st.session_state["pf_tank_liters__comma"] = f"{int(tank_liters):,}"
+            t_l.markdown(
+                f"<div style='padding-top:0.2rem;'>"
+                f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>TANK 내용적 (L) 환산</div>"
+                f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{tank_liters:,.0f}</div>"
+                f"<div style='font-size:0.75rem;color:#64748B;'>"
+                f"{float(tank_kg):,.0f} kg ÷ {tank_gas} {_dens:g} kg/L</div>"
+                f"</div>",
+                unsafe_allow_html=True,
             )
-            if need_search:
-                o_cands = kakao_place_search(_oq)
-                d_cands = kakao_place_search(_dq)
-                st.session_state["pf_origin_cands"] = o_cands
-                st.session_state["pf_dest_cands"] = d_cands
-                st.session_state["pf_origin_q"] = _oq
-                st.session_state["pf_dest_q"] = _dq
-                st.session_state.pop("pf_origin_pick", None)
-                st.session_state.pop("pf_dest_pick", None)
-                if not o_cands or not d_cands:
-                    st.session_state["pf_route_info"] = {
-                        "ok": False,
-                        "message": "출발/도착을 찾지 못했습니다. 주소·상호·명칭을 확인해 주세요.",
-                    }
-                    st.error(st.session_state["pf_route_info"]["message"])
-                elif len(o_cands) > 1 or len(d_cands) > 1:
-                    st.warning("지점이 여러 개입니다. 아래에서 지점을 고른 뒤 다시 「거리·통행료 조회」를 눌러주세요.")
-                    st.rerun()
-                else:
-                    oi, di = 0, 0
-                    route = kakao_route_from_coords(
-                        o_cands[oi]["lat"], o_cands[oi]["lon"],
-                        d_cands[di]["lat"], d_cands[di]["lon"],
-                        o_cands[oi]["label"], d_cands[di]["label"],
+        tank_spec = float(tank_kg)  # 저장·계산용 (단위: kg)
+        _nm3 = tank_kg_to_nm3(tank_kg, tank_gas)
+        _nm3_per_kg = float(GAS_NM3_PER_KG.get(tank_gas, 0))
+        st.caption(
+            f"기체환산({tank_gas}): {float(tank_kg):,.0f} kg × {_nm3_per_kg:g} Nm³/kg = "
+            f"**{_nm3:,.1f} Nm³**  ·  내용적 {float(tank_liters):,.0f} L 기준 "
+            f"{tank_liters_to_nm3(tank_liters, tank_gas):,.1f} Nm³"
+        )
+        with st.expander("각 가스별 밀도·기체환산 비교", expanded=False):
+            st.caption("동일 내용적(L)으로 가스별 kg·Nm³를 비교합니다. ★ = 현재 선택 가스. (0℃·1atm 대략값)")
+            _gas_df = pd.DataFrame(gas_conversion_rows(tank_liters, tank_kg, tank_gas))
+            _gas_df["밀도(kg/L)"] = _gas_df["밀도(kg/L)"].map(lambda x: f"{float(x):.4g}")
+            _gas_df["Nm³/kg"] = _gas_df["Nm³/kg"].map(lambda x: f"{float(x):.4g}")
+            _gas_df["내용적 기준 kg"] = _gas_df["내용적 기준 kg"].map(lambda x: f"{float(x):,.1f}")
+            _gas_df["내용적 기준 Nm³"] = _gas_df["내용적 기준 Nm³"].map(lambda x: f"{float(x):,.1f}")
+            _gas_df["현재탱크 Nm³"] = _gas_df["현재탱크 Nm³"].map(
+                lambda x: f"{float(x):,.1f}" if isinstance(x, (int, float)) else str(x)
+            )
+            st.dataframe(_gas_df, hide_index=True, width="stretch")
+        # 별도 작은 타일: 탱크 사용주기 (화면 복잡도 ↓ — 접힌 expander)
+        _nm3pkg = float(GAS_NM3_PER_KG.get(tank_gas, 0) or 0)
+        with st.expander("⏱ 탱크 사용주기 (시간당 사용량 · 가동시간)", expanded=False):
+            st.caption(
+                f"충전기준 = 탱크×80% · 사용주기 = 충전기준 ÷ (시간당kg × 일가동) · "
+                f"{tank_gas} 환산 {_nm3pkg:g} Nm³/kg"
+            )
+            # 기존 float 세션값 → 정수 (format=%d 호환)
+            for _pk in ("pf_hourly_nm3", "pf_hourly_usage", "pf_operating_hours", "pf_operating_days"):
+                if _pk in st.session_state:
+                    try:
+                        st.session_state[_pk] = int(round(float(st.session_state[_pk])))
+                    except Exception:
+                        pass
+            _hmode0 = str(p0.get("hourly_usage_mode") or "kg")
+            if _hmode0 not in ("nm3", "kg"):
+                _hmode0 = "kg"
+            hourly_usage_mode = st.radio(
+                "시간당 사용량 입력",
+                options=["nm3", "kg"],
+                index=0 if _hmode0 == "nm3" else 1,
+                format_func=lambda m: "루베(Nm³/h) → kg/h 환산" if m == "nm3" else "kg/h 직접 입력",
+                horizontal=True,
+                key="pf_hourly_mode",
+            )
+            _kg_h0 = float(p0.get("hourly_usage_kg", PROFIT_DEFAULTS["hourly_usage_kg"]) or 0)
+            _nm3_h0 = p0.get("hourly_usage_nm3")
+            if _nm3_h0 is None or float(_nm3_h0 or 0) <= 0:
+                _nm3_h0 = kg_per_h_to_nm3_per_h(_kg_h0, tank_gas)
+            u_a, u_b, u_o = st.columns(3)
+            if hourly_usage_mode == "nm3":
+                with u_a:
+                    hourly_usage_nm3 = st.number_input(
+                        "시간당 사용량 (Nm³/h, 루베)",
+                        min_value=0,
+                        step=1,
+                        value=int(round(float(_nm3_h0))),
+                        format="%d",
+                        key="pf_hourly_nm3",
+                        help=f"{tank_gas}: kg/h = Nm³/h ÷ {_nm3pkg:g}",
                     )
-                    st.session_state["pf_route_info"] = route
-                    if route.get("ok"):
-                        st.session_state["pf_lkm"] = round(float(route["km"]), 1)
-                        st.session_state["pf_ltoll"] = float(route.get("toll") or 0)
-                        st.success(route.get("message") or f"거리 {route['km']:.1f} km")
-                    else:
-                        st.error(route.get("message") or "거리 조회 실패")
+                hourly_usage_kg = nm3_per_h_to_kg_per_h(hourly_usage_nm3, tank_gas)
+                st.session_state["pf_hourly_usage"] = int(round(hourly_usage_kg))
+                u_b.markdown(
+                    f"<div style='padding-top:0.2rem;'>"
+                    f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>시간당 사용량 (kg/h) 환산</div>"
+                    f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{hourly_usage_kg:,.0f}</div>"
+                    f"<div style='font-size:0.75rem;color:#64748B;'>{tank_gas} {float(hourly_usage_nm3):,.0f} Nm³/h ÷ {_nm3pkg:g}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
             else:
-                o_cands = st.session_state.get("pf_origin_cands") or []
-                d_cands = st.session_state.get("pf_dest_cands") or []
-                if not o_cands or not d_cands:
-                    st.error("출발/도착을 찾지 못했습니다. 주소·상호·명칭을 확인해 주세요.")
-                else:
-                    oi = int(st.session_state.get("pf_origin_pick", 0) or 0) if len(o_cands) > 1 else 0
-                    di = int(st.session_state.get("pf_dest_pick", 0) or 0) if len(d_cands) > 1 else 0
-                    oi = max(0, min(oi, len(o_cands) - 1))
-                    di = max(0, min(di, len(d_cands) - 1))
-                    route = kakao_route_from_coords(
-                        o_cands[oi]["lat"], o_cands[oi]["lon"],
-                        d_cands[di]["lat"], d_cands[di]["lon"],
-                        o_cands[oi]["label"], d_cands[di]["label"],
+                with u_b:
+                    hourly_usage_kg = st.number_input(
+                        "시간당 사용량 (kg/h)",
+                        min_value=0,
+                        step=1,
+                        value=int(round(float(_kg_h0))),
+                        format="%d",
+                        key="pf_hourly_usage",
                     )
-                    st.session_state["pf_route_info"] = route
-                    if route.get("ok"):
-                        st.session_state["pf_lkm"] = round(float(route["km"]), 1)
-                        st.session_state["pf_ltoll"] = float(route.get("toll") or 0)
-                        st.success(route.get("message") or f"거리 {route['km']:.1f} km")
+                hourly_usage_nm3 = kg_per_h_to_nm3_per_h(hourly_usage_kg, tank_gas)
+                st.session_state["pf_hourly_nm3"] = int(round(hourly_usage_nm3))
+                u_a.markdown(
+                    f"<div style='padding-top:0.2rem;'>"
+                    f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>시간당 사용량 (Nm³/h) 환산</div>"
+                    f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{hourly_usage_nm3:,.0f}</div>"
+                    f"<div style='font-size:0.75rem;color:#64748B;'>{tank_gas} {float(hourly_usage_kg):,.0f} kg/h × {_nm3pkg:g}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            operating_hours = u_o.number_input(
+                "일 가동시간 (h/일)",
+                min_value=0,
+                max_value=24,
+                step=1,
+                value=int(round(float(p0.get("operating_hours", PROFIT_DEFAULTS["operating_hours"])))),
+                format="%d",
+                key="pf_operating_hours",
+            )
+            d_days, d_auto = st.columns([1, 2])
+            operating_days = d_days.number_input(
+                "월 가동일수 (일/월)",
+                min_value=1,
+                max_value=31,
+                step=1,
+                value=int(round(float(p0.get("operating_days_per_month", PROFIT_DEFAULTS["operating_days_per_month"])))),
+                format="%d",
+                key="pf_operating_days",
+                help="월 사용량 = 일 사용량(시간당×일가동) × 월 가동일수. 예: 주5일≈22일, 연중무휴≈30일",
+            )
+            _cycle = compute_tank_usage_cycle(
+                tank_kg,
+                hourly_usage_kg,
+                operating_hours,
+                fill_ratio=0.8,
+                days_per_month=operating_days,
+            )
+            _monthly_est = float(_cycle.get("monthly_kg") or 0)
+            auto_monthly_from_cycle = d_auto.checkbox(
+                f"월 평균 공급량에 자동 반영 (일사용량 × {int(operating_days)}일)",
+                value=bool(p0.get("auto_monthly_from_cycle", False)),
+                key="pf_auto_monthly",
+                help="체크 시 아래 「월 평균 공급량」= 일사용량 × 월가동일수. 해제하면 직접 입력합니다.",
+            )
+            if _cycle.get("ok"):
+                c1, c2, c3, c4 = st.columns(4)
+                c1.markdown(
+                    f"<div class='metric-box'><div class='metric-label'>일 사용량</div>"
+                    f"<div class='metric-value' style='font-size:18px;'>{_cycle['daily_kg']:,.0f} kg/일</div></div>",
+                    unsafe_allow_html=True,
+                )
+                c2.markdown(
+                    f"<div class='metric-box'><div class='metric-label'>사용주기</div>"
+                    f"<div class='metric-value' style='font-size:18px;color:#2563EB;'>{_cycle['cycle_days']:,.0f} 일</div></div>",
+                    unsafe_allow_html=True,
+                )
+                c3.markdown(
+                    f"<div class='metric-box'><div class='metric-label'>가동시간 기준</div>"
+                    f"<div class='metric-value' style='font-size:18px;'>{_cycle['cycle_hours']:,.0f} h</div></div>",
+                    unsafe_allow_html=True,
+                )
+                c4.markdown(
+                    f"<div class='metric-box'><div class='metric-label'>월 사용량({int(operating_days)}일)</div>"
+                    f"<div class='metric-value' style='font-size:18px;'>{_monthly_est:,.0f} kg</div></div>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    f"탱크 {float(tank_kg):,.0f} kg · 충전기준 {_cycle['charge_kg']:,.0f} kg(80%) · "
+                    f"월가동 {int(operating_days)}일 · 월충전 약 {_cycle['fills_per_month']:,.0f}회 · {_cycle['message']}"
+                )
+                if auto_monthly_from_cycle:
+                    _mu = int(round(_monthly_est))
+                    st.session_state["pf_usage"] = _mu
+                    st.session_state["pf_usage__comma"] = f"{_mu:,}"
+                    st.caption(
+                        f"→ 월 평균 공급량 {_mu:,} kg "
+                        f"(일 {_cycle['daily_kg']:,.0f} × {int(operating_days)}일) 자동 반영 중"
+                    )
+            else:
+                st.caption(_cycle.get("message") or "입력값을 확인하세요.")
+        i1, i2, i3 = st.columns(3)
+        with i1:
+            tank_price = profit_int_comma_input(
+                "1. TANK 구입가 (원)", key="pf_tank_price", value=p0["tank_price"]
+            )
+        with i2:
+            if auto_monthly_from_cycle and _cycle.get("ok"):
+                monthly_usage = float(st.session_state.get("pf_usage", round(_monthly_est)))
+                st.markdown(
+                    f"<div style='padding-top:0.2rem;'>"
+                    f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>월 평균 공급량 (kg)</div>"
+                    f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{monthly_usage:,.0f}</div>"
+                    f"<div style='font-size:0.75rem;color:#64748B;'>사용주기 자동반영 (직접입력은 위 체크 해제)</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                monthly_usage = profit_int_comma_input(
+                    "월 평균 공급량 (kg)",
+                    key="pf_usage",
+                    value=p0["monthly_usage_kg"],
+                    help="직접 입력. 사용주기에서 자동반영하려면 위 체크박스를 켜세요.",
+                )
+        with i3:
+            construction = profit_int_comma_input(
+                "3. 공사비용 (원)", key="pf_const", value=p0["construction_cost"]
+            )
+        v1, v2, v3 = st.columns(3)
+        with v1:
+            vap_cap = profit_int_comma_input(
+                "2. 기화기 용량 (Nm3/hr)", key="pf_vap_cap", value=p0["vaporizer_capacity"]
+            )
+        vap_note = v2.text_input("기화기 수량 메모", value=str(p0.get("vaporizer_qty_note", "")), key="pf_vap_note")
+        with v3:
+            vap_price = profit_int_comma_input(
+                "기화기 구입가 (원)", key="pf_vap_price", value=p0["vaporizer_price"]
+            )
+        # —— 물류비 계산 (단가 바로 위) ——
+        st.markdown("##### ◎ 물류비 계산")
+        st.caption(
+            "20톤 벌크로리 · 경유 · 통행료 5종  ·  "
+            "왕복=탱크용량×80%충전 기준 자동  ·  "
+            "((거리km × 유류비/L ÷ 연비) + 통행료) × 왕복 ÷ 월평균공급량 → 「2. 물류비」반영"
+        )
+        # 경유 시장가(오피넷) — 매월 자동 반영
+        force_diesel = st.session_state.pop("pf_diesel_force", False)
+        diesel_info = get_diesel_price_monthly(force_refresh=force_diesel)
+        month_now = datetime.date.today().strftime("%Y-%m")
+        if diesel_info.get("ok"):
+            if st.session_state.get("pf_diesel_applied_month") != month_now or force_diesel:
+                st.session_state["pf_lfuel"] = float(diesel_info["price"])
+                st.session_state["pf_diesel_applied_month"] = month_now
+        a1, a2 = st.columns(2)
+        logi_origin = a1.text_input(
+            "출발지 (주소·상호·명칭)",
+            value=str(p0.get("logi_origin", PROFIT_DEFAULTS["logi_origin"])),
+            key="pf_origin",
+            placeholder="예: 신일가스 화성공장 / 경기도 화성시 …",
+            help="상호·지점명이 여러 개면 아래에서 선택할 수 있습니다.",
+        )
+        logi_dest = a2.text_input(
+            "도착지 (주소·상호·명칭)",
+            value=str(p0.get("logi_dest", "")),
+            key="pf_dest",
+            placeholder="예: 제이아이금속 / 경북 구미시 …",
+            help="상호·지점명이 여러 개면 아래에서 선택할 수 있습니다.",
+        )
+        _oq = str(logi_origin or "").strip()
+        _dq = str(logi_dest or "").strip()
+        _o_cands = st.session_state.get("pf_origin_cands") if st.session_state.get("pf_origin_q") == _oq else []
+        _d_cands = st.session_state.get("pf_dest_cands") if st.session_state.get("pf_dest_q") == _dq else []
+        _o_cands = _o_cands or []
+        _d_cands = _d_cands or []
+        # 지점이 여러 개면 선택 UI
+        if _o_cands or _d_cands:
+            p1, p2 = st.columns(2)
+            with p1:
+                if len(_o_cands) > 1:
+                    st.selectbox(
+                        f"출발 지점 선택 ({len(_o_cands)}곳)",
+                        options=list(range(len(_o_cands))),
+                        format_func=lambda i: _o_cands[i]["label"],
+                        key="pf_origin_pick",
+                    )
+                elif len(_o_cands) == 1:
+                    st.caption(f"출발: {_o_cands[0]['label']}")
+            with p2:
+                if len(_d_cands) > 1:
+                    st.selectbox(
+                        f"도착 지점 선택 ({len(_d_cands)}곳)",
+                        options=list(range(len(_d_cands))),
+                        format_func=lambda i: _d_cands[i]["label"],
+                        key="pf_dest_pick",
+                    )
+                elif len(_d_cands) == 1:
+                    st.caption(f"도착: {_d_cands[0]['label']}")
+        btn_r, btn_f = st.columns(2)
+        if btn_r.button("📍 거리·통행료 조회", key="pf_route_btn", type="secondary", width="stretch"):
+            with st.spinner("통합검색·거리·통행료 조회 중…"):
+                need_search = (
+                    st.session_state.get("pf_origin_q") != _oq
+                    or st.session_state.get("pf_dest_q") != _dq
+                    or not st.session_state.get("pf_origin_cands")
+                    or not st.session_state.get("pf_dest_cands")
+                )
+                if need_search:
+                    o_cands = kakao_place_search(_oq)
+                    d_cands = kakao_place_search(_dq)
+                    st.session_state["pf_origin_cands"] = o_cands
+                    st.session_state["pf_dest_cands"] = d_cands
+                    st.session_state["pf_origin_q"] = _oq
+                    st.session_state["pf_dest_q"] = _dq
+                    st.session_state.pop("pf_origin_pick", None)
+                    st.session_state.pop("pf_dest_pick", None)
+                    if not o_cands or not d_cands:
+                        st.session_state["pf_route_info"] = {
+                            "ok": False,
+                            "message": "출발/도착을 찾지 못했습니다. 주소·상호·명칭을 확인해 주세요.",
+                        }
+                        st.error(st.session_state["pf_route_info"]["message"])
+                    elif len(o_cands) > 1 or len(d_cands) > 1:
+                        st.warning("지점이 여러 개입니다. 아래에서 지점을 고른 뒤 다시 「거리·통행료 조회」를 눌러주세요.")
+                        st.rerun()
                     else:
-                        st.error(route.get("message") or "거리 조회 실패")
-    if btn_f.button("⛽ 경유 시세 새로고침", key="pf_diesel_btn", width="stretch"):
-        st.session_state["pf_diesel_force"] = True
-        st.rerun()
-    route_info = st.session_state.get("pf_route_info") or {}
-    if route_info.get("ok"):
+                        oi, di = 0, 0
+                        route = kakao_route_from_coords(
+                            o_cands[oi]["lat"], o_cands[oi]["lon"],
+                            d_cands[di]["lat"], d_cands[di]["lon"],
+                            o_cands[oi]["label"], d_cands[di]["label"],
+                        )
+                        st.session_state["pf_route_info"] = route
+                        if route.get("ok"):
+                            st.session_state["pf_lkm"] = round(float(route["km"]), 1)
+                            st.session_state["pf_ltoll"] = float(route.get("toll") or 0)
+                            st.success(route.get("message") or f"거리 {route['km']:.1f} km")
+                        else:
+                            st.error(route.get("message") or "거리 조회 실패")
+                else:
+                    o_cands = st.session_state.get("pf_origin_cands") or []
+                    d_cands = st.session_state.get("pf_dest_cands") or []
+                    if not o_cands or not d_cands:
+                        st.error("출발/도착을 찾지 못했습니다. 주소·상호·명칭을 확인해 주세요.")
+                    else:
+                        oi = int(st.session_state.get("pf_origin_pick", 0) or 0) if len(o_cands) > 1 else 0
+                        di = int(st.session_state.get("pf_dest_pick", 0) or 0) if len(d_cands) > 1 else 0
+                        oi = max(0, min(oi, len(o_cands) - 1))
+                        di = max(0, min(di, len(d_cands) - 1))
+                        route = kakao_route_from_coords(
+                            o_cands[oi]["lat"], o_cands[oi]["lon"],
+                            d_cands[di]["lat"], d_cands[di]["lon"],
+                            o_cands[oi]["label"], d_cands[di]["label"],
+                        )
+                        st.session_state["pf_route_info"] = route
+                        if route.get("ok"):
+                            st.session_state["pf_lkm"] = round(float(route["km"]), 1)
+                            st.session_state["pf_ltoll"] = float(route.get("toll") or 0)
+                            st.success(route.get("message") or f"거리 {route['km']:.1f} km")
+                        else:
+                            st.error(route.get("message") or "거리 조회 실패")
+        if btn_f.button("⛽ 경유 시세 새로고침", key="pf_diesel_btn", width="stretch"):
+            st.session_state["pf_diesel_force"] = True
+            st.rerun()
+        route_info = st.session_state.get("pf_route_info") or {}
+        if route_info.get("ok"):
+            st.caption(
+                f"출발: {route_info.get('origin_label','')} → 도착: {route_info.get('dest_label','')}  ·  "
+                f"{route_info.get('message','')}"
+            )
+        if diesel_info.get("ok"):
+            st.caption(
+                f"경유 시장가 {float(diesel_info['price']):,.2f} 원/L  ·  "
+                f"{diesel_info.get('source','')}  ·  기준일 {diesel_info.get('asof','')}  ·  "
+                f"{month_now} 자동반영"
+            )
+        else:
+            st.caption(diesel_info.get("message") or "경유 시세 조회 실패 — 유류비를 수동 입력하세요.")
+        if "pf_lkm" not in st.session_state:
+            st.session_state["pf_lkm"] = float(p0.get("logi_km", 70.0))
+        if "pf_lfuel" not in st.session_state:
+            st.session_state["pf_lfuel"] = float(
+                diesel_info["price"] if diesel_info.get("ok") else p0.get("logi_fuel_price", 1400.0)
+            )
+        l1, l2, l3 = st.columns(3)
+        logi_km = l1.number_input("거리 (km)", min_value=0.0, step=0.1, key="pf_lkm")
+        logi_fuel = l2.number_input(
+            "유류비 (원/L, 경유)", min_value=0.0, step=1.0, key="pf_lfuel",
+        )
+        logi_eff = l3.number_input(
+            "연비 (km/L, 20톤벌크)", min_value=0.1, step=0.1,
+            value=float(p0.get("logi_efficiency", 2.5)), key="pf_leff",
+        )
+        l4, l5, l6 = st.columns(3)
+        if "pf_ltoll" not in st.session_state:
+            st.session_state["pf_ltoll"] = float(p0.get("logi_toll", 0.0))
+        logi_toll = l4.number_input(
+            "통행료 (원, 편도·20톤벌크)", min_value=0.0, step=100.0, key="pf_ltoll",
+        )
+        # 왕복횟수 = ceil(월평균공급량 ÷ (탱크총용량kg × 80%))
+        _rt_info = compute_roundtrips_from_tank(monthly_usage, tank_spec, fill_ratio=0.8)
+        logi_rt = float(_rt_info["roundtrips"]) if _rt_info.get("ok") else float(p0.get("logi_roundtrips", 0) or 0)
+        st.session_state["pf_lrt"] = logi_rt
+        l5.markdown(
+            f"<div style='padding-top:0.2rem;'>"
+            f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>왕복 횟수 (회/월)</div>"
+            f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{logi_rt:,.0f}</div>"
+            f"<div style='font-size:0.75rem;color:#64748B;'>탱크 80% 소모시 충전</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        # 물류비 공급량 = 프로젝트 「월 평균 공급량」 그대로 (별도 입력 없음)
+        logi_kg = float(monthly_usage) if float(monthly_usage or 0) > 0 else 1.0
+        st.session_state["pf_lkg"] = logi_kg
+        l6.markdown(
+            f"<div style='padding-top:0.2rem;'>"
+            f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>월평균 공급량 (kg)</div>"
+            f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{logi_kg:,.0f}</div>"
+            f"<div style='font-size:0.75rem;color:#64748B;'>프로젝트 월 평균 공급량 연동</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        logi_calc = compute_logistics_unit_cost(
+            logi_km, logi_fuel, logi_eff, logi_toll, logi_rt, logi_kg
+        )
+        logi_per = int(round(float(logi_calc["per_kg"])))
+        # 계산값을 단가 「물류비」위젯에 즉시 반영 (단가 렌더 전에 세팅)
+        st.session_state["pf_logi"] = int(logi_per)
+        st.caption(_rt_info.get("message") or "")
         st.caption(
-            f"출발: {route_info.get('origin_label','')} → 도착: {route_info.get('dest_label','')}  ·  "
-            f"{route_info.get('message','')}"
+            f"계산 물류비 {logi_per:,} 원/kg  ·  "
+            f"편도연료 {logi_calc['fuel_one_way']:,.0f}원  ·  "
+            f"왕복총비용 {logi_calc['round_trip_cost']:,.0f}원"
         )
-    if diesel_info.get("ok"):
-        st.caption(
-            f"경유 시장가 {float(diesel_info['price']):,.2f} 원/L  ·  "
-            f"{diesel_info.get('source','')}  ·  기준일 {diesel_info.get('asof','')}  ·  "
-            f"{month_now} 자동반영"
+        st.markdown("##### ◎ 단가")
+        for _uk in ("pf_buy", "pf_logi", "pf_supply", "pf_dep", "pf_rent", "pf_rent_n"):
+            if _uk in st.session_state:
+                try:
+                    st.session_state[_uk] = int(round(float(st.session_state[_uk])))
+                except Exception:
+                    pass
+        u1, u2, u3 = st.columns(3)
+        with u1:
+            purchase_unit = st.number_input(
+                "1. 매입단가 (원/kg)",
+                min_value=0,
+                step=1,
+                value=int(round(float(p0["purchase_unit"]))),
+                format="%d",
+                key="pf_buy",
+            )
+        with u2:
+            logistics_unit = st.number_input(
+                "2. 물류비 (원/kg)",
+                min_value=0,
+                step=1,
+                format="%d",
+                key="pf_logi",
+            )
+            st.caption(
+                f"적용: ((거리 {float(logi_km):,.0f}km × 유류 {float(logi_fuel):,.0f}원/L ÷ 연비 {float(logi_eff):g}) "
+                f"+ 통행료 {float(logi_toll):,.0f}원) × 왕복 {float(logi_rt):,.0f}회 "
+                f"÷ 월공급 {float(logi_kg):,.0f}kg = **{logi_per:,} 원/kg** → 위 칸에 자동반영"
+            )
+        with u3:
+            supply_unit = st.number_input(
+                "3. 공급단가 (원/kg)",
+                min_value=0,
+                step=1,
+                value=int(round(float(p0["supply_unit"]))),
+                format="%d",
+                key="pf_supply",
+            )
+        st.markdown("##### ◎ 금융 / 관리 / 임대")
+        f1, f2, f3, f4 = st.columns(4)
+        interest = f1.number_input(
+            "이자율 (예: 0.05=5%)", min_value=0.0, max_value=1.0, step=0.005, format="%.3f",
+            value=float(p0["interest_rate"]), key="pf_rate",
         )
-    else:
-        st.caption(diesel_info.get("message") or "경유 시세 조회 실패 — 유류비를 수동 입력하세요.")
-    if "pf_lkm" not in st.session_state:
-        st.session_state["pf_lkm"] = float(p0.get("logi_km", 70.0))
-    if "pf_lfuel" not in st.session_state:
-        st.session_state["pf_lfuel"] = float(
-            diesel_info["price"] if diesel_info.get("ok") else p0.get("logi_fuel_price", 1400.0)
+        mgmt_rate = f2.number_input(
+            "일반관리비 비율 (월매출)", min_value=0.0, max_value=1.0, step=0.005, format="%.3f",
+            value=float(p0["mgmt_rate"]), key="pf_mgmt",
         )
-    l1, l2, l3 = st.columns(3)
-    logi_km = l1.number_input("거리 (km)", min_value=0.0, step=0.1, key="pf_lkm")
-    logi_fuel = l2.number_input(
-        "유류비 (원/L, 경유)", min_value=0.0, step=1.0, key="pf_lfuel",
-    )
-    logi_eff = l3.number_input(
-        "연비 (km/L, 20톤벌크)", min_value=0.1, step=0.1,
-        value=float(p0.get("logi_efficiency", 2.5)), key="pf_leff",
-    )
-    l4, l5, l6 = st.columns(3)
-    if "pf_ltoll" not in st.session_state:
-        st.session_state["pf_ltoll"] = float(p0.get("logi_toll", 0.0))
-    logi_toll = l4.number_input(
-        "통행료 (원, 편도·20톤벌크)", min_value=0.0, step=100.0, key="pf_ltoll",
-    )
-    # 왕복횟수 = ceil(월평균공급량 ÷ (탱크총용량kg × 80%))
-    _rt_info = compute_roundtrips_from_tank(monthly_usage, tank_spec, fill_ratio=0.8)
-    logi_rt = float(_rt_info["roundtrips"]) if _rt_info.get("ok") else float(p0.get("logi_roundtrips", 0) or 0)
-    st.session_state["pf_lrt"] = logi_rt
-    l5.markdown(
-        f"<div style='padding-top:0.2rem;'>"
-        f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>왕복 횟수 (회/월)</div>"
-        f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{logi_rt:,.0f}</div>"
-        f"<div style='font-size:0.75rem;color:#64748B;'>탱크 80% 소모시 충전</div>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-    # 물류비 공급량 = 프로젝트 「월 평균 공급량」 그대로 (별도 입력 없음)
-    logi_kg = float(monthly_usage) if float(monthly_usage or 0) > 0 else 1.0
-    st.session_state["pf_lkg"] = logi_kg
-    l6.markdown(
-        f"<div style='padding-top:0.2rem;'>"
-        f"<div style='font-size:0.875rem;color:#31333F;margin-bottom:0.25rem;'>월평균 공급량 (kg)</div>"
-        f"<div style='font-size:1rem;font-weight:600;color:#0F172A;'>{logi_kg:,.0f}</div>"
-        f"<div style='font-size:0.75rem;color:#64748B;'>프로젝트 월 평균 공급량 연동</div>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-    logi_calc = compute_logistics_unit_cost(
-        logi_km, logi_fuel, logi_eff, logi_toll, logi_rt, logi_kg
-    )
-    logi_per = int(round(float(logi_calc["per_kg"])))
-    # 계산값을 단가 「물류비」위젯에 즉시 반영 (단가 렌더 전에 세팅)
-    st.session_state["pf_logi"] = int(logi_per)
-    st.caption(_rt_info.get("message") or "")
-    st.caption(
-        f"계산 물류비 {logi_per:,} 원/kg  ·  "
-        f"편도연료 {logi_calc['fuel_one_way']:,.0f}원  ·  "
-        f"왕복총비용 {logi_calc['round_trip_cost']:,.0f}원"
-    )
-    st.markdown("##### ◎ 단가")
-    for _uk in ("pf_buy", "pf_logi", "pf_supply", "pf_dep", "pf_rent", "pf_rent_n"):
-        if _uk in st.session_state:
-            try:
-                st.session_state[_uk] = int(round(float(st.session_state[_uk])))
-            except Exception:
-                pass
-    u1, u2, u3 = st.columns(3)
-    with u1:
-        purchase_unit = st.number_input(
-            "1. 매입단가 (원/kg)",
+        dep_months = f3.number_input(
+            "감가상각 개월 (10년=120)",
+            min_value=1,
+            step=12,
+            value=int(round(float(p0["depreciation_months"]))),
+            format="%d",
+            key="pf_dep",
+        )
+        rent = f4.number_input(
+            "장비 임대료 (원)",
+            min_value=0,
+            step=10000,
+            value=int(round(float(p0["equipment_rent"]))),
+            format="%d",
+            key="pf_rent",
+        )
+        rent_count = st.number_input(
+            "부가횟수",
             min_value=0,
             step=1,
-            value=int(round(float(p0["purchase_unit"]))),
+            value=int(round(float(p0["rent_count"]))),
             format="%d",
-            key="pf_buy",
+            key="pf_rent_n",
         )
-    with u2:
-        logistics_unit = st.number_input(
-            "2. 물류비 (원/kg)",
-            min_value=0,
-            step=1,
-            format="%d",
-            key="pf_logi",
-        )
-        st.caption(
-            f"적용: ((거리 {float(logi_km):,.0f}km × 유류 {float(logi_fuel):,.0f}원/L ÷ 연비 {float(logi_eff):g}) "
-            f"+ 통행료 {float(logi_toll):,.0f}원) × 왕복 {float(logi_rt):,.0f}회 "
-            f"÷ 월공급 {float(logi_kg):,.0f}kg = **{logi_per:,} 원/kg** → 위 칸에 자동반영"
-        )
-    with u3:
-        supply_unit = st.number_input(
-            "3. 공급단가 (원/kg)",
-            min_value=0,
-            step=1,
-            value=int(round(float(p0["supply_unit"]))),
-            format="%d",
-            key="pf_supply",
-        )
-    st.markdown("##### ◎ 금융 / 관리 / 임대")
-    f1, f2, f3, f4 = st.columns(4)
-    interest = f1.number_input(
-        "이자율 (예: 0.05=5%)", min_value=0.0, max_value=1.0, step=0.005, format="%.3f",
-        value=float(p0["interest_rate"]), key="pf_rate",
-    )
-    mgmt_rate = f2.number_input(
-        "일반관리비 비율 (월매출)", min_value=0.0, max_value=1.0, step=0.005, format="%.3f",
-        value=float(p0["mgmt_rate"]), key="pf_mgmt",
-    )
-    dep_months = f3.number_input(
-        "감가상각 개월 (10년=120)",
-        min_value=1,
-        step=12,
-        value=int(round(float(p0["depreciation_months"]))),
-        format="%d",
-        key="pf_dep",
-    )
-    rent = f4.number_input(
-        "장비 임대료 (원)",
-        min_value=0,
-        step=10000,
-        value=int(round(float(p0["equipment_rent"]))),
-        format="%d",
-        key="pf_rent",
-    )
-    rent_count = st.number_input(
-        "부가횟수",
-        min_value=0,
-        step=1,
-        value=int(round(float(p0["rent_count"]))),
-        format="%d",
-        key="pf_rent_n",
-    )
-    b_save, b_reset = st.columns(2)
-    submitted = b_save.button("💾 계산 / 저장", type="primary", width="stretch", key="pf_save_btn")
-    reset = b_reset.button("↺ 엑셀 기본값으로 초기화", width="stretch", key="pf_reset_btn")
-    if reset:
-        st.session_state["profit_inputs"] = dict(PROFIT_DEFAULTS)
-        save_profit_inputs(st.session_state["profit_inputs"])
-        for k in _pf_keys:
-            st.session_state.pop(k, None)
-        st.session_state.pop("pf_route_info", None)
-        st.session_state.pop("pf_diesel_applied_month", None)
-        st.session_state.pop("pf_diesel_force", None)
-        st.rerun()
-    if submitted:
-        new_p = {
+        b_save, b_reset = st.columns(2)
+        submitted = b_save.button("💾 계산 / 저장", type="primary", width="stretch", key="pf_save_btn")
+        reset = b_reset.button("↺ 엑셀 기본값으로 초기화", width="stretch", key="pf_reset_btn")
+        if reset:
+            st.session_state["profit_inputs"] = dict(PROFIT_DEFAULTS)
+            save_profit_inputs(st.session_state["profit_inputs"])
+            for k in _pf_keys:
+                st.session_state.pop(k, None)
+            st.session_state.pop("pf_route_info", None)
+            st.session_state.pop("pf_diesel_applied_month", None)
+            st.session_state.pop("pf_diesel_force", None)
+            st.rerun()
+        if submitted:
+            new_p = {
+                "project_name": project_name,
+                "tank_gas": tank_gas,
+                "tank_capacity_mode": tank_capacity_mode,
+                "tank_liters": float(tank_liters),
+                "tank_spec": tank_spec,
+                "hourly_usage_mode": str(hourly_usage_mode),
+                "hourly_usage_kg": float(hourly_usage_kg),
+                "hourly_usage_nm3": float(hourly_usage_nm3),
+                "operating_hours": float(operating_hours),
+                "operating_days_per_month": float(operating_days),
+                "auto_monthly_from_cycle": bool(auto_monthly_from_cycle),
+                "tank_price": tank_price,
+                "monthly_usage_kg": monthly_usage,
+                "vaporizer_capacity": vap_cap,
+                "vaporizer_qty_note": vap_note,
+                "vaporizer_price": vap_price,
+                "construction_cost": construction,
+                "purchase_unit": purchase_unit,
+                "logistics_unit": float(logistics_unit),
+                "supply_unit": supply_unit,
+                "interest_rate": interest,
+                "mgmt_rate": mgmt_rate,
+                "depreciation_months": dep_months,
+                "equipment_rent": rent,
+                "rent_count": rent_count,
+                "logi_km": float(logi_km),
+                "logi_fuel_price": float(logi_fuel),
+                "logi_efficiency": float(logi_eff),
+                "logi_toll": float(logi_toll),
+                "logi_roundtrips": float(logi_rt),
+                "logi_supply_kg": float(logi_kg),
+                "logi_origin": str(logi_origin),
+                "logi_dest": str(logi_dest),
+            }
+            st.session_state["profit_inputs"] = new_p
+            save_profit_inputs(new_p)
+            st.success("저장되었습니다. 아래 결과가 갱신됩니다.")
+        # 화면 결과도 현재 입력(자동 반영된 물류비 포함) 기준으로 표시
+        p = {
             "project_name": project_name,
             "tank_gas": tank_gas,
             "tank_capacity_mode": tank_capacity_mode,
@@ -12918,149 +13007,113 @@ def _render_profitability_analysis_tab(latest_update_str):
             "logi_origin": str(logi_origin),
             "logi_dest": str(logi_dest),
         }
-        st.session_state["profit_inputs"] = new_p
-        save_profit_inputs(new_p)
-        st.success("저장되었습니다. 아래 결과가 갱신됩니다.")
-    # 화면 결과도 현재 입력(자동 반영된 물류비 포함) 기준으로 표시
-    p = {
-        "project_name": project_name,
-        "tank_gas": tank_gas,
-        "tank_capacity_mode": tank_capacity_mode,
-        "tank_liters": float(tank_liters),
-        "tank_spec": tank_spec,
-        "hourly_usage_mode": str(hourly_usage_mode),
-        "hourly_usage_kg": float(hourly_usage_kg),
-        "hourly_usage_nm3": float(hourly_usage_nm3),
-        "operating_hours": float(operating_hours),
-        "operating_days_per_month": float(operating_days),
-        "auto_monthly_from_cycle": bool(auto_monthly_from_cycle),
-        "tank_price": tank_price,
-        "monthly_usage_kg": monthly_usage,
-        "vaporizer_capacity": vap_cap,
-        "vaporizer_qty_note": vap_note,
-        "vaporizer_price": vap_price,
-        "construction_cost": construction,
-        "purchase_unit": purchase_unit,
-        "logistics_unit": float(logistics_unit),
-        "supply_unit": supply_unit,
-        "interest_rate": interest,
-        "mgmt_rate": mgmt_rate,
-        "depreciation_months": dep_months,
-        "equipment_rent": rent,
-        "rent_count": rent_count,
-        "logi_km": float(logi_km),
-        "logi_fuel_price": float(logi_fuel),
-        "logi_efficiency": float(logi_eff),
-        "logi_toll": float(logi_toll),
-        "logi_roundtrips": float(logi_rt),
-        "logi_supply_kg": float(logi_kg),
-        "logi_origin": str(logi_origin),
-        "logi_dest": str(logi_dest),
-    }
-    st.session_state["profit_inputs"] = p
-    r = compute_profitability(p)
-    st.markdown("---")
-    st.markdown(
-        f"<div class='sub-header dashboard-tab-panel-head'>◆ [{html.escape(str(p.get('project_name') or '프로젝트'))}] 투자대비 수익성 분석 보고</div>",
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        f"TANK: {p.get('tank_gas','')} {float(p.get('tank_liters') or 0):,.0f} L → "
-        f"{parse_tank_capacity_kg(p.get('tank_spec')):,.0f} kg · "
-        f"기화기 {p.get('vaporizer_capacity',0):,.0f} Nm3/hr {p.get('vaporizer_qty_note','')} · "
-        f"년 사용량(자동) {r['yearly_usage']:,.0f} kg"
-    )
-    m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(
-        f"<div class='metric-box'><div class='metric-label'>합계 투자액 (C9+C16+C18)</div>"
-        f"<div class='metric-value'>{r['total_invest']:,.0f} 원</div></div>",
-        unsafe_allow_html=True,
-    )
-    m2.markdown(
-        f"<div class='metric-box'><div class='metric-label'>매출이익 (원/kg)</div>"
-        f"<div class='metric-value'>{r['margin_kg']:,.1f} 원/kg</div></div>",
-        unsafe_allow_html=True,
-    )
-    m3.markdown(
-        f"<div class='metric-box'><div class='metric-label'>월평균 이익금</div>"
-        f"<div class='metric-value' style='color:{'#059669' if r['monthly_profit']>=0 else '#E11D48'};'>"
-        f"{r['monthly_profit']:,.0f} 원/월</div></div>",
-        unsafe_allow_html=True,
-    )
-    m4.markdown(
-        f"<div class='metric-box'><div class='metric-label'>최근 3개월 매출 실이익</div>"
-        f"<div class='metric-value'>{r['three_month']:,.0f} 원</div></div>",
-        unsafe_allow_html=True,
-    )
-    left, right = st.columns(2)
-    def _pf_i(v):
+        st.session_state["profit_inputs"] = p
+        r = compute_profitability(p)
+        st.markdown("---")
+        st.markdown(
+            f"<div class='sub-header dashboard-tab-panel-head'>◆ [{html.escape(str(p.get('project_name') or '프로젝트'))}] 투자대비 수익성 분석 보고</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"TANK: {p.get('tank_gas','')} {float(p.get('tank_liters') or 0):,.0f} L → "
+            f"{parse_tank_capacity_kg(p.get('tank_spec')):,.0f} kg · "
+            f"기화기 {p.get('vaporizer_capacity',0):,.0f} Nm3/hr {p.get('vaporizer_qty_note','')} · "
+            f"년 사용량(자동) {r['yearly_usage']:,.0f} kg"
+        )
+        m1, m2, m3, m4 = st.columns(4)
+        m1.markdown(
+            f"<div class='metric-box'><div class='metric-label'>합계 투자액 (C9+C16+C18)</div>"
+            f"<div class='metric-value'>{r['total_invest']:,.0f} 원</div></div>",
+            unsafe_allow_html=True,
+        )
+        m2.markdown(
+            f"<div class='metric-box'><div class='metric-label'>매출이익 (원/kg)</div>"
+            f"<div class='metric-value'>{r['margin_kg']:,.1f} 원/kg</div></div>",
+            unsafe_allow_html=True,
+        )
+        m3.markdown(
+            f"<div class='metric-box'><div class='metric-label'>월평균 이익금</div>"
+            f"<div class='metric-value' style='color:{'#059669' if r['monthly_profit']>=0 else '#E11D48'};'>"
+            f"{r['monthly_profit']:,.0f} 원/월</div></div>",
+            unsafe_allow_html=True,
+        )
+        m4.markdown(
+            f"<div class='metric-box'><div class='metric-label'>최근 3개월 매출 실이익</div>"
+            f"<div class='metric-value'>{r['three_month']:,.0f} 원</div></div>",
+            unsafe_allow_html=True,
+        )
+        left, right = st.columns(2)
+        def _pf_i(v):
+            try:
+                return f"{int(round(float(v or 0))):,}"
+            except Exception:
+                return "0"
+        with left:
+            st.markdown("**◎ 단가 · 투자 요약**")
+            summary_df = pd.DataFrame(
+                [
+                    {"항목": "TANK 구입가", "값": _pf_i(p["tank_price"]), "단위": "원"},
+                    {"항목": "기화기 구입가", "값": _pf_i(p["vaporizer_price"]), "단위": "원"},
+                    {"항목": "공사비용", "값": _pf_i(p["construction_cost"]), "단위": "원"},
+                    {"항목": "합계 금액", "값": _pf_i(r["total_invest"]), "단위": "원"},
+                    {"항목": "년 사용량", "값": _pf_i(r["yearly_usage"]), "단위": "kg"},
+                    {"항목": "월 평균 공급량", "값": _pf_i(p["monthly_usage_kg"]), "단위": "kg"},
+                    {"항목": "매입단가", "값": _pf_i(p["purchase_unit"]), "단위": "원/kg"},
+                    {"항목": "물류비", "값": _pf_i(p["logistics_unit"]), "단위": "원/kg"},
+                    {"항목": "공급단가", "값": _pf_i(p["supply_unit"]), "단위": "원/kg"},
+                    {"항목": "매출이익", "값": _pf_i(r["margin_kg"]), "단위": "원/kg"},
+                    {"항목": "물류비 계산(P18)", "값": _pf_i(r["logi_per_kg"]), "단위": "원/kg"},
+                ]
+            )
+            st.dataframe(summary_df, hide_index=True, width="stretch", height=420)
+        with right:
+            st.markdown("**◎ 사용량 대비 영업이익 (월)**")
+            result_df = pd.DataFrame(
+                [
+                    {"항목": "월평균 매출이익", "계산": "월사용량 × 매출이익", "값": _pf_i(r["monthly_gross"]), "단위": "원/월"},
+                    {"항목": "장비 감가상각", "계산": f"투자합계 ÷ {p['depreciation_months']:.0f}", "값": _pf_i(r["depreciation"]), "단위": "원/월"},
+                    {"항목": "금융비", "계산": "원금 × 이자율 ÷ 12", "값": _pf_i(r["finance"]), "단위": "원/월"},
+                    {"항목": "월 매출", "계산": "월사용량 × 공급단가", "값": _pf_i(r["monthly_sales"]), "단위": "원/월"},
+                    {"항목": "일반관리비", "계산": f"월매출 × {p['mgmt_rate']*100:.1f}%", "값": _pf_i(r["mgmt"]), "단위": "원/월"},
+                    {"항목": "투자비용(상각+금융)", "계산": "감가상각 + 금융비", "값": _pf_i(r["invest_cost"]), "단위": "원/월"},
+                    {"항목": "월평균 이익금", "계산": "매출이익 − 투자비용 − 관리비", "값": _pf_i(r["monthly_profit"]), "단위": "원/월"},
+                    {"항목": "최근 3개월 실이익", "계산": "월이익×3 + 임대료×횟수", "값": _pf_i(r["three_month"]), "단위": "원"},
+                ]
+            )
+            st.dataframe(result_df, hide_index=True, width="stretch", height=420)
+        st.info(
+            "적용 함수: `년사용량=월×12` · `합계=탱크+기화기+공사` · `매출이익=공급−(매입+물류)` · "
+            "`관리비=월매출×14.5%` · `감가=투자÷120` · `금융=원금×이자÷12` · "
+            "`월이익=매출이익−(감가+금융)−관리비` · `3개월=월이익×3+(임대×횟수)` · "
+            "`물류원/kg=(KM×유류비/연비+통행료)×왕복÷KG`"
+        )
+        # Tab9 전용 — 스크린샷형 수익성 보고서 엑셀 (동일 입력이면 캐시 재사용)
+        _route_for_xlsx = st.session_state.get("pf_route_info") or {}
+        _diesel_for_xlsx = diesel_info if isinstance(diesel_info, dict) else {}
         try:
-            return f"{int(round(float(v or 0))):,}"
-        except Exception:
-            return "0"
-    with left:
-        st.markdown("**◎ 단가 · 투자 요약**")
-        summary_df = pd.DataFrame(
-            [
-                {"항목": "TANK 구입가", "값": _pf_i(p["tank_price"]), "단위": "원"},
-                {"항목": "기화기 구입가", "값": _pf_i(p["vaporizer_price"]), "단위": "원"},
-                {"항목": "공사비용", "값": _pf_i(p["construction_cost"]), "단위": "원"},
-                {"항목": "합계 금액", "값": _pf_i(r["total_invest"]), "단위": "원"},
-                {"항목": "년 사용량", "값": _pf_i(r["yearly_usage"]), "단위": "kg"},
-                {"항목": "월 평균 공급량", "값": _pf_i(p["monthly_usage_kg"]), "단위": "kg"},
-                {"항목": "매입단가", "값": _pf_i(p["purchase_unit"]), "단위": "원/kg"},
-                {"항목": "물류비", "값": _pf_i(p["logistics_unit"]), "단위": "원/kg"},
-                {"항목": "공급단가", "값": _pf_i(p["supply_unit"]), "단위": "원/kg"},
-                {"항목": "매출이익", "값": _pf_i(r["margin_kg"]), "단위": "원/kg"},
-                {"항목": "물류비 계산(P18)", "값": _pf_i(r["logi_per_kg"]), "단위": "원/kg"},
-            ]
-        )
-        st.dataframe(summary_df, hide_index=True, width="stretch", height=420)
-    with right:
-        st.markdown("**◎ 사용량 대비 영업이익 (월)**")
-        result_df = pd.DataFrame(
-            [
-                {"항목": "월평균 매출이익", "계산": "월사용량 × 매출이익", "값": _pf_i(r["monthly_gross"]), "단위": "원/월"},
-                {"항목": "장비 감가상각", "계산": f"투자합계 ÷ {p['depreciation_months']:.0f}", "값": _pf_i(r["depreciation"]), "단위": "원/월"},
-                {"항목": "금융비", "계산": "원금 × 이자율 ÷ 12", "값": _pf_i(r["finance"]), "단위": "원/월"},
-                {"항목": "월 매출", "계산": "월사용량 × 공급단가", "값": _pf_i(r["monthly_sales"]), "단위": "원/월"},
-                {"항목": "일반관리비", "계산": f"월매출 × {p['mgmt_rate']*100:.1f}%", "값": _pf_i(r["mgmt"]), "단위": "원/월"},
-                {"항목": "투자비용(상각+금융)", "계산": "감가상각 + 금융비", "값": _pf_i(r["invest_cost"]), "단위": "원/월"},
-                {"항목": "월평균 이익금", "계산": "매출이익 − 투자비용 − 관리비", "값": _pf_i(r["monthly_profit"]), "단위": "원/월"},
-                {"항목": "최근 3개월 실이익", "계산": "월이익×3 + 임대료×횟수", "값": _pf_i(r["three_month"]), "단위": "원"},
-            ]
-        )
-        st.dataframe(result_df, hide_index=True, width="stretch", height=420)
-    st.info(
-        "적용 함수: `년사용량=월×12` · `합계=탱크+기화기+공사` · `매출이익=공급−(매입+물류)` · "
-        "`관리비=월매출×14.5%` · `감가=투자÷120` · `금융=원금×이자÷12` · "
-        "`월이익=매출이익−(감가+금융)−관리비` · `3개월=월이익×3+(임대×횟수)` · "
-        "`물류원/kg=(KM×유류비/연비+통행료)×왕복÷KG`"
-    )
-    # Tab9 전용 — 스크린샷형 수익성 보고서 엑셀 (동일 입력이면 캐시 재사용)
-    _route_for_xlsx = st.session_state.get("pf_route_info") or {}
-    _diesel_for_xlsx = diesel_info if isinstance(diesel_info, dict) else {}
-    try:
-        _profit_xlsx = _cached_profitability_report_excel(
-            json.dumps(p, ensure_ascii=False, sort_keys=True, default=str),
-            json.dumps(r, ensure_ascii=False, sort_keys=True, default=str),
-            json.dumps(_route_for_xlsx, ensure_ascii=False, sort_keys=True, default=str),
-            json.dumps(_diesel_for_xlsx, ensure_ascii=False, sort_keys=True, default=str),
-        )
-        st.download_button(
-            "📥 수익성 분석 보고서 엑셀 내보내기",
-            data=_profit_xlsx,
-            file_name=f"수익성분석_{str(p.get('project_name') or '보고서')}_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width="stretch",
-            key="pf_report_xlsx_btn",
-            help="스크린샷과 같은 보고서 형태. 거리·통행료·경유시세 설명은 작은 글씨로 포함됩니다.",
-        )
-    except Exception as _xlsx_err:
-        st.warning(f"보고서 엑셀 생성 실패: {_xlsx_err}")
+            _profit_xlsx = _cached_profitability_report_excel(
+                json.dumps(p, ensure_ascii=False, sort_keys=True, default=str),
+                json.dumps(r, ensure_ascii=False, sort_keys=True, default=str),
+                json.dumps(_route_for_xlsx, ensure_ascii=False, sort_keys=True, default=str),
+                json.dumps(_diesel_for_xlsx, ensure_ascii=False, sort_keys=True, default=str),
+            )
+            st.download_button(
+                "📥 수익성 분석 보고서 엑셀 내보내기",
+                data=_profit_xlsx,
+                file_name=f"수익성분석_{str(p.get('project_name') or '보고서')}_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+                key="pf_report_xlsx_btn",
+                help="스크린샷과 같은 보고서 형태. 거리·통행료·경유시세 설명은 작은 글씨로 포함됩니다.",
+            )
+        except Exception as _xlsx_err:
+            st.warning(f"보고서 엑셀 생성 실패: {_xlsx_err}")
 
 with tab9:
-    _render_profitability_analysis_tab(latest_update_str)
+    if _dash_should_defer_heavy_tab(8):
+        _dash_defer_heavy_stub('📈 수익성 분석', 8)
+    else:
+        _render_profitability_analysis_tab(latest_update_str)
 
 with tab10:
     # 업무일지 탭 전용 — 다른 탭과 공유 상태/헬퍼를 쓰지 않음.
