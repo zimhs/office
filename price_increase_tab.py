@@ -23,6 +23,8 @@ from urllib.parse import quote
 import pandas as pd
 import streamlit as st
 
+from dev_mode import dev_caption
+
 try:
     from openpyxl import Workbook, load_workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -2554,7 +2556,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     cap = f"빌드 {PI_UI_BUILD}"
     if latest_update_str:
         cap += f" · 매출 {latest_update_str}"
-    st.caption(cap)
+    dev_caption(cap)
 
     mail_df = load_mail_contacts()
     log_df = load_sent_log()

@@ -20,6 +20,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from streamlit.errors import StreamlitAPIException
 
+from dev_mode import dev_caption, is_dev_mode
+
 try:
     from openpyxl import load_workbook
     from openpyxl.utils import get_column_letter
@@ -4161,7 +4163,9 @@ def _maybe_sync_worklog_remote() -> None:
 
 
 def _render_worklog_sync_ui() -> None:
-    """동기화 결과·충돌 안내 (fragment 밖)."""
+    """동기화 결과·충돌 안내 (fragment 밖). dev 모드(?dev=1)에서만 표시."""
+    if not is_dev_mode():
+        return
     try:
         from worklog_remote_sync import remote_sync_configured, resolve_gist_id
 
@@ -4276,31 +4280,32 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         f"<style>section.main {{ font-family:{_WL_FONT_STACK}; }}</style>",
         unsafe_allow_html=True,
     )
-    st.caption(f"업무일지 빌드 {_WL_UI_BUILD}")
+    dev_caption(f"업무일지 빌드 {_WL_UI_BUILD}")
     _filt_changed = _dashboard_filters_changed_this_run()
     _arch_root = resolve_worklog_archive_root()
-    if _arch_root:
-        st.caption(f"월별 저장 경로: `{_arch_root}/{{연도}}/{{N}}월.xlsx` (날짜=시트명)")
-    else:
-        st.caption("월별 저장 경로: `Desktop/업무/일지/{연도}/{N}월.xlsx` (Google Drive 동기화 시 「다른 컴퓨터/내 컴퓨터/Desktop/업무/일지」)")
-    try:
-        from worklog_remote_sync import cloud_sync_status
-
-        _cs = st.session_state.get("_wl_cloud_status_cache")
-        if not isinstance(_cs, dict):
-            _cs = cloud_sync_status(WORKLOG_DIR)
-            st.session_state["_wl_cloud_status_cache"] = _cs
-        if not _cs.get("token"):
-            if _wl_is_streamlit_cloud():
-                st.caption("☁ Gist **미연동** — Streamlit Cloud **Settings → Secrets** 에 `github_token`, `worklog_gist_id` 필요")
-            else:
-                st.caption("☁ Cloud: **미연동** — `.streamlit/secrets.toml` 에 `github_token` 넣고 Streamlit 재시작")
-        elif _cs.get("gist_id"):
-            st.caption(f"☁ Gist **연동됨** · `worklog_gist_id = \"{_cs['gist_id']}\"`")
+    if is_dev_mode():
+        if _arch_root:
+            st.caption(f"월별 저장 경로: `{_arch_root}/{{연도}}/{{N}}월.xlsx` (날짜=시트명)")
         else:
-            st.caption("☁ Gist: 토큰 OK · **저장**하면 gist id 생성")
-    except Exception:
-        pass
+            st.caption("월별 저장 경로: `Desktop/업무/일지/{연도}/{N}월.xlsx` (Google Drive 동기화 시 「다른 컴퓨터/내 컴퓨터/Desktop/업무/일지」)")
+        try:
+            from worklog_remote_sync import cloud_sync_status
+
+            _cs = st.session_state.get("_wl_cloud_status_cache")
+            if not isinstance(_cs, dict):
+                _cs = cloud_sync_status(WORKLOG_DIR)
+                st.session_state["_wl_cloud_status_cache"] = _cs
+            if not _cs.get("token"):
+                if _wl_is_streamlit_cloud():
+                    st.caption("☁ Gist **미연동** — Streamlit Cloud **Settings → Secrets** 에 `github_token`, `worklog_gist_id` 필요")
+                else:
+                    st.caption("☁ Cloud: **미연동** — `.streamlit/secrets.toml` 에 `github_token` 넣고 Streamlit 재시작")
+            elif _cs.get("gist_id"):
+                st.caption(f"☁ Gist **연동됨** · `worklog_gist_id = \"{_cs['gist_id']}\"`")
+            else:
+                st.caption("☁ Gist: 토큰 OK · **저장**하면 gist id 생성")
+        except Exception:
+            pass
     if not st.session_state.get("_wl_cache_bust_v24"):
         st.session_state["_wl_cache_bust_v24"] = True
         for k in list(st.session_state.keys()):
