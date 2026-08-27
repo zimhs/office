@@ -4596,29 +4596,11 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """상단 필터 rerun이면 비활성 탭 UI 생략 (활성 탭만 다시 그림).
-
-    Streamlit은 필터 변경 시 모든 with tab 블록을 실행함.
-    활성 탭만 렌더하고 나머지는 stub → 검색/지정 체감 로딩 개선.
-    """
+    """탭 UI 생략 비활성 — 요청에 따라 모든 탭을 항상 렌더(활성 처리)."""
+    # 필터 로딩 최적화는 Gist skip·피벗 캐시 등으로만 유지. 탭 stub 하지 않음.
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
-    if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
-        mounted[tab_idx] = True
-        return False
-    if st.session_state.get("_dash_filter_changed_flag"):
-        active = _dash_active_tab_idx()
-        if active is not None and int(active) == int(tab_idx):
-            mounted[tab_idx] = True
-            return False
-        # 쿠키 없으면 영업 종합(0)만 유지, 나머지 생략
-        if active is None and int(tab_idx) == 0:
-            mounted[tab_idx] = True
-            return False
-        mounted[tab_idx] = False
-        return True
-    if mounted.get(tab_idx, True) is False:
-        return True
     mounted[tab_idx] = True
+    st.session_state.pop(f"_dash_force_tab_{tab_idx}", None)
     return False
 
 
@@ -4628,26 +4610,13 @@ def _dash_defer_heavy_stub(
     backup_key: str = "",
     prefixes: tuple[str, ...] = (),
 ) -> None:
-    if backup_key and prefixes:
-        _dash_backup_session_keys(backup_key, prefixes)
-    st.caption(
-        f"{title}: 상단 필터 변경 중이라 이 탭 UI를 잠시 생략했습니다. "
-        "이 탭을 쓰려면 「화면 불러오기」또는 탭을 다시 눌러 주세요."
-    )
-    if st.button(f"{title} 화면 불러오기", key=f"_dash_reload_tab_{tab_idx}", width="stretch"):
-        st.session_state[f"_dash_force_tab_{tab_idx}"] = True
-        st.rerun()
+    """호환용 no-op (탭은 항상 활성 렌더)."""
+    return
 
 
 def _dash_need_client_pivot_bundle() -> bool:
-    """거래처/품목 탭 등이 아니면 필터 변경 시 클라이언트 피벗 생략."""
-    if not st.session_state.get("_dash_filter_changed_flag"):
-        return True
-    active = _dash_active_tab_idx()
-    if active is None:
-        return True
-    # tab2 거래처(1), tab3 품목(2), tab4 담당자(3) — 클라이언트 피벗 사용
-    return int(active) in (1, 2, 3)
+    """모든 탭 활성 렌더 → 클라이언트 피벗 항상 계산."""
+    return True
 
 
 def inject_dash_active_tab_cookie_script() -> None:
@@ -4695,7 +4664,7 @@ def inject_dash_active_tab_cookie_script() -> None:
               }
               if (idx < 0) return;
               doc.cookie = COOKIE + '=' + idx + '; path=/; max-age=31536000; SameSite=Lax';
-              setTimeout(clickRemount, 40);
+              // 전체 탭 활성 렌더 — stub 자동복원 클릭 없음
             } catch (e1) {}
           }
           if (!doc.__dashActiveTabCookieReady) {
@@ -9865,7 +9834,7 @@ if not full_df.empty:
         # 필터 변경 플래그를 피벗/탭 전에 확정 (lazy pivot · 탭 defer)
         _dash_note_filter_change_for_heavy_tabs()
         # 반영 확인용(앱 빌드)
-        st.caption("필터 빌드 2026-08-27k · 필터시활성탭만")
+        st.caption("필터 빌드 2026-08-27m · 전체탭활성")
 
         df_base = df_base_opts
         df_staff_filtered = (
@@ -10099,14 +10068,17 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.t
 )
 # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
 # 활성 탭 cookie 스크립트는 height=0·가벼움 → 매 run 재주입(탭 전환 추적·stub 자동복원)
-_STICKY_INJECT_VER = 34
+_STICKY_INJECT_VER = 35
 if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
     st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
     st.session_state["_ipad_sticky_injected"] = True
     st.session_state["_ipad_sticky_ver"] = 30
-inject_dash_active_tab_cookie_script()
+# 탭 cookie는 유지(향후용). 자동 「화면 불러오기」는 전체탭활성으로 불필요 → 주입 축소
+if st.session_state.get("_dash_active_tab_cookie_on") != 2:
+    inject_dash_active_tab_cookie_script()
+    st.session_state["_dash_active_tab_cookie_on"] = 2
 # Tab 1: 📌 영업 종합 요약
 with tab1:
     if _dash_should_defer_heavy_tab(0):
