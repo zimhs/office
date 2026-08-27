@@ -3881,28 +3881,128 @@ def _drop_sales_noise_rows(df):
     if "품목명" in df.columns:
         noise |= df["품목명"].astype(str).str.contains(r"이월\s*미수|\[이월", na=False)
     return df.loc[~noise].copy()
+_INVALID_INDUSTRY_STAFF = frozenset(
+    {
+        "",
+        "nan",
+        "none",
+        "nat",
+        "미지정",
+        "담당자없음",
+        "지정안함",
+        "없음",
+        "거래종료",
+    }
+)
+
+
+def _read_industry_csv_bytes(industry_bytes):
+    """업체대분류 CSV → DataFrame (encoding 시도)."""
+    if not industry_bytes:
+        return None
+    for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
+        try:
+            temp_ind = pd.read_csv(
+                io.BytesIO(industry_bytes),
+                encoding=enc,
+                on_bad_lines="skip",
+                engine="python",
+            )
+            temp_ind.columns = temp_ind.columns.astype(str).str.strip()
+            return temp_ind
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            return None
+    return None
+
+
 @st.cache_data(show_spinner="업종 분류 데이터를 읽어오는 중입니다...")
 def load_industry_file(industry_bytes):
     if not industry_bytes:
         return {}
     try:
-        for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
-            try:
-                temp_ind = pd.read_csv(io.BytesIO(industry_bytes), encoding=enc, on_bad_lines='skip', engine='python')
-                temp_ind.columns = temp_ind.columns.astype(str).str.strip()
-                
-                c_client = next((c for c in temp_ind.columns if "거래처" in c or "상호" in c), None)
-                c_ind = next((c for c in temp_ind.columns if "분류" in c or "업종" in c), None)
-                
-                if c_client and c_ind:
-                    temp_ind = temp_ind.dropna(subset=[c_client, c_ind])
-                    return temp_ind.astype(str).set_index(c_client)[c_ind].to_dict()
-                break
-            except UnicodeDecodeError:
-                continue
+        temp_ind = _read_industry_csv_bytes(industry_bytes)
+        if temp_ind is None or temp_ind.empty:
+            return {}
+        c_client = next((c for c in temp_ind.columns if "거래처" in c or "상호" in c), None)
+        c_ind = next((c for c in temp_ind.columns if "분류" in c or "업종" in c), None)
+        if c_client and c_ind:
+            temp_ind = temp_ind.dropna(subset=[c_client, c_ind])
+            return temp_ind.astype(str).set_index(c_client)[c_ind].to_dict()
     except Exception:
         pass
     return {}
+
+
+@st.cache_data(show_spinner=False)
+def load_industry_staff_map(industry_bytes):
+    """업체대분류 CSV의 영업담당자 → {거래처: 담당자}.
+
+    월별 매출(202607 등)에 담당자 열이 없어도 '담당거래처'가 담당자 필터에 잡히도록 함.
+    예: 포엠주식회사 → 김혁수
+    """
+    if not industry_bytes:
+        return {}
+    try:
+        temp_ind = _read_industry_csv_bytes(industry_bytes)
+        if temp_ind is None or temp_ind.empty:
+            return {}
+        c_client = next((c for c in temp_ind.columns if "거래처" in c or "상호" in c), None)
+        c_staff = next(
+            (
+                c
+                for c in temp_ind.columns
+                if any(k in c for k in ("영업담당", "담당자", "영업사원"))
+            ),
+            None,
+        )
+        if not c_client or not c_staff:
+            return {}
+        out = {}
+        for _, row in temp_ind.iterrows():
+            client = str(row.get(c_client, "")).strip()
+            staff = str(row.get(c_staff, "")).strip() if pd.notna(row.get(c_staff)) else ""
+            if not client or client in ("nan", "None"):
+                continue
+            if not staff or staff.lower() in _INVALID_INDUSTRY_STAFF:
+                continue
+            out[client] = staff
+            # 끝점 없는 표기도 같이 매칭
+            bare = client.rstrip(".")
+            if bare and bare not in out:
+                out[bare] = staff
+        return out
+    except Exception:
+        return {}
+
+
+def _apply_industry_staff_mapping(df, staff_map: dict | None):
+    """매출에서 담당자를 못 찾은(미지정) 행만 업체대분류 영업담당자로 채움. 기존 지정·수동매핑은 보존."""
+    if df is None or df.empty or not staff_map:
+        return df if df is not None else pd.DataFrame()
+    if "거래처" not in df.columns:
+        return df
+    out = df.copy()
+    if "담당자" not in out.columns:
+        out["담당자"] = "미지정"
+    out["담당자"] = out["담당자"].fillna("미지정").astype(str).str.strip()
+    mask = out["담당자"].isin(
+        ["미지정", "", "nan", "None", "NaN", "담당자없음", "지정안함", "없음"]
+    )
+    if not mask.any():
+        return out
+    mapped = out.loc[mask, "거래처"].astype(str).str.strip().map(staff_map)
+    if "거래처_원본" in out.columns:
+        mapped_orig = (
+            out.loc[mask, "거래처_원본"].astype(str).str.strip().map(staff_map)
+        )
+        mapped = mapped.where(mapped.notna(), mapped_orig)
+    fill_mask = mapped.notna() & mapped.astype(str).str.strip().ne("")
+    if fill_mask.any():
+        idx = mapped.index[fill_mask]
+        out.loc[idx, "담당자"] = mapped.loc[idx].astype(str).str.strip()
+    return out
 def dedupe_debt_client_gubun(df):
     """동일 거래처·구분은 1행만 유지. 월 합계 절댓값이 큰 행 우선."""
     if df is None or df.empty:
@@ -9518,6 +9618,7 @@ if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
     st.rerun()
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
+industry_staff_map = load_industry_staff_map(ind_bytes) if ind_bytes else {}
 debt_df = load_debt_file(debt_bytes) if debt_bytes else pd.DataFrame()
 if not debt_df.empty:
     debt_df = dedupe_debt_client_gubun(debt_df)
@@ -9536,7 +9637,7 @@ df_vaporizer = load_equipment_file(vaporizer_bytes, vaporizer_name) if vaporizer
 df_integrated = load_equipment_file(int_bytes, int_name) if int_bytes else pd.DataFrame()
 # ===== [초고속 데이터 전처리 캐시 엔진 (기존 로직 100% 무손실 보존)] =====
 @st.cache_data(show_spinner=False)
-def get_fast_processed_full_df(meta_data, staff_token, ind_dict):
+def get_fast_processed_full_df(meta_data, staff_token, ind_dict, ind_staff_dict=None):
     """필터 클릭 시 매번 발생하는 무거운 텍스트 연산(정규식, 매핑)을 1회로 압축"""
     # 1. 유저의 기존 고급 로드 기능 완벽 유지
     temp_df = (
@@ -9546,6 +9647,8 @@ def get_fast_processed_full_df(meta_data, staff_token, ind_dict):
     
     # 2. 무거운 데이터 정제 작업을 캐시 안으로 이동 (한 번만 실행됨)
     if not temp_df.empty:
+        # 업체대분류 영업담당자 → 미지정만 채움 (월별 CSV에 담당자 열 없을 때 담당거래처 누락 방지)
+        temp_df = _apply_industry_staff_mapping(temp_df, ind_staff_dict or {})
         temp_df = _apply_manual_staff_mapping(temp_df)
         _client_s = temp_df["거래처"].astype(str).str.strip()
         mask_closed = _client_s.str.match(r"^[zZ]", na=False)
@@ -9555,11 +9658,23 @@ def get_fast_processed_full_df(meta_data, staff_token, ind_dict):
         is_deposit_row = temp_df["품목명"].astype(str).str.contains("입금", na=False)
         temp_df = temp_df[~is_deposit_row].copy()
         temp_df["업종"] = temp_df["거래처"].map(ind_dict).fillna("미분류")
+        # 업종 매핑은 원본명 기준으로도 보강 (종속처 포엠주식회사(카드결재) 등)
+        if "거래처_원본" in temp_df.columns:
+            miss = temp_df["업종"].eq("미분류")
+            if miss.any():
+                temp_df.loc[miss, "업종"] = (
+                    temp_df.loc[miss, "거래처_원본"].map(ind_dict).fillna("미분류")
+                )
         
     return temp_df
 
 # 단 0.01초 만에 메모리에서 정제 완료된 데이터를 즉시 꺼내옴
-full_df = get_fast_processed_full_df(sales_file_meta, _manual_staff_map_cache_token(), industry_dict)
+full_df = get_fast_processed_full_df(
+    sales_file_meta,
+    _manual_staff_map_cache_token(),
+    industry_dict,
+    industry_staff_map,
+)
 # ====================================================================
 target_items = [
     "CO2 (kg, Bulk)",
@@ -9668,6 +9783,15 @@ if not full_df.empty:
                     list_filter_client_options(df_staff_for_opts)
                 )
         all_clients = list(st.session_state.get("_dash_client_opts_tuple", ()))
+        # 업체대분류 담당거래처도 목록에 포함(조회기간에 매출이 없어도 검색 가능)
+        if selected_staff and industry_staff_map:
+            _ind_clients = {
+                c
+                for c, s in industry_staff_map.items()
+                if s in selected_staff and c and not str(c).startswith(("z", "Z"))
+            }
+            if _ind_clients:
+                all_clients = sorted(set(all_clients) | _ind_clients)
         # 🏢 거래처 — 옵션에 없는 이전 선택만 '전체'로, 유효 선택은 유지
         client_options_with_all = ["전체 거래처"] + all_clients
         _client_cur = st.session_state.get("dash_filter_client_selectbox")
