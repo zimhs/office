@@ -986,7 +986,7 @@ def resolve_worklog_archive_root() -> str | None:
                     break
                 except OSError:
                     continue
-    st.session_state[ck] = found
+    st.session_state["_wl_archive_root_cache"] = {"path": found}
     return found
 
 
