@@ -137,7 +137,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-27b · 엑셀선(병합)복구"
+_WL_UI_BUILD = "2026-08-27c · 삭제팝업자동닫기"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1701,6 +1701,13 @@ def _schedule_worklog_remote_delete(d: date) -> None:
         return
     st.session_state[lock_k] = True
     threading.Thread(target=_worklog_remote_delete_job, args=(d,), daemon=True).start()
+
+
+def _queue_worklog_day_delete(d: date) -> None:
+    """삭제 확정 — 다음 run에서 처리 + 삭제 popover 닫기."""
+    st.session_state["wl_do_delete_day"] = d.isoformat()
+    st.session_state["wl_skip_sync_once"] = True
+    st.session_state["wl_del_day_open"] = False
 
 
 def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
@@ -3633,11 +3640,10 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.rerun()
             with bar_del:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
-                with st.popover("삭제", width="content", key="wl_del_day_open"):
+                with st.popover("삭제", width="content", key="wl_del_day_open", on_change="rerun"):
                     st.caption("이 날짜 일지 전체 삭제")
                     if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
-                        st.session_state["wl_do_delete_day"] = selected.isoformat()
-                        st.session_state["wl_skip_sync_once"] = True
+                        _queue_worklog_day_delete(selected)
                         _wl_rerun(full=True)
 
             _iso_bar = selected.isoformat()
