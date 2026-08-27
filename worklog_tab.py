@@ -137,7 +137,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-27b · 엑셀선(병합)복구"
+_WL_UI_BUILD = "2026-08-27f · 삭제확정수정"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1713,6 +1713,33 @@ def _schedule_worklog_remote_delete(d: date) -> None:
         return
     st.session_state[lock_k] = True
     threading.Thread(target=_worklog_remote_delete_job, args=(d,), daemon=True).start()
+
+
+def _on_confirm_delete_day() -> None:
+    """확정 on_click — 위젯 생성 전에 실행되어 popover를 안전하게 닫음."""
+    d = st.session_state.get("worklog_selected")
+    if isinstance(d, date):
+        st.session_state["wl_do_delete_day"] = d.isoformat()
+    elif isinstance(d, str) and d:
+        st.session_state["wl_do_delete_day"] = d
+    st.session_state["wl_skip_sync_once"] = True
+    st.session_state["wl_del_day_open"] = False
+
+
+def _run_pending_worklog_day_delete() -> bool:
+    """wl_do_delete_day 플래그가 있으면 로컬 삭제 실행. 처리했으면 True."""
+    del_iso = st.session_state.pop("wl_do_delete_day", None)
+    if not del_iso:
+        return False
+    try:
+        d_del = date.fromisoformat(str(del_iso))
+        delete_worklog_day(d_del, remote=False)
+        _schedule_worklog_remote_delete(d_del)
+        st.session_state["wl_skip_sync_once"] = True
+        st.session_state["wl_del_day_open"] = False
+        return True
+    except Exception:
+        return False
 
 
 def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
@@ -3626,6 +3653,11 @@ def _wl_finish_edit_fragment() -> None:
 
 def _render_worklog_input_panel(selected: date) -> None:
     """오른쪽 게이지+입력. 칸 이동 시 published 스냅샷 갱신(동일 fragment rerun)."""
+    if _run_pending_worklog_day_delete():
+        selected = st.session_state.get("worklog_selected") or selected
+        _wl_rerun(full=True)
+        return
+
     saved = list_saved_worklog_dates()
     try:
         _gauge_usage = _content_row_usage(_read_editor_entries(selected))
@@ -3653,12 +3685,15 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.rerun()
             with bar_del:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
-                with st.popover("삭제", width="content", key="wl_del_day_open"):
+                with st.popover("삭제", width="content", key="wl_del_day_open", on_change="rerun"):
                     st.caption("이 날짜 일지 전체 삭제")
-                    if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
-                        st.session_state["wl_do_delete_day"] = selected.isoformat()
-                        st.session_state["wl_skip_sync_once"] = True
-                        _wl_rerun(full=True)
+                    st.button(
+                        "확정",
+                        type="primary",
+                        width="content",
+                        key="wl_del_day_yes",
+                        on_click=_on_confirm_delete_day,
+                    )
 
             _iso_bar = selected.isoformat()
             _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
@@ -4279,15 +4314,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         st.session_state["worklog_selected"] = date.today()
     selected: date = st.session_state["worklog_selected"]
 
-    del_iso = st.session_state.pop("wl_do_delete_day", None)
-    if del_iso:
-        try:
-            d_del = date.fromisoformat(del_iso)
-            delete_worklog_day(d_del, remote=False)
-            _schedule_worklog_remote_delete(d_del)
-            st.session_state["wl_skip_sync_once"] = True
-        except Exception:
-            pass
+    _run_pending_worklog_day_delete()
 
     _prepare_worklog_day_state(selected, skip_remote_pull=_filt_changed)
     _maybe_sync_worklog_remote()
