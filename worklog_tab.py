@@ -10,6 +10,7 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 import time
 from datetime import date
 from functools import lru_cache
@@ -136,7 +137,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26y · 워크시트일+인쇄레이아웃"
+_WL_UI_BUILD = "2026-08-27a · 삭제로딩개선"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1610,7 +1611,81 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
         st.session_state["wl_last_cloud_err"] = str(e)
     return path
 
-def delete_worklog_day(d: date) -> list[str]:
+def _purge_worklog_day_preview_cache(d: date) -> None:
+    """삭제 후 왼쪽 요약·엑셀 HTML 캐시 제거 (불필요한 재렌더·로딩 방지)."""
+    iso = d.isoformat()
+    for k in (
+        f"wl_sum_sig_{iso}",
+        f"wl_sum_html_{iso}",
+        f"wl_print_cells_sig_{iso}",
+        f"wl_print_cells_path_{iso}",
+        f"wl_left_excel_on_{iso}",
+        f"wl_left_excel_path_{iso}",
+        f"wl_left_excel_sig_v24_{iso}",
+        f"wl_left_excel_html_v24_{iso}",
+        f"wl_left_excel_h_v24_{iso}",
+        f"wl_form_sig_v14_{iso}",
+        f"wl_remote_pull_tried_{iso}",
+    ):
+        st.session_state.pop(k, None)
+    for k in list(st.session_state.keys()):
+        if not isinstance(k, str):
+            continue
+        if iso in k and (
+            k.startswith("wl_print_html_cache_")
+            or k.startswith("wl_print_html_meta_")
+            or k.startswith("wl_left_excel_html_")
+        ):
+            st.session_state.pop(k, None)
+
+
+def _delete_worklog_day_remote_sync(d: date) -> tuple[list[str], str]:
+    """Gist·Drive 원격 삭제 (느림 — UI 블로킹 방지용 분리)."""
+    iso = d.isoformat()
+    removed: list[str] = []
+    cloud_note = ""
+    try:
+        from worklog_remote_sync import delete_worklog_day_remote
+
+        ok, cerr = delete_worklog_day_remote(d, WORKLOG_DIR)
+        if ok:
+            removed.append(f"Cloud:{iso}.xlsx")
+        elif cerr and cerr not in ("github_token 없음", "gist 없음"):
+            cloud_note = f" Cloud:{cerr}"
+    except Exception as e:
+        cloud_note = f" Cloud:{e}"
+    try:
+        from drive_autoload import delete_worklog_day_from_drive
+
+        for dn in delete_worklog_day_from_drive(d, WORKLOG_DIR):
+            removed.append(f"Drive:{dn}")
+    except Exception:
+        pass
+    return removed, cloud_note
+
+
+def _worklog_remote_delete_job(d: date) -> None:
+    try:
+        _delete_worklog_day_remote_sync(d)
+        try:
+            from worklog_remote_sync import invalidate_gist_days_cache
+            invalidate_gist_days_cache()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _schedule_worklog_remote_delete(d: date) -> None:
+    iso = d.isoformat()
+    lock_k = f"_wl_remote_del_started_{iso}"
+    if st.session_state.get(lock_k):
+        return
+    st.session_state[lock_k] = True
+    threading.Thread(target=_worklog_remote_delete_job, args=(d,), daemon=True).start()
+
+
+def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
     _ensure_dirs()
     iso = d.isoformat()
     removed: list[str] = []
@@ -1633,41 +1708,27 @@ def delete_worklog_day(d: date) -> list[str]:
     try:
         arch = delete_worklog_archive_sheet(d)
         if arch:
-            removed.append(f"{os.path.basename(arch)}#{iso}")
+            removed.append(f"{os.path.basename(arch)}#{worklog_archive_sheet_title(d)}")
     except Exception:
         pass
-    # Cloud/Drive에서도 삭제 — 동기화가 구 파일을 되살리는 원인
-    cloud_note = ""
+    # 삭제 표시 — 동기화가 구 파일을 되살리지 않도록 원격 삭제 전에 기록
     try:
-        from worklog_remote_sync import delete_worklog_day_remote, mark_worklog_day_deleted
-
+        from worklog_remote_sync import mark_worklog_day_deleted
         mark_worklog_day_deleted(iso, WORKLOG_DIR)
-        ok, cerr = delete_worklog_day_remote(d, WORKLOG_DIR)
-        if ok:
-            removed.append(f"Cloud:{iso}.xlsx")
-        elif cerr and cerr not in ("github_token 없음", "gist 없음"):
-            cloud_note = f" Cloud:{cerr}"
-    except Exception as e:
+    except Exception:
+        pass
+    cloud_note = ""
+    if remote:
+        extra, cloud_note = _delete_worklog_day_remote_sync(d)
+        removed.extend(extra)
         try:
-            from worklog_remote_sync import mark_worklog_day_deleted
-            mark_worklog_day_deleted(iso, WORKLOG_DIR)
+            from worklog_remote_sync import invalidate_gist_days_cache
+            invalidate_gist_days_cache()
         except Exception:
             pass
-        cloud_note = f" Cloud:{e}"
-    try:
-        from drive_autoload import delete_worklog_day_from_drive
-
-        for dn in delete_worklog_day_from_drive(d, WORKLOG_DIR):
-            removed.append(f"Drive:{dn}")
-    except Exception:
-        pass
     _invalidate_saved_dates_cache()
     _invalidate_worklog_presence_cache(d)
-    try:
-        from worklog_remote_sync import invalidate_gist_days_cache
-        invalidate_gist_days_cache()
-    except Exception:
-        pass
+    _purge_worklog_day_preview_cache(d)
     _clear_date_widget_state(d)
     st.session_state.pop(f"wl_open_ctx_{iso}", None)
     st.session_state.pop(f"wl_saved_ok_{iso}", None)
@@ -1677,7 +1738,11 @@ def delete_worklog_day(d: date) -> list[str]:
     st.session_state[_next_key(d)] = ""
     st.session_state[_notes_key(d)] = ""
     st.session_state[f"wl_entry_count_{iso}"] = 1
-    msg = f"삭제 완료" + (f": {', '.join(removed)}" if removed else " (저장본 없음, 입력만 초기화)") + cloud_note
+    msg = f"삭제 완료" + (f": {', '.join(removed)}" if removed else " (저장본 없음, 입력만 초기화)")
+    if not remote:
+        msg += " · Cloud/Drive 정리 중"
+    else:
+        msg += cloud_note
     st.session_state[f"wl_pending_sync_{iso}"] = {"entries": empty, "next": "", "notes": "", "msg": msg}
     try: _publish_view_cells(d, _empty_cells(d))
     except Exception: st.session_state.pop(_view_cells_key(d), None)
@@ -3553,8 +3618,9 @@ def _render_worklog_input_panel(selected: date) -> None:
                 with st.popover("삭제", width="content", key="wl_del_day_open"):
                     st.caption("이 날짜 일지 전체 삭제")
                     if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
-                        delete_worklog_day(selected)
-                        st.rerun()
+                        st.session_state["wl_do_delete_day"] = selected.isoformat()
+                        st.session_state["wl_skip_sync_once"] = True
+                        _wl_rerun(full=True)
 
             _iso_bar = selected.isoformat()
             _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
@@ -4148,6 +4214,16 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     if "worklog_selected" not in st.session_state:
         st.session_state["worklog_selected"] = date.today()
     selected: date = st.session_state["worklog_selected"]
+
+    del_iso = st.session_state.pop("wl_do_delete_day", None)
+    if del_iso:
+        try:
+            d_del = date.fromisoformat(del_iso)
+            delete_worklog_day(d_del, remote=False)
+            _schedule_worklog_remote_delete(d_del)
+            st.session_state["wl_skip_sync_once"] = True
+        except Exception:
+            pass
 
     _prepare_worklog_day_state(selected)
     _maybe_sync_worklog_remote()
