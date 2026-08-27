@@ -109,7 +109,7 @@ class SalesNoiseFilterTest(unittest.TestCase):
 class IndustryStaffMapTest(unittest.TestCase):
     def test_poem_maps_to_kim_from_industry_csv(self):
         """업체대분류 영업담당자: 포엠주식회사 → 김혁수 (월별 매출에 담당자 열 없어도)."""
-        ind_path = os.path.join(os.path.dirname(__file__), "uproad", "업체대분류.csv")
+        ind_path = os.path.join(os.path.dirname(__file__), "uploaded_cache", "industry.csv")
         if not os.path.exists(ind_path):
             ind_path = os.path.join(os.path.dirname(__file__), "uploaded_cache", "industry.csv")
         if not os.path.exists(ind_path):

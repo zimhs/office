@@ -24,3 +24,7 @@
 
 ■ 복원 예시
   cp -R "백업/snapshots/latest/worklog_tab.py" ./worklog_tab.py
+
+■ 불필요 파일 정리 (Mac)
+  dashboard_Cleanup.command 더블클릭
+  또는 ./cleanup_dashboard.sh

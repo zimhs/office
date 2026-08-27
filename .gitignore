@@ -73,6 +73,15 @@ uploaded_cache/market_research/_merged_frame.sig
 uploaded_cache/market_research/_merged_frame.pkl.tmp
 worklog_tab.py.final_*
 
+# 로컬 전용·불필요 (dashboard 폴더 정리 대상)
+app_test.py
+dashboard_최종본*/
+통합 영업 분석 대시보드.html
+통합 영업 분석 대시보드_files/
+uproad/
+엑셀원본.xlsx
+/탄산단가인상공문.xlsx
+
 # 로컬 원클릭 백업 (Mac dashboard 폴더)
 백업/snapshots/**
 !백업/README.txt
