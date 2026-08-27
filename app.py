@@ -9475,26 +9475,27 @@ if not full_df.empty:
                 (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
             ]
         df_base_opts = st.session_state.get("_dash_date_slice_df", full_df)
-        # 담당자 옵션: 날짜 슬라이스 동일하면 재계산 생략 (결과 동일)
-        if st.session_state.get("_dash_staff_opts_sig") != _date_slice_sig:
-            st.session_state["_dash_staff_opts_sig"] = _date_slice_sig
+        # 담당자 옵션: 날짜 슬라이스(+행수) 동일하면 재계산 생략. 빈 캐시로 고착되지 않게 행수 포함.
+        _staff_opts_sig = (_date_slice_sig, int(len(df_base_opts)))
+        if st.session_state.get("_dash_staff_opts_sig") != _staff_opts_sig:
+            st.session_state["_dash_staff_opts_sig"] = _staff_opts_sig
             st.session_state["_dash_staff_opts_list"] = _dash_staff_opts_from(df_base_opts)
         _staff_opts = list(st.session_state.get("_dash_staff_opts_list") or [])
-        _prev_staff = st.session_state.get("dash_filter_staff", [])
-        if isinstance(_prev_staff, list) and _prev_staff:
-            _kept_staff = [x for x in _prev_staff if x in _staff_opts]
-            if _kept_staff != _prev_staff:
-                st.session_state["dash_filter_staff"] = _kept_staff
-        # 👤 담당자 선택 (불편한 multiselect 버리고 selectbox로 교체 + 호환성 유지)
+        # 👤 담당자 — index=0 고정 금지(선택값이 매번 '전체'로 풀리며 전체 재계산·로딩 유발)
         _staff_opts_with_all = ["전체 담당자"] + _staff_opts
-        _staff_picked = fc3.selectbox("👤 담당자", options=_staff_opts_with_all, index=0, key="dash_filter_staff_sb_new")
+        _staff_cur = st.session_state.get("dash_filter_staff_sb_new")
+        if _staff_cur not in _staff_opts_with_all:
+            st.session_state["dash_filter_staff_sb_new"] = "전체 담당자"
+        _staff_picked = fc3.selectbox("👤 담당자", options=_staff_opts_with_all, key="dash_filter_staff_sb_new")
         selected_staff = [] if _staff_picked == "전체 담당자" else [_staff_picked]
+        # 구 리스트 키와 동기화(다른 로직 호환, 위젯 키는 건드리지 않음)
+        st.session_state["dash_filter_staff"] = list(selected_staff)
         df_staff_for_opts = (
             df_base_opts[df_base_opts["담당자"].isin(selected_staff)]
             if selected_staff
             else df_base_opts
         )
-        _client_opts_sig = (start_date, end_date, tuple(selected_staff or ()))
+        _client_opts_sig = (start_date, end_date, tuple(selected_staff or ()), int(len(df_staff_for_opts)))
         if st.session_state.get("_dash_client_opts_sig") != _client_opts_sig:
             st.session_state["_dash_client_opts_sig"] = _client_opts_sig
             if df_staff_for_opts.empty:
@@ -9503,38 +9504,25 @@ if not full_df.empty:
                 st.session_state["_dash_client_opts_tuple"] = tuple(
                     list_filter_client_options(df_staff_for_opts)
                 )
-        all_clients = sorted(st.session_state.get("_dash_client_opts_tuple", ()))
-        # 단일 선택 + 태그 X로 원복 (selectbox는 지우기 불가 → multiselect max 1)
-        # 구 selectbox 키 문자열 → 새 리스트 키로 1회 이관
-        if "dash_filter_client_ms" not in st.session_state:
-            _old_c = st.session_state.get("dash_filter_client", "전체 거래처")
-            if isinstance(_old_c, str) and _old_c and _old_c != "전체 거래처" and _old_c in all_clients:
-                st.session_state["dash_filter_client_ms"] = [_old_c]
-            else:
-                st.session_state["dash_filter_client_ms"] = []
-        _prev_clients = st.session_state.get("dash_filter_client_ms", [])
-        if isinstance(_prev_clients, list) and _prev_clients:
-            _kept_c = [x for x in _prev_clients if x in all_clients]
-            if _kept_c != _prev_clients:
-                st.session_state["dash_filter_client_ms"] = _kept_c
-        # 🏢 거래처 선택 (기형적인 multiselect 버리고 1초 타자 가능한 selectbox로 순정 복구)
+        all_clients = list(st.session_state.get("_dash_client_opts_tuple", ()))
+        # 🏢 거래처 — 옵션에 없는 이전 선택만 '전체'로, 유효 선택은 유지
         client_options_with_all = ["전체 거래처"] + all_clients
-        
+        _client_cur = st.session_state.get("dash_filter_client_selectbox")
+        if _client_cur not in client_options_with_all:
+            st.session_state["dash_filter_client_selectbox"] = "전체 거래처"
         selected_client = fc4.selectbox(
             "🏢 거래처",
             options=client_options_with_all,
-            index=0,
-            key="dash_filter_client_selectbox"
+            key="dash_filter_client_selectbox",
         )
-        # 하위 로직·엑셀 시그니처 호환용
         st.session_state["dash_filter_client"] = selected_client
         df_client_for_opts = (
             filter_df_by_selected_client(df_staff_for_opts, selected_client)
             if selected_client != "전체 거래처"
             else df_staff_for_opts
         )
-        # 품목 옵션: 담당자·거래처 동일하면 unique() 재계산 생략 (결과 동일)
-        _item_opts_sig = (_client_opts_sig, selected_client)
+        # 품목 옵션 캐시 (담당자+거래처+행수)
+        _item_opts_sig = (_client_opts_sig, selected_client, int(len(df_client_for_opts)))
         if st.session_state.get("_dash_item_opts_sig") != _item_opts_sig:
             st.session_state["_dash_item_opts_sig"] = _item_opts_sig
             if df_client_for_opts.empty or "품목명" not in df_client_for_opts.columns:
@@ -9544,15 +9532,14 @@ if not full_df.empty:
                     sorted(df_client_for_opts["품목명"].astype(str).unique())
                 )
         available_items = list(st.session_state.get("_dash_item_opts_tuple", ()))
-        _prev_items = st.session_state.get("dash_filter_items", [])
-        if isinstance(_prev_items, list) and _prev_items:
-            _kept = [x for x in _prev_items if x in available_items]
-            if _kept != _prev_items:
-                st.session_state["dash_filter_items"] = _kept
-        # 📦 품목명 선택 (불편한 multiselect 버리고 selectbox로 교체 + 호환성 유지)
+        # 📦 품목명 — 유효 선택 유지 (index=0 제거)
         _item_opts = ["전체 품목"] + available_items
-        _item_picked = fc5.selectbox("📦 품목명", options=_item_opts, index=0, key="dash_filter_items_sb_new")
+        _item_cur = st.session_state.get("dash_filter_items_sb_new")
+        if _item_cur not in _item_opts:
+            st.session_state["dash_filter_items_sb_new"] = "전체 품목"
+        _item_picked = fc5.selectbox("📦 품목명", options=_item_opts, key="dash_filter_items_sb_new")
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
+        st.session_state["dash_filter_items"] = list(selected_item)
 
         df_base = df_base_opts
         df_staff_filtered = (
