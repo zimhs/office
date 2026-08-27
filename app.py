@@ -9475,7 +9475,11 @@ if not full_df.empty:
                 (full_df["매출일_dt"] >= start_dt) & (full_df["매출일_dt"] <= end_dt)
             ]
         df_base_opts = st.session_state.get("_dash_date_slice_df", full_df)
-        _staff_opts = _dash_staff_opts_from(df_base_opts)
+        # 담당자 옵션: 날짜 슬라이스 동일하면 재계산 생략 (결과 동일)
+        if st.session_state.get("_dash_staff_opts_sig") != _date_slice_sig:
+            st.session_state["_dash_staff_opts_sig"] = _date_slice_sig
+            st.session_state["_dash_staff_opts_list"] = _dash_staff_opts_from(df_base_opts)
+        _staff_opts = list(st.session_state.get("_dash_staff_opts_list") or [])
         _prev_staff = st.session_state.get("dash_filter_staff", [])
         if isinstance(_prev_staff, list) and _prev_staff:
             _kept_staff = [x for x in _prev_staff if x in _staff_opts]
@@ -9529,11 +9533,17 @@ if not full_df.empty:
             if selected_client != "전체 거래처"
             else df_staff_for_opts
         )
-        available_items = (
-            sorted(df_client_for_opts["품목명"].astype(str).unique())
-            if not df_client_for_opts.empty
-            else []
-        )
+        # 품목 옵션: 담당자·거래처 동일하면 unique() 재계산 생략 (결과 동일)
+        _item_opts_sig = (_client_opts_sig, selected_client)
+        if st.session_state.get("_dash_item_opts_sig") != _item_opts_sig:
+            st.session_state["_dash_item_opts_sig"] = _item_opts_sig
+            if df_client_for_opts.empty or "품목명" not in df_client_for_opts.columns:
+                st.session_state["_dash_item_opts_tuple"] = ()
+            else:
+                st.session_state["_dash_item_opts_tuple"] = tuple(
+                    sorted(df_client_for_opts["품목명"].astype(str).unique())
+                )
+        available_items = list(st.session_state.get("_dash_item_opts_tuple", ()))
         _prev_items = st.session_state.get("dash_filter_items", [])
         if isinstance(_prev_items, list) and _prev_items:
             _kept = [x for x in _prev_items if x in available_items]
@@ -9620,12 +9630,13 @@ filtered_debt_df = pd.DataFrame()
 if not debt_df.empty:
     if selected_staff:
         valid_staff_clients = full_df[full_df["담당자"].isin(selected_staff)]["거래처"].unique()
-        staff_debt_df = debt_df[debt_df["거래처"].isin(valid_staff_clients)].copy()
+        staff_debt_df = debt_df[debt_df["거래처"].isin(valid_staff_clients)]
     else:
-        staff_debt_df = debt_df.copy()
-    filtered_debt_df = staff_debt_df.copy()
+        staff_debt_df = debt_df
     if selected_client != "전체 거래처":
-        filtered_debt_df = filtered_debt_df[filtered_debt_df["거래처"] == selected_client].copy()
+        filtered_debt_df = staff_debt_df[staff_debt_df["거래처"] == selected_client]
+    else:
+        filtered_debt_df = staff_debt_df
 client_addr_raw = resolve_client_address(selected_client, addr_dict)
 if not client_addr_raw:
     client_addr = "등록된 주소 정보가 없습니다."

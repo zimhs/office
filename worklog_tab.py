@@ -136,7 +136,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-27f · 상단필터로딩완화"
+_WL_UI_BUILD = "2026-08-27g · 필터로딩추가완화"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -3340,10 +3340,18 @@ def _try_pull_remote_worklog_day(d: date) -> bool:
     return False
 
 
-def _prepare_worklog_day_state(selected: date) -> None:
+def _dashboard_filters_changed_this_run() -> bool:
+    """상단 필터가 직전 기록과 다르면 True (시그니처는 아직 갱신하지 않음)."""
+    prev = st.session_state.get("_wl_dash_filter_sig")
+    if prev is None:
+        return False
+    return prev != _dashboard_top_filter_sig()
+
+
+def _prepare_worklog_day_state(selected: date, *, skip_remote_pull: bool = False) -> None:
     """날짜별 위젯 초기화 + 저장 직후 pending 시드 (페이지 rerun 시 1회)."""
     iso = selected.isoformat()
-    if not os.path.isfile(worklog_path(selected)):
+    if not skip_remote_pull and not os.path.isfile(worklog_path(selected)):
         if _try_pull_remote_worklog_day(selected):
             iso = selected.isoformat()
     open_k = f"wl_open_ctx_{iso}"
@@ -4126,6 +4134,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         unsafe_allow_html=True,
     )
     st.caption(f"업무일지 빌드 {_WL_UI_BUILD}")
+    _filt_changed = _dashboard_filters_changed_this_run()
     _arch_root = resolve_worklog_archive_root()
     if _arch_root:
         st.caption(f"월별 저장 경로: `{_arch_root}/{{연도}}/{{N}}월.xlsx` (날짜=시트명)")
@@ -4134,7 +4143,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     try:
         from worklog_remote_sync import cloud_sync_status
 
-        _cs = cloud_sync_status(WORKLOG_DIR)
+        _cs = st.session_state.get("_wl_cloud_status_cache")
+        if not isinstance(_cs, dict):
+            _cs = cloud_sync_status(WORKLOG_DIR)
+            st.session_state["_wl_cloud_status_cache"] = _cs
         if not _cs.get("token"):
             if _wl_is_streamlit_cloud():
                 st.caption("☁ Gist **미연동** — Streamlit Cloud **Settings → Secrets** 에 `github_token`, `worklog_gist_id` 필요")
@@ -4159,7 +4171,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         st.session_state["worklog_selected"] = date.today()
     selected: date = st.session_state["worklog_selected"]
 
-    _prepare_worklog_day_state(selected)
+    # 상단 필터 rerun: Gist pull·sync 생략 (일지 날짜/내용은 무손실)
+    _prepare_worklog_day_state(selected, skip_remote_pull=_filt_changed)
     _maybe_sync_worklog_remote()
 
     if st.session_state.get("wl_print_panel"):
