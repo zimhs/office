@@ -137,7 +137,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-27c · 삭제팝업자동닫기"
+_WL_UI_BUILD = "2026-08-27d · 삭제팝업닫기수정"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1704,10 +1704,10 @@ def _schedule_worklog_remote_delete(d: date) -> None:
 
 
 def _queue_worklog_day_delete(d: date) -> None:
-    """삭제 확정 — 다음 run에서 처리 + 삭제 popover 닫기."""
+    """삭제 확정 — 다음 run에서 처리. popover 닫기는 위젯 생성 전 pending으로."""
     st.session_state["wl_do_delete_day"] = d.isoformat()
     st.session_state["wl_skip_sync_once"] = True
-    st.session_state["wl_del_day_open"] = False
+    st.session_state["wl_del_day_close_pending"] = True
 
 
 def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
@@ -3613,6 +3613,10 @@ def _wl_finish_edit_fragment() -> None:
 
 def _render_worklog_input_panel(selected: date) -> None:
     """오른쪽 게이지+입력. 칸 이동 시 published 스냅샷 갱신(동일 fragment rerun)."""
+    # popover key는 위젯 생성 전에만 수정 가능 (확정 클릭 → 다음 run에서 닫기)
+    if st.session_state.pop("wl_del_day_close_pending", None):
+        st.session_state["wl_del_day_open"] = False
+
     saved = list_saved_worklog_dates()
     try:
         _gauge_usage = _content_row_usage(_read_editor_entries(selected))
