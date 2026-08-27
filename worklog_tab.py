@@ -136,7 +136,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-26w · Cloud만있어도로컬저장"
+_WL_UI_BUILD = "2026-08-27f · 상단필터로딩완화"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -953,6 +953,10 @@ def _iter_google_drive_roots() -> list[str]:
     return roots
 
 def resolve_worklog_archive_root() -> str | None:
+    """…/Desktop/업무/일지 또는 Drive 경로. 세션 캐시로 상단 필터 rerun 시 Drive 스캔 생략."""
+    cached = st.session_state.get("_wl_archive_root_cache")
+    if isinstance(cached, dict) and "path" in cached:
+        return cached.get("path")
     candidates: list[str] = []
     home = os.path.expanduser("~")
     candidates.append(os.path.join(home, "Desktop", "업무", "일지"))
@@ -964,15 +968,23 @@ def resolve_worklog_archive_root() -> str | None:
             except OSError: continue
             pcs.sort(key=lambda n: (0 if "(1)" in n else 1, n))
             for pc in pcs: candidates.append(os.path.join(other, pc, WORKLOG_ARCHIVE_REL))
+    found: str | None = None
     existing = [p for p in candidates if os.path.isdir(p)]
-    if existing: return existing[0]
-    for p in candidates:
-        parent = os.path.dirname(p)
-        grand = os.path.dirname(parent)
-        if os.path.isdir(grand):
-            try: os.makedirs(p, exist_ok=True); return p
-            except OSError: continue
-    return None
+    if existing:
+        found = existing[0]
+    else:
+        for p in candidates:
+            parent = os.path.dirname(p)
+            grand = os.path.dirname(parent)
+            if os.path.isdir(grand):
+                try:
+                    os.makedirs(p, exist_ok=True)
+                    found = p
+                    break
+                except OSError:
+                    continue
+    st.session_state["_wl_archive_root_cache"] = {"path": found}
+    return found
 
 def worklog_archive_path(d: date) -> str | None:
     """호환용: 월별 통합 파일 경로 (…/일지/2026/8월.xlsx)."""
@@ -3923,19 +3935,41 @@ def _render_worklog_input_panel(selected: date) -> None:
             _wl_entry_editor()
 
 
+def _dashboard_top_filter_sig() -> tuple:
+    """상단 고정바 담당자·거래처·품목·기간 시그니처 (app.py 키와 동일)."""
+    return (
+        st.session_state.get("dash_filter_staff_sb_new"),
+        st.session_state.get("dash_filter_client_selectbox"),
+        st.session_state.get("dash_filter_items_sb_new"),
+        st.session_state.get("dash_filter_start"),
+        st.session_state.get("dash_filter_end"),
+    )
+
+
 def _maybe_sync_worklog_remote() -> None:
-    """페이지 전체 rerun 시에만 Drive/Gist 동기화 (fragment 입력 rerun 제외)."""
+    """페이지 전체 rerun 시에만 Drive/Gist 동기화 (fragment 입력 rerun 제외).
+
+    상단 담당자·거래처·품목 변경으로 인한 전체 rerun에서는 네트워크 sync를 건너뛰어
+    필터 조작 시 로딩 스파이크를 막는다. (강제 sync 버튼은 제외)
+    """
     if st.session_state.pop("wl_skip_sync_once", None):
         return
+    _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
+    _filt = _dashboard_top_filter_sig()
+    _prev_filt = st.session_state.get("_wl_dash_filter_sig")
+    if not _force and _prev_filt is not None and _prev_filt != _filt:
+        st.session_state["_wl_dash_filter_sig"] = _filt
+        return
+    st.session_state["_wl_dash_filter_sig"] = _filt
     try:
         from drive_autoload import sync_worklog_bidirectional
         from worklog_remote_sync import sync_worklog_remote
 
         _now = time.time()
         _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
-        _force = bool(st.session_state.pop("_wl_drive_sync_force", None))
         _on_cloud = _wl_is_streamlit_cloud()
-        _sync_iv = 15 if _on_cloud else 120
+        # 로컬 Mac: 필터 rerun이 잦아 간격을 넉넉히 (강제 버튼은 즉시)
+        _sync_iv = 20 if _on_cloud else 300
         if not (_force or (_now - _prev >= _sync_iv)):
             return
         st.session_state["_wl_drive_sync_ts"] = _now
