@@ -31,10 +31,17 @@ def _wl_rerun(*, full: bool = False) -> None:
     """업무일지 fragment 안이면 fragment만 다시 실행 (전체 앱 로딩 방지).
 
     full=True 는 저장·날짜변경처럼 왼쪽 요약도 같이 갱신해야 할 때 사용.
+    위젯 on_change 콜백 안에서는 호출하지 말 것 — Streamlit이 이미 rerun 중이라
+    중복 rerun이 ERROR·필터/버튼 비활성화를 유발한다.
     """
     if full:
         st.rerun()
         return
+    now = time.time()
+    last = float(st.session_state.get("_wl_frag_rerun_ts") or 0)
+    if now - last < 0.12:
+        return
+    st.session_state["_wl_frag_rerun_ts"] = now
     try:
         st.rerun(scope="fragment")
     except (StreamlitAPIException, RuntimeError):
@@ -136,7 +143,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-27j · 필터시중탭생략"
+_WL_UI_BUILD = "2026-08-27o · 입력안정화"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -2222,6 +2229,17 @@ def _content_row_usage(entries: list[dict] | None) -> dict:
         used += need; wrote_any = True; prev_gap = _entry_blank_after(ent, 1)
     return {"total": total, "used": used, "remaining": max(0, total - used), "per_entry": per_entry, "last_row": WL_CONTENT_ROWS[-1] if WL_CONTENT_ROWS else 41, "next_row": WL_CONTENT_ROWS[used] if used < total else None, "overflow": used > total}
 
+def _render_worklog_gauge_slot(gauge_slot, selected: date) -> None:
+    """입력 위젯 반영 후 칸 남음 게이지(초록 막대) 그리기."""
+    try:
+        usage = _content_row_usage(_read_editor_entries(selected))
+    except Exception:
+        usage = _content_row_usage([])
+    with gauge_slot.container():
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
+        _render_row_remain_gauge(usage, height_px=700)
+
+
 def _render_row_remain_gauge(usage: dict, *, height_px: int = 980) -> None:
     total, used, rem, overflow = max(1, int(usage.get("total") or 1)), max(0, int(usage.get("used") or 0)), max(0, int(usage.get("remaining") or 0)), bool(usage.get("overflow"))
     if overflow: accent, used_color, rem_color, label, big, rem_show, used_show = "#DC2626", "#FECACA", "#FEE2E2", "초과", f"+{used - total}", 0, total
@@ -3378,7 +3396,7 @@ def _render_worklog_left_preview(selected: date) -> None:
     """왼쪽 요약/엑셀 — fragment 밖에서만 그림 (타이핑 시 재실행 안 됨)."""
     draft = _view_cells_for_preview(selected)
     st.markdown("##### 업무일지 보기")
-    st.caption("입력은 바로 반영 · 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신")
+    st.caption("입력과 칸 게이지는 함께 갱신 · 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신")
     p1, p2 = st.columns(2)
     with p1:
         do_print = st.button(
@@ -3518,16 +3536,11 @@ def _wl_finish_edit_fragment() -> None:
 
 
 def _render_worklog_input_panel(selected: date) -> None:
-    """오른쪽 게이지+입력. 칸 이동 시 published 스냅샷 갱신(동일 fragment rerun)."""
+    """오른쪽 게이지+입력. 입력 반영 후 칸 게이지 갱신(fragment rerun)."""
     saved = list_saved_worklog_dates()
-    try:
-        _gauge_usage = _content_row_usage(_read_editor_entries(selected))
-    except Exception:
-        _gauge_usage = _content_row_usage([])
     col_gauge, col_input = st.columns([0.14, 1], gap="small")
     with col_gauge:
-            st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-            _render_row_remain_gauge(_gauge_usage, height_px=700)
+        gauge_slot = st.empty()
 
     with col_input:
             st.markdown("##### 업무 입력")
@@ -3720,7 +3733,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         st.session_state[f"wl_focus_caret_{iso2}"] = s
 
-                st.caption("입력은 즉시 반영됩니다. 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신됩니다.")
+                st.caption("입력 시 오른쪽 칸(남음) 게이지가 함께 갱신됩니다.")
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
                 _rem = _usage["remaining"]
@@ -3780,7 +3793,15 @@ def _render_worklog_input_panel(selected: date) -> None:
                         if gap_key not in st.session_state: st.session_state[gap_key] = _entry_blank_after((_live_entries[i] if i < len(_live_entries) else None), 1)
 
                         st.markdown("<hr style='margin:16px 0 12px;border:none;border-top:1px dashed #E2E8F0;'>", unsafe_allow_html=True)
-                        st.number_input("다음 항목 전 빈 칸 수", min_value=0, max_value=10, step=1, key=gap_key, help="이 항목 다음에 원본 엑셀에서 비워 둘 행 수.")
+
+                        st.number_input(
+                            "다음 항목 전 빈 칸 수",
+                            min_value=0,
+                            max_value=10,
+                            step=1,
+                            key=gap_key,
+                            help="이 항목 다음에 원본 엑셀에서 비워 둘 행 수.",
+                        )
                         _ent_rows = (_usage["per_entry"][i] if i < len(_usage["per_entry"]) else max(_filled, 1))
                         st.caption(f"이 항목 약 {_ent_rows}행 사용 · 전체 남은 {_rem}행 (마지막 칸 G{_usage['last_row']})")
 
@@ -3922,8 +3943,6 @@ def _render_worklog_input_panel(selected: date) -> None:
                 if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
                     _request_left_preview_refresh(d)
                     _wl_finish_edit_fragment()
-                    if not st.session_state.get("wl_need_left_refresh"):
-                        _wl_rerun()
                 ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
                 if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
                     _insert_line_after(iso2, int(ins_after[0]), int(ins_after[1]))
@@ -3941,6 +3960,8 @@ def _render_worklog_input_panel(selected: date) -> None:
             if _sp_msg:
                 st.caption(_sp_msg)
             _wl_entry_editor()
+
+    _render_worklog_gauge_slot(gauge_slot, selected)
 
 
 def _dashboard_top_filter_sig() -> tuple:
