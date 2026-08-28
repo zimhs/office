@@ -1,7 +1,6 @@
 #!/bin/bash
 # Cloud 메인 + 로컬 업무일지·공문(8502) — 브라우저 탭 2개만
-#   chmod +x dashboard_Cloud.command
-#   xattr -d com.apple.quarantine dashboard_Cloud.command 2>/dev/null
+# 바탕화면 복사본이어도 dashboard 폴더 최신본으로 자동 실행됩니다.
 
 dash_export_path
 
@@ -34,6 +33,12 @@ ROOT="$(_dash_bootstrap_root)" || {
 
 # shellcheck source=dashboard_launch_common.sh
 . "${ROOT}/dashboard_launch_common.sh"
+
+dash_exec_canonical "$HERE" "$ROOT" "dashboard_Cloud.command"
+
+if ! dash_launch_lock "cloud_pair"; then
+  exit 0
+fi
 
 fail() {
   osascript -e "display alert \"Cloud·업무일지 시작 실패\" message \"$1\""

@@ -1,7 +1,6 @@
 #!/bin/bash
 # 로컬 Streamlit: 메인(8501) + 업무일지·공문(8502) — 브라우저 탭 2개만
-#   chmod +x dashboard_Local.command
-#   xattr -d com.apple.quarantine dashboard_Local.command 2>/dev/null
+# 바탕화면 복사본이어도 dashboard 폴더 최신본으로 자동 실행됩니다.
 
 dash_export_path
 
@@ -34,6 +33,12 @@ ROOT="$(_dash_bootstrap_root)" || {
 
 # shellcheck source=dashboard_launch_common.sh
 . "${ROOT}/dashboard_launch_common.sh"
+
+dash_exec_canonical "$HERE" "$ROOT" "dashboard_Local.command"
+
+if ! dash_launch_lock "local_pair"; then
+  exit 0
+fi
 
 fail() {
   osascript -e "display alert \"로컬 대시보드 시작 실패\" message \"$1\""

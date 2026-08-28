@@ -64,6 +64,37 @@ dash_streamlit_run() {
   fi
 }
 
+# 바탕화면 복사본(구버전) → dashboard 폴더 최신 스크립트로 넘김
+dash_exec_canonical() {
+  local here="$1"
+  local root="$2"
+  local name="$3"
+  local canon="${root}/${name}"
+  if [ ! -f "$canon" ]; then
+    return 1
+  fi
+  local here_abs canon_dir
+  here_abs="$(cd "$here" && pwd)"
+  canon_dir="$(cd "$(dirname "$canon")" && pwd)"
+  if [ "$here_abs" != "$canon_dir" ]; then
+    exec "$canon"
+  fi
+  return 0
+}
+
+dash_launch_lock() {
+  local key="$1"
+  local lock_dir="${HOME}/.dashboard_launch"
+  local lock_file="${lock_dir}/${key}.lock"
+  mkdir -p "$lock_dir"
+  if ! mkdir "${lock_file}.d" 2>/dev/null; then
+    return 1
+  fi
+  echo "$$" >"${lock_file}.d/pid"
+  trap 'rm -rf "${lock_file}.d"' EXIT
+  return 0
+}
+
 dash_start_bg() {
   local root="$1"
   local port="$2"
@@ -74,6 +105,17 @@ dash_start_bg() {
     return 0
   fi
 
+  if [ -f "${root}/.dashboard_${port}.starting" ]; then
+    local i
+    for i in $(seq 1 30); do
+      if dash_health "$port"; then
+        return 0
+      fi
+      sleep 1
+    done
+  fi
+
+  touch "${root}/.dashboard_${port}.starting"
   (
     cd "$root" || exit 1
     dash_streamlit_run "$root" "$app" \
@@ -81,15 +123,18 @@ dash_start_bg() {
       --server.headless=true \
       --browser.gatherUsageStats=false \
       >>"$log" 2>&1
+    rm -f "${root}/.dashboard_${port}.starting"
   ) &
 
   local i
   for i in $(seq 1 45); do
     if dash_health "$port"; then
+      rm -f "${root}/.dashboard_${port}.starting"
       return 0
     fi
     sleep 1
   done
+  rm -f "${root}/.dashboard_${port}.starting"
   return 1
 }
 
@@ -105,16 +150,21 @@ dash_ensure_worklog() {
   dash_start_bg "$root" 8502 "$app"
 }
 
-# Streamlit 자동 브라우저는 쓰지 않고, open 은 여기서만 (중복 탭 방지)
+dash_open_two_urls() {
+  local url1="$1"
+  local url2="$2"
+  open "$url1"
+  sleep 0.4
+  open "$url2"
+}
+
 dash_open_both_local() {
-  open "http://127.0.0.1:8501"
-  open "http://127.0.0.1:8502"
+  dash_open_two_urls "http://127.0.0.1:8501" "http://127.0.0.1:8502"
 }
 
 dash_open_cloud_and_worklog() {
   local root="$1"
-  open "$(dash_cloud_url "$root")"
-  open "http://127.0.0.1:8502"
+  dash_open_two_urls "$(dash_cloud_url "$root")" "http://127.0.0.1:8502"
 }
 
 dash_launch_local_pair() {
