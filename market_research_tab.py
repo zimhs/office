@@ -1331,6 +1331,7 @@ def _filter_frame(
     query: str,
     include_factory: bool,
     hide_unclassified: bool = False,
+    _logic_ver: int = 9,
 ) -> pd.DataFrame:
     """가벼운 필터 — Pandas str.contains 대신 초고속 List Comprehension 적용"""
     view = df
@@ -1445,25 +1446,34 @@ def _mr_slim_frame(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, cols]
 
 
-@st.fragment
-def _mr_filter_results_fragment(
+def _mr_market_tab_keep_visible() -> None:
+    """적용 후 full rerun 시 시장조사 탭이 defer stub으로 바뀌지 않게."""
+    mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
+    for idx in (9, 10, 11):
+        mounted[idx] = True
+        st.session_state[f"_dash_force_tab_{idx}"] = True
+    st.session_state["_dash_filter_changed_flag"] = False
+
+
+def _mr_filter_results(
     df: pd.DataFrame,
     regions: list[str],
     cascade: dict,
     latest_update_str: str,
 ) -> None:
-    """필터·검색·표 — form+적용으로 지역 선택 즉시 재실행 크래시를 피함."""
+    """필터·검색·표 — form+적용 (fragment 미사용: form submit 호환)."""
     try:
         if mr_cascade is None:
             st.error("market_research_cascade 모듈이 없습니다.")
             return
 
+        _flash = st.session_state.pop("mr_v6_apply_flash", None)
+
         st.caption(
-            "필터 **v8** · 지역→단지→공급사 종속 · "
-            "조건을 고른 뒤 **적용** (적용 즉시 아래 결과 갱신)."
+            "필터 **v9** · 지역→단지→공급사 종속 · "
+            "조건 선택 후 **적용** (버튼 클릭 시 결과·건수 갱신)."
         )
 
-        # 직전에 적용된 값 (옵션 종속 기준)
         app_r = list(st.session_state.get("mr_v6_region") or [])
         app_c = list(st.session_state.get("mr_v6_complex") or [])
         app_s = list(st.session_state.get("mr_v6_sup") or [])
@@ -1471,13 +1481,12 @@ def _mr_filter_results_fragment(
         app_fac = bool(st.session_state.get("mr_v6_fac", False))
         app_hide = bool(st.session_state.get("mr_v6_hide", False))
 
-        form_ver = int(st.session_state.get("mr_v6_form_ver") or 0)
         form_cx_opts = mr_cascade.complex_opts(cascade, app_r, include_factory=app_fac)
         form_sup_opts = mr_cascade.supplier_opts(
             cascade, app_r, app_c, include_factory=app_fac
         )
 
-        with st.form(f"mr_filter_v6_{form_ver}", clear_on_submit=False):
+        with st.form("mr_filter_v9", clear_on_submit=False, border=True):
             c_fac, c_hide = st.columns(2)
             with c_fac:
                 fac_in = st.checkbox("화성공장 DB(단독) 포함", value=app_fac)
@@ -1519,12 +1528,14 @@ def _mr_filter_results_fragment(
             with f4:
                 q_in = st.text_input("검색 (업체·주소·단지·가스·비고)", value=app_q)
 
-            applied = st.form_submit_button("🔍 적용", type="primary", use_container_width=True)
+            applied = st.form_submit_button(
+                "🔍 적용",
+                type="primary",
+                use_container_width=True,
+            )
 
         if applied:
             st.session_state["mr_v6_region"] = list(r_in or [])
-            st.session_state["mr_v6_complex"] = list(c_in or [])
-            st.session_state["mr_v6_sup"] = list(s_in or [])
             st.session_state["mr_v6_q"] = (q_in or "").strip()
             st.session_state["mr_v6_fac"] = bool(fac_in)
             st.session_state["mr_v6_hide"] = bool(hide_in)
@@ -1537,7 +1548,21 @@ def _mr_filter_results_fragment(
                 cascade, list(r_in or []), kept_c, include_factory=bool(fac_in)
             )
             st.session_state["mr_v6_sup"] = [x for x in (s_in or []) if x in new_sup]
-            st.session_state["mr_v6_form_ver"] = form_ver + 1
+            st.session_state["mr_v6_apply_flash"] = {
+                "regions": list(r_in or []),
+                "complexes": len(kept_c),
+                "query": (q_in or "").strip(),
+            }
+            _mr_market_tab_keep_visible()
+            st.rerun()
+
+        if isinstance(_flash, dict):
+            _rg = _flash.get("regions") or []
+            st.success(
+                "필터 적용됨 · "
+                + (f"지역 {', '.join(_rg)}" if _rg else "전체")
+                + (f" · 검색「{_flash.get('query')}」" if _flash.get("query") else "")
+            )
 
         app_r = list(st.session_state.get("mr_v6_region") or [])
         app_c = list(st.session_state.get("mr_v6_complex") or [])
@@ -1947,7 +1972,7 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         key=lambda x: (x == "미분류", x),
     )
     try:
-        _mr_filter_results_fragment(df, regions, cascade, latest_update_str)
+        _mr_filter_results(df, regions, cascade, latest_update_str)
     except Exception as e:
         st.error(f"시장조사 필터 표시 실패: {e}")
         st.exception(e)
