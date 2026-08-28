@@ -10,6 +10,7 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 import time
 from datetime import date
 from functools import lru_cache
@@ -18,6 +19,8 @@ from typing import Any
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit.errors import StreamlitAPIException
+
+from dev_mode import dev_caption, is_dev_mode
 
 try:
     from openpyxl import load_workbook
@@ -136,7 +139,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-27j · 필터시중탭생략"
+_WL_UI_BUILD = "2026-08-28a · 일괄가져오기제거"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -986,6 +989,7 @@ def resolve_worklog_archive_root() -> str | None:
     st.session_state["_wl_archive_root_cache"] = {"path": found}
     return found
 
+
 def worklog_archive_path(d: date) -> str | None:
     """호환용: 월별 통합 파일 경로 (…/일지/2026/8월.xlsx)."""
     return worklog_archive_month_path(d)
@@ -1050,8 +1054,36 @@ def _cleanup_legacy_day_archive_files(d: date, month_path: str | None) -> None:
 
 
 def worklog_archive_sheet_title(d: date) -> str:
-    """월별 파일 안 워크시트명 = 날짜 (YYYY-MM-DD)."""
+    """월별 파일 안 워크시트명 = 일 (예: 27)."""
+    return str(d.day)
+
+
+def _worklog_archive_legacy_sheet_title(d: date) -> str:
+    """구버전 워크시트명 (YYYY-MM-DD). 존재·삭제 조회용."""
     return d.isoformat()
+
+
+def _worklog_archive_sheet_titles_for_lookup(d: date) -> tuple[str, ...]:
+    """현재(일) + 레거시(YYYY-MM-DD) 워크시트명."""
+    cur = worklog_archive_sheet_title(d)
+    leg = _worklog_archive_legacy_sheet_title(d)
+    return (cur,) if cur == leg else (cur, leg)
+
+
+def _resolve_archive_sheet_name(sheetnames: list[str] | tuple[str, ...], d: date) -> str | None:
+    for title in _worklog_archive_sheet_titles_for_lookup(d):
+        if title in sheetnames:
+            return title
+    return None
+
+
+def _archive_sheet_sort_key(name: str) -> tuple:
+    if name.isdigit():
+        return (0, int(name))
+    try:
+        return (1, date.fromisoformat(name))
+    except ValueError:
+        return (2, name)
 
 
 def _invalidate_worklog_presence_cache(d: date | None = None) -> None:
@@ -1073,14 +1105,14 @@ def worklog_date_exists_in_archive(d: date) -> bool:
     cached = st.session_state.get(ck)
     if isinstance(cached, bool):
         return cached
-    title = worklog_archive_sheet_title(d)
+    titles = _worklog_archive_sheet_titles_for_lookup(d)
     found = False
     month_path = worklog_archive_month_path(d)
     if month_path and os.path.exists(month_path) and load_workbook is not None:
         try:
             wb = load_workbook(month_path, read_only=True)
             try:
-                if title in wb.sheetnames:
+                if _resolve_archive_sheet_name(wb.sheetnames, d):
                     found = True
             finally:
                 wb.close()
@@ -1100,7 +1132,7 @@ def worklog_date_exists_in_archive(d: date) -> bool:
                     try:
                         wb = load_workbook(p, read_only=True)
                         try:
-                            if title in wb.sheetnames:
+                            if _resolve_archive_sheet_name(wb.sheetnames, d):
                                 found = True
                                 break
                         finally:
@@ -1128,10 +1160,9 @@ def worklog_date_exists_on_drive(d: date) -> bool:
         month_p = os.path.join(arch_dir, f"{d.month}월.xlsx")
         if not os.path.isfile(month_p):
             return False
-        title = worklog_archive_sheet_title(d)
         wb = load_workbook(month_p, read_only=True)
         try:
-            return title in wb.sheetnames
+            return _resolve_archive_sheet_name(wb.sheetnames, d) is not None
         finally:
             wb.close()
     except Exception:
@@ -1220,7 +1251,7 @@ def check_worklog_save_allowed(d: date, *, had_local_at_open: bool) -> tuple[boo
 
 
 def describe_worklog_archive_target(d: date) -> str:
-    """UI용 저장 경로 설명 (Desktop/업무/일지/YYYY/N월.xlsx#YYYY-MM-DD)."""
+    """UI용 저장 경로 설명 (Desktop/업무/일지/YYYY/N월.xlsx#일)."""
     root = resolve_worklog_archive_root()
     month_path = worklog_archive_month_path(d)
     if root and month_path:
@@ -1231,77 +1262,72 @@ def describe_worklog_archive_target(d: date) -> str:
     return f"{home}/Desktop/업무/일지/{d.year}/{d.month}월.xlsx#{worklog_archive_sheet_title(d)}"
 
 
-def _clone_worksheet_to_workbook(src_ws, dst_wb, title: str):
-    """날짜일지 시트를 월별 통합 파일로 복사 (셀·서식·병합·행열·인쇄·이미지)."""
+def _copy_worksheet_cross_workbook(src_ws, dst_ws) -> None:
+    """다른 통합문서 간 시트 복사 — openpyxl WorksheetCopy + 인쇄·화면 설정.
+
+    merged_cells 객체 shallow copy / _style 일괄 복사는 Excel에서 병합·테두리가
+    깨지므로, 셀 서식은 속성별 copy 후 merge_cells()로 병합을 다시 적용한다.
+    """
     from copy import copy as _cpy
 
-    if title in dst_wb.sheetnames:
-        del dst_wb[title]
-    dst = dst_wb.create_sheet(title)
-
-    for key, md in src_ws.column_dimensions.items():
-        if md.width is not None:
-            dst.column_dimensions[key].width = md.width
-    for key, md in src_ws.row_dimensions.items():
-        if md.height is not None:
-            dst.row_dimensions[key].height = md.height
-
-    for row in src_ws.iter_rows():
-        for cell in row:
-            new_cell = dst.cell(row=cell.row, column=cell.column, value=cell.value)
+    for (row, col), source_cell in src_ws._cells.items():
+        target_cell = dst_ws.cell(column=col, row=row)
+        target_cell._value = source_cell._value
+        target_cell.data_type = source_cell.data_type
+        if source_cell.has_style:
             try:
-                if cell.has_style:
-                    new_cell.font = _cpy(cell.font)
-                    new_cell.border = _cpy(cell.border)
-                    new_cell.fill = _cpy(cell.fill)
-                    new_cell.number_format = cell.number_format
-                    new_cell.protection = _cpy(cell.protection)
-                    new_cell.alignment = _cpy(cell.alignment)
+                target_cell.font = _cpy(source_cell.font)
+                target_cell.border = _cpy(source_cell.border)
+                target_cell.fill = _cpy(source_cell.fill)
+                target_cell.number_format = source_cell.number_format
+                target_cell.protection = _cpy(source_cell.protection)
+                target_cell.alignment = _cpy(source_cell.alignment)
             except Exception:
                 pass
+        if source_cell.hyperlink:
+            target_cell._hyperlink = _cpy(source_cell.hyperlink)
+        if source_cell.comment:
+            target_cell.comment = _cpy(source_cell.comment)
 
+    for attr in ("row_dimensions", "column_dimensions"):
+        src_dims = getattr(src_ws, attr)
+        dst_dims = getattr(dst_ws, attr)
+        for key, dim in src_dims.items():
+            dst_dims[key] = _cpy(dim)
+            dst_dims[key].worksheet = dst_ws
+
+    dst_ws.sheet_format = _cpy(src_ws.sheet_format)
+    dst_ws.sheet_properties = _cpy(src_ws.sheet_properties)
+    dst_ws.page_margins = _cpy(src_ws.page_margins)
+    dst_ws.page_setup = _cpy(src_ws.page_setup)
+    dst_ws.print_options = _cpy(src_ws.print_options)
+
+    try:
+        dst_ws.print_area = src_ws.print_area
+    except Exception:
+        pass
+    try:
+        dst_ws.print_title_rows = src_ws.print_title_rows
+        dst_ws.print_title_cols = src_ws.print_title_cols
+    except Exception:
+        pass
+    try:
+        dst_ws.sheet_view = _cpy(src_ws.sheet_view)
+    except Exception:
+        pass
+    try:
+        if getattr(src_ws, "views", None):
+            dst_ws.views = _cpy(src_ws.views)
+    except Exception:
+        pass
+
+    # 병합은 셀·서식 복사 후 마지막에 적용 (merged_cells shallow copy 금지)
     try:
         for mr in list(src_ws.merged_cells.ranges):
-            dst.merge_cells(str(mr))
+            dst_ws.merge_cells(str(mr))
     except Exception:
         pass
 
-    try:
-        dst.print_area = src_ws.print_area
-    except Exception:
-        pass
-    try:
-        sp, dp = src_ws.page_setup, dst.page_setup
-        for attr in (
-            "orientation",
-            "fitToPage",
-            "fitToWidth",
-            "fitToHeight",
-            "scale",
-            "paperSize",
-            "pageOrder",
-        ):
-            try:
-                setattr(dp, attr, getattr(sp, attr))
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
-        dst.page_margins = _cpy(src_ws.page_margins)
-    except Exception:
-        pass
-    try:
-        dst.print_title_rows = src_ws.print_title_rows
-        dst.print_title_cols = src_ws.print_title_cols
-    except Exception:
-        pass
-    try:
-        dst.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
-    except Exception:
-        pass
-
-    # 로고 등 이미지
     try:
         from openpyxl.drawing.image import Image as XLImage
 
@@ -1316,11 +1342,19 @@ def _clone_worksheet_to_workbook(src_ws, dst_wb, title: str):
                     new_img.height = img.height
                 if getattr(img, "anchor", None) is not None:
                     new_img.anchor = img.anchor
-                dst.add_image(new_img)
+                dst_ws.add_image(new_img)
             except Exception:
                 continue
     except Exception:
         pass
+
+
+def _clone_worksheet_to_workbook(src_ws, dst_wb, title: str):
+    """날짜일지 시트를 월별 통합 파일로 복사 (원본 인쇄·열 너비·화면 배율 유지)."""
+    if title in dst_wb.sheetnames:
+        del dst_wb[title]
+    dst = dst_wb.create_sheet(title)
+    _copy_worksheet_cross_workbook(src_ws, dst)
     return dst
 
 
@@ -1355,30 +1389,42 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
     if not month_path or not day_xlsx_path or not os.path.exists(day_xlsx_path):
         return None
     sheet_title = worklog_archive_sheet_title(d)
+    legacy_title = _worklog_archive_legacy_sheet_title(d)
     if not allow_overwrite and worklog_date_exists_in_archive(d):
         return month_path if os.path.exists(month_path) else None
     _migrate_legacy_month_workbook(d, month_path)
+
+    # 첫 월 파일: 일지 xlsx를 그대로 복사 → 인쇄 미리보기·열 너비 100% 유지
+    if not os.path.exists(month_path):
+        shutil.copy2(day_xlsx_path, month_path)
+        month_wb = load_workbook(month_path)
+        try:
+            ws = month_wb.active
+            if ws.title != sheet_title:
+                ws.title = sheet_title
+            month_wb.save(month_path)
+        finally:
+            month_wb.close()
+        _cleanup_legacy_day_archive_files(d, month_path)
+        return month_path
+
     day_wb = load_workbook(day_xlsx_path)
     try:
         src_ws = day_wb.active
-        if os.path.exists(month_path):
-            month_wb = load_workbook(month_path)
-        else:
-            from openpyxl import Workbook
-
-            month_wb = Workbook()
-            # 기본 빈 시트 제거 (날짜 시트만 유지)
-            if month_wb.sheetnames:
-                default = month_wb.active
-                default.title = "_tmp_remove_"
+        month_wb = load_workbook(month_path)
         try:
+            # 레거시 YYYY-MM-DD 시트 → 일(27) 시트로 통일
+            if legacy_title != sheet_title and legacy_title in month_wb.sheetnames:
+                del month_wb[legacy_title]
             _clone_worksheet_to_workbook(src_ws, month_wb, sheet_title)
-            if "_tmp_remove_" in month_wb.sheetnames:
-                del month_wb["_tmp_remove_"]
-            # 시트 이름 날짜순 정렬에 가깝게 재배치
-            names = [n for n in month_wb.sheetnames if n != sheet_title]
+            # 시트 이름 일자순 정렬 (일-only·레거시 ISO 모두)
+            names = [
+                n
+                for n in month_wb.sheetnames
+                if n != sheet_title and not n.startswith("_")
+            ]
             names.append(sheet_title)
-            names.sort()
+            names.sort(key=_archive_sheet_sort_key)
             for i, name in enumerate(names):
                 month_wb.move_sheet(name, offset=i - month_wb.sheetnames.index(name))
             month_wb.save(month_path)
@@ -1404,13 +1450,13 @@ def delete_worklog_archive_sheet(d: date) -> str | None:
     _cleanup_legacy_day_archive_files(d, month_path)
     if not os.path.exists(month_path):
         return removed
-    sheet_title = worklog_archive_sheet_title(d)
     try:
         wb = load_workbook(month_path)
         try:
-            if sheet_title in wb.sheetnames:
-                del wb[sheet_title]
-                removed = month_path
+            for sheet_title in _worklog_archive_sheet_titles_for_lookup(d):
+                if sheet_title in wb.sheetnames:
+                    del wb[sheet_title]
+                    removed = month_path
             remaining = [n for n in wb.sheetnames if n and not n.startswith("_")]
             if not remaining:
                 wb.close()
@@ -1598,7 +1644,108 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
         st.session_state["wl_last_cloud_err"] = str(e)
     return path
 
-def delete_worklog_day(d: date) -> list[str]:
+def _purge_worklog_day_preview_cache(d: date) -> None:
+    """삭제 후 왼쪽 요약·엑셀 HTML 캐시 제거 (불필요한 재렌더·로딩 방지)."""
+    iso = d.isoformat()
+    for k in (
+        f"wl_sum_sig_{iso}",
+        f"wl_sum_html_{iso}",
+        f"wl_print_cells_sig_{iso}",
+        f"wl_print_cells_path_{iso}",
+        f"wl_left_excel_on_{iso}",
+        f"wl_left_excel_path_{iso}",
+        f"wl_left_excel_sig_v24_{iso}",
+        f"wl_left_excel_html_v24_{iso}",
+        f"wl_left_excel_h_v24_{iso}",
+        f"wl_form_sig_v14_{iso}",
+        f"wl_remote_pull_tried_{iso}",
+    ):
+        st.session_state.pop(k, None)
+    for k in list(st.session_state.keys()):
+        if not isinstance(k, str):
+            continue
+        if iso in k and (
+            k.startswith("wl_print_html_cache_")
+            or k.startswith("wl_print_html_meta_")
+            or k.startswith("wl_left_excel_html_")
+        ):
+            st.session_state.pop(k, None)
+
+
+def _delete_worklog_day_remote_sync(d: date) -> tuple[list[str], str]:
+    """Gist·Drive 원격 삭제 (느림 — UI 블로킹 방지용 분리)."""
+    iso = d.isoformat()
+    removed: list[str] = []
+    cloud_note = ""
+    try:
+        from worklog_remote_sync import delete_worklog_day_remote
+
+        ok, cerr = delete_worklog_day_remote(d, WORKLOG_DIR)
+        if ok:
+            removed.append(f"Cloud:{iso}.xlsx")
+        elif cerr and cerr not in ("github_token 없음", "gist 없음"):
+            cloud_note = f" Cloud:{cerr}"
+    except Exception as e:
+        cloud_note = f" Cloud:{e}"
+    try:
+        from drive_autoload import delete_worklog_day_from_drive
+
+        for dn in delete_worklog_day_from_drive(d, WORKLOG_DIR):
+            removed.append(f"Drive:{dn}")
+    except Exception:
+        pass
+    return removed, cloud_note
+
+
+def _worklog_remote_delete_job(d: date) -> None:
+    try:
+        _delete_worklog_day_remote_sync(d)
+        try:
+            from worklog_remote_sync import invalidate_gist_days_cache
+            invalidate_gist_days_cache()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _schedule_worklog_remote_delete(d: date) -> None:
+    iso = d.isoformat()
+    lock_k = f"_wl_remote_del_started_{iso}"
+    if st.session_state.get(lock_k):
+        return
+    st.session_state[lock_k] = True
+    threading.Thread(target=_worklog_remote_delete_job, args=(d,), daemon=True).start()
+
+
+def _on_confirm_delete_day() -> None:
+    """확정 on_click — 위젯 생성 전에 실행되어 popover를 안전하게 닫음."""
+    d = st.session_state.get("worklog_selected")
+    if isinstance(d, date):
+        st.session_state["wl_do_delete_day"] = d.isoformat()
+    elif isinstance(d, str) and d:
+        st.session_state["wl_do_delete_day"] = d
+    st.session_state["wl_skip_sync_once"] = True
+    st.session_state["wl_del_day_open"] = False
+
+
+def _run_pending_worklog_day_delete() -> bool:
+    """wl_do_delete_day 플래그가 있으면 로컬 삭제 실행. 처리했으면 True."""
+    del_iso = st.session_state.pop("wl_do_delete_day", None)
+    if not del_iso:
+        return False
+    try:
+        d_del = date.fromisoformat(str(del_iso))
+        delete_worklog_day(d_del, remote=False)
+        _schedule_worklog_remote_delete(d_del)
+        st.session_state["wl_skip_sync_once"] = True
+        st.session_state["wl_del_day_open"] = False
+        return True
+    except Exception:
+        return False
+
+
+def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
     _ensure_dirs()
     iso = d.isoformat()
     removed: list[str] = []
@@ -1621,41 +1768,27 @@ def delete_worklog_day(d: date) -> list[str]:
     try:
         arch = delete_worklog_archive_sheet(d)
         if arch:
-            removed.append(f"{os.path.basename(arch)}#{iso}")
+            removed.append(f"{os.path.basename(arch)}#{worklog_archive_sheet_title(d)}")
     except Exception:
         pass
-    # Cloud/Drive에서도 삭제 — 동기화가 구 파일을 되살리는 원인
-    cloud_note = ""
+    # 삭제 표시 — 동기화가 구 파일을 되살리지 않도록 원격 삭제 전에 기록
     try:
-        from worklog_remote_sync import delete_worklog_day_remote, mark_worklog_day_deleted
-
+        from worklog_remote_sync import mark_worklog_day_deleted
         mark_worklog_day_deleted(iso, WORKLOG_DIR)
-        ok, cerr = delete_worklog_day_remote(d, WORKLOG_DIR)
-        if ok:
-            removed.append(f"Cloud:{iso}.xlsx")
-        elif cerr and cerr not in ("github_token 없음", "gist 없음"):
-            cloud_note = f" Cloud:{cerr}"
-    except Exception as e:
+    except Exception:
+        pass
+    cloud_note = ""
+    if remote:
+        extra, cloud_note = _delete_worklog_day_remote_sync(d)
+        removed.extend(extra)
         try:
-            from worklog_remote_sync import mark_worklog_day_deleted
-            mark_worklog_day_deleted(iso, WORKLOG_DIR)
+            from worklog_remote_sync import invalidate_gist_days_cache
+            invalidate_gist_days_cache()
         except Exception:
             pass
-        cloud_note = f" Cloud:{e}"
-    try:
-        from drive_autoload import delete_worklog_day_from_drive
-
-        for dn in delete_worklog_day_from_drive(d, WORKLOG_DIR):
-            removed.append(f"Drive:{dn}")
-    except Exception:
-        pass
     _invalidate_saved_dates_cache()
     _invalidate_worklog_presence_cache(d)
-    try:
-        from worklog_remote_sync import invalidate_gist_days_cache
-        invalidate_gist_days_cache()
-    except Exception:
-        pass
+    _purge_worklog_day_preview_cache(d)
     _clear_date_widget_state(d)
     st.session_state.pop(f"wl_open_ctx_{iso}", None)
     st.session_state.pop(f"wl_saved_ok_{iso}", None)
@@ -1665,7 +1798,11 @@ def delete_worklog_day(d: date) -> list[str]:
     st.session_state[_next_key(d)] = ""
     st.session_state[_notes_key(d)] = ""
     st.session_state[f"wl_entry_count_{iso}"] = 1
-    msg = f"삭제 완료" + (f": {', '.join(removed)}" if removed else " (저장본 없음, 입력만 초기화)") + cloud_note
+    msg = f"삭제 완료" + (f": {', '.join(removed)}" if removed else " (저장본 없음, 입력만 초기화)")
+    if not remote:
+        msg += " · Cloud/Drive 정리 중"
+    else:
+        msg += cloud_note
     st.session_state[f"wl_pending_sync_{iso}"] = {"entries": empty, "next": "", "notes": "", "msg": msg}
     try: _publish_view_cells(d, _empty_cells(d))
     except Exception: st.session_state.pop(_view_cells_key(d), None)
@@ -3519,6 +3656,11 @@ def _wl_finish_edit_fragment() -> None:
 
 def _render_worklog_input_panel(selected: date) -> None:
     """오른쪽 게이지+입력. 칸 이동 시 published 스냅샷 갱신(동일 fragment rerun)."""
+    if _run_pending_worklog_day_delete():
+        selected = st.session_state.get("worklog_selected") or selected
+        _wl_rerun(full=True)
+        return
+
     saved = list_saved_worklog_dates()
     try:
         _gauge_usage = _content_row_usage(_read_editor_entries(selected))
@@ -3546,11 +3688,15 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.rerun()
             with bar_del:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
-                with st.popover("삭제", width="content", key="wl_del_day_open"):
+                with st.popover("삭제", width="content", key="wl_del_day_open", on_change="rerun"):
                     st.caption("이 날짜 일지 전체 삭제")
-                    if st.button("확정", type="primary", width="content", key="wl_del_day_yes"):
-                        delete_worklog_day(selected)
-                        st.rerun()
+                    st.button(
+                        "확정",
+                        type="primary",
+                        width="content",
+                        key="wl_del_day_yes",
+                        on_click=_on_confirm_delete_day,
+                    )
 
             _iso_bar = selected.isoformat()
             _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
@@ -3865,7 +4011,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                             if arch_target and not _wl_quiet_ui():
                                 msg += f" · {arch_target}"
                             elif arch and not _wl_quiet_ui():
-                                _sh = st.session_state.get("wl_last_archive_sheet") or d.isoformat()
+                                _sh = st.session_state.get("wl_last_archive_sheet") or worklog_archive_sheet_title(d)
                                 msg += f" · 일지/{d.year}/{os.path.basename(arch)}#{_sh}"
                             if drv:
                                 msg += " · Drive"
@@ -4018,7 +4164,9 @@ def _maybe_sync_worklog_remote() -> None:
 
 
 def _render_worklog_sync_ui() -> None:
-    """동기화 결과·충돌 안내 (fragment 밖)."""
+    """동기화 결과·충돌 안내 (fragment 밖). dev 모드(?dev=1)에서만 표시."""
+    if not is_dev_mode():
+        return
     try:
         from worklog_remote_sync import remote_sync_configured, resolve_gist_id
 
@@ -4133,31 +4281,32 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         f"<style>section.main {{ font-family:{_WL_FONT_STACK}; }}</style>",
         unsafe_allow_html=True,
     )
-    st.caption(f"업무일지 빌드 {_WL_UI_BUILD}")
+    dev_caption(f"업무일지 빌드 {_WL_UI_BUILD}")
     _filt_changed = _dashboard_filters_changed_this_run()
     _arch_root = resolve_worklog_archive_root()
-    if _arch_root:
-        st.caption(f"월별 저장 경로: `{_arch_root}/{{연도}}/{{N}}월.xlsx` (날짜=시트명)")
-    else:
-        st.caption("월별 저장 경로: `Desktop/업무/일지/{연도}/{N}월.xlsx` (Google Drive 동기화 시 「다른 컴퓨터/내 컴퓨터/Desktop/업무/일지」)")
-    try:
-        from worklog_remote_sync import cloud_sync_status
-
-        _cs = st.session_state.get("_wl_cloud_status_cache")
-        if not isinstance(_cs, dict):
-            _cs = cloud_sync_status(WORKLOG_DIR)
-            st.session_state["_wl_cloud_status_cache"] = _cs
-        if not _cs.get("token"):
-            if _wl_is_streamlit_cloud():
-                st.caption("☁ Gist **미연동** — Streamlit Cloud **Settings → Secrets** 에 `github_token`, `worklog_gist_id` 필요")
-            else:
-                st.caption("☁ Cloud: **미연동** — `.streamlit/secrets.toml` 에 `github_token` 넣고 Streamlit 재시작")
-        elif _cs.get("gist_id"):
-            st.caption(f"☁ Gist **연동됨** · `worklog_gist_id = \"{_cs['gist_id']}\"`")
+    if is_dev_mode():
+        if _arch_root:
+            st.caption(f"월별 저장 경로: `{_arch_root}/{{연도}}/{{N}}월.xlsx` (날짜=시트명)")
         else:
-            st.caption("☁ Gist: 토큰 OK · **저장**하면 gist id 생성")
-    except Exception:
-        pass
+            st.caption("월별 저장 경로: `Desktop/업무/일지/{연도}/{N}월.xlsx` (Google Drive 동기화 시 「다른 컴퓨터/내 컴퓨터/Desktop/업무/일지」)")
+        try:
+            from worklog_remote_sync import cloud_sync_status
+
+            _cs = st.session_state.get("_wl_cloud_status_cache")
+            if not isinstance(_cs, dict):
+                _cs = cloud_sync_status(WORKLOG_DIR)
+                st.session_state["_wl_cloud_status_cache"] = _cs
+            if not _cs.get("token"):
+                if _wl_is_streamlit_cloud():
+                    st.caption("☁ Gist **미연동** — Streamlit Cloud **Settings → Secrets** 에 `github_token`, `worklog_gist_id` 필요")
+                else:
+                    st.caption("☁ Cloud: **미연동** — `.streamlit/secrets.toml` 에 `github_token` 넣고 Streamlit 재시작")
+            elif _cs.get("gist_id"):
+                st.caption(f"☁ Gist **연동됨** · `worklog_gist_id = \"{_cs['gist_id']}\"`")
+            else:
+                st.caption("☁ Gist: 토큰 OK · **저장**하면 gist id 생성")
+        except Exception:
+            pass
     if not st.session_state.get("_wl_cache_bust_v24"):
         st.session_state["_wl_cache_bust_v24"] = True
         for k in list(st.session_state.keys()):
@@ -4171,7 +4320,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         st.session_state["worklog_selected"] = date.today()
     selected: date = st.session_state["worklog_selected"]
 
-    # 상단 필터 rerun: Gist pull·sync 생략 (일지 날짜/내용은 무손실)
+    _run_pending_worklog_day_delete()
+
     _prepare_worklog_day_state(selected, skip_remote_pull=_filt_changed)
     _maybe_sync_worklog_remote()
 

@@ -1,0 +1,7 @@
+streamlit[pdf]
+pandas
+numpy
+openpyxl
+requests
+fpdf2
+Pillow

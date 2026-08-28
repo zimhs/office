@@ -78,6 +78,10 @@ except ImportError:
 # 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
 pd.set_option("styler.render.max_elements", 2000000)
 st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide", initial_sidebar_state="expanded")
+
+from dev_mode import apply_dev_ui_gate, dev_caption, is_dev_mode
+
+apply_dev_ui_gate()
 # ==========================================
 # 0. 로컬 파일 자동 저장을 위한 디렉토리 설정
 # ==========================================
@@ -9827,8 +9831,8 @@ if not full_df.empty:
         _item_picked = fc5.selectbox("📦 품목명", options=_item_opts, key="dash_filter_items_sb_new")
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
-        # 반영 확인용(앱 빌드). 업무일지·공문 생략 최적화 포함 여부.
-        st.caption("필터 빌드 2026-08-27j · 필터시중탭생략")
+        # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
+        dev_caption("필터 빌드 2026-08-27j · 필터시중탭생략")
 
         df_base = df_base_opts
         df_staff_filtered = (
