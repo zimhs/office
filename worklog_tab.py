@@ -4322,8 +4322,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
     _run_pending_worklog_day_delete()
 
-    _prepare_worklog_day_state(selected, skip_remote_pull=_filt_changed)
-    if not st.session_state.get("_wl_boot_sync_done"):
+    _boot = not st.session_state.get("_wl_boot_sync_done")
+    _prepare_worklog_day_state(selected, skip_remote_pull=_filt_changed or _boot)
+    if _boot:
         st.session_state["_wl_boot_sync_done"] = True
     else:
         _maybe_sync_worklog_remote()

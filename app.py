@@ -4786,12 +4786,15 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """heavy 탭(업무일지·시장조사·공문) — 활성 탭일 때만 렌더.
+    """heavy 탭 defer — Cloud 업무일지·공문은 항상 펼침, 시장조사만 lazy.
 
-    - 앱 시작·다른 탭 사용 시 stub → 시작·Tab1~8 체감 속도 유지
-    - force remount / 「화면 불러오기」→ 즉시 복원
-    - 상단 필터 변경 시: 활성 heavy 탭만 렌더, 나머지 defer
+    - Cloud: 업무일지(9)·공문(11) stub 없이 매 run 렌더
+    - 시장조사(10): 활성 탭·force remount 시에만 렌더
+    - 상단 필터 변경 시: 시장조사는 활성일 때만, 업무일지·공문은 Cloud에서 유지
     """
+    if _dash_cloud_merged_tabs() and tab_idx in (_DASH_TAB_WORKLOG, _DASH_TAB_LETTER):
+        return False
+
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
         mounted[tab_idx] = True
@@ -10631,7 +10634,8 @@ if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
     st.session_state["_ipad_sticky_injected"] = True
     st.session_state["_ipad_sticky_ver"] = 30
 if _DASH_CLOUD_TABS:
-    inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=(9, 10, 11))
+    # Cloud 업무일지·공문은 eager — 시장조사(10)만 stub 자동 복원
+    inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=(10,))
 else:
     inject_dash_active_tab_cookie_script(min_tabs=10, heavy_indices=(9,))
 # Tab 1: 📌 영업 종합 요약
