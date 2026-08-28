@@ -629,6 +629,21 @@ def get_exact_original_price(series):
     if s.empty:
         return 0
     return s.mode().iloc[0]
+
+
+def _ensure_numeric_unit_price(df, col="단가"):
+    """단가 열을 float로 강제 — 캐시/구버전 파싱 잔여 문자열로 인한 setitem TypeError 방지."""
+    out = df.copy()
+    if col not in out.columns:
+        out[col] = 0.0
+        return out
+    out[col] = pd.to_numeric(
+        out[col].astype(str).str.replace(r"[^\d.-]", "", regex=True),
+        errors="coerce",
+    ).fillna(0.0)
+    return out
+
+
 def apply_forward_unit_price(unit_price_df, qty_df, years, all_months):
     """당월 출고 없음(0)이어도 직전 최종 변경 단가를 이월 표시."""
     if unit_price_df.empty:
@@ -5366,11 +5381,13 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
     if latest_col and latest_col in qty_p.columns:
         qty_p = qty_p.sort_values(by=latest_col, ascending=False)
         sales_p = sales_p.reindex(qty_p.index)
-    df_for_price = target_tab3_df.copy()
+    df_for_price = _ensure_numeric_unit_price(target_tab3_df.copy())
     target_clients = ["두산판금", "드림맥", "모베이스전전", "지엔티테크", "태광기업", "경민산업", "동주산업"]
     mask_n2_special = (df_for_price["거래처"].isin(target_clients)) & (df_for_price["품목명"] == "N2 (kg, Bulk)")
-    
-    df_for_price.loc[mask_n2_special, "단가"] = df_for_price.loc[mask_n2_special, "단가"] * 1.238
+    if mask_n2_special.any():
+        df_for_price.loc[mask_n2_special, "단가"] = (
+            df_for_price.loc[mask_n2_special, "단가"] * 1.238
+        )
     raw_up = df_for_price.pivot_table(index="품목명", columns="연도월_정렬", values="단가", aggfunc=get_exact_original_price)
     
     if not raw_up.empty:
@@ -5739,15 +5756,16 @@ def cached_tab4_item_client_triple_pivot(
     if item_name in _TAB4_BULK_ITEMS:
         qty_raw = qty_raw / 1000
 
-    d_price = d.copy()
+    d_price = _ensure_numeric_unit_price(d.copy())
     mask_n2 = (d_price["거래처"].isin(_TAB4_N2_SPECIAL_CLIENTS)) & (
         d_price["품목명"] == "N2 (kg, Bulk)"
     )
-    d_price.loc[mask_n2, "단가"] = d_price.loc[mask_n2, "단가"] * 1.238
+    if mask_n2.any():
+        d_price.loc[mask_n2, "단가"] = d_price.loc[mask_n2, "단가"] * 1.238
     if d_price.empty or "단가" not in d_price.columns:
         price_raw = pd.DataFrame(index=sales_raw.index)
     else:
-        price_raw = d.pivot_table(
+        price_raw = d_price.pivot_table(
             index="거래처", columns="연도월_정렬", values="단가", aggfunc=get_exact_original_price
         ).fillna(0)
 
@@ -9346,8 +9364,30 @@ if sync_cache_remote is not None and cache_remote_configured():
             sync_cache_remote(CACHE_DIR, force=True)
         except Exception:
             pass
-elif _is_streamlit_cloud() and cache_remote_configured is not None and not cache_remote_configured():
-    st.sidebar.caption("Gist 캐시: secrets에 github_token (+ dashboard_cache_gist_id)")
+    elif _is_streamlit_cloud() and cache_remote_configured is not None and not cache_remote_configured():
+        st.sidebar.caption("Gist 캐시: secrets에 github_token (+ dashboard_cache_gist_id)")
+
+if st.session_state.pop("_gist_restore_after_clear", False):
+    if sync_cache_remote is not None and cache_remote_configured():
+        try:
+            _restore = sync_cache_remote(CACHE_DIR, prefer_remote=True, force_pull=True)
+            _n = len((_restore or {}).get("copied") or [])
+            if _n:
+                try:
+                    load_uploaded_files_from_meta.clear()
+                    load_uploaded_files_from_bytes.clear()
+                except Exception:
+                    pass
+                st.session_state["_dash_sales_cache_cleared"] = True
+                st.sidebar.success(f"Gist에서 캐시 복구 · {_n}개")
+                st.rerun()
+            else:
+                st.sidebar.warning(
+                    "로컬 캐시를 지웠습니다. Gist에 최신 데이터가 없으면 "
+                    "맥에서 ☁️ Drive 복사본으로 동기화 후 다시 시도하세요."
+                )
+        except Exception as _re:
+            st.sidebar.warning(f"Gist 복구 실패: {_re}")
 
 address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
 industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)", type=["csv"])
@@ -9806,14 +9846,17 @@ if _is_streamlit_cloud() and sync_cache_remote is not None and cache_remote_conf
         help="맥·Cloud 최신 사이드바 CSV/매출을 Gist에서 다시 받습니다.",
     ):
         try:
-            _gr = sync_cache_remote(CACHE_DIR, prefer_remote=True)
+            _gr = sync_cache_remote(CACHE_DIR, prefer_remote=True, force_pull=True)
             if isinstance(_gr, dict) and _gr.get("copied"):
                 try:
                     load_uploaded_files_from_meta.clear()
                     load_uploaded_files_from_bytes.clear()
                 except Exception:
                     pass
+                st.session_state["_dash_sales_cache_cleared"] = True
                 st.session_state.pop("_gist_cache_boot_rerun", None)
+                for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
+                    st.session_state.pop(_pk, None)
                 st.rerun()
             elif isinstance(_gr, dict) and _gr.get("error"):
                 st.sidebar.warning(str(_gr.get("error")))
@@ -9822,7 +9865,10 @@ if _is_streamlit_cloud() and sync_cache_remote is not None and cache_remote_conf
         except Exception as _ge:
             st.sidebar.warning(str(_ge))
 
-if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
+if st.sidebar.button(
+    "🗑️ 저장된 캐시 데이터 초기화",
+    help="로컬 CSV/캐시만 삭제합니다. Cloud에서는 Gist에서 자동 복구를 시도합니다.",
+):
     for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
               tank_cache_path, tank_cache_path + "_name.txt", 
               vaporizer_cache_path, vaporizer_cache_path + "_name.txt",
@@ -9837,6 +9883,11 @@ if st.sidebar.button("🗑️ 저장된 캐시 데이터 초기화"):
         load_uploaded_files_from_bytes.clear()
     except Exception:
         pass
+    st.session_state["_dash_sales_cache_cleared"] = True
+    for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
+        st.session_state.pop(_pk, None)
+    if _is_streamlit_cloud():
+        st.session_state["_gist_restore_after_clear"] = True
     st.rerun()
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
@@ -9889,6 +9940,14 @@ def get_fast_processed_full_df(meta_data, staff_token, ind_dict, ind_staff_dict=
                 )
         
     return temp_df
+
+# 캐시 초기화·Gist 수동 가져오기 직후 — 파싱/피벗 캐시까지 무효화
+if st.session_state.pop("_dash_sales_cache_cleared", False):
+    try:
+        get_fast_processed_full_df.clear()
+        cached_tab3_pivots.clear()
+    except Exception:
+        pass
 
 # 단 0.01초 만에 메모리에서 정제 완료된 데이터를 즉시 꺼내옴
 full_df = get_fast_processed_full_df(
@@ -10050,7 +10109,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-28f · Tab4스타일수정")
+        dev_caption("필터 빌드 2026-08-28g · 캐시복구수정")
 
         df_base = df_base_opts
         df_staff_filtered = (
