@@ -8754,15 +8754,21 @@ def set_saved_date(file_path, date_val):
 # ★ 탭 전체 적용 표 합계행 렌더링 유틸리티 (무손실 보존) ★
 # ==========================================
 def get_display_df_with_sum(df, sum_label="연간 합계", text_cols=None):
-    if df is None or df.empty: return df
+    if df is None or df.empty:
+        return df
     disp = df.copy()
-    numeric_cols = disp.select_dtypes(include=[np.number]).columns
-    sum_series = disp[numeric_cols].sum()
-    disp.loc[sum_label] = sum_series
+    text_cols = [c for c in (text_cols or []) if c in disp.columns]
+    for col in text_cols:
+        disp[col] = disp[col].astype(object)
+    numeric_cols = [
+        c for c in disp.select_dtypes(include=[np.number]).columns if c not in text_cols
+    ]
+    if numeric_cols:
+        sum_series = disp[numeric_cols].sum()
+        disp.loc[sum_label, numeric_cols] = sum_series.values
     if text_cols:
         for col in text_cols:
-            if col in disp.columns:
-                disp.at[sum_label, col] = "총 합계"
+            disp.at[sum_label, col] = "총 합계"
     return disp
 def style_with_sum(disp_df, fmt_str, cmap=None, subset_cols=None, axis=None):
     if disp_df.empty:
@@ -10037,7 +10043,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-28c · Cloud12탭 · Tab4품목거래처상세")
+        dev_caption("필터 빌드 2026-08-28d · Tab4합계행수정")
 
         df_base = df_base_opts
         df_staff_filtered = (
