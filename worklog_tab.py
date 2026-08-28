@@ -139,7 +139,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-27h · 일지일괄가져오기"
+_WL_UI_BUILD = "2026-08-27i · 일지일괄가져오기fix"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -4340,8 +4340,42 @@ def _maybe_sync_worklog_remote() -> None:
         pass
 
 
+def _on_bulk_import_new() -> None:
+    """확정 on_click — 위젯 키 대신 별도 플래그만 설정."""
+    st.session_state["wl_do_bulk_import"] = "new"
+
+
+def _on_bulk_import_overwrite() -> None:
+    """확정 on_click — 위젯 키 대신 별도 플래그만 설정."""
+    st.session_state["wl_do_bulk_import"] = "overwrite"
+
+
+def _run_pending_bulk_import() -> bool:
+    """wl_do_bulk_import 플래그가 있으면 일괄 가져오기 실행. 처리했으면 True."""
+    mode = st.session_state.pop("wl_do_bulk_import", None)
+    if mode not in ("new", "overwrite"):
+        return False
+    res = bulk_import_archive_to_worklog(overwrite=(mode == "overwrite"))
+    if res.get("total", 0) == 0:
+        msg = "가져올 일지가 없습니다. `…/업무/일지/연도/N월.xlsx` 또는 `YYYY-MM-DD.xlsx` 형식을 확인하세요."
+        st.session_state["wl_bulk_import_result"] = {"ok": False, "msg": msg}
+    else:
+        msg = (
+            f"일괄 가져오기 완료: **{res['imported']}**건 가져옴 · "
+            f"{res['skipped']}건 건너뜀 · {res['failed']}건 실패"
+        )
+        st.session_state["wl_bulk_import_result"] = {"ok": True, "msg": msg}
+    return True
+
+
 def _render_worklog_archive_import_ui() -> None:
     """업무/일지 폴더 → 탭 편집 캐시 일괄 가져오기 (항상 표시)."""
+    flash = st.session_state.pop("wl_bulk_import_result", None)
+    if isinstance(flash, dict) and flash.get("msg"):
+        if flash.get("ok"):
+            st.success(flash["msg"])
+        else:
+            st.warning(flash["msg"])
     root = resolve_worklog_archive_root()
     with st.expander("📥 업무/일지 폴더에서 일괄 가져오기", expanded=False):
         if not root:
@@ -4360,42 +4394,21 @@ def _render_worklog_archive_import_ui() -> None:
         )
         c1, c2 = st.columns(2)
         with c1:
-            if st.button(
+            st.button(
                 "새 날짜만 가져오기",
                 key="wl_bulk_import_new",
                 width="stretch",
                 help="이미 탭에 있는 날짜는 건너뜁니다.",
-            ):
-                st.session_state["wl_do_bulk_import"] = "new"
-                st.rerun()
+                on_click=_on_bulk_import_new,
+            )
         with c2:
-            if st.button(
+            st.button(
                 "전체 덮어쓰기",
                 key="wl_bulk_import_all",
                 width="stretch",
                 help="기존 탭 일지도 archive 내용으로 덮어씁니다.",
-            ):
-                st.session_state["wl_do_bulk_import"] = "overwrite"
-                st.rerun()
-    mode = st.session_state.pop("wl_do_bulk_import", None)
-    flash = st.session_state.pop("wl_bulk_import_result", None)
-    if isinstance(flash, dict) and flash.get("msg"):
-        if flash.get("ok"):
-            st.success(flash["msg"])
-        else:
-            st.warning(flash["msg"])
-    if mode in ("new", "overwrite"):
-        res = bulk_import_archive_to_worklog(overwrite=(mode == "overwrite"))
-        if res.get("total", 0) == 0:
-            msg = "가져올 일지가 없습니다. `…/업무/일지/연도/N월.xlsx` 또는 `YYYY-MM-DD.xlsx` 형식을 확인하세요."
-            st.session_state["wl_bulk_import_result"] = {"ok": False, "msg": msg}
-        else:
-            msg = (
-                f"일괄 가져오기 완료: **{res['imported']}**건 가져옴 · "
-                f"{res['skipped']}건 건너뜀 · {res['failed']}건 실패"
+                on_click=_on_bulk_import_overwrite,
             )
-            st.session_state["wl_bulk_import_result"] = {"ok": True, "msg": msg}
-        st.rerun()
 
 
 def _render_worklog_sync_ui() -> None:
@@ -4556,6 +4569,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     selected: date = st.session_state["worklog_selected"]
 
     _run_pending_worklog_day_delete()
+    _run_pending_bulk_import()
 
     _prepare_worklog_day_state(selected, skip_remote_pull=_filt_changed)
     _maybe_sync_worklog_remote()
