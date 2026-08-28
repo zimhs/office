@@ -4534,8 +4534,15 @@ def _dash_base_pivot_cache_key(start_date, end_date, sales_meta, manual_token):
     return ("base", str(start_date), str(end_date), sales_meta, manual_token)
 
 
-# 상단 필터 rerun 시 무거운 탭(업무일지·시장조사·공문) 생략용 — 탭 인덱스 = st.tabs 순서
+# 상단 필터 rerun 시 무거운 탭 생략용 — 탭 인덱스 = st.tabs 순서
+# Cloud(iPad): 업무일지·공문 포함 12탭 / Mac 로컬(8501): 10탭(8502 전용)
+def _dash_cloud_merged_tabs() -> bool:
+    """Streamlit Cloud·iPad — 한 URL에 업무일지·공문 포함. Mac localhost 8501 은 False."""
+    return _is_streamlit_cloud()
+
+
 _DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER = 9, 10, 11
+_DASH_TAB_MARKET_LOCAL = 9
 
 
 def _dash_top_filter_sig_now() -> tuple:
@@ -4592,10 +4599,9 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """상단 필터 rerun이면 업무일지·시장조사·공문 UI를 생략.
+    """상단 필터 rerun이면 시장조사 UI를 생략.
 
-    이 탭들은 상단 영업 필터를 쓰지 않음. 필터 변경마다 같이 그리면
-    (업무일지·공문 추가 이후) 체감 로딩이 급증함.
+    이 탭은 상단 영업 필터를 쓰지 않음. 필터 변경마다 같이 그리면 체감 로딩이 급증함.
     - force remount / 「화면 불러오기」→ 즉시 복원
     - 활성 탭이 해당 heavy 탭이면(쿠키) 생략하지 않음(화면이 비지 않게)
     - 필터 변경 후 미복원이면 다음 rerun에서도 stub 유지(필터 계속 빠릿)
@@ -4629,68 +4635,69 @@ def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: 
         st.rerun()
 
 
-def inject_dash_active_tab_cookie_script() -> None:
+def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: tuple[int, ...] = (9,)) -> None:
     """메인 탭 선택 → cookie + deferred stub 자동 「화면 불러오기」.
 
     Streamlit components.html 은 rerun 마다 DOM에서 사라지므로 매 run 재주입.
     """
+    heavy_js = ", ".join(str(i) for i in heavy_indices) or "-1"
     components.html(
-        """
+        f"""
         <script>
-        (function () {
+        (function () {{
           var doc = window.parent.document;
           var COOKIE = 'dash_active_tab';
-          function mainTabList() {
+          var HEAVY = [{heavy_js}];
+          function mainTabList() {{
             var lists = doc.querySelectorAll('[role="tablist"]');
             var best = null, bestN = 0;
-            for (var i = 0; i < lists.length; i++) {
+            for (var i = 0; i < lists.length; i++) {{
               var n = lists[i].querySelectorAll('[role="tab"]').length;
-              if (n >= 12 && n > bestN) { bestN = n; best = lists[i]; }
-              else if (n > bestN) { bestN = n; best = lists[i]; }
-            }
+              if (n >= {min_tabs} && n > bestN) {{ bestN = n; best = lists[i]; }}
+              else if (n > bestN) {{ bestN = n; best = lists[i]; }}
+            }}
             return best;
-          }
-          function clickRemount() {
+          }}
+          function clickRemount() {{
             var buttons = doc.querySelectorAll('button');
-            for (var b = 0; b < buttons.length; b++) {
+            for (var b = 0; b < buttons.length; b++) {{
               var t = (buttons[b].innerText || buttons[b].textContent || '');
-              if (t.indexOf('화면 불러오기') >= 0) {
-                try { buttons[b].click(); } catch (eClick) {}
+              if (t.indexOf('화면 불러오기') >= 0) {{
+                try {{ buttons[b].click(); }} catch (eClick) {{}}
                 return true;
-              }
-            }
+              }}
+            }}
             return false;
-          }
-          function writeIdx() {
-            try {
+          }}
+          function writeIdx() {{
+            try {{
               var list = mainTabList();
               if (!list) return;
               var tabs = list.querySelectorAll('[role="tab"]');
               var idx = -1;
-              for (var i = 0; i < tabs.length; i++) {
-                if (tabs[i].getAttribute('aria-selected') === 'true') { idx = i; break; }
-              }
+              for (var i = 0; i < tabs.length; i++) {{
+                if (tabs[i].getAttribute('aria-selected') === 'true') {{ idx = i; break; }}
+              }}
               if (idx < 0) return;
               doc.cookie = COOKIE + '=' + idx + '; path=/; max-age=31536000; SameSite=Lax';
-              // 업무일지(9)·시장조사(10)·공문(11): stub이면 자동 복원
-              if (idx >= 9 && idx <= 11) {
+              if (HEAVY.indexOf(idx) >= 0) {{
                 setTimeout(clickRemount, 40);
-              }
-            } catch (e1) {}
-          }
-          if (!doc.__dashActiveTabCookieReady) {
+              }}
+            }} catch (e1) {{}}
+          }}
+          if (!doc.__dashActiveTabCookieReady) {{
             doc.__dashActiveTabCookieReady = true;
-            doc.addEventListener('click', function (ev) {
-              try {
+            doc.addEventListener('click', function (ev) {{
+              try {{
                 var t = ev.target && ev.target.closest && ev.target.closest('[role="tab"]');
                 if (t) setTimeout(writeIdx, 30);
-              } catch (e2) {}
-            }, true);
-          }
+              }} catch (e2) {{}}
+            }}, true);
+          }}
           writeIdx();
           setTimeout(writeIdx, 120);
           setTimeout(writeIdx, 600);
-        })();
+        }})();
         </script>
         """,
         height=0,
@@ -9832,7 +9839,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-27j · 필터시중탭생략")
+        dev_caption("필터 빌드 2026-08-28b · Cloud12탭 · Mac로컬10탭")
 
         df_base = df_base_opts
         df_staff_filtered = (
@@ -10032,32 +10039,52 @@ except Exception as exc:
     st.sidebar.error(f"PPT 생성 오류: {exc}")
 # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
 _dash_note_filter_change_for_heavy_tabs()
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
-    [
-        "📌 영업 종합 요약",
-        "🏢 거래처 분석",
-        "📦 품목 및 단가 분석",
-        "👤 담당자 & 상세내역",
-        "📌 채권 관리",
-        "📍 카카오맵",
-        "🏭 설비 재고 현황",
-        "🛢️ 통합 탱크 재고",
-        "📈 수익성 분석",
-        "📝 일일업무일지",
-        "🔎 시장조사",
-        "📨 공문",
-    ]
-)
+_DASH_CLOUD_TABS = _dash_cloud_merged_tabs()
+if _DASH_CLOUD_TABS:
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
+        [
+            "📌 영업 종합 요약",
+            "🏢 거래처 분석",
+            "📦 품목 및 단가 분석",
+            "👤 담당자 & 상세내역",
+            "📌 채권 관리",
+            "📍 카카오맵",
+            "🏭 설비 재고 현황",
+            "🛢️ 통합 탱크 재고",
+            "📈 수익성 분석",
+            "📝 일일업무일지",
+            "🔎 시장조사",
+            "📨 공문",
+        ]
+    )
+else:
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
+        [
+            "📌 영업 종합 요약",
+            "🏢 거래처 분석",
+            "📦 품목 및 단가 분석",
+            "👤 담당자 & 상세내역",
+            "📌 채권 관리",
+            "📍 카카오맵",
+            "🏭 설비 재고 현황",
+            "🛢️ 통합 탱크 재고",
+            "📈 수익성 분석",
+            "🔎 시장조사",
+        ]
+    )
 # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
 # 활성 탭 cookie 스크립트는 height=0·가벼움 → 매 run 재주입(탭 전환 추적·stub 자동복원)
-_STICKY_INJECT_VER = 33
+_STICKY_INJECT_VER = 35
 if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
     st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
     st.session_state["_ipad_sticky_injected"] = True
     st.session_state["_ipad_sticky_ver"] = 30
-inject_dash_active_tab_cookie_script()
+if _DASH_CLOUD_TABS:
+    inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=(9, 10, 11))
+else:
+    inject_dash_active_tab_cookie_script(min_tabs=10, heavy_indices=(9,))
 # Tab 1: 📌 영업 종합 요약
 with tab1:
     t1_c1, t1_c2 = st.columns([4, 1])
@@ -13066,61 +13093,66 @@ def _render_profitability_analysis_tab(latest_update_str):
 with tab9:
     _render_profitability_analysis_tab(latest_update_str)
 
-with tab10:
-    # 업무일지 탭 전용 — 다른 탭과 공유 상태/헬퍼를 쓰지 않음.
-    # 파일 mtime 변경 시에만 reload (매번 reload 금지 → 달력/저장 로딩 감소).
-    # 로드 실패 시에도 다른 탭은 유지.
-    # 상단 필터 변경 시(다른 탭 사용 중) 무거운 UI 생략 → 예전처럼 필터가 빠릿하게.
-    try:
-        if _dash_should_defer_heavy_tab(_DASH_TAB_WORKLOG):
-            _dash_defer_heavy_stub(
-                "📝 일일업무일지",
-                _DASH_TAB_WORKLOG,
-                "_dash_bak_worklog",
-                ("wl_", "worklog_", "wl_date_pick"),
+if _DASH_CLOUD_TABS:
+    with tab10:
+        # 업무일지 — Cloud·iPad 전용 (Mac 로컬 8501·8502 분리)
+        try:
+            if _dash_should_defer_heavy_tab(_DASH_TAB_WORKLOG):
+                _dash_defer_heavy_stub(
+                    "📝 일일업무일지",
+                    _DASH_TAB_WORKLOG,
+                    "_dash_bak_worklog",
+                    ("wl_", "worklog_", "wl_date_pick"),
+                )
+            else:
+                _dash_restore_session_keys("_dash_bak_worklog")
+                import importlib
+                import os
+                import sys
+
+                import worklog_tab as _worklog_tab
+
+                _wl_path = getattr(_worklog_tab, "__file__", None) or ""
+                _wl_mtime = os.path.getmtime(_wl_path) if _wl_path and os.path.exists(_wl_path) else 0
+                if "_wl_mod_mtime" not in st.session_state:
+                    st.session_state["_wl_mod_mtime"] = _wl_mtime
+                elif st.session_state.get("_wl_mod_mtime") != _wl_mtime:
+                    _worklog_tab = importlib.reload(_worklog_tab)
+                    st.session_state["_wl_mod_mtime"] = _wl_mtime
+                    sys.modules["worklog_tab"] = _worklog_tab
+                _worklog_tab.render_worklog_tab(latest_update_str)
+                _dash_backup_session_keys(
+                    "_dash_bak_worklog",
+                    ("wl_", "worklog_", "wl_date_pick"),
+                )
+        except ModuleNotFoundError:
+            st.error(
+                "일일업무일지 모듈(`worklog_tab.py`)을 찾을 수 없습니다. "
+                "배포 파일에 포함되었는지 확인해 주세요."
             )
-        else:
-            _dash_restore_session_keys("_dash_bak_worklog")
-            import importlib
-            import os
-            import sys
-
-            import worklog_tab as _worklog_tab
-
-            _wl_path = getattr(_worklog_tab, "__file__", None) or ""
-            _wl_mtime = os.path.getmtime(_wl_path) if _wl_path and os.path.exists(_wl_path) else 0
-            if "_wl_mod_mtime" not in st.session_state:
-                st.session_state["_wl_mod_mtime"] = _wl_mtime
-            elif st.session_state.get("_wl_mod_mtime") != _wl_mtime:
-                _worklog_tab = importlib.reload(_worklog_tab)
-                st.session_state["_wl_mod_mtime"] = _wl_mtime
-                sys.modules["worklog_tab"] = _worklog_tab
-            _worklog_tab.render_worklog_tab(latest_update_str)
-            _dash_backup_session_keys(
-                "_dash_bak_worklog",
-                ("wl_", "worklog_", "wl_date_pick"),
-            )
-    except ModuleNotFoundError:
-        st.error(
-            "일일업무일지 모듈(`worklog_tab.py`)을 찾을 수 없습니다. "
-            "배포 파일에 포함되었는지 확인해 주세요."
-        )
-        st.info("다른 탭은 정상 이용 가능합니다.")
-    except Exception as _wl_err:
-        if is_touch_ui():
-            st.error("일일업무일지 탭을 표시하지 못했습니다. 잠시 후 새로고침해 주세요.")
             st.info("다른 탭은 정상 이용 가능합니다.")
-        else:
-            st.error(f"일일업무일지 탭 오류: {_wl_err}")
-            st.info("다른 탭은 정상 이용 가능합니다.")
+        except Exception as _wl_err:
+            if is_touch_ui():
+                st.error("일일업무일지 탭을 표시하지 못했습니다. 잠시 후 새로고침해 주세요.")
+                st.info("다른 탭은 정상 이용 가능합니다.")
+            else:
+                st.error(f"일일업무일지 탭 오류: {_wl_err}")
+                st.info("다른 탭은 정상 이용 가능합니다.")
+    _tab_market = tab11
+    _tab_letter = tab12
+    _tab_market_idx = _DASH_TAB_MARKET
+else:
+    _tab_market = tab10
+    _tab_letter = None
+    _tab_market_idx = _DASH_TAB_MARKET_LOCAL
 
-with tab11:
+with _tab_market:
     # 시장조사 탭 전용 — 다른 탭과 공유 상태/헬퍼를 쓰지 않음.
     try:
-        if _dash_should_defer_heavy_tab(_DASH_TAB_MARKET):
+        if _dash_should_defer_heavy_tab(_tab_market_idx):
             _dash_defer_heavy_stub(
                 "🔎 시장조사",
-                _DASH_TAB_MARKET,
+                _tab_market_idx,
                 "_dash_bak_market",
                 ("mr_", "market_"),
             )
@@ -13152,41 +13184,42 @@ with tab11:
         st.error(f"시장조사 탭 오류: {_mr_err}")
         st.info("다른 탭은 정상 이용 가능합니다. 새로고침 후에도 같으면 관리자에게 오류 문구를 보내 주세요.")
 
-with tab12:
-    # 공문 탭 전용 — 다른 탭 블록/공유 헬퍼는 수정하지 않음.
-    try:
-        if _dash_should_defer_heavy_tab(_DASH_TAB_LETTER):
-            _dash_defer_heavy_stub(
-                "📨 공문",
-                _DASH_TAB_LETTER,
-                "_dash_bak_letter",
-                ("pi_",),
+if _tab_letter is not None:
+    with _tab_letter:
+        # 공문 — Cloud·iPad 전용
+        try:
+            if _dash_should_defer_heavy_tab(_DASH_TAB_LETTER):
+                _dash_defer_heavy_stub(
+                    "📨 공문",
+                    _DASH_TAB_LETTER,
+                    "_dash_bak_letter",
+                    ("pi_",),
+                )
+            else:
+                _dash_restore_session_keys("_dash_bak_letter")
+                import importlib
+                import os
+                import sys
+
+                import price_increase_tab as _pi_tab
+
+                _pi_path = getattr(_pi_tab, "__file__", None) or ""
+                _pi_mtime = os.path.getmtime(_pi_path) if _pi_path and os.path.exists(_pi_path) else 0
+                if "_pi_mod_mtime" not in st.session_state:
+                    st.session_state["_pi_mod_mtime"] = _pi_mtime
+                elif st.session_state.get("_pi_mod_mtime") != _pi_mtime:
+                    _pi_tab = importlib.reload(_pi_tab)
+                    st.session_state["_pi_mod_mtime"] = _pi_mtime
+                    sys.modules["price_increase_tab"] = _pi_tab
+                _pi_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                _pi_tab.render_price_increase_tab(_pi_df, latest_update_str=latest_update_str)
+                _dash_backup_session_keys("_dash_bak_letter", ("pi_",))
+        except ModuleNotFoundError:
+            st.error(
+                "공문 모듈(`price_increase_tab.py`)을 찾을 수 없습니다. "
+                "배포 파일에 포함되었는지 확인해 주세요."
             )
-        else:
-            _dash_restore_session_keys("_dash_bak_letter")
-            import importlib
-            import os
-            import sys
-
-            import price_increase_tab as _pi_tab
-
-            _pi_path = getattr(_pi_tab, "__file__", None) or ""
-            _pi_mtime = os.path.getmtime(_pi_path) if _pi_path and os.path.exists(_pi_path) else 0
-            if "_pi_mod_mtime" not in st.session_state:
-                st.session_state["_pi_mod_mtime"] = _pi_mtime
-            elif st.session_state.get("_pi_mod_mtime") != _pi_mtime:
-                _pi_tab = importlib.reload(_pi_tab)
-                st.session_state["_pi_mod_mtime"] = _pi_mtime
-                sys.modules["price_increase_tab"] = _pi_tab
-            _pi_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
-            _pi_tab.render_price_increase_tab(_pi_df, latest_update_str=latest_update_str)
-            _dash_backup_session_keys("_dash_bak_letter", ("pi_",))
-    except ModuleNotFoundError:
-        st.error(
-            "공문 모듈(`price_increase_tab.py`)을 찾을 수 없습니다. "
-            "배포 파일에 포함되었는지 확인해 주세요."
-        )
-        st.info("다른 탭은 정상 이용 가능합니다.")
-    except Exception as _pi_err:
-        st.error(f"공문 탭 오류: {_pi_err}")
-        st.info("다른 탭은 정상 이용 가능합니다.")
+            st.info("다른 탭은 정상 이용 가능합니다.")
+        except Exception as _pi_err:
+            st.error(f"공문 탭 오류: {_pi_err}")
+            st.info("다른 탭은 정상 이용 가능합니다.")

@@ -1,0 +1,75 @@
+#!/bin/bash
+# 바탕화면 업무일지·공문만 (8502) — 브라우저 탭 1개
+#   chmod +x ~/Desktop/업무일지_Dashboard.command
+
+dash_export_path() {
+  export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
+}
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+_dash_bootstrap_root() {
+  local cand
+  for cand in \
+    "${HERE}" \
+    "${HOME}/Desktop/dashboard" \
+    "/Users/maegbugpeulom1/Desktop/dashboard" \
+    "${HOME}/Desktop/dashboard-main" \
+    "${HERE}/dashboard"
+  do
+    if [ -f "${cand}/dashboard_launch_common.sh" ] && [ -f "${cand}/업무일지/app.py" ]; then
+      echo "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ROOT="$(_dash_bootstrap_root)" || {
+  osascript -e 'display alert "업무일지 app.py 없음" message "Desktop/dashboard/업무일지/app.py 가 있는지 확인하세요."'
+  exit 1
+}
+
+# shellcheck source=dashboard_launch_common.sh
+. "${ROOT}/dashboard_launch_common.sh"
+
+fail() {
+  osascript -e "display alert \"업무일지·공문 시작 실패\" message \"$1\""
+  echo "$1"
+  read -r -p "Enter 키를 누르면 종료합니다..."
+  exit 1
+}
+
+if ! command -v python3 >/dev/null 2>&1; then
+  fail "python3 를 찾을 수 없습니다."
+fi
+
+if ! dash_ensure_worklog "$ROOT"; then
+  fail "업무일지(8502) 시작 실패. ${ROOT}/.dashboard_8502.log 확인"
+fi
+
+has_tab="$(osascript 2>/dev/null <<'APPLESCRIPT'
+tell application "Google Chrome"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if URL of t starts with "http://127.0.0.1:8502" then return "yes"
+    end repeat
+  end repeat
+end tell
+return "no"
+APPLESCRIPT
+)"
+
+if [ "$has_tab" = "yes" ]; then
+  osascript -e 'tell application "Google Chrome" to activate' 2>/dev/null || true
+  osascript -e 'display notification "8502 탭으로 이동 (새 탭 없음)" with title "업무일지"'
+  exit 0
+fi
+
+bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+if [ -x "$bin" ]; then
+  "$bin" "http://127.0.0.1:8502" >/dev/null 2>&1 &
+else
+  open -a "Google Chrome" "http://127.0.0.1:8502"
+fi
+osascript -e 'display notification "업무일지(8502) 탭 1개를 엽니다." with title "업무일지"'

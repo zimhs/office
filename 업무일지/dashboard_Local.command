@@ -1,53 +1,38 @@
 #!/bin/bash
-# 업무일지·공문 전용 Streamlit (포트 8502 — 메인 대시보드 8501 과 분리)
-# 사용: dashboard/업무일지 폴더에서 더블클릭
-#   chmod +x dashboard_Local.command
+# 업무일지·공문만 (8502) — 메인 Local.command 가 8502도 켜므로 여기서는 브라우저만
+# v2026-08-28d — 탭이 이미 있으면 포커스만
+export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}"
 
-export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+URL="http://127.0.0.1:8502"
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$DIR/.." && pwd)"
-APP="$DIR/app.py"
-
-if [ ! -f "$APP" ]; then
-  osascript -e 'display alert "업무일지 app.py 없음" message "dashboard/업무일지/app.py 가 있는지 확인하세요."'
-  exit 1
-fi
-
-PORT="${STREAMLIT_PORT:-8502}"
-URL="http://127.0.0.1:${PORT}"
-
-fail() {
-  osascript -e "display alert \"업무일지·공문 시작 실패\" message \"$1\""
-  echo "$1"
-  read -r -p "Enter 키를 누르면 종료합니다..."
+curl -sf "${URL}/_stcore/health" >/dev/null 2>&1 || {
+  osascript -e 'display alert "8502가 꺼져 있습니다" message "먼저 dashboard_Local.command 를 실행하세요."'
   exit 1
 }
 
-if ! command -v python3 >/dev/null 2>&1; then
-  fail "python3 를 찾을 수 없습니다."
-fi
+has_tab="$(osascript 2>/dev/null <<'APPLESCRIPT'
+tell application "Google Chrome"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if URL of t starts with "http://127.0.0.1:8502" then return "yes"
+    end repeat
+  end repeat
+end tell
+return "no"
+APPLESCRIPT
+)"
 
-if curl -sf "${URL}/_stcore/health" >/dev/null 2>&1; then
-  open "${URL}"
+if [ "$has_tab" = "yes" ]; then
+  osascript -e 'tell application "Google Chrome" to activate' 2>/dev/null || true
+  osascript -e 'display notification "8502 탭으로 이동 (새 탭 없음)" with title "업무일지"'
   exit 0
 fi
 
-osascript -e 'display notification "업무일지·공문 대시보드를 시작합니다 (8502)." with title "업무일지"'
-
-cd "$ROOT" || fail "dashboard 루트로 이동 실패: $ROOT"
-
-REQ="$DIR/requirements.txt"
-if [ ! -f "$REQ" ] && [ -f "$ROOT/requirements.txt" ]; then
-  REQ="$ROOT/requirements.txt"
-fi
-
-if [ -x "$ROOT/.venv/bin/streamlit" ]; then
-  exec "$ROOT/.venv/bin/streamlit" run "$APP" --server.port="$PORT" --server.headless=false --browser.gatherUsageStats=false
-elif command -v streamlit >/dev/null 2>&1; then
-  exec streamlit run "$APP" --server.port="$PORT" --server.headless=false --browser.gatherUsageStats=false
-elif python3 -m streamlit --version >/dev/null 2>&1; then
-  exec python3 -m streamlit run "$APP" --server.port="$PORT" --server.headless=false --browser.gatherUsageStats=false
+bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+if [ -x "$bin" ]; then
+  "$bin" "$URL" >/dev/null 2>&1 &
 else
-  fail "streamlit 이 없습니다.\ncd \"$ROOT\" && python3 -m pip install -r \"$REQ\""
+  open -a "Google Chrome" "$URL"
 fi
+osascript -e 'display notification "업무일지(8502) 탭 1개" with title "업무일지"'

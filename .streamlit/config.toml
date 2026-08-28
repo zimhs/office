@@ -1,0 +1,11 @@
+# Streamlit이 브라우저를 직접 열지 않도록 (런처가 Chrome 탭 2개만 엶)
+[server]
+headless = true
+address = "127.0.0.1"
+runOnSave = false
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+serverAddress = "127.0.0.1"
