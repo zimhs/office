@@ -1339,9 +1339,11 @@ def _filter_frame(
     if hide_unclassified and "산업단지" in view.columns:
         view = view[view["산업단지"] != "미분류"]
     if regions:
-        view = view[view["지역"].isin(regions)]
+        reg_set = {str(r).strip() for r in regions}
+        view = view[view["지역"].astype(str).str.strip().isin(reg_set)]
     if complexes:
-        view = view[view["산업단지"].isin(complexes)]
+        cx_set = {str(c).strip() for c in complexes}
+        view = view[view["산업단지"].astype(str).str.strip().isin(cx_set)]
         
     # 1. 공급사 검색 속도 극대화 (List Comprehension 적용)
     if suppliers:
@@ -1402,9 +1404,11 @@ def _mr_cascade_base(
     if hide_unclassified and "산업단지" in view.columns:
         view = view[view["산업단지"] != "미분류"]
     if regions:
-        view = view[view["지역"].isin(regions)]
+        reg_set = {str(r).strip() for r in regions if r}
+        view = view[view["지역"].astype(str).str.strip().isin(reg_set)]
     if complexes:
-        view = view[view["산업단지"].isin(complexes)]
+        cx_set = {str(c).strip() for c in complexes if c}
+        view = view[view["산업단지"].astype(str).str.strip().isin(cx_set)]
     return view
 
 
@@ -1455,8 +1459,8 @@ def _mr_filter_results_fragment(
             return
 
         st.caption(
-            "필터 **v7** · 지역→단지→공급사 종속 · "
-            "조건을 고른 뒤 **적용** (부분 갱신, 전체 재로딩 없음)."
+            "필터 **v8** · 지역→단지→공급사 종속 · "
+            "조건을 고른 뒤 **적용** (적용 즉시 아래 결과 갱신)."
         )
 
         # 직전에 적용된 값 (옵션 종속 기준)
@@ -1467,15 +1471,13 @@ def _mr_filter_results_fragment(
         app_fac = bool(st.session_state.get("mr_v6_fac", False))
         app_hide = bool(st.session_state.get("mr_v6_hide", False))
 
-        cx_opts = mr_cascade.complex_opts(cascade, app_r, include_factory=app_fac)
-        # 폼 안에서는 직전 적용 지역 기준으로 단지 옵션을 보여 줌
-        # (지역을 바꾼 뒤 적용 1회 → 단지 목록이 줄어듦)
+        form_ver = int(st.session_state.get("mr_v6_form_ver") or 0)
         form_cx_opts = mr_cascade.complex_opts(cascade, app_r, include_factory=app_fac)
         form_sup_opts = mr_cascade.supplier_opts(
             cascade, app_r, app_c, include_factory=app_fac
         )
 
-        with st.form("mr_filter_v6", clear_on_submit=False):
+        with st.form(f"mr_filter_v6_{form_ver}", clear_on_submit=False):
             c_fac, c_hide = st.columns(2)
             with c_fac:
                 fac_in = st.checkbox("화성공장 DB(단독) 포함", value=app_fac)
@@ -1487,15 +1489,14 @@ def _mr_filter_results_fragment(
                 r_in = st.multiselect(
                     "지역",
                     options=regions,
-                    default=[x for x in app_r if x in regions],
+                    default=_ms_default(app_r, regions),
                     placeholder="전체 지역",
                 )
             with f2:
-                # 지역 변경 직후(아직 미적용)에는 직전 지역 단지 목록을 보여 줌
                 c_in = st.multiselect(
                     "산업단지" + (f" ({len(form_cx_opts)}개)" if app_r else ""),
                     options=form_cx_opts,
-                    default=[x for x in app_c if x in form_cx_opts],
+                    default=_ms_default(app_c, form_cx_opts),
                     placeholder=(
                         "데이터 없음"
                         if (app_r and not form_cx_opts)
@@ -1508,7 +1509,7 @@ def _mr_filter_results_fragment(
                 s_in = st.multiselect(
                     "공급사",
                     options=form_sup_opts,
-                    default=[x for x in app_s if x in form_sup_opts],
+                    default=_ms_default(app_s, form_sup_opts),
                     placeholder=(
                         "데이터 없음"
                         if (app_c and not form_sup_opts)
@@ -1518,16 +1519,15 @@ def _mr_filter_results_fragment(
             with f4:
                 q_in = st.text_input("검색 (업체·주소·단지·가스·비고)", value=app_q)
 
-            applied = st.form_submit_button("🔍 적용", type="primary", width="stretch")
+            applied = st.form_submit_button("🔍 적용", type="primary", use_container_width=True)
 
         if applied:
             st.session_state["mr_v6_region"] = list(r_in or [])
             st.session_state["mr_v6_complex"] = list(c_in or [])
             st.session_state["mr_v6_sup"] = list(s_in or [])
-            st.session_state["mr_v6_q"] = q_in or ""
+            st.session_state["mr_v6_q"] = (q_in or "").strip()
             st.session_state["mr_v6_fac"] = bool(fac_in)
             st.session_state["mr_v6_hide"] = bool(hide_in)
-            # 지역이 바뀌면 단지/공급사는 새 범위로 다시 고르게
             new_cx = mr_cascade.complex_opts(
                 cascade, list(r_in or []), include_factory=bool(fac_in)
             )
@@ -1537,10 +1537,7 @@ def _mr_filter_results_fragment(
                 cascade, list(r_in or []), kept_c, include_factory=bool(fac_in)
             )
             st.session_state["mr_v6_sup"] = [x for x in (s_in or []) if x in new_sup]
-            try:
-                st.rerun(scope="fragment")
-            except TypeError:
-                st.rerun()
+            st.session_state["mr_v6_form_ver"] = form_ver + 1
 
         app_r = list(st.session_state.get("mr_v6_region") or [])
         app_c = list(st.session_state.get("mr_v6_complex") or [])
@@ -1548,6 +1545,24 @@ def _mr_filter_results_fragment(
         app_q = str(st.session_state.get("mr_v6_q") or "")
         app_fac = bool(st.session_state.get("mr_v6_fac", False))
         app_hide = bool(st.session_state.get("mr_v6_hide", False))
+
+        _applied_parts = []
+        if app_r:
+            _applied_parts.append("지역=" + "·".join(app_r))
+        if app_c:
+            _applied_parts.append("단지=" + "·".join(app_c[:3]) + ("…" if len(app_c) > 3 else ""))
+        if app_s:
+            _applied_parts.append("공급사=" + "·".join(app_s[:2]) + ("…" if len(app_s) > 2 else ""))
+        if app_q:
+            _applied_parts.append(f"검색={app_q}")
+        if app_fac:
+            _applied_parts.append("화성공장DB포함")
+        if app_hide:
+            _applied_parts.append("미분류제외")
+        if _applied_parts:
+            st.caption("✅ 적용됨 · " + " · ".join(_applied_parts))
+        else:
+            st.caption("ℹ️ 적용 조건 없음 — 전체 목록 표시")
 
         view = _filter_frame(
             df,
