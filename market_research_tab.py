@@ -1631,14 +1631,14 @@ def _mr_filter_results(
         with dl_c:
             xl_n = min(n_view, _MR_EXCEL_LIMIT)
             xl_df = view[show_cols].head(xl_n) if show_cols else view.head(xl_n)
+            st.session_state.pop("mr_dl_xlsx_search", None)
             st.download_button(
                 f"엑셀 다운로드 ({xl_n:,}건)",
                 data=_mr_filter_excel_bytes(xl_df),
                 file_name=f"시장조사_검색결과_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="mr_dl_xlsx_search",
                 type="primary",
-                width="stretch",
+                use_container_width=True,
             )
         mode = st.radio(
             "보기",
@@ -1752,6 +1752,7 @@ def _mr_filter_results(
 
 def render_market_research_tab(latest_update_str: str = "") -> None:
     """시장조사 탭 UI."""
+    _mr_clear_widget_session_keys()
     st.markdown(
         "<div class='sub-header dashboard-tab-panel-head'>🔎 시장조사</div>",
         unsafe_allow_html=True,

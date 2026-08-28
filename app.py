@@ -4579,6 +4579,21 @@ _DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER = 9, 10, 11
 _DASH_TAB_MARKET_LOCAL = 9
 # 시장조사 — mr_v6_ 필터·캐시만 백업 (mr_dl_* 위젯 키 복원 시 download_button 오류 방지)
 _DASH_MR_STATE_PREFIXES = ("mr_v6_", "_mr_ipad", "_mr_cache", "_mr_mod", "_mr_data")
+_DASH_MR_WIDGET_PREFIXES = (
+    "mr_dl_",
+    "mr_view_",
+    "mr_region_pick_",
+    "mr_sup_pick_",
+    "mr_complex_pick_",
+    "mr_fac_q_",
+    "mr_upload_",
+    "mr_up_del_",
+    "mr_del_",
+)
+
+
+def _dash_is_mr_widget_key(key: str) -> bool:
+    return isinstance(key, str) and key.startswith(_DASH_MR_WIDGET_PREFIXES)
 
 
 def _dash_top_filter_sig_now() -> tuple:
@@ -4629,9 +4644,18 @@ def _dash_restore_session_keys(store_key: str) -> None:
     bak = st.session_state.get(store_key)
     if not isinstance(bak, dict):
         return
+    if store_key == "_dash_bak_market":
+        bak = {k: v for k, v in bak.items() if not _dash_is_mr_widget_key(k)}
+        st.session_state[store_key] = bak
     for k, v in bak.items():
+        if _dash_is_mr_widget_key(k):
+            continue
         if k not in st.session_state:
             st.session_state[k] = v
+    if store_key == "_dash_bak_market":
+        for k in list(st.session_state.keys()):
+            if _dash_is_mr_widget_key(k):
+                st.session_state.pop(k, None)
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
