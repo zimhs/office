@@ -1629,19 +1629,6 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
                 st.session_state["wl_last_drive_month_path"] = mdrv
     except Exception:
         pass
-    try:
-        from worklog_remote_sync import push_worklog_day_remote, resolve_github_token
-
-        if resolve_github_token():
-            gid, cerr = push_worklog_day_remote(path, WORKLOG_DIR, force=force)
-            if gid:
-                st.session_state["wl_last_cloud_gist"] = gid
-            elif cerr:
-                st.session_state["wl_last_cloud_err"] = cerr
-        else:
-            st.session_state["wl_last_cloud_err"] = "github_token 없음 (secrets.toml 확인)"
-    except Exception as e:
-        st.session_state["wl_last_cloud_err"] = str(e)
     return path
 
 def _purge_worklog_day_preview_cache(d: date) -> None:
@@ -4117,7 +4104,6 @@ def _maybe_sync_worklog_remote() -> None:
     st.session_state["_wl_dash_filter_sig"] = _filt
     try:
         from drive_autoload import sync_worklog_bidirectional
-        from worklog_remote_sync import sync_worklog_remote
 
         _now = time.time()
         _prev = float(st.session_state.get("_wl_drive_sync_ts") or 0)
@@ -4128,19 +4114,19 @@ def _maybe_sync_worklog_remote() -> None:
             return
         st.session_state["_wl_drive_sync_ts"] = _now
         _wl_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
-        _remote_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
         if not _on_cloud:
             _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR, force=_force)
-        try:
-            _remote_sync = sync_worklog_remote(WORKLOG_DIR, force=_force)
-        except Exception as _re:
-            _remote_sync = {
-                "ok": False,
-                "skipped": False,
-                "copied": [],
-                "conflicts": [],
-                "error": str(_re),
-            }
+        elif _force:
+            try:
+                from drive_autoload import sync_dashboard_copy_on_boot
+
+                _wl_sync = sync_dashboard_copy_on_boot(
+                    os.path.dirname(WORKLOG_DIR),
+                    force_refresh=True,
+                )
+            except Exception as _dre:
+                _wl_sync = {"ok": False, "error": str(_dre), "copied": [], "conflicts": []}
+        _remote_sync: dict = {"ok": True, "skipped": True, "copied": [], "conflicts": []}
         st.session_state["_wl_last_wl_sync"] = _wl_sync
         st.session_state["_wl_last_remote_sync"] = _remote_sync
         _conflicts: list[str] = []
@@ -4172,14 +4158,11 @@ def _render_worklog_sync_ui() -> None:
 
         _on_cloud = _wl_is_streamlit_cloud()
         _wl_sync = st.session_state.get("_wl_last_wl_sync") or {}
-        _remote_sync = st.session_state.get("_wl_last_remote_sync") or {}
-        _copied_n = len((_wl_sync or {}).get("copied") or []) + len((_remote_sync or {}).get("copied") or [])
+        _copied_n = len((_wl_sync or {}).get("copied") or [])
         if _copied_n:
-            st.caption(f"일지 동기화 · {_copied_n}개" + (" (Gist)" if _on_cloud else " (Drive/Cloud)"))
-        elif _on_cloud and isinstance(_remote_sync, dict) and _remote_sync.get("error") and not _remote_sync.get("skipped"):
-            st.warning(f"Gist 동기화 실패: {_remote_sync.get('error')}")
-        if _on_cloud and remote_sync_configured():
-            if st.button("↻ Gist에서 일지 가져오기", key="wl_gist_pull_btn", width="stretch"):
+            st.caption(f"일지 동기화 · {_copied_n}개" + (" (Drive)" if _on_cloud else " (Drive/Cloud)"))
+        if _on_cloud:
+            if st.button("↻ Drive에서 일지 가져오기", key="wl_drive_pull_btn", width="stretch"):
                 st.session_state["_wl_drive_sync_force"] = True
                 st.rerun()
         if st.session_state.get("_wl_sync_conflicts"):
