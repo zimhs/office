@@ -48,5 +48,28 @@ if ! dash_ensure_worklog "$ROOT"; then
   fail "업무일지(8502) 시작 실패. ${ROOT}/.dashboard_8502.log 확인"
 fi
 
-open "http://127.0.0.1:8502"
+has_tab="$(osascript 2>/dev/null <<'APPLESCRIPT'
+tell application "Google Chrome"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if URL of t starts with "http://127.0.0.1:8502" then return "yes"
+    end repeat
+  end repeat
+end tell
+return "no"
+APPLESCRIPT
+)"
+
+if [ "$has_tab" = "yes" ]; then
+  osascript -e 'tell application "Google Chrome" to activate' 2>/dev/null || true
+  osascript -e 'display notification "8502 탭으로 이동 (새 탭 없음)" with title "업무일지"'
+  exit 0
+fi
+
+bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+if [ -x "$bin" ]; then
+  "$bin" "http://127.0.0.1:8502" >/dev/null 2>&1 &
+else
+  open -a "Google Chrome" "http://127.0.0.1:8502"
+fi
 osascript -e 'display notification "업무일지(8502) 탭 1개를 엽니다." with title "업무일지"'
