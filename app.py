@@ -9947,11 +9947,6 @@ if isinstance(_drive_gist, dict):
         _gpn = int(_drive_gist.get("push_count") or 0)
         if _gpn > 0:
             st.sidebar.success(f"Gist 업로드 · {_gpn}개 (iPad/Cloud에서 ↻ 가져오기)")
-            _ggid = (_drive_gist.get("gist_id") or "").strip()
-            if _ggid:
-                st.sidebar.caption(
-                    f"Cloud secrets → dashboard_cache_gist_id = {_ggid}"
-                )
 
 if (not _is_streamlit_cloud()) and cache_remote_configured is not None:
     if not cache_remote_configured():
@@ -9959,14 +9954,12 @@ if (not _is_streamlit_cloud()) and cache_remote_configured is not None:
     elif resolve_dashboard_cache_gist_id is not None:
         _mac_gid = (resolve_dashboard_cache_gist_id(CACHE_DIR) or "").strip()
         if _mac_gid:
-            st.sidebar.caption(f"맥 Gist id: {_mac_gid}")
+            st.sidebar.caption("Gist 연동됨 · id는 secrets.toml에만 저장")
 
 _gist_push_n = st.session_state.pop("_gist_cache_push_msg", None)
 if isinstance(_gist_push_n, int) and _gist_push_n > 0:
     st.sidebar.caption(f"Gist 캐시 업로드 · {_gist_push_n}개 (Cloud/iPad에서 ↻ 가져오기)")
-_gist_push_id = st.session_state.pop("_gist_cache_push_id", None)
-if isinstance(_gist_push_id, str) and _gist_push_id.strip():
-    st.sidebar.caption(f"Gist id: {_gist_push_id.strip()}")
+st.session_state.pop("_gist_cache_push_id", None)
 
 if (not _is_streamlit_cloud()) and sync_cache_remote is not None and cache_remote_configured():
     if st.sidebar.button(
@@ -9983,12 +9976,9 @@ if (not _is_streamlit_cloud()) and sync_cache_remote is not None and cache_remot
             if isinstance(_up, dict) and _up.get("error"):
                 st.sidebar.warning(str(_up.get("error")))
             elif _pn:
-                _gid = (_up or {}).get("gist_id") or ""
-                st.sidebar.success(f"Gist 업로드 · {_pn}개")
-                if _gid:
-                    st.sidebar.caption(
-                        f"Gist id: {_gid} — Streamlit Cloud secrets의 dashboard_cache_gist_id 와 동일해야 합니다."
-                    )
+                st.sidebar.success(
+                    f"Gist 업로드 · {_pn}개 · Cloud secrets의 dashboard_cache_gist_id 와 맥이 동일한지 확인"
+                )
             else:
                 st.sidebar.info("Gist: 업로드할 변경 없음 (이미 Gist와 동일)")
         except Exception as _ue:
@@ -10031,13 +10021,9 @@ if isinstance(_gist_pull, tuple) and len(_gist_pull) == 2:
     if _kind == "error":
         st.sidebar.warning(str(_val))
     elif _kind == "empty":
-        _cloud_gid = ""
-        if resolve_dashboard_cache_gist_id is not None:
-            _cloud_gid = (resolve_dashboard_cache_gist_id(CACHE_DIR) or "").strip()
         st.sidebar.warning(
             "Gist에 캐시 파일이 없습니다. "
-            + (f"(Cloud gist id: {_cloud_gid}) " if _cloud_gid else "(Cloud gist id 미설정) ")
-            + "맥에서 ↑ Gist에 데이터 올리기 후, Cloud secrets의 dashboard_cache_gist_id 가 맥과 동일한지 확인하세요."
+            "맥에서 ↑ Gist에 데이터 올리기 후, Cloud secrets의 dashboard_cache_gist_id 가 맥과 동일한지 확인하세요."
         )
     elif _kind == "ok":
         st.sidebar.success(f"Gist에서 {_val}개 받음 · 화면 새로고침됨")
