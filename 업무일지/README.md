@@ -26,6 +26,8 @@
 3. 또는 `업무일지/dashboard_Local.command` 더블클릭
 4. 메인 대시보드는 기존처럼 `dashboard_Local.command` (8501) 사용
 
+**한 번에 두 개:** `dashboard_Local.command` → **메인 8501 + 업무일지 8502** 동시 실행 · `dashboard_Cloud.command` → **Cloud 메인 + 업무일지 8502**
+
 터미널:
 
 ```bash

@@ -1,38 +1,39 @@
 #!/bin/bash
-# 로컬 Streamlit 대시보드 바로가기 (macOS)
-# 사용: app.py 와 같은 폴더에 두고 더블클릭
+# 로컬 Streamlit: 메인(8501) + 업무일지·공문(8502) 동시 실행
 #   chmod +x dashboard_Local.command
 #   xattr -d com.apple.quarantine dashboard_Local.command 2>/dev/null
 
-export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
+dash_export_path
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ ! -f "$DIR/app.py" ]; then
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+_dash_bootstrap_root() {
+  if [ -f "${HERE}/app.py" ] && [ -f "${HERE}/dashboard_launch_common.sh" ]; then
+    echo "$HERE"
+    return 0
+  fi
+  local cand
   for cand in \
     "${HOME}/Desktop/dashboard" \
     "/Users/maegbugpeulom1/Desktop/dashboard" \
     "${HOME}/Desktop/dashboard-main" \
-    "${DIR}/dashboard"
+    "${HERE}/dashboard"
   do
-    if [ -f "${cand}/app.py" ]; then
-      DIR="$cand"
-      break
+    if [ -f "${cand}/app.py" ] && [ -f "${cand}/dashboard_launch_common.sh" ]; then
+      echo "$cand"
+      return 0
     fi
   done
-fi
+  return 1
+}
 
-cd "$DIR" || {
-  osascript -e 'display alert "프로젝트 폴더를 찾을 수 없습니다." message "app.py 가 있는 폴더(예: Desktop/dashboard)에 이 파일을 넣어 주세요."'
+ROOT="$(_dash_bootstrap_root)" || {
+  osascript -e 'display alert "프로젝트 폴더를 찾을 수 없습니다." message "Desktop/dashboard 에 app.py 와 dashboard_launch_common.sh 가 있는지 확인하세요."'
   exit 1
 }
 
-if [ ! -f "$DIR/app.py" ]; then
-  osascript -e "display alert \"app.py 없음\" message \"현재 폴더: $DIR\""
-  exit 1
-fi
-
-PORT="${STREAMLIT_PORT:-8501}"
-URL="http://127.0.0.1:${PORT}"
+# shellcheck source=dashboard_launch_common.sh
+. "${ROOT}/dashboard_launch_common.sh"
 
 fail() {
   osascript -e "display alert \"로컬 대시보드 시작 실패\" message \"$1\""
@@ -42,23 +43,31 @@ fail() {
 }
 
 if ! command -v python3 >/dev/null 2>&1; then
-  fail "python3 를 찾을 수 없습니다. Python을 설치한 뒤 다시 실행하세요."
+  fail "python3 를 찾을 수 없습니다."
 fi
 
-# 이미 실행 중이면 브라우저만 연다
-if curl -sf "${URL}/_stcore/health" >/dev/null 2>&1; then
-  open "${URL}"
+if ! dash_worklog_app "$ROOT" >/dev/null; then
+  osascript -e 'display alert "업무일지 app.py 없음" message "dashboard/업무일지/app.py 를 받은 뒤 다시 실행하세요."'
+fi
+
+if dash_worklog_app "$ROOT" >/dev/null; then
+  if ! dash_ensure_worklog "$ROOT"; then
+    fail "업무일지(8502) 시작에 실패했습니다. ${ROOT}/.dashboard_8502.log 를 확인하세요."
+  fi
+fi
+
+if dash_health 8501; then
+  dash_open_both_local
+  osascript -e 'display notification "메인(8501)과 업무일지(8502) 브라우저를 엽니다." with title "영업 대시보드"'
   exit 0
 fi
 
-osascript -e 'display notification "로컬 대시보드를 시작합니다." with title "영업 대시보드"'
+osascript -e 'display notification "메인(8501)과 업무일지(8502)를 시작합니다." with title "영업 대시보드"'
+dash_open_both_local
 
-if [ -x "$DIR/.venv/bin/streamlit" ]; then
-  exec "$DIR/.venv/bin/streamlit" run "$DIR/app.py" --server.port="$PORT" --server.headless=false --browser.gatherUsageStats=false
-elif command -v streamlit >/dev/null 2>&1; then
-  exec streamlit run "$DIR/app.py" --server.port="$PORT" --server.headless=false --browser.gatherUsageStats=false
-elif python3 -m streamlit --version >/dev/null 2>&1; then
-  exec python3 -m streamlit run "$DIR/app.py" --server.port="$PORT" --server.headless=false --browser.gatherUsageStats=false
-else
-  fail "streamlit 이 없습니다. 터미널에서:\ncd \"$DIR\" && python3 -m pip install -r requirements.txt"
-fi
+cd "$ROOT" || fail "dashboard 폴더 이동 실패"
+
+exec dash_streamlit_run "$ROOT" "$ROOT/app.py" \
+  --server.port=8501 \
+  --server.headless=false \
+  --browser.gatherUsageStats=false
