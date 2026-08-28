@@ -162,9 +162,12 @@ dash_open_both_local() {
   dash_open_two_urls "http://127.0.0.1:8501" "http://127.0.0.1:8502"
 }
 
+dash_open_cloud_only() {
+  open "$(dash_cloud_url "$1")"
+}
+
 dash_open_cloud_and_worklog() {
-  local root="$1"
-  dash_open_two_urls "$(dash_cloud_url "$root")" "http://127.0.0.1:8502"
+  dash_open_cloud_only "$1"
 }
 
 dash_launch_local_pair() {
@@ -177,7 +180,6 @@ dash_launch_local_pair() {
 
 dash_launch_cloud_pair() {
   local root="$1"
-  dash_ensure_worklog "$root" || return 1
-  dash_open_cloud_and_worklog "$root"
+  dash_open_cloud_only "$root"
   return 0
 }
