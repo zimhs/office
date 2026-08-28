@@ -486,12 +486,16 @@ def sync_worklog_remote(
     local_dir: str = "./uploaded_cache/worklog",
     *,
     force: bool = False,
+    prefer_remote: bool = False,
+    force_pull: bool = False,
 ) -> dict:
     """Gist ↔ 로컬 uploaded_cache/worklog 동기화.
 
     - 로컬만 있음 → push
     - 원격만 있음 → pull
     - 둘 다 있고 sha 다름 → conflicts (자동 덮어쓰기 안 함)
+    - prefer_remote=True (Cloud): Gist 최신 우선 pull
+    - force_pull=True: sha 일치해도 Gist에서 다시 받음
     """
     token = resolve_github_token()
     if not token:
@@ -554,7 +558,7 @@ def sync_worklog_remote(
         loc = os.path.join(local_dir, name)
         loc_ok = os.path.isfile(loc)
         rem = remote_files.get(name)
-        rem_ok = rem is not None and f"{name}{_B64_SUFFIX}" in files_meta
+        rem_ok = f"{name}{_B64_SUFFIX}" in files_meta
 
         if loc_ok and not rem_ok:
             gid, perr = push_worklog_day_remote(loc, local_dir)
@@ -584,7 +588,8 @@ def sync_worklog_remote(
         local_sha = _sha256_file(loc) or ""
         remote_sha = str((rem or {}).get("sha256") or "")
         if remote_sha and local_sha and local_sha == remote_sha:
-            continue
+            if not (prefer_remote and force_pull):
+                continue
         # sha 없으면 내용 비교
         if not remote_sha:
             try:
@@ -592,7 +597,25 @@ def sync_worklog_remote(
                 remote_sha = _sha256_bytes(_decode_file(b64)) if b64 else ""
             except Exception:
                 remote_sha = ""
-        if remote_sha and local_sha == remote_sha:
+        if remote_sha and local_sha == remote_sha and not (prefer_remote and force_pull):
+            continue
+
+        if prefer_remote and rem_ok:
+            should_pull = (
+                force_pull
+                or not loc_ok
+                or not remote_sha
+                or local_sha != remote_sha
+            )
+            if should_pull and not is_worklog_day_deleted(name, local_dir):
+                if _pull_one(files_meta, name, loc):
+                    copied.append(f"←Cloud:{name}")
+                    try:
+                        rm = float((rem or {}).get("mtime") or 0)
+                        if rm > 0:
+                            os.utime(loc, (rm, rm))
+                    except OSError:
+                        pass
             continue
 
         if force:

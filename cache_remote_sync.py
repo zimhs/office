@@ -308,6 +308,16 @@ def sync_cache_remote(
     files_meta = gist.get("files") or {}
     manifest = _load_manifest(files_meta)
     remote_files: Dict[str, Any] = dict(manifest.get("files") or {})
+    # manifest 누락·구버전 Gist — .gz.b64 키에서 원격 파일 목록 보강
+    for gkey in files_meta:
+        if not isinstance(gkey, str) or not gkey.endswith(_B64_SUFFIX):
+            continue
+        if gkey in (_MANIFEST, "README.md"):
+            continue
+        base = gkey[: -len(_B64_SUFFIX)]
+        rel = _rel_from_gist_key(base)
+        if rel and rel not in remote_files:
+            remote_files[rel] = {"sha256": "", "mtime": 0.0}
 
     copied: List[str] = []
     names: Set[str] = set(local_files.keys()) | set(remote_files.keys())
@@ -317,7 +327,7 @@ def sync_cache_remote(
         loc_ok = os.path.isfile(loc)
         rem = remote_files.get(rel)
         gkey = _gist_key(rel) + _B64_SUFFIX
-        rem_ok = rem is not None and gkey in files_meta
+        rem_ok = gkey in files_meta
 
         if loc_ok and not rem_ok:
             if not prefer_remote:
@@ -352,7 +362,13 @@ def sync_cache_remote(
         rm = float((rem or {}).get("mtime") or 0)
 
         if prefer_remote and rem_ok:
-            if force_pull or (not loc_ok) or (local_sha != remote_sha and remote_sha):
+            should_pull = (
+                force_pull
+                or not loc_ok
+                or not remote_sha
+                or local_sha != remote_sha
+            )
+            if should_pull:
                 if _pull_one(files_meta, rel, loc):
                     copied.append(f"←Gist:{rel}")
                     try:
