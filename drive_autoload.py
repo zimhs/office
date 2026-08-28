@@ -11,6 +11,11 @@ import re
 import shutil
 from typing import Dict, List, Optional, Tuple
 
+try:
+    from worklog_remote_sync import _sha256_file
+except Exception:
+    _sha256_file = None  # type: ignore
+
 DRIVE_COPY_NAME = "dashboard 복사본"
 
 # Drive 루트 파일명 → (캐시 상대경로, 선택적 name.txt 내용)
@@ -93,6 +98,30 @@ def _should_replace(src: str, dst: str) -> bool:
         return ss.st_mtime >= sd.st_mtime - 1.0
     except OSError:
         return True
+
+
+def _cache_differs_from_drive(src: str, dst: str) -> bool:
+    """캐시→Drive 푸시 시 변경 여부 (크기·시간·내용 해시)."""
+    if not os.path.isfile(src):
+        return False
+    if not os.path.isfile(dst):
+        return True
+    try:
+        if os.path.getsize(src) != os.path.getsize(dst):
+            return True
+        if abs(os.path.getmtime(src) - os.path.getmtime(dst)) >= 1.0:
+            return True
+    except OSError:
+        return True
+    if _sha256_file is not None:
+        try:
+            local_sha = _sha256_file(src) or ""
+            drive_sha = _sha256_file(dst) or ""
+            if local_sha and drive_sha and local_sha != drive_sha:
+                return True
+        except Exception:
+            return True
+    return False
 
 
 def _list_drive_sales(drive_root: str) -> List[str]:
@@ -199,11 +228,13 @@ def sync_drive_copy_into_cache(cache_dir: str = "./uploaded_cache") -> dict:
         }
 
 
-def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache") -> dict:
+def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache", *, force: bool = False) -> dict:
     """맥 uploaded_cache → Drive「dashboard 복사본」(업로드 반영).
 
     Google Drive 데스크톱이 클라우드로 올리면 아이패드 Drive 폴더에도 보임.
     Streamlit Cloud 시드는 별도 git push가 필요.
+
+    force=True: 사이드바 수동 동기화 — 내용이 같아도 캐시 기준으로 Drive에 덮어씀.
     """
     drive_root = resolve_drive_dashboard_copy()
     if not drive_root:
@@ -211,11 +242,13 @@ def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache") -> dict:
             "ok": False,
             "skipped": True,
             "copied": [],
+            "checked": 0,
             "source": None,
             "error": "Drive「dashboard 복사본」경로 없음",
         }
 
     copied: List[str] = []
+    checked = 0
     try:
         sales_dir = os.path.join(cache_dir, "sales")
 
@@ -224,15 +257,9 @@ def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache") -> dict:
             dst = os.path.join(drive_root, drive_name)
             if not os.path.isfile(src):
                 continue
-            if os.path.isfile(dst):
-                try:
-                    if (
-                        os.path.getsize(src) == os.path.getsize(dst)
-                        and abs(os.path.getmtime(src) - os.path.getmtime(dst)) < 1.0
-                    ):
-                        continue
-                except OSError:
-                    pass
+            checked += 1
+            if not force and not _cache_differs_from_drive(src, dst):
+                continue
             if _atomic_copy(src, dst):
                 copied.append(drive_name)
 
@@ -252,15 +279,9 @@ def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache") -> dict:
                 dst = os.path.join(drive_root, sn)
                 if not os.path.isfile(src):
                     continue
-                if os.path.isfile(dst):
-                    try:
-                        if (
-                            os.path.getsize(src) == os.path.getsize(dst)
-                            and abs(os.path.getmtime(src) - os.path.getmtime(dst)) < 1.0
-                        ):
-                            continue
-                    except OSError:
-                        pass
+                checked += 1
+                if not force and not _cache_differs_from_drive(src, dst):
+                    continue
                 if _atomic_copy(src, dst):
                     copied.append(sn)
             # Drive에만 남은 옛 매출(예: 2026.csv) 제거 — 캐시에 있는 목록만 유지
@@ -282,6 +303,7 @@ def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache") -> dict:
             "ok": True,
             "skipped": False,
             "copied": copied,
+            "checked": checked,
             "source": drive_root,
         }
     except Exception as e:
@@ -289,6 +311,7 @@ def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache") -> dict:
             "ok": False,
             "skipped": False,
             "copied": copied,
+            "checked": checked,
             "source": drive_root,
             "error": str(e),
         }
