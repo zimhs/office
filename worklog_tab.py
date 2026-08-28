@@ -3443,7 +3443,7 @@ def _try_pull_remote_worklog_day(d: date) -> bool:
 
             sync_dashboard_copy_on_boot(
                 os.path.dirname(WORKLOG_DIR),
-                force_refresh=True,
+                force_refresh=False,
                 include_worklog=True,
             )
         except Exception:
