@@ -9795,7 +9795,7 @@ def _run_cache_to_drive_sync(*, force: bool = False):
     if not force and st.session_state.get("_drive_synced_this_upload"):
         return None
     try:
-        res = sync_cache_to_drive_copy(CACHE_DIR)
+        res = sync_cache_to_drive_copy(CACHE_DIR, force=force)
     except Exception as e:
         res = {"ok": False, "error": str(e)}
     st.session_state["_drive_synced_this_upload"] = True
@@ -9829,8 +9829,18 @@ if st.sidebar.button("☁️ Drive 복사본으로 동기화", help="맥 캐시 
 _drive_out = st.session_state.pop("_drive_sync_out_msg", None)
 if isinstance(_drive_out, dict):
     if _drive_out.get("ok") and not _drive_out.get("skipped"):
-        _nc = len([x for x in (_drive_out.get("copied") or []) if not str(x).startswith("-")])
-        st.sidebar.success(f"Drive 복사본 반영 완료 · {_nc}개")
+        _copied = [x for x in (_drive_out.get("copied") or []) if not str(x).startswith("-")]
+        _nc = len(_copied)
+        _checked = int(_drive_out.get("checked") or 0)
+        _src = _drive_out.get("source") or ""
+        if _nc:
+            st.sidebar.success(f"Drive 복사본 반영 완료 · {_nc}개")
+        elif _checked:
+            st.sidebar.info(f"Drive 복사본과 동일 · {_checked}개 확인 (변경 없음)")
+        else:
+            st.sidebar.warning("동기화할 캐시 파일이 없습니다. 사이드바에서 CSV를 먼저 업로드하세요.")
+        if _src:
+            st.sidebar.caption(f"저장 위치: {_src}")
     elif _drive_out.get("skipped"):
         st.sidebar.caption("Drive 경로 없음 — 맥에서 Google Drive 앱 확인")
     elif not _drive_out.get("ok"):
