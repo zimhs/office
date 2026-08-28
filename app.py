@@ -96,17 +96,15 @@ DASHBOARD_CLOUD_URL = (
 ).strip().rstrip("/")
 
 try:
-    from drive_autoload import sync_drive_copy_into_cache, sync_cache_to_drive_copy
+    from drive_autoload import (
+        sync_cache_to_drive_copy,
+        sync_dashboard_copy_on_boot,
+        sync_drive_copy_into_cache,
+    )
 except Exception:  # pragma: no cover
     sync_drive_copy_into_cache = None  # type: ignore
     sync_cache_to_drive_copy = None  # type: ignore
-
-try:
-    from cache_remote_sync import cache_remote_configured, resolve_dashboard_cache_gist_id, sync_cache_remote
-except Exception:  # pragma: no cover
-    cache_remote_configured = None  # type: ignore
-    resolve_dashboard_cache_gist_id = None  # type: ignore
-    sync_cache_remote = None  # type: ignore
+    sync_dashboard_copy_on_boot = None  # type: ignore
 
 
 def _is_local_macos() -> bool:
@@ -148,8 +146,10 @@ def _render_cloud_sync_banner() -> None:
     """로컬(localhost)에서만: 맥·아이패드는 같은 Cloud URL 쓰도록 안내."""
     url = _cloud_app_url()
     if _is_streamlit_cloud():
-        st.sidebar.success("Cloud 공용 · 맥·아이패드 동일 저장소 (여기에 업로드)")
-        st.sidebar.caption("새 파일은 이 사이드바에만 올리면 양쪽에서 같이 보입니다.")
+        st.sidebar.success("Cloud · Drive「dashboard 복사본/uproad」에서 자동 로드")
+        st.sidebar.caption(
+            "맥에서 ☁️ Drive 복사본으로 동기화 후 재시작하면 최신 CSV·매출이 반영됩니다."
+        )
         return
     st.sidebar.error(
         "로컬 실행 중입니다. 아이패드와 맞추려면 **Cloud**를 쓰세요."
@@ -9491,68 +9491,50 @@ def render_frozen_styler_html(
 inject_custom_css()
 st.sidebar.header("📁 데이터 업로드 및 유지")
 _render_cloud_sync_banner()
-# Drive「dashboard 복사본」→ uploaded_cache (맥: Drive 마운트 / 클라우드: 배포 시드)
+# Drive「dashboard 복사본/uproad」→ uploaded_cache (재시작·재부팅 시 최신 우선)
 _drive_autoload_res = None
-if sync_drive_copy_into_cache is not None:
+if not st.session_state.get("_drive_copy_boot_sync_done") and sync_dashboard_copy_on_boot is not None:
     try:
-        _drive_autoload_res = sync_drive_copy_into_cache(CACHE_DIR)
+        _drive_autoload_res = sync_dashboard_copy_on_boot(CACHE_DIR, force_refresh=True)
+        st.session_state["_drive_copy_boot_sync_done"] = True
     except Exception as _dae:
         _drive_autoload_res = {"ok": False, "error": str(_dae)}
+        st.session_state["_drive_copy_boot_sync_done"] = True
 if isinstance(_drive_autoload_res, dict):
     if _drive_autoload_res.get("ok") and _drive_autoload_res.get("source"):
         _n = len(_drive_autoload_res.get("copied") or [])
+        _src = _drive_autoload_res.get("source") or ""
         st.sidebar.caption(
             f"Drive 복사본 자동로드"
-            + (f" · 갱신 {_n}개" if _n else " · 캐시 유지")
+            + (f" · 갱신 {_n}개" if _n else " · 최신 확인")
+            + (" (Cloud API)" if _drive_autoload_res.get("remote") else "")
         )
+        if _src and _n:
+            st.sidebar.caption(f"출처: {_src}")
+        if _n and not st.session_state.get("_drive_copy_boot_rerun"):
+            try:
+                load_uploaded_files_from_meta.clear()
+                load_uploaded_files_from_bytes.clear()
+            except Exception:
+                pass
+            st.session_state["_dash_sales_cache_cleared"] = True
+            st.session_state["_drive_copy_boot_rerun"] = True
+            st.rerun()
     elif _drive_autoload_res.get("ok") and _drive_autoload_res.get("skipped"):
-        st.sidebar.caption("캐시/시드 자동로드 (Drive 경로 없음)")
+        _note = _drive_autoload_res.get("note") or _drive_autoload_res.get("error") or ""
+        if _note:
+            st.sidebar.caption(f"Drive 복사본: {_note}")
+        else:
+            st.sidebar.caption("Drive 복사본 경로 없음 — 시드 캐시 사용")
     elif not _drive_autoload_res.get("ok"):
         st.sidebar.warning(
             f"Drive 자동로드 실패: {_drive_autoload_res.get('error') or '알 수 없음'}"
         )
 
-# Cloud 재부팅: Gist 최신 캐시를 git 시드보다 우선 (사이드바 CSV·매출)
-_cache_remote_res = None
-if sync_cache_remote is not None and cache_remote_configured():
-    try:
-        _cache_remote_res = sync_cache_remote(
-            CACHE_DIR,
-            prefer_remote=_is_streamlit_cloud(),
-        )
-    except Exception as _cre:
-        _cache_remote_res = {"ok": False, "error": str(_cre), "copied": []}
-    if isinstance(_cache_remote_res, dict) and _cache_remote_res.get("copied"):
-        _ncr = len(_cache_remote_res.get("copied") or [])
-        st.sidebar.caption(
-            f"Gist 캐시 동기화 · {_ncr}개"
-            + (" (Cloud 최신 반영)" if _is_streamlit_cloud() else "")
-        )
-        if _is_streamlit_cloud() and not st.session_state.get("_gist_cache_boot_rerun"):
-            st.session_state["_gist_cache_boot_rerun"] = True
-            st.rerun()
-    elif (
-        isinstance(_cache_remote_res, dict)
-        and _cache_remote_res.get("error")
-        and _is_streamlit_cloud()
-    ):
-        st.sidebar.warning(f"Gist 캐시: {_cache_remote_res.get('error')}")
-    elif (
-        isinstance(_drive_autoload_res, dict)
-        and _drive_autoload_res.get("copied")
-        and not _is_streamlit_cloud()
-    ):
+if st.session_state.pop("_drive_restore_after_clear", False):
+    if sync_dashboard_copy_on_boot is not None:
         try:
-            sync_cache_remote(CACHE_DIR, force=True)
-        except Exception:
-            pass
-    elif _is_streamlit_cloud() and cache_remote_configured is not None and not cache_remote_configured():
-        st.sidebar.caption("Gist 캐시: secrets에 github_token (+ dashboard_cache_gist_id)")
-
-if st.session_state.pop("_gist_restore_after_clear", False):
-    if sync_cache_remote is not None and cache_remote_configured():
-        try:
-            _restore = sync_cache_remote(CACHE_DIR, prefer_remote=True, force_pull=True)
+            _restore = sync_dashboard_copy_on_boot(CACHE_DIR, force_refresh=True)
             _n = len((_restore or {}).get("copied") or [])
             if _n:
                 try:
@@ -9561,15 +9543,14 @@ if st.session_state.pop("_gist_restore_after_clear", False):
                 except Exception:
                     pass
                 st.session_state["_dash_sales_cache_cleared"] = True
-                st.sidebar.success(f"Gist에서 캐시 복구 · {_n}개")
+                st.sidebar.success(f"Drive 복사본에서 복구 · {_n}개")
                 st.rerun()
             else:
                 st.sidebar.warning(
-                    "로컬 캐시를 지웠습니다. Gist에 최신 데이터가 없으면 "
-                    "맥에서 ☁️ Drive 복사본으로 동기화 후 다시 시도하세요."
+                    "로컬 캐시를 지웠습니다. 맥에서 ☁️ Drive 복사본으로 동기화 후 다시 시도하세요."
                 )
         except Exception as _re:
-            st.sidebar.warning(f"Gist 복구 실패: {_re}")
+            st.sidebar.warning(f"Drive 복구 실패: {_re}")
 
 address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
 industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)", type=["csv"])
@@ -9990,47 +9971,39 @@ if _drive_upload_hit and sync_cache_to_drive_copy is not None:
 elif not _drive_upload_hit:
     st.session_state.pop("_drive_synced_this_upload", None)
 
-if _drive_upload_hit and sync_cache_remote is not None and cache_remote_configured():
-    try:
-        _push_res = sync_cache_remote(CACHE_DIR, force=True)
-        if isinstance(_push_res, dict) and _push_res.get("copied"):
-            st.session_state["_gist_cache_push_msg"] = len(_push_res.get("copied") or [])
-    except Exception:
-        pass
-
 if st.sidebar.button(
     "☁️ Drive 복사본으로 동기화",
-    help="맥 캐시 → Google Drive uproad 폴더. iPad/Cloud 브라우저용은 Gist(↓ 버튼)도 별도 필요.",
+    help="맥 캐시 → Google Drive「dashboard 복사본/uproad」. Cloud·iPad는 재시작 시 여기서 자동 로드.",
 ):
     st.session_state.pop("_drive_synced_this_upload", None)
     _run_cache_to_drive_sync(force=True)
-    if sync_cache_remote is None or not cache_remote_configured():
-        st.session_state["_drive_gist_out"] = {
-            "ok": False,
-            "skipped": True,
-            "note": "github_token 없음",
-        }
-    else:
-        try:
-            _gp = sync_cache_remote(CACHE_DIR, force=True)
-            st.session_state["_drive_gist_out"] = _gp if isinstance(_gp, dict) else {}
-            _pn = int((st.session_state["_drive_gist_out"] or {}).get("push_count") or 0)
-            if not _pn:
-                _pn = len(
-                    [
-                        x
-                        for x in ((st.session_state["_drive_gist_out"] or {}).get("copied") or [])
-                        if str(x).startswith("→Gist")
-                    ]
-                )
-            if _pn:
-                st.session_state["_gist_cache_push_msg"] = _pn
-                _gid = (st.session_state["_drive_gist_out"] or {}).get("gist_id") or ""
-                if _gid:
-                    st.session_state["_gist_cache_push_id"] = _gid
-        except Exception as _gpe:
-            st.session_state["_drive_gist_out"] = {"ok": False, "error": str(_gpe)}
     st.rerun()
+
+if st.sidebar.button(
+    "↻ Drive 복사본에서 가져오기",
+    help="Google Drive uproad 폴더 → 캐시 (Cloud·맥 공통). 맥에서 동기화 후 눌러 최신 반영.",
+):
+    if sync_dashboard_copy_on_boot is not None:
+        try:
+            _dr = sync_dashboard_copy_on_boot(CACHE_DIR, force_refresh=True)
+            try:
+                load_uploaded_files_from_meta.clear()
+                load_uploaded_files_from_bytes.clear()
+            except Exception:
+                pass
+            st.session_state["_dash_sales_cache_cleared"] = True
+            for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
+                st.session_state.pop(_pk, None)
+            _dn = len((_dr or {}).get("copied") or [])
+            if isinstance(_dr, dict) and _dr.get("error"):
+                st.session_state["_drive_pull_msg"] = ("error", str(_dr.get("error")))
+            elif _dn > 0:
+                st.session_state["_drive_pull_msg"] = ("ok", _dn)
+            else:
+                st.session_state["_drive_pull_msg"] = ("same", None)
+            st.rerun()
+        except Exception as _de:
+            st.sidebar.warning(str(_de))
 
 _drive_out = st.session_state.pop("_drive_sync_out_msg", None)
 if isinstance(_drive_out, dict):
@@ -10052,106 +10025,19 @@ if isinstance(_drive_out, dict):
     elif not _drive_out.get("ok"):
         st.sidebar.warning(f"Drive 동기화 실패: {_drive_out.get('error') or '알 수 없음'}")
 
-_drive_gist = st.session_state.pop("_drive_gist_out", None)
-if isinstance(_drive_gist, dict):
-    if _drive_gist.get("skipped") or _drive_gist.get("note") == "github_token 없음":
-        st.sidebar.warning(
-            "Drive만 반영됨 · iPad/Cloud용 Gist 미연동. "
-            "`.streamlit/secrets.toml`에 github_token 을 넣고 재시작 후 "
-            "↑ Gist에 데이터 올리기를 실행하세요."
-        )
-    elif _drive_gist.get("error"):
-        st.sidebar.warning(f"Gist 업로드 실패: {_drive_gist.get('error')}")
-    else:
-        _gpn = int(_drive_gist.get("push_count") or 0)
-        if _gpn > 0:
-            st.sidebar.success(f"Gist 업로드 · {_gpn}개 (iPad/Cloud에서 ↻ 가져오기)")
-
-if (not _is_streamlit_cloud()) and cache_remote_configured is not None:
-    if not cache_remote_configured():
-        st.sidebar.caption("Gist 미연동 — secrets.toml에 github_token (gist 권한 PAT) 필요")
-    elif resolve_dashboard_cache_gist_id is not None:
-        _mac_gid = (resolve_dashboard_cache_gist_id(CACHE_DIR) or "").strip()
-        if _mac_gid:
-            st.sidebar.caption("Gist 연동됨 · id는 secrets.toml에만 저장")
-
-_gist_push_n = st.session_state.pop("_gist_cache_push_msg", None)
-if isinstance(_gist_push_n, int) and _gist_push_n > 0:
-    st.sidebar.caption(f"Gist 캐시 업로드 · {_gist_push_n}개 (Cloud/iPad에서 ↻ 가져오기)")
-st.session_state.pop("_gist_cache_push_id", None)
-
-if (not _is_streamlit_cloud()) and sync_cache_remote is not None and cache_remote_configured():
-    if st.sidebar.button(
-        "↑ Gist에 데이터 올리기",
-        help="맥 uploaded_cache → GitHub Gist. iPad/Cloud는 ↻ Gist에서 가져오기로 받습니다 (Drive 복사본과 별도).",
-    ):
-        try:
-            _up = sync_cache_remote(CACHE_DIR, force=True)
-            _pn = int((_up or {}).get("push_count") or 0)
-            if not _pn:
-                _pn = len(
-                    [x for x in ((_up or {}).get("copied") or []) if str(x).startswith("→Gist")]
-                )
-            if isinstance(_up, dict) and _up.get("error"):
-                st.sidebar.warning(str(_up.get("error")))
-            elif _pn:
-                st.sidebar.success(
-                    f"Gist 업로드 · {_pn}개 · Cloud secrets의 dashboard_cache_gist_id 와 맥이 동일한지 확인"
-                )
-            else:
-                st.sidebar.info("Gist: 업로드할 변경 없음 (이미 Gist와 동일)")
-        except Exception as _ue:
-            st.sidebar.warning(str(_ue))
-
-if _is_streamlit_cloud() and sync_cache_remote is not None and cache_remote_configured():
-    if st.sidebar.button(
-        "↻ Gist에서 데이터 가져오기",
-        help="맥에서 ↑ Gist에 올린 CSV/매출을 받습니다. Google Drive 복사본과는 별도 경로입니다.",
-    ):
-        try:
-            _gr = sync_cache_remote(CACHE_DIR, prefer_remote=True, force_pull=True)
-            try:
-                load_uploaded_files_from_meta.clear()
-                load_uploaded_files_from_bytes.clear()
-            except Exception:
-                pass
-            st.session_state["_dash_sales_cache_cleared"] = True
-            st.session_state.pop("_gist_cache_boot_rerun", None)
-            for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
-                st.session_state.pop(_pk, None)
-            if isinstance(_gr, dict) and _gr.get("error"):
-                st.session_state["_gist_pull_msg"] = ("error", str(_gr.get("error")))
-            elif isinstance(_gr, dict):
-                _pull = int(_gr.get("pull_count") or 0)
-                _remote = int(_gr.get("remote_count") or 0)
-                if _remote == 0:
-                    st.session_state["_gist_pull_msg"] = ("empty", None)
-                elif _pull > 0:
-                    st.session_state["_gist_pull_msg"] = ("ok", _pull)
-                else:
-                    st.session_state["_gist_pull_msg"] = ("refresh", _remote)
-            st.rerun()
-        except Exception as _ge:
-            st.sidebar.warning(str(_ge))
-
-_gist_pull = st.session_state.pop("_gist_pull_msg", None)
-if isinstance(_gist_pull, tuple) and len(_gist_pull) == 2:
-    _kind, _val = _gist_pull
+_drive_pull = st.session_state.pop("_drive_pull_msg", None)
+if isinstance(_drive_pull, tuple) and len(_drive_pull) == 2:
+    _kind, _val = _drive_pull
     if _kind == "error":
         st.sidebar.warning(str(_val))
-    elif _kind == "empty":
-        st.sidebar.warning(
-            "Gist에 캐시 파일이 없습니다. "
-            "맥에서 ↑ Gist에 데이터 올리기 후, Cloud secrets의 dashboard_cache_gist_id 가 맥과 동일한지 확인하세요."
-        )
     elif _kind == "ok":
-        st.sidebar.success(f"Gist에서 {_val}개 받음 · 화면 새로고침됨")
-    elif _kind == "refresh":
-        st.sidebar.info(f"Gist {_val}개 확인 · 파싱 캐시 새로고침 (파일 내용은 Gist와 동일)")
+        st.sidebar.success(f"Drive 복사본에서 {_val}개 받음 · 화면 새로고침됨")
+    elif _kind == "same":
+        st.sidebar.info("Drive 복사본과 동일 · 파싱 캐시 새로고침")
 
 if st.sidebar.button(
     "🗑️ 저장된 캐시 데이터 초기화",
-    help="로컬 CSV/캐시만 삭제합니다. Cloud에서는 Gist에서 자동 복구를 시도합니다.",
+    help="로컬 CSV/캐시만 삭제합니다. Cloud에서는 Drive 복사본에서 자동 복구를 시도합니다.",
 ):
     for p in [addr_cache_path, industry_cache_path, debt_cache_path, 
               tank_cache_path, tank_cache_path + "_name.txt", 
@@ -10171,7 +10057,7 @@ if st.sidebar.button(
     for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
         st.session_state.pop(_pk, None)
     if _is_streamlit_cloud():
-        st.session_state["_gist_restore_after_clear"] = True
+        st.session_state["_drive_restore_after_clear"] = True
     st.rerun()
 addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
@@ -10226,7 +10112,7 @@ def get_fast_processed_full_df(meta_data, staff_token, ind_dict, ind_staff_dict=
         
     return temp_df
 
-# 캐시 초기화·Gist 수동 가져오기 직후 — 파싱/피벗 캐시까지 무효화
+# 캐시 초기화·Drive 수동 가져오기 직후 — 파싱/피벗 캐시까지 무효화
 if st.session_state.pop("_dash_sales_cache_cleared", False):
     try:
         get_fast_processed_full_df.clear()

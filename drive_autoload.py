@@ -151,16 +151,19 @@ def _list_drive_sales(drive_root: str) -> List[str]:
     return sorted(keep)
 
 
-def sync_drive_copy_into_cache(cache_dir: str = "./uploaded_cache") -> dict:
-    """Drive 복사본 → uploaded_cache. 프로세스당 1회.
+def sync_drive_copy_into_cache(
+    cache_dir: str = "./uploaded_cache",
+    *,
+    force_refresh: bool = False,
+) -> dict:
+    """Drive 복사본 → uploaded_cache. 프로세스당 1회 (force_refresh 시 항상 Drive 우선).
 
     Returns:
         {ok, source, copied: [..], skipped: bool, error?}
     """
     global _DONE
-    if _DONE:
+    if _DONE and not force_refresh:
         return {"ok": True, "skipped": True, "copied": [], "source": None}
-    _DONE = True
 
     drive_root = resolve_drive_dashboard_copy()
     if not drive_root:
@@ -172,6 +175,7 @@ def sync_drive_copy_into_cache(cache_dir: str = "./uploaded_cache") -> dict:
             "note": "Drive 복사본 없음(클라우드·시드 캐시 사용)",
         }
 
+    _DONE = True
     copied: List[str] = []
     try:
         os.makedirs(cache_dir, exist_ok=True)
@@ -181,7 +185,9 @@ def sync_drive_copy_into_cache(cache_dir: str = "./uploaded_cache") -> dict:
         for src_name, rel, name_txt in _CACHE_MAP:
             src = os.path.join(drive_root, src_name)
             dst = os.path.join(cache_dir, rel)
-            if not _should_replace(src, dst):
+            if not force_refresh and not _should_replace(src, dst):
+                continue
+            if not os.path.isfile(src):
                 continue
             if _atomic_copy(src, dst):
                 copied.append(src_name)
@@ -209,8 +215,26 @@ def sync_drive_copy_into_cache(cache_dir: str = "./uploaded_cache") -> dict:
             for sn in wanted_sales:
                 src = os.path.join(drive_root, sn)
                 dst = os.path.join(sales_dir, sn)
-                if _should_replace(src, dst) and _atomic_copy(src, dst):
-                    copied.append(f"sales/{sn}")
+                if force_refresh or _should_replace(src, dst):
+                    if _atomic_copy(src, dst):
+                        copied.append(f"sales/{sn}")
+
+        # worklog 하위 폴더
+        wl_drive = os.path.join(drive_root, "worklog")
+        if os.path.isdir(wl_drive):
+            wl_local = os.path.join(cache_dir, "worklog")
+            os.makedirs(wl_local, exist_ok=True)
+            try:
+                for wname in os.listdir(wl_drive):
+                    if not _is_worklog_day_file(wname) and wname != "template.xlsx":
+                        continue
+                    src = os.path.join(wl_drive, wname)
+                    dst = os.path.join(wl_local, wname)
+                    if force_refresh or _should_replace(src, dst):
+                        if _atomic_copy(src, dst):
+                            copied.append(f"worklog/{wname}")
+            except OSError:
+                pass
 
         return {
             "ok": True,
@@ -224,6 +248,32 @@ def sync_drive_copy_into_cache(cache_dir: str = "./uploaded_cache") -> dict:
             "skipped": False,
             "copied": copied,
             "source": drive_root,
+            "error": str(e),
+        }
+
+
+def sync_dashboard_copy_on_boot(
+    cache_dir: str = "./uploaded_cache",
+    *,
+    force_refresh: bool = True,
+) -> dict:
+    """재시작·재부팅 시 dashboard 복사본/uproad 최신 데이터 로드.
+
+    맥: Drive Desktop 마운트 / Cloud: Drive API (drive_remote_fetch).
+    """
+    local_root = resolve_drive_dashboard_copy()
+    if local_root:
+        return sync_drive_copy_into_cache(cache_dir, force_refresh=force_refresh)
+    try:
+        from drive_remote_fetch import sync_drive_copy_from_remote
+
+        return sync_drive_copy_from_remote(cache_dir, force_refresh=force_refresh)
+    except Exception as e:
+        return {
+            "ok": False,
+            "skipped": True,
+            "copied": [],
+            "source": None,
             "error": str(e),
         }
 
