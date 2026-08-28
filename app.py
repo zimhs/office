@@ -5864,7 +5864,7 @@ def render_tab4_item_client_section(
         unsafe_allow_html=True,
     )
     st.dataframe(
-        price_disp.style.format("{:,.0f}", na_rep=""),
+        style_with_sum(price_disp, "{:,.0f}", cmap=None, axis=None),
         use_container_width=True,
         height=row_h,
     )
@@ -8777,10 +8777,14 @@ def style_with_sum(disp_df, fmt_str, cmap=None, subset_cols=None, axis=None):
     if disp_df.empty:
         return disp_df.style
     if subset_cols is None:
-        subset_cols = disp_df.select_dtypes(include=[np.number]).columns
+        subset_cols = list(disp_df.select_dtypes(include=[np.number]).columns)
+    else:
+        subset_cols = [c for c in subset_cols if c in disp_df.columns]
     grad_subset = pd.IndexSlice[disp_df.index[:-1], subset_cols]
-    styled = disp_df.style.format(fmt_str)
-    if cmap:
+    styled = disp_df.style
+    if subset_cols:
+        styled = styled.format(fmt_str, subset=subset_cols)
+    if cmap and len(subset_cols):
         styled = styled.background_gradient(cmap=cmap, axis=axis, subset=grad_subset)
     styled = styled.apply(
         lambda s: ['font-weight: 800; background-color: #E2E8F0; color: #0F172A;'] * len(s),
@@ -10046,7 +10050,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-28e · Tab4합계행v2")
+        dev_caption("필터 빌드 2026-08-28f · Tab4스타일수정")
 
         df_base = df_base_opts
         df_staff_filtered = (
