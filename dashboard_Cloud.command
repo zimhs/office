@@ -30,7 +30,13 @@ if ! _up; then
   for _ in $(seq 1 40); do _up && break; sleep 1; done
 fi
 
-open -a "Google Chrome" "$CLOUD"
-sleep 0.4
-open -a "Google Chrome" "http://127.0.0.1:8502"
-osascript -e 'display notification "Cloud + 8502 탭 2개" with title "영업 대시보드"'
+_open_chrome_two_tabs() {
+  local u1="$1" u2="$2"
+  local bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  [ -x "$bin" ] || { osascript -e 'display alert "Google Chrome 없음"'; exit 1; }
+  "$bin" --new-window "$u1" "$u2" >/dev/null 2>&1 &
+  sleep 0.3
+}
+
+_open_chrome_two_tabs "$CLOUD" "http://127.0.0.1:8502"
+osascript -e 'display notification "Chrome 한 창 · Cloud+8502" with title "영업 대시보드"'

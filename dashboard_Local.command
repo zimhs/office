@@ -65,21 +65,22 @@ _run_bg() {
 }
 
 _open_chrome_two_tabs() {
-  if [ ! -d "/Applications/Google Chrome.app" ]; then
+  local u1="$1" u2="$2"
+  local bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  if [ ! -x "$bin" ]; then
     osascript -e 'display alert "Google Chrome 없음" message "Chrome 설치 후 다시 실행하세요."'
     return 1
   fi
-  # AppleScript·자동화 권한 없이 Chrome만 사용
-  open -na "Google Chrome" --args --new-window "$URL1"
-  sleep 0.5
-  open -a "Google Chrome" "$URL2"
+  # Chrome 한 창 · 탭 2개 (open -na 는 창이 2개 뜸)
+  "$bin" --new-window "$u1" "$u2" >/dev/null 2>&1 &
+  sleep 0.3
 }
 
 [ -f "$WORK" ] || { osascript -e 'display alert "업무일지 없음" message "dashboard/업무일지/app.py 확인"'; exit 1; }
 
 if _up 8501 && _up 8502; then
-  _open_chrome_two_tabs
-  osascript -e 'display notification "Chrome 탭 2개 (이미 실행 중)" with title "영업 대시보드"'
+  _open_chrome_two_tabs "$URL1" "$URL2"
+  osascript -e 'display notification "Chrome 한 창 · 탭 2개" with title "영업 대시보드"'
   exit 0
 fi
 
@@ -87,5 +88,5 @@ _kill_ports
 _run_bg 8502 "$WORK" || { osascript -e 'display alert "8502 시작 실패" message "dashboard/.dash_8502.log 확인"'; exit 1; }
 _run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패" message "dashboard/.dash_8501.log 확인"'; exit 1; }
 
-_open_chrome_two_tabs
-osascript -e 'display notification "Chrome · 8501+8502 탭 2개" with title "영업 대시보드"'
+_open_chrome_two_tabs "$URL1" "$URL2"
+osascript -e 'display notification "Chrome 한 창 · 8501+8502" with title "영업 대시보드"'
