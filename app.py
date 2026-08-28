@@ -10037,7 +10037,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-28c · Tab4품목거래처상세")
+        dev_caption("필터 빌드 2026-08-28c · Cloud12탭 · Tab4품목거래처상세")
 
         df_base = df_base_opts
         df_staff_filtered = (
