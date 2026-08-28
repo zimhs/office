@@ -1,6 +1,6 @@
 #!/bin/bash
 # 메인(8501) + 업무일지(8502) — Chrome 창 1개 · 탭 2개 · 재실행 시 탭 추가 없음
-# v2026-08-28e
+# v2026-08-28f — app.py 등 변경 시 자동 재시작
 export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
 
 ROOT="${HOME}/Desktop/dashboard"
@@ -28,6 +28,31 @@ fi
 trap 'rmdir "$LAUNCH_LOCK" 2>/dev/null' EXIT
 
 _up() { curl -sf "http://127.0.0.1:$1/_stcore/health" >/dev/null 2>&1; }
+
+_mtime() {
+  local f="$1"
+  [ -f "$f" ] || { echo 0; return; }
+  stat -f "%m" "$f" 2>/dev/null || stat -c "%Y" "$f" 2>/dev/null || echo 0
+}
+
+_code_stamp() {
+  printf "%s|%s|%s" \
+    "$(_mtime "${MAIN}")" \
+    "$(_mtime "${ROOT}/market_research_tab.py")" \
+    "$(_mtime "${WORK}")"
+}
+
+_save_code_stamp() {
+  _code_stamp >"${ROOT}/.dash_code_stamp"
+}
+
+_code_changed_since_start() {
+  local cur saved
+  cur="$(_code_stamp)"
+  saved=""
+  [ -f "${ROOT}/.dash_code_stamp" ] && saved="$(cat "${ROOT}/.dash_code_stamp" 2>/dev/null || true)"
+  [ -n "$saved" ] && [ "$cur" != "$saved" ]
+}
 
 # Chrome CLI --new-window 는 '이전 세션 복원'으로 네이버·캘린더만 뜨는 경우가 있어 AppleScript 로만 탭 제어
 _chrome_ensure_tabs() {
@@ -101,12 +126,16 @@ APPLESCRIPT
   fi
 }
 
-# ★ 서버가 이미 떠 있으면 재시작 없음 — localhost 탭 없으면 새로 엶
+# ★ 서버가 이미 떠 있으면 재시작 없음 — 단, app.py 등 코드 변경 시에는 재시작
 if _up 8501 && _up 8502; then
-  _chrome_ensure_tabs
-  touch "$STAMP"
-  osascript -e 'display notification "대시보드 탭으로 이동 (중복 탭 없음)" with title "영업 대시보드"'
-  exit 0
+  if _code_changed_since_start; then
+    osascript -e 'display notification "코드 변경 감지 — 서버 재시작합니다" with title "영업 대시보드"'
+  else
+    _chrome_ensure_tabs
+    touch "$STAMP"
+    osascript -e 'display notification "대시보드 탭으로 이동 (서버 유지 · 코드 변경 시 자동 재시작)" with title "영업 대시보드"'
+    exit 0
+  fi
 fi
 
 _kill_ports() {
@@ -153,4 +182,5 @@ _run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패"'; exi
 
 _chrome_ensure_tabs
 touch "$STAMP"
-osascript -e 'display notification "Chrome · 8501+8502 탭 2개" with title "영업 대시보드"'
+_save_code_stamp
+osascript -e 'display notification "Chrome · 8501+8502 탭 2개 (코드 반영됨)" with title "영업 대시보드"'
