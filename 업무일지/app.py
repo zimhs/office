@@ -19,8 +19,10 @@ os.chdir(_ROOT)
 
 import streamlit as st
 
-from dev_mode import apply_dev_ui_gate, dev_caption, is_dev_mode
+from dev_mode import apply_dev_ui_gate, dev_caption
 from sales_loader import load_sales_for_letter_tab
+
+_APP_BUILD = "2026-08-28b · 업무일지공문2탭"
 
 apply_dev_ui_gate()
 
@@ -34,13 +36,44 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 1rem; }
+    .block-container { padding-top: 0.75rem; }
+    div[data-testid="stTabs"] {
+        position: sticky;
+        top: 0;
+        z-index: 200;
+        background: #fff;
+        padding-top: 0.25rem;
+        padding-bottom: 0.35rem;
+        border-bottom: 1px solid #E2E8F0;
+        margin-bottom: 0.5rem;
+    }
+    div[data-testid="stTabs"] button[data-baseweb="tab"] {
+        font-size: 1rem !important;
+        font-weight: 600 !important;
+        padding: 0.45rem 1.1rem !important;
+    }
+    #wl-dash-head {
+        margin: 0 0 0.35rem 0;
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #0F172A;
+    }
+    #wl-dash-sub {
+        margin: 0 0 0.5rem 0;
+        font-size: 0.82rem;
+        color: #64748B;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-dev_caption("업무일지·공문 전용 · 포트 8502 · 메인 대시보드와 분리 실행")
+st.markdown(
+    f"<p id='wl-dash-head'>업무일지 · 공문 전용 대시보드</p>"
+    f"<p id='wl-dash-sub'>아래 탭에서 <b>📝 일일업무일지</b> 와 <b>📨 공문</b> 을 선택 · 빌드 {_APP_BUILD}</p>",
+    unsafe_allow_html=True,
+)
+dev_caption(f"업무일지·공문 전용 · 포트 8502 · {_APP_BUILD}")
 
 tab_wl, tab_letter = st.tabs(["📝 일일업무일지", "📨 공문"])
 
