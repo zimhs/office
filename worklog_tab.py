@@ -3441,7 +3441,11 @@ def _try_pull_remote_worklog_day(d: date) -> bool:
         try:
             from drive_autoload import sync_dashboard_copy_on_boot
 
-            sync_dashboard_copy_on_boot(os.path.dirname(WORKLOG_DIR), force_refresh=True)
+            sync_dashboard_copy_on_boot(
+                os.path.dirname(WORKLOG_DIR),
+                force_refresh=True,
+                include_worklog=True,
+            )
         except Exception:
             pass
     else:
@@ -4120,6 +4124,7 @@ def _maybe_sync_worklog_remote() -> None:
                 _wl_sync = sync_dashboard_copy_on_boot(
                     os.path.dirname(WORKLOG_DIR),
                     force_refresh=True,
+                    include_worklog=True,
                 )
             except Exception as _dre:
                 _wl_sync = {"ok": False, "error": str(_dre), "copied": [], "conflicts": []}
