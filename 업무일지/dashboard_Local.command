@@ -10,5 +10,5 @@ curl -sf "${URL}/_stcore/health" >/dev/null 2>&1 || {
   exit 1
 }
 
-open "$URL"
+open -a "Google Chrome" "$URL"
 osascript -e 'display notification "업무일지(8502) 탭 1개" with title "업무일지"'

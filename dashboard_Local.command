@@ -64,29 +64,25 @@ _run_bg() {
 }
 
 _open_one_window_two_tabs() {
-  /usr/bin/osascript <<'APPLESCRIPT'
-set u1 to "http://127.0.0.1:8501"
-set u2 to "http://127.0.0.1:8502"
-try
-  tell application "Google Chrome"
-    set w to make new window with properties {URL:u1}
-    tell w to make new tab with properties {URL:u2}
-    activate
-    return
-  end tell
-end try
-try
-  tell application "Safari"
-    set w to make new document with properties {URL:u1}
-    tell w to make new tab with properties {URL:u2}
-    activate
-    return
-  end tell
-end try
-do shell script "open " & quoted form of u1
-delay 0.5
-do shell script "open " & quoted form of u2
+  local chrome="/Applications/Google Chrome.app"
+  if [ ! -d "$chrome" ]; then
+    osascript -e 'display alert "Google Chrome 없음" message "Chrome 설치 후 다시 실행하세요."'
+    return 1
+  fi
+  # AppleScript (Chrome 전용) — 실패 시 open -a Chrome 으로 fallback
+  if /usr/bin/osascript <<'APPLESCRIPT' 2>/dev/null
+tell application "Google Chrome"
+  activate
+  set w to make new window with properties {URL:"http://127.0.0.1:8501"}
+  tell w to make new tab with properties {URL:"http://127.0.0.1:8502"}
+end tell
 APPLESCRIPT
+  then
+    return 0
+  fi
+  open -na "Google Chrome" --args --new-window "$URL1"
+  sleep 0.4
+  open -a "Google Chrome" "$URL2"
 }
 
 [ -f "$WORK" ] || { osascript -e 'display alert "업무일지 없음"'; exit 1; }
