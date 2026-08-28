@@ -5781,7 +5781,7 @@ def cached_tab4_item_client_triple_pivot(
         if pvt.empty:
             return pvt
         out = pvt.copy()
-        out.insert(0, "순번", range(1, len(out) + 1))
+        out.insert(0, "순번", [str(i) for i in range(1, len(out) + 1)])
         return out
 
     return {
@@ -8758,18 +8758,21 @@ def get_display_df_with_sum(df, sum_label="연간 합계", text_cols=None):
         return df
     disp = df.copy()
     text_cols = [c for c in (text_cols or []) if c in disp.columns]
-    for col in text_cols:
-        disp[col] = disp[col].astype(object)
     numeric_cols = [
         c for c in disp.select_dtypes(include=[np.number]).columns if c not in text_cols
     ]
-    if numeric_cols:
-        sum_series = disp[numeric_cols].sum()
-        disp.loc[sum_label, numeric_cols] = sum_series.values
-    if text_cols:
-        for col in text_cols:
-            disp.at[sum_label, col] = "총 합계"
-    return disp
+    sum_row = {}
+    for col in disp.columns:
+        if col in text_cols:
+            sum_row[col] = "총 합계"
+        elif col in numeric_cols:
+            sum_row[col] = disp[col].sum()
+        else:
+            sum_row[col] = ""
+    sum_df = pd.DataFrame([sum_row], index=[sum_label])
+    for col in text_cols:
+        sum_df[col] = sum_df[col].astype(str)
+    return pd.concat([disp, sum_df])
 def style_with_sum(disp_df, fmt_str, cmap=None, subset_cols=None, axis=None):
     if disp_df.empty:
         return disp_df.style
@@ -10043,7 +10046,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-28d · Tab4합계행수정")
+        dev_caption("필터 빌드 2026-08-28e · Tab4합계행v2")
 
         df_base = df_base_opts
         df_staff_filtered = (
