@@ -2,7 +2,7 @@
 # 로컬 Streamlit: 메인(8501) + 업무일지·공문(8502) — 브라우저 탭 2개만
 # 바탕화면 복사본이어도 dashboard 폴더 최신본으로 자동 실행됩니다.
 
-dash_export_path
+export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 

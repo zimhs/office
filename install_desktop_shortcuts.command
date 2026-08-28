@@ -11,9 +11,11 @@ fi
 
 ln -sf "${DASH}/dashboard_Local.command" "${HOME}/Desktop/dashboard_Local.command"
 ln -sf "${DASH}/dashboard_Cloud.command" "${HOME}/Desktop/dashboard_Cloud.command"
+ln -sf "${DASH}/dashboard_Stop.command" "${HOME}/Desktop/dashboard_Stop.command"
 
 chmod +x "${DASH}/dashboard_Local.command"
 chmod +x "${DASH}/dashboard_Cloud.command"
+chmod +x "${DASH}/dashboard_Stop.command"
 chmod +x "${DASH}/dashboard_launch_common.sh"
 
 xattr -d com.apple.quarantine "${HOME}/Desktop/dashboard_Local.command" 2>/dev/null
