@@ -154,6 +154,22 @@ def _drive_boot_copy_affects_dashboard(copied) -> bool:
     return False
 
 
+def _cache_has_dashboard_data(cache_dir: str) -> bool:
+    """Cloud 시드/캐시에 매출·기본 CSV가 있으면 True (부트 1pass 가속)."""
+    try:
+        sales_dir = os.path.join(cache_dir, "sales")
+        if os.path.isdir(sales_dir):
+            for name in os.listdir(sales_dir):
+                if name.endswith(".csv"):
+                    return True
+        for rel in ("address.csv", "industry.csv", "debt.csv"):
+            if os.path.isfile(os.path.join(cache_dir, rel)):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _render_cloud_sync_banner() -> None:
     """로컬(localhost)에서만: 맥·아이패드는 같은 Cloud URL 쓰도록 안내."""
     url = _cloud_app_url()
@@ -4798,10 +4814,17 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """heavy 탭 defer — Cloud·맥 공통: 활성 탭·강제 로드 시에만 렌더 (부트 가속).
+    """heavy 탭 defer — Cloud 9~11은 eager(항상 펼침). Mac: 시장조사만 lazy.
 
-    업무일지·시장조사·공문은 탭 클릭 시 cookie 스크립트가 자동 「화면 불러오기」.
+    Cloud 부트: 9~11 탭 데이터를 미리 렌더. Drive sync는 smart·2pass로 가속.
     """
+    if _dash_cloud_merged_tabs() and tab_idx in (
+        _DASH_TAB_WORKLOG,
+        _DASH_TAB_MARKET,
+        _DASH_TAB_LETTER,
+    ):
+        return False
+
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
         mounted[tab_idx] = True
@@ -9498,17 +9521,30 @@ _render_cloud_sync_banner()
 # Drive「dashboard 복사본/uproad」→ uploaded_cache (재시작·재부팅 시 최신 우선)
 _drive_autoload_res = None
 _on_cloud_boot = _is_streamlit_cloud()
-if not st.session_state.get("_drive_copy_boot_sync_done") and sync_dashboard_copy_on_boot is not None:
+if (
+    _on_cloud_boot
+    and not st.session_state.get("_drive_copy_boot_sync_done")
+    and not st.session_state.get("_drive_deferred_sync_ran")
+    and _cache_has_dashboard_data(CACHE_DIR)
+):
+    # 1pass: 캐시로 9~11 포함 전 탭 즉시 표시 → run 끝에 Drive smart sync
+    st.session_state["_drive_copy_boot_sync_done"] = True
+    st.session_state["_drive_deferred_sync_pending"] = True
+elif not st.session_state.get("_drive_copy_boot_sync_done") and sync_dashboard_copy_on_boot is not None:
     try:
         _drive_autoload_res = sync_dashboard_copy_on_boot(
             CACHE_DIR,
             force_refresh=not _on_cloud_boot,
-            include_worklog=not _on_cloud_boot,
+            include_worklog=True,
         )
         st.session_state["_drive_copy_boot_sync_done"] = True
+        if _on_cloud_boot:
+            st.session_state["_drive_deferred_sync_ran"] = True
     except Exception as _dae:
         _drive_autoload_res = {"ok": False, "error": str(_dae)}
         st.session_state["_drive_copy_boot_sync_done"] = True
+        if _on_cloud_boot:
+            st.session_state["_drive_deferred_sync_ran"] = True
 if isinstance(_drive_autoload_res, dict):
     if _drive_autoload_res.get("ok") and _drive_autoload_res.get("source"):
         _n = len(_drive_autoload_res.get("copied") or [])
@@ -10541,7 +10577,8 @@ if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
     st.session_state["_ipad_sticky_injected"] = True
     st.session_state["_ipad_sticky_ver"] = 30
 if _DASH_CLOUD_TABS:
-    inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=(9, 10, 11))
+    # Cloud 9~11 eager — 탭 클릭 remount 불필요
+    inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=())
 else:
     inject_dash_active_tab_cookie_script(min_tabs=10, heavy_indices=(9,))
 # Tab 1: 📌 영업 종합 요약
@@ -13706,3 +13743,9 @@ if _tab_letter is not None:
         except Exception as _pi_err:
             st.error(f"공문 탭 오류: {_pi_err}")
             st.info("다른 탭은 정상 이용 가능합니다.")
+
+# Cloud 2pass 부트: 1pass UI 표시 후 Drive smart sync (9~11 eager 유지)
+if st.session_state.pop("_drive_deferred_sync_pending", False):
+    st.session_state.pop("_drive_copy_boot_sync_done", None)
+    st.session_state["_drive_deferred_sync_ran"] = True
+    st.rerun()
