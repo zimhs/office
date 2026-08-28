@@ -2595,7 +2595,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     dev_caption(cap)
 
     mail_df = load_mail_contacts()
-    log_df = load_sent_log()
     smtp_cfg = _render_smtp_bar()
     mail_df = _render_mail_settings_expander(mail_df)
 
@@ -2617,7 +2616,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
         if not client:
             st.info("담당자·거래처를 선택하세요.")
         else:
-            last = last_sent_for_client(client, log_df)
+            last = last_sent_for_client(client)
             email = _render_email_row(client, mail_df)
 
             price_df = latest_unit_prices(sales_df, client)
@@ -2918,7 +2917,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
         rows = []
         for cl in bulk_clients:
             em = lookup_email(cl, mail_df)
-            last = last_sent_for_client(cl, log_df)
+            last = last_sent_for_client(cl)
             rows.append(
                 {
                     "발송": True,  # 담당자 내 거래처 전체 선택 기본
@@ -3058,6 +3057,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
 
     # ── 발송 이력 ──
     with tab_hist:
+        log_df = load_sent_log()
         st.caption("거래처별 최근 발송일·제목 및 전체 로그")
         summary = sent_summary_by_client(log_df)
         if summary.empty:
