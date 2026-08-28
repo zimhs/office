@@ -102,9 +102,10 @@ except Exception:  # pragma: no cover
     sync_cache_to_drive_copy = None  # type: ignore
 
 try:
-    from cache_remote_sync import cache_remote_configured, sync_cache_remote
+    from cache_remote_sync import cache_remote_configured, resolve_dashboard_cache_gist_id, sync_cache_remote
 except Exception:  # pragma: no cover
     cache_remote_configured = None  # type: ignore
+    resolve_dashboard_cache_gist_id = None  # type: ignore
     sync_cache_remote = None  # type: ignore
 
 
@@ -9821,7 +9822,17 @@ if st.sidebar.button("☁️ Drive 복사본으로 동기화", help="맥 캐시 
     _run_cache_to_drive_sync(force=True)
     if sync_cache_remote is not None and cache_remote_configured():
         try:
-            sync_cache_remote(CACHE_DIR, force=True)
+            _gp = sync_cache_remote(CACHE_DIR, force=True)
+            _pn = int((_gp or {}).get("push_count") or 0)
+            if not _pn:
+                _pn = len(
+                    [x for x in ((_gp or {}).get("copied") or []) if str(x).startswith("→Gist")]
+                )
+            if _pn:
+                st.session_state["_gist_cache_push_msg"] = _pn
+                _gid = (_gp or {}).get("gist_id") or ""
+                if _gid:
+                    st.session_state["_gist_cache_push_id"] = _gid
         except Exception:
             pass
     st.rerun()
@@ -9848,32 +9859,81 @@ if isinstance(_drive_out, dict):
 
 _gist_push_n = st.session_state.pop("_gist_cache_push_msg", None)
 if isinstance(_gist_push_n, int) and _gist_push_n > 0:
-    st.sidebar.caption(f"Gist 캐시 업로드 · {_gist_push_n}개 (Cloud 재부팅 시 반영)")
+    st.sidebar.caption(f"Gist 캐시 업로드 · {_gist_push_n}개 (Cloud/iPad에서 ↻ 가져오기)")
+_gist_push_id = st.session_state.pop("_gist_cache_push_id", None)
+if isinstance(_gist_push_id, str) and _gist_push_id.strip():
+    st.sidebar.caption(f"Gist id: {_gist_push_id.strip()}")
+
+if (not _is_streamlit_cloud()) and sync_cache_remote is not None and cache_remote_configured():
+    if st.sidebar.button(
+        "↑ Gist에 데이터 올리기",
+        help="맥 uploaded_cache → GitHub Gist. iPad/Cloud는 ↻ Gist에서 가져오기로 받습니다 (Drive 복사본과 별도).",
+    ):
+        try:
+            _up = sync_cache_remote(CACHE_DIR, force=True)
+            _pn = int((_up or {}).get("push_count") or 0)
+            if not _pn:
+                _pn = len(
+                    [x for x in ((_up or {}).get("copied") or []) if str(x).startswith("→Gist")]
+                )
+            if isinstance(_up, dict) and _up.get("error"):
+                st.sidebar.warning(str(_up.get("error")))
+            elif _pn:
+                _gid = (_up or {}).get("gist_id") or ""
+                st.sidebar.success(f"Gist 업로드 · {_pn}개")
+                if _gid:
+                    st.sidebar.caption(
+                        f"Gist id: {_gid} — Streamlit Cloud secrets의 dashboard_cache_gist_id 와 동일해야 합니다."
+                    )
+            else:
+                st.sidebar.info("Gist: 업로드할 변경 없음 (이미 Gist와 동일)")
+        except Exception as _ue:
+            st.sidebar.warning(str(_ue))
 
 if _is_streamlit_cloud() and sync_cache_remote is not None and cache_remote_configured():
     if st.sidebar.button(
         "↻ Gist에서 데이터 가져오기",
-        help="맥·Cloud 최신 사이드바 CSV/매출을 Gist에서 다시 받습니다.",
+        help="맥에서 ↑ Gist에 올린 CSV/매출을 받습니다. Google Drive 복사본과는 별도 경로입니다.",
     ):
         try:
             _gr = sync_cache_remote(CACHE_DIR, prefer_remote=True, force_pull=True)
-            if isinstance(_gr, dict) and _gr.get("copied"):
-                try:
-                    load_uploaded_files_from_meta.clear()
-                    load_uploaded_files_from_bytes.clear()
-                except Exception:
-                    pass
-                st.session_state["_dash_sales_cache_cleared"] = True
-                st.session_state.pop("_gist_cache_boot_rerun", None)
-                for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
-                    st.session_state.pop(_pk, None)
-                st.rerun()
-            elif isinstance(_gr, dict) and _gr.get("error"):
-                st.sidebar.warning(str(_gr.get("error")))
-            else:
-                st.sidebar.caption("Gist: 이미 최신입니다.")
+            try:
+                load_uploaded_files_from_meta.clear()
+                load_uploaded_files_from_bytes.clear()
+            except Exception:
+                pass
+            st.session_state["_dash_sales_cache_cleared"] = True
+            st.session_state.pop("_gist_cache_boot_rerun", None)
+            for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
+                st.session_state.pop(_pk, None)
+            if isinstance(_gr, dict) and _gr.get("error"):
+                st.session_state["_gist_pull_msg"] = ("error", str(_gr.get("error")))
+            elif isinstance(_gr, dict):
+                _pull = int(_gr.get("pull_count") or 0)
+                _remote = int(_gr.get("remote_count") or 0)
+                if _remote == 0:
+                    st.session_state["_gist_pull_msg"] = ("empty", None)
+                elif _pull > 0:
+                    st.session_state["_gist_pull_msg"] = ("ok", _pull)
+                else:
+                    st.session_state["_gist_pull_msg"] = ("refresh", _remote)
+            st.rerun()
         except Exception as _ge:
             st.sidebar.warning(str(_ge))
+
+_gist_pull = st.session_state.pop("_gist_pull_msg", None)
+if isinstance(_gist_pull, tuple) and len(_gist_pull) == 2:
+    _kind, _val = _gist_pull
+    if _kind == "error":
+        st.sidebar.warning(str(_val))
+    elif _kind == "empty":
+        st.sidebar.warning(
+            "Gist에 캐시 파일이 없습니다. 맥에서 ↑ Gist에 데이터 올리기(또는 ☁️ Drive 동기화)를 먼저 실행하세요."
+        )
+    elif _kind == "ok":
+        st.sidebar.success(f"Gist에서 {_val}개 받음 · 화면 새로고침됨")
+    elif _kind == "refresh":
+        st.sidebar.info(f"Gist {_val}개 확인 · 파싱 캐시 새로고침 (파일 내용은 Gist와 동일)")
 
 if st.sidebar.button(
     "🗑️ 저장된 캐시 데이터 초기화",
@@ -10119,7 +10179,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-28g · 캐시복구수정")
+        dev_caption("필터 빌드 2026-08-28h · Gist복구수정")
 
         df_base = df_base_opts
         df_staff_filtered = (
