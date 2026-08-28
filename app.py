@@ -633,15 +633,33 @@ def get_exact_original_price(series):
 
 
 def _ensure_numeric_unit_price(df, col="단가"):
-    """단가 열을 float로 강제 — 캐시/구버전 파싱 잔여 문자열로 인한 setitem TypeError 방지."""
+    """단가 열을 float64로 강제 — Cloud Python 3.14 / pandas setitem TypeError 방지."""
     out = df.copy()
     if col not in out.columns:
-        out[col] = 0.0
+        out[col] = np.float64(0.0)
         return out
-    out[col] = pd.to_numeric(
-        out[col].astype(str).str.replace(r"[^\d.-]", "", regex=True),
-        errors="coerce",
-    ).fillna(0.0)
+    out[col] = (
+        pd.to_numeric(
+            out[col].astype(str).str.replace(r"[^\d.-]", "", regex=True),
+            errors="coerce",
+        )
+        .astype(np.float64)
+        .fillna(0.0)
+    )
+    return out
+
+
+def _apply_n2_bulk_price_multiplier(df, *, clients, item="N2 (kg, Bulk)", mult=1.238, col="단가"):
+    """N2 벌크 특정 거래처 단가 보정 — loc setitem 대신 numpy 배열로 적용."""
+    out = _ensure_numeric_unit_price(df, col)
+    if out.empty or "거래처" not in out.columns or "품목명" not in out.columns:
+        return out
+    mask = (out["거래처"].isin(clients)) & (out["품목명"] == item)
+    if not mask.any():
+        return out
+    prices = out[col].to_numpy(dtype=np.float64, copy=True)
+    prices[mask.to_numpy()] *= float(mult)
+    out[col] = prices
     return out
 
 
@@ -5382,13 +5400,10 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
     if latest_col and latest_col in qty_p.columns:
         qty_p = qty_p.sort_values(by=latest_col, ascending=False)
         sales_p = sales_p.reindex(qty_p.index)
-    df_for_price = _ensure_numeric_unit_price(target_tab3_df.copy())
-    target_clients = ["두산판금", "드림맥", "모베이스전전", "지엔티테크", "태광기업", "경민산업", "동주산업"]
-    mask_n2_special = (df_for_price["거래처"].isin(target_clients)) & (df_for_price["품목명"] == "N2 (kg, Bulk)")
-    if mask_n2_special.any():
-        df_for_price.loc[mask_n2_special, "단가"] = (
-            df_for_price.loc[mask_n2_special, "단가"] * 1.238
-        )
+    df_for_price = _apply_n2_bulk_price_multiplier(
+        target_tab3_df,
+        clients=["두산판금", "드림맥", "모베이스전전", "지엔티테크", "태광기업", "경민산업", "동주산업"],
+    )
     raw_up = df_for_price.pivot_table(index="품목명", columns="연도월_정렬", values="단가", aggfunc=get_exact_original_price)
     
     if not raw_up.empty:
@@ -5757,12 +5772,10 @@ def cached_tab4_item_client_triple_pivot(
     if item_name in _TAB4_BULK_ITEMS:
         qty_raw = qty_raw / 1000
 
-    d_price = _ensure_numeric_unit_price(d.copy())
-    mask_n2 = (d_price["거래처"].isin(_TAB4_N2_SPECIAL_CLIENTS)) & (
-        d_price["품목명"] == "N2 (kg, Bulk)"
+    d_price = _apply_n2_bulk_price_multiplier(
+        d,
+        clients=list(_TAB4_N2_SPECIAL_CLIENTS),
     )
-    if mask_n2.any():
-        d_price.loc[mask_n2, "단가"] = d_price.loc[mask_n2, "단가"] * 1.238
     if d_price.empty or "단가" not in d_price.columns:
         price_raw = pd.DataFrame(index=sales_raw.index)
     else:
@@ -10226,7 +10239,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-28i · Gist연동안내")
+        dev_caption("필터 빌드 2026-08-28j · 단가Py314수정")
 
         df_base = df_base_opts
         df_staff_filtered = (
