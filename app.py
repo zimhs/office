@@ -9817,24 +9817,38 @@ if _drive_upload_hit and sync_cache_remote is not None and cache_remote_configur
     except Exception:
         pass
 
-if st.sidebar.button("☁️ Drive 복사본으로 동기화", help="맥 캐시 → Google Drive dashboard 복사본"):
+if st.sidebar.button(
+    "☁️ Drive 복사본으로 동기화",
+    help="맥 캐시 → Google Drive uproad 폴더. iPad/Cloud 브라우저용은 Gist(↓ 버튼)도 별도 필요.",
+):
     st.session_state.pop("_drive_synced_this_upload", None)
     _run_cache_to_drive_sync(force=True)
-    if sync_cache_remote is not None and cache_remote_configured():
+    if sync_cache_remote is None or not cache_remote_configured():
+        st.session_state["_drive_gist_out"] = {
+            "ok": False,
+            "skipped": True,
+            "note": "github_token 없음",
+        }
+    else:
         try:
             _gp = sync_cache_remote(CACHE_DIR, force=True)
-            _pn = int((_gp or {}).get("push_count") or 0)
+            st.session_state["_drive_gist_out"] = _gp if isinstance(_gp, dict) else {}
+            _pn = int((st.session_state["_drive_gist_out"] or {}).get("push_count") or 0)
             if not _pn:
                 _pn = len(
-                    [x for x in ((_gp or {}).get("copied") or []) if str(x).startswith("→Gist")]
+                    [
+                        x
+                        for x in ((st.session_state["_drive_gist_out"] or {}).get("copied") or [])
+                        if str(x).startswith("→Gist")
+                    ]
                 )
             if _pn:
                 st.session_state["_gist_cache_push_msg"] = _pn
-                _gid = (_gp or {}).get("gist_id") or ""
+                _gid = (st.session_state["_drive_gist_out"] or {}).get("gist_id") or ""
                 if _gid:
                     st.session_state["_gist_cache_push_id"] = _gid
-        except Exception:
-            pass
+        except Exception as _gpe:
+            st.session_state["_drive_gist_out"] = {"ok": False, "error": str(_gpe)}
     st.rerun()
 
 _drive_out = st.session_state.pop("_drive_sync_out_msg", None)
@@ -9856,6 +9870,34 @@ if isinstance(_drive_out, dict):
         st.sidebar.caption("Drive 경로 없음 — 맥에서 Google Drive 앱 확인")
     elif not _drive_out.get("ok"):
         st.sidebar.warning(f"Drive 동기화 실패: {_drive_out.get('error') or '알 수 없음'}")
+
+_drive_gist = st.session_state.pop("_drive_gist_out", None)
+if isinstance(_drive_gist, dict):
+    if _drive_gist.get("skipped") or _drive_gist.get("note") == "github_token 없음":
+        st.sidebar.warning(
+            "Drive만 반영됨 · iPad/Cloud용 Gist 미연동. "
+            "`.streamlit/secrets.toml`에 github_token 을 넣고 재시작 후 "
+            "↑ Gist에 데이터 올리기를 실행하세요."
+        )
+    elif _drive_gist.get("error"):
+        st.sidebar.warning(f"Gist 업로드 실패: {_drive_gist.get('error')}")
+    else:
+        _gpn = int(_drive_gist.get("push_count") or 0)
+        if _gpn > 0:
+            st.sidebar.success(f"Gist 업로드 · {_gpn}개 (iPad/Cloud에서 ↻ 가져오기)")
+            _ggid = (_drive_gist.get("gist_id") or "").strip()
+            if _ggid:
+                st.sidebar.caption(
+                    f"Cloud secrets → dashboard_cache_gist_id = {_ggid}"
+                )
+
+if (not _is_streamlit_cloud()) and cache_remote_configured is not None:
+    if not cache_remote_configured():
+        st.sidebar.caption("Gist 미연동 — secrets.toml에 github_token (gist 권한 PAT) 필요")
+    elif resolve_dashboard_cache_gist_id is not None:
+        _mac_gid = (resolve_dashboard_cache_gist_id(CACHE_DIR) or "").strip()
+        if _mac_gid:
+            st.sidebar.caption(f"맥 Gist id: {_mac_gid}")
 
 _gist_push_n = st.session_state.pop("_gist_cache_push_msg", None)
 if isinstance(_gist_push_n, int) and _gist_push_n > 0:
@@ -9927,8 +9969,13 @@ if isinstance(_gist_pull, tuple) and len(_gist_pull) == 2:
     if _kind == "error":
         st.sidebar.warning(str(_val))
     elif _kind == "empty":
+        _cloud_gid = ""
+        if resolve_dashboard_cache_gist_id is not None:
+            _cloud_gid = (resolve_dashboard_cache_gist_id(CACHE_DIR) or "").strip()
         st.sidebar.warning(
-            "Gist에 캐시 파일이 없습니다. 맥에서 ↑ Gist에 데이터 올리기(또는 ☁️ Drive 동기화)를 먼저 실행하세요."
+            "Gist에 캐시 파일이 없습니다. "
+            + (f"(Cloud gist id: {_cloud_gid}) " if _cloud_gid else "(Cloud gist id 미설정) ")
+            + "맥에서 ↑ Gist에 데이터 올리기 후, Cloud secrets의 dashboard_cache_gist_id 가 맥과 동일한지 확인하세요."
         )
     elif _kind == "ok":
         st.sidebar.success(f"Gist에서 {_val}개 받음 · 화면 새로고침됨")
@@ -10179,7 +10226,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-28h · Gist복구수정")
+        dev_caption("필터 빌드 2026-08-28i · Gist연동안내")
 
         df_base = df_base_opts
         df_staff_filtered = (

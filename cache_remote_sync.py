@@ -281,10 +281,33 @@ def sync_cache_remote(
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(os.path.join(cache_dir, "sales"), exist_ok=True)
 
+    local_files = _list_local_cache_files(cache_dir)
+
+    # 맥 force=True: 로컬 캐시 전체를 Gist에 덮어씀 (Drive 동기화·↑ Gist 버튼)
+    if force and not prefer_remote:
+        copied: List[str] = []
+        for rel, loc in sorted(local_files.items()):
+            if not os.path.isfile(loc):
+                continue
+            _, perr = push_cache_file(rel, loc, cache_dir)
+            if not perr:
+                copied.append(f"→Gist!:{rel}")
+        remember_dashboard_cache_gist_id(gid, cache_dir)
+        push_count = len(copied)
+        return {
+            "ok": True,
+            "skipped": False,
+            "copied": copied,
+            "pull_count": 0,
+            "push_count": push_count,
+            "remote_count": push_count,
+            "gist_id": gid,
+            "source": f"gist:{gid}",
+        }
+
     files_meta = gist.get("files") or {}
     manifest = _load_manifest(files_meta)
     remote_files: Dict[str, Any] = dict(manifest.get("files") or {})
-    local_files = _list_local_cache_files(cache_dir)
 
     copied: List[str] = []
     names: Set[str] = set(local_files.keys()) | set(remote_files.keys())
