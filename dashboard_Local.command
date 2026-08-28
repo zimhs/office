@@ -1,6 +1,6 @@
 #!/bin/bash
 # 메인(8501) + 업무일지(8502) — Chrome 창 1개 · 탭 2개 · 재실행 시 탭 추가 없음
-# v2026-08-28d
+# v2026-08-28e
 export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
 
 ROOT="${HOME}/Desktop/dashboard"
@@ -29,65 +29,83 @@ trap 'rmdir "$LAUNCH_LOCK" 2>/dev/null' EXIT
 
 _up() { curl -sf "http://127.0.0.1:$1/_stcore/health" >/dev/null 2>&1; }
 
-_chrome_has_tab() {
-  local needle="$1"
-  osascript 2>/dev/null <<APPLESCRIPT
+# Chrome CLI --new-window 는 '이전 세션 복원'으로 네이버·캘린더만 뜨는 경우가 있어 AppleScript 로만 탭 제어
+_chrome_ensure_tabs() {
+  osascript <<'APPLESCRIPT' 2>/dev/null
 tell application "Google Chrome"
-  repeat with w in windows
-    repeat with t in tabs of w
-      if URL of t starts with "$needle" then return "yes"
-    end repeat
-  end repeat
-end tell
-return "no"
-APPLESCRIPT
-}
+  set u1 to "http://127.0.0.1:8501"
+  set u2 to "http://127.0.0.1:8502"
+  set win1 to missing value
+  set idx1 to 0
+  set win2 to missing value
+  set idx2 to 0
 
-_chrome_focus_tabs() {
-  osascript 2>/dev/null <<'APPLESCRIPT'
-tell application "Google Chrome"
-  set targetWin to missing value
-  set targetTab to 0
   repeat with w in windows
     set ti to 1
     repeat with t in tabs of w
-      if URL of t starts with "http://127.0.0.1:8501" then
-        set targetWin to w
-        set targetTab to ti
-        exit repeat
+      set theURL to URL of t
+      if theURL starts with u1 then
+        set win1 to w
+        set idx1 to ti
+      end if
+      if theURL starts with u2 then
+        set win2 to w
+        set idx2 to ti
       end if
       set ti to ti + 1
     end repeat
-    if targetWin is not missing value then exit repeat
   end repeat
-  if targetWin is not missing value then
-    set index of targetWin to 1
-    set active tab index of targetWin to targetTab
+
+  if win1 is not missing value and win2 is not missing value then
+    set index of win1 to 1
+    set active tab index of win1 to idx1
     activate
+    return
   end if
+
+  if win1 is missing value and win2 is missing value then
+    make new window
+    set URL of active tab of window 1 to u1
+    make new tab at end of window 1 with properties {URL:u2}
+    set active tab index of window 1 to 1
+    activate
+    return
+  end if
+
+  if win1 is not missing value then
+    set targetWin to win1
+    if win2 is missing value then
+      make new tab at end of targetWin with properties {URL:u2}
+    end if
+    set index of targetWin to 1
+    set active tab index of targetWin to idx1
+    activate
+    return
+  end if
+
+  set targetWin to win2
+  make new tab at end of targetWin with properties {URL:u1}
+  set index of targetWin to 1
+  repeat with ti from 1 to count of tabs of targetWin
+    if URL of tab ti of targetWin starts with u1 then
+      set active tab index of targetWin to ti
+      exit repeat
+    end if
+  end repeat
+  activate
 end tell
 APPLESCRIPT
-}
-
-_chrome_open_once() {
-  local has1 has2
-  has1="$(_chrome_has_tab "http://127.0.0.1:8501")"
-  has2="$(_chrome_has_tab "http://127.0.0.1:8502")"
-  if [ "$has1" = "yes" ] && [ "$has2" = "yes" ]; then
-    _chrome_focus_tabs
-    return 0
+  if [ $? -ne 0 ]; then
+    osascript -e 'display alert "Chrome 탭 열기 실패" message "Chrome이 실행 중인지, Automation 권한이 허용됐는지 확인하세요."'
+    return 1
   fi
-  local bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-  [ -x "$bin" ] || { osascript -e 'display alert "Google Chrome 없음"'; return 1; }
-  "$bin" --new-window "$URL1" "$URL2" >/dev/null 2>&1 &
-  sleep 0.5
 }
 
-# ★ 서버가 이미 떠 있으면 재시작·탭 추가 없이 Chrome만 포커스
+# ★ 서버가 이미 떠 있으면 재시작 없음 — localhost 탭 없으면 새로 엶
 if _up 8501 && _up 8502; then
-  _chrome_focus_tabs
+  _chrome_ensure_tabs
   touch "$STAMP"
-  osascript -e 'display notification "이미 실행 중 (탭 추가 안 함)" with title "영업 대시보드"'
+  osascript -e 'display notification "대시보드 탭으로 이동 (중복 탭 없음)" with title "영업 대시보드"'
   exit 0
 fi
 
@@ -133,6 +151,6 @@ _kill_ports
 _run_bg 8502 "$WORK" || { osascript -e 'display alert "8502 시작 실패"'; exit 1; }
 _run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패"'; exit 1; }
 
-_chrome_open_once
+_chrome_ensure_tabs
 touch "$STAMP"
-osascript -e 'display notification "Chrome 한 창 · 탭 2개 (다시 누르면 탭 추가 안 함)" with title "영업 대시보드"'
+osascript -e 'display notification "Chrome · 8501+8502 탭 2개" with title "영업 대시보드"'
