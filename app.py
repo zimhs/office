@@ -4659,29 +4659,36 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """상단 필터 rerun이면 시장조사 UI를 생략.
+    """heavy 탭(업무일지·시장조사·공문) — 활성 탭일 때만 렌더.
 
-    이 탭은 상단 영업 필터를 쓰지 않음. 필터 변경마다 같이 그리면 체감 로딩이 급증함.
+    - 앱 시작·다른 탭 사용 시 stub → 시작·Tab1~8 체감 속도 유지
     - force remount / 「화면 불러오기」→ 즉시 복원
-    - 활성 탭이 해당 heavy 탭이면(쿠키) 생략하지 않음(화면이 비지 않게)
-    - 필터 변경 후 미복원이면 다음 rerun에서도 stub 유지(필터 계속 빠릿)
+    - 상단 필터 변경 시: 활성 heavy 탭만 렌더, 나머지 defer
     """
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
         mounted[tab_idx] = True
         return False
+
+    active = _dash_active_tab_idx()
+    on_this_tab = active is not None and int(active) == int(tab_idx)
+
     if st.session_state.get("_dash_filter_changed_flag"):
-        active = _dash_active_tab_idx()
-        if active is not None and int(active) == int(tab_idx):
+        if on_this_tab:
             mounted[tab_idx] = True
             return False
         mounted[tab_idx] = False
         return True
-    # 필터 변경이 아닌 rerun: 이전에 생략했으면 stub 유지(복원 버튼/탭 전환 자동클릭까지)
-    if mounted.get(tab_idx, True) is False:
-        return True
-    mounted[tab_idx] = True
-    return False
+
+    if on_this_tab:
+        mounted[tab_idx] = True
+        return False
+
+    # cookie 미설정 직후 remount run — 방금 불러온 탭은 한 run 더 유지
+    if active is None and mounted.get(tab_idx, False):
+        return False
+
+    return True
 
 
 def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: tuple[str, ...]) -> None:
