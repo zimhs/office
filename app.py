@@ -4612,6 +4612,53 @@ def _dash_is_mr_widget_key(key: str) -> bool:
     return isinstance(key, str) and key.startswith(_DASH_MR_WIDGET_PREFIXES)
 
 
+# 공문 — pi_pdf_/pi_mail_draft 등 상태만 백업 (pi_smtp_test 등 위젯 키 복원 시 button 오류 방지)
+_DASH_PI_STATE_PREFIXES = (
+    "pi_pdf_",
+    "pi_dl_",
+    "pi_mail_draft",
+    "pi_sales_cache_",
+    "pi_email_client",
+    "pi_last_client",
+    "pi_body_client",
+    "pi_left_mode",
+    "pi_show_dl",
+    "pi_preview_meta",
+    "pi_preview_force",
+    "pi_bulk_force_",
+    "pi_bulk_sel_",
+    "pi_bulk_staff_prev",
+)
+_DASH_PI_WIDGET_PREFIXES = (
+    "pi_dialog_",
+    "pi_mail_compose_",
+    "pi_mail_pick_",
+    "pi_mail_all_",
+    "pi_mail_upload",
+    "pi_quick_",
+    "pi_smtp_",
+    "pi_single_",
+    "pi_letter_doc_",
+    "pi_letter_send_",
+    "pi_letter_body_",
+    "pi_body_reset",
+    "pi_include_price",
+    "pi_left_preview",
+    "pi_left_send",
+    "pi_left_summary",
+    "pi_left_big",
+    "pi_pdf_preview_",
+    "pi_pdf_help",
+    "pi_bulk_",
+    "pi_global_pct",
+    "pi_items_",
+)
+
+
+def _dash_is_pi_widget_key(key: str) -> bool:
+    return isinstance(key, str) and key.startswith(_DASH_PI_WIDGET_PREFIXES)
+
+
 def _dash_top_filter_sig_now() -> tuple:
     return (
         st.session_state.get("dash_filter_staff_sb_new"),
@@ -4660,17 +4707,22 @@ def _dash_restore_session_keys(store_key: str) -> None:
     bak = st.session_state.get(store_key)
     if not isinstance(bak, dict):
         return
+    widget_fn = None
     if store_key == "_dash_bak_market":
-        bak = {k: v for k, v in bak.items() if not _dash_is_mr_widget_key(k)}
+        widget_fn = _dash_is_mr_widget_key
+    elif store_key == "_dash_bak_letter":
+        widget_fn = _dash_is_pi_widget_key
+    if widget_fn is not None:
+        bak = {k: v for k, v in bak.items() if not widget_fn(k)}
         st.session_state[store_key] = bak
     for k, v in bak.items():
-        if _dash_is_mr_widget_key(k):
+        if widget_fn is not None and widget_fn(k):
             continue
         if k not in st.session_state:
             st.session_state[k] = v
-    if store_key == "_dash_bak_market":
+    if widget_fn is not None:
         for k in list(st.session_state.keys()):
-            if _dash_is_mr_widget_key(k):
+            if widget_fn(k):
                 st.session_state.pop(k, None)
 
 
@@ -13653,7 +13705,7 @@ if _tab_letter is not None:
                     "📨 공문",
                     _DASH_TAB_LETTER,
                     "_dash_bak_letter",
-                    ("pi_",),
+                    _DASH_PI_STATE_PREFIXES,
                 )
             else:
                 _dash_restore_session_keys("_dash_bak_letter")
@@ -13673,7 +13725,7 @@ if _tab_letter is not None:
                     sys.modules["price_increase_tab"] = _pi_tab
                 _pi_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
                 _pi_tab.render_price_increase_tab(_pi_df, latest_update_str=latest_update_str)
-                _dash_backup_session_keys("_dash_bak_letter", ("pi_",))
+                _dash_backup_session_keys("_dash_bak_letter", _DASH_PI_STATE_PREFIXES)
         except ModuleNotFoundError:
             st.error(
                 "공문 모듈(`price_increase_tab.py`)을 찾을 수 없습니다. "

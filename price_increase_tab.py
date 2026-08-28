@@ -2523,13 +2523,48 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
     return mail_df
 
 
+def _pi_clear_widget_session_keys() -> None:
+    """defer 탭 복원 등으로 위젯 키가 session_state에 남으면 button 오류."""
+    for k in list(st.session_state.keys()):
+        if not isinstance(k, str):
+            continue
+        if k.startswith(
+            (
+                "pi_dialog_",
+                "pi_mail_compose_",
+                "pi_mail_pick_",
+                "pi_mail_all_",
+                "pi_mail_upload",
+                "pi_quick_",
+                "pi_smtp_",
+                "pi_single_",
+                "pi_letter_doc_",
+                "pi_letter_send_",
+                "pi_letter_body_",
+                "pi_body_reset",
+                "pi_include_price",
+                "pi_left_preview",
+                "pi_left_send",
+                "pi_left_summary",
+                "pi_left_big",
+                "pi_pdf_preview_",
+                "pi_pdf_help",
+                "pi_bulk_",
+                "pi_global_pct",
+                "pi_items_",
+            )
+        ):
+            st.session_state.pop(k, None)
+
+
 def _render_smtp_bar() -> dict:
     cfg = smtp_settings()
     c1, c2, c3 = st.columns([2.5, 1.2, 1.2])
     with c1:
         st.caption(f"SMTP · {smtp_status_label(cfg)}")
     with c2:
-        if st.button("SMTP 연결 테스트", key="pi_smtp_test", use_container_width=True):
+        st.session_state.pop("pi_smtp_test", None)
+        if st.button("SMTP 연결 테스트", use_container_width=True):
             ok, msg = test_smtp_connection(cfg)
             (st.success if ok else st.error)(msg)
     with c3:
@@ -2545,6 +2580,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     fragment: 저장·버튼 클릭 시 공문 탭만 갱신(다른 탭·사이드바 전체 로딩 생략).
     """
     _ensure_dirs()
+    _pi_clear_widget_session_keys()
     # 매출 스냅샷 토큰 — 바뀌면 단가 캐시 무효화
     _n = 0 if sales_df is None else int(len(sales_df))
     st.session_state["pi_sales_cache_token"] = f"{latest_update_str}|{_n}"
