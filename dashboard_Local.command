@@ -1,5 +1,5 @@
 #!/bin/bash
-# 메인(8501) + 업무일지·공문(8502) — Chrome 탭 2개 (자동화/Safari 불필요)
+# 메인(8501) + 업무일지·공문(8502) — Chrome 창 1개 · 탭 2개만
 export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
 
 ROOT="${HOME}/Desktop/dashboard"
@@ -12,22 +12,28 @@ URL1="http://127.0.0.1:8501"
 URL2="http://127.0.0.1:8502"
 LOCKDIR="${HOME}/.dashboard_local_running"
 
-# 이전 실행이 비정상 종료되면 잠금 폴더가 남아 아무 것도 안 함 → 자동 삭제
 if [ -d "$LOCKDIR" ]; then
   if ! lsof -ti:8501 >/dev/null 2>&1 && ! lsof -ti:8502 >/dev/null 2>&1; then
-    rmdir "$LOCKDIR" 2>/dev/null || rm -rf "$LOCKDIR" 2>/dev/null
+    rm -rf "$LOCKDIR" 2>/dev/null
+  else
+    osascript -e 'display notification "이미 시작 중 — 탭 추가 안 함" with title "영업 대시보드"'
+    exit 0
   fi
 fi
 
-if ! mkdir "$LOCKDIR" 2>/dev/null; then
-  osascript -e 'display notification "잠시 후 다시 눌러 주세요 (실행 중)" with title "영업 대시보드"'
+mkdir "$LOCKDIR" 2>/dev/null || {
+  osascript -e 'display notification "실행 중 — 잠시 후 다시" with title "영업 대시보드"'
   exit 0
-fi
+}
 trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
 
-_up() {
-  curl -sf "http://127.0.0.1:$1/_stcore/health" >/dev/null 2>&1
-}
+_up() { curl -sf "http://127.0.0.1:$1/_stcore/health" >/dev/null 2>&1; }
+
+# ★ 이미 켜져 있으면 탭 절대 추가 안 함
+if _up 8501 && _up 8502; then
+  osascript -e 'display notification "이미 실행 중 — Chrome 탭 추가 안 함" with title "영업 대시보드"'
+  exit 0
+fi
 
 _kill_ports() {
   lsof -ti:8501 2>/dev/null | xargs kill 2>/dev/null || true
@@ -37,7 +43,6 @@ _kill_ports() {
 
 _run_bg() {
   local port="$1" app="$2"
-  _up "$port" && return 0
   (
     cd "$ROOT" || exit 1
     export STREAMLIT_SERVER_HEADLESS=true
@@ -57,36 +62,22 @@ _run_bg() {
     fi
   ) &
   local i
-  for i in $(seq 1 45); do
-    _up "$port" && return 0
-    sleep 1
-  done
+  for i in $(seq 1 45); do _up "$port" && return 0; sleep 1; done
   return 1
 }
 
-_open_chrome_two_tabs() {
-  local u1="$1" u2="$2"
+_open_chrome_one_window() {
   local bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-  if [ ! -x "$bin" ]; then
-    osascript -e 'display alert "Google Chrome 없음" message "Chrome 설치 후 다시 실행하세요."'
-    return 1
-  fi
-  # Chrome 한 창 · 탭 2개 (open -na 는 창이 2개 뜸)
-  "$bin" --new-window "$u1" "$u2" >/dev/null 2>&1 &
-  sleep 0.3
+  [ -x "$bin" ] || { osascript -e 'display alert "Google Chrome 없음"'; return 1; }
+  "$bin" --new-window "$URL1" "$URL2" >/dev/null 2>&1 &
 }
 
-[ -f "$WORK" ] || { osascript -e 'display alert "업무일지 없음" message "dashboard/업무일지/app.py 확인"'; exit 1; }
-
-if _up 8501 && _up 8502; then
-  _open_chrome_two_tabs "$URL1" "$URL2"
-  osascript -e 'display notification "Chrome 한 창 · 탭 2개" with title "영업 대시보드"'
-  exit 0
-fi
+[ -f "$WORK" ] || { osascript -e 'display alert "업무일지 없음"'; exit 1; }
 
 _kill_ports
-_run_bg 8502 "$WORK" || { osascript -e 'display alert "8502 시작 실패" message "dashboard/.dash_8502.log 확인"'; exit 1; }
-_run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패" message "dashboard/.dash_8501.log 확인"'; exit 1; }
+_run_bg 8502 "$WORK" || { osascript -e 'display alert "8502 시작 실패"'; exit 1; }
+_run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패"'; exit 1; }
 
-_open_chrome_two_tabs "$URL1" "$URL2"
-osascript -e 'display notification "Chrome 한 창 · 8501+8502" with title "영업 대시보드"'
+_open_chrome_one_window
+osascript -e 'display notification "Chrome 한 창 · 탭 2개만 열림" with title "영업 대시보드"'
+sleep 2
