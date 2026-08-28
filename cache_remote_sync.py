@@ -297,9 +297,10 @@ def sync_cache_remote(
         rem_ok = rem is not None and gkey in files_meta
 
         if loc_ok and not rem_ok:
-            _, perr = push_cache_file(rel, loc, cache_dir)
-            if not perr:
-                copied.append(f"→Gist:{rel}")
+            if not prefer_remote:
+                _, perr = push_cache_file(rel, loc, cache_dir)
+                if not perr:
+                    copied.append(f"→Gist:{rel}")
             continue
 
         if rem_ok and not loc_ok:
@@ -318,7 +319,7 @@ def sync_cache_remote(
 
         local_sha = _sha256_file(loc) or ""
         remote_sha = str((rem or {}).get("sha256") or "")
-        if remote_sha and local_sha == remote_sha:
+        if remote_sha and local_sha == remote_sha and not (prefer_remote and force_pull):
             continue
 
         try:
@@ -359,10 +360,16 @@ def sync_cache_remote(
                     pass
 
     remember_dashboard_cache_gist_id(gid, cache_dir)
+    remote_count = len(remote_files)
+    pull_count = len([x for x in copied if str(x).startswith("←Gist:")])
+    push_count = len([x for x in copied if str(x).startswith("→Gist")])
     return {
         "ok": True,
         "skipped": False,
         "copied": copied,
+        "pull_count": pull_count,
+        "push_count": push_count,
+        "remote_count": remote_count,
         "gist_id": gid,
         "source": f"gist:{gid}",
     }
