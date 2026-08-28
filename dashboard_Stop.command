@@ -9,6 +9,7 @@ pkill -f "streamlit run" 2>/dev/null || true
 
 rm -f "${HOME}/.dashboard_browser_opened"
 rm -f "${HOME}/.dashboard_cloud_browser_opened"
+rm -f "${HOME}/Desktop/dashboard/.dash_code_stamp"
 rm -f "${HOME}/.dashboard_local.flock"
 rm -rf "${HOME}/.dashboard_local_launching" 2>/dev/null
 rm -rf "${HOME}/.dashboard_cloud_launching" 2>/dev/null
