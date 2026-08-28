@@ -142,6 +142,18 @@ def _cloud_app_url() -> str:
     return DASHBOARD_CLOUD_URL
 
 
+def _drive_boot_copy_affects_dashboard(copied) -> bool:
+    """worklog만 갱신된 부트 sync는 전체 rerun 생략."""
+    if not copied:
+        return False
+    for name in copied:
+        s = str(name)
+        if s.startswith("worklog/") or s.startswith("worklog_err:"):
+            continue
+        return True
+    return False
+
+
 def _render_cloud_sync_banner() -> None:
     """로컬(localhost)에서만: 맥·아이패드는 같은 Cloud URL 쓰도록 안내."""
     url = _cloud_app_url()
@@ -4786,18 +4798,10 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """heavy 탭 defer — Cloud 업무일지·시장조사·공문은 항상 펼침.
+    """heavy 탭 defer — Cloud·맥 공통: 활성 탭·강제 로드 시에만 렌더 (부트 가속).
 
-    - Cloud: stub 없이 매 run 렌더 (탭 클릭·화면 불러오기 2회 사이클 제거)
-    - Mac 로컬: 시장조사만 lazy
+    업무일지·시장조사·공문은 탭 클릭 시 cookie 스크립트가 자동 「화면 불러오기」.
     """
-    if _dash_cloud_merged_tabs() and tab_idx in (
-        _DASH_TAB_WORKLOG,
-        _DASH_TAB_MARKET,
-        _DASH_TAB_LETTER,
-    ):
-        return False
-
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
         mounted[tab_idx] = True
@@ -9493,9 +9497,14 @@ st.sidebar.header("📁 데이터 업로드 및 유지")
 _render_cloud_sync_banner()
 # Drive「dashboard 복사본/uproad」→ uploaded_cache (재시작·재부팅 시 최신 우선)
 _drive_autoload_res = None
+_on_cloud_boot = _is_streamlit_cloud()
 if not st.session_state.get("_drive_copy_boot_sync_done") and sync_dashboard_copy_on_boot is not None:
     try:
-        _drive_autoload_res = sync_dashboard_copy_on_boot(CACHE_DIR, force_refresh=True)
+        _drive_autoload_res = sync_dashboard_copy_on_boot(
+            CACHE_DIR,
+            force_refresh=not _on_cloud_boot,
+            include_worklog=not _on_cloud_boot,
+        )
         st.session_state["_drive_copy_boot_sync_done"] = True
     except Exception as _dae:
         _drive_autoload_res = {"ok": False, "error": str(_dae)}
@@ -9511,7 +9520,12 @@ if isinstance(_drive_autoload_res, dict):
         )
         if _src and _n:
             st.sidebar.caption(f"출처: {_src}")
-        if _n and not st.session_state.get("_drive_copy_boot_rerun"):
+        _copied_list = _drive_autoload_res.get("copied") or []
+        if (
+            _n
+            and _drive_boot_copy_affects_dashboard(_copied_list)
+            and not st.session_state.get("_drive_copy_boot_rerun")
+        ):
             try:
                 load_uploaded_files_from_meta.clear()
                 load_uploaded_files_from_bytes.clear()
@@ -9985,7 +9999,11 @@ if st.sidebar.button(
 ):
     if sync_dashboard_copy_on_boot is not None:
         try:
-            _dr = sync_dashboard_copy_on_boot(CACHE_DIR, force_refresh=True)
+            _dr = sync_dashboard_copy_on_boot(
+                CACHE_DIR,
+                force_refresh=True,
+                include_worklog=True,
+            )
             try:
                 load_uploaded_files_from_meta.clear()
                 load_uploaded_files_from_bytes.clear()
@@ -10523,8 +10541,7 @@ if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
     st.session_state["_ipad_sticky_injected"] = True
     st.session_state["_ipad_sticky_ver"] = 30
 if _DASH_CLOUD_TABS:
-    # Cloud heavy 탭 eager — stub 자동 remount 불필요
-    inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=())
+    inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=(9, 10, 11))
 else:
     inject_dash_active_tab_cookie_script(min_tabs=10, heavy_indices=(9,))
 # Tab 1: 📌 영업 종합 요약

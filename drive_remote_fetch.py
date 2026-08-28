@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -187,6 +188,34 @@ def _write_bytes(dest: str, raw: bytes) -> bool:
         return False
 
 
+def _drive_modified_ts(meta: dict) -> float:
+    raw = str(meta.get("modifiedTime") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _remote_newer_than_cache(meta: dict, dst: str, *, force_refresh: bool) -> bool:
+    """Drive 파일이 로컬보다 새로울 때만 다운로드 (Cloud 부트 가속)."""
+    if force_refresh:
+        return True
+    if not os.path.isfile(dst):
+        return True
+    remote_ts = _drive_modified_ts(meta)
+    if remote_ts <= 0:
+        return False
+    try:
+        return remote_ts > os.path.getmtime(dst) + 1.0
+    except OSError:
+        return True
+
+
 def _dedupe_sales_names(names: List[str]) -> List[str]:
     if not _SKIP_ANNUAL_IF_MONTHLY:
         return sorted(names)
@@ -211,6 +240,7 @@ def sync_drive_copy_from_remote(
     cache_dir: str = "./uploaded_cache",
     *,
     force_refresh: bool = False,
+    include_worklog: bool = True,
 ) -> dict:
     """Cloud: Drive uproad 폴더 → uploaded_cache (Gist 대체)."""
     folder_id = resolve_drive_uproad_folder_id()
@@ -247,7 +277,7 @@ def sync_drive_copy_from_remote(
             continue
         rel = drive_to_rel[src_name]
         dst = os.path.join(cache_dir, rel)
-        if not force_refresh and os.path.isfile(dst):
+        if not _remote_newer_than_cache(meta, dst, force_refresh=force_refresh):
             continue
         raw, derr = _drive_download(str(meta.get("id")))
         if raw and _write_bytes(dst, raw):
@@ -281,15 +311,15 @@ def sync_drive_copy_from_remote(
             if not meta:
                 continue
             dst = os.path.join(sales_dir, sn)
-            if not force_refresh and os.path.isfile(dst):
+            if not _remote_newer_than_cache(meta, dst, force_refresh=force_refresh):
                 continue
             raw, _ = _drive_download(str(meta.get("id")))
             if raw and _write_bytes(dst, raw):
                 copied.append(f"sales/{sn}")
 
-    # worklog 하위 폴더
+    # worklog 하위 폴더 (부트 시 생략 가능 — 탭 열 때 수동 sync)
     wl_meta = by_name.get("worklog")
-    if wl_meta and str(wl_meta.get("mimeType") or "").endswith("folder"):
+    if include_worklog and wl_meta and str(wl_meta.get("mimeType") or "").endswith("folder"):
         wl_dir = os.path.join(cache_dir, "worklog")
         os.makedirs(wl_dir, exist_ok=True)
         wl_files, wl_err = _list_children(str(wl_meta.get("id")))
@@ -301,7 +331,7 @@ def sync_drive_copy_from_remote(
                 if not _WORKLOG_DAY_RE.match(wname) and wname != "template.xlsx":
                     continue
                 wdst = os.path.join(wl_dir, wname)
-                if not force_refresh and os.path.isfile(wdst):
+                if not _remote_newer_than_cache(wf, wdst, force_refresh=force_refresh):
                     continue
                 raw, _ = _drive_download(str(wf.get("id")))
                 if raw and _write_bytes(wdst, raw):

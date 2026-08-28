@@ -155,6 +155,7 @@ def sync_drive_copy_into_cache(
     cache_dir: str = "./uploaded_cache",
     *,
     force_refresh: bool = False,
+    include_worklog: bool = True,
 ) -> dict:
     """Drive 복사본 → uploaded_cache. 프로세스당 1회 (force_refresh 시 항상 Drive 우선).
 
@@ -219,22 +220,23 @@ def sync_drive_copy_into_cache(
                     if _atomic_copy(src, dst):
                         copied.append(f"sales/{sn}")
 
-        # worklog 하위 폴더
-        wl_drive = os.path.join(drive_root, "worklog")
-        if os.path.isdir(wl_drive):
-            wl_local = os.path.join(cache_dir, "worklog")
-            os.makedirs(wl_local, exist_ok=True)
-            try:
-                for wname in os.listdir(wl_drive):
-                    if not _is_worklog_day_file(wname) and wname != "template.xlsx":
-                        continue
-                    src = os.path.join(wl_drive, wname)
-                    dst = os.path.join(wl_local, wname)
-                    if force_refresh or _should_replace(src, dst):
-                        if _atomic_copy(src, dst):
-                            copied.append(f"worklog/{wname}")
-            except OSError:
-                pass
+        # worklog 하위 폴더 (부트 시 생략 가능)
+        if include_worklog:
+            wl_drive = os.path.join(drive_root, "worklog")
+            if os.path.isdir(wl_drive):
+                wl_local = os.path.join(cache_dir, "worklog")
+                os.makedirs(wl_local, exist_ok=True)
+                try:
+                    for wname in os.listdir(wl_drive):
+                        if not _is_worklog_day_file(wname) and wname != "template.xlsx":
+                            continue
+                        src = os.path.join(wl_drive, wname)
+                        dst = os.path.join(wl_local, wname)
+                        if force_refresh or _should_replace(src, dst):
+                            if _atomic_copy(src, dst):
+                                copied.append(f"worklog/{wname}")
+                except OSError:
+                    pass
 
         return {
             "ok": True,
@@ -256,18 +258,28 @@ def sync_dashboard_copy_on_boot(
     cache_dir: str = "./uploaded_cache",
     *,
     force_refresh: bool = True,
+    include_worklog: bool = False,
 ) -> dict:
     """재시작·재부팅 시 dashboard 복사본/uproad 최신 데이터 로드.
 
     맥: Drive Desktop 마운트 / Cloud: Drive API (drive_remote_fetch).
+    Cloud 부트: force_refresh=False·include_worklog=False 로 CSV만 빠르게 확인.
     """
     local_root = resolve_drive_dashboard_copy()
     if local_root:
-        return sync_drive_copy_into_cache(cache_dir, force_refresh=force_refresh)
+        return sync_drive_copy_into_cache(
+            cache_dir,
+            force_refresh=force_refresh,
+            include_worklog=include_worklog,
+        )
     try:
         from drive_remote_fetch import sync_drive_copy_from_remote
 
-        return sync_drive_copy_from_remote(cache_dir, force_refresh=force_refresh)
+        return sync_drive_copy_from_remote(
+            cache_dir,
+            force_refresh=force_refresh,
+            include_worklog=include_worklog,
+        )
     except Exception as e:
         return {
             "ok": False,
