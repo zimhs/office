@@ -3933,6 +3933,22 @@ _INVALID_INDUSTRY_STAFF = frozenset(
     }
 )
 
+# 업종별 상세분석 — 대납·충전소(대납) 계열을 「충전소」로 통합
+_INDUSTRY_MERGE_TO_CHARGING = frozenset(
+    {
+        "대납처",
+        "충전소(대납)",
+        "충전소대납",
+    }
+)
+
+
+def _normalize_industry_label(label) -> str:
+    s = str(label or "").strip()
+    if s in _INDUSTRY_MERGE_TO_CHARGING:
+        return "충전소"
+    return s
+
 
 def _read_industry_csv_bytes(industry_bytes):
     """업체대분류 CSV → DataFrame (encoding 시도)."""
@@ -10101,6 +10117,7 @@ def get_fast_processed_full_df(meta_data, staff_token, ind_dict, ind_staff_dict=
                 temp_df.loc[miss, "업종"] = (
                     temp_df.loc[miss, "거래처_원본"].map(ind_dict).fillna("미분류")
                 )
+        temp_df["업종"] = temp_df["업종"].map(_normalize_industry_label)
         
     return temp_df
 
