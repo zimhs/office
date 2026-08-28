@@ -139,7 +139,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-27i · 일지일괄가져오기fix"
+_WL_UI_BUILD = "2026-08-28a · 일괄가져오기제거"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -988,183 +988,6 @@ def resolve_worklog_archive_root() -> str | None:
                     continue
     st.session_state["_wl_archive_root_cache"] = {"path": found}
     return found
-
-
-def _parse_archive_sheet_to_date(sheet_name: str, year: int, month: int) -> date | None:
-    """월별 xlsx 시트명 → date (27 또는 YYYY-MM-DD)."""
-    sn = str(sheet_name or "").strip()
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", sn):
-        try:
-            return date.fromisoformat(sn)
-        except ValueError:
-            return None
-    if sn.isdigit():
-        try:
-            return date(year, month, int(sn))
-        except ValueError:
-            return None
-    return None
-
-
-def _iter_all_archive_dates(root: str | None = None) -> list[date]:
-    """업무/일지 폴더에서 발견된 모든 일자 (월별 시트 + 일자별 xlsx)."""
-    root = root or resolve_worklog_archive_root()
-    if not root or not os.path.isdir(root):
-        return []
-    found: set[date] = set()
-    try:
-        year_names = sorted(os.listdir(root))
-    except OSError:
-        return []
-    for year_name in year_names:
-        if not str(year_name).isdigit():
-            continue
-        year = int(year_name)
-        year_dir = os.path.join(root, year_name)
-        if not os.path.isdir(year_dir):
-            continue
-        try:
-            entries = os.listdir(year_dir)
-        except OSError:
-            continue
-        for fn in entries:
-            fp = os.path.join(year_dir, fn)
-            if fn.endswith(".xlsx") and re.fullmatch(r"\d{4}-\d{2}-\d{2}\.xlsx", fn):
-                try:
-                    found.add(date.fromisoformat(fn[:10]))
-                except ValueError:
-                    pass
-                continue
-            if fn.endswith("월.xlsx") and os.path.isfile(fp) and load_workbook is not None:
-                try:
-                    month = int(fn.replace("월.xlsx", ""))
-                except ValueError:
-                    continue
-                try:
-                    wb = load_workbook(fp, read_only=True)
-                    try:
-                        for sn in wb.sheetnames:
-                            d = _parse_archive_sheet_to_date(sn, year, month)
-                            if d is not None:
-                                found.add(d)
-                    finally:
-                        wb.close()
-                except Exception:
-                    pass
-                continue
-            if fn.endswith("월") and os.path.isdir(fp):
-                sub = fp
-                for fn2 in os.listdir(sub):
-                    fp2 = os.path.join(sub, fn2)
-                    if fn2.endswith(".xlsx") and re.fullmatch(r"\d{4}-\d{2}-\d{2}\.xlsx", fn2):
-                        try:
-                            found.add(date.fromisoformat(fn2[:10]))
-                        except ValueError:
-                            pass
-                    elif fn2.endswith("월.xlsx") and os.path.isfile(fp2) and load_workbook is not None:
-                        try:
-                            month = int(fn2.replace("월.xlsx", ""))
-                        except ValueError:
-                            continue
-                        try:
-                            wb = load_workbook(fp2, read_only=True)
-                            try:
-                                for sn in wb.sheetnames:
-                                    d = _parse_archive_sheet_to_date(sn, year, month)
-                                    if d is not None:
-                                        found.add(d)
-                            finally:
-                                wb.close()
-                        except Exception:
-                            pass
-    return sorted(found)
-
-
-def _import_archive_day_to_cache(d: date, *, overwrite: bool = False) -> str:
-    """archive → uploaded_cache/worklog/YYYY-MM-DD.xlsx. 'imported'|'skipped'|'missing'|'error'."""
-    if load_workbook is None:
-        return "error"
-    dest = worklog_path(d)
-    if os.path.isfile(dest) and not overwrite:
-        return "skipped"
-    year_dir = worklog_archive_year_dir(d)
-    if year_dir:
-        legacy = os.path.join(year_dir, f"{d.isoformat()}.xlsx")
-        if os.path.isfile(legacy):
-            try:
-                _ensure_dirs()
-                shutil.copy2(legacy, dest)
-                return "imported"
-            except Exception:
-                return "error"
-        legacy2 = os.path.join(year_dir, f"{d.month}월", f"{d.isoformat()}.xlsx")
-        if os.path.isfile(legacy2):
-            try:
-                _ensure_dirs()
-                shutil.copy2(legacy2, dest)
-                return "imported"
-            except Exception:
-                return "error"
-    month_path = worklog_archive_month_path(d)
-    if not month_path or not os.path.isfile(month_path):
-        legacy_month = os.path.join(year_dir, f"{d.month}월", f"{d.month}월.xlsx") if year_dir else ""
-        if legacy_month and os.path.isfile(legacy_month):
-            month_path = legacy_month
-        else:
-            return "missing"
-    try:
-        month_wb = load_workbook(month_path)
-        sheet_name = _resolve_archive_sheet_name(month_wb.sheetnames, d)
-        if not sheet_name:
-            month_wb.close()
-            return "missing"
-        src_ws = month_wb[sheet_name]
-        _ensure_dirs()
-        if not os.path.isfile(WORKLOG_TEMPLATE):
-            month_wb.close()
-            return "error"
-        shutil.copy2(WORKLOG_TEMPLATE, dest)
-        day_wb = load_workbook(dest)
-        day_ws = day_wb.active
-        _copy_worksheet_cross_workbook(src_ws, day_ws)
-        day_wb.save(dest)
-        day_wb.close()
-        month_wb.close()
-        return "imported"
-    except Exception:
-        return "error"
-
-
-def bulk_import_archive_to_worklog(*, overwrite: bool = False) -> dict:
-    """업무/일지 전체 → uploaded_cache/worklog 일괄 변환."""
-    root = resolve_worklog_archive_root()
-    days = _iter_all_archive_dates(root)
-    imported = skipped = missing = failed = 0
-    for d in days:
-        r = _import_archive_day_to_cache(d, overwrite=overwrite)
-        if r == "imported":
-            imported += 1
-        elif r == "skipped":
-            skipped += 1
-        elif r == "missing":
-            missing += 1
-        else:
-            failed += 1
-    if imported:
-        _invalidate_saved_dates_cache()
-        for d in days:
-            iso = d.isoformat()
-            st.session_state.pop(_boot_key(d), None)
-            st.session_state.pop(f"wl_open_ctx_{iso}", None)
-            st.session_state.pop(f"wl_remote_pull_tried_{iso}", None)
-    return {
-        "root": root,
-        "total": len(days),
-        "imported": imported,
-        "skipped": skipped,
-        "missing": missing,
-        "failed": failed,
-    }
 
 
 def worklog_archive_path(d: date) -> str | None:
@@ -4340,77 +4163,6 @@ def _maybe_sync_worklog_remote() -> None:
         pass
 
 
-def _on_bulk_import_new() -> None:
-    """확정 on_click — 위젯 키 대신 별도 플래그만 설정."""
-    st.session_state["wl_do_bulk_import"] = "new"
-
-
-def _on_bulk_import_overwrite() -> None:
-    """확정 on_click — 위젯 키 대신 별도 플래그만 설정."""
-    st.session_state["wl_do_bulk_import"] = "overwrite"
-
-
-def _run_pending_bulk_import() -> bool:
-    """wl_do_bulk_import 플래그가 있으면 일괄 가져오기 실행. 처리했으면 True."""
-    mode = st.session_state.pop("wl_do_bulk_import", None)
-    if mode not in ("new", "overwrite"):
-        return False
-    res = bulk_import_archive_to_worklog(overwrite=(mode == "overwrite"))
-    if res.get("total", 0) == 0:
-        msg = "가져올 일지가 없습니다. `…/업무/일지/연도/N월.xlsx` 또는 `YYYY-MM-DD.xlsx` 형식을 확인하세요."
-        st.session_state["wl_bulk_import_result"] = {"ok": False, "msg": msg}
-    else:
-        msg = (
-            f"일괄 가져오기 완료: **{res['imported']}**건 가져옴 · "
-            f"{res['skipped']}건 건너뜀 · {res['failed']}건 실패"
-        )
-        st.session_state["wl_bulk_import_result"] = {"ok": True, "msg": msg}
-    return True
-
-
-def _render_worklog_archive_import_ui() -> None:
-    """업무/일지 폴더 → 탭 편집 캐시 일괄 가져오기 (항상 표시)."""
-    flash = st.session_state.pop("wl_bulk_import_result", None)
-    if isinstance(flash, dict) and flash.get("msg"):
-        if flash.get("ok"):
-            st.success(flash["msg"])
-        else:
-            st.warning(flash["msg"])
-    root = resolve_worklog_archive_root()
-    with st.expander("📥 업무/일지 폴더에서 일괄 가져오기", expanded=False):
-        if not root:
-            st.caption(
-                "경로 없음: `Desktop/업무/일지` 또는 Drive "
-                "「다른 컴퓨터/내 컴퓨터/Desktop/업무/일지」"
-            )
-            return
-        try:
-            n_days = len(_iter_all_archive_dates(root))
-        except Exception:
-            n_days = 0
-        st.caption(
-            f"원본 `{root}` → 편집용 `uploaded_cache/worklog/` · "
-            f"발견 약 **{n_days}**일"
-        )
-        c1, c2 = st.columns(2)
-        with c1:
-            st.button(
-                "새 날짜만 가져오기",
-                key="wl_bulk_import_new",
-                width="stretch",
-                help="이미 탭에 있는 날짜는 건너뜁니다.",
-                on_click=_on_bulk_import_new,
-            )
-        with c2:
-            st.button(
-                "전체 덮어쓰기",
-                key="wl_bulk_import_all",
-                width="stretch",
-                help="기존 탭 일지도 archive 내용으로 덮어씁니다.",
-                on_click=_on_bulk_import_overwrite,
-            )
-
-
 def _render_worklog_sync_ui() -> None:
     """동기화 결과·충돌 안내 (fragment 밖). dev 모드(?dev=1)에서만 표시."""
     if not is_dev_mode():
@@ -4569,7 +4321,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     selected: date = st.session_state["worklog_selected"]
 
     _run_pending_worklog_day_delete()
-    _run_pending_bulk_import()
 
     _prepare_worklog_day_state(selected, skip_remote_pull=_filt_changed)
     _maybe_sync_worklog_remote()
@@ -4601,7 +4352,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     )
 
     _render_worklog_sync_ui()
-    _render_worklog_archive_import_ui()
 
     @st.fragment
     def _worklog_body() -> None:
