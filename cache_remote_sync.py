@@ -254,10 +254,12 @@ def sync_cache_remote(
     *,
     force: bool = False,
     prefer_remote: bool = False,
+    force_pull: bool = False,
 ) -> dict:
     """Gist ↔ uploaded_cache 동기화 (사이드바 CSV·매출).
 
     prefer_remote=True: Cloud 재부팅 시 Gist(최신) 우선.
+    force_pull=True: prefer_remote 시 sha 일치해도 Gist에서 다시 받음(수동 새로고침).
     """
     token = resolve_github_token()
     if not token:
@@ -326,7 +328,7 @@ def sync_cache_remote(
         rm = float((rem or {}).get("mtime") or 0)
 
         if prefer_remote and rem_ok:
-            if (not loc_ok) or (local_sha != remote_sha and remote_sha):
+            if force_pull or (not loc_ok) or (local_sha != remote_sha and remote_sha):
                 if _pull_one(files_meta, rel, loc):
                     copied.append(f"←Gist:{rel}")
                     try:
