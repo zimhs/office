@@ -33,6 +33,8 @@ MR_UPLOAD_MANIFEST = os.path.join(MR_UPLOAD_DIR, "manifest.json")
 MR_MANUAL_SOURCE = "직접입력"
 MR_FRAME_PKL = os.path.join(MR_CACHE_DIR, "_merged_frame.pkl")
 MR_FRAME_SIG = os.path.join(MR_CACHE_DIR, "_merged_frame.sig")
+MR_BUNDLE_PKL = os.path.join(MR_CACHE_DIR, "_tab_bundle.pkl")
+MR_BUNDLE_SIG = os.path.join(MR_CACHE_DIR, "_tab_bundle.sig")
 _MR_DRIVE_SYNCED = False
 MR_UPLOAD_KINDS = [
     ("자동", "파일명·양식으로 자동 감지"),
@@ -316,21 +318,21 @@ def _ms_default(prev, options: list[str]) -> list[str]:
     return [x for x in (prev or []) if x in opts]
 
 
-@st.cache_data(show_spinner=False, ttl=600)
-def _area_complex_lookup(_cache_sig: str) -> dict[str, str]:
-    """공장등록 주소(읍면동·리) → 산업단지 고신뢰 맵.
+def _mr_is_cloud() -> bool:
+    """Streamlit Community Cloud — Drive 로컬 동기화 생략."""
+    try:
+        env = (os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT") or "").strip().lower()
+        if env == "cloud":
+            return True
+        return os.path.abspath(os.getcwd()).startswith("/mount/src")
+    except Exception:
+        return False
 
-    공개 단지 위치와 같은 근거(등록 DB)로 미분류를 재분류할 때 사용.
-    """
+
+def _build_area_complex_lookup_from_records(fac: list[dict]) -> dict[str, str]:
+    """공장등록 레코드 → 읍면동/리 산업단지 맵 (엑셀 재파싱 없음)."""
     from collections import Counter, defaultdict
 
-    root = ensure_market_research_cache()
-    fac: list[dict] = []
-    for p in _list_xlsx(root):
-        nfc = unicodedata.normalize("NFC", p.name)
-        if "화성" in nfc and "공장" in nfc:
-            fac = _parse_factory_registry(p)
-            break
     votes: dict[str, Counter] = defaultdict(Counter)
     for r in fac:
         cx = _s(r.get("산업단지"))
@@ -348,7 +350,6 @@ def _area_complex_lookup(_cache_sig: str) -> dict[str, str]:
     for key, c in votes.items():
         top, n = c.most_common(1)[0]
         tot = sum(c.values())
-        # 리면 8건·80%, 읍면동만이면 더 엄격(오분류 방지)
         if "|" in key:
             ok = n >= 8 and n / tot >= 0.8
         else:
@@ -356,6 +357,19 @@ def _area_complex_lookup(_cache_sig: str) -> dict[str, str]:
         if ok:
             out[key] = top
     return out
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def _area_complex_lookup(_cache_sig: str) -> dict[str, str]:
+    """공장등록 주소(읍면동·리) → 산업단지 고신뢰 맵."""
+    root = ensure_market_research_cache()
+    fac: list[dict] = []
+    for p in _list_xlsx(root):
+        nfc = unicodedata.normalize("NFC", p.name)
+        if "화성" in nfc and "공장" in nfc:
+            fac = _parse_factory_registry(p)
+            break
+    return _build_area_complex_lookup_from_records(fac)
 
 
 def _complex_from_area(addr: str, lookup: dict[str, str]) -> str:
@@ -445,6 +459,13 @@ def ensure_market_research_cache(*, force: bool = False) -> str:
         except Exception:
             if _MR_DRIVE_SYNCED:
                 return MR_CACHE_DIR
+    if _mr_is_cloud():
+        try:
+            st.session_state["_mr_cache_synced"] = True
+        except Exception:
+            pass
+        _MR_DRIVE_SYNCED = True
+        return MR_CACHE_DIR
     for cand in MR_DRIVE_CANDIDATES:
         if cand and os.path.isdir(cand):
             try:
@@ -605,12 +626,13 @@ def _invalidate_mr_loaded() -> None:
         _cached_mr_cascade_index,
         _cached_mr_tab_bundle,
         _cached_cache_signature,
+        _area_complex_lookup,
     ):
         try:
             clear_fn.clear()
         except Exception:
             pass
-    for p in (MR_FRAME_PKL, MR_FRAME_SIG, MR_FRAME_PKL + ".tmp"):
+    for p in (MR_FRAME_PKL, MR_FRAME_SIG, MR_FRAME_PKL + ".tmp", MR_BUNDLE_PKL, MR_BUNDLE_SIG, MR_BUNDLE_PKL + ".tmp"):
         try:
             if os.path.exists(p):
                 os.remove(p)
@@ -1104,6 +1126,46 @@ def _parse_seojin(path: Path) -> list[dict]:
     return records
 
 
+def _bundle_disk_load(sig: str):
+    if not sig or not os.path.isfile(MR_BUNDLE_PKL) or not os.path.isfile(MR_BUNDLE_SIG):
+        return None
+    try:
+        with open(MR_BUNDLE_SIG, "r", encoding="utf-8") as f:
+            if f.read().strip() != sig:
+                return None
+        with open(MR_BUNDLE_PKL, "rb") as f:
+            payload = pickle.load(f)
+        if not isinstance(payload, (tuple, list)) or len(payload) != 4:
+            return None
+        slim, raw_n, removed, cascade = payload
+        if not isinstance(slim, pd.DataFrame) or not isinstance(cascade, dict):
+            return None
+        return slim, int(raw_n), int(removed), cascade
+    except Exception:
+        return None
+
+
+def _bundle_disk_save(
+    sig: str, slim: pd.DataFrame, raw_n: int, removed: int, cascade: dict
+) -> None:
+    if not sig:
+        return
+    try:
+        os.makedirs(MR_CACHE_DIR, exist_ok=True)
+        tmp = MR_BUNDLE_PKL + ".tmp"
+        with open(tmp, "wb") as f:
+            pickle.dump((slim, int(raw_n), int(removed), cascade), f, protocol=4)
+        os.replace(tmp, MR_BUNDLE_PKL)
+        with open(MR_BUNDLE_SIG, "w", encoding="utf-8") as f:
+            f.write(sig)
+    except Exception:
+        try:
+            if os.path.exists(MR_BUNDLE_PKL + ".tmp"):
+                os.remove(MR_BUNDLE_PKL + ".tmp")
+        except Exception:
+            pass
+
+
 def _frame_disk_load(sig: str):
     if not sig or not os.path.isfile(MR_FRAME_PKL) or not os.path.isfile(MR_FRAME_SIG):
         return None
@@ -1161,6 +1223,7 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         if e.get("filename")
     }
     records: list[dict] = []
+    fac_for_lookup: list[dict] = []
     seen_paths: set[str] = set()
 
     for p in files:
@@ -1187,7 +1250,9 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         elif "mail" in n or "시장조사ㅡ" in nfc or "시장조사-" in nfc:
             records.extend(_parse_visit_notes(p, "방문조사(mail)"))
         elif "화성" in nfc and "공장" in nfc:
-            records.extend(_parse_factory_registry(p))
+            fac_recs = _parse_factory_registry(p)
+            fac_for_lookup.extend(fac_recs)
+            records.extend(fac_recs)
         elif "김진혁" in nfc:
             records.extend(_parse_visit_notes(p, "방문조사(김진혁)"))
         elif "서진" in nfc:
@@ -1245,8 +1310,8 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         else:
             merged[c] = merged[c].fillna("").astype(str)
     merged.loc[merged["산업단지"].isin(["", "nan"]), "산업단지"] = "미분류"
-    # 미분류 → 공장등록 기반 읍면동/리 맵 + 주소 키워드로 재분류
-    lookup = _area_complex_lookup(_cache_sig)
+    # 미분류 → 공장등록 기반 읍면동/리 맵 + 주소 키워드로 재분류 (엑셀 재파싱 없음)
+    lookup = _build_area_complex_lookup_from_records(fac_for_lookup)
     merged, _ = enrich_unclassified_complexes(merged, lookup)
     merged["_search"] = (
         merged["업체명"]
@@ -1460,7 +1525,10 @@ def _mr_slim_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, ttl=600)
 def _cached_mr_tab_bundle(_cache_sig: str) -> tuple[pd.DataFrame, int, int, dict]:
-    """병합 DF(slim) + cascade — load 1회, cascade 중복 로드 없음."""
+    """병합 DF(slim) + cascade — disk·cache 1회, cascade 중복 빌드 없음."""
+    disk = _bundle_disk_load(_cache_sig)
+    if disk is not None:
+        return disk
     df, raw_n, removed_n = load_market_research_frame(_cache_sig)
     slim = _mr_slim_frame(df)
     if mr_cascade is None:
@@ -1470,6 +1538,7 @@ def _cached_mr_tab_bundle(_cache_sig: str) -> tuple[pd.DataFrame, int, int, dict
         }
     else:
         cascade = mr_cascade.build_cascade_index(df)
+    _bundle_disk_save(_cache_sig, slim, raw_n, removed_n, cascade)
     return slim, raw_n, removed_n, cascade
 
 
@@ -1826,6 +1895,9 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         "엑셀 업로드·직접입력 가능 · 검색은 「적용」"
     )
 
+    with st.spinner("시장조사 데이터 불러오는 중…"):
+        df, raw_n, removed_n, cascade = _mr_load_tab_bundle()
+
     with st.expander("📁 엑셀 업로드", expanded=False):
         st.caption(
             "파일을 `uploaded_cache/market_research/uploads/`에 저장한 뒤 목록에 합칩니다. "
@@ -1997,9 +2069,6 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                 f"저장 위치: `{MR_MANUAL_FILE}` "
                 "(맥이면 Drive「시장조사/직접입력_시장조사.json」에도 복사)"
             )
-
-    # Drive 동기화·엑셀 병합 — 세션 warm + cache_data로 rerun 비용 절감
-    df, raw_n, removed_n, cascade = _mr_load_tab_bundle()
 
     if df.empty:
         st.info(
