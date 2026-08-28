@@ -600,10 +600,15 @@ def delete_manual_entry(entry_id: str) -> bool:
 
 
 def _invalidate_mr_loaded() -> None:
-    try:
-        load_market_research_frame.clear()
-    except Exception:
-        pass
+    for clear_fn in (
+        load_market_research_frame,
+        _cached_mr_cascade_index,
+        _cached_mr_tab_bundle,
+    ):
+        try:
+            clear_fn.clear()
+        except Exception:
+            pass
     for p in (MR_FRAME_PKL, MR_FRAME_SIG, MR_FRAME_PKL + ".tmp"):
         try:
             if os.path.exists(p):
@@ -618,6 +623,7 @@ def _invalidate_mr_loaded() -> None:
         "_mr_removed_n",
         "_mr_cascade",
         "_mr_ipad_bundle",
+        "_mr_session_bundle",
     ):
         st.session_state.pop(k, None)
 
@@ -1446,6 +1452,38 @@ def _mr_slim_frame(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, cols]
 
 
+@st.cache_data(show_spinner=False, ttl=600)
+def _cached_mr_tab_bundle(_cache_sig: str) -> tuple[pd.DataFrame, int, int, dict]:
+    """병합 DF(slim) + cascade — 탭 rerun마다 디스크/병합 반복 방지."""
+    df, raw_n, removed_n = load_market_research_frame(_cache_sig)
+    slim = _mr_slim_frame(df)
+    cascade = _cached_mr_cascade_index(_cache_sig)
+    return slim, raw_n, removed_n, cascade
+
+
+def _mr_load_tab_bundle() -> tuple[pd.DataFrame, int, int, dict]:
+    """세션 warm + st.cache_data — 적용 rerun 시 목록 재로딩 최소화."""
+    ensure_market_research_cache()
+    sig = _cache_signature()
+    warm = st.session_state.get("_mr_session_bundle")
+    if isinstance(warm, dict) and warm.get("sig") == sig and warm.get("df") is not None:
+        return (
+            warm["df"],
+            int(warm.get("raw_n") or 0),
+            int(warm.get("removed_n") or 0),
+            warm.get("cascade") or {},
+        )
+    df, raw_n, removed_n, cascade = _cached_mr_tab_bundle(sig)
+    st.session_state["_mr_session_bundle"] = {
+        "sig": sig,
+        "df": df,
+        "raw_n": raw_n,
+        "removed_n": removed_n,
+        "cascade": cascade,
+    }
+    return df, raw_n, removed_n, cascade
+
+
 def _mr_market_tab_keep_visible() -> None:
     """적용 후 full rerun 시 시장조사 탭이 defer stub으로 바뀌지 않게."""
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
@@ -1455,25 +1493,169 @@ def _mr_market_tab_keep_visible() -> None:
     st.session_state["_dash_filter_changed_flag"] = False
 
 
-def _mr_clear_widget_session_keys() -> None:
-    """defer 탭 복원 등으로 위젯 키가 session_state에 남으면 download_button 오류."""
-    for k in list(st.session_state.keys()):
-        if not isinstance(k, str):
-            continue
-        if k.startswith(
-            (
-                "mr_dl_",
-                "mr_view_",
-                "mr_region_pick_",
-                "mr_sup_pick_",
-                "mr_complex_pick_",
-                "mr_fac_q_",
-                "mr_upload_",
-                "mr_up_del_",
-                "mr_del_",
+@st.fragment
+def _mr_filter_results_body(
+    df: pd.DataFrame,
+    latest_update_str: str,
+) -> None:
+    """검색 결과·표·엑셀 — fragment만 rerun (보기 전환·상세 빠름)."""
+    app_r = list(st.session_state.get("mr_v6_region") or [])
+    app_c = list(st.session_state.get("mr_v6_complex") or [])
+    app_s = list(st.session_state.get("mr_v6_sup") or [])
+    app_q = str(st.session_state.get("mr_v6_q") or "")
+    app_fac = bool(st.session_state.get("mr_v6_fac", False))
+    app_hide = bool(st.session_state.get("mr_v6_hide", False))
+
+    _applied_parts = []
+    if app_r:
+        _applied_parts.append("지역=" + "·".join(app_r))
+    if app_c:
+        _applied_parts.append("단지=" + "·".join(app_c[:3]) + ("…" if len(app_c) > 3 else ""))
+    if app_s:
+        _applied_parts.append("공급사=" + "·".join(app_s[:2]) + ("…" if len(app_s) > 2 else ""))
+    if app_q:
+        _applied_parts.append(f"검색={app_q}")
+    if app_fac:
+        _applied_parts.append("화성공장DB포함")
+    if app_hide:
+        _applied_parts.append("미분류제외")
+    if _applied_parts:
+        st.caption("✅ 적용됨 · " + " · ".join(_applied_parts))
+    else:
+        st.caption("ℹ️ 적용 조건 없음 — 전체 목록 표시")
+
+    view = _filter_frame(
+        df,
+        regions=tuple(app_r),
+        complexes=tuple(app_c),
+        suppliers=tuple(app_s),
+        query=app_q,
+        include_factory=app_fac,
+        hide_unclassified=app_hide,
+    )
+
+    show_cols = [c for c in _MR_SHOW_COLS if c in view.columns]
+    limit = _MR_DISPLAY_LIMIT
+    n_view = len(view)
+    cap_c, dl_c = st.columns([2.4, 1])
+    with cap_c:
+        st.caption(f"검색 결과 **{n_view:,}**건 · 화면에 {min(n_view, limit):,}건 표시")
+    with dl_c:
+        xl_n = min(n_view, _MR_EXCEL_LIMIT)
+        xl_df = view[show_cols].head(xl_n) if show_cols else view.head(xl_n)
+        st.session_state.pop("mr_dl_xlsx_search", None)
+        st.download_button(
+            f"엑셀 다운로드 ({xl_n:,}건)",
+            data=_mr_filter_excel_bytes(xl_df),
+            file_name=f"시장조사_검색결과_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
+        )
+    mode = st.radio(
+        "보기",
+        options=["통합 목록", "지역별", "공급사별", "화성공장 DB", "산업단지별"],
+        horizontal=True,
+        key="mr_view_v6",
+    )
+
+    if mode == "통합 목록":
+        st.dataframe(
+            view[show_cols].head(limit),
+            width="stretch",
+            hide_index=True,
+            height=480,
+        )
+    elif mode == "지역별":
+        region_counts = (
+            view.groupby("지역", dropna=False)
+            .size()
+            .rename("건수")
+            .sort_values(ascending=False)
+            .reset_index()
+        )
+        left, right = st.columns([1, 1.4])
+        with left:
+            st.dataframe(region_counts, width="stretch", hide_index=True, height=400)
+        with right:
+            opts = region_counts["지역"].tolist() or ["미분류"]
+            pick = st.selectbox("지역 상세", options=opts, key="mr_region_pick_v6")
+            sub = view[view["지역"] == pick][show_cols]
+            st.caption(f"{pick} · {len(sub):,}건")
+            st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
+    elif mode == "공급사별":
+        cnt: Counter[str] = Counter()
+        for s in view["공급사"].astype(str):
+            for p in re.split(r"\s*[·|/]\s*", s):
+                p = p.strip()
+                if p:
+                    cnt[p] += 1
+        if not cnt:
+            st.info("공급사 정보가 있는 행이 없습니다.")
+        else:
+            sc = (
+                pd.DataFrame({"공급사": list(cnt.keys()), "건수": list(cnt.values())})
+                .sort_values("건수", ascending=False)
+                .head(50)
+                .reset_index(drop=True)
             )
-        ):
-            st.session_state.pop(k, None)
+            a, b = st.columns([1, 1.4])
+            with a:
+                st.dataframe(sc, width="stretch", hide_index=True, height=400)
+            with b:
+                pick_s = st.selectbox(
+                    "공급사 상세", options=sc["공급사"].tolist(), key="mr_sup_pick_v6"
+                )
+                sub = view[
+                    view["공급사"].str.contains(
+                        re.escape(pick_s), regex=True, na=False
+                    )
+                ][show_cols]
+                st.caption(f"{pick_s} · {len(sub):,}건")
+                st.dataframe(
+                    sub.head(limit), width="stretch", hide_index=True, height=400
+                )
+    elif mode == "화성공장 DB":
+        fac = (
+            df[df["_has_factory"]]
+            if "_has_factory" in df.columns
+            else df.iloc[0:0]
+        )
+        st.caption(f"화성공장 관련 **{len(fac):,}**건")
+        q2 = st.text_input("공장 DB 검색", key="mr_fac_q_v6")
+        fac2 = fac
+        qq = (q2 or "").strip()
+        if qq and "_search" in fac2.columns:
+            fac2 = fac[
+                fac["_search"].str.contains(qq.casefold(), regex=False, na=False)
+            ]
+        st.dataframe(
+            fac2[show_cols].head(limit),
+            width="stretch",
+            hide_index=True,
+            height=440,
+        )
+    else:
+        cx_counts = (
+            view.groupby("산업단지", dropna=False)
+            .size()
+            .rename("건수")
+            .sort_values(ascending=False)
+            .reset_index()
+        )
+        left, right = st.columns([1, 1.4])
+        with left:
+            st.dataframe(cx_counts, width="stretch", hide_index=True, height=400)
+        with right:
+            opts_cx = cx_counts["산업단지"].tolist() or ["미분류"]
+            pick_cx = st.selectbox(
+                "산업단지 상세", options=opts_cx, key="mr_complex_pick_v6"
+            )
+            sub = view[view["산업단지"] == pick_cx][show_cols]
+            st.caption(f"{pick_cx} · {len(sub):,}건")
+            st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
+    if latest_update_str:
+        st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
 
 def _mr_filter_results(
@@ -1482,19 +1664,15 @@ def _mr_filter_results(
     cascade: dict,
     latest_update_str: str,
 ) -> None:
-    """필터·검색·표 — form+적용 (fragment 미사용: form submit 호환)."""
+    """필터 form(전체 rerun) + 결과 fragment(보기 전환만 국소 rerun)."""
     try:
         if mr_cascade is None:
             st.error("market_research_cascade 모듈이 없습니다.")
             return
 
-        _mr_clear_widget_session_keys()
-
-        _flash = st.session_state.pop("mr_v6_apply_flash", None)
-
         st.caption(
-            "필터 **v9** · 지역→단지→공급사 종속 · "
-            "조건 선택 후 **적용** (버튼 클릭 시 결과·건수 갱신)."
+            "필터 **v10** · 지역→단지→공급사 종속 · "
+            "조건 선택 후 **적용** (1회 갱신, 보기 전환은 빠른 국소 갱신)."
         )
 
         app_r = list(st.session_state.get("mr_v6_region") or [])
@@ -1509,7 +1687,7 @@ def _mr_filter_results(
             cascade, app_r, app_c, include_factory=app_fac
         )
 
-        with st.form("mr_filter_v9", clear_on_submit=False, border=True):
+        with st.form("mr_filter_v10", clear_on_submit=False, border=True):
             c_fac, c_hide = st.columns(2)
             with c_fac:
                 fac_in = st.checkbox("화성공장 DB(단독) 포함", value=app_fac)
@@ -1557,6 +1735,7 @@ def _mr_filter_results(
                 use_container_width=True,
             )
 
+        _flash = None
         if applied:
             st.session_state["mr_v6_region"] = list(r_in or [])
             st.session_state["mr_v6_q"] = (q_in or "").strip()
@@ -1571,13 +1750,12 @@ def _mr_filter_results(
                 cascade, list(r_in or []), kept_c, include_factory=bool(fac_in)
             )
             st.session_state["mr_v6_sup"] = [x for x in (s_in or []) if x in new_sup]
-            st.session_state["mr_v6_apply_flash"] = {
+            _flash = {
                 "regions": list(r_in or []),
                 "complexes": len(kept_c),
                 "query": (q_in or "").strip(),
             }
             _mr_market_tab_keep_visible()
-            st.rerun()
 
         if isinstance(_flash, dict):
             _rg = _flash.get("regions") or []
@@ -1587,163 +1765,7 @@ def _mr_filter_results(
                 + (f" · 검색「{_flash.get('query')}」" if _flash.get("query") else "")
             )
 
-        app_r = list(st.session_state.get("mr_v6_region") or [])
-        app_c = list(st.session_state.get("mr_v6_complex") or [])
-        app_s = list(st.session_state.get("mr_v6_sup") or [])
-        app_q = str(st.session_state.get("mr_v6_q") or "")
-        app_fac = bool(st.session_state.get("mr_v6_fac", False))
-        app_hide = bool(st.session_state.get("mr_v6_hide", False))
-
-        _applied_parts = []
-        if app_r:
-            _applied_parts.append("지역=" + "·".join(app_r))
-        if app_c:
-            _applied_parts.append("단지=" + "·".join(app_c[:3]) + ("…" if len(app_c) > 3 else ""))
-        if app_s:
-            _applied_parts.append("공급사=" + "·".join(app_s[:2]) + ("…" if len(app_s) > 2 else ""))
-        if app_q:
-            _applied_parts.append(f"검색={app_q}")
-        if app_fac:
-            _applied_parts.append("화성공장DB포함")
-        if app_hide:
-            _applied_parts.append("미분류제외")
-        if _applied_parts:
-            st.caption("✅ 적용됨 · " + " · ".join(_applied_parts))
-        else:
-            st.caption("ℹ️ 적용 조건 없음 — 전체 목록 표시")
-
-        view = _filter_frame(
-            df,
-            regions=tuple(app_r),
-            complexes=tuple(app_c),
-            suppliers=tuple(app_s),
-            query=app_q,
-            include_factory=app_fac,
-            hide_unclassified=app_hide,
-        )
-
-        show_cols = [c for c in _MR_SHOW_COLS if c in view.columns]
-        limit = _MR_DISPLAY_LIMIT
-        n_view = len(view)
-        cap_c, dl_c = st.columns([2.4, 1])
-        with cap_c:
-            st.caption(f"검색 결과 **{n_view:,}**건 · 화면에 {min(n_view, limit):,}건 표시")
-        with dl_c:
-            xl_n = min(n_view, _MR_EXCEL_LIMIT)
-            xl_df = view[show_cols].head(xl_n) if show_cols else view.head(xl_n)
-            st.session_state.pop("mr_dl_xlsx_search", None)
-            st.download_button(
-                f"엑셀 다운로드 ({xl_n:,}건)",
-                data=_mr_filter_excel_bytes(xl_df),
-                file_name=f"시장조사_검색결과_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-                use_container_width=True,
-            )
-        mode = st.radio(
-            "보기",
-            options=["통합 목록", "지역별", "공급사별", "화성공장 DB", "산업단지별"],
-            horizontal=True,
-            key="mr_view_v6",
-        )
-
-        if mode == "통합 목록":
-            st.dataframe(
-                view[show_cols].head(limit),
-                width="stretch",
-                hide_index=True,
-                height=480,
-            )
-        elif mode == "지역별":
-            region_counts = (
-                view.groupby("지역", dropna=False)
-                .size()
-                .rename("건수")
-                .sort_values(ascending=False)
-                .reset_index()
-            )
-            left, right = st.columns([1, 1.4])
-            with left:
-                st.dataframe(region_counts, width="stretch", hide_index=True, height=400)
-            with right:
-                opts = region_counts["지역"].tolist() or ["미분류"]
-                pick = st.selectbox("지역 상세", options=opts, key="mr_region_pick_v6")
-                sub = view[view["지역"] == pick][show_cols]
-                st.caption(f"{pick} · {len(sub):,}건")
-                st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
-        elif mode == "공급사별":
-            cnt: Counter[str] = Counter()
-            for s in view["공급사"].astype(str):
-                for p in re.split(r"\s*[·|/]\s*", s):
-                    p = p.strip()
-                    if p:
-                        cnt[p] += 1
-            if not cnt:
-                st.info("공급사 정보가 있는 행이 없습니다.")
-            else:
-                sc = (
-                    pd.DataFrame({"공급사": list(cnt.keys()), "건수": list(cnt.values())})
-                    .sort_values("건수", ascending=False)
-                    .head(50)
-                    .reset_index(drop=True)
-                )
-                a, b = st.columns([1, 1.4])
-                with a:
-                    st.dataframe(sc, width="stretch", hide_index=True, height=400)
-                with b:
-                    pick_s = st.selectbox(
-                        "공급사 상세", options=sc["공급사"].tolist(), key="mr_sup_pick_v6"
-                    )
-                    sub = view[
-                        view["공급사"].str.contains(
-                            re.escape(pick_s), regex=True, na=False
-                        )
-                    ][show_cols]
-                    st.caption(f"{pick_s} · {len(sub):,}건")
-                    st.dataframe(
-                        sub.head(limit), width="stretch", hide_index=True, height=400
-                    )
-        elif mode == "화성공장 DB":
-            fac = (
-                df[df["_has_factory"]]
-                if "_has_factory" in df.columns
-                else df.iloc[0:0]
-            )
-            st.caption(f"화성공장 관련 **{len(fac):,}**건")
-            q2 = st.text_input("공장 DB 검색", key="mr_fac_q_v6")
-            fac2 = fac
-            qq = (q2 or "").strip()
-            if qq and "_search" in fac2.columns:
-                fac2 = fac[
-                    fac["_search"].str.contains(qq.casefold(), regex=False, na=False)
-                ]
-            st.dataframe(
-                fac2[show_cols].head(limit),
-                width="stretch",
-                hide_index=True,
-                height=440,
-            )
-        else:
-            cx_counts = (
-                view.groupby("산업단지", dropna=False)
-                .size()
-                .rename("건수")
-                .sort_values(ascending=False)
-                .reset_index()
-            )
-            left, right = st.columns([1, 1.4])
-            with left:
-                st.dataframe(cx_counts, width="stretch", hide_index=True, height=400)
-            with right:
-                opts_cx = cx_counts["산업단지"].tolist() or ["미분류"]
-                pick_cx = st.selectbox(
-                    "산업단지 상세", options=opts_cx, key="mr_complex_pick_v6"
-                )
-                sub = view[view["산업단지"] == pick_cx][show_cols]
-                st.caption(f"{pick_cx} · {len(sub):,}건")
-                st.dataframe(sub.head(limit), width="stretch", hide_index=True, height=400)
-        if latest_update_str:
-            st.caption(f"대시보드 기준 시각: {latest_update_str}")
+        _mr_filter_results_body(df, latest_update_str)
     except Exception as e:
         st.error(f"시장조사 필터 오류: {e}")
         st.exception(e)
@@ -1752,7 +1774,6 @@ def _mr_filter_results(
 
 def render_market_research_tab(latest_update_str: str = "") -> None:
     """시장조사 탭 UI."""
-    _mr_clear_widget_session_keys()
     st.markdown(
         "<div class='sub-header dashboard-tab-panel-head'>🔎 시장조사</div>",
         unsafe_allow_html=True,
@@ -1934,37 +1955,8 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                 "(맥이면 Drive「시장조사/직접입력_시장조사.json」에도 복사)"
             )
 
-    # Drive 동기화·엑셀 병합은 디스크 캐시 우선. 세션에 대형 DF를 두지 않음.
-    _ipad_mr = False
-    try:
-        _ipad_mr = bool(st.session_state.get("force_touch_ui"))
-    except Exception:
-        _ipad_mr = False
-    if _ipad_mr:
-        _warm = st.session_state.get("_mr_ipad_bundle")
-        if isinstance(_warm, dict) and _warm.get("df") is not None:
-            df = _warm["df"]
-            raw_n = int(_warm.get("raw_n") or 0)
-            removed_n = int(_warm.get("removed_n") or 0)
-            cascade = _warm.get("cascade") or {}
-        else:
-            ensure_market_research_cache()
-            sig = _cache_signature()
-            df, raw_n, removed_n = load_market_research_frame(sig)
-            df = _mr_slim_frame(df)
-            cascade = _cached_mr_cascade_index(sig)
-            st.session_state["_mr_ipad_bundle"] = {
-                "df": df,
-                "raw_n": raw_n,
-                "removed_n": removed_n,
-                "cascade": cascade,
-            }
-    else:
-        ensure_market_research_cache()
-        sig = _cache_signature()
-        df, raw_n, removed_n = load_market_research_frame(sig)
-        df = _mr_slim_frame(df)
-        cascade = _cached_mr_cascade_index(sig)
+    # Drive 동기화·엑셀 병합 — 세션 warm + cache_data로 rerun 비용 절감
+    df, raw_n, removed_n, cascade = _mr_load_tab_bundle()
 
     if df.empty:
         st.info(
