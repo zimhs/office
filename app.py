@@ -4659,6 +4659,63 @@ def _dash_is_pi_widget_key(key: str) -> bool:
     return isinstance(key, str) and key.startswith(_DASH_PI_WIDGET_PREFIXES)
 
 
+# 업무일지 — 편집 상태만 백업 (wl_date_pick 등 위젯 키 복원·이중 로딩 방지)
+_DASH_WL_STATE_PREFIXES = (
+    "worklog_selected",
+    "wl_last_",
+    "wl_saved_dates",
+    "wl_print_panel",
+    "wl_dialog_preview",
+    "wl_pending_sync_",
+    "wl_flash_",
+    "wl_open_ctx_",
+    "wl_cloud_status",
+    "wl_view_cells_",
+    "wl_left_excel_path_",
+    "wl_print_cells_",
+    "wl_active_cell_",
+    "wl_do_delete",
+    "wl_skip_sync",
+    "wl_del_day",
+    "_wl_last_",
+    "_wl_drive_sync",
+    "_wl_dash_filter_sig",
+    "_wl_boot_sync_done",
+)
+_DASH_WL_WIDGET_PREFIXES = (
+    "wl_date_pick",
+    "wl_print_btn",
+    "wl_open_print",
+    "wl_del_",
+    "wl_focus_",
+    "wl_entry_",
+    "wl_client_",
+    "wl_content_",
+    "wl_notes_",
+    "wl_ln_",
+    "wl_print_",
+    "wl_dialog_",
+    "wl_sync_",
+    "wl_special_",
+    "wl_gauge_",
+    "wl_month_",
+    "wl_year_",
+    "wl_staff_",
+    "wl_filter_",
+    "wl_left_excel_on_",
+    "wl_mail_",
+    "wl_saved_",
+)
+
+
+def _dash_is_wl_widget_key(key: str) -> bool:
+    if not isinstance(key, str):
+        return False
+    if key.startswith("wl_") and not any(key.startswith(p) for p in _DASH_WL_STATE_PREFIXES):
+        return True
+    return key.startswith(_DASH_WL_WIDGET_PREFIXES)
+
+
 def _dash_top_filter_sig_now() -> tuple:
     return (
         st.session_state.get("dash_filter_staff_sb_new"),
@@ -4712,6 +4769,8 @@ def _dash_restore_session_keys(store_key: str) -> None:
         widget_fn = _dash_is_mr_widget_key
     elif store_key == "_dash_bak_letter":
         widget_fn = _dash_is_pi_widget_key
+    elif store_key == "_dash_bak_worklog":
+        widget_fn = _dash_is_wl_widget_key
     if widget_fn is not None:
         bak = {k: v for k, v in bak.items() if not widget_fn(k)}
         st.session_state[store_key] = bak
@@ -4752,10 +4811,6 @@ def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
         mounted[tab_idx] = True
         return False
 
-    # cookie 미설정 직후 remount run — 방금 불러온 탭은 한 run 더 유지
-    if active is None and mounted.get(tab_idx, False):
-        return False
-
     return True
 
 
@@ -4793,18 +4848,16 @@ def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: t
             }}
             return best;
           }}
-          function clickRemount() {{
-            var buttons = doc.querySelectorAll('button');
-            for (var b = 0; b < buttons.length; b++) {{
-              var t = (buttons[b].innerText || buttons[b].textContent || '');
-              if (t.indexOf('화면 불러오기') >= 0) {{
-                try {{ buttons[b].click(); }} catch (eClick) {{}}
-                return true;
-              }}
+          function clickRemountForTab(idx) {{
+            var sel = '[class*="st-key-_dash_reload_tab_' + idx + '"] button';
+            var btn = doc.querySelector(sel);
+            if (btn) {{
+              try {{ btn.click(); }} catch (eClick) {{}}
+              return true;
             }}
             return false;
           }}
-          function writeIdx() {{
+          function writeIdx(triggerRemount) {{
             try {{
               var list = mainTabList();
               if (!list) return;
@@ -4815,9 +4868,18 @@ def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: t
               }}
               if (idx < 0) return;
               doc.cookie = COOKIE + '=' + idx + '; path=/; max-age=31536000; SameSite=Lax';
-              if (HEAVY.indexOf(idx) >= 0) {{
-                setTimeout(clickRemount, 40);
+              if (HEAVY.indexOf(idx) < 0) return;
+              if (triggerRemount) {{
+                setTimeout(function () {{ clickRemountForTab(idx); }}, 40);
+                return;
               }}
+              var bootKey = 'dash_heavy_boot_' + idx;
+              try {{
+                if (!sessionStorage.getItem(bootKey)) {{
+                  sessionStorage.setItem(bootKey, '1');
+                  setTimeout(function () {{ clickRemountForTab(idx); }}, 80);
+                }}
+              }} catch (eBoot) {{}}
             }} catch (e1) {{}}
           }}
           if (!doc.__dashActiveTabCookieReady) {{
@@ -4825,13 +4887,12 @@ def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: t
             doc.addEventListener('click', function (ev) {{
               try {{
                 var t = ev.target && ev.target.closest && ev.target.closest('[role="tab"]');
-                if (t) setTimeout(writeIdx, 30);
+                if (t) setTimeout(function () {{ writeIdx(true); }}, 30);
               }} catch (e2) {{}}
             }}, true);
           }}
-          writeIdx();
-          setTimeout(writeIdx, 120);
-          setTimeout(writeIdx, 600);
+          writeIdx(false);
+          setTimeout(function () {{ writeIdx(false); }}, 120);
         }})();
         </script>
         """,
@@ -13614,7 +13675,7 @@ if _DASH_CLOUD_TABS:
                     "📝 일일업무일지",
                     _DASH_TAB_WORKLOG,
                     "_dash_bak_worklog",
-                    ("wl_", "worklog_", "wl_date_pick"),
+                    _DASH_WL_STATE_PREFIXES,
                 )
             else:
                 _dash_restore_session_keys("_dash_bak_worklog")
@@ -13635,7 +13696,7 @@ if _DASH_CLOUD_TABS:
                 _worklog_tab.render_worklog_tab(latest_update_str)
                 _dash_backup_session_keys(
                     "_dash_bak_worklog",
-                    ("wl_", "worklog_", "wl_date_pick"),
+                    _DASH_WL_STATE_PREFIXES,
                 )
         except ModuleNotFoundError:
             st.error(
