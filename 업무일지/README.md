@@ -16,9 +16,17 @@
 ## Mac에서 실행
 
 1. `dashboard` 폴더를 GitHub에서 받거나 `git pull`
-2. `업무일지/dashboard_Local.command` 더블클릭  
-   → `http://127.0.0.1:8502` 브라우저 열림
-3. 메인 대시보드는 기존처럼 `dashboard_Local.command` (8501) 사용
+2. **바탕화면 바로가기** (추천):
+   ```bash
+   cp ~/Desktop/dashboard/업무일지_Dashboard.command ~/Desktop/
+   chmod +x ~/Desktop/업무일지_Dashboard.command
+   xattr -d com.apple.quarantine ~/Desktop/업무일지_Dashboard.command 2>/dev/null
+   ```
+   → Desktop **`업무일지_Dashboard.command`** 더블클릭 · `http://127.0.0.1:8502`
+3. 또는 `업무일지/dashboard_Local.command` 더블클릭
+4. 메인 대시보드는 기존처럼 `dashboard_Local.command` (8501) 사용
+
+**한 번에 두 개:** `dashboard_Local.command` → **메인 8501 + 업무일지 8502** 동시 실행 · `dashboard_Cloud.command` → **Cloud 메인 + 업무일지 8502**
 
 터미널:
 
