@@ -9514,21 +9514,42 @@ if isinstance(_drive_autoload_res, dict):
 
 # Cloud 재부팅: Gist 최신 캐시를 git 시드보다 우선 (사이드바 CSV·매출)
 _cache_remote_res = None
+_gist_cloud_boot = _is_streamlit_cloud() and not st.session_state.get("_gist_cache_boot_pull_done")
 if sync_cache_remote is not None and cache_remote_configured():
     try:
         _cache_remote_res = sync_cache_remote(
             CACHE_DIR,
             prefer_remote=_is_streamlit_cloud(),
+            force_pull=_gist_cloud_boot,
         )
     except Exception as _cre:
         _cache_remote_res = {"ok": False, "error": str(_cre), "copied": []}
-    if isinstance(_cache_remote_res, dict) and _cache_remote_res.get("copied"):
+    _gist_pull_n = 0
+    if isinstance(_cache_remote_res, dict):
+        _gist_pull_n = int(_cache_remote_res.get("pull_count") or 0)
+        if not _gist_pull_n and _cache_remote_res.get("copied"):
+            _gist_pull_n = len(
+                [x for x in (_cache_remote_res.get("copied") or []) if str(x).startswith("←Gist:")]
+            )
+    if isinstance(_cache_remote_res, dict) and (
+        _cache_remote_res.get("copied") or _gist_cloud_boot
+    ):
+        if _gist_cloud_boot:
+            st.session_state["_gist_cache_boot_pull_done"] = True
         _ncr = len(_cache_remote_res.get("copied") or [])
+        if _gist_cloud_boot and _ncr == 0:
+            _ncr = int(_cache_remote_res.get("remote_count") or 0)
         st.sidebar.caption(
             f"Gist 캐시 동기화 · {_ncr}개"
             + (" (Cloud 최신 반영)" if _is_streamlit_cloud() else "")
         )
         if _is_streamlit_cloud() and not st.session_state.get("_gist_cache_boot_rerun"):
+            try:
+                load_uploaded_files_from_meta.clear()
+                load_uploaded_files_from_bytes.clear()
+            except Exception:
+                pass
+            st.session_state["_dash_sales_cache_cleared"] = True
             st.session_state["_gist_cache_boot_rerun"] = True
             st.rerun()
     elif (
@@ -9548,6 +9569,23 @@ if sync_cache_remote is not None and cache_remote_configured():
             pass
     elif _is_streamlit_cloud() and cache_remote_configured is not None and not cache_remote_configured():
         st.sidebar.caption("Gist 캐시: secrets에 github_token (+ dashboard_cache_gist_id)")
+
+# Cloud 재부팅: 업무일지 Gist도 git 시드보다 우선 (force pull 1회)
+if _gist_cloud_boot and _is_streamlit_cloud() and cache_remote_configured():
+    try:
+        from worklog_remote_sync import sync_worklog_remote
+
+        _wl_boot_dir = os.path.join(CACHE_DIR, "worklog")
+        _wl_boot_res = sync_worklog_remote(
+            _wl_boot_dir,
+            prefer_remote=True,
+            force_pull=True,
+        )
+        _wl_boot_n = len((_wl_boot_res or {}).get("copied") or [])
+        if _wl_boot_n:
+            st.sidebar.caption(f"Gist 업무일지 · {_wl_boot_n}개 (Cloud 최신 반영)")
+    except Exception as _wlb:
+        st.sidebar.warning(f"Gist 업무일지: {_wlb}")
 
 if st.session_state.pop("_gist_restore_after_clear", False):
     if sync_cache_remote is not None and cache_remote_configured():

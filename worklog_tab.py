@@ -4132,7 +4132,12 @@ def _maybe_sync_worklog_remote() -> None:
         if not _on_cloud:
             _wl_sync = sync_worklog_bidirectional(WORKLOG_DIR, force=_force)
         try:
-            _remote_sync = sync_worklog_remote(WORKLOG_DIR, force=_force)
+            _remote_sync = sync_worklog_remote(
+                WORKLOG_DIR,
+                force=_force,
+                prefer_remote=_on_cloud,
+                force_pull=_force,
+            )
         except Exception as _re:
             _remote_sync = {
                 "ok": False,
