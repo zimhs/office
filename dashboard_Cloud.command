@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cloud 메인 + 로컬 업무일지·공문(8502) 동시 실행
+# Cloud 메인 + 로컬 업무일지·공문(8502) — 브라우저 탭 2개만
 #   chmod +x dashboard_Cloud.command
 #   xattr -d com.apple.quarantine dashboard_Cloud.command 2>/dev/null
 
@@ -50,17 +50,12 @@ if ! dash_worklog_app "$ROOT" >/dev/null; then
   fail "업무일지 app.py 없음 — dashboard/업무일지/app.py 를 받으세요."
 fi
 
-if ! dash_ensure_worklog "$ROOT"; then
-  fail "업무일지(8502) 시작에 실패했습니다. ${ROOT}/.dashboard_8502.log 를 확인하세요."
+if ! dash_launch_cloud_pair "$ROOT"; then
+  fail "업무일지(8502) 시작 실패. ${ROOT}/.dashboard_8502.log 를 확인하세요."
 fi
 
 CLOUD_URL="$(dash_cloud_url "$ROOT")"
-dash_open_cloud_and_worklog "$ROOT"
+osascript -e 'display notification "Cloud + 업무일지(8502) 탭 2개를 엽니다." with title "영업 대시보드"'
 
-osascript -e "display notification \"Cloud 메인 + 업무일지(8502) 브라우저를 엽니다.\" with title \"영업 대시보드\""
-
-# 8502 는 백그라운드 — 터미널 창 유지(로그 확인용)
 echo "Cloud: ${CLOUD_URL}"
 echo "업무일지: http://127.0.0.1:8502"
-echo "종료: 이 창에서 Ctrl+C (8502 백그라운드 프로세스는 Activity Monitor에서 streamlit 종료)"
-read -r -p "Enter 키를 누르면 이 안내 창만 닫습니다..."

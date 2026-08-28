@@ -1,5 +1,5 @@
 #!/bin/bash
-# 로컬 Streamlit: 메인(8501) + 업무일지·공문(8502) 동시 실행
+# 로컬 Streamlit: 메인(8501) + 업무일지·공문(8502) — 브라우저 탭 2개만
 #   chmod +x dashboard_Local.command
 #   xattr -d com.apple.quarantine dashboard_Local.command 2>/dev/null
 
@@ -50,24 +50,8 @@ if ! dash_worklog_app "$ROOT" >/dev/null; then
   osascript -e 'display alert "업무일지 app.py 없음" message "dashboard/업무일지/app.py 를 받은 뒤 다시 실행하세요."'
 fi
 
-if dash_worklog_app "$ROOT" >/dev/null; then
-  if ! dash_ensure_worklog "$ROOT"; then
-    fail "업무일지(8502) 시작에 실패했습니다. ${ROOT}/.dashboard_8502.log 를 확인하세요."
-  fi
+if ! dash_launch_local_pair "$ROOT"; then
+  fail "대시보드 시작 실패. ${ROOT}/.dashboard_8501.log 또는 .dashboard_8502.log 를 확인하세요."
 fi
 
-if dash_health 8501; then
-  dash_open_both_local
-  osascript -e 'display notification "메인(8501)과 업무일지(8502) 브라우저를 엽니다." with title "영업 대시보드"'
-  exit 0
-fi
-
-osascript -e 'display notification "메인(8501)과 업무일지(8502)를 시작합니다." with title "영업 대시보드"'
-dash_open_both_local
-
-cd "$ROOT" || fail "dashboard 폴더 이동 실패"
-
-exec dash_streamlit_run "$ROOT" "$ROOT/app.py" \
-  --server.port=8501 \
-  --server.headless=false \
-  --browser.gatherUsageStats=false
+osascript -e 'display notification "메인(8501) + 업무일지(8502) 탭 2개를 엽니다." with title "영업 대시보드"'
