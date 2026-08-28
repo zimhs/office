@@ -1455,6 +1455,27 @@ def _mr_market_tab_keep_visible() -> None:
     st.session_state["_dash_filter_changed_flag"] = False
 
 
+def _mr_clear_widget_session_keys() -> None:
+    """defer 탭 복원 등으로 위젯 키가 session_state에 남으면 download_button 오류."""
+    for k in list(st.session_state.keys()):
+        if not isinstance(k, str):
+            continue
+        if k.startswith(
+            (
+                "mr_dl_",
+                "mr_view_",
+                "mr_region_pick_",
+                "mr_sup_pick_",
+                "mr_complex_pick_",
+                "mr_fac_q_",
+                "mr_upload_",
+                "mr_up_del_",
+                "mr_del_",
+            )
+        ):
+            st.session_state.pop(k, None)
+
+
 def _mr_filter_results(
     df: pd.DataFrame,
     regions: list[str],
@@ -1466,6 +1487,8 @@ def _mr_filter_results(
         if mr_cascade is None:
             st.error("market_research_cascade 모듈이 없습니다.")
             return
+
+        _mr_clear_widget_session_keys()
 
         _flash = st.session_state.pop("mr_v6_apply_flash", None)
 

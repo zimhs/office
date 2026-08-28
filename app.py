@@ -4577,6 +4577,8 @@ def _dash_cloud_merged_tabs() -> bool:
 
 _DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER = 9, 10, 11
 _DASH_TAB_MARKET_LOCAL = 9
+# 시장조사 — mr_v6_ 필터·캐시만 백업 (mr_dl_* 위젯 키 복원 시 download_button 오류 방지)
+_DASH_MR_STATE_PREFIXES = ("mr_v6_", "_mr_ipad", "_mr_cache", "_mr_mod", "_mr_data")
 
 
 def _dash_top_filter_sig_now() -> tuple:
@@ -13578,7 +13580,7 @@ with _tab_market:
                 "🔎 시장조사",
                 _tab_market_idx,
                 "_dash_bak_market",
-                ("mr_", "market_"),
+                _DASH_MR_STATE_PREFIXES,
             )
         else:
             _dash_restore_session_keys("_dash_bak_market")
@@ -13597,7 +13599,7 @@ with _tab_market:
                 st.session_state["_mr_mod_mtime"] = _mr_mtime
                 sys.modules["market_research_tab"] = _mr_tab
             _mr_tab.render_market_research_tab(latest_update_str)
-            _dash_backup_session_keys("_dash_bak_market", ("mr_", "market_"))
+            _dash_backup_session_keys("_dash_bak_market", _DASH_MR_STATE_PREFIXES)
     except ModuleNotFoundError:
         st.error(
             "시장조사 모듈(`market_research_tab.py`)을 찾을 수 없습니다. "
