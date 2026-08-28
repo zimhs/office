@@ -5671,6 +5671,204 @@ def render_tab3_item_client_expanders(df_src, items, metric, years, all_months, 
                 use_container_width=True,
                 height=min(420, 80 + 28 * min(len(pvt_disp), 12)),
             )
+
+
+_TAB4_BULK_ITEMS = ("CO2 (kg, Bulk)", "N2 (kg, Bulk)", "O2 (kg, Bulk)", "AR (kg, Bulk)")
+_TAB4_N2_SPECIAL_CLIENTS = [
+    "두산판금", "드림맥", "모베이스전전", "지엔티테크", "태광기업", "경민산업", "동주산업",
+]
+
+
+def _tab4_filter_item_pivot_columns(pvt, years, all_months, selected_years_short):
+    if pvt is None or pvt.empty:
+        return pvt
+    cols = []
+    for y in selected_years_short:
+        for m in reversed(all_months):
+            c = f"{y}년 {m}"
+            if c in pvt.columns:
+                cols.append(c)
+        tot = f"{y}년 연간총합"
+        if tot in pvt.columns:
+            cols.append(tot)
+    out = pvt[[c for c in cols if c in pvt.columns]]
+    return out if not out.empty else pvt
+
+
+def _tab4_expand_client_item_pivot(raw, years, all_months):
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    expanded = {}
+    for yr in years:
+        yr_short = yr[2:]
+        yr_sum = 0
+        for m in all_months:
+            col_key = f"{yr_short}년 {m}"
+            val = raw[col_key] if col_key in raw.columns else 0
+            expanded[col_key] = val
+            yr_sum = yr_sum + val
+        expanded[f"{yr_short}년 연간총합"] = yr_sum
+    return pd.DataFrame(expanded, index=raw.index)
+
+
+@st.cache_data
+def cached_tab4_item_client_triple_pivot(
+    df, item_name, years_tuple, all_months_tuple, selected_years_short_tuple
+):
+    """품목 1개 → 거래처별 월별 매출(만원)·사용량·단가 피벗 (매출순위 내림차순)."""
+    if df is None or df.empty or not item_name:
+        return None
+    years = list(years_tuple)
+    all_months = list(all_months_tuple)
+    selected_years_short = list(selected_years_short_tuple)
+    if not selected_years_short:
+        return None
+    d = df[df["품목명"] == item_name].copy()
+    if d.empty:
+        return None
+
+    sales_raw = (
+        d.pivot_table(index="거래처", columns="연도월_정렬", values="매출액", aggfunc="sum")
+        .fillna(0)
+        * 1.1
+        / 10000
+    )
+    qty_raw = d.pivot_table(
+        index="거래처", columns="연도월_정렬", values="출고량", aggfunc="sum"
+    ).fillna(0)
+    if item_name in _TAB4_BULK_ITEMS:
+        qty_raw = qty_raw / 1000
+
+    d_price = d.copy()
+    mask_n2 = (d_price["거래처"].isin(_TAB4_N2_SPECIAL_CLIENTS)) & (
+        d_price["품목명"] == "N2 (kg, Bulk)"
+    )
+    d_price.loc[mask_n2, "단가"] = d_price.loc[mask_n2, "단가"] * 1.238
+    if d_price.empty or "단가" not in d_price.columns:
+        price_raw = pd.DataFrame(index=sales_raw.index)
+    else:
+        price_raw = d.pivot_table(
+            index="거래처", columns="연도월_정렬", values="단가", aggfunc=get_exact_original_price
+        ).fillna(0)
+
+    sales_p = _tab4_expand_client_item_pivot(sales_raw, years, all_months)
+    qty_p = _tab4_expand_client_item_pivot(qty_raw, years, all_months)
+    price_p = _tab4_expand_client_item_pivot(price_raw, years, all_months) if not price_raw.empty else pd.DataFrame(index=sales_p.index)
+
+    if not price_p.empty and not qty_p.empty:
+        price_p = apply_forward_unit_price(price_p, qty_p, years, all_months)
+
+    sales_p = _tab4_filter_item_pivot_columns(sales_p, years, all_months, selected_years_short)
+    qty_p = _tab4_filter_item_pivot_columns(qty_p.reindex(sales_p.index).fillna(0), years, all_months, selected_years_short)
+    price_p = _tab4_filter_item_pivot_columns(
+        price_p.reindex(sales_p.index).fillna(0), years, all_months, selected_years_short
+    )
+
+    if sales_p.empty:
+        return None
+
+    sort_col = next((c for c in sales_p.columns if "연간총합" in str(c)), None)
+    if sort_col is None and len(sales_p.columns):
+        sort_col = sales_p.columns[-1]
+    sort_key = sales_p[sort_col] if sort_col else sales_p.sum(axis=1)
+    order = sort_key.sort_values(ascending=False).index
+    active = sort_key[sort_key > 0].index
+    order = [x for x in order if x in active]
+
+    def _ranked(pvt):
+        pvt = pvt.reindex(order).fillna(0)
+        pvt = pvt.loc[(pvt != 0).any(axis=1)]
+        if pvt.empty:
+            return pvt
+        out = pvt.copy()
+        out.insert(0, "순번", range(1, len(out) + 1))
+        return out
+
+    return {
+        "sales": _ranked(sales_p),
+        "qty": _ranked(qty_p),
+        "price": _ranked(price_p),
+    }
+
+
+def render_tab4_item_client_section(
+    df_src,
+    item_name,
+    years,
+    all_months,
+    *,
+    selected_staff=None,
+):
+    """Tab4 — 상단 품목 선택 시 거래처별 월별 사용량·단가·매출."""
+    avail_years_short = [y[2:] for y in years]
+    default_years = [avail_years_short[0]] if avail_years_short else []
+    sel_years = st.multiselect(
+        "📅 표시할 연도",
+        options=avail_years_short,
+        default=default_years,
+        format_func=lambda x: f"20{x}년",
+        key="tab4_item_client_years",
+    )
+    if not sel_years:
+        st.warning("연도를 1개 이상 선택하세요.")
+        return
+
+    staff_note = ""
+    if selected_staff:
+        staff_note = f" · 담당자 필터: {', '.join(selected_staff)}"
+    st.caption(
+        f"**[{item_name}]** 거래처별 월별 상세 · 매출순위(순번) 내림차순{staff_note}"
+    )
+
+    triple = cached_tab4_item_client_triple_pivot(
+        df_src,
+        item_name,
+        tuple(years),
+        tuple(all_months),
+        tuple(sorted(sel_years)),
+    )
+    if not triple or triple["sales"].empty:
+        st.info(f"선택한 조건에서 [{item_name}] 거래처 데이터가 없습니다.")
+        return
+
+    sales_disp = get_display_df_with_sum(triple["sales"], "합계", text_cols=["순번"])
+    qty_disp = get_display_df_with_sum(triple["qty"], "합계", text_cols=["순번"])
+    price_disp = get_display_df_with_sum(triple["price"], "합계", text_cols=["순번"])
+
+    qty_fmt = "{:,.1f}" if item_name in _TAB4_BULK_ITEMS else "{:,.0f}"
+    row_h = min(520, 96 + 28 * min(len(sales_disp), 14))
+
+    st.markdown(
+        "<div style='font-size:14px;font-weight:600;color:#334155;margin:12px 0 6px;'>"
+        "1️⃣ 매출액 (VAT 포함, 만원)</div>",
+        unsafe_allow_html=True,
+    )
+    st.dataframe(
+        style_with_sum(sales_disp, "{:,.0f}", "Blues", axis=None),
+        use_container_width=True,
+        height=row_h,
+    )
+    st.markdown(
+        "<div style='font-size:14px;font-weight:600;color:#334155;margin:16px 0 6px;'>"
+        f"2️⃣ 사용량 ({'ton' if item_name in _TAB4_BULK_ITEMS else '출고량'})</div>",
+        unsafe_allow_html=True,
+    )
+    st.dataframe(
+        style_with_sum(qty_disp, qty_fmt, "Greens", axis=None),
+        use_container_width=True,
+        height=row_h,
+    )
+    st.markdown(
+        "<div style='font-size:14px;font-weight:600;color:#334155;margin:16px 0 6px;'>"
+        "3️⃣ 적용 단가 (원)</div>",
+        unsafe_allow_html=True,
+    )
+    st.dataframe(
+        price_disp.style.format("{:,.0f}", na_rep=""),
+        use_container_width=True,
+        height=row_h,
+    )
+
 # ==========================================
 # ★ 누락되었던 필수 캐시 함수 복구 완료 ★
 # ==========================================
@@ -9839,7 +10037,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-28b · Cloud12탭 · Mac로컬10탭")
+        dev_caption("필터 빌드 2026-08-28c · Tab4품목거래처상세")
 
         df_base = df_base_opts
         df_staff_filtered = (
@@ -11670,6 +11868,30 @@ with tab4:
                 render_plotly_chart(fig_ranking, use_container_width=True, key=f"ranking_chart_{sel_staff}")
         else:
             st.info(f"💡 {current_year}년에 선택한 담당자({sel_staff})의 거래처 매출 실적 데이터가 없습니다.")
+
+    st.markdown(
+        "<div class='sub-header dashboard-tab-panel-head'>"
+        "📦 품목별 거래처 월별 상세 (사용량 · 단가 · 매출)</div>",
+        unsafe_allow_html=True,
+    )
+    if not selected_item:
+        st.info(
+            "💡 상단 고정바에서 **품목명**을 선택하면, 해당 품목을 거래하는 거래처별 "
+            "월별 **사용량 · 단가 · 매출**이 **매출순위(순번) 내림차순**으로 표시됩니다."
+        )
+    elif len(selected_item) > 1:
+        st.info("품목별 상세는 **품목 1개** 선택 시 표시됩니다.")
+    elif df_f.empty:
+        st.info("선택한 담당자·거래처·기간에 해당 품목 데이터가 없습니다.")
+    else:
+        render_tab4_item_client_section(
+            df_f,
+            selected_item[0],
+            years,
+            all_months,
+            selected_staff=selected_staff or None,
+        )
+
     if not df_base.empty:
         with st.expander("⚠️ 담당자 미지정 신규/누락 거래처 (직접 지정) 열기/닫기", expanded=True):
             unassigned_df = df_base[df_base["담당자"] == "미지정"]
