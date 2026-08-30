@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-30a · 입력ws안정화"
+_WL_UI_BUILD = "2026-08-30c · 내용칸여백축소"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -182,6 +182,8 @@ _WL_LINES_CSS = """
   outline: none;
   box-sizing: border-box;
 }
+/* 내용칸: 좌우 여백 최소화로 한 줄에 더 많이 보이게 (글자크기·인쇄배율 불변) */
+.wl-lines:not(.client) .wl-row input { padding: 0 1px; }
 .wl-lines.client .wl-row input { background: #F8FAFC; text-align: center; }
 .wl-row input:focus { background: #E0F2FE; }
 .wl-row button {
@@ -192,6 +194,7 @@ _WL_LINES_CSS = """
   padding: 0;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
 }
+.wl-lines:not(.client) .wl-row button { flex: 0 0 1.1rem; width: 1.1rem; min-width: 1.1rem; }
 .wl-row button:hover { background: #E2E8F0; color: #DC2626; }
 .wl-row button.hidden { display: none; }
 """
@@ -431,7 +434,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v15",
+    "worklog_entry_lines_v16",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -886,9 +889,9 @@ def _set_body_font(cell) -> None:
 # =====================================================================
 # 💡 [핵심] 글자 넘침 현상 원천 차단 (엄격한 max_units 설정)
 # =====================================================================
-# 14pt 바탕체 기준, 엑셀 너비를 넘지 않도록 한계치를 하향 조정
+# 14pt 바탕체 기준 내용칸 한 줄 한도 (한글 1자=2단위). 자동 다음칸 이동 임계값.
 @lru_cache(maxsize=1)
-def _content_line_units() -> int: return 72  # 한글 34자 제한
+def _content_line_units() -> int: return 78  # 한글 39자 (기존 36자 + 3자)
 
 @lru_cache(maxsize=1)
 def _client_line_units() -> int: return 16  # 👈 한글 8자(16 단위)로 증가
@@ -3911,7 +3914,17 @@ def _render_worklog_input_panel(selected: date) -> None:
 
                         if i == 0:
                             st.markdown(
-                                """<style>div[class*="st-key-wl_clients_comp_"], div[class*="st-key-wl_lines_comp_"] { width: 100%; } div[class*="st-key-wl_clients_comp_"] .wl-lines, div[class*="st-key-wl_lines_comp_"] .wl-lines { margin: 0; } div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) { align-items: flex-start !important; }</style>""",
+                                """<style>
+                                div[class*="st-key-wl_clients_comp_"], div[class*="st-key-wl_lines_comp_"] { width: 100% !important; max-width: 100% !important; }
+                                div[class*="st-key-wl_clients_comp_"] .wl-lines, div[class*="st-key-wl_lines_comp_"] .wl-lines { margin: 0; }
+                                div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) { align-items: flex-start !important; gap: 0.25rem !important; }
+                                /* 내용칸 열: Streamlit 칼럼 좌우 패딩 축소 → 입력 폭 확보 */
+                                div[data-testid="column"]:has(div[class*="st-key-wl_lines_comp_"]) {
+                                  padding-left: 0.15rem !important;
+                                  padding-right: 0 !important;
+                                }
+                                div[class*="st-key-wl_lines_comp_"] > div { width: 100% !important; }
+                                </style>""",
                                 unsafe_allow_html=True,
                             )
 
