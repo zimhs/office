@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-31b · 익일미리보기·요약칸고정"
+_WL_UI_BUILD = "2026-08-31d · 실시간요약·ws안정"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -283,6 +283,16 @@ export default function (component) {
     inst.lines = normalize(next);
     return inst.lines;
   }
+  let softTimer = null;
+  function softEmit(next) {
+    localOnly(next);
+    if (softTimer) clearTimeout(softTimer);
+    softTimer = setTimeout(function () {
+      softTimer = null;
+      const cur = normalize(inst.lines || readDomLines());
+      setStateValue("lines", cur);
+    }, 280);
+  }
   function focusAt(idx) {
     requestAnimationFrame(() => {
       const el = root.querySelector('input[data-idx="' + idx + '"]');
@@ -332,8 +342,9 @@ export default function (component) {
         let j0 = j;
         let v = cur[j0] || "";
         if (displayUnits(v) <= maxU) {
-          // type/composition도 Python에 동기화 — 저장 클릭 시 직전 입력이 누락되지 않게
-          if (mode === "blur" || mode === "force" || mode === "type") emit(cur, null);
+          // 입력 중: 로컬+디바운스 — 매 키 fragment rerun 시 Cached ForwardMsg MISS
+          if (mode === "blur" || mode === "force") emit(cur, null);
+          else if (mode === "type") softEmit(cur);
           else localOnly(cur);
           return;
         }
@@ -434,7 +445,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v17",
+    "worklog_entry_lines_v18",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -689,13 +700,14 @@ export default function (component) {
     emitFocus(info.key);
     emitCaret(info.key, s, en);
   };
-  // 익일업무·특이사항 textarea: keyup마다 caret emit → Streamlit rerun → 커서 점프
-  // click/focus만 추적 (특수기호 삽입용), 타이핑 중에는 emit 안 함
+  // 익일업무·특이사항 textarea: keyup caret emit 금지
+  // 내용/거래처 input: keyup마다 rerun → Cached ForwardMsg MISS (click/focusin만)
   const onSel = (e) => {
     const info = resolveKey(e.target);
     if (!info) return;
     const tag = String(e.target.tagName || "").toUpperCase();
     if (tag === "TEXTAREA") return;
+    if (e.type === "keyup") return;
     let s = 0;
     let en = 0;
     try {
@@ -705,7 +717,6 @@ export default function (component) {
     emitCaret(info.key, s, en);
   };
   document.addEventListener("focusin", onFocusIn, true);
-  document.addEventListener("keyup", onSel, true);
   document.addEventListener("click", onSel, true);
 
   if (focusKey) {
@@ -722,14 +733,13 @@ export default function (component) {
   return () => {
     document.removeEventListener("keydown", onKey, true);
     document.removeEventListener("focusin", onFocusIn, true);
-    document.removeEventListener("keyup", onSel, true);
     document.removeEventListener("click", onSel, true);
   };
 }
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v22",
+    "worklog_cell_nav_hook_v23",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -2839,8 +2849,18 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             filled = list(synced)
             while filled and filled[-1] == "": filled.pop()
             st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(filled)
-            lj = _last_used_line_index(synced)
-            _remember_active_cell(iso, _entry_line_key(iso, entry_i, lj), len(str(synced[lj] or "")))
+            try:
+                fj = int(cur.get("focus", -1))
+                if fj >= 0:
+                    caret = cur.get("caret") if isinstance(cur.get("caret"), dict) else {}
+                    pos = int(caret.get("s", len(str(synced[fj] or ""))))
+                    _remember_active_cell(iso, _entry_line_key(iso, entry_i, fj), pos)
+                else:
+                    lj = _last_used_line_index(synced)
+                    _remember_active_cell(iso, _entry_line_key(iso, entry_i, lj), len(str(synced[lj] or "")))
+            except (TypeError, ValueError, IndexError):
+                lj = _last_used_line_index(synced)
+                _remember_active_cell(iso, _entry_line_key(iso, entry_i, lj), len(str(synced[lj] or "")))
 
     def _on_lines_focus_change() -> None:
         _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_line_key)
@@ -3260,6 +3280,14 @@ def _view_cells_for_preview(d: date) -> dict:
     return cells
 
 
+def _draft_cells_for_left_preview(d: date) -> dict:
+    """왼쪽 요약/엑셀 — 현재 입력 위젯 값 (실시간). 요약 HTML은 soft blank 줄 제거."""
+    try:
+        return _cells_from_widgets(d)
+    except Exception:
+        return _view_cells_for_preview(d)
+
+
 def _clear_date_widget_state(d: date) -> None:
     iso = d.isoformat()
     prefixes = (f"wl_ent_c_{iso}_", f"wl_ent_t_{iso}_", f"wl_ent_gap_{iso}_", f"wl_ent_ln_{iso}_", f"wl_ent_lc_{iso}_", f"wl_ent_gen_{iso}_", f"wl_ent_cl_{iso}_", f"wl_ent_clc_{iso}_", f"wl_ent_rev_{iso}_", f"wl_lines_comp_{iso}_", f"wl_lines_live_{iso}_", f"wl_lines_inst_{iso}_", f"wl_clients_comp_{iso}_", f"wl_clients_live_{iso}_", f"wl_clients_inst_{iso}_", f"wl_clients_rev_{iso}_", f"wl_force_comp_lines_{iso}_", f"wl_force_comp_clients_{iso}_", f"wl_lines_user_edit_{iso}_", f"wl_clients_user_edit_{iso}_", f"wl_exp_{iso}_", f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_save_btn_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}")
@@ -3566,10 +3594,10 @@ def _prepare_worklog_day_state(selected: date, *, skip_remote_pull: bool = False
 
 
 def _render_worklog_left_preview(selected: date) -> None:
-    """왼쪽 요약/엑셀 — published 스냅샷만 표시 (타이핑·칸 이동 시 요약 위치 고정)."""
-    draft = _view_cells_for_preview(selected)
+    """왼쪽 요약/엑셀 — 입력 위젯 실시간 반영 (요약은 soft blank 제거)."""
+    draft = _draft_cells_for_left_preview(selected)
     st.markdown("##### 업무일지 보기")
-    st.caption("입력은 바로 반영 · 왼쪽 요약은 저장·엑셀 미리보기 시 갱신")
+    st.caption("입력 즉시 왼쪽 반영 · 엑셀 양식은 「엑셀 미리보기」")
     p1, p2 = st.columns(2)
     with p1:
         do_print = st.button(
@@ -3642,7 +3670,7 @@ def _render_worklog_left_preview(selected: date) -> None:
         xlsx_left = st.session_state.get(_left_path_key) or ""
         if xlsx_left and os.path.exists(str(xlsx_left)):
             try:
-                cells_view = _view_cells_for_preview(selected)
+                cells_view = _draft_cells_for_left_preview(selected)
                 live_sig = json.dumps(cells_view, ensure_ascii=False, sort_keys=True)
                 sig_k = f"wl_left_excel_sig_v25_{selected.isoformat()}"
                 html_k = f"wl_left_excel_html_v25_{selected.isoformat()}"
@@ -3923,7 +3951,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         st.session_state[f"wl_focus_caret_{iso2}"] = s
 
-                st.caption("입력은 즉시 반영됩니다. 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신됩니다.")
+                st.caption("입력 즉시 반영 · 왼쪽 요약도 타이핑과 함께 갱신됩니다.")
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
                 _rem = _usage["remaining"]
