@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-30f · 익일빈줄유지"
+_WL_UI_BUILD = "2026-08-30g · 익일빈줄·요약공백복구"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -2362,20 +2362,26 @@ def _textarea_lines(raw: str) -> list[str]:
 
 
 def _panel_lines_from_cells(cells: dict, rows: list[int], *, col: str = "D") -> list[str]:
-    """엑셀 행 → textarea 줄. 맨 끝 빈 행만 제거."""
-    lines = [str(cells.get(f"{col}{r}") or "") for r in rows]
+    """엑셀 행 → textarea 줄. 맨 끝 빈 행만 제거. soft blank는 빈 줄로."""
+    lines: list[str] = []
+    for r in rows:
+        raw = str(cells.get(f"{col}{r}") or "")
+        if raw in (_WL_SOFT_BLANK, "\u00a0"):
+            lines.append("")
+        else:
+            lines.append(raw)
     while lines and not lines[-1].strip():
         lines.pop()
     return lines
 
 
 def _panel_lines_to_cells(lines: list[str] | None, max_u: int) -> list[str]:
-    """textarea 줄 → 엑셀 D열 행 목록. 빈 줄은 빈 칸으로 유지."""
+    """textarea 줄 → 엑셀 D열 행 목록. 빈 줄은 NBSP로 유지(빈 문자열이 None으로 저장되는 것 방지)."""
     chunks: list[str] = []
     for t in lines or []:
         t = str(t or "")
-        if t == "":
-            chunks.append("")
+        if t.strip() == "":
+            chunks.append("\u00a0")
         else:
             chunks.extend(_chunk_text(t, max_u) or [t])
     return chunks
@@ -2451,12 +2457,27 @@ def render_readable_preview_html(d: date, cells: dict) -> str:
     if rows:
         work_items = []
         for i, (client, content) in enumerate(rows, 1):
-            c = html.escape(client).replace("\n", "<br>") if client else "<span class='muted'>(거래처 없음)</span>"
-            t = html.escape(content) if content else "<span class='muted'>—</span>"
+            # 요약: 거래처는 첫 실문장만 (소프트빈칸이 client에 \n으로 붙어 생기던 거대 공백 제거)
+            _cl = [ln for ln in str(client or "").splitlines() if ln.strip()]
+            client_show = _cl[0] if _cl else ""
+            # 내용: 앞·뒤·중간 빈줄 제거 — 엑셀 행맞춤용 soft blank가 요약에 공백으로 보이던 것 복구
+            _ct = [ln for ln in str(content or "").splitlines() if ln.strip()]
+            content_show = "\n".join(_ct)
+            c = html.escape(client_show) if client_show else "<span class='muted'>(거래처 없음)</span>"
+            t = html.escape(content_show).replace("\n", "<br>") if content_show else "<span class='muted'>—</span>"
             work_items.append(f"""<div class="item"><div class="idx">{i}</div><div class="body"><div class="client">{c}</div><div class="content">{t}</div></div></div>""")
         work_html = "".join(work_items)
     else: work_html = "<div class='empty'>등록된 업무 내용이 없습니다.</div>"
-    def _lines(items: list[str], empty_msg: str) -> str: return "".join(f"<div class='line'><span class='dot'></span><span>{html.escape(x)}</span></div>" for x in items) if items else f"<div class='empty'>{empty_msg}</div>"
+    def _lines(items: list[str], empty_msg: str) -> str:
+        if not items:
+            return f"<div class='empty'>{empty_msg}</div>"
+        out = []
+        for x in items:
+            if not str(x).strip():
+                out.append("<div class='line'><span class='dot' style='visibility:hidden'></span><span>&nbsp;</span></div>")
+            else:
+                out.append(f"<div class='line'><span class='dot'></span><span>{html.escape(x)}</span></div>")
+        return "".join(out)
     _iframe_css = _WL_SUMMARY_PREVIEW_CSS.replace(".wl-sum-preview ", "") + " html, body { margin:0; padding:0; background:transparent; } body { padding:4px; }"
     return (
         f'<!DOCTYPE html><html><head><meta charset="utf-8"><style>{_iframe_css}</style></head><body>'
