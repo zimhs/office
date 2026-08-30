@@ -15,6 +15,35 @@
 
 ## Mac에서 실행
 
+### 코드 반영 (중요)
+
+Cloud/PR에서 수정한 내용은 **Mac `~/Desktop/dashboard`에 자동으로 안 들어갑니다.** 아래 중 하나를 실행하세요.
+
+**방법 A — 바로가기 (추천)**
+
+1. `install_desktop_shortcuts.command` 한 번 실행 → 바탕화면에 `dashboard_Update.command` 생김
+2. 수정 반영할 때마다 **`dashboard_Update.command` 더블클릭**
+   - `git pull` → 서버 종료 → `dashboard_Local.command` 재시작
+
+**방법 B — 터미널**
+
+```bash
+cd ~/Desktop/dashboard
+git pull origin main
+bash dashboard_Stop.command
+bash dashboard_Local.command
+```
+
+**반영 확인:** 업무일지(8502) 상단 빌드 표시  
+예) `2026-08-30 · 업무일지공문2탭 · 2026-08-30g · 익일빈줄·요약공백복구`  
+`2026-08-28b`만 보이면 **아직 구버전**입니다.
+
+> `dashboard_Local.command`만 누르면 **이미 켜진 서버를 그대로 쓰는 경우**가 많습니다.  
+> `worklog_tab.py`만 바뀐 경우 예전에는 재시작을 안 했으나, 지금은 변경 감지에 포함됩니다.  
+> 그래도 안 바뀌면 **`dashboard_Update.command`** 또는 **Stop → Local** 순서로 실행하세요.
+
+### 실행
+
 1. `dashboard` 폴더를 GitHub에서 받거나 `git pull`
 2. **바탕화면 바로가기** (추천):
    ```bash
