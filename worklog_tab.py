@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-31e · 칸넘침복구·줄이동미리보기"
+_WL_UI_BUILD = "2026-08-31f · 미리보기칸넘침복구"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -445,7 +445,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v19",
+    "worklog_entry_lines_v20",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -901,7 +901,23 @@ def _set_body_font(cell) -> None:
 # =====================================================================
 # 14pt 바탕체 기준 내용칸 한 줄 한도 (한글 1자=2단위). 자동 다음칸 이동 임계값.
 @lru_cache(maxsize=1)
-def _content_line_units() -> int: return 72  # 한글 36자 — 엑셀/인쇄 미리보기 칸 폭과 일치
+def _content_line_units() -> int:
+    """원본 G:X 병합 폭 — 14pt 바탕체 한 줄에 맞춘 단위(반각=1, 한글=2)."""
+    fallback = 68
+    if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
+        return fallback
+    try:
+        wb = load_workbook(WORKLOG_TEMPLATE, data_only=False)
+        ws = wb.active
+        total = sum(
+            _excel_col_width(ws, c)
+            for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
+        )
+        wb.close()
+        units = int(total * (11 / 14) * 1.02)  # 템플릿 열폭 → 14pt 실측 (2% 여유)
+        return max(60, min(units, 70))
+    except Exception:
+        return fallback
 
 @lru_cache(maxsize=1)
 def _client_line_units() -> int: return 16  # 👈 한글 8자(16 단위)로 증가
@@ -953,6 +969,11 @@ def _spill_all_content(cells: dict) -> dict:
     cells = _spill_column(cells, WL_NEXT_ROWS, "D")
     cells = _spill_column(cells, WL_NOTE_ROWS, "D")
     return cells
+
+
+def _cells_for_preview_write(cells: dict) -> dict:
+    """미리보기/인쇄 xlsx — 한 줄이 칸을 넘지 않게 spill 후 반환."""
+    return _spill_all_content(dict(cells or {}))
 
 # 💡 템플릿 준비: git의 uploaded_cache/worklog/template.xlsx 를 우선 사용
 # (예전엔 ~/Desktop/업무일지.xlsx mtime이 더 新し면 덮어써서 로고·양식 반영이 깨짐)
@@ -2085,6 +2106,12 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
                 
             if text in (_WL_SOFT_BLANK, "\u00a0"): text = ""
             elif is_content and text.strip() == "" and text != "": text = ""
+            elif is_content and text.strip():
+                if _display_units(text) > _content_line_units():
+                    text, _ = _fit_by_units(text, _content_line_units())
+            elif is_client and text.strip():
+                if _display_units(text) > _client_line_units():
+                    text, _ = _fit_by_units(text, _client_line_units())
                 
             if is_vertical and text.strip():
                 chars = [ch for ch in _text_clean if ch]
@@ -2093,6 +2120,8 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
                 esc = "&nbsp;"  # 익일/특이 빈 행 — 인쇄 미리보기에서 줄 위치 유지
             else:
                 esc = html.escape(text).replace(" ", "&nbsp;").replace("\n", "<br>")
+            if is_content or is_client:
+                esc = f'<div style="display:block;max-width:100%;overflow:hidden;text-overflow:clip;white-space:nowrap;">{esc}</div>'
                 
             if is_content or is_client: white, overflow, text_overflow = "nowrap", "hidden", "clip"
             elif is_vertical: white, overflow, text_overflow = "normal", "hidden", "clip"
@@ -3317,7 +3346,7 @@ def _build_preview_file(d: date, cells: dict) -> str:
     _ensure_dirs()
     if not os.path.exists(WORKLOG_TEMPLATE): raise FileNotFoundError("업무일지 템플릿이 없습니다.")
     dst = _preview_path(d)
-    write_cells_to_path(dst, d, cells, force_template=True)
+    write_cells_to_path(dst, d, _cells_for_preview_write(cells), force_template=True)
     return dst
 
 def _excel_app_path() -> str | None:
@@ -3330,7 +3359,7 @@ def _print_xlsx_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"일일�
 def prepare_print_xlsx(d: date, cells: dict) -> str:
     _ensure_dirs()
     dst = _print_xlsx_path(d)
-    write_cells_to_path(dst, d, cells, force_template=True)
+    write_cells_to_path(dst, d, _cells_for_preview_write(cells), force_template=True)
     return os.path.abspath(dst)
 
 def open_excel_print_preview(xlsx_path: str, *, prefer_print_dialog: bool = True) -> tuple[bool, str]:
