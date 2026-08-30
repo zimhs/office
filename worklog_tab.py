@@ -34,10 +34,17 @@ def _wl_rerun(*, full: bool = False) -> None:
     """업무일지 fragment 안이면 fragment만 다시 실행 (전체 앱 로딩 방지).
 
     full=True 는 저장·날짜변경처럼 왼쪽 요약도 같이 갱신해야 할 때 사용.
+    위젯 on_change 콜백 안에서는 호출하지 말 것 — Streamlit이 이미 rerun 중이라
+    중복 rerun이 Cached ForwardMsg MISS·특수기호 실패를 유발한다.
     """
     if full:
         st.rerun()
         return
+    now = time.time()
+    last = float(st.session_state.get("_wl_frag_rerun_ts") or 0)
+    if now - last < 0.12:
+        return
+    st.session_state["_wl_frag_rerun_ts"] = now
     try:
         st.rerun(scope="fragment")
     except (StreamlitAPIException, RuntimeError):
@@ -139,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-28a · 일괄가져오기제거"
+_WL_UI_BUILD = "2026-08-30a · 입력ws안정화"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -2870,11 +2877,6 @@ def _sync_editor_focus_from_comp(iso: str, entry_i: int, comp_key: str, key_fn) 
         pos = 0
     fk = key_fn(iso, entry_i, fj)
     _remember_active_cell(iso, fk, pos)
-    # 같은 항목 안에서 줄(칸)이 바뀌면 왼쪽 요약 갱신 요청
-    try:
-        _request_left_preview_refresh(date.fromisoformat(iso), focus_sig=fk)
-    except Exception:
-        pass
 
 
 def _last_used_line_index(lines: list[str]) -> int:
@@ -2939,6 +2941,10 @@ def _process_pending_special_char(iso: str, entry_count: int) -> bool:
             st.session_state["wl_special_msg"] = f"「{ch}」삽입"
             # 바 리마운트(동일 기호 연속 클릭 인식)
             st.session_state[f"wl_sp_token_{iso}"] = str(int(time.time() * 1000) % 1_000_000_000)
+            try:
+                _sync_left_preview_snapshot(date.fromisoformat(iso))
+            except Exception:
+                pass
             return True
         st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
     except StreamlitAPIException:
@@ -3617,8 +3623,8 @@ def _render_worklog_left_preview(selected: date) -> None:
                 st.error(f"요약 보기 오류: {e}")
 
 
-def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> None:
-    """칸 이동·저장 등 — 왼쪽 요약 스냅샷 갱신 (fragment rerun만, 전체 앱 rerun 없음)."""
+def _sync_left_preview_snapshot(d: date, *, focus_sig: str | None = None) -> None:
+    """왼쪽 요약 스냅샷만 갱신. fragment rerun은 호출하지 않음 (위젯 콜백 rerun에 맡김)."""
     iso = d.isoformat()
     if focus_sig is not None:
         prev = st.session_state.get(f"wl_left_focus_sig_{iso}")
@@ -3629,6 +3635,12 @@ def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> N
         _publish_view_cells(d, _cells_from_widgets(d))
     except Exception:
         pass
+
+
+def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> None:
+    """저장·엑셀 미리보기 등 — 왼쪽 요약 스냅샷 갱신 + fragment rerun 예약."""
+    _sync_left_preview_snapshot(d, focus_sig=focus_sig)
+    iso = d.isoformat()
     # 엑셀 미리보기 모드면 iframe 갱신 생략 (요약 보기로 돌아올 때 publish 반영)
     if st.session_state.get(f"wl_left_excel_on_{iso}"):
         return
@@ -3688,8 +3700,7 @@ def _render_worklog_input_panel(selected: date) -> None:
 
             _iso_bar = selected.isoformat()
             _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
-            if _render_worklog_special_chars(_iso_bar, _n_bar):
-                _wl_rerun()
+            _render_worklog_special_chars(_iso_bar, _n_bar)
 
             if isinstance(picked, date) and picked != selected:
                 if os.path.exists(worklog_path(picked)):
@@ -3794,6 +3805,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                 ent_req = st.session_state.pop(f"wl_do_enter_cell_{iso2}", None)
                 if isinstance(ent_req, dict):
                     _commit_enter_on_cell(str(ent_req.get("kind") or ""), iso2, int(ent_req.get("ei") or 0), int(ent_req.get("lj") or 0), str(ent_req.get("v") or ""))
+                    _sync_left_preview_snapshot(d)
 
                 sp_req = st.session_state.pop(f"wl_do_special_{iso2}", None)
                 if isinstance(sp_req, dict):
@@ -3825,12 +3837,12 @@ def _render_worklog_input_panel(selected: date) -> None:
                     fk = str(hook.get("focus") or "")
                     if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
                         st.session_state["wl_active_cell_key"] = fk
-                        _request_left_preview_refresh(d, focus_sig=fk)
+                        _sync_left_preview_snapshot(d, focus_sig=fk)
                         return
                     if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state[f"wl_focus_ln_{iso2}"] = fk
-                        _request_left_preview_refresh(d, focus_sig=fk)
+                        _sync_left_preview_snapshot(d, focus_sig=fk)
 
                 def _on_caret_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
@@ -4053,24 +4065,6 @@ def _render_worklog_input_panel(selected: date) -> None:
                     on_focus_change=_on_focus_trigger,
                     on_caret_change=_on_caret_trigger,
                 )
-                if st.session_state.get(f"wl_do_enter_cell_{iso2}"):
-                    _request_left_preview_refresh(d)
-                    _wl_finish_edit_fragment()
-                    if not st.session_state.get("wl_need_left_refresh"):
-                        _wl_rerun()
-                ins_after = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
-                if isinstance(ins_after, (list, tuple)) and len(ins_after) == 2:
-                    _insert_line_after(iso2, int(ins_after[0]), int(ins_after[1]))
-                    _wl_rerun()
-                ins_cl_after = st.session_state.pop(f"wl_do_insert_cl_{iso2}", None)
-                if isinstance(ins_cl_after, (list, tuple)) and len(ins_cl_after) == 2:
-                    _insert_client_after(iso2, int(ins_cl_after[0]), int(ins_cl_after[1]))
-                    _wl_rerun()
-
-            _n_now = int(st.session_state.get(f"wl_entry_count_{iso}", 1) or 1)
-            # 날짜변경 등으로 위쪽 처리가 스킵된 pending 대비
-            if _process_pending_special_char(iso, _n_now):
-                _wl_rerun()
             _sp_msg = st.session_state.pop("wl_special_msg", None)
             if _sp_msg:
                 st.caption(_sp_msg)
