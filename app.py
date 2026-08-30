@@ -6047,13 +6047,17 @@ def render_tab4_item_client_section(
         f"**[{item_name}]** 거래처별 월별 상세 · 매출순위(순번) 내림차순{staff_note}"
     )
 
-    triple = cached_tab4_item_client_triple_pivot(
-        df_src,
-        item_name,
-        tuple(years),
-        tuple(all_months),
-        tuple(sorted(sel_years)),
-    )
+    try:
+        triple = cached_tab4_item_client_triple_pivot(
+            df_src,
+            item_name,
+            tuple(years),
+            tuple(all_months),
+            tuple(sorted(sel_years)),
+        )
+    except Exception as _t4e:
+        st.error(f"품목별 상세 데이터 생성 오류: {_t4e}")
+        return
     if not triple or triple["sales"].empty:
         st.info(f"선택한 조건에서 [{item_name}] 거래처 데이터가 없습니다.")
         return
@@ -6065,36 +6069,28 @@ def render_tab4_item_client_section(
     qty_fmt = "{:,.1f}" if item_name in _TAB4_BULK_ITEMS else "{:,.0f}"
     row_h = min(520, 96 + 28 * min(len(sales_disp), 14))
 
-    st.markdown(
-        "<div style='font-size:14px;font-weight:600;color:#334155;margin:12px 0 6px;'>"
-        "1️⃣ 매출액 (VAT 포함, 만원)</div>",
-        unsafe_allow_html=True,
+    def _tab4_show_table(title: str, disp_df, fmt: str, cmap=None):
+        st.markdown(
+            f"<div style='font-size:14px;font-weight:600;color:#334155;margin:12px 0 6px;'>{title}</div>",
+            unsafe_allow_html=True,
+        )
+        try:
+            st.dataframe(
+                style_with_sum(disp_df, fmt, cmap, axis=None),
+                use_container_width=True,
+                height=row_h,
+            )
+        except Exception:
+            st.dataframe(disp_df, use_container_width=True, height=row_h)
+
+    _tab4_show_table("1️⃣ 매출액 (VAT 포함, 만원)", sales_disp, "{:,.0f}", "Blues")
+    _tab4_show_table(
+        f"2️⃣ 사용량 ({'ton' if item_name in _TAB4_BULK_ITEMS else '출고량'})",
+        qty_disp,
+        qty_fmt,
+        "Greens",
     )
-    st.dataframe(
-        style_with_sum(sales_disp, "{:,.0f}", "Blues", axis=None),
-        use_container_width=True,
-        height=row_h,
-    )
-    st.markdown(
-        "<div style='font-size:14px;font-weight:600;color:#334155;margin:16px 0 6px;'>"
-        f"2️⃣ 사용량 ({'ton' if item_name in _TAB4_BULK_ITEMS else '출고량'})</div>",
-        unsafe_allow_html=True,
-    )
-    st.dataframe(
-        style_with_sum(qty_disp, qty_fmt, "Greens", axis=None),
-        use_container_width=True,
-        height=row_h,
-    )
-    st.markdown(
-        "<div style='font-size:14px;font-weight:600;color:#334155;margin:16px 0 6px;'>"
-        "3️⃣ 적용 단가 (원)</div>",
-        unsafe_allow_html=True,
-    )
-    st.dataframe(
-        style_with_sum(price_disp, "{:,.0f}", cmap=None, axis=None),
-        use_container_width=True,
-        height=row_h,
-    )
+    _tab4_show_table("3️⃣ 적용 단가 (원)", price_disp, "{:,.0f}", None)
 
 # ==========================================
 # ★ 누락되었던 필수 캐시 함수 복구 완료 ★
@@ -10171,6 +10167,7 @@ if st.session_state.pop("_dash_sales_cache_cleared", False):
     try:
         get_fast_processed_full_df.clear()
         cached_tab3_pivots.clear()
+        cached_tab4_item_client_triple_pivot.clear()
     except Exception:
         pass
 
@@ -10334,7 +10331,7 @@ if not full_df.empty:
         selected_item = [] if _item_picked == "전체 품목" else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         # 반영 확인용(앱 빌드). dev 모드(?dev=1)에서만 표시.
-        dev_caption("필터 빌드 2026-08-28j · 단가Py314수정")
+        dev_caption("필터 빌드 2026-08-28k · Tab4품목상세")
 
         df_base = df_base_opts
         df_staff_filtered = (
@@ -12172,22 +12169,34 @@ with tab4:
         "📦 품목별 거래처 월별 상세 (사용량 · 단가 · 매출)</div>",
         unsafe_allow_html=True,
     )
-    if not selected_item:
+    _tab4_items = list(st.session_state.get("dash_filter_items") or selected_item or [])
+    _tab4_staff = list(st.session_state.get("dash_filter_staff") or selected_staff or [])
+    _tab4_df = df_f
+    if (
+        _tab4_items
+        and not _tab4_df.empty
+        and "품목명" in _tab4_df.columns
+        and not _tab4_df["품목명"].isin(_tab4_items).any()
+    ):
+        _tab4_df = pd.DataFrame()
+    if _tab4_items and _tab4_df.empty and not df_client_filtered.empty and "품목명" in df_client_filtered.columns:
+        _tab4_df = df_client_filtered[df_client_filtered["품목명"].isin(_tab4_items)]
+    if not _tab4_items:
         st.info(
             "💡 상단 고정바에서 **품목명**을 선택하면, 해당 품목을 거래하는 거래처별 "
             "월별 **사용량 · 단가 · 매출**이 **매출순위(순번) 내림차순**으로 표시됩니다."
         )
-    elif len(selected_item) > 1:
+    elif len(_tab4_items) > 1:
         st.info("품목별 상세는 **품목 1개** 선택 시 표시됩니다.")
-    elif df_f.empty:
+    elif _tab4_df.empty:
         st.info("선택한 담당자·거래처·기간에 해당 품목 데이터가 없습니다.")
     else:
         render_tab4_item_client_section(
-            df_f,
-            selected_item[0],
+            _tab4_df,
+            _tab4_items[0],
             years,
             all_months,
-            selected_staff=selected_staff or None,
+            selected_staff=_tab4_staff or None,
         )
 
     if not df_base.empty:
