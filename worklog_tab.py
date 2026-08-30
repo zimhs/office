@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-30a · 입력ws안정화"
+_WL_UI_BUILD = "2026-08-30b · 내용칸+3자"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -886,9 +886,9 @@ def _set_body_font(cell) -> None:
 # =====================================================================
 # 💡 [핵심] 글자 넘침 현상 원천 차단 (엄격한 max_units 설정)
 # =====================================================================
-# 14pt 바탕체 기준, 엑셀 너비를 넘지 않도록 한계치를 하향 조정
+# 14pt 바탕체 기준 내용칸 한 줄 한도 (한글 1자=2단위). 자동 다음칸 이동 임계값.
 @lru_cache(maxsize=1)
-def _content_line_units() -> int: return 72  # 한글 34자 제한
+def _content_line_units() -> int: return 78  # 한글 39자 (기존 36자 + 3자)
 
 @lru_cache(maxsize=1)
 def _client_line_units() -> int: return 16  # 👈 한글 8자(16 단위)로 증가
