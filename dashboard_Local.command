@@ -1,6 +1,6 @@
 #!/bin/bash
 # 메인(8501) + 업무일지(8502) — Chrome 창 1개 · 탭 2개 · 재실행 시 탭 추가 없음
-# v2026-08-28f — app.py 등 변경 시 자동 재시작
+# v2026-08-30 — worklog_tab 등 변경 시 자동 재시작
 export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
 
 ROOT="${HOME}/Desktop/dashboard"
@@ -36,10 +36,13 @@ _mtime() {
 }
 
 _code_stamp() {
-  printf "%s|%s|%s" \
+  printf "%s|%s|%s|%s|%s|%s" \
     "$(_mtime "${MAIN}")" \
     "$(_mtime "${ROOT}/market_research_tab.py")" \
-    "$(_mtime "${WORK}")"
+    "$(_mtime "${WORK}")" \
+    "$(_mtime "${ROOT}/worklog_tab.py")" \
+    "$(_mtime "${ROOT}/price_increase_tab.py")" \
+    "$(_mtime "${ROOT}/drive_autoload.py")"
 }
 
 _save_code_stamp() {

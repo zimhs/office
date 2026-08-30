@@ -22,7 +22,13 @@ import streamlit as st
 from dev_mode import apply_dev_ui_gate, dev_caption
 from sales_loader import load_sales_for_letter_tab
 
-_APP_BUILD = "2026-08-28b · 업무일지공문2탭"
+try:
+    import worklog_tab as _worklog_tab_mod
+
+    _WL_BUILD = str(getattr(_worklog_tab_mod, "_WL_UI_BUILD", "") or "").strip()
+except Exception:
+    _WL_BUILD = ""
+_APP_BUILD = f"2026-08-30 · 업무일지공문2탭" + (f" · {_WL_BUILD}" if _WL_BUILD else "")
 
 apply_dev_ui_gate()
 
