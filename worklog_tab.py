@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-30g · 익일빈줄·요약공백복구"
+_WL_UI_BUILD = "2026-08-31b · 익일미리보기·요약칸고정"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -2064,6 +2064,7 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
 
             if is_vertical: ha, va = "center", "middle"
             elif is_client: ha, va = "center", "middle"  # 거래처 칸 항상 가운데
+            elif is_body_d: ha, va = "left", "top"  # 익일/특이 — 빈 줄·다음 줄 위치 유지
             elif is_content: ha = "left"
                 
             fill = _cell_fill_color(cell) or "#FFFFFF"
@@ -2078,6 +2079,8 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
             if is_vertical and text.strip():
                 chars = [ch for ch in _text_clean if ch]
                 esc = "<br>".join(html.escape(ch) for ch in chars)
+            elif is_body_d and not str(text).strip():
+                esc = "&nbsp;"  # 익일/특이 빈 행 — 인쇄 미리보기에서 줄 위치 유지
             else:
                 esc = html.escape(text).replace(" ", "&nbsp;").replace("\n", "<br>")
                 
@@ -2412,10 +2415,17 @@ def _pack_entries_to_cells(d: date, entries: list[dict], next_day: list[str] | N
     return cells
 
 def _entries_from_cells(cells: dict) -> tuple[list[tuple[str, str]], list[str], list[str]]:
-    rows = [(e.get("client") or "", e.get("content") or "") for e in _grouped_entries_from_cells(cells)]
+    rows = [_summary_row_from_entry(e) for e in _grouped_entries_from_cells(cells)]
     next_day = _panel_lines_from_cells(cells, WL_NEXT_ROWS)
     notes = _panel_lines_from_cells(cells, WL_NOTE_ROWS)
     return rows, next_day, notes
+
+
+def _summary_row_from_entry(ent: dict) -> tuple[str, str]:
+    """요약/미리보기용 — 거래처·내용에서 soft blank 빈줄 제거."""
+    client = next((ln for ln in _entry_client_lines(ent) if str(ln).strip()), "")
+    content_lines = [ln for ln in _entry_pack_lines(ent) if str(ln).strip()]
+    return client, "\n".join(content_lines)
 
 _WL_SUMMARY_PREVIEW_CSS = (
     "@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');"
@@ -2431,10 +2441,11 @@ _WL_SUMMARY_PREVIEW_CSS = (
     " color:#64748B; text-transform:uppercase; }"
     " .wl-sum-preview .item { display:flex; gap:12px; align-items:flex-start; padding:12px; margin-bottom:8px;"
     " background:#fff; border:1px solid #E2E8F0; border-radius:10px; }"
+    " .wl-sum-preview .item .body { flex:1; min-width:0; display:flex; flex-direction:column; gap:0; }"
     " .wl-sum-preview .idx { flex:0 0 28px; height:28px; border-radius:8px; background:#CCFBF1; color:#0F766E;"
     " font-weight:700; font-size:13px; display:flex; align-items:center; justify-content:center; }"
-    " .wl-sum-preview .client { font-size:15px; font-weight:700; color:#134E4A; margin-bottom:4px; white-space:pre-wrap; }"
-    " .wl-sum-preview .content { font-size:14px; line-height:1.55; color:#334155; white-space:pre-wrap; word-break:break-word; }"
+    " .wl-sum-preview .client { font-size:15px; font-weight:700; color:#134E4A; margin:0 0 2px 0; padding:0; white-space:pre-wrap; line-height:1.35; }"
+    " .wl-sum-preview .content { font-size:14px; line-height:1.45; color:#334155; white-space:pre-wrap; word-break:break-word; margin:0; padding:0; }"
     " .wl-sum-preview .muted { color:#94A3B8; font-weight:500; }"
     " .wl-sum-preview .empty { padding:18px; text-align:center; color:#94A3B8; font-size:13px;"
     " border:1px dashed #CBD5E1; border-radius:10px; background:#F8FAFC; }"
@@ -2457,12 +2468,8 @@ def render_readable_preview_html(d: date, cells: dict) -> str:
     if rows:
         work_items = []
         for i, (client, content) in enumerate(rows, 1):
-            # 요약: 거래처는 첫 실문장만 (소프트빈칸이 client에 \n으로 붙어 생기던 거대 공백 제거)
-            _cl = [ln for ln in str(client or "").splitlines() if ln.strip()]
-            client_show = _cl[0] if _cl else ""
-            # 내용: 앞·뒤·중간 빈줄 제거 — 엑셀 행맞춤용 soft blank가 요약에 공백으로 보이던 것 복구
-            _ct = [ln for ln in str(content or "").splitlines() if ln.strip()]
-            content_show = "\n".join(_ct)
+            client_show = str(client or "").strip()
+            content_show = str(content or "").strip()
             c = html.escape(client_show) if client_show else "<span class='muted'>(거래처 없음)</span>"
             t = html.escape(content_show).replace("\n", "<br>") if content_show else "<span class='muted'>—</span>"
             work_items.append(f"""<div class="item"><div class="idx">{i}</div><div class="body"><div class="client">{c}</div><div class="content">{t}</div></div></div>""")
@@ -2991,10 +2998,6 @@ def _process_pending_special_char(iso: str, entry_count: int) -> bool:
             st.session_state["wl_special_msg"] = f"「{ch}」삽입"
             # 바 리마운트(동일 기호 연속 클릭 인식)
             st.session_state[f"wl_sp_token_{iso}"] = str(int(time.time() * 1000) % 1_000_000_000)
-            try:
-                _sync_left_preview_snapshot(date.fromisoformat(iso))
-            except Exception:
-                pass
             return True
         st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
     except StreamlitAPIException:
@@ -3238,7 +3241,13 @@ def _publish_view_cells(d: date, cells: dict) -> None:
         except Exception:
             pass
     st.session_state[_view_cells_key(d)] = cells
-    for k in (f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}", f"wl_left_excel_sig_v24_{iso}", f"wl_left_excel_html_v24_{iso}", f"wl_left_excel_h_v24_{iso}"): st.session_state.pop(k, None)
+    for k in (
+        f"wl_sum_sig_{iso}", f"wl_sum_html_{iso}",
+        f"wl_sum_sig_v25_{iso}", f"wl_sum_html_v25_{iso}",
+        f"wl_left_excel_sig_v24_{iso}", f"wl_left_excel_html_v24_{iso}", f"wl_left_excel_h_v24_{iso}",
+        f"wl_left_excel_sig_v25_{iso}", f"wl_left_excel_html_v25_{iso}", f"wl_left_excel_h_v25_{iso}",
+    ):
+        st.session_state.pop(k, None)
 
 def _view_cells_for_preview(d: date) -> dict:
     key = _view_cells_key(d)
@@ -3249,6 +3258,7 @@ def _view_cells_for_preview(d: date) -> dict:
     cells = _empty_cells(d)
     st.session_state[key] = cells
     return cells
+
 
 def _clear_date_widget_state(d: date) -> None:
     iso = d.isoformat()
@@ -3464,9 +3474,9 @@ def _worklog_summary_html_body(full_html: str) -> str:
 
 def _render_worklog_summary_block(selected: date, cells: dict) -> None:
     """요약 카드 — iframe(components.html) 대신 markdown으로 깜빡임 최소화."""
-    draft_sig = json.dumps(cells, ensure_ascii=False, sort_keys=True)
-    sum_sig_k = f"wl_sum_sig_{selected.isoformat()}"
-    sum_html_k = f"wl_sum_html_{selected.isoformat()}"
+    draft_sig = json.dumps({"cells": cells, "build": _WL_UI_BUILD}, ensure_ascii=False, sort_keys=True)
+    sum_sig_k = f"wl_sum_sig_v25_{selected.isoformat()}"
+    sum_html_k = f"wl_sum_html_v25_{selected.isoformat()}"
     if st.session_state.get(sum_sig_k) != draft_sig:
         view_html = render_readable_preview_html(selected, cells)
         st.session_state[sum_sig_k] = draft_sig
@@ -3556,10 +3566,10 @@ def _prepare_worklog_day_state(selected: date, *, skip_remote_pull: bool = False
 
 
 def _render_worklog_left_preview(selected: date) -> None:
-    """왼쪽 요약/엑셀 — fragment 밖에서만 그림 (타이핑 시 재실행 안 됨)."""
+    """왼쪽 요약/엑셀 — published 스냅샷만 표시 (타이핑·칸 이동 시 요약 위치 고정)."""
     draft = _view_cells_for_preview(selected)
     st.markdown("##### 업무일지 보기")
-    st.caption("입력은 바로 반영 · 왼쪽 요약은 칸 이동·저장·엑셀 미리보기 시 갱신")
+    st.caption("입력은 바로 반영 · 왼쪽 요약은 저장·엑셀 미리보기 시 갱신")
     p1, p2 = st.columns(2)
     with p1:
         do_print = st.button(
@@ -3634,9 +3644,9 @@ def _render_worklog_left_preview(selected: date) -> None:
             try:
                 cells_view = _view_cells_for_preview(selected)
                 live_sig = json.dumps(cells_view, ensure_ascii=False, sort_keys=True)
-                sig_k = f"wl_left_excel_sig_v24_{selected.isoformat()}"
-                html_k = f"wl_left_excel_html_v24_{selected.isoformat()}"
-                h_k = f"wl_left_excel_h_v24_{selected.isoformat()}"
+                sig_k = f"wl_left_excel_sig_v25_{selected.isoformat()}"
+                html_k = f"wl_left_excel_html_v25_{selected.isoformat()}"
+                h_k = f"wl_left_excel_h_v25_{selected.isoformat()}"
                 scale_l = _WL_PREVIEW_SCALE
                 if st.session_state.get(sig_k) != live_sig:
                     xlsx_left = _prepare_excel_preview(selected, cells_view)
@@ -3855,7 +3865,6 @@ def _render_worklog_input_panel(selected: date) -> None:
                 ent_req = st.session_state.pop(f"wl_do_enter_cell_{iso2}", None)
                 if isinstance(ent_req, dict):
                     _commit_enter_on_cell(str(ent_req.get("kind") or ""), iso2, int(ent_req.get("ei") or 0), int(ent_req.get("lj") or 0), str(ent_req.get("v") or ""))
-                    _sync_left_preview_snapshot(d)
 
                 sp_req = st.session_state.pop(f"wl_do_special_{iso2}", None)
                 if isinstance(sp_req, dict):
@@ -3887,12 +3896,10 @@ def _render_worklog_input_panel(selected: date) -> None:
                     fk = str(hook.get("focus") or "")
                     if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
                         st.session_state["wl_active_cell_key"] = fk
-                        _sync_left_preview_snapshot(d, focus_sig=fk)
                         return
                     if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state[f"wl_focus_ln_{iso2}"] = fk
-                        _sync_left_preview_snapshot(d, focus_sig=fk)
 
                 def _on_caret_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
