@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-30c · 내용칸여백축소"
+_WL_UI_BUILD = "2026-08-30d · 거래처내용밀착"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -3917,19 +3917,29 @@ def _render_worklog_input_panel(selected: date) -> None:
                                 """<style>
                                 div[class*="st-key-wl_clients_comp_"], div[class*="st-key-wl_lines_comp_"] { width: 100% !important; max-width: 100% !important; }
                                 div[class*="st-key-wl_clients_comp_"] .wl-lines, div[class*="st-key-wl_lines_comp_"] .wl-lines { margin: 0; }
-                                div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) { align-items: flex-start !important; gap: 0.25rem !important; }
-                                /* 내용칸 열: Streamlit 칼럼 좌우 패딩 축소 → 입력 폭 확보 */
+                                /* 거래처·내용 칸 사이 간격 제거 + 왼쪽 붙여 내용칸 폭 확보 */
+                                div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) {
+                                  align-items: flex-start !important;
+                                  gap: 0 !important;
+                                  column-gap: 0 !important;
+                                }
+                                div[data-testid="column"]:has(div[class*="st-key-wl_clients_comp_"]) {
+                                  padding-left: 0 !important;
+                                  padding-right: 0 !important;
+                                  flex-grow: 0 !important;
+                                }
                                 div[data-testid="column"]:has(div[class*="st-key-wl_lines_comp_"]) {
-                                  padding-left: 0.15rem !important;
+                                  padding-left: 0 !important;
                                   padding-right: 0 !important;
                                 }
+                                div[class*="st-key-wl_clients_comp_"] > div,
                                 div[class*="st-key-wl_lines_comp_"] > div { width: 100% !important; }
                                 </style>""",
                                 unsafe_allow_html=True,
                             )
 
-                        # 화면 비율 조절 (거래처 칸 넓힘)
-                        col_client, col_content = st.columns([2.0, 6.0], gap="small")
+                        # 거래처 좁게 · 내용 넓게, 칼럼 gap 없음(위 CSS로 완전 밀착)
+                        col_client, col_content = st.columns([1.35, 6.65], gap="small")
 
                         with col_client: _mount_entry_client_editor(iso2, i, _cu)
                         with col_content: _mount_entry_lines_editor(iso2, i, max_u)
