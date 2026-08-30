@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-30e · 입력글자10pt"
+_WL_UI_BUILD = "2026-08-30f · 익일빈줄유지"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -2354,6 +2354,33 @@ def _render_row_remain_gauge(usage: dict, *, height_px: int = 980) -> None:
     next_txt = f"다음 G{usage.get('next_row')}" if usage.get("next_row") else "칸 끝"
     st.markdown(f"""<div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:6px;padding:2px 2px 0;min-height:{height_px}px;height:{height_px}px;font-family:'Pretendard','Apple SD Gothic Neo',sans-serif;"><div style="text-align:center;line-height:1.1;flex:0 0 auto;"><div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:#64748B;">{label}</div><div style="font-size:22px;font-weight:800;color:{accent};margin-top:1px;">{big}</div><div style="font-size:10px;color:#94A3B8;">칸</div></div><div style="display:flex;flex-direction:column;justify-content:flex-start;flex:1 1 auto;width:26px;min-height:{max(520, height_px - 120)}px;height:{max(520, height_px - 120)}px;padding:4px 3px;border-radius:10px;background:#F8FAFC;box-shadow:inset 0 0 0 1px #E2E8F0;" title="전체 {total}칸 · 사용 {used}칸 · 남음 {rem}칸">{"".join(segs)}</div><div style="text-align:center;line-height:1.25;flex:0 0 auto;"><div style="font-size:11px;font-weight:800;color:#0F172A;"><span style="color:{accent};">{rem_show}</span><span style="color:#94A3B8;font-weight:600;"> / {total}</span></div><div style="font-size:10px;color:#64748B;">남은칸 / 전체칸</div><div style="font-size:10px;color:#94A3B8;margin-top:2px;">사용 {used_show}칸 · {next_txt}</div></div></div>""", unsafe_allow_html=True)
 
+def _textarea_lines(raw: str) -> list[str]:
+    """익일업무·특이사항 textarea — 선행·중간 빈 줄 위치 유지."""
+    if raw is None:
+        return []
+    return str(raw).splitlines()
+
+
+def _panel_lines_from_cells(cells: dict, rows: list[int], *, col: str = "D") -> list[str]:
+    """엑셀 행 → textarea 줄. 맨 끝 빈 행만 제거."""
+    lines = [str(cells.get(f"{col}{r}") or "") for r in rows]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def _panel_lines_to_cells(lines: list[str] | None, max_u: int) -> list[str]:
+    """textarea 줄 → 엑셀 D열 행 목록. 빈 줄은 빈 칸으로 유지."""
+    chunks: list[str] = []
+    for t in lines or []:
+        t = str(t or "")
+        if t == "":
+            chunks.append("")
+        else:
+            chunks.extend(_chunk_text(t, max_u) or [t])
+    return chunks
+
+
 def _pack_entries_to_cells(d: date, entries: list[dict], next_day: list[str] | None = None, notes: list[str] | None = None) -> dict:
     cells, max_u, row_i, rows, wrote_any, prev_gap = _empty_cells(d), _content_line_units(), 0, WL_CONTENT_ROWS, False, 0
     for ent in entries or []:
@@ -2374,15 +2401,14 @@ def _pack_entries_to_cells(d: date, entries: list[dict], next_day: list[str] | N
             row_i += 1
         wrote_any, prev_gap = True, _entry_blank_after(ent, 1)
     for t_list, t_rows in ((next_day, WL_NEXT_ROWS), (notes, WL_NOTE_ROWS)):
-        chunks = []
-        for t in t_list or []: chunks.extend(_chunk_text(t, max_u))
+        chunks = _panel_lines_to_cells(t_list, max_u)
         for i, r in enumerate(t_rows): cells[f"D{r}"] = chunks[i] if i < len(chunks) else ""
     return cells
 
 def _entries_from_cells(cells: dict) -> tuple[list[tuple[str, str]], list[str], list[str]]:
     rows = [(e.get("client") or "", e.get("content") or "") for e in _grouped_entries_from_cells(cells)]
-    next_day = [x for x in [(cells.get(f"D{r}") or "").strip() for r in WL_NEXT_ROWS] if x]
-    notes = [x for x in [(cells.get(f"D{r}") or "").strip() for r in WL_NOTE_ROWS] if x]
+    next_day = _panel_lines_from_cells(cells, WL_NEXT_ROWS)
+    notes = _panel_lines_from_cells(cells, WL_NOTE_ROWS)
     return rows, next_day, notes
 
 _WL_SUMMARY_PREVIEW_CSS = (
@@ -3130,7 +3156,7 @@ def _cells_from_widgets(d: date) -> dict:
     nk, ok = f"wl_next_area_{d.isoformat()}", f"wl_notes_area_{d.isoformat()}"
     next_raw = str(st.session_state.get(nk) or st.session_state.get(_next_key(d), "") or "")
     notes_raw = str(st.session_state.get(ok) or st.session_state.get(_notes_key(d), "") or "")
-    return _pack_entries_to_cells(d, entries, [x.strip() for x in next_raw.splitlines() if x.strip()], [x.strip() for x in notes_raw.splitlines() if x.strip()])
+    return _pack_entries_to_cells(d, entries, _textarea_lines(next_raw), _textarea_lines(notes_raw))
 
 def _seed_day_entry_widgets(d: date, entries_list: list[dict], next_txt: str, notes_txt: str) -> None:
     """저장/추가/삭제 후 입력 위젯을 entries 기준으로 다시 심는다. CCv2 인스턴스 키도 갱신."""
@@ -3978,8 +4004,8 @@ def _render_worklog_input_panel(selected: date) -> None:
                             notes_txt = str(st.session_state.get(f"wl_notes_area_{iso2}", "") or "")
                             cells = _pack_entries_to_cells(
                                 d, entries_now,
-                                [x.strip() for x in next_txt.splitlines() if x.strip()],
-                                [x.strip() for x in notes_txt.splitlines() if x.strip()],
+                                _textarea_lines(next_txt),
+                                _textarea_lines(notes_txt),
                             )
                             open_ctx = st.session_state.get(f"wl_open_ctx_{iso2}") or {}
                             had_local = bool(open_ctx.get("had_local")) or bool(st.session_state.get(f"wl_saved_ok_{iso2}"))
