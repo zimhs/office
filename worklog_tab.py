@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-30c · 내용칸여백축소"
+_WL_UI_BUILD = "2026-08-30e · 입력글자10pt"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -177,7 +177,7 @@ _WL_LINES_CSS = """
   background: transparent;
   color: #0F172A;
   font-family: 'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕',serif !important;
-  font-size: 11pt;  /* 입력칸 전용: 글씨가 칸 안에 다 보이도록 */
+  font-size: 10pt;  /* 입력칸만 1pt 축소 — 인쇄/미리보기(_WL_BODY_FONT_PT)와 무관 */
   line-height: 28px;
   outline: none;
   box-sizing: border-box;
@@ -434,7 +434,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v16",
+    "worklog_entry_lines_v17",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
