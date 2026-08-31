@@ -4754,7 +4754,7 @@ def _dash_is_wl_widget_key(key: str) -> bool:
 _DASH_FILTER_ALL_STAFF = "전체 담당자"
 _DASH_FILTER_ALL_CLIENT = "전체 거래처"
 _DASH_FILTER_ALL_ITEM = "전체 품목"
-_DASH_FILTER_UI_REV = "2026-08-31h"
+_DASH_FILTER_UI_REV = "2026-08-31i"
 _DASH_FILTER_STAFF_KEY = "dash_filter_staff_sb_v32"
 _DASH_FILTER_CLIENT_KEY = "dash_filter_client_sb_v32"
 _DASH_FILTER_ITEM_KEY = "dash_filter_item_sb_v32"
@@ -4897,108 +4897,6 @@ def _dash_on_filter_clear_rerun() -> None:
     _dash_consume_filter_clear_cookie()
 
 
-def _dash_inject_filter_select_script() -> None:
-    """selectbox: 전체… 클릭 시 입력만 비우기 · Backspace/Delete 지울 때만 해당 칸 전체…"""
-    keys_js = json.dumps([_DASH_FILTER_STAFF_KEY, _DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ITEM_KEY])
-    all_js = json.dumps([_DASH_FILTER_ALL_STAFF, _DASH_FILTER_ALL_CLIENT, _DASH_FILTER_ALL_ITEM])
-    components.html(
-        f"""
-        <script>
-        (function () {{
-          var doc = window.parent.document;
-          var win = window.parent;
-          var KEYS = {keys_js};
-          var ALL = {all_js};
-          var clearPending = false;
-          function isDropdownOpen() {{
-            try {{
-              var lb = doc.querySelector('[role="listbox"]');
-              if (lb && lb.offsetParent !== null) return true;
-              var pop = doc.querySelector('[data-baseweb="popover"]');
-              if (pop && pop.offsetParent !== null) return true;
-            }} catch (e0) {{}}
-            return false;
-          }}
-          function isAllLabel(v) {{
-            return ALL.indexOf(String(v || '').trim()) >= 0;
-          }}
-          function clickClearRerunBtn() {{
-            var btn = doc.querySelector('[class*="st-key-_dash_filter_clear_rerun_btn"] button');
-            if (btn) try {{ btn.click(); }} catch (e1) {{}}
-          }}
-          function onFilterFieldEmptied(fieldKey, allLabel) {{
-            if (clearPending || isDropdownOpen()) return;
-            clearPending = true;
-            try {{
-              doc.cookie = 'dash_filter_clear=' + encodeURIComponent(fieldKey) + '; path=/; max-age=15; SameSite=Lax';
-            }} catch (e2) {{}}
-            var w = doc.querySelector('[class*="st-key-' + fieldKey + '"]');
-            if (w) {{
-              var inp2 = w.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
-              if (inp2) {{
-                inp2.value = allLabel;
-                inp2.dataset.dashFilterPrev = allLabel;
-              }}
-            }}
-            clickClearRerunBtn();
-            setTimeout(function () {{ clearPending = false; }}, 400);
-          }}
-          function bindFilterSelects() {{
-            for (var i = 0; i < KEYS.length; i++) {{
-              var key = KEYS[i];
-              var allLabel = ALL[i];
-              var wrap = doc.querySelector('[class*="st-key-' + key + '"]');
-              if (!wrap) continue;
-              var inp = wrap.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
-              if (!inp || inp.dataset.dashFilterSelBound) continue;
-              inp.dataset.dashFilterSelBound = '1';
-              inp.addEventListener('mousedown', function () {{
-                this.dataset.dashFilterPrev = String(this.value || '').trim();
-                if (isAllLabel(this.dataset.dashFilterPrev)) {{
-                  this.value = '';
-                }}
-              }});
-              inp.addEventListener('focus', function () {{
-                if (!this.dataset.dashFilterPrev) {{
-                  this.dataset.dashFilterPrev = String(this.value || '').trim();
-                }}
-                if (isAllLabel(this.value)) {{
-                  this.value = '';
-                }}
-              }});
-              (function (fieldKey, fieldAll) {{
-                inp.addEventListener('keydown', function (e) {{
-                  if (e.key !== 'Backspace' && e.key !== 'Delete') return;
-                  var self = this;
-                  setTimeout(function () {{
-                    if (isDropdownOpen()) return;
-                    var v = String(self.value || '').trim();
-                    var prev = String(self.dataset.dashFilterPrev || '').trim();
-                    if (!v && prev && !isAllLabel(prev)) onFilterFieldEmptied(fieldKey, fieldAll);
-                  }}, 0);
-                }});
-              }})(key, allLabel);
-              inp.addEventListener('change', function () {{
-                var v = String(this.value || '').trim();
-                if (v) {{
-                  this.dataset.dashFilterPrev = v;
-                  try {{ doc.cookie = 'dash_filter_clear=; path=/; max-age=0; SameSite=Lax'; }} catch (e3) {{}}
-                }}
-              }});
-            }}
-          }}
-          bindFilterSelects();
-          win.__dashboardBindFilterSelects = bindFilterSelects;
-          setTimeout(bindFilterSelects, 120);
-          setTimeout(bindFilterSelects, 600);
-        }})();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-
 def _dash_note_filter_change_for_heavy_tabs() -> bool:
     """상단 필터가 바뀐 run이면 True. heavy 탭 defer 판단용 플래그도 갱신."""
     sig = _dash_top_filter_sig_now()
@@ -5106,7 +5004,7 @@ def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: 
 def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: tuple[int, ...] = (9,)) -> None:
     """메인 탭 선택 → cookie + deferred stub 자동 「화면 불러오기」.
 
-    Streamlit components.html 은 rerun 마다 DOM에서 사라지므로 매 run 재주입.
+    세션 1회 주입 — click 리스너는 parent document에 유지.
     """
     heavy_js = ", ".join(str(i) for i in heavy_indices) or "-1"
     components.html(
@@ -7896,20 +7794,52 @@ def inject_sticky_tabs_script():
             var STICKY_SCRIPT_VER_IPAD = 41; /* iPad: 검색창 방해 스크롤/포커스 족쇄 제거 */
             var DASH_FILTER_ALL_LABELS = ['전체 담당자', '전체 거래처', '전체 품목'];
             var DASH_FILTER_TEXT_KEYS = ['dash_filter_staff_sb_v32', 'dash_filter_client_sb_v32', 'dash_filter_item_sb_v32'];
-            function bindDashboardFilterTextInputs() {
-                if (typeof parentWin.__dashboardBindFilterSelects === 'function') {
-                    try { parentWin.__dashboardBindFilterSelects(); return; } catch (e0) {}
+            var dashFilterClearPending = false;
+            function dashFilterDropdownOpen() {
+                try {
+                    var lb = parentDoc.querySelector('[role="listbox"]');
+                    if (lb && lb.offsetParent !== null) return true;
+                    var pop = parentDoc.querySelector('[data-baseweb="popover"]');
+                    if (pop && pop.offsetParent !== null) return true;
+                } catch (eDf0) {}
+                return false;
+            }
+            function dashFilterIsAllLabel(v) {
+                return DASH_FILTER_ALL_LABELS.indexOf(String(v || '').trim()) >= 0;
+            }
+            function dashFilterClickClearRerunBtn() {
+                var btn = parentDoc.querySelector('[class*="st-key-_dash_filter_clear_rerun_btn"] button');
+                if (btn) try { btn.click(); } catch (eDf1) {}
+            }
+            function dashFilterOnFieldEmptied(fieldKey, allLabel) {
+                if (dashFilterClearPending || dashFilterDropdownOpen()) return;
+                dashFilterClearPending = true;
+                try {
+                    parentDoc.cookie = 'dash_filter_clear=' + encodeURIComponent(fieldKey) + '; path=/; max-age=15; SameSite=Lax';
+                } catch (eDf2) {}
+                var w = parentDoc.querySelector('[class*="st-key-' + fieldKey + '"]');
+                if (w) {
+                    var inp2 = w.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
+                    if (inp2) {
+                        inp2.value = allLabel;
+                        inp2.dataset.dashFilterPrev = allLabel;
+                    }
                 }
+                dashFilterClickClearRerunBtn();
+                setTimeout(function () { dashFilterClearPending = false; }, 400);
+            }
+            function bindDashboardFilterTextInputs() {
                 for (var i = 0; i < DASH_FILTER_TEXT_KEYS.length; i++) {
                     var key = DASH_FILTER_TEXT_KEYS[i];
+                    var allLabel = DASH_FILTER_ALL_LABELS[i];
                     var wrap = parentDoc.querySelector('[class*="st-key-' + key + '"]');
                     if (!wrap) continue;
                     var inp = wrap.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
-                    if (!inp || inp.__dashFilterTextBound) continue;
-                    inp.__dashFilterTextBound = true;
+                    if (!inp || inp.dataset.dashFilterSelBound) continue;
+                    inp.dataset.dashFilterSelBound = '1';
                     inp.addEventListener('mousedown', function() {
                         this.dataset.dashFilterPrev = String(this.value || '').trim();
-                        if (DASH_FILTER_ALL_LABELS.indexOf(this.dataset.dashFilterPrev) >= 0) {
+                        if (dashFilterIsAllLabel(this.dataset.dashFilterPrev)) {
                             this.value = '';
                         }
                     });
@@ -7917,13 +7847,32 @@ def inject_sticky_tabs_script():
                         if (!this.dataset.dashFilterPrev) {
                             this.dataset.dashFilterPrev = String(this.value || '').trim();
                         }
-                        if (DASH_FILTER_ALL_LABELS.indexOf(String(this.value || '').trim()) >= 0) {
+                        if (dashFilterIsAllLabel(this.value)) {
                             this.value = '';
+                        }
+                    });
+                    (function (fieldKey, fieldAll) {
+                        inp.addEventListener('keydown', function (e) {
+                            if (e.key !== 'Backspace' && e.key !== 'Delete') return;
+                            var self = this;
+                            setTimeout(function () {
+                                if (dashFilterDropdownOpen()) return;
+                                var v = String(self.value || '').trim();
+                                var prev = String(self.dataset.dashFilterPrev || '').trim();
+                                if (!v && prev && !dashFilterIsAllLabel(prev)) dashFilterOnFieldEmptied(fieldKey, fieldAll);
+                            }, 0);
+                        });
+                    })(key, allLabel);
+                    inp.addEventListener('change', function() {
+                        var v = String(this.value || '').trim();
+                        if (v) {
+                            this.dataset.dashFilterPrev = v;
+                            try { parentDoc.cookie = 'dash_filter_clear=; path=/; max-age=0; SameSite=Lax'; } catch (eDf3) {}
                         }
                     });
                 }
             }
-            parentWin.__dashboardBindFilterTextInputs = bindDashboardFilterTextInputs;
+            parentWin.__dashboardBindFilterSelects = bindDashboardFilterTextInputs;
             var syncTimer = null;
             var lastH = 0;
             function isTouchPadEarly() {
@@ -10631,9 +10580,8 @@ if not full_df.empty:
         )
         selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
-        _dash_inject_filter_select_script()
-        st.caption("🔍 검색 v31h · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
-        dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · 선택1회rerun")
+        st.caption("🔍 검색 v31i · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
+        dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · script1회주입")
 
         df_base = df_base_opts
         df_staff_filtered = (
@@ -10867,19 +10815,21 @@ else:
         ]
     )
 # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
-# 활성 탭 cookie 스크립트는 height=0·가벼움 → 매 run 재주입(탭 전환 추적·stub 자동복원)
-_STICKY_INJECT_VER = 35
+# 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
+_STICKY_INJECT_VER = 36
+_ACTIVE_TAB_INJECT_VER = 2
 if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
     inject_sticky_tabs_script()
     inject_ipad_plotly_controls()
     st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
     st.session_state["_ipad_sticky_injected"] = True
     st.session_state["_ipad_sticky_ver"] = 30
-if _DASH_CLOUD_TABS:
-    # Cloud 9~11 eager — 탭 클릭 remount 불필요
-    inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=())
-else:
-    inject_dash_active_tab_cookie_script(min_tabs=10, heavy_indices=(9,))
+if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
+    if _DASH_CLOUD_TABS:
+        inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=())
+    else:
+        inject_dash_active_tab_cookie_script(min_tabs=10, heavy_indices=(9,))
+    st.session_state["_dash_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
 # Tab 1: 📌 영업 종합 요약
 with tab1:
     t1_c1, t1_c2 = st.columns([4, 1])
