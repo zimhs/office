@@ -4899,6 +4899,246 @@ def _dash_on_filter_clear_rerun() -> None:
     _dash_consume_filter_clear_cookie()
 
 
+_DASH_FILTER_BIND_VER = 7
+
+
+def _dash_inject_filter_select_script() -> None:
+    """필터 selectbox: fragment rerun마다 주입 — sticky 1회 주입만으로는 DOM 교체 후 무력화됨."""
+    keys_js = json.dumps(
+        [_DASH_FILTER_STAFF_KEY, _DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ITEM_KEY]
+    )
+    all_js = json.dumps(
+        [_DASH_FILTER_ALL_STAFF, _DASH_FILTER_ALL_CLIENT, _DASH_FILTER_ALL_ITEM]
+    )
+    components.html(
+        f"""
+        <script>
+        (function () {{
+          var doc = window.parent.document;
+          var win = window.parent;
+          var BIND_VER = {_DASH_FILTER_BIND_VER};
+          var KEYS = {keys_js};
+          var ALL = {all_js};
+          var clearPending = false;
+          win.__dashboardBindFilterSelectsExternal = true;
+          function isDropdownOpen() {{
+            try {{
+              var lb = doc.querySelector('[role="listbox"]');
+              if (lb && lb.offsetParent !== null) return true;
+              var pop = doc.querySelector('[data-baseweb="popover"]');
+              if (pop && pop.offsetParent !== null) return true;
+            }} catch (e0) {{}}
+            return false;
+          }}
+          function isAllLabel(v) {{
+            return ALL.indexOf(String(v || '').trim()) >= 0;
+          }}
+          function findWrap(key) {{
+            return doc.querySelector('[class*="st-key-' + key + '"]');
+          }}
+          function findInput(el) {{
+            if (!el || !el.closest) return null;
+            if (el.tagName === 'INPUT') {{
+              for (var i = 0; i < KEYS.length; i++) {{
+                if (el.closest('[class*="st-key-' + KEYS[i] + '"]')) return el;
+              }}
+              return null;
+            }}
+            for (var j = 0; j < KEYS.length; j++) {{
+              var wrap = el.closest('[class*="st-key-' + KEYS[j] + '"]');
+              if (!wrap) continue;
+              var inp = wrap.querySelector(
+                '[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input[role="combobox"], input'
+              );
+              if (inp) return inp;
+            }}
+            return null;
+          }}
+          function fieldMeta(inp) {{
+            if (!inp) return null;
+            for (var i = 0; i < KEYS.length; i++) {{
+              if (inp.closest('[class*="st-key-' + KEYS[i] + '"]')) {{
+                return {{ key: KEYS[i], allLabel: ALL[i] }};
+              }}
+            }}
+            return null;
+          }}
+          function setInputValue(inp, val) {{
+            if (!inp) return;
+            try {{
+              var desc = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value');
+              if (desc && desc.set) desc.set.call(inp, val);
+              else inp.value = val;
+            }} catch (eSet) {{
+              inp.value = val;
+            }}
+            try {{
+              inp.dispatchEvent(new win.InputEvent('input', {{
+                bubbles: true, cancelable: true, inputType: 'insertText', data: val
+              }}));
+            }} catch (eIn) {{
+              try {{ inp.dispatchEvent(new win.Event('input', {{ bubbles: true }})); }} catch (eIn2) {{}}
+            }}
+            try {{ inp.dispatchEvent(new win.Event('change', {{ bubbles: true }})); }} catch (eCh) {{}}
+          }}
+          function valueNeedsReset(inp, allLabel) {{
+            var v = String(inp && inp.value || '');
+            var trimmed = v.trim();
+            if (!trimmed) return false;
+            if (isAllLabel(trimmed)) return true;
+            if (allLabel && v.indexOf(allLabel) >= 0) return true;
+            return false;
+          }}
+          function clearForTyping(inp, allLabel) {{
+            if (!inp) return;
+            var prev = String(inp.value || '').trim();
+            if (!inp.dataset.dashFilterPrev && prev) inp.dataset.dashFilterPrev = prev;
+            inp.dataset.dashFilterClearingToType = '1';
+            delete inp.dataset.dashFilterTyping;
+            if (prev) setInputValue(inp, '');
+            setTimeout(function () {{
+              delete inp.dataset.dashFilterClearingToType;
+            }}, 350);
+          }}
+          function clickClearRerunBtn() {{
+            var btn = doc.querySelector('[class*="st-key-_dash_filter_clear_rerun_btn"] button');
+            if (btn) try {{ btn.click(); return; }} catch (e1) {{}}
+            var buttons = doc.querySelectorAll('button');
+            for (var i = 0; i < buttons.length; i++) {{
+              if ((buttons[i].textContent || '').indexOf('필터지우기적용') >= 0) {{
+                try {{ buttons[i].click(); return; }} catch (e2) {{}}
+              }}
+            }}
+          }}
+          function onFieldEmptied(fieldKey, allLabel) {{
+            if (clearPending || isDropdownOpen()) return;
+            clearPending = true;
+            try {{
+              doc.cookie = 'dash_filter_clear=' + encodeURIComponent(fieldKey) + '; path=/; max-age=15; SameSite=Lax';
+            }} catch (e3) {{}}
+            var w = findWrap(fieldKey);
+            if (w) {{
+              var inp2 = w.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
+              if (inp2) {{
+                setInputValue(inp2, allLabel);
+                inp2.dataset.dashFilterPrev = allLabel;
+                delete inp2.dataset.dashFilterTyping;
+              }}
+            }}
+            clickClearRerunBtn();
+            setTimeout(function () {{ clearPending = false; }}, 400);
+          }}
+          function maybeEmptied(inp) {{
+            if (!inp || inp.dataset.dashFilterClearingToType) return;
+            var meta = fieldMeta(inp);
+            if (!meta) return;
+            var v = String(inp.value || '').trim();
+            var prev = String(inp.dataset.dashFilterPrev || '').trim();
+            if (v) return;
+            if (!prev && inp.dataset.dashFilterTyping !== '1') return;
+            if (isAllLabel(prev) && inp.dataset.dashFilterTyping !== '1') return;
+            if (isDropdownOpen()) return;
+            onFieldEmptied(meta.key, meta.allLabel);
+          }}
+          function beginTyping(inp, meta, text) {{
+            if (!inp || !meta) return;
+            if (!inp.dataset.dashFilterPrev) {{
+              inp.dataset.dashFilterPrev = String(inp.value || '').trim() || meta.allLabel;
+            }}
+            inp.dataset.dashFilterTyping = '1';
+            setInputValue(inp, String(text || ''));
+          }}
+          function installDelegation() {{
+            if (win.__dashFilterDelegationVer >= BIND_VER) return;
+            win.__dashFilterDelegationVer = BIND_VER;
+            function onFilterPress(e) {{
+              var inp = findInput(e.target);
+              if (!inp) return;
+              var meta = fieldMeta(inp);
+              if (!meta) return;
+              clearForTyping(inp, meta.allLabel);
+            }}
+            doc.addEventListener('pointerdown', onFilterPress, true);
+            doc.addEventListener('mousedown', onFilterPress, true);
+            doc.addEventListener('focusin', function (e) {{
+              var inp = findInput(e.target);
+              if (!inp || inp.dataset.dashFilterPrev) return;
+              var meta = fieldMeta(inp);
+              if (!meta) return;
+              clearForTyping(inp, meta.allLabel);
+            }}, true);
+            doc.addEventListener('compositionstart', function (e) {{
+              var inp = findInput(e.target);
+              if (!inp) return;
+              var meta = fieldMeta(inp);
+              if (!meta) return;
+              if (valueNeedsReset(inp, meta.allLabel) || (String(inp.value || '').trim() && !inp.dataset.dashFilterTyping)) {{
+                if (!inp.dataset.dashFilterPrev) {{
+                  inp.dataset.dashFilterPrev = String(inp.value || '').trim() || meta.allLabel;
+                }}
+                inp.dataset.dashFilterTyping = '1';
+                setInputValue(inp, '');
+              }}
+            }}, true);
+            doc.addEventListener('beforeinput', function (e) {{
+              var inp = findInput(e.target);
+              if (!inp || e.isComposing) return;
+              var meta = fieldMeta(inp);
+              if (!meta) return;
+              var it = e.inputType || '';
+              if (it.indexOf('insert') !== 0 && it !== 'insertReplacementText') return;
+              var data = (e.data != null) ? String(e.data) : '';
+              if (!data) return;
+              var cur = String(inp.value || '');
+              if (valueNeedsReset(inp, meta.allLabel) || (cur.trim() && !inp.dataset.dashFilterTyping)) {{
+                e.preventDefault();
+                beginTyping(inp, meta, data);
+              }}
+            }}, true);
+            doc.addEventListener('keydown', function (e) {{
+              var inp = findInput(e.target);
+              if (!inp) return;
+              var meta = fieldMeta(inp);
+              if (!meta) return;
+              if (e.key === 'Backspace' || e.key === 'Delete') {{
+                setTimeout(function () {{ maybeEmptied(inp); }}, 0);
+                return;
+              }}
+              if (e.isComposing) return;
+              if (!e.key || e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
+              if (valueNeedsReset(inp, meta.allLabel) || (String(inp.value || '').trim() && !inp.dataset.dashFilterTyping)) {{
+                e.preventDefault();
+                beginTyping(inp, meta, e.key);
+              }}
+            }}, true);
+            doc.addEventListener('input', function (e) {{
+              var inp = findInput(e.target);
+              if (!inp) return;
+              var v = String(inp.value || '').trim();
+              if (!v) setTimeout(function () {{ maybeEmptied(inp); }}, 0);
+              else {{
+                inp.dataset.dashFilterPrev = v;
+                try {{ doc.cookie = 'dash_filter_clear=; path=/; max-age=0; SameSite=Lax'; }} catch (e4) {{}}
+              }}
+            }}, true);
+            doc.addEventListener('change', function (e) {{
+              var inp = findInput(e.target);
+              if (!inp) return;
+              delete inp.dataset.dashFilterTyping;
+              var v = String(inp.value || '').trim();
+              if (v) inp.dataset.dashFilterPrev = v;
+            }}, true);
+          }}
+          installDelegation();
+          try {{ doc.cookie = 'dash_filter_clear=; path=/; max-age=0; SameSite=Lax'; }} catch (eClr) {{}}
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def _dash_note_filter_change_for_heavy_tabs() -> bool:
     """상단 필터가 바뀐 run이면 True. heavy 탭 defer 판단용 플래그도 갱신."""
     sig = _dash_top_filter_sig_now()
@@ -7814,216 +8054,10 @@ def inject_sticky_tabs_script():
             var parentWin = window.parent;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 19; 
+            var STICKY_SCRIPT_VER_MAC = 20; 
             var STICKY_SCRIPT_VER_IPAD = 41; /* iPad: 검색창 방해 스크롤/포커스 족쇄 제거 */
-            var DASH_FILTER_ALL_LABELS = ['전체 담당자', '전체 거래처', '전체 품목'];
-            var DASH_FILTER_TEXT_KEYS = ['dash_filter_staff_sb_v32', 'dash_filter_client_sb_v32', 'dash_filter_item_sb_v32'];
-            var dashFilterClearPending = false;
-            function dashFilterDropdownOpen() {
-                try {
-                    var lb = parentDoc.querySelector('[role="listbox"]');
-                    if (lb && lb.offsetParent !== null) return true;
-                    var pop = parentDoc.querySelector('[data-baseweb="popover"]');
-                    if (pop && pop.offsetParent !== null) return true;
-                } catch (eDf0) {}
-                return false;
-            }
-            function dashFilterIsAllLabel(v) {
-                return DASH_FILTER_ALL_LABELS.indexOf(String(v || '').trim()) >= 0;
-            }
-            function dashFilterClickClearRerunBtn() {
-                var btn = parentDoc.querySelector('[class*="st-key-_dash_filter_clear_rerun_btn"] button');
-                if (btn) try { btn.click(); } catch (eDf1) {}
-            }
-            function dashFilterOnFieldEmptied(fieldKey, allLabel) {
-                if (dashFilterClearPending || dashFilterDropdownOpen()) return;
-                dashFilterClearPending = true;
-                try {
-                    parentDoc.cookie = 'dash_filter_clear=' + encodeURIComponent(fieldKey) + '; path=/; max-age=15; SameSite=Lax';
-                } catch (eDf2) {}
-                var w = parentDoc.querySelector('[class*="st-key-' + fieldKey + '"]');
-                if (w) {
-                    var inp2 = w.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
-                    if (inp2) {
-                        inp2.value = allLabel;
-                        inp2.dataset.dashFilterPrev = allLabel;
-                    }
-                }
-                dashFilterClickClearRerunBtn();
-                setTimeout(function () { dashFilterClearPending = false; }, 400);
-            }
-            function dashFilterFieldFromTarget(el) {
-                if (!el || !el.closest) return null;
-                for (var i = 0; i < DASH_FILTER_TEXT_KEYS.length; i++) {
-                    var fk = DASH_FILTER_TEXT_KEYS[i];
-                    if (el.closest('[class*="st-key-' + fk + '"]')) {
-                        return { key: fk, allLabel: DASH_FILTER_ALL_LABELS[i] };
-                    }
-                }
-                return null;
-            }
-            function dashFilterResolveInput(el) {
-                if (!el || !el.closest) return null;
-                if (el.tagName === 'INPUT') {
-                    return dashFilterFieldFromTarget(el) ? el : null;
-                }
-                for (var i = 0; i < DASH_FILTER_TEXT_KEYS.length; i++) {
-                    var fk = DASH_FILTER_TEXT_KEYS[i];
-                    var wrap = el.closest('[class*="st-key-' + fk + '"]');
-                    if (!wrap) continue;
-                    var inp = wrap.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
-                    if (inp) return inp;
-                }
-                return null;
-            }
-            function dashFilterSetInputValue(inp, val) {
-                if (!inp) return;
-                try {
-                    var desc = Object.getOwnPropertyDescriptor(parentWin.HTMLInputElement.prototype, 'value');
-                    if (desc && desc.set) desc.set.call(inp, val);
-                    else inp.value = val;
-                } catch (eSet) {
-                    inp.value = val;
-                }
-                try {
-                    inp.dispatchEvent(new parentWin.InputEvent('input', {
-                        bubbles: true,
-                        cancelable: true,
-                        inputType: 'insertText',
-                        data: val
-                    }));
-                } catch (eIn) {
-                    try { inp.dispatchEvent(new parentWin.Event('input', { bubbles: true })); } catch (eIn2) {}
-                }
-            }
-            function dashFilterValueNeedsReset(inp, allLabel) {
-                var v = String(inp && inp.value || '');
-                var trimmed = v.trim();
-                if (!trimmed) return false;
-                if (dashFilterIsAllLabel(trimmed)) return true;
-                if (allLabel && v.indexOf(allLabel) >= 0) return true;
-                return false;
-            }
-            function dashFilterStripAllLabel(v, allLabel) {
-                var s = String(v || '');
-                if (!allLabel || s.indexOf(allLabel) < 0) return s.trim();
-                return s.replace(allLabel, '').trim();
-            }
-            function dashFilterClearInputForTyping(inp, allLabel) {
-                if (!inp) return;
-                var prev = String(inp.value || '').trim();
-                if (!inp.dataset.dashFilterPrev && prev) inp.dataset.dashFilterPrev = prev;
-                delete inp.dataset.dashFilterTyping;
-                if (!prev) return;
-                dashFilterSetInputValue(inp, '');
-                var self = inp;
-                setTimeout(function () {
-                    if (self && dashFilterValueNeedsReset(self, allLabel)) dashFilterSetInputValue(self, '');
-                }, 0);
-                parentWin.requestAnimationFrame(function () {
-                    if (self && dashFilterValueNeedsReset(self, allLabel)) dashFilterSetInputValue(self, '');
-                });
-            }
-            function dashFilterBeginTyping(inp, meta, insertText) {
-                if (!inp || !meta) return;
-                var fieldAll = meta.allLabel;
-                if (!inp.dataset.dashFilterPrev) {
-                    inp.dataset.dashFilterPrev = String(inp.value || '').trim() || fieldAll;
-                }
-                inp.dataset.dashFilterTyping = '1';
-                dashFilterSetInputValue(inp, String(insertText || ''));
-            }
             function bindDashboardFilterTextInputs() {
-                /* fragment rerun + React selectbox + 한글 IME: beforeinput/compositionstart 처리 */
-                if (parentWin.__dashboardFilterSelectDelegated) return;
-                parentWin.__dashboardFilterSelectDelegated = true;
-                function onFilterPointer(e) {
-                    var inp = dashFilterResolveInput(e.target);
-                    if (!inp) return;
-                    var meta = dashFilterFieldFromTarget(inp);
-                    if (!meta) return;
-                    dashFilterClearInputForTyping(inp, meta.allLabel);
-                }
-                parentDoc.addEventListener('pointerdown', onFilterPointer, true);
-                parentDoc.addEventListener('mousedown', onFilterPointer, true);
-                parentDoc.addEventListener('focusin', function (e) {
-                    var inp = dashFilterResolveInput(e.target);
-                    if (!inp) return;
-                    var meta = dashFilterFieldFromTarget(inp);
-                    if (!meta) return;
-                    if (!inp.dataset.dashFilterPrev) {
-                        dashFilterClearInputForTyping(inp, meta.allLabel);
-                    }
-                }, true);
-                parentDoc.addEventListener('compositionstart', function (e) {
-                    var inp = dashFilterResolveInput(e.target);
-                    if (!inp) return;
-                    var meta = dashFilterFieldFromTarget(inp);
-                    if (!meta) return;
-                    if (dashFilterValueNeedsReset(inp, meta.allLabel) || (String(inp.value || '').trim() && !inp.dataset.dashFilterTyping)) {
-                        if (!inp.dataset.dashFilterPrev) {
-                            inp.dataset.dashFilterPrev = String(inp.value || '').trim() || meta.allLabel;
-                        }
-                        inp.dataset.dashFilterTyping = '1';
-                        dashFilterSetInputValue(inp, '');
-                    }
-                }, true);
-                parentDoc.addEventListener('beforeinput', function (e) {
-                    var inp = dashFilterResolveInput(e.target);
-                    if (!inp) return;
-                    var meta = dashFilterFieldFromTarget(inp);
-                    if (!meta) return;
-                    if (e.isComposing) return;
-                    var it = e.inputType || '';
-                    if (it.indexOf('insert') !== 0 && it !== 'insertReplacementText') return;
-                    var data = (e.data != null) ? String(e.data) : '';
-                    if (!data) return;
-                    var fieldAll = meta.allLabel;
-                    var cur = String(inp.value || '');
-                    if (dashFilterValueNeedsReset(inp, fieldAll) || (cur.trim() && !inp.dataset.dashFilterTyping)) {
-                        e.preventDefault();
-                        dashFilterBeginTyping(inp, meta, data);
-                    }
-                }, true);
-                parentDoc.addEventListener('keydown', function (e) {
-                    var inp = dashFilterResolveInput(e.target);
-                    if (!inp) return;
-                    var meta = dashFilterFieldFromTarget(inp);
-                    if (!meta) return;
-                    var fieldKey = meta.key;
-                    var fieldAll = meta.allLabel;
-                    var self = inp;
-                    if (e.key === 'Backspace' || e.key === 'Delete') {
-                        setTimeout(function () {
-                            if (dashFilterDropdownOpen()) return;
-                            var v = String(self.value || '').trim();
-                            var prev = String(self.dataset.dashFilterPrev || '').trim();
-                            if (!v && prev && !dashFilterIsAllLabel(prev)) dashFilterOnFieldEmptied(fieldKey, fieldAll);
-                        }, 0);
-                        return;
-                    }
-                    if (e.isComposing) return;
-                    if (!e.key || e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
-                    if (dashFilterValueNeedsReset(inp, fieldAll) || (String(inp.value || '').trim() && !inp.dataset.dashFilterTyping)) {
-                        e.preventDefault();
-                        dashFilterBeginTyping(inp, meta, e.key);
-                    }
-                }, true);
-                parentDoc.addEventListener('change', function (e) {
-                    var inp = dashFilterResolveInput(e.target);
-                    if (!inp) return;
-                    delete inp.dataset.dashFilterTyping;
-                    var meta = dashFilterFieldFromTarget(inp);
-                    var v = String(inp.value || '').trim();
-                    if (meta && dashFilterValueNeedsReset(inp, meta.allLabel)) {
-                        v = dashFilterStripAllLabel(v, meta.allLabel);
-                        if (v !== String(inp.value || '').trim()) dashFilterSetInputValue(inp, v);
-                    }
-                    if (v) {
-                        inp.dataset.dashFilterPrev = v;
-                        try { parentDoc.cookie = 'dash_filter_clear=; path=/; max-age=0; SameSite=Lax'; } catch (eDf3) {}
-                    }
-                }, true);
+                /* 필터 select UX → _dash_inject_filter_select_script (fragment rerun마다) */
             }
             parentWin.__dashboardBindFilterSelects = bindDashboardFilterTextInputs;
             var syncTimer = null;
@@ -8124,7 +8158,6 @@ def inject_sticky_tabs_script():
             if (parentWin.__dashboardStickyObserver) {
                 parentWin.__dashboardStickyObserver.disconnect();
             }
-            parentWin.__dashboardFilterSelectDelegated = false;
             if (parentWin.__dashboardStickyBootInterval) {
                 clearInterval(parentWin.__dashboardStickyBootInterval);
             }
@@ -10597,6 +10630,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     global avg_monthly_sales_total, avg_rate_total, latest_month_str_total
     global cur_month_sales_client, prev_month_sales_client, mom_rate_client
     global avg_monthly_sales_client, avg_rate_client, latest_month_str_client
+    _dash_consume_filter_clear_cookie()
     if not full_df.empty:
         latest_dt_overall = full_df["매출일_dt"].max()
         if pd.notnull(latest_dt_overall):
@@ -10745,8 +10779,8 @@ def _dash_filter_and_tabs_fragment() -> None:
             )
             selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
             st.session_state["dash_filter_items"] = list(selected_item)
-            st.caption("🔍 검색 v31o · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
-            dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · fragment+clickclear")
+            st.caption("🔍 검색 v31q · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
+            dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · filterReinject{_DASH_FILTER_BIND_VER}")
 
             df_base = df_base_opts
             df_staff_filtered = (
@@ -10992,7 +11026,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 39
+    _STICKY_INJECT_VER = 40
     _ACTIVE_TAB_INJECT_VER = 2
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
         inject_sticky_tabs_script()
@@ -14175,6 +14209,9 @@ def _dash_filter_and_tabs_fragment() -> None:
             except Exception as _pi_err:
                 st.error(f"공문 탭 오류: {_pi_err}")
                 st.info("다른 탭은 정상 이용 가능합니다.")
+
+    _dash_inject_filter_select_script()
+
 
 _dash_filter_and_tabs_fragment()
 
