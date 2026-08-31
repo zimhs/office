@@ -444,6 +444,13 @@ def inject_custom_css():
             .dashboard-filter-sticky [data-baseweb="select"] > div {
                 min-height: 1.85rem !important;
             }
+            /* 필터 selectbox ▼ 목록 스크롤 */
+            .dashboard-filter-sticky [data-baseweb="popover"] ul,
+            .dashboard-filter-sticky [data-testid="stSelectboxVirtualDropdown"] {
+                max-height: 280px !important;
+                overflow-y: auto !important;
+                -webkit-overflow-scrolling: touch !important;
+            }
             .dashboard-filter-sticky [data-testid="stMarkdownContainer"] {
                 margin: 0 !important;
                 padding: 0 !important;
@@ -4747,17 +4754,20 @@ def _dash_is_wl_widget_key(key: str) -> bool:
 _DASH_FILTER_ALL_STAFF = "전체 담당자"
 _DASH_FILTER_ALL_CLIENT = "전체 거래처"
 _DASH_FILTER_ALL_ITEM = "전체 품목"
-_DASH_FILTER_UI_REV = "2026-08-31c"
-_DASH_FILTER_STAFF_KEY = "dash_filter_staff_txt"
-_DASH_FILTER_CLIENT_KEY = "dash_filter_client_txt"
-_DASH_FILTER_ITEM_KEY = "dash_filter_item_txt"
+_DASH_FILTER_UI_REV = "2026-08-31d"
+_DASH_FILTER_STAFF_KEY = "dash_filter_staff_sb_v32"
+_DASH_FILTER_CLIENT_KEY = "dash_filter_client_sb_v32"
+_DASH_FILTER_ITEM_KEY = "dash_filter_item_sb_v32"
 _DASH_FILTER_LEGACY_POP = (
     "dash_filter_staff_sb_new",
     "dash_filter_staff_in_v2",
+    "dash_filter_staff_txt",
     "dash_filter_client_selectbox",
     "dash_filter_client_in_v2",
+    "dash_filter_client_txt",
     "dash_filter_items_sb_new",
     "dash_filter_item_in_v2",
+    "dash_filter_item_txt",
 )
 
 
@@ -4769,11 +4779,11 @@ def _dash_norm_filter_input(raw, all_label: str) -> str:
 
 
 def _dash_prepare_filter_widgets() -> None:
-    """구 selectbox 세션·이전 키 제거 — 빈칸=전체, 화면에 '전체…' 값 없음."""
+    """필터 selectbox 세션 정리 — 맨 위 '전체…' = 전체 필터."""
     slots = (
-        (_DASH_FILTER_STAFF_KEY, _DASH_FILTER_ALL_STAFF, ("dash_filter_staff_txt", "dash_filter_staff_in_v2", "dash_filter_staff_sb_new")),
-        (_DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ALL_CLIENT, ("dash_filter_client_txt", "dash_filter_client_in_v2", "dash_filter_client_selectbox")),
-        (_DASH_FILTER_ITEM_KEY, _DASH_FILTER_ALL_ITEM, ("dash_filter_item_txt", "dash_filter_item_in_v2", "dash_filter_items_sb_new")),
+        (_DASH_FILTER_STAFF_KEY, _DASH_FILTER_ALL_STAFF, ("dash_filter_staff_sb_v32", "dash_filter_staff_txt", "dash_filter_staff_in_v2", "dash_filter_staff_sb_new")),
+        (_DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ALL_CLIENT, ("dash_filter_client_sb_v32", "dash_filter_client_txt", "dash_filter_client_in_v2", "dash_filter_client_selectbox")),
+        (_DASH_FILTER_ITEM_KEY, _DASH_FILTER_ALL_ITEM, ("dash_filter_item_sb_v32", "dash_filter_item_txt", "dash_filter_item_in_v2", "dash_filter_items_sb_new")),
     )
     if st.session_state.get("_dash_filter_ui_rev") != _DASH_FILTER_UI_REV:
         keep: dict[str, str] = {}
@@ -4787,15 +4797,12 @@ def _dash_prepare_filter_widgets() -> None:
         for k in list(st.session_state.keys()):
             if isinstance(k, str) and k.startswith("dash_filter_"):
                 st.session_state.pop(k, None)
-        for cur_k, _, _ in slots:
-            st.session_state[cur_k] = keep.get(cur_k, "")
+        for cur_k, all_label, _ in slots:
+            st.session_state[cur_k] = keep.get(cur_k) or all_label
         st.session_state["_dash_filter_ui_rev"] = _DASH_FILTER_UI_REV
 
     for k in _DASH_FILTER_LEGACY_POP:
         st.session_state.pop(k, None)
-    for cur_k, all_label, _ in slots:
-        if _dash_norm_filter_input(st.session_state.get(cur_k), all_label) == "":
-            st.session_state[cur_k] = ""
 
 
 def _dash_resolve_staff_filter(raw, opts: list[str]) -> list[str]:
@@ -4836,16 +4843,16 @@ def _dash_resolve_item_filter(raw, opts: list[str]) -> list[str]:
 
 def _dash_top_filter_sig_now() -> tuple:
     return (
-        _dash_norm_filter_input(st.session_state.get(_DASH_FILTER_STAFF_KEY), _DASH_FILTER_ALL_STAFF),
-        _dash_norm_filter_input(st.session_state.get(_DASH_FILTER_CLIENT_KEY), _DASH_FILTER_ALL_CLIENT),
-        _dash_norm_filter_input(st.session_state.get(_DASH_FILTER_ITEM_KEY), _DASH_FILTER_ALL_ITEM),
+        st.session_state.get(_DASH_FILTER_STAFF_KEY),
+        st.session_state.get(_DASH_FILTER_CLIENT_KEY),
+        st.session_state.get(_DASH_FILTER_ITEM_KEY),
         st.session_state.get("dash_filter_start"),
         st.session_state.get("dash_filter_end"),
     )
 
 
-def _dash_inject_filter_input_script() -> None:
-    """상단 검색란: 클릭 시 '전체…' 제거·즉시 입력 (sticky 스크립트 early-return 보완)."""
+def _dash_inject_filter_select_script() -> None:
+    """상단 selectbox: '전체…' 상태에서 클릭 시 입력칸 비우기(▼ 목록·스크롤 유지)."""
     keys_js = json.dumps([_DASH_FILTER_STAFF_KEY, _DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ITEM_KEY])
     all_js = json.dumps([_DASH_FILTER_ALL_STAFF, _DASH_FILTER_ALL_CLIENT, _DASH_FILTER_ALL_ITEM])
     components.html(
@@ -4856,37 +4863,34 @@ def _dash_inject_filter_input_script() -> None:
           var win = window.parent;
           var KEYS = {keys_js};
           var ALL = {all_js};
-          function bindFilterInputs() {{
+          function bindFilterSelects() {{
             for (var i = 0; i < KEYS.length; i++) {{
               var key = KEYS[i];
               var wrap = doc.querySelector('[class*="st-key-' + key + '"]');
               if (!wrap) continue;
-              var inp = wrap.querySelector('input[type="text"], input:not([type])');
-              if (!inp || inp.dataset.dashFilterBound) continue;
-              inp.dataset.dashFilterBound = '1';
+              var inp = wrap.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
+              if (!inp || inp.dataset.dashFilterSelBound) continue;
+              inp.dataset.dashFilterSelBound = '1';
               inp.addEventListener('mousedown', function () {{
                 var v = String(this.value || '').trim();
                 if (ALL.indexOf(v) >= 0) {{
                   this.value = '';
                   try {{ this.dispatchEvent(new Event('input', {{ bubbles: true }})); }} catch (e1) {{}}
-                }} else if (v) {{
-                  var self = this;
-                  setTimeout(function () {{ try {{ self.select(); }} catch (e2) {{}} }}, 0);
                 }}
               }});
               inp.addEventListener('focus', function () {{
                 var v = String(this.value || '').trim();
                 if (ALL.indexOf(v) >= 0) {{
                   this.value = '';
-                  try {{ this.dispatchEvent(new Event('input', {{ bubbles: true }})); }} catch (e3) {{}}
+                  try {{ this.dispatchEvent(new Event('input', {{ bubbles: true }})); }} catch (e2) {{}}
                 }}
               }});
             }}
           }}
-          bindFilterInputs();
-          win.__dashboardBindFilterTextInputs = bindFilterInputs;
-          setTimeout(bindFilterInputs, 120);
-          setTimeout(bindFilterInputs, 600);
+          bindFilterSelects();
+          win.__dashboardBindFilterSelects = bindFilterSelects;
+          setTimeout(bindFilterSelects, 120);
+          setTimeout(bindFilterSelects, 600);
         }})();
         </script>
         """,
@@ -7788,19 +7792,19 @@ def inject_sticky_tabs_script():
             var parentWin = window.parent;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 15; 
-            var STICKY_SCRIPT_VER_IPAD = 40; /* iPad: 검색창 방해 스크롤/포커스 족쇄 제거 */
+            var STICKY_SCRIPT_VER_MAC = 16; 
+            var STICKY_SCRIPT_VER_IPAD = 41; /* iPad: 검색창 방해 스크롤/포커스 족쇄 제거 */
             var DASH_FILTER_ALL_LABELS = ['전체 담당자', '전체 거래처', '전체 품목'];
-            var DASH_FILTER_TEXT_KEYS = ['dash_filter_staff_txt', 'dash_filter_client_txt', 'dash_filter_item_txt'];
+            var DASH_FILTER_TEXT_KEYS = ['dash_filter_staff_sb_v32', 'dash_filter_client_sb_v32', 'dash_filter_item_sb_v32'];
             function bindDashboardFilterTextInputs() {
-                if (typeof parentWin.__dashboardBindFilterTextInputs === 'function') {
-                    try { parentWin.__dashboardBindFilterTextInputs(); return; } catch (e0) {}
+                if (typeof parentWin.__dashboardBindFilterSelects === 'function') {
+                    try { parentWin.__dashboardBindFilterSelects(); return; } catch (e0) {}
                 }
                 for (var i = 0; i < DASH_FILTER_TEXT_KEYS.length; i++) {
                     var key = DASH_FILTER_TEXT_KEYS[i];
                     var wrap = parentDoc.querySelector('[class*="st-key-' + key + '"]');
                     if (!wrap) continue;
-                    var inp = wrap.querySelector('input[type="text"], input:not([type])');
+                    var inp = wrap.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
                     if (!inp || inp.__dashFilterTextBound) continue;
                     inp.__dashFilterTextBound = true;
                     inp.addEventListener('mousedown', function() {
@@ -7808,9 +7812,6 @@ def inject_sticky_tabs_script():
                         if (DASH_FILTER_ALL_LABELS.indexOf(v) >= 0) {
                             this.value = '';
                             try { this.dispatchEvent(new Event('input', { bubbles: true })); } catch (eIn) {}
-                        } else if (v) {
-                            var self = this;
-                            setTimeout(function() { try { self.select(); } catch (eSel) {} }, 0);
                         }
                     });
                     inp.addEventListener('focus', function() {
@@ -10444,13 +10445,16 @@ if not full_df.empty:
             st.session_state["_dash_staff_opts_list"] = _dash_staff_opts_from(df_base_opts)
         _staff_opts = list(st.session_state.get("_dash_staff_opts_list") or [])
         _dash_prepare_filter_widgets()
-        _staff_in = fc3.text_input(
+        _staff_opts_with_all = [_DASH_FILTER_ALL_STAFF] + _staff_opts
+        _staff_cur = st.session_state.get(_DASH_FILTER_STAFF_KEY)
+        if _staff_cur not in _staff_opts_with_all:
+            st.session_state[_DASH_FILTER_STAFF_KEY] = _DASH_FILTER_ALL_STAFF
+        _staff_picked = fc3.selectbox(
             "👤 담당자",
+            options=_staff_opts_with_all,
             key=_DASH_FILTER_STAFF_KEY,
-            placeholder="",
-            help="비우면 전체 담당자 · 클릭 후 바로 입력",
         )
-        selected_staff = _dash_resolve_staff_filter(_staff_in, _staff_opts)
+        selected_staff = [] if _staff_picked == _DASH_FILTER_ALL_STAFF else [_staff_picked]
         # 구 리스트 키와 동기화(다른 로직 호환, 위젯 키는 건드리지 않음)
         st.session_state["dash_filter_staff"] = list(selected_staff)
         df_staff_for_opts = (
@@ -10477,13 +10481,15 @@ if not full_df.empty:
             }
             if _ind_clients:
                 all_clients = sorted(set(all_clients) | _ind_clients)
-        _client_in = fc4.text_input(
+        client_options_with_all = [_DASH_FILTER_ALL_CLIENT] + all_clients
+        _client_cur = st.session_state.get(_DASH_FILTER_CLIENT_KEY)
+        if _client_cur not in client_options_with_all:
+            st.session_state[_DASH_FILTER_CLIENT_KEY] = _DASH_FILTER_ALL_CLIENT
+        selected_client = fc4.selectbox(
             "🏢 거래처",
+            options=client_options_with_all,
             key=_DASH_FILTER_CLIENT_KEY,
-            placeholder="",
-            help="비우면 전체 거래처 · 클릭 후 바로 입력",
         )
-        selected_client = _dash_resolve_client_filter(_client_in, all_clients)
         st.session_state["dash_filter_client"] = selected_client
         df_client_for_opts = (
             filter_df_by_selected_client(df_staff_for_opts, selected_client)
@@ -10501,17 +10507,20 @@ if not full_df.empty:
                     sorted(df_client_for_opts["품목명"].astype(str).unique())
                 )
         available_items = list(st.session_state.get("_dash_item_opts_tuple", ()))
-        _item_in = fc5.text_input(
+        _item_opts = [_DASH_FILTER_ALL_ITEM] + available_items
+        _item_cur = st.session_state.get(_DASH_FILTER_ITEM_KEY)
+        if _item_cur not in _item_opts:
+            st.session_state[_DASH_FILTER_ITEM_KEY] = _DASH_FILTER_ALL_ITEM
+        _item_picked = fc5.selectbox(
             "📦 품목명",
+            options=_item_opts,
             key=_DASH_FILTER_ITEM_KEY,
-            placeholder="",
-            help="비우면 전체 품목 · 클릭 후 바로 입력",
         )
-        selected_item = _dash_resolve_item_filter(_item_in, available_items)
+        selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
-        _dash_inject_filter_input_script()
-        st.caption("🔍 검색 v31c · 클릭 후 입력 · 비우면 전체 (▼ 드롭다운 없음)")
-        dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · 빈칸=전체")
+        _dash_inject_filter_select_script()
+        st.caption("🔍 검색 v31d · ▼ 목록 스크롤 · 맨 위=전체 · 클릭 시 바로 입력")
+        dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · selectbox+스크롤")
 
         df_base = df_base_opts
         df_staff_filtered = (
