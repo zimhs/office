@@ -4754,7 +4754,7 @@ def _dash_is_wl_widget_key(key: str) -> bool:
 _DASH_FILTER_ALL_STAFF = "전체 담당자"
 _DASH_FILTER_ALL_CLIENT = "전체 거래처"
 _DASH_FILTER_ALL_ITEM = "전체 품목"
-_DASH_FILTER_UI_REV = "2026-08-31f"
+_DASH_FILTER_UI_REV = "2026-08-31g"
 _DASH_FILTER_STAFF_KEY = "dash_filter_staff_sb_v32"
 _DASH_FILTER_CLIENT_KEY = "dash_filter_client_sb_v32"
 _DASH_FILTER_ITEM_KEY = "dash_filter_item_sb_v32"
@@ -4805,28 +4805,43 @@ def _dash_prepare_filter_widgets() -> None:
         st.session_state.pop(k, None)
 
 
-def _dash_reset_all_filters() -> None:
-    """담당자·거래처·품목 → 전체… (한 칸 지울 때 세 칸 모두 초기화)."""
-    st.session_state[_DASH_FILTER_STAFF_KEY] = _DASH_FILTER_ALL_STAFF
-    st.session_state[_DASH_FILTER_CLIENT_KEY] = _DASH_FILTER_ALL_CLIENT
-    st.session_state[_DASH_FILTER_ITEM_KEY] = _DASH_FILTER_ALL_ITEM
-    st.session_state["dash_filter_staff"] = []
-    st.session_state["dash_filter_client"] = _DASH_FILTER_ALL_CLIENT
-    st.session_state["dash_filter_items"] = []
-    for k in (
-        "_dash_client_opts_sig",
-        "_dash_item_opts_sig",
-        "_dash_client_opts_tuple",
-        "_dash_item_opts_tuple",
-    ):
-        st.session_state.pop(k, None)
+def _dash_clear_one_filter(changed_key: str) -> None:
+    """지운 칸만 '전체…' — 세 칸 동시 초기화로 인한 대량 로딩 방지."""
+    if changed_key == _DASH_FILTER_STAFF_KEY:
+        st.session_state[_DASH_FILTER_STAFF_KEY] = _DASH_FILTER_ALL_STAFF
+        st.session_state["dash_filter_staff"] = []
+        for k in (
+            "_dash_client_opts_sig",
+            "_dash_item_opts_sig",
+            "_dash_client_opts_tuple",
+            "_dash_item_opts_tuple",
+        ):
+            st.session_state.pop(k, None)
+    elif changed_key == _DASH_FILTER_CLIENT_KEY:
+        st.session_state[_DASH_FILTER_CLIENT_KEY] = _DASH_FILTER_ALL_CLIENT
+        st.session_state["dash_filter_client"] = _DASH_FILTER_ALL_CLIENT
+        for k in ("_dash_item_opts_sig", "_dash_item_opts_tuple"):
+            st.session_state.pop(k, None)
+    elif changed_key == _DASH_FILTER_ITEM_KEY:
+        st.session_state[_DASH_FILTER_ITEM_KEY] = _DASH_FILTER_ALL_ITEM
+        st.session_state["dash_filter_items"] = []
 
 
-def _dash_consume_filter_reset_cookie() -> None:
+def _dash_consume_filter_clear_cookie() -> None:
     try:
         cookies = getattr(st.context, "cookies", None)
-        if cookies and str(cookies.get("dash_filter_reset_all", "")) == "1":
-            _dash_reset_all_filters()
+        if not cookies:
+            return
+        raw = cookies.get("dash_filter_clear")
+        if not raw:
+            return
+        key = str(raw).strip()
+        if key in (
+            _DASH_FILTER_STAFF_KEY,
+            _DASH_FILTER_CLIENT_KEY,
+            _DASH_FILTER_ITEM_KEY,
+        ):
+            _dash_clear_one_filter(key)
     except Exception:
         pass
 
@@ -4878,7 +4893,7 @@ def _dash_top_filter_sig_now() -> tuple:
 
 
 def _dash_inject_filter_select_script() -> None:
-    """selectbox: 전체… 클릭 시 입력만 비우기 · 실제 값을 지울 때만 세 칸 모두 전체…"""
+    """selectbox: 전체… 클릭 시 입력만 비우기 · 실제 값 지우면 해당 칸만 전체…"""
     keys_js = json.dumps([_DASH_FILTER_STAFF_KEY, _DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ITEM_KEY])
     all_js = json.dumps([_DASH_FILTER_ALL_STAFF, _DASH_FILTER_ALL_CLIENT, _DASH_FILTER_ALL_ITEM])
     components.html(
@@ -4889,29 +4904,27 @@ def _dash_inject_filter_select_script() -> None:
           var win = window.parent;
           var KEYS = {keys_js};
           var ALL = {all_js};
-          function clickResetBtn() {{
-            var btn = doc.querySelector('[class*="st-key-_dash_filter_reset_all_btn"] button');
+          function clickClearRerunBtn() {{
+            var btn = doc.querySelector('[class*="st-key-_dash_filter_clear_rerun_btn"] button');
             if (btn) try {{ btn.click(); }} catch (e0) {{}}
           }}
-          function applyAllLabelsDom() {{
-            for (var j = 0; j < KEYS.length; j++) {{
-              var w = doc.querySelector('[class*="st-key-' + KEYS[j] + '"]');
-              if (!w) continue;
-              var inp2 = w.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
-              if (inp2) {{
-                inp2.value = ALL[j];
-                try {{ inp2.dispatchEvent(new Event('input', {{ bubbles: true }})); }} catch (e1) {{}}
-              }}
+          function onFilterFieldEmptied(fieldKey, allLabel) {{
+            try {{
+              doc.cookie = 'dash_filter_clear=' + encodeURIComponent(fieldKey) + '; path=/; max-age=15; SameSite=Lax';
+            }} catch (e2) {{}}
+            var w = doc.querySelector('[class*="st-key-' + fieldKey + '"]');
+            if (!w) return;
+            var inp2 = w.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
+            if (inp2) {{
+              inp2.value = allLabel;
+              inp2.dataset.dashFilterPrev = allLabel;
             }}
-          }}
-          function onFilterEmptied() {{
-            try {{ doc.cookie = 'dash_filter_reset_all=1; path=/; max-age=15; SameSite=Lax'; }} catch (e2) {{}}
-            applyAllLabelsDom();
-            clickResetBtn();
+            clickClearRerunBtn();
           }}
           function bindFilterSelects() {{
             for (var i = 0; i < KEYS.length; i++) {{
               var key = KEYS[i];
+              var allLabel = ALL[i];
               var wrap = doc.querySelector('[class*="st-key-' + key + '"]');
               if (!wrap) continue;
               var inp = wrap.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
@@ -4934,12 +4947,14 @@ def _dash_inject_filter_select_script() -> None:
                   this.value = '';
                 }}
               }});
-              inp.addEventListener('input', function () {{
-                var v = String(this.value || '').trim();
-                var prev = String(this.dataset.dashFilterPrev || '').trim();
-                if (!v && prev && !isAllLabel(prev)) onFilterEmptied();
-                if (v) this.dataset.dashFilterPrev = v;
-              }});
+              (function (fieldKey, fieldAll) {{
+                inp.addEventListener('input', function () {{
+                  var v = String(this.value || '').trim();
+                  var prev = String(this.dataset.dashFilterPrev || '').trim();
+                  if (!v && prev && !isAllLabel(prev)) onFilterFieldEmptied(fieldKey, fieldAll);
+                  if (v) this.dataset.dashFilterPrev = v;
+                }});
+              }})(key, allLabel);
               inp.addEventListener('change', function () {{
                 var v = String(this.value || '').trim();
                 if (v) this.dataset.dashFilterPrev = v;
@@ -10482,17 +10497,13 @@ if not full_df.empty:
         st.markdown("<div id='sticky-marker' style='display:none;'></div>", unsafe_allow_html=True)
         st.markdown(
             """<style>
-            div[class*="st-key-_dash_filter_reset_all_btn"] {
+            div[class*="st-key-_dash_filter_clear_rerun_btn"] {
               display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important;
             }
             </style>""",
             unsafe_allow_html=True,
         )
-        st.button(
-            "필터전체초기화",
-            key="_dash_filter_reset_all_btn",
-            on_click=_dash_reset_all_filters,
-        )
+        st.button("필터지우기적용", key="_dash_filter_clear_rerun_btn")
         fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1.15, 1.35, 1.15])
         start_date = fc1.text_input("📅 조회 시작", "200101", key="dash_filter_start")
         end_date = fc2.text_input("📅 조회 종료", "261231", key="dash_filter_end")
@@ -10516,7 +10527,7 @@ if not full_df.empty:
             st.session_state["_dash_staff_opts_sig"] = _staff_opts_sig
             st.session_state["_dash_staff_opts_list"] = _dash_staff_opts_from(df_base_opts)
         _staff_opts = list(st.session_state.get("_dash_staff_opts_list") or [])
-        _dash_consume_filter_reset_cookie()
+        _dash_consume_filter_clear_cookie()
         _dash_prepare_filter_widgets()
         _staff_opts_with_all = [_DASH_FILTER_ALL_STAFF] + _staff_opts
         _staff_cur = st.session_state.get(_DASH_FILTER_STAFF_KEY)
@@ -10592,8 +10603,8 @@ if not full_df.empty:
         selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
         st.session_state["dash_filter_items"] = list(selected_item)
         _dash_inject_filter_select_script()
-        st.caption("🔍 검색 v31f · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 세 칸 전체")
-        dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · 값적용·지우면전체3칸")
+        st.caption("🔍 검색 v31g · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
+        dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · 지우면해당칸만전체")
 
         df_base = df_base_opts
         df_staff_filtered = (
