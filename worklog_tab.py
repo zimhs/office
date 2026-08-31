@@ -4168,10 +4168,14 @@ def _render_worklog_input_panel(selected: date) -> None:
 
 def _dashboard_top_filter_sig() -> tuple:
     """상단 고정바 담당자·거래처·품목·기간 시그니처 (app.py 키와 동일)."""
+    def _norm(raw, all_label: str) -> str:
+        s = str(raw or "").strip()
+        return "" if not s or s == all_label else s
+
     return (
-        st.session_state.get("dash_filter_staff_sb_new"),
-        st.session_state.get("dash_filter_client_selectbox"),
-        st.session_state.get("dash_filter_items_sb_new"),
+        _norm(st.session_state.get("dash_filter_staff_in_v2"), "전체 담당자"),
+        _norm(st.session_state.get("dash_filter_client_in_v2"), "전체 거래처"),
+        _norm(st.session_state.get("dash_filter_item_in_v2"), "전체 품목"),
         st.session_state.get("dash_filter_start"),
         st.session_state.get("dash_filter_end"),
     )
