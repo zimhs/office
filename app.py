@@ -5139,6 +5139,15 @@ def _dash_inject_filter_select_script() -> None:
     )
 
 
+def _dash_inject_filter_select_script_for_run() -> None:
+    """필터 select JS — Mac: fragment rerun마다 주입. Cloud: delegation 1회면 iframe 생략."""
+    if _is_streamlit_cloud():
+        if st.session_state.get("_dash_filter_bind_injected_ver") == _DASH_FILTER_BIND_VER:
+            return
+        st.session_state["_dash_filter_bind_injected_ver"] = _DASH_FILTER_BIND_VER
+    _dash_inject_filter_select_script()
+
+
 def _dash_note_filter_change_for_heavy_tabs() -> bool:
     """상단 필터가 바뀐 run이면 True. heavy 탭 defer 판단용 플래그도 갱신."""
     sig = _dash_top_filter_sig_now()
@@ -5221,17 +5230,10 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """heavy 탭 defer — Cloud 9~11은 eager(항상 펼침). Mac: 시장조사만 lazy.
+    """heavy 탭 defer — Mac: 시장조사(9). Cloud: 업무일지·시장조사·공문(9~11) lazy.
 
-    Cloud 부트: 9~11 탭 데이터를 미리 렌더. Drive sync는 smart·2pass로 가속.
+    활성 탭·「화면 불러오기」·탭 클릭 remount 시에만 full render.
     """
-    if _dash_cloud_merged_tabs() and tab_idx in (
-        _DASH_TAB_WORKLOG,
-        _DASH_TAB_MARKET,
-        _DASH_TAB_LETTER,
-    ):
-        return False
-
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
         mounted[tab_idx] = True
@@ -9946,11 +9948,16 @@ if (
     st.session_state["_drive_copy_boot_sync_done"] = True
     st.session_state["_drive_deferred_sync_pending"] = True
 elif not st.session_state.get("_drive_copy_boot_sync_done") and sync_dashboard_copy_on_boot is not None:
+    _cloud_2pass_sync = (
+        _on_cloud_boot
+        and st.session_state.get("_drive_deferred_sync_ran")
+        and not st.session_state.get("_drive_copy_boot_sync_done")
+    )
     try:
         _drive_autoload_res = sync_dashboard_copy_on_boot(
             CACHE_DIR,
             force_refresh=not _on_cloud_boot,
-            include_worklog=True,
+            include_worklog=not _cloud_2pass_sync,
         )
         st.session_state["_drive_copy_boot_sync_done"] = True
         if _on_cloud_boot:
@@ -10780,7 +10787,12 @@ def _dash_filter_and_tabs_fragment() -> None:
             selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
             st.session_state["dash_filter_items"] = list(selected_item)
             st.caption("🔍 검색 v31q · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
-            dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · filterReinject{_DASH_FILTER_BIND_VER}")
+            if _is_streamlit_cloud():
+                dev_caption(
+                    f"Cloud perf · lazy9-11 · filterReinject1x · 2passWLdefer · bind{_DASH_FILTER_BIND_VER}"
+                )
+            else:
+                dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · filterReinject{_DASH_FILTER_BIND_VER}")
 
             df_base = df_base_opts
             df_staff_filtered = (
@@ -11027,7 +11039,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
     _STICKY_INJECT_VER = 40
-    _ACTIVE_TAB_INJECT_VER = 2
+    _ACTIVE_TAB_INJECT_VER = 3
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
         inject_sticky_tabs_script()
         inject_ipad_plotly_controls()
@@ -11036,7 +11048,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.session_state["_ipad_sticky_ver"] = 30
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         if _DASH_CLOUD_TABS:
-            inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=())
+            inject_dash_active_tab_cookie_script(min_tabs=12, heavy_indices=(9, 10, 11))
         else:
             inject_dash_active_tab_cookie_script(min_tabs=10, heavy_indices=(9,))
         st.session_state["_dash_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
@@ -14210,13 +14222,13 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.error(f"공문 탭 오류: {_pi_err}")
                 st.info("다른 탭은 정상 이용 가능합니다.")
 
-    _dash_inject_filter_select_script()
+    _dash_inject_filter_select_script_for_run()
 
 
 _dash_filter_and_tabs_fragment()
 
 
-# Cloud 2pass 부트: 1pass UI 표시 후 Drive smart sync (9~11 eager 유지)
+# Cloud 2pass 부트: 1pass UI 표시 후 Drive smart sync (heavy 9~11 lazy)
 if st.session_state.pop("_drive_deferred_sync_pending", False):
     st.session_state.pop("_drive_copy_boot_sync_done", None)
     st.session_state["_drive_deferred_sync_ran"] = True
