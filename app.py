@@ -4747,13 +4747,17 @@ def _dash_is_wl_widget_key(key: str) -> bool:
 _DASH_FILTER_ALL_STAFF = "전체 담당자"
 _DASH_FILTER_ALL_CLIENT = "전체 거래처"
 _DASH_FILTER_ALL_ITEM = "전체 품목"
-_DASH_FILTER_STAFF_KEY = "dash_filter_staff_in_v2"
-_DASH_FILTER_CLIENT_KEY = "dash_filter_client_in_v2"
-_DASH_FILTER_ITEM_KEY = "dash_filter_item_in_v2"
-_DASH_FILTER_LEGACY_KEYS = (
-    ("dash_filter_staff_sb_new", _DASH_FILTER_STAFF_KEY, _DASH_FILTER_ALL_STAFF),
-    ("dash_filter_client_selectbox", _DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ALL_CLIENT),
-    ("dash_filter_items_sb_new", _DASH_FILTER_ITEM_KEY, _DASH_FILTER_ALL_ITEM),
+_DASH_FILTER_UI_REV = "2026-08-31c"
+_DASH_FILTER_STAFF_KEY = "dash_filter_staff_txt"
+_DASH_FILTER_CLIENT_KEY = "dash_filter_client_txt"
+_DASH_FILTER_ITEM_KEY = "dash_filter_item_txt"
+_DASH_FILTER_LEGACY_POP = (
+    "dash_filter_staff_sb_new",
+    "dash_filter_staff_in_v2",
+    "dash_filter_client_selectbox",
+    "dash_filter_client_in_v2",
+    "dash_filter_items_sb_new",
+    "dash_filter_item_in_v2",
 )
 
 
@@ -4764,21 +4768,34 @@ def _dash_norm_filter_input(raw, all_label: str) -> str:
     return s
 
 
-def _dash_migrate_top_filter_widgets() -> None:
-    """selectbox→text_input 위젯 타입 충돌 방지: v2 키로 1회 이전."""
-    if st.session_state.get("_dash_filter_widget_v2_ready"):
-        return
-    for old_k, new_k, all_label in _DASH_FILTER_LEGACY_KEYS:
-        if new_k not in st.session_state:
-            st.session_state[new_k] = _dash_norm_filter_input(st.session_state.get(old_k), all_label)
-        st.session_state.pop(old_k, None)
-    st.session_state["_dash_filter_widget_v2_ready"] = True
+def _dash_prepare_filter_widgets() -> None:
+    """구 selectbox 세션·이전 키 제거 — 빈칸=전체, 화면에 '전체…' 값 없음."""
+    slots = (
+        (_DASH_FILTER_STAFF_KEY, _DASH_FILTER_ALL_STAFF, ("dash_filter_staff_txt", "dash_filter_staff_in_v2", "dash_filter_staff_sb_new")),
+        (_DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ALL_CLIENT, ("dash_filter_client_txt", "dash_filter_client_in_v2", "dash_filter_client_selectbox")),
+        (_DASH_FILTER_ITEM_KEY, _DASH_FILTER_ALL_ITEM, ("dash_filter_item_txt", "dash_filter_item_in_v2", "dash_filter_items_sb_new")),
+    )
+    if st.session_state.get("_dash_filter_ui_rev") != _DASH_FILTER_UI_REV:
+        keep: dict[str, str] = {}
+        for cur_k, all_label, keys in slots:
+            for k in keys:
+                if k == cur_k:
+                    continue
+                v = _dash_norm_filter_input(st.session_state.get(k), all_label)
+                if v and cur_k not in keep:
+                    keep[cur_k] = v
+        for k in list(st.session_state.keys()):
+            if isinstance(k, str) and k.startswith("dash_filter_"):
+                st.session_state.pop(k, None)
+        for cur_k, _, _ in slots:
+            st.session_state[cur_k] = keep.get(cur_k, "")
+        st.session_state["_dash_filter_ui_rev"] = _DASH_FILTER_UI_REV
 
-
-def _dash_seed_filter_text_key(key: str, all_label: str) -> None:
-    cur = st.session_state.get(key)
-    if cur is None or str(cur).strip() == all_label:
-        st.session_state[key] = ""
+    for k in _DASH_FILTER_LEGACY_POP:
+        st.session_state.pop(k, None)
+    for cur_k, all_label, _ in slots:
+        if _dash_norm_filter_input(st.session_state.get(cur_k), all_label) == "":
+            st.session_state[cur_k] = ""
 
 
 def _dash_resolve_staff_filter(raw, opts: list[str]) -> list[str]:
@@ -7771,10 +7788,10 @@ def inject_sticky_tabs_script():
             var parentWin = window.parent;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 14; 
-            var STICKY_SCRIPT_VER_IPAD = 39; /* iPad: 검색창 방해 스크롤/포커스 족쇄 제거 */
+            var STICKY_SCRIPT_VER_MAC = 15; 
+            var STICKY_SCRIPT_VER_IPAD = 40; /* iPad: 검색창 방해 스크롤/포커스 족쇄 제거 */
             var DASH_FILTER_ALL_LABELS = ['전체 담당자', '전체 거래처', '전체 품목'];
-            var DASH_FILTER_TEXT_KEYS = ['dash_filter_staff_in_v2', 'dash_filter_client_in_v2', 'dash_filter_item_in_v2'];
+            var DASH_FILTER_TEXT_KEYS = ['dash_filter_staff_txt', 'dash_filter_client_txt', 'dash_filter_item_txt'];
             function bindDashboardFilterTextInputs() {
                 if (typeof parentWin.__dashboardBindFilterTextInputs === 'function') {
                     try { parentWin.__dashboardBindFilterTextInputs(); return; } catch (e0) {}
@@ -10426,13 +10443,12 @@ if not full_df.empty:
             st.session_state["_dash_staff_opts_sig"] = _staff_opts_sig
             st.session_state["_dash_staff_opts_list"] = _dash_staff_opts_from(df_base_opts)
         _staff_opts = list(st.session_state.get("_dash_staff_opts_list") or [])
-        _dash_migrate_top_filter_widgets()
-        # 👤 담당자 — 빈칸=전체, 클릭 즉시 입력(placeholder)
-        _dash_seed_filter_text_key(_DASH_FILTER_STAFF_KEY, _DASH_FILTER_ALL_STAFF)
+        _dash_prepare_filter_widgets()
         _staff_in = fc3.text_input(
             "👤 담당자",
             key=_DASH_FILTER_STAFF_KEY,
-            placeholder=_DASH_FILTER_ALL_STAFF,
+            placeholder="",
+            help="비우면 전체 담당자 · 클릭 후 바로 입력",
         )
         selected_staff = _dash_resolve_staff_filter(_staff_in, _staff_opts)
         # 구 리스트 키와 동기화(다른 로직 호환, 위젯 키는 건드리지 않음)
@@ -10461,12 +10477,11 @@ if not full_df.empty:
             }
             if _ind_clients:
                 all_clients = sorted(set(all_clients) | _ind_clients)
-        # 🏢 거래처 — 빈칸=전체, 클릭 즉시 입력(placeholder)
-        _dash_seed_filter_text_key(_DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ALL_CLIENT)
         _client_in = fc4.text_input(
             "🏢 거래처",
             key=_DASH_FILTER_CLIENT_KEY,
-            placeholder=_DASH_FILTER_ALL_CLIENT,
+            placeholder="",
+            help="비우면 전체 거래처 · 클릭 후 바로 입력",
         )
         selected_client = _dash_resolve_client_filter(_client_in, all_clients)
         st.session_state["dash_filter_client"] = selected_client
@@ -10486,17 +10501,17 @@ if not full_df.empty:
                     sorted(df_client_for_opts["품목명"].astype(str).unique())
                 )
         available_items = list(st.session_state.get("_dash_item_opts_tuple", ()))
-        # 📦 품목명 — 빈칸=전체, 클릭 즉시 입력(placeholder)
-        _dash_seed_filter_text_key(_DASH_FILTER_ITEM_KEY, _DASH_FILTER_ALL_ITEM)
         _item_in = fc5.text_input(
             "📦 품목명",
             key=_DASH_FILTER_ITEM_KEY,
-            placeholder=_DASH_FILTER_ALL_ITEM,
+            placeholder="",
+            help="비우면 전체 품목 · 클릭 후 바로 입력",
         )
         selected_item = _dash_resolve_item_filter(_item_in, available_items)
         st.session_state["dash_filter_items"] = list(selected_item)
         _dash_inject_filter_input_script()
-        dev_caption("필터 빌드 2026-08-31b · 검색란v2키")
+        st.caption("🔍 검색 v31c · 클릭 후 입력 · 비우면 전체 (▼ 드롭다운 없음)")
+        dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · 빈칸=전체")
 
         df_base = df_base_opts
         df_staff_filtered = (
