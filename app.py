@@ -512,6 +512,8 @@ def inject_custom_css():
                 min-width: max-content !important;
                 padding: 2px 8px 3px 8px !important;
                 font-size: 12px !important;
+                pointer-events: auto !important;
+                cursor: pointer !important;
             }
 
             .dashboard-filter-sticky [role="tablist"]::-webkit-scrollbar,
@@ -5149,7 +5151,7 @@ def _dash_inject_filter_select_script_for_run() -> None:
 
 
 def _dash_inject_sticky_resync_script() -> None:
-    """Cloud/iPad: fragment rerun 후 고정바·spacer 재동기화."""
+    """Cloud: fragment rerun 후 고정바·탭 remount 재동기화."""
     if not _is_streamlit_cloud():
         return
     components.html(
@@ -5158,8 +5160,18 @@ def _dash_inject_sticky_resync_script() -> None:
         (function () {
           var win = window.parent;
           try {
+            if (typeof win.__dashboardFixDuplicateTabs === 'function') {
+              win.__dashboardFixDuplicateTabs(true);
+            }
+            if (typeof win.__dashboardMacScheduleSync === 'function') {
+              win.__dashboardMacScheduleSync(0);
+              win.__dashboardMacScheduleSync(250);
+              return;
+            }
             if (typeof win.__dashboardIpadScheduleSync === 'function') {
+              win.__dashboardIpadFreezeLayout = false;
               win.__dashboardIpadScheduleSync(0);
+              win.__dashboardIpadScheduleSync(300);
               return;
             }
             if (typeof win.__dashboardIpadPin === 'function') {
@@ -8258,8 +8270,40 @@ def inject_sticky_tabs_script():
                 }
                 return inFilter;
             }
+            function findStickyMarker() {
+                var markers = parentDoc.querySelectorAll('#sticky-marker');
+                if (!markers.length) return null;
+                for (var i = markers.length - 1; i >= 0; i--) {
+                    if (markers[i].isConnected) return markers[i];
+                }
+                return markers[markers.length - 1];
+            }
+            function cleanupOrphanStickyFilters() {
+                var markers = parentDoc.querySelectorAll('#sticky-marker');
+                if (markers.length <= 1) return;
+                var i, oldM, oldBox;
+                for (i = 0; i < markers.length - 1; i++) {
+                    oldM = markers[i];
+                    if (!oldM.isConnected) continue;
+                    oldBox = oldM.closest('.dashboard-filter-sticky');
+                    if (!oldBox) continue;
+                    oldBox.classList.remove('dashboard-filter-sticky', 'dashboard-filter-sticky-touch');
+                    oldBox.style.removeProperty('position');
+                    oldBox.style.removeProperty('top');
+                    oldBox.style.removeProperty('left');
+                    oldBox.style.removeProperty('right');
+                    oldBox.style.removeProperty('width');
+                    oldBox.style.removeProperty('max-width');
+                    oldBox.style.removeProperty('z-index');
+                    oldBox.style.removeProperty('transform');
+                }
+                var spacers = parentDoc.querySelectorAll('#' + SPACER_ID);
+                for (i = 0; i < spacers.length - 1; i++) {
+                    try { spacers[i].remove(); } catch (eSp) {}
+                }
+            }
             function findFilterBox() {
-                var marker = parentDoc.getElementById('sticky-marker');
+                var marker = findStickyMarker();
                 if (!marker) return null;
                 return marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') ||
                        marker.closest('div[data-testid="stVerticalBlock"]');
@@ -8452,7 +8496,13 @@ def inject_sticky_tabs_script():
                 return false;
             }
             function ensureSpacer(filterBox) {
-                var spacer = parentDoc.getElementById(SPACER_ID);
+                var spacers = parentDoc.querySelectorAll('#' + SPACER_ID);
+                var spacer = null;
+                var si;
+                for (si = 0; si < spacers.length; si++) {
+                    if (si === spacers.length - 1) spacer = spacers[si];
+                    else { try { spacers[si].remove(); } catch (eRmSp) {} }
+                }
                 if (!spacer) {
                     spacer = parentDoc.createElement('div');
                     spacer.id = SPACER_ID;
@@ -8522,6 +8572,7 @@ def inject_sticky_tabs_script():
             function applyIpad0804Hack() {
                 if (parentWin.__dashboardIpadFreezeLayout) return;
                 if (isIpadFilterLocked()) return;
+                cleanupOrphanStickyFilters();
                 cleanupIpadPortal();
                 var dropOpen = false;
                 try { dropOpen = isFilterDropdownOpen(); } catch (eDo) {}
@@ -8573,7 +8624,15 @@ def inject_sticky_tabs_script():
                     labels.push((origTabs[i].textContent || '').replace(/\\s+/g, ' ').trim());
                 }
                 var sig = labels.join('|');
-                if (bar.getAttribute('data-sig') !== sig || bar.childNodes.length !== origTabs.length) {
+                var listId = list.getAttribute('data-dashboard-tablist-id');
+                if (!listId) {
+                    listId = 'tl-' + Date.now();
+                    list.setAttribute('data-dashboard-tablist-id', listId);
+                }
+                if (bar.getAttribute('data-bound-list-id') !== listId
+                    || bar.getAttribute('data-sig') !== sig
+                    || bar.childNodes.length !== origTabs.length) {
+                    bar.setAttribute('data-bound-list-id', listId);
                     bar.setAttribute('data-sig', sig);
                     bar.innerHTML = '';
                     for (i = 0; i < origTabs.length; i++) {
@@ -8723,6 +8782,7 @@ def inject_sticky_tabs_script():
             }
 
             function syncFixedBar() {
+                cleanupOrphanStickyFilters();
                 try { fixDuplicateMainTabs(false); } catch (eSf) {}
                 if (touchMode) {
                     if (isFilterDropdownOpen()) return;
@@ -8809,6 +8869,7 @@ def inject_sticky_tabs_script():
             }
             function scheduleSync(ms) {
                 try {
+                    cleanupOrphanStickyFilters();
                     if (touchMode && (parentWin.__dashboardIpadFreezeLayout || isIpadFilterLocked())) return;
                     var all = collectMainTabLists();
                     if (all.length > 1) {
@@ -10819,7 +10880,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.caption("🔍 검색 v31q · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
             if _is_streamlit_cloud():
                 dev_caption(
-                    f"Cloud · sticky · lazy9-11 · mountedKeep · bind{_DASH_FILTER_BIND_VER}"
+                    f"Cloud · sticky · tabNav · lazy9-11 · mountedKeep · bind{_DASH_FILTER_BIND_VER}"
                 )
             else:
                 dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · filterReinject{_DASH_FILTER_BIND_VER}")
@@ -11068,7 +11129,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 41
+    _STICKY_INJECT_VER = 42
     _ACTIVE_TAB_INJECT_VER = 3
     _CLOUD_ACTIVE_TAB_INJECT_VER = 5
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
