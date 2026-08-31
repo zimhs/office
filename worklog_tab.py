@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-31f · 미리보기칸넘침복구"
+_WL_UI_BUILD = "2026-08-31g · 미리보기칸px한도"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -445,7 +445,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v20",
+    "worklog_entry_lines_v21",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -900,24 +900,69 @@ def _set_body_font(cell) -> None:
 # 💡 [핵심] 글자 넘침 현상 원천 차단 (엄격한 max_units 설정)
 # =====================================================================
 # 14pt 바탕체 기준 내용칸 한 줄 한도 (한글 1자=2단위). 자동 다음칸 이동 임계값.
-@lru_cache(maxsize=1)
-def _content_line_units() -> int:
-    """원본 G:X 병합 폭 — 14pt 바탕체 한 줄에 맞춘 단위(반각=1, 한글=2)."""
-    fallback = 68
-    if load_workbook is None or not os.path.exists(WORKLOG_TEMPLATE):
-        return fallback
+def _excel_width_to_px(width: float) -> int:
+    """엑셀 열 너비 → px (화면 100% 기준, 원본과 동일 체감)."""
     try:
-        wb = load_workbook(WORKLOG_TEMPLATE, data_only=False)
+        w = float(width)
+    except (TypeError, ValueError):
+        w = 8.43
+    return max(10, int(w * 7 + 5))
+
+
+def _content_merge_width_px(path: str | None = None, *, layout_scale: float = 1.0) -> int:
+    """G:X 병합 내용칸 가로 px (layout_scale=인쇄미리보기 배율)."""
+    path = path or WORKLOG_TEMPLATE
+    ls = float(layout_scale) if layout_scale and layout_scale > 0 else 1.0
+    if load_workbook is None or not os.path.exists(path):
+        return max(10, int(round(468 * ls)))
+    try:
+        wb = load_workbook(path, data_only=False)
         ws = wb.active
         total = sum(
-            _excel_col_width(ws, c)
+            max(1, int(round(_excel_width_to_px(_excel_col_width(ws, c)) * ls)))
             for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
         )
         wb.close()
-        units = int(total * (11 / 14) * 1.02)  # 템플릿 열폭 → 14pt 실측 (2% 여유)
-        return max(60, min(units, 70))
+        return max(10, total)
     except Exception:
+        return max(10, int(round(468 * ls)))
+
+
+def _units_from_cell_px(cell_px: float, *, font_pt: float, layout_scale: float) -> int:
+    """셀 px → 내용 한 줄 단위(한글=2). 인쇄/미리보기 px에 맞춘 보수적 한도."""
+    ls = float(layout_scale) if layout_scale and layout_scale > 0 else 1.0
+    fpx = float(font_pt) * ls * 96.0 / 72.0
+    char_px = max(fpx * 0.90, 8.0)
+    max_chars = max(1, int(float(cell_px) / char_px * 0.90))
+    return max(52, min(max_chars * 2, 64))
+
+
+@lru_cache(maxsize=1)
+def _content_line_units() -> int:
+    """G:X 병합칸 — 인쇄(69%)·화면미리보기(65%) px 중 좁은 쪽 기준."""
+    fallback = 58
+    path = WORKLOG_TEMPLATE
+    if not os.path.exists(path):
         return fallback
+    ls_print = _excel_print_scale(path) or 0.69
+    px_print = _content_merge_width_px(path, layout_scale=ls_print)
+    px_screen = _content_merge_width_px(path, layout_scale=1.0) * float(_WL_PREVIEW_SCALE)
+    cell_px = min(px_print, px_screen)
+    ls_eff = ls_print if cell_px == px_print else _WL_PREVIEW_SCALE
+    return _units_from_cell_px(cell_px, font_pt=_WL_BODY_FONT_PT, layout_scale=ls_eff)
+
+
+def _content_line_units_for_layout(path: str, layout_scale: float) -> int:
+    """workbook_to_html용 — layout_scale·화면 zoom 반영 한 줄 단위."""
+    ls = float(layout_scale or 1.0)
+    if abs(ls - 1.0) < 0.01:
+        cell_px = _content_merge_width_px(path, layout_scale=1.0) * float(_WL_PREVIEW_SCALE)
+        ls_eff = float(_WL_PREVIEW_SCALE)
+    else:
+        cell_px = _content_merge_width_px(path, layout_scale=ls)
+        ls_eff = ls
+    return _units_from_cell_px(cell_px, font_pt=_WL_BODY_FONT_PT, layout_scale=ls_eff)
+
 
 @lru_cache(maxsize=1)
 def _client_line_units() -> int: return 16  # 👈 한글 8자(16 단위)로 증가
@@ -1925,12 +1970,6 @@ def _wl_cell_font(cell, *, is_content: bool, is_client: bool, is_body_d: bool, i
         fsize_pt = 11.0
     return stack, fsize_pt
 
-def _excel_width_to_px(width: float) -> int:
-    """엑셀 열 너비 → px (화면 100% 기준, 원본과 동일 체감)."""
-    try: w = float(width)
-    except (TypeError, ValueError): w = 8.43
-    return max(10, int(w * 7 + 5))
-
 def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
     if load_workbook is None or not path or not os.path.exists(path): return 900, 1312
     try:
@@ -2107,8 +2146,9 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
             if text in (_WL_SOFT_BLANK, "\u00a0"): text = ""
             elif is_content and text.strip() == "" and text != "": text = ""
             elif is_content and text.strip():
-                if _display_units(text) > _content_line_units():
-                    text, _ = _fit_by_units(text, _content_line_units())
+                max_u = _content_line_units_for_layout(path, ls)
+                if _display_units(text) > max_u:
+                    text, _ = _fit_by_units(text, max_u)
             elif is_client and text.strip():
                 if _display_units(text) > _client_line_units():
                     text, _ = _fit_by_units(text, _client_line_units())
@@ -2130,6 +2170,8 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
             c0 = c - WL_MIN_COL
             span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
             width_css = f"width:{span_w}px;min-width:{span_w}px;max-width:{span_w}px;" if span_w else ""
+            if is_content or is_client:
+                width_css += "max-width:0;overflow:hidden;"
 
             if is_vertical:
                 pad_css = "padding:4px 1px;"
@@ -2451,7 +2493,7 @@ def _pack_entries_to_cells(d: date, entries: list[dict], next_day: list[str] | N
     for t_list, t_rows in ((next_day, WL_NEXT_ROWS), (notes, WL_NOTE_ROWS)):
         chunks = _panel_lines_to_cells(t_list, max_u)
         for i, r in enumerate(t_rows): cells[f"D{r}"] = chunks[i] if i < len(chunks) else ""
-    return cells
+    return _spill_all_content(cells)
 
 def _entries_from_cells(cells: dict) -> tuple[list[tuple[str, str]], list[str], list[str]]:
     rows = [_summary_row_from_entry(e) for e in _grouped_entries_from_cells(cells)]
