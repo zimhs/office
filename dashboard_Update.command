@@ -1,6 +1,6 @@
 #!/bin/bash
 # Mac 로컬 — GitHub 최신 코드 받기 + 서버 재시작
-# 더블클릭: git pull → Stop → Local (8501+8502)
+# 더블클릭: fetch → pull(또는 main 동기화) → Stop → Local (8501+8502)
 export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
 
 ROOT="${HOME}/Desktop/dashboard"
@@ -23,6 +23,15 @@ if [ ! -d .git ]; then
   exit 1
 fi
 
+_pull_ff_only() {
+  git pull origin main --ff-only >/dev/null 2>&1
+}
+
+_sync_to_origin_main() {
+  osascript -e 'display notification "로컬 git을 GitHub main과 맞춥니다" with title "영업 대시보드"'
+  git reset --hard origin/main >/dev/null 2>&1
+}
+
 osascript -e 'display notification "GitHub에서 최신 코드 받는 중…" with title "영업 대시보드"'
 if ! git fetch origin main 2>&1; then
   osascript -e 'display alert "git fetch 실패" message "인터넷·GitHub 연결을 확인하세요."'
@@ -30,13 +39,35 @@ if ! git fetch origin main 2>&1; then
 fi
 
 BEFORE="$(git rev-parse HEAD 2>/dev/null || echo none)"
-if ! git pull origin main --ff-only 2>&1; then
-  osascript -e 'display alert "git pull 실패" message "로컬 수정과 충돌했을 수 있습니다. 터미널에서 cd ~/Desktop/dashboard && git status 로 확인하세요."'
-  exit 1
+SYNCED_HARD=false
+STASHED=false
+
+if ! _pull_ff_only; then
+  if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]; then
+    if git stash push -u -m "dashboard_Update auto $(date +%Y%m%d-%H%M%S)" >/dev/null 2>&1; then
+      STASHED=true
+    fi
+  fi
+
+  if ! _pull_ff_only; then
+    if ! _sync_to_origin_main; then
+      osascript -e 'display alert "git 동기화 실패" message "터미널에서 cd ~/Desktop/dashboard && git status 를 확인하세요."'
+      exit 1
+    fi
+    SYNCED_HARD=true
+  elif [ "$STASHED" = true ]; then
+    if ! git stash pop >/dev/null 2>&1; then
+      osascript -e 'display notification "로컬 수정은 stash에 보관됨 · git stash list" with title "영업 대시보드"'
+    fi
+  fi
 fi
+
 AFTER="$(git rev-parse HEAD 2>/dev/null || echo none)"
 
-if [ "$BEFORE" = "$AFTER" ]; then
+if [ "$SYNCED_HARD" = true ]; then
+  osascript -e 'display alert "GitHub main과 동기화했습니다" message "로컬 git 커밋/수정은 제거되었을 수 있습니다. 필요하면 터미널에서 git stash list 로 확인하세요."'
+  MSG="GitHub main 동기화 — 서버 재시작"
+elif [ "$BEFORE" = "$AFTER" ]; then
   MSG="이미 최신입니다"
 else
   MSG="코드 갱신됨 — 서버 재시작합니다"
