@@ -5148,6 +5148,32 @@ def _dash_inject_filter_select_script_for_run() -> None:
     _dash_inject_filter_select_script()
 
 
+def _dash_inject_sticky_resync_script() -> None:
+    """Cloud/iPad: fragment rerun 후 고정바·spacer 재동기화."""
+    if not _is_streamlit_cloud():
+        return
+    components.html(
+        """
+        <script>
+        (function () {
+          var win = window.parent;
+          try {
+            if (typeof win.__dashboardIpadScheduleSync === 'function') {
+              win.__dashboardIpadScheduleSync(0);
+              return;
+            }
+            if (typeof win.__dashboardIpadPin === 'function') {
+              win.__dashboardIpadPin();
+            }
+          } catch (e) {}
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def _dash_note_filter_change_for_heavy_tabs() -> bool:
     """상단 필터가 바뀐 run이면 True. heavy 탭 defer 판단용 플래그도 갱신."""
     sig = _dash_top_filter_sig_now()
@@ -10647,11 +10673,10 @@ def _dash_filter_and_tabs_fragment() -> None:
         if pd.notnull(latest_dt_overall):
             latest_update_str = latest_dt_overall.strftime("%Y-%m-%d")
         # ==============================================================
-        # 필터 영역 — Cloud: sticky 미적용(일반 스크롤). Mac: inject_sticky_tabs_script
-        # 맥·iPad 공통: 선택 즉시 반영. sticky 재기동 억제로 로딩감 완화.
+        # 필터 영역 (상단 고정은 inject_sticky_tabs_script에서 처리)
+        # 맥·iPad·Cloud 공통: 선택 즉시 반영. sticky 재기동 억제로 로딩감 완화.
         # ==============================================================
-        if not _is_streamlit_cloud():
-            st.markdown("<div id='dashboard-sticky-spacer'></div>", unsafe_allow_html=True)
+        st.markdown("<div id='dashboard-sticky-spacer'></div>", unsafe_allow_html=True)
         try:
             filter_container = st.container(border=True)
         except TypeError:
@@ -10680,8 +10705,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 '<div id="dashboard-filter-bar" class="notranslate" translate="no" lang="ko"></div>',
                 unsafe_allow_html=True,
             )
-            if not _is_streamlit_cloud():
-                st.markdown("<div id='sticky-marker' style='display:none;'></div>", unsafe_allow_html=True)
+            st.markdown("<div id='sticky-marker' style='display:none;'></div>", unsafe_allow_html=True)
             st.markdown(
                 """<style>
                 div[class*="st-key-_dash_filter_clear_rerun_btn"] {
@@ -10795,7 +10819,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.caption("🔍 검색 v31q · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
             if _is_streamlit_cloud():
                 dev_caption(
-                    f"Cloud · noSticky · lazy9-11 · mountedKeep · bind{_DASH_FILTER_BIND_VER}"
+                    f"Cloud · sticky · lazy9-11 · mountedKeep · bind{_DASH_FILTER_BIND_VER}"
                 )
             else:
                 dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · filterReinject{_DASH_FILTER_BIND_VER}")
@@ -11044,12 +11068,11 @@ def _dash_filter_and_tabs_fragment() -> None:
         )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 40
+    _STICKY_INJECT_VER = 41
     _ACTIVE_TAB_INJECT_VER = 3
     _CLOUD_ACTIVE_TAB_INJECT_VER = 5
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
-        if not _is_streamlit_cloud():
-            inject_sticky_tabs_script()
+        inject_sticky_tabs_script()
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
@@ -14234,6 +14257,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.info("다른 탭은 정상 이용 가능합니다.")
 
     _dash_inject_filter_select_script_for_run()
+    if _is_streamlit_cloud():
+        _dash_inject_sticky_resync_script()
 
 
 _dash_filter_and_tabs_fragment()
