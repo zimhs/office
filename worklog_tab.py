@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-31g · 미리보기칸px한도"
+_WL_UI_BUILD = "2026-08-31h · 내용칸72단위복원"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -445,7 +445,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v21",
+    "worklog_entry_lines_v22",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -909,59 +909,9 @@ def _excel_width_to_px(width: float) -> int:
     return max(10, int(w * 7 + 5))
 
 
-def _content_merge_width_px(path: str | None = None, *, layout_scale: float = 1.0) -> int:
-    """G:X 병합 내용칸 가로 px (layout_scale=인쇄미리보기 배율)."""
-    path = path or WORKLOG_TEMPLATE
-    ls = float(layout_scale) if layout_scale and layout_scale > 0 else 1.0
-    if load_workbook is None or not os.path.exists(path):
-        return max(10, int(round(468 * ls)))
-    try:
-        wb = load_workbook(path, data_only=False)
-        ws = wb.active
-        total = sum(
-            max(1, int(round(_excel_width_to_px(_excel_col_width(ws, c)) * ls)))
-            for c in range(WL_CONTENT_COL_START, WL_CONTENT_COL_END + 1)
-        )
-        wb.close()
-        return max(10, total)
-    except Exception:
-        return max(10, int(round(468 * ls)))
-
-
-def _units_from_cell_px(cell_px: float, *, font_pt: float, layout_scale: float) -> int:
-    """셀 px → 내용 한 줄 단위(한글=2). 인쇄/미리보기 px에 맞춘 보수적 한도."""
-    ls = float(layout_scale) if layout_scale and layout_scale > 0 else 1.0
-    fpx = float(font_pt) * ls * 96.0 / 72.0
-    char_px = max(fpx * 0.90, 8.0)
-    max_chars = max(1, int(float(cell_px) / char_px * 0.90))
-    return max(52, min(max_chars * 2, 64))
-
-
 @lru_cache(maxsize=1)
 def _content_line_units() -> int:
-    """G:X 병합칸 — 인쇄(69%)·화면미리보기(65%) px 중 좁은 쪽 기준."""
-    fallback = 58
-    path = WORKLOG_TEMPLATE
-    if not os.path.exists(path):
-        return fallback
-    ls_print = _excel_print_scale(path) or 0.69
-    px_print = _content_merge_width_px(path, layout_scale=ls_print)
-    px_screen = _content_merge_width_px(path, layout_scale=1.0) * float(_WL_PREVIEW_SCALE)
-    cell_px = min(px_print, px_screen)
-    ls_eff = ls_print if cell_px == px_print else _WL_PREVIEW_SCALE
-    return _units_from_cell_px(cell_px, font_pt=_WL_BODY_FONT_PT, layout_scale=ls_eff)
-
-
-def _content_line_units_for_layout(path: str, layout_scale: float) -> int:
-    """workbook_to_html용 — layout_scale·화면 zoom 반영 한 줄 단위."""
-    ls = float(layout_scale or 1.0)
-    if abs(ls - 1.0) < 0.01:
-        cell_px = _content_merge_width_px(path, layout_scale=1.0) * float(_WL_PREVIEW_SCALE)
-        ls_eff = float(_WL_PREVIEW_SCALE)
-    else:
-        cell_px = _content_merge_width_px(path, layout_scale=ls)
-        ls_eff = ls
-    return _units_from_cell_px(cell_px, font_pt=_WL_BODY_FONT_PT, layout_scale=ls_eff)
+    return 72  # 한글 36자(72단위) — 넘침 없던 기존 한도
 
 
 @lru_cache(maxsize=1)
@@ -2145,13 +2095,6 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
                 
             if text in (_WL_SOFT_BLANK, "\u00a0"): text = ""
             elif is_content and text.strip() == "" and text != "": text = ""
-            elif is_content and text.strip():
-                max_u = _content_line_units_for_layout(path, ls)
-                if _display_units(text) > max_u:
-                    text, _ = _fit_by_units(text, max_u)
-            elif is_client and text.strip():
-                if _display_units(text) > _client_line_units():
-                    text, _ = _fit_by_units(text, _client_line_units())
                 
             if is_vertical and text.strip():
                 chars = [ch for ch in _text_clean if ch]
@@ -2160,18 +2103,14 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
                 esc = "&nbsp;"  # 익일/특이 빈 행 — 인쇄 미리보기에서 줄 위치 유지
             else:
                 esc = html.escape(text).replace(" ", "&nbsp;").replace("\n", "<br>")
-            if is_content or is_client:
-                esc = f'<div style="display:block;max-width:100%;overflow:hidden;text-overflow:clip;white-space:nowrap;">{esc}</div>'
                 
-            if is_content or is_client: white, overflow, text_overflow = "nowrap", "hidden", "clip"
+            if is_content or is_client: white, overflow, text_overflow = "nowrap", "visible", "clip"
             elif is_vertical: white, overflow, text_overflow = "normal", "hidden", "clip"
             else: white, overflow, text_overflow = "pre-wrap", "visible", "clip"
                 
             c0 = c - WL_MIN_COL
             span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
             width_css = f"width:{span_w}px;min-width:{span_w}px;max-width:{span_w}px;" if span_w else ""
-            if is_content or is_client:
-                width_css += "max-width:0;overflow:hidden;"
 
             if is_vertical:
                 pad_css = "padding:4px 1px;"
