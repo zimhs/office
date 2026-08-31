@@ -32,6 +32,13 @@ except ImportError:
 st.markdown(
     """
     <style>
+    /* 본문 여백 확보용 코드 추가 */
+    .block-container, [data-testid="stAppViewBlockContainer"] {
+        padding-top: 120px !important; 
+    }
+    h1, h2, h3, h4, h5, h6, [data-testid="stMarkdownContainer"] {
+        scroll-margin-top: 180px !important;
+    }
     /* 1. 팝업창의 높이만 깔끔하게 제한 (위치 계산은 스트림릿에게 맡겨서 입력칸에 딱 붙게 함) */
     div[data-baseweb="popover"] > div,
     ul[role="listbox"] {
@@ -5199,6 +5206,7 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_should_defer_light_tab(tab_idx: int) -> bool:
+    return False
     """지도·설비·탱크·수익성 — 상단 영업 필터와 무관, 필터 rerun 시 활성 탭만 렌더."""
     if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
         return False
@@ -5221,6 +5229,7 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
+    return False
     """heavy 탭 defer — Cloud 9~11은 eager(항상 펼침). Mac: 시장조사만 lazy.
 
     Cloud 부트: 9~11 탭 데이터를 미리 렌더. Drive sync는 smart·2pass로 가속.
