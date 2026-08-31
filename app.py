@@ -10615,7 +10615,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             )
             selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
             st.session_state["dash_filter_items"] = list(selected_item)
-            st.caption("🔍 검색 v31j · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
+            st.caption("🔍 검색 v31k · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
             dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · fragment+lightdefer")
 
             df_base = df_base_opts
@@ -13937,9 +13937,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                     )
                 else:
                     _dash_restore_session_keys("_dash_bak_worklog")
-                    import importlib
-                    import os
-                    import sys
 
                     import worklog_tab as _worklog_tab
 
@@ -13989,9 +13986,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                 )
             else:
                 _dash_restore_session_keys("_dash_bak_market")
-                import importlib
-                import os
-                import sys
 
                 import market_research_tab as _mr_tab
 
@@ -14028,9 +14022,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                     )
                 else:
                     _dash_restore_session_keys("_dash_bak_letter")
-                    import importlib
-                    import os
-                    import sys
 
                     import price_increase_tab as _pi_tab
 
