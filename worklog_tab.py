@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-31h · 내용칸72단위복원"
+_WL_UI_BUILD = "2026-08-31i · ws안정+74단위"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -283,16 +283,6 @@ export default function (component) {
     inst.lines = normalize(next);
     return inst.lines;
   }
-  let softTimer = null;
-  function softEmit(next) {
-    localOnly(next);
-    if (softTimer) clearTimeout(softTimer);
-    softTimer = setTimeout(function () {
-      softTimer = null;
-      const cur = normalize(inst.lines || readDomLines());
-      setStateValue("lines", cur);
-    }, 280);
-  }
   function focusAt(idx) {
     requestAnimationFrame(() => {
       const el = root.querySelector('input[data-idx="' + idx + '"]');
@@ -342,9 +332,8 @@ export default function (component) {
         let j0 = j;
         let v = cur[j0] || "";
         if (displayUnits(v) <= maxU) {
-          // 입력 중: 로컬+디바운스 — 매 키 fragment rerun 시 Cached ForwardMsg MISS
+          // 타이핑 중 서버 동기화 금지 — blur·칸넘김·Enter만 emit (ForwardMsg MISS 방지)
           if (mode === "blur" || mode === "force") emit(cur, null);
-          else if (mode === "type") softEmit(cur);
           else localOnly(cur);
           return;
         }
@@ -368,35 +357,11 @@ export default function (component) {
       });
       input.addEventListener("focus", () => {
         if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
         setStateValue("focus", j);
-        setStateValue("caret", { s: s, e: e, j: j });
-      });
-      input.addEventListener("keyup", () => {
-        if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
-        setStateValue("caret", { s: s, e: e, j: j });
       });
       input.addEventListener("click", () => {
         if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
         setStateValue("focus", j);
-        setStateValue("caret", { s: s, e: e, j: j });
       });
       input.addEventListener("blur", () => {
         commitValue("blur");
@@ -445,7 +410,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v22",
+    "worklog_entry_lines_v23",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -911,7 +876,7 @@ def _excel_width_to_px(width: float) -> int:
 
 @lru_cache(maxsize=1)
 def _content_line_units() -> int:
-    return 72  # 한글 36자(72단위) — 넘침 없던 기존 한도
+    return 74  # 한글 37자(74단위) — 기존 72 + 1자
 
 
 @lru_cache(maxsize=1)
@@ -3220,6 +3185,28 @@ def _read_editor_entries(d: date) -> list[dict]:
         out.append({"client": client, "client_lines": client_lines, "content": content, "lines": lines, "blank_after": blank_after})
     return out or [{"client": "", "client_lines": [], "content": "", "lines": [], "blank_after": 1}]
 
+
+def _flush_entry_comp_to_live(iso: str, entry_count: int) -> None:
+    """저장 직전 — blur emit된 CCv2 lines를 live/session 키에 반영."""
+    for i in range(max(0, int(entry_count or 0))):
+        for comp_key, live_key, line_key, count_key, text_key in (
+            (_entry_lines_comp_key(iso, i), _entry_lines_live_key(iso, i), _entry_line_key, _entry_line_count_key, f"wl_ent_t_{iso}_{i}"),
+            (_entry_clients_comp_key(iso, i), _entry_clients_live_key(iso, i), _entry_client_key, _entry_client_count_key, f"wl_ent_c_{iso}_{i}"),
+        ):
+            cs = st.session_state.get(comp_key)
+            if not isinstance(cs, dict) or not isinstance(cs.get("lines"), list):
+                continue
+            synced = [str(x or "") for x in cs.get("lines")]
+            st.session_state[live_key] = synced
+            st.session_state[count_key(iso, i)] = len(synced)
+            for j, line in enumerate(synced):
+                st.session_state[line_key(iso, i, j)] = line
+            filled = list(synced)
+            while filled and filled[-1] == "":
+                filled.pop()
+            st.session_state[text_key] = "\n".join(filled)
+
+
 def _cells_from_widgets(d: date) -> dict:
     entries = _read_editor_entries(d)
     nk, ok = f"wl_next_area_{d.isoformat()}", f"wl_notes_area_{d.isoformat()}"
@@ -4016,7 +4003,6 @@ def _render_worklog_input_panel(selected: date) -> None:
                     with st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=exp_key):
                         if st.button("이 항목 삭제", key=f"wl_del_btn_{iso2}_{i}", use_container_width=True):
                             st.session_state[f"wl_do_del_{iso2}"] = i
-                            _wl_rerun()
 
                         _cu = _client_line_units()
                         if int(st.session_state.get(_entry_client_count_key(iso2, i), 0) or 0) <= 0:
@@ -4065,7 +4051,6 @@ def _render_worklog_input_panel(selected: date) -> None:
 
                 if st.button("＋ 항목 추가", key=f"wl_add_btn_{iso2}", width="stretch"):
                     st.session_state[f"wl_do_add_{iso2}"] = True
-                    _wl_rerun()
 
                 st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
                 st.markdown(
@@ -4084,11 +4069,11 @@ def _render_worklog_input_panel(selected: date) -> None:
                 st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
 
                 if st.button("저장", type="primary", width="stretch", key=f"wl_save_btn_{iso2}"):
-                    # 클릭 직후 한 번 더 그려 입력 컴포넌트 값을 확정한 뒤 저장
+                    # 1회 rerun으로 blur 확정 후 다음 런에서 저장 (중복 rerun 금지)
                     st.session_state[f"wl_do_save_{iso2}"] = True
-                    _wl_rerun()
                 elif do_save:
                     try:
+                        _flush_entry_comp_to_live(iso2, n)
                         entries_now = _read_editor_entries(d)
                         usage_now = _content_row_usage(entries_now)
                         if usage_now.get("overflow"):
