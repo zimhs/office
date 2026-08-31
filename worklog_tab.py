@@ -4173,9 +4173,9 @@ def _dashboard_top_filter_sig() -> tuple:
         return "" if not s or s == all_label else s
 
     return (
-        _norm(st.session_state.get("dash_filter_staff_in_v2"), "전체 담당자"),
-        _norm(st.session_state.get("dash_filter_client_in_v2"), "전체 거래처"),
-        _norm(st.session_state.get("dash_filter_item_in_v2"), "전체 품목"),
+        _norm(st.session_state.get("dash_filter_staff_txt"), "전체 담당자"),
+        _norm(st.session_state.get("dash_filter_client_txt"), "전체 거래처"),
+        _norm(st.session_state.get("dash_filter_item_txt"), "전체 품목"),
         st.session_state.get("dash_filter_start"),
         st.session_state.get("dash_filter_end"),
     )
