@@ -30116,3 +30116,246 @@ For `use_container_width=True`, use `width='stretch'`. For `use_container_width=
 2026-09-01 08:56:52.446 Please replace `st.components.v1.html` with `st.iframe`.
 
 `st.components.v1.html` will be removed after 2026-06-01.
+2026-09-01 09:51:13.544 
+Warning: the config option 'server.enableCORS=false' is not compatible with
+'server.enableXsrfProtection=true'.
+As a result, 'server.enableCORS' is being overridden to 'true'.
+
+More information:
+In order to protect against CSRF attacks, we send a cookie with each request.
+To do so, we must specify allowable origins, which places a restriction on
+cross-origin resource sharing.
+
+If cross origin resource sharing is required, please disable server.enableXsrfProtection.
+            
+2026-09-01 09:51:13.820 Uvicorn server started on 127.0.0.1:8501
+
+  You can now view your Streamlit app in your browser.
+
+  URL: http://127.0.0.1:8501
+
+  For better performance, install the Watchdog module:
+
+  $ xcode-select --install
+  $ pip install watchdog
+            
+Requirement already satisfied: opendartreader in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (0.3.2)
+Requirement already satisfied: beautifulsoup4>=4.14.3 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (4.15.0)
+Requirement already satisfied: click>=8.3.3 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (8.4.2)
+Requirement already satisfied: lxml>=6.1.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (6.1.1)
+Requirement already satisfied: pandas>=2.2.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (3.0.3)
+Requirement already satisfied: python-dotenv>=1.0.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (1.2.2)
+Requirement already satisfied: requests>=2.31.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (2.34.2)
+Requirement already satisfied: soupsieve>=1.6.1 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from beautifulsoup4>=4.14.3->opendartreader) (2.9.1)
+Requirement already satisfied: typing-extensions>=4.0.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from beautifulsoup4>=4.14.3->opendartreader) (4.16.0)
+Requirement already satisfied: numpy>=1.26.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from pandas>=2.2.0->opendartreader) (2.5.1)
+Requirement already satisfied: python-dateutil>=2.8.2 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from pandas>=2.2.0->opendartreader) (2.9.0.post0)
+Requirement already satisfied: six>=1.5 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from python-dateutil>=2.8.2->pandas>=2.2.0->opendartreader) (1.17.0)
+Requirement already satisfied: charset_normalizer<4,>=2 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from requests>=2.31.0->opendartreader) (3.4.9)
+Requirement already satisfied: idna<4,>=2.5 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from requests>=2.31.0->opendartreader) (3.18)
+Requirement already satisfied: urllib3<3,>=1.26 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from requests>=2.31.0->opendartreader) (2.7.0)
+Requirement already satisfied: certifi>=2023.5.7 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from requests>=2.31.0->opendartreader) (2026.6.17)
+
+[notice] A new release of pip is available: 26.1.2 -> 26.2.1
+[notice] To update, run: pip3 install --upgrade pip
+Requirement already satisfied: opendartreader in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (0.3.2)
+Requirement already satisfied: beautifulsoup4>=4.14.3 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (4.15.0)
+Requirement already satisfied: click>=8.3.3 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (8.4.2)
+Requirement already satisfied: lxml>=6.1.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (6.1.1)
+Requirement already satisfied: pandas>=2.2.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (3.0.3)
+Requirement already satisfied: python-dotenv>=1.0.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (1.2.2)
+Requirement already satisfied: requests>=2.31.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from opendartreader) (2.34.2)
+Requirement already satisfied: soupsieve>=1.6.1 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from beautifulsoup4>=4.14.3->opendartreader) (2.9.1)
+Requirement already satisfied: typing-extensions>=4.0.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from beautifulsoup4>=4.14.3->opendartreader) (4.16.0)
+Requirement already satisfied: numpy>=1.26.0 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from pandas>=2.2.0->opendartreader) (2.5.1)
+Requirement already satisfied: python-dateutil>=2.8.2 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from pandas>=2.2.0->opendartreader) (2.9.0.post0)
+Requirement already satisfied: six>=1.5 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from python-dateutil>=2.8.2->pandas>=2.2.0->opendartreader) (1.17.0)
+Requirement already satisfied: charset_normalizer<4,>=2 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from requests>=2.31.0->opendartreader) (3.4.9)
+Requirement already satisfied: idna<4,>=2.5 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from requests>=2.31.0->opendartreader) (3.18)
+Requirement already satisfied: urllib3<3,>=1.26 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from requests>=2.31.0->opendartreader) (2.7.0)
+Requirement already satisfied: certifi>=2023.5.7 in /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages (from requests>=2.31.0->opendartreader) (2026.6.17)
+
+[notice] A new release of pip is available: 26.1.2 -> 26.2.1
+[notice] To update, run: pip3 install --upgrade pip
+2026-09-01 09:51:20.591 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-09-01 09:51:20.592 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-09-01 09:51:20.592 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-09-01 09:51:20.642 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:20.724 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:20.901 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-09-01 09:51:20.906 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:20.943 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:20.954 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:20.963 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:20.996 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.008 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.015 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-09-01 09:51:21.038 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-09-01 09:51:21.071 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.102 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.137 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.150 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.236 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.273 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.290 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.696 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.711 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.726 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.778 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.839 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:21.910 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:22.000 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:22.053 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:22.065 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:22.102 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:22.121 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:22.401 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-09-01 09:51:22.541 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.
+2026-09-01 09:51:22.547 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:22.549 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:22.562 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:22.563 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:22.568 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:23.142 Please replace `st.components.v1.html` with `st.iframe`.
+
+`st.components.v1.html` will be removed after 2026-06-01.

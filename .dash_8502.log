@@ -2274,3 +2274,41 @@ For `use_container_width=True`, use `width='stretch'`. For `use_container_width=
 `use_container_width` will be removed after 2025-12-31.
 
 For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:12.640 
+Warning: the config option 'server.enableCORS=false' is not compatible with
+'server.enableXsrfProtection=true'.
+As a result, 'server.enableCORS' is being overridden to 'true'.
+
+More information:
+In order to protect against CSRF attacks, we send a cookie with each request.
+To do so, we must specify allowable origins, which places a restriction on
+cross-origin resource sharing.
+
+If cross origin resource sharing is required, please disable server.enableXsrfProtection.
+            
+2026-09-01 09:51:12.784 Uvicorn server started on 127.0.0.1:8502
+
+  You can now view your Streamlit app in your browser.
+
+  URL: http://127.0.0.1:8502
+
+  For better performance, install the Watchdog module:
+
+  $ xcode-select --install
+  $ pip install watchdog
+            
+2026-09-01 09:51:17.722 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:17.747 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-09-01 09:51:18.096 Please replace `use_container_width` with `width`.
+
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.

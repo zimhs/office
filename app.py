@@ -10629,8 +10629,9 @@ df_detail = pd.DataFrame()
 all_months = [f"{i:02d}월" for i in range(1, 13)]
 years = ["2026"]
 @st.fragment
-def _dash_filter_and_tabs_fragment() -> None:
+def _dash_filter_and_tabs_fragment() -> None:    
     """Top filter + tabs; fragment rerun skips file/Drive reload."""
+    inject_custom_css()
     global latest_update_str, selected_staff, selected_item, selected_client
     global df_base, df_client_filtered, df_f
     global pivot_m_total, client_item_qty_pivot, sales_p, qty_p, unit_price_p
@@ -14230,4 +14231,3 @@ if st.session_state.pop("_drive_deferred_sync_pending", False):
     st.session_state.pop("_drive_copy_boot_sync_done", None)
     st.session_state["_drive_deferred_sync_ran"] = True
     st.rerun()
-inject_custom_css()
