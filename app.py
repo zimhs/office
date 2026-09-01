@@ -382,7 +382,7 @@ def inject_custom_css():
                 left: var(--dashboard-bar-left, 0px) !important;
                 width: var(--dashboard-bar-width, 100%) !important;
                 max-width: var(--dashboard-bar-width, 100%) !important;
-                z-index: 990 !important;
+                z-index: 999999 !important;
                 background-color: #FFFFFF !important;
                 border: 1px solid #BFDBFE !important;
                 border-radius: 0 0 6px 6px !important;
@@ -395,7 +395,7 @@ def inject_custom_css():
             }
 
             .dashboard-filter-sticky-touch {
-                z-index: 999999 !important;
+                z-index: 1000005 !important;
                 top: 3.65rem !important;
                 border: 2px solid #2563EB !important;
                 border-top: 3px solid #2563EB !important;
@@ -9939,7 +9939,7 @@ def render_frozen_styler_html(
 # ==========================================
 # 5. 메인 실행 흐름 및 영구 캐싱 관리
 # ==========================================
-inject_custom_css()
+
 st.sidebar.header("📁 데이터 업로드 및 유지")
 _render_cloud_sync_banner()
 # Drive「dashboard 복사본/uproad」→ uploaded_cache (재시작·재부팅 시 최신 우선)
@@ -10629,8 +10629,9 @@ df_detail = pd.DataFrame()
 all_months = [f"{i:02d}월" for i in range(1, 13)]
 years = ["2026"]
 @st.fragment
-def _dash_filter_and_tabs_fragment() -> None:
+def _dash_filter_and_tabs_fragment() -> None:    
     """Top filter + tabs; fragment rerun skips file/Drive reload."""
+    inject_custom_css()
     global latest_update_str, selected_staff, selected_item, selected_client
     global df_base, df_client_filtered, df_f
     global pivot_m_total, client_item_qty_pivot, sales_p, qty_p, unit_price_p
@@ -10788,7 +10789,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             )
             selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
             st.session_state["dash_filter_items"] = list(selected_item)
-            st.caption("🔍 검색 v31q · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
+            # st.caption("🔍 검색 v31q · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
             dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · filterReinject{_DASH_FILTER_BIND_VER}")
 
             df_base = df_base_opts
