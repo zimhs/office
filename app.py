@@ -9939,7 +9939,7 @@ def render_frozen_styler_html(
 # ==========================================
 # 5. 메인 실행 흐름 및 영구 캐싱 관리
 # ==========================================
-inject_custom_css()
+
 st.sidebar.header("📁 데이터 업로드 및 유지")
 _render_cloud_sync_banner()
 # Drive「dashboard 복사본/uproad」→ uploaded_cache (재시작·재부팅 시 최신 우선)
@@ -14230,3 +14230,4 @@ if st.session_state.pop("_drive_deferred_sync_pending", False):
     st.session_state.pop("_drive_copy_boot_sync_done", None)
     st.session_state["_drive_deferred_sync_ran"] = True
     st.rerun()
+inject_custom_css()
