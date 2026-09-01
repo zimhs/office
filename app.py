@@ -10789,7 +10789,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             )
             selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
             st.session_state["dash_filter_items"] = list(selected_item)
-            st.caption("🔍 검색 v31q · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
+            # st.caption("🔍 검색 v31q · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
             dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · filterReinject{_DASH_FILTER_BIND_VER}")
 
             df_base = df_base_opts
