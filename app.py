@@ -382,7 +382,7 @@ def inject_custom_css():
                 left: var(--dashboard-bar-left, 0px) !important;
                 width: var(--dashboard-bar-width, 100%) !important;
                 max-width: var(--dashboard-bar-width, 100%) !important;
-                z-index: 990 !important;
+                z-index: 999999 !important;
                 background-color: #FFFFFF !important;
                 border: 1px solid #BFDBFE !important;
                 border-radius: 0 0 6px 6px !important;
@@ -395,7 +395,7 @@ def inject_custom_css():
             }
 
             .dashboard-filter-sticky-touch {
-                z-index: 999999 !important;
+                z-index: 1000005 !important;
                 top: 3.65rem !important;
                 border: 2px solid #2563EB !important;
                 border-top: 3px solid #2563EB !important;
