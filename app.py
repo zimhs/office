@@ -5145,15 +5145,18 @@ def _dash_inject_filter_select_script() -> None:
         width=0,
     )
 
-
 def _dash_note_filter_change_for_heavy_tabs() -> bool:
     """상단 필터가 바뀐 run이면 True. heavy 탭 defer 판단용 플래그도 갱신."""
     sig = _dash_top_filter_sig_now()
-    prev = st.session_state.get("_dash_filter_sig_heavy")
-    changed = prev is not None and prev != sig
-    st.session_state["_dash_filter_sig_heavy"] = sig
-    st.session_state["_dash_filter_changed_flag"] = changed
-    return changed
+    prev_sig = st.session_state.get("_dash_last_filter_sig")
+    
+    if sig != prev_sig:
+        st.session_state["_dash_last_filter_sig"] = sig
+        # 무거운 탭(Tab 5~8 등)의 렌더링 지연을 위한 플래그 갱신
+        st.session_state["_dash_defer_heavy_tabs"] = True
+        return True
+        
+    return False
 
 
 def _dash_active_tab_idx() -> int | None:
