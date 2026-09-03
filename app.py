@@ -5179,7 +5179,7 @@ def _dash_on_filter_clear_rerun() -> None:
     _dash_consume_filter_clear_cookie()
 
 
-_DASH_FILTER_BIND_VER = 7
+_DASH_FILTER_BIND_VER = 8
 
 
 def _dash_inject_filter_select_script() -> None:
@@ -5213,6 +5213,15 @@ def _dash_inject_filter_select_script() -> None:
           function isAllLabel(v) {{
             return ALL.indexOf(String(v || '').trim()) >= 0;
           }}
+          function isImeBusy(e, inp) {{
+            try {{
+              if (e && (e.isComposing || e.keyCode === 229)) return true;
+            }} catch (e1) {{}}
+            try {{
+              if (inp && inp.dataset && inp.dataset.dashFilterComposing === '1') return true;
+            }} catch (e2) {{}}
+            return false;
+          }}
           function findWrap(key) {{
             return doc.querySelector('[class*="st-key-' + key + '"]');
           }}
@@ -5243,7 +5252,8 @@ def _dash_inject_filter_select_script() -> None:
             }}
             return null;
           }}
-          function setInputValue(inp, val) {{
+          function setValueQuiet(inp, val) {{
+            /* change 이벤트는 Streamlit rerun·IME 중단을 일으켜 보내지 않음 */
             if (!inp) return;
             try {{
               var desc = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value');
@@ -5252,33 +5262,26 @@ def _dash_inject_filter_select_script() -> None:
             }} catch (eSet) {{
               inp.value = val;
             }}
-            try {{
-              inp.dispatchEvent(new win.InputEvent('input', {{
-                bubbles: true, cancelable: true, inputType: 'insertText', data: val
-              }}));
-            }} catch (eIn) {{
-              try {{ inp.dispatchEvent(new win.Event('input', {{ bubbles: true }})); }} catch (eIn2) {{}}
-            }}
-            try {{ inp.dispatchEvent(new win.Event('change', {{ bubbles: true }})); }} catch (eCh) {{}}
+            try {{ inp.dispatchEvent(new win.Event('input', {{ bubbles: true }})); }} catch (eIn) {{}}
           }}
-          function valueNeedsReset(inp, allLabel) {{
-            var v = String(inp && inp.value || '');
-            var trimmed = v.trim();
-            if (!trimmed) return false;
-            if (isAllLabel(trimmed)) return true;
-            if (allLabel && v.indexOf(allLabel) >= 0) return true;
-            return false;
+          function isPlaceholder(inp, allLabel) {{
+            var v = String(inp && inp.value || '').trim();
+            if (!v) return false;
+            if (isAllLabel(v)) return true;
+            return !!(allLabel && v === String(allLabel).trim());
           }}
-          function clearForTyping(inp, allLabel) {{
-            if (!inp) return;
-            var prev = String(inp.value || '').trim();
-            if (!inp.dataset.dashFilterPrev && prev) inp.dataset.dashFilterPrev = prev;
+          function clearPlaceholderOnly(inp, allLabel) {{
+            /* '전체 거래처/품목/담당자'일 때만 비움. 이미 친 검색어는 절대 지우지 않음 */
+            if (!inp || !isPlaceholder(inp, allLabel)) return false;
+            if (inp.dataset.dashFilterComposing === '1') return false;
+            inp.dataset.dashFilterPrev = String(inp.value || '').trim() || allLabel;
+            inp.dataset.dashFilterTyping = '1';
             inp.dataset.dashFilterClearingToType = '1';
-            delete inp.dataset.dashFilterTyping;
-            if (prev) setInputValue(inp, '');
+            setValueQuiet(inp, '');
             setTimeout(function () {{
               delete inp.dataset.dashFilterClearingToType;
-            }}, 350);
+            }}, 200);
+            return true;
           }}
           function clickClearRerunBtn() {{
             var btn = doc.querySelector('[class*="st-key-_dash_filter_clear_rerun_btn"] button');
@@ -5300,9 +5303,10 @@ def _dash_inject_filter_select_script() -> None:
             if (w) {{
               var inp2 = w.querySelector('[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input');
               if (inp2) {{
-                setInputValue(inp2, allLabel);
+                setValueQuiet(inp2, allLabel);
                 inp2.dataset.dashFilterPrev = allLabel;
                 delete inp2.dataset.dashFilterTyping;
+                delete inp2.dataset.dashFilterComposing;
               }}
             }}
             clickClearRerunBtn();
@@ -5310,23 +5314,16 @@ def _dash_inject_filter_select_script() -> None:
           }}
           function maybeEmptied(inp) {{
             if (!inp || inp.dataset.dashFilterClearingToType) return;
+            if (inp.dataset.dashFilterComposing === '1') return;
             var meta = fieldMeta(inp);
             if (!meta) return;
             var v = String(inp.value || '').trim();
             var prev = String(inp.dataset.dashFilterPrev || '').trim();
             if (v) return;
-            if (!prev && inp.dataset.dashFilterTyping !== '1') return;
-            if (isAllLabel(prev) && inp.dataset.dashFilterTyping !== '1') return;
+            if (inp.dataset.dashFilterTyping !== '1') return;
+            if (isAllLabel(prev)) return;
             if (isDropdownOpen()) return;
             onFieldEmptied(meta.key, meta.allLabel);
-          }}
-          function beginTyping(inp, meta, text) {{
-            if (!inp || !meta) return;
-            if (!inp.dataset.dashFilterPrev) {{
-              inp.dataset.dashFilterPrev = String(inp.value || '').trim() || meta.allLabel;
-            }}
-            inp.dataset.dashFilterTyping = '1';
-            setInputValue(inp, String(text || ''));
           }}
           function installDelegation() {{
             if (win.__dashFilterDelegationVer >= BIND_VER) return;
@@ -5336,77 +5333,68 @@ def _dash_inject_filter_select_script() -> None:
               if (!inp) return;
               var meta = fieldMeta(inp);
               if (!meta) return;
-              clearForTyping(inp, meta.allLabel);
+              clearPlaceholderOnly(inp, meta.allLabel);
             }}
             doc.addEventListener('pointerdown', onFilterPress, true);
             doc.addEventListener('mousedown', onFilterPress, true);
             doc.addEventListener('focusin', function (e) {{
               var inp = findInput(e.target);
-              if (!inp || inp.dataset.dashFilterPrev) return;
+              if (!inp) return;
               var meta = fieldMeta(inp);
               if (!meta) return;
-              clearForTyping(inp, meta.allLabel);
+              clearPlaceholderOnly(inp, meta.allLabel);
             }}, true);
             doc.addEventListener('compositionstart', function (e) {{
               var inp = findInput(e.target);
               if (!inp) return;
               var meta = fieldMeta(inp);
               if (!meta) return;
-              if (valueNeedsReset(inp, meta.allLabel) || (String(inp.value || '').trim() && !inp.dataset.dashFilterTyping)) {{
-                if (!inp.dataset.dashFilterPrev) {{
-                  inp.dataset.dashFilterPrev = String(inp.value || '').trim() || meta.allLabel;
-                }}
-                inp.dataset.dashFilterTyping = '1';
-                setInputValue(inp, '');
-              }}
+              inp.dataset.dashFilterComposing = '1';
+              inp.dataset.dashFilterTyping = '1';
+              /* composition 중에는 value를 건드리지 않음(한 음절마다 이전 글자 삭제 방지) */
             }}, true);
-            doc.addEventListener('beforeinput', function (e) {{
+            doc.addEventListener('compositionend', function (e) {{
               var inp = findInput(e.target);
-              if (!inp || e.isComposing) return;
-              var meta = fieldMeta(inp);
-              if (!meta) return;
-              var it = e.inputType || '';
-              if (it.indexOf('insert') !== 0 && it !== 'insertReplacementText') return;
-              var data = (e.data != null) ? String(e.data) : '';
-              if (!data) return;
-              var cur = String(inp.value || '');
-              if (valueNeedsReset(inp, meta.allLabel) || (cur.trim() && !inp.dataset.dashFilterTyping)) {{
-                e.preventDefault();
-                beginTyping(inp, meta, data);
-              }}
+              if (!inp) return;
+              delete inp.dataset.dashFilterComposing;
+              inp.dataset.dashFilterTyping = '1';
+              var v = String(inp.value || '').trim();
+              if (v && !isAllLabel(v)) inp.dataset.dashFilterPrev = v;
             }}, true);
             doc.addEventListener('keydown', function (e) {{
               var inp = findInput(e.target);
               if (!inp) return;
               var meta = fieldMeta(inp);
               if (!meta) return;
+              if (isImeBusy(e, inp)) return;
               if (e.key === 'Backspace' || e.key === 'Delete') {{
                 setTimeout(function () {{ maybeEmptied(inp); }}, 0);
-                return;
-              }}
-              if (e.isComposing) return;
-              if (!e.key || e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
-              if (valueNeedsReset(inp, meta.allLabel) || (String(inp.value || '').trim() && !inp.dataset.dashFilterTyping)) {{
-                e.preventDefault();
-                beginTyping(inp, meta, e.key);
               }}
             }}, true);
             doc.addEventListener('input', function (e) {{
               var inp = findInput(e.target);
-              if (!inp) return;
+              if (!inp || isImeBusy(e, inp)) return;
               var v = String(inp.value || '').trim();
-              if (!v) setTimeout(function () {{ maybeEmptied(inp); }}, 0);
-              else {{
+              if (v && !isAllLabel(v)) {{
+                inp.dataset.dashFilterTyping = '1';
                 inp.dataset.dashFilterPrev = v;
                 try {{ doc.cookie = 'dash_filter_clear=; path=/; max-age=0; SameSite=Lax'; }} catch (e4) {{}}
+                return;
               }}
+              if (!v) setTimeout(function () {{ maybeEmptied(inp); }}, 0);
             }}, true);
             doc.addEventListener('change', function (e) {{
               var inp = findInput(e.target);
-              if (!inp) return;
-              delete inp.dataset.dashFilterTyping;
+              if (!inp || isImeBusy(e, inp)) return;
+              /* 한글 음절 확정 change로 typing 플래그를 지우면 다음 음절이 통째로 리셋됨 */
               var v = String(inp.value || '').trim();
-              if (v) inp.dataset.dashFilterPrev = v;
+              if (v && !isAllLabel(v)) inp.dataset.dashFilterPrev = v;
+            }}, true);
+            doc.addEventListener('blur', function (e) {{
+              var inp = findInput(e.target);
+              if (!inp) return;
+              if (inp.dataset.dashFilterComposing === '1') return;
+              setTimeout(function () {{ maybeEmptied(inp); }}, 0);
             }}, true);
           }}
           installDelegation();
@@ -11867,7 +11855,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             )
             selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
             st.session_state["dash_filter_items"] = list(selected_item)
-            st.caption("🔍 검색 v31q · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
+            st.caption("🔍 검색 v32 · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
             if _is_streamlit_cloud():
                 dev_caption(
                     f"Cloud · 로컬동일 · nativeTabs · Mini가로세로 · lazy9-11 · bind{_DASH_FILTER_BIND_VER}"
