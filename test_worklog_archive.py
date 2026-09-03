@@ -144,6 +144,8 @@ class WorklogMonthArchiveTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(cache, "2026-09-04.xlsx")))
             again = self.wt.create_worklog_day_local(d)
             self.assertFalse(again["created"])
+            dates = self.wt.list_saved_worklog_dates()
+            self.assertIn("2026-09-04", dates)
         wb = load_workbook(os.path.join(self.root, "2026", "9월.xlsx"), read_only=True)
         try:
             self.assertIn("4", wb.sheetnames)

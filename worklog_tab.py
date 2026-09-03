@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-04a · 추가버튼·로컬생성팝업"
+_WL_UI_BUILD = "2026-09-04b · 추가·요약·달력·맥경로"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1504,14 +1504,70 @@ def delete_worklog_archive_sheet(d: date) -> str | None:
 
 def worklog_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"{d.isoformat()}.xlsx")
 
+def _list_archive_saved_dates() -> set[str]:
+    """맥 경로 …/일지/YYYY/N월.xlsx 시트(일) → 달력 • 표시용."""
+    out: set[str] = set()
+    if load_workbook is None:
+        return out
+    root = resolve_worklog_archive_root()
+    if not root or not os.path.isdir(root):
+        return out
+    try:
+        year_names = os.listdir(root)
+    except OSError:
+        return out
+    for year_name in year_names:
+        if not (year_name.isdigit() and len(year_name) == 4):
+            continue
+        year = int(year_name)
+        year_dir = os.path.join(root, year_name)
+        if not os.path.isdir(year_dir):
+            continue
+        try:
+            files = os.listdir(year_dir)
+        except OSError:
+            continue
+        for fname in files:
+            m = re.match(r"^(\d{1,2})월\.xlsx$", fname)
+            if not m:
+                continue
+            month = int(m.group(1))
+            if month < 1 or month > 12:
+                continue
+            path = os.path.join(year_dir, fname)
+            try:
+                wb = load_workbook(path, read_only=True)
+                try:
+                    for name in wb.sheetnames:
+                        if name.isdigit():
+                            try:
+                                out.add(date(year, month, int(name)).isoformat())
+                            except ValueError:
+                                pass
+                        else:
+                            try:
+                                out.add(date.fromisoformat(name).isoformat())
+                            except ValueError:
+                                pass
+                finally:
+                    wb.close()
+            except Exception:
+                continue
+    return out
+
+
 def list_saved_worklog_dates() -> set[str]:
     cached = st.session_state.get("wl_saved_dates_cache")
     if isinstance(cached, set): return cached
     _ensure_dirs()
     out: set[str] = set()
-    for name in os.listdir(WORKLOG_DIR):
-        if name.endswith(".xlsx") and len(name) >= 15 and name[0:4].isdigit() and name not in {"template.xlsx"} and not name.startswith("_preview_") and "_인쇄" not in name:
-            out.add(name.replace(".xlsx", ""))
+    try:
+        for name in os.listdir(WORKLOG_DIR):
+            if name.endswith(".xlsx") and len(name) >= 15 and name[0:4].isdigit() and name not in {"template.xlsx"} and not name.startswith("_preview_") and "_인쇄" not in name:
+                out.add(name.replace(".xlsx", ""))
+    except OSError:
+        pass
+    out.update(_list_archive_saved_dates())
     st.session_state["wl_saved_dates_cache"] = out
     return out
 
@@ -1682,6 +1738,17 @@ def create_worklog_day_local(d: date) -> dict:
     ctx = dict(st.session_state.get(f"wl_open_ctx_{iso}") or {})
     ctx["had_local"] = True
     st.session_state[f"wl_open_ctx_{iso}"] = ctx
+    cells = read_worklog_cells(d) if os.path.isfile(path) else _empty_cells(d)
+    try:
+        _publish_view_cells(d, cells)
+    except Exception:
+        pass
+    st.session_state.pop(f"wl_sum_sig_v25_{iso}", None)
+    st.session_state.pop(f"wl_sum_html_v25_{iso}", None)
+    st.session_state[f"wl_left_excel_on_{iso}"] = False
+    saved_set = st.session_state.get("wl_saved_dates_cache")
+    if isinstance(saved_set, set):
+        saved_set.add(iso)
     target = describe_worklog_archive_target(d)
     if created:
         msg = f"로컬 엑셀을 만들었습니다 · {target}"
@@ -1693,6 +1760,7 @@ def create_worklog_day_local(d: date) -> dict:
         "archive": archive,
         "target": target,
         "msg": msg,
+        "cells": cells,
     }
 
 
@@ -3500,7 +3568,8 @@ def _worklog_created_dialog() -> None:
     else:
         st.info(msg)
     if target:
-        st.caption(f"저장 위치: `{target}` · 작성은 오른쪽 입력 후 「저장」")
+        st.caption(f"맥 경로: `{target}`")
+    st.caption("요약보기에 반영 · 달력에 • · 작성은 오른쪽 입력 후 「저장」")
     path = st.session_state.get("wl_dialog_preview_path")
     if path and os.path.exists(str(path)):
         path = str(path)
@@ -3859,10 +3928,11 @@ def _render_worklog_input_panel(selected: date) -> None:
                 if st.button("추가", type="primary", width="stretch", key="wl_add_day_btn", help="이 날짜 엑셀 업무일지를 로컬에 만들고 팝업으로 확인"):
                     try:
                         info = create_worklog_day_local(selected)
-                        cells_now = read_worklog_cells(selected) if os.path.isfile(info.get("path") or "") else _empty_cells(selected)
+                        cells_now = info.get("cells") or _empty_cells(selected)
                         preview = _prepare_excel_preview(selected, cells_now)
                         st.session_state["wl_dialog_preview_path"] = preview
                         st.session_state["wl_create_dialog"] = info
+                        st.session_state["wl_need_left_refresh"] = True
                         _worklog_created_dialog()
                     except Exception as e:
                         if _wl_quiet_ui():
