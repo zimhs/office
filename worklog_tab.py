@@ -4333,12 +4333,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         return
 
     # 반영 확인용 + 예전 미리보기 HTML 캐시 무효화(한 번)
+    # 제목과 같은 블록에 폰트를 넣어 빈 markdown 여백이 생기지 않게 함
     st.markdown(
         f"<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap'>"
-        f"<style>section.main {{ font-family:{_WL_FONT_STACK}; }}</style>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
+        f"<style>section.main {{ font-family:{_WL_FONT_STACK}; }}</style>"
         "<div class='sub-header dashboard-tab-panel-head'>📝 일일업무일지</div>",
         unsafe_allow_html=True,
     )

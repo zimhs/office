@@ -272,8 +272,10 @@ def inject_custom_css():
             }
             
             /* ★★★ 상단 여백 최소화 (Streamlit 헤더는 그대로) ★★★ */
-            section.main .block-container { 
-                padding-top: 0.25rem !important; 
+            section.main .block-container,
+            [data-testid="stMainBlockContainer"],
+            .stMainBlockContainer {
+                padding-top: 0 !important; 
                 padding-bottom: 0.75rem !important;
                 padding-left: 1rem !important;
                 padding-right: 1rem !important;
@@ -377,7 +379,9 @@ def inject_custom_css():
                 border: none !important;
             }
             /* fixed 필터의 element-container 슬롯만 0 — 스페이서 컨테이너는 제외 */
-            [data-testid="stElementContainer"]:has(.dashboard-filter-sticky):not(:has(#dashboard-sticky-spacer)) {
+            [data-testid="stElementContainer"]:has(.dashboard-filter-sticky):not(:has(#dashboard-sticky-spacer)),
+            [data-testid="stElementContainer"]:has(> [data-testid="stVerticalBlockBorderWrapper"].dashboard-filter-sticky),
+            [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .dashboard-filter-sticky):not(:has(#dashboard-sticky-spacer)):not(:has([data-testid="stTabs"])) {
                 height: 0 !important;
                 min-height: 0 !important;
                 max-height: 0 !important;
@@ -495,13 +499,27 @@ def inject_custom_css():
                 position: relative !important;
             }
 
-            .dashboard-tabs-host-compact > div[role="tabpanel"],
-            .dashboard-tabs-host-compact [role="tabpanel"] {
+            .dashboard-tabs-host-compact > div[role="tabpanel"]:not([hidden]),
+            .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]) {
                 display: block !important;
                 height: auto !important;
                 max-height: none !important;
                 min-height: 0 !important;
                 overflow: visible !important;
+            }
+            /* 숨긴 탭이 display:block 으로 쌓이면 고정바 아래 큰 빈 여백이 됨 */
+            [data-testid="stTabs"] [role="tabpanel"][hidden],
+            [data-testid="stTabs"] [role="tabpanel"][aria-hidden="true"],
+            .dashboard-tabs-host-compact [role="tabpanel"][hidden],
+            .dashboard-tabs-host-compact [role="tabpanel"][aria-hidden="true"] {
+                display: none !important;
+                height: 0 !important;
+                min-height: 0 !important;
+                max-height: 0 !important;
+                overflow: hidden !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                border: 0 !important;
             }
 
             .dashboard-filter-sticky.dashboard-filter-sticky-with-tabs {
@@ -720,7 +738,18 @@ def inject_custom_css():
                 scroll-margin-top: 4mm !important;
             }
             /* 고정바 바로 아래 본문 첫 블록 여백 제거(탭패널 4mm만 유지) */
-            section.main .block-container {
+            section.main .block-container,
+            [data-testid="stMainBlockContainer"],
+            .stMainBlockContainer {
+                padding-top: 0 !important;
+            }
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]),
+            [data-testid="stTabContent"] {
+                padding-top: 4mm !important;
+                margin-top: 0 !important;
+            }
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) > div:first-child {
+                margin-top: 0 !important;
                 padding-top: 0 !important;
             }
             .dashboard-tabs-host-compact {
@@ -8483,7 +8512,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 65
+    _sticky_py_ver = 66
     components.html(
         """
         <script>
@@ -8494,13 +8523,14 @@ def inject_sticky_tabs_script():
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 40;
-            var STICKY_SCRIPT_VER_IPAD = 61; /* v65: 본문 4mm + 검색 캡션 제거 */
+            var STICKY_SCRIPT_VER_MAC = 41;
+            var STICKY_SCRIPT_VER_IPAD = 62; /* v66: 본문을 고정바 아래 4mm로 당김 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
                 parentWin.__dashboardStickyMacReady = 0;
                 parentWin.__dashboardStickyTouchReady = 0;
                 parentWin.__dashboardTabsUnifiedOk = false;
+                parentWin.__dashboardContentSnapOk = false;
                 parentWin.__dashboardStickyPyVer = PY_STICKY_VER;
             }
             try { parentDoc.documentElement.classList.add('dashboard-tabs-unified'); } catch (eUni0) {}
@@ -8516,8 +8546,8 @@ def inject_sticky_tabs_script():
             var spacerFreezeUntil = 0;
             var lastViewportW = 0;
             var lastGeoKey = '';
-            /* 큰 여백만 제거하고, 본문 숨쉼(~4mm)은 CSS padding-top:4mm 로 유지 */
-            var CONTENT_GAP_PX = 2;
+            /* 고정바 하단과 본문 사이 목표 간격 (~4mm) */
+            var CONTENT_GAP_PX = 15;
             function computeBarHeight(filterH) {
                 return Math.max(48, Math.round(filterH || 0));
             }
@@ -8566,19 +8596,54 @@ def inject_sticky_tabs_script():
             function tightenContentGap(filterBox) {
                 /* 스페이서는 고정바 실측 높이만. 클릭 후 scrollIntoView로
                    탭패널 top이 바뀌면 gap이 음수/과대해져 여백이 폭증하므로
-                   viewport gap으로 높이를 키우거나 당기지 않는다. */
+                   viewport gap으로 스페이서를 키우지 않는다. */
                 if (!filterBox || !isElementFixed(filterBox)) return lastH;
                 var filterH = Math.round(filterBox.getBoundingClientRect().height) || 0;
                 var barH = computeBarHeight(filterH);
                 if (barH < 48) return lastH;
-                if (lastH > 0 && Math.abs(barH - lastH) <= 12) return lastH;
+                if (lastH > 0 && Math.abs(barH - lastH) <= 12) {
+                    try { snapContentToBar(filterBox); } catch (eSn0) {}
+                    return lastH;
+                }
                 var spacer = parentDoc.getElementById(SPACER_ID);
                 if (spacer) {
                     setSpacerHeightPx(spacer, barH);
                     lastH = barH;
                     spacerFrozenH = barH;
                 }
+                try { snapContentToBar(filterBox); } catch (eSn1) {}
                 return lastH;
+            }
+            function snapContentToBar(filterBox) {
+                /* 스크롤이 맨 위일 때만 본문을 바 아래 4mm로 당긴다.
+                   클릭 후 scrollIntoView로 생긴 가짜 큰 간격은 무시(여백 폭증 방지). */
+                if (!filterBox || !isElementFixed(filterBox)) return;
+                var scrollY = parentWin.scrollY || parentDoc.documentElement.scrollTop || 0;
+                if (scrollY > 12) return;
+                var host = findMainTabsHost();
+                if (!host) return;
+                var panel = host.querySelector('[role="tabpanel"]:not([hidden])');
+                if (!panel) return;
+                var gap = Math.round(
+                    panel.getBoundingClientRect().top - filterBox.getBoundingClientRect().bottom
+                );
+                var extra = gap - CONTENT_GAP_PX;
+                var cur = parseFloat(host.style.marginTop) || 0;
+                if (Math.abs(extra) <= 4) {
+                    parentWin.__dashboardContentSnapOk = true;
+                    return;
+                }
+                /* 이미 당긴 뒤 갑자기 큰 간격 = 클릭/scrollIntoView → 더 안 당김 */
+                if (extra > 8 && cur < -4) {
+                    parentWin.__dashboardContentSnapOk = true;
+                    return;
+                }
+                if (parentWin.__dashboardContentSnapOk && extra > 8) return;
+                if (extra > 360 || extra < -80) return;
+                var next = cur - extra;
+                if (next > 0) next = 0;
+                if (next < -360) next = -360;
+                host.style.setProperty('margin-top', next + 'px', 'important');
             }
             function applySpacerForBar(filterBox, filterH, force) {
                 if (!filterBox) return lastH;
@@ -9409,6 +9474,7 @@ def inject_sticky_tabs_script():
                 var filterH = Math.max(48, Math.round(targetBox.getBoundingClientRect().height) || 0);
                 publishBarGeometry(topPx, side, maxW || Math.max(120, (vw || 0) - side * 2), filterH);
                 applySpacerForBar(targetBox, filterH, true);
+                try { snapContentToBar(targetBox); } catch (eSnapI) {}
                 parentWin.__dashboardIpadTarget = targetBox;
                 parentWin.__dashboardIpadSpacer = parentDoc.getElementById(SPACER_ID);
                 ipadFreezeLayout();
@@ -9629,6 +9695,7 @@ def inject_sticky_tabs_script():
                 syncTopShield(topMac, rectMac);
                 /* 로컬·Cloud 공통: 실측 스페이서 + 본문 틈 실측 제거 */
                 applySpacerForBar(filterBox, filterH, false);
+                try { snapContentToBar(filterBox); } catch (eSnapM) {}
                 if (mountedOk) {
                     parentWin.__dashboardStickyGeoFrozen = {
                         top: topMac, left: rectMac.left, width: rectMac.width
@@ -12095,7 +12162,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 65
+    _STICKY_INJECT_VER = 66
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
@@ -12104,7 +12171,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 46
+        st.session_state["_ipad_sticky_ver"] = 47
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=12, heavy_indices=(9, 10, 11)
