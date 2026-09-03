@@ -3972,7 +3972,8 @@ def _render_worklog_input_panel(selected: date) -> None:
                     else: label += " · (비어 있음)"
 
                     exp_key = f"wl_exp_{iso2}_{i}"
-                    default_open = i == n - 1
+                    # 첫 로딩 시 일일업무 가독성을 위해 기본 펼침
+                    default_open = True
                     if exp_key not in st.session_state: st.session_state[exp_key] = default_open
 
                     with st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=exp_key):
