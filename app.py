@@ -326,7 +326,8 @@ def inject_custom_css():
             /* ===== 상단 통합 고정바 (필터 + 탭) ===== */
             #dashboard-sticky-spacer {
                 width: 100% !important;
-                height: var(--dashboard-fixed-bar-height, 108px) !important;
+                height: var(--dashboard-fixed-bar-height, 168px) !important;
+                min-height: 152px !important;
                 margin: 0 !important;
                 padding: 0 !important;
                 pointer-events: none !important;
@@ -533,16 +534,18 @@ def inject_custom_css():
             }
 
             .dashboard-tabs-host-compact [role="tabpanel"] {
-                padding-top: 4px !important;
+                padding-top: 10px !important;
             }
 
             .dashboard-tab-panel-head {
-                padding-top: 2px !important;
+                padding-top: 6px !important;
                 margin-bottom: 6px !important;
             }
 
             .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]) {
                 padding-bottom: 48px !important;
+                padding-top: 10px !important;
+                scroll-margin-top: var(--dashboard-fixed-bar-height, 168px) !important;
             }
 
             /* Streamlit 기본 스크롤 복구 */
@@ -5162,9 +5165,7 @@ def _dash_inject_filter_select_script_for_run() -> None:
 
 
 def _dash_inject_sticky_resync_script() -> None:
-    """Cloud: fragment rerun 후 고정바·탭 remount 재동기화."""
-    if not _is_streamlit_cloud():
-        return
+    """fragment/탭 전환 후 고정바·spacer 재동기화 (로컬·Cloud)."""
     components.html(
         """
         <script>
@@ -8903,10 +8904,11 @@ def inject_sticky_tabs_script():
                     parentDoc.documentElement.style.setProperty('--dashboard-bar-width', rectMac.width + 'px');
                     syncTopShield(topMac, rectMac);
                 }
-                var barHMac = filterBox.offsetHeight + 4;
+                var barHMac = Math.max(filterBox.offsetHeight + 8, 152);
                 if (Math.abs(barHMac - lastH) > 1) {
                     var spacerMac = ensureSpacer(filterBox);
                     spacerMac.style.height = barHMac + 'px';
+                    spacerMac.style.minHeight = '152px';
                     spacerMac.style.display = 'block';
                     parentDoc.documentElement.style.setProperty('--dashboard-fixed-bar-height', barHMac + 'px');
                     lastH = barHMac;
@@ -11194,7 +11196,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 44
+    _STICKY_INJECT_VER = 45
     _ACTIVE_TAB_INJECT_VER = 6
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
         inject_sticky_tabs_script()
@@ -14380,8 +14382,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.info("다른 탭은 정상 이용 가능합니다.")
 
     _dash_inject_filter_select_script_for_run()
-    if _is_streamlit_cloud():
-        _dash_inject_sticky_resync_script()
+    # 로컬·Cloud 공통: fragment/탭 전환 후 고정바 spacer 재동기화 (콘텐츠 가림 방지)
+    _dash_inject_sticky_resync_script()
 
 
 _dash_filter_and_tabs_fragment()
