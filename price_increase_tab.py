@@ -38,7 +38,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-03a · 연락처자동·메일유사매칭·smtp중첩키"
+PI_UI_BUILD = "2026-09-03b · 통합12탭·연락처자동저장"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -253,11 +253,15 @@ def _mail_contact_candidate_paths() -> list[str]:
 def ensure_mail_contacts_autoload(path: str = PI_MAIL_CSV) -> tuple[pd.DataFrame, str]:
     """저장된 연락처를 읽고, 비어 있으면 Desktop/캐시 CSV를 자동 적재.
 
+    한 번 업로드·저장되면 다음부터는 저장본을 자동 사용(재업로드 불필요).
     Returns: (mail_df, note) — note는 UI용 짧은 안내(없으면 '').
     """
     _ensure_dirs()
     cur = load_mail_contacts(path)
     if not cur.empty:
+        if not st.session_state.get("_pi_mail_saved_noted"):
+            st.session_state["_pi_mail_saved_noted"] = True
+            return cur, f"연락처 저장본 자동사용 · {len(cur)}건 (재업로드 불필요)"
         return cur, ""
     # 이미 세션에서 자동적재 시도했으면 반복 스킵(업로더는 계속 가능)
     if st.session_state.get("_pi_mail_autoload_done"):
@@ -287,6 +291,7 @@ def ensure_mail_contacts_autoload(path: str = PI_MAIL_CSV) -> tuple[pd.DataFrame
         save_mail_contacts(best_df, path)
     except Exception:
         return best_df, f"자동 적재(메모리): `{os.path.basename(best_src)}` {len(best_df)}건"
+    st.session_state["_pi_mail_saved_noted"] = True
     return load_mail_contacts(path), f"연락처 자동 적재: `{os.path.basename(best_src)}` → {len(best_df)}건"
 
 

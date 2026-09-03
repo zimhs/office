@@ -63,16 +63,22 @@ if ! _pull_ff_only; then
 fi
 
 AFTER="$(git rev-parse HEAD 2>/dev/null || echo none)"
+AFTER_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo "?")"
+PI_BUILD="$(grep -E '^PI_UI_BUILD\s*=' "${ROOT}/price_increase_tab.py" 2>/dev/null | head -1 | sed -E 's/^PI_UI_BUILD\s*=\s*//; s/^["'\'']//; s/["'\'']\s*$//')"
+[ -n "$PI_BUILD" ] || PI_BUILD="(공문빌드 확인불가)"
 
 if [ "$SYNCED_HARD" = true ]; then
   osascript -e 'display alert "GitHub main과 동기화했습니다" message "로컬 git 커밋/수정은 제거되었을 수 있습니다. 필요하면 터미널에서 git stash list 로 확인하세요."'
-  MSG="GitHub main 동기화 — 서버 재시작"
+  MSG="동기화 ${AFTER_SHORT} — 재시작 · ${PI_BUILD}"
 elif [ "$BEFORE" = "$AFTER" ]; then
-  MSG="이미 최신입니다"
+  MSG="이미 최신 ${AFTER_SHORT} · ${PI_BUILD}"
 else
-  MSG="코드 갱신됨 — 서버 재시작합니다"
+  MSG="갱신 ${AFTER_SHORT} — 재시작 · ${PI_BUILD}"
 fi
 osascript -e "display notification \"${MSG}\" with title \"영업 대시보드\""
+
+# 코드 stamp 지워서 Local이 반드시 재시작하도록
+rm -f "${ROOT}/.dash_code_stamp"
 
 [ -x "${ROOT}/dashboard_Stop.command" ] && bash "${ROOT}/dashboard_Stop.command"
 sleep 2
