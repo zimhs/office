@@ -1641,10 +1641,7 @@ def _mr_filter_and_results(
 
     _mr_ensure_draft_widgets()
 
-    st.caption(
-        "필터 **v11** · 지역→단지→공급사 종속 · "
-        "**적용** 클릭 시 이 영역만 갱신 (전체 대시보드 rerun 없음)."
-    )
+    st.caption("지역 → 산업단지 → 공급사 순으로 고른 뒤 **적용**을 누르세요.")
 
     draft_r = list(st.session_state.get("mr_w_region") or [])
     draft_c = list(st.session_state.get("mr_w_complex") or [])
@@ -1718,13 +1715,7 @@ def _mr_filter_and_results(
         )
 
     if applied:
-        flash = _mr_apply_draft_filters(cascade)
-        _rg = flash.get("regions") or []
-        st.success(
-            "필터 적용됨 · "
-            + (f"지역 {', '.join(_rg)}" if _rg else "전체")
-            + (f" · 검색「{flash.get('query')}」" if flash.get("query") else "")
-        )
+        _mr_apply_draft_filters(cascade)
 
     app_r = list(st.session_state.get("mr_v6_region") or [])
     app_c = list(st.session_state.get("mr_v6_complex") or [])
@@ -1911,7 +1902,14 @@ def _mr_filter_results(
 @st.fragment
 def _mr_loaded_panel(latest_update_str: str = "") -> None:
     """데이터 로드·지표·필터 — fragment로 셸(헤더·업로드) 먼저 그린 뒤 비동기 채움."""
-    with st.spinner("시장조사 데이터 불러오는 중…"):
+    warm = st.session_state.get("_mr_session_bundle")
+    need_spinner = not (
+        isinstance(warm, dict) and warm.get("df") is not None and warm.get("sig")
+    )
+    if need_spinner:
+        with st.spinner("시장조사 데이터 불러오는 중…"):
+            df, raw_n, removed_n, cascade = _mr_load_tab_bundle()
+    else:
         df, raw_n, removed_n, cascade = _mr_load_tab_bundle()
 
     if df.empty:
@@ -1921,6 +1919,7 @@ def _mr_loaded_panel(latest_update_str: str = "") -> None:
         )
         return
 
+    st.markdown("##### 조회 요약")
     n_all = len(df)
     n_survey = int((~df["_factory_only"]).sum())
     n_merged_rows = int((df["병합건수"] > 1).sum()) if "병합건수" in df.columns else 0
@@ -1956,13 +1955,11 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         "<div class='sub-header dashboard-tab-panel-head'>🔎 시장조사</div>",
         unsafe_allow_html=True,
     )
-    st.caption(
-        "경로: Google Drive › Desktop › 업무 › 시장조사  ·  "
-        "엑셀 업로드·직접입력 가능 · 검색은 「적용」"
-    )
+    st.caption("엑셀·직접입력 후 아래에서 검색하고 **적용**을 누르세요.")
 
     with st.expander("📁 엑셀 업로드", expanded=False):
         st.caption(
+            "Google Drive › Desktop › 업무 › 시장조사 · "
             "파일을 `uploaded_cache/market_research/uploads/`에 저장한 뒤 목록에 합칩니다. "
             "양식이 다르면 아래 **파싱 형식**을 지정하세요."
         )
@@ -2133,4 +2130,5 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                 "(맥이면 Drive「시장조사/직접입력_시장조사.json」에도 복사)"
             )
 
+    st.divider()
     _mr_loaded_panel(latest_update_str)
