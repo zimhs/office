@@ -5387,8 +5387,12 @@ def _dash_inject_filter_select_script_for_run() -> None:
     _dash_inject_filter_select_script()
 
 
-def _dash_inject_sticky_resync_script() -> None:
-    """fragment/탭 전환·heavy 탭 로드 후 dual-fixed 탭줄을 즉시 재고정."""
+def _dash_inject_sticky_resync_script(*, force: bool = False) -> None:
+    """fragment/탭 전환·heavy 탭 로드 후 dual-fixed 탭줄을 즉시 재고정.
+
+    force=True: 시장조사 등 heavy 풀로딩 직전/직후 — 쿨다운으로 건너뛰지 않음.
+    """
+    _force_js = "true" if force else "false"
     components.html(
         """
         <script>
@@ -5396,9 +5400,11 @@ def _dash_inject_sticky_resync_script() -> None:
           var win = window.parent;
           var doc = win.document;
           var now = Date.now();
-          /* Cloud 로딩/fragment 중 분리바로 바뀌지 않도록 쿨다운을 짧게 */
+          var force = __DASH_STICKY_RESYNC_FORCE__;
+          /* 즉시 호출만 짧게 디바운스. delayed retry는 항상 예약(heavy 로드 누락 방지) */
           var cool = 120;
-          if (win.__dashStickyResyncAt && (now - win.__dashStickyResyncAt) < cool) return;
+          var skipImmediate = (!force && win.__dashStickyResyncAt
+            && (now - win.__dashStickyResyncAt) < cool);
           win.__dashStickyResyncAt = now;
           function remountSticky() {
             try {
@@ -5428,7 +5434,6 @@ def _dash_inject_sticky_resync_script() -> None:
                   win.__dashboardEnsureCloudStickyTabs(fb);
                 }
               }
-              /* dual-fixed: schedule만으로는 remount 직후 한 박자 늦을 수 있어 즉시 sync */
               if (typeof win.__dashboardMacScheduleSync === 'function') {
                 win.__dashboardMacScheduleSync(0);
               }
@@ -5440,13 +5445,13 @@ def _dash_inject_sticky_resync_script() -> None:
               }
             } catch (e) {}
           }
-          remountSticky();
-          [24, 80, 200, 480].forEach(function (ms) {
+          if (!skipImmediate) remountSticky();
+          [24, 80, 200, 480, 900].forEach(function (ms) {
             setTimeout(remountSticky, ms);
           });
         })();
         </script>
-        """,
+        """.replace("__DASH_STICKY_RESYNC_FORCE__", _force_js),
         height=0,
         width=0,
     )
@@ -5548,12 +5553,12 @@ def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
     active = _dash_active_tab_idx()
     on_this_tab = active is not None and int(active) == int(tab_idx)
 
-    # 첫 로딩에서 dash_active_tab 쿠키가 아직 주입되기 전이면 active가 None일 수 있다.
-    # 이때 heavy 탭을 stub으로만 렌더하면(「화면 불러오기」만 뜨면) 사용자 입장에서
-    # 탭이 제대로 "펼쳐져" 보이지 않는 문제가 생긴다.
-    # 단, 상단 필터가 바뀐 run은 제외한다.
-    if active is None and not st.session_state.get("_dash_filter_changed_flag", False):
-        return False
+    # active 쿠키가 아직 없으면(첫 페인트) 요약 탭만 보이는 상태다.
+    # 이때 시장조사·업무일지·공문까지 백그라운드 풀로딩하면 거대한 DOM/리런이
+    # 상단 통합 고정바를 분리바로 풀어버린다 → heavy는 stub 유지.
+    # 사용자가 해당 탭을 누르면 cookie + 「화면 불러오기」자동 클릭으로 full render.
+    if active is None:
+        return True
 
     if st.session_state.get("_dash_filter_changed_flag"):
         if on_this_tab:
@@ -5640,9 +5645,22 @@ def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: t
                   }}, 8000);
                 }} catch (eLk2) {{}}
               }}
+              function kickSticky() {{
+                try {{
+                  var w = window.parent;
+                  if (typeof w.__dashboardMacScheduleSync === 'function') w.__dashboardMacScheduleSync(0);
+                  if (typeof w.__dashboardIpadScheduleSync === 'function') w.__dashboardIpadScheduleSync(0);
+                  if (typeof w.__dashboardFixDuplicateTabs === 'function') w.__dashboardFixDuplicateTabs(true);
+                }} catch (eKs) {{}}
+              }}
               if (triggerRemount) {{
                 armLock();
-                setTimeout(function () {{ clickRemountForTab(idx); }}, 40);
+                setTimeout(function () {{
+                  clickRemountForTab(idx);
+                  kickSticky();
+                  setTimeout(kickSticky, 200);
+                  setTimeout(kickSticky, 600);
+                }}, 40);
                 return;
               }}
               var bootKey = 'dash_heavy_boot_' + idx;
@@ -5650,7 +5668,11 @@ def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: t
                 if (!sessionStorage.getItem(bootKey)) {{
                   sessionStorage.setItem(bootKey, '1');
                   armLock();
-                  setTimeout(function () {{ clickRemountForTab(idx); }}, 80);
+                  setTimeout(function () {{
+                    clickRemountForTab(idx);
+                    kickSticky();
+                    setTimeout(kickSticky, 200);
+                  }}, 80);
                 }}
               }} catch (eBoot) {{}}
             }} catch (e1) {{}}
@@ -5660,7 +5682,15 @@ def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: t
             doc.addEventListener('click', function (ev) {{
               try {{
                 var t = ev.target && ev.target.closest && ev.target.closest('[role="tab"]');
-                if (t) setTimeout(function () {{ writeIdx(true); }}, 30);
+                if (t) {{
+                  setTimeout(function () {{ writeIdx(true); }}, 30);
+                  /* 탭 클릭 직후에도 고정바 기하 유지 (heavy 전환 플리커 완화) */
+                  try {{
+                    var w = window.parent;
+                    if (typeof w.__dashboardMacScheduleSync === 'function') w.__dashboardMacScheduleSync(0);
+                    if (typeof w.__dashboardIpadScheduleSync === 'function') w.__dashboardIpadScheduleSync(0);
+                  }} catch (eTabSync) {{}}
+                }}
               }} catch (e2) {{}}
             }}, true);
           }}
@@ -11875,7 +11905,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
     _STICKY_INJECT_VER = 58
-    _ACTIVE_TAB_INJECT_VER = 10
+    _ACTIVE_TAB_INJECT_VER = 11
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
@@ -14951,6 +14981,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     )
                 else:
                     _dash_restore_session_keys("_dash_bak_worklog")
+                    _dash_inject_sticky_resync_script(force=True)
 
                     import worklog_tab as _worklog_tab
 
@@ -14967,6 +14998,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                         "_dash_bak_worklog",
                         _DASH_WL_STATE_PREFIXES,
                     )
+                    _dash_inject_sticky_resync_script(force=True)
             except ModuleNotFoundError:
                 st.error(
                     "일일업무일지 모듈(`worklog_tab.py`)을 찾을 수 없습니다. "
@@ -15001,6 +15033,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                 )
             else:
                 _dash_restore_session_keys("_dash_bak_market")
+                # heavy 풀로딩 직전: 고정바 기하를 잠가 시장조사 DOM 폭주 중 분리 방지
+                _dash_inject_sticky_resync_script(force=True)
 
                 import market_research_tab as _mr_tab
 
@@ -15014,6 +15048,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     sys.modules["market_research_tab"] = _mr_tab
                 _mr_tab.render_market_research_tab(latest_update_str)
                 _dash_backup_session_keys("_dash_bak_market", _DASH_MR_STATE_PREFIXES)
+                _dash_inject_sticky_resync_script(force=True)
         except ModuleNotFoundError:
             st.error(
                 "시장조사 모듈(`market_research_tab.py`)을 찾을 수 없습니다. "
@@ -15037,6 +15072,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     )
                 else:
                     _dash_restore_session_keys("_dash_bak_letter")
+                    _dash_inject_sticky_resync_script(force=True)
 
                     import price_increase_tab as _pi_tab
 
@@ -15051,6 +15087,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     _pi_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
                     _pi_tab.render_price_increase_tab(_pi_df, latest_update_str=latest_update_str)
                     _dash_backup_session_keys("_dash_bak_letter", _DASH_PI_STATE_PREFIXES)
+                    _dash_inject_sticky_resync_script(force=True)
             except ModuleNotFoundError:
                 st.error(
                     "공문 모듈(`price_increase_tab.py`)을 찾을 수 없습니다. "
