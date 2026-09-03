@@ -5504,42 +5504,16 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """heavy 탭 defer — 업무일지·시장조사·공문(9~11) lazy (로컬·Cloud 공통).
+    """heavy 탭(업무일지·시장조사·공문) — 항상 펼쳐서 풀로딩.
 
-    활성 탭·「화면 불러오기」·탭 클릭 remount 시에만 full render.
-    한 번 연 탭은 filter 미변경 rerun에서도 stub 되돌리지 않음(탭 전환 유지).
-    검색/필터 변경 시 비활성 heavy는 stub → 이중 풀로딩 방지.
+    stub/「화면 불러오기」없이 세 탭 UI·데이터를 처음부터 렌더한다.
+    (고정바 소실은 sticky CSS/장착 로직으로 별도 방어)
     """
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
-    if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
-        mounted[tab_idx] = True
-        return False
-
-    active = _dash_active_tab_idx()
-    on_this_tab = active is not None and int(active) == int(tab_idx)
-
-    # active 쿠키가 아직 없으면(첫 페인트) 요약 탭만 보이는 상태다.
-    # 이때 시장조사·업무일지·공문까지 백그라운드 풀로딩하면 거대한 DOM/리런이
-    # 상단 통합 고정바를 분리바로 풀어버린다 → heavy는 stub 유지.
-    # 사용자가 해당 탭을 누르면 cookie + 「화면 불러오기」자동 클릭으로 full render.
-    if active is None:
-        return True
-
-    if st.session_state.get("_dash_filter_changed_flag"):
-        if on_this_tab:
-            mounted[tab_idx] = True
-            return False
-        mounted[tab_idx] = False
-        return True
-
-    if mounted.get(tab_idx):
-        return False
-
-    if on_this_tab:
-        mounted[tab_idx] = True
-        return False
-
-    return True
+    # force 플래그도 소비해 두고 항상 full render
+    st.session_state.pop(f"_dash_force_tab_{tab_idx}", None)
+    mounted[tab_idx] = True
+    return False
 
 
 def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: tuple[str, ...]) -> None:
