@@ -40,7 +40,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-03e · 로컬SMTP설정"
+PI_UI_BUILD = "2026-09-03e2 · SMTP설정표시"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -3185,27 +3185,74 @@ def _render_smtp_bar() -> dict:
         tpl = resolve_letter_template()
         st.caption(f"양식: `{os.path.basename(tpl)}`")
 
-    # 로컬: secrets 없어도 화면에서 다음메일 계정 저장
-    show_setup = (not cfg.get("ready")) or (not _pi_is_streamlit_cloud())
-    if show_setup:
-        with st.expander(
-            "🔐 SMTP 계정 설정 (다음메일)",
-            expanded=not bool(cfg.get("ready")),
-        ):
-            if _pi_is_streamlit_cloud():
-                st.caption(
-                    "Cloud는 Streamlit Secrets에 `smtp_user` / `smtp_password` 를 넣으세요."
+    # 미연동이면 expander 없이 바로 입력폼 표시 (찾기 쉽게)
+    if not cfg.get("ready") and not _pi_is_streamlit_cloud():
+        st.info(
+            "**다음메일 SMTP 미연동** — 아래에 아이디·비밀번호를 넣고 「저장 · 연동」을 누르세요. "
+            "(다음메일 설정에서 POP3/IMAP 사용 ON)"
+        )
+        local = load_local_smtp()
+        u0 = str(cfg.get("user") or local.get("smtp_user") or "")
+        p0 = str(local.get("smtp_password") or "")
+        with st.form("pi_local_smtp_form"):
+            st.markdown("##### 🔐 SMTP 계정 설정 (다음메일)")
+            provider = st.selectbox(
+                "메일",
+                ["daum", "gmail", "naver"],
+                index=["daum", "gmail", "naver"].index(
+                    str(local.get("smtp_provider") or cfg.get("provider") or "daum")
                 )
+                if str(local.get("smtp_provider") or cfg.get("provider") or "daum")
+                in ("daum", "gmail", "naver")
+                else 0,
+            )
+            user = st.text_input(
+                "메일 아이디",
+                value=u0,
+                placeholder="아이디@daum.net",
+            )
+            password = st.text_input(
+                "메일 비밀번호",
+                value=p0,
+                type="password",
+                placeholder="다음메일 비밀번호",
+            )
+            from_name = st.text_input(
+                "보내는 이름",
+                value=str(local.get("smtp_from_name") or cfg.get("from_name") or "신일가스"),
+            )
+            relax_ssl = st.checkbox(
+                "Mac SSL 오류 시 검증 완화 (CERTIFICATE_VERIFY_FAILED)",
+                value=True,
+            )
+            saved = st.form_submit_button("저장 · 연동", use_container_width=True)
+        if saved:
+            if not user or not password:
+                st.error("아이디와 비밀번호를 모두 입력하세요.")
             else:
-                st.caption(
-                    "다음메일 → 설정 → **POP3/IMAP 사용 ON** 후, "
-                    "아이디(전체메일)와 비밀번호를 저장하세요. "
-                    f"저장 위치: `{PI_SMTP_LOCAL}` (이 Mac에만 보관)"
+                path = save_local_smtp(
+                    user=user,
+                    password=password,
+                    provider=str(provider),
+                    from_name=from_name,
+                    ssl_verify="0" if relax_ssl else "1",
                 )
+                st.success(f"저장됨 → `{path}` · 연결 테스트로 확인하세요.")
+                _pi_rerun()
+        return smtp_settings()
+
+    # 이미 연동됨(또는 Cloud) — 접을 수 있는 재설정
+    show_setup = not _pi_is_streamlit_cloud()
+    if show_setup:
+        with st.expander("🔐 SMTP 계정 변경 (다음메일)", expanded=False):
+            st.caption(
+                "비밀번호를 바꾸려면 다시 저장하세요. "
+                f"저장 위치: `{PI_SMTP_LOCAL}`"
+            )
             local = load_local_smtp()
             u0 = str(cfg.get("user") or local.get("smtp_user") or "")
             p0 = str(local.get("smtp_password") or "")
-            with st.form("pi_local_smtp_form"):
+            with st.form("pi_local_smtp_form_edit"):
                 provider = st.selectbox(
                     "메일",
                     ["daum", "gmail", "naver"],
@@ -3216,23 +3263,16 @@ def _render_smtp_bar() -> dict:
                     in ("daum", "gmail", "naver")
                     else 0,
                 )
-                user = st.text_input(
-                    "메일 아이디",
-                    value=u0,
-                    placeholder="아이디@daum.net",
-                )
+                user = st.text_input("메일 아이디", value=u0, placeholder="아이디@daum.net")
                 password = st.text_input(
-                    "메일 비밀번호",
-                    value=p0,
-                    type="password",
-                    placeholder="다음메일 비밀번호",
+                    "메일 비밀번호", value=p0, type="password", placeholder="다음메일 비밀번호"
                 )
                 from_name = st.text_input(
                     "보내는 이름",
                     value=str(local.get("smtp_from_name") or cfg.get("from_name") or "신일가스"),
                 )
                 relax_ssl = st.checkbox(
-                    "Mac SSL 오류 시 검증 완화 (CERTIFICATE_VERIFY_FAILED)",
+                    "Mac SSL 오류 시 검증 완화",
                     value=str(local.get("smtp_ssl_verify") or "0") in ("0", "false", "off"),
                 )
                 saved = st.form_submit_button("저장 · 연동", use_container_width=True)
@@ -3247,10 +3287,10 @@ def _render_smtp_bar() -> dict:
                         from_name=from_name,
                         ssl_verify="0" if relax_ssl else "1",
                     )
-                    st.success(f"저장됨 → `{path}` · 연결 테스트로 확인하세요.")
+                    st.success(f"저장됨 → `{path}`")
                     _pi_rerun()
-            if cfg.get("ready"):
-                st.caption("이미 연동됨. 비밀번호를 바꾸려면 다시 저장하세요.")
+    elif _pi_is_streamlit_cloud() and not cfg.get("ready"):
+        st.warning("Cloud Secrets에 `smtp_user` / `smtp_password` 를 넣으세요.")
     return smtp_settings()
 
 
