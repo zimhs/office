@@ -1898,7 +1898,7 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
     with st.spinner("시장조사 데이터 불러오는 중…"):
         df, raw_n, removed_n, cascade = _mr_load_tab_bundle()
 
-    with st.expander("📁 엑셀 업로드", expanded=False):
+    with st.expander("📁 엑셀 업로드", expanded=True):
         st.caption(
             "파일을 `uploaded_cache/market_research/uploads/`에 저장한 뒤 목록에 합칩니다. "
             "양식이 다르면 아래 **파싱 형식**을 지정하세요."
@@ -1981,7 +1981,7 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                         st.rerun()
             st.caption(f"저장 폴더: `{MR_UPLOAD_DIR}`")
 
-    with st.expander("✍️ 새 시장조사 입력", expanded=False):
+    with st.expander("✍️ 새 시장조사 입력", expanded=True):
         with st.form("mr_new_entry_form", clear_on_submit=True):
             r1c1, r1c2, r1c3 = st.columns([1.3, 0.9, 1.2])
             with r1c1:

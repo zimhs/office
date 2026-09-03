@@ -3116,7 +3116,7 @@ def _render_pi_left_summary(
         st.dataframe(_items_df_for_editor(items), use_container_width=True, hide_index=True)
     else:
         st.caption("단가표 없음 · 공문 본문만 발송")
-    with st.expander("공문 본문 미리보기", expanded=False):
+    with st.expander("공문 본문 미리보기", expanded=True):
         st.text(letter_body or "(본문 없음)")
 
 
