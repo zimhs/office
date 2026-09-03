@@ -350,8 +350,9 @@ def inject_custom_css():
             /* ===== 상단 통합 고정바 (필터 + 탭) ===== */
             #dashboard-sticky-spacer {
                 width: 100% !important;
-                height: var(--dashboard-fixed-bar-height, 168px) !important;
-                min-height: 152px !important;
+                /* 초기 동기화 전에도 로컬과 동일한 여백 크기 유지 */
+                height: var(--dashboard-fixed-bar-height, 120px) !important;
+                min-height: 120px !important;
                 margin: 0 !important;
                 padding: 0 !important;
                 pointer-events: none !important;
