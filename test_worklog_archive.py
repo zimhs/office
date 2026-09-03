@@ -152,6 +152,27 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         finally:
             wb.close()
 
+    def test_save_worklog_day_local_only_writes_sheet(self):
+        d = date(2026, 9, 4)
+        tpl = os.path.join(self._tmp.name, "template.xlsx")
+        cache = os.path.join(self._tmp.name, "cache")
+        os.makedirs(cache, exist_ok=True)
+        _write_day_xlsx(tpl, "tpl")
+        with patch.object(self.wt, "WORKLOG_TEMPLATE", tpl), patch.object(self.wt, "WORKLOG_DIR", cache):
+            self.wt.create_worklog_day_local(d)
+            cells = self.wt._empty_cells(d)
+            cells["C8"] = "테스트거래처"
+            cells["G8"] = "테스트내용"
+            self.wt.save_worklog_day_local_only(d, cells)
+        month_path = os.path.join(self.root, "2026", "9월.xlsx")
+        wb = load_workbook(month_path, read_only=True)
+        try:
+            self.assertIn("4", wb.sheetnames)
+            self.assertEqual(str(wb["4"]["C8"].value or ""), "테스트거래처")
+            self.assertEqual(str(wb["4"]["G8"].value or ""), "테스트내용")
+        finally:
+            wb.close()
+
 
 if __name__ == "__main__":
     unittest.main()

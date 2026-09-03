@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-04b · 추가·요약·달력·맥경로"
+_WL_UI_BUILD = "2026-09-04c · 팝업에서작성·로컬저장"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1761,7 +1761,37 @@ def create_worklog_day_local(d: date) -> dict:
         "target": target,
         "msg": msg,
         "cells": cells,
+        "iso": iso,
     }
+
+
+def save_worklog_day_local_only(d: date, cells: dict) -> str:
+    """작성 저장 — 로컬 캐시 + 맥 월별 시트만. Drive/Cloud 없음."""
+    path = worklog_path(d)
+    cells = _spill_all_content(cells)
+    write_cells_to_path(path, d, cells, force_template=True)
+    try:
+        upsert_worklog_archive_sheet(d, path, allow_overwrite=True)
+    except Exception as e:
+        st.session_state["wl_last_archive_err"] = str(e)
+    _invalidate_saved_dates_cache()
+    _invalidate_worklog_presence_cache(d)
+    iso = d.isoformat()
+    st.session_state[f"wl_saved_ok_{iso}"] = True
+    ctx = dict(st.session_state.get(f"wl_open_ctx_{iso}") or {})
+    ctx["had_local"] = True
+    st.session_state[f"wl_open_ctx_{iso}"] = ctx
+    try:
+        _publish_view_cells(d, cells)
+    except Exception:
+        pass
+    st.session_state.pop(f"wl_sum_sig_v25_{iso}", None)
+    st.session_state.pop(f"wl_sum_html_v25_{iso}", None)
+    st.session_state[f"wl_left_excel_on_{iso}"] = False
+    saved_set = st.session_state.get("wl_saved_dates_cache")
+    if isinstance(saved_set, set):
+        saved_set.add(iso)
+    return path
 
 
 def _purge_worklog_day_preview_cache(d: date) -> None:
@@ -3559,30 +3589,111 @@ def _worklog_form_preview_dialog() -> None:
 
 @st.dialog("엑셀 업무일지", width="large")
 def _worklog_created_dialog() -> None:
-    """추가 클릭 — 그 날짜 로컬 엑셀 생성 결과 + 양식 미리보기."""
+    """추가 클릭 — 미리보기 + 오른쪽에서 바로 작성·로컬 저장."""
     info = st.session_state.get("wl_create_dialog") or {}
+    iso = str(info.get("iso") or "")
+    d = None
+    if iso:
+        try:
+            d = date.fromisoformat(iso)
+        except ValueError:
+            d = None
+    if d is None:
+        cur = st.session_state.get("worklog_selected")
+        d = cur if isinstance(cur, date) else date.today()
+        iso = d.isoformat()
     msg = str(info.get("msg") or "로컬 엑셀 업무일지")
-    target = str(info.get("target") or "")
-    if info.get("created"):
+    target = str(info.get("target") or describe_worklog_archive_target(d))
+    if info.get("saved"):
+        st.success(msg)
+    elif info.get("created"):
         st.success(msg)
     else:
         st.info(msg)
-    if target:
-        st.caption(f"맥 경로: `{target}`")
-    st.caption("요약보기에 반영 · 달력에 • · 작성은 오른쪽 입력 후 「저장」")
-    path = st.session_state.get("wl_dialog_preview_path")
-    if path and os.path.exists(str(path)):
-        path = str(path)
-        try:
-            scale = _WL_PREVIEW_SCALE
-            print_html = render_worklog_view_html(path, print_mode=False, auto_print=False, scale=scale)
-            _, frame_h = _scaled_view_frame_size(path, scale)
-            components.html(print_html, height=min(760, max(420, int(frame_h))), scrolling=True)
-        except Exception as e:
-            st.warning(f"미리보기 표시 실패: {e}")
-    if st.button("닫고 작성하기", type="primary", width="stretch", key="wl_create_dialog_close"):
-        st.session_state.pop("wl_create_dialog", None)
-        st.rerun()
+    st.caption(f"맥 경로: `{target}` · 이 팝업에서 작성 · 요약보기·달력 • 반영")
+
+    if not st.session_state.get(f"wl_dlg_seeded_{iso}"):
+        ents = list(st.session_state.get(_entries_key(d)) or [])
+        if not ents:
+            ents = [{"client": "", "content": ""}]
+        st.session_state[f"wl_dlg_n_{iso}"] = max(1, len(ents))
+        for i, ent in enumerate(ents):
+            if f"wl_dlg_c_{iso}_{i}" not in st.session_state:
+                st.session_state[f"wl_dlg_c_{iso}_{i}"] = str(ent.get("client") or "")
+            if f"wl_dlg_t_{iso}_{i}" not in st.session_state:
+                st.session_state[f"wl_dlg_t_{iso}_{i}"] = str(ent.get("content") or "")
+        if f"wl_dlg_next_{iso}" not in st.session_state:
+            st.session_state[f"wl_dlg_next_{iso}"] = str(st.session_state.get(_next_key(d), "") or "")
+        if f"wl_dlg_notes_{iso}" not in st.session_state:
+            st.session_state[f"wl_dlg_notes_{iso}"] = str(st.session_state.get(_notes_key(d), "") or "")
+        st.session_state[f"wl_dlg_seeded_{iso}"] = True
+
+    left, right = st.columns([1.05, 1], gap="medium")
+    with left:
+        path = st.session_state.get("wl_dialog_preview_path")
+        if path and os.path.exists(str(path)):
+            path = str(path)
+            try:
+                scale = _WL_PREVIEW_SCALE
+                print_html = render_worklog_view_html(path, print_mode=False, auto_print=False, scale=scale)
+                _, frame_h = _scaled_view_frame_size(path, scale)
+                components.html(print_html, height=min(640, max(360, int(frame_h))), scrolling=True)
+            except Exception as e:
+                st.warning(f"미리보기 표시 실패: {e}")
+        else:
+            st.caption("미리보기 없음")
+    with right:
+        st.markdown("##### 작성")
+        n = int(st.session_state.get(f"wl_dlg_n_{iso}", 1) or 1)
+        for i in range(n):
+            st.markdown(f"**항목 {i + 1}**")
+            st.text_input("거래처", key=f"wl_dlg_c_{iso}_{i}", placeholder="거래처", label_visibility="collapsed")
+            st.text_area("내용", key=f"wl_dlg_t_{iso}_{i}", height=88, placeholder="내용", label_visibility="collapsed")
+        if st.button("＋ 항목 추가", key=f"wl_dlg_add_{iso}", width="stretch"):
+            st.session_state[f"wl_dlg_n_{iso}"] = n + 1
+            st.rerun()
+        st.text_area("익일업무", key=f"wl_dlg_next_{iso}", height=72)
+        st.text_area("특이사항", key=f"wl_dlg_notes_{iso}", height=72)
+        if st.button("로컬 저장", type="primary", key=f"wl_dlg_save_{iso}", width="stretch"):
+            n_now = int(st.session_state.get(f"wl_dlg_n_{iso}", 1) or 1)
+            entries = []
+            for i in range(n_now):
+                c = str(st.session_state.get(f"wl_dlg_c_{iso}_{i}") or "")
+                t = str(st.session_state.get(f"wl_dlg_t_{iso}_{i}") or "")
+                entries.append(
+                    {
+                        "client": c,
+                        "content": t,
+                        "client_lines": [ln for ln in c.splitlines() if ln] or [c],
+                        "lines": t.splitlines() or [""],
+                        "blank_after": 1,
+                    }
+                )
+            next_txt = str(st.session_state.get(f"wl_dlg_next_{iso}") or "")
+            notes_txt = str(st.session_state.get(f"wl_dlg_notes_{iso}") or "")
+            cells = _pack_entries_to_cells(d, entries, _textarea_lines(next_txt), _textarea_lines(notes_txt))
+            try:
+                save_worklog_day_local_only(d, cells)
+                _seed_day_entry_widgets(d, entries, next_txt, notes_txt)
+                preview = _prepare_excel_preview(d, cells)
+                st.session_state["wl_dialog_preview_path"] = preview
+                info = dict(info)
+                info["saved"] = True
+                info["created"] = False
+                info["msg"] = f"로컬 저장 완료 · {describe_worklog_archive_target(d)}"
+                info["target"] = describe_worklog_archive_target(d)
+                info["iso"] = iso
+                st.session_state["wl_create_dialog"] = info
+                st.session_state["wl_need_left_refresh"] = True
+                st.rerun()
+            except Exception as e:
+                if _wl_quiet_ui():
+                    st.error("로컬 저장에 실패했습니다. 템플릿·경로를 확인해 주세요.")
+                else:
+                    st.error(f"로컬 저장 실패: {e}")
+        if st.button("닫기", key="wl_create_dialog_close", width="stretch"):
+            st.session_state.pop("wl_create_dialog", None)
+            st.rerun()
 
 
 def _prepare_excel_preview(d: date, cells: dict) -> str:
