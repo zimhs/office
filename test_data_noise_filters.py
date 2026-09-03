@@ -133,5 +133,23 @@ class IndustryStaffMapTest(unittest.TestCase):
         self.assertEqual(kept.iloc[0]["담당자"], "박철수")
 
 
+class CloudLocalParityHelpersTest(unittest.TestCase):
+    def test_cloud_uses_same_12_tabs_as_local(self):
+        self.assertTrue(_dash_cloud_merged_tabs())
+
+    def test_drive_boot_worklog_only_does_not_rerun_dashboard(self):
+        self.assertFalse(_drive_boot_copy_affects_dashboard(["worklog/2026-09-03.xlsx"]))
+        self.assertFalse(_drive_boot_copy_affects_dashboard([]))
+        self.assertTrue(_drive_boot_copy_affects_dashboard(["sales/202609.csv"]))
+        self.assertTrue(_drive_boot_copy_affects_dashboard(["주소.csv", "worklog/2026-09-03.xlsx"]))
+
+    def test_cache_has_dashboard_data_on_seed(self):
+        cache = os.path.join(os.path.dirname(__file__), "uploaded_cache")
+        self.assertTrue(_cache_has_dashboard_data(cache))
+
+    def test_desktop_sidebar_stays_expanded(self):
+        self.assertEqual(_dash_initial_sidebar_state(), "expanded")
+
+
 if __name__ == "__main__":
     unittest.main()

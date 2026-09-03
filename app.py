@@ -57,27 +57,51 @@ _TAB3_CMAP_GREEN = LinearSegmentedColormap.from_list(
 _TAB3_CMAP_ORANGE = LinearSegmentedColormap.from_list(
     "tab3_orange", ["#FFF7ED", "#FFEDD5", "#FDBA74"]
 )
-# OpenDartReader 강제 주입 및 인식 패치
-import sys
-import subprocess
-import importlib
-import streamlit as st
-
+# OpenDartReader — requirements.txt에 포함. Cloud 부트에서 pip install 금지(로딩 폭증).
 try:
     import OpenDartReader
 except ImportError:
+    OpenDartReader = None
+
+
+def _dash_initial_sidebar_state() -> str:
+    """iPad Mini 등 터치: 사이드바를 접고 시작. 맥 데스크톱은 expanded."""
     try:
-        # 1. 강제 설치
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "opendartreader"])
-        # 2. 파이썬 안경 씌우기 (새로 설치된 부품 즉시 인식!)
-        importlib.invalidate_caches()
-        # 3. 다시 임포트
-        import OpenDartReader
+        cookies = getattr(st.context, "cookies", None)
+        if cookies is not None and str(cookies.get("dashboard_touch", "") or "") == "1":
+            return "collapsed"
     except Exception:
-        OpenDartReader = None
+        pass
+    try:
+        headers = getattr(st.context, "headers", None)
+        ua = ""
+        if headers is not None:
+            ua = str(headers.get("User-Agent") or headers.get("user-agent") or "")
+        if ua and (
+            re.search(r"iPad|iPhone|iPod", ua)
+            or ("Macintosh" in ua and "Mobile" in ua)
+        ):
+            return "collapsed"
+    except Exception:
+        pass
+    try:
+        qp = st.query_params.get("touch_ui", "")
+        if isinstance(qp, (list, tuple)):
+            qp = qp[0] if qp else ""
+        if str(qp).strip() in ("1", "true", "yes", "True"):
+            return "collapsed"
+    except Exception:
+        pass
+    return "expanded"
+
+
 # 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
 pd.set_option("styler.render.max_elements", 2000000)
-st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="통합 영업 분석 대시보드",
+    layout="wide",
+    initial_sidebar_state=_dash_initial_sidebar_state(),
+)
 
 from dev_mode import apply_dev_ui_gate, dev_caption, is_dev_mode
 
@@ -207,7 +231,6 @@ except ImportError:
 
 # 페이지 및 Styler 가동 한도 설정 (과부하 방지용)
 pd.set_option("styler.render.max_elements", 2000000)
-st.set_page_config(page_title="통합 영업 분석 대시보드", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
 # 0. 로컬 파일 자동 저장을 위한 디렉토리 설정
@@ -233,7 +256,7 @@ def inject_custom_css():
             document.documentElement.classList.add('notranslate');
         </script>
         <meta name="google" content="notranslate" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
         <style>
             /* 기본 불필요 UI 숨김 */
             div[data-baseweb="select"] + div:has(span) { display: none !important; }
@@ -528,6 +551,24 @@ def inject_custom_css():
                 touch-action: pan-x !important;
             }
 
+            /* 프록시 탭바 잔여분 제거 — 로컬·Cloud·iPad 모두 네이티브 탭 */
+            #dashboard-ipad-h-tabs {
+                display: none !important;
+                height: 0 !important;
+                max-height: 0 !important;
+                overflow: hidden !important;
+                visibility: hidden !important;
+                pointer-events: none !important;
+            }
+            .dashboard-ipad-hide-tabs {
+                display: flex !important;
+                visibility: visible !important;
+                height: auto !important;
+                max-height: none !important;
+                overflow-x: auto !important;
+                pointer-events: auto !important;
+            }
+
             .dashboard-filter-sticky [role="tablist"]::-webkit-scrollbar,
             .dashboard-tabs-in-filter::-webkit-scrollbar {
                 display: none;
@@ -572,22 +613,37 @@ def inject_custom_css():
                 }
             }
 
-            /* iPad Mini 7 등 — 세로(좁은 폭) */
+            /* iPad Mini 7 (CSS 744×1133) 세로 — 필터 2열 wrap, 탭 가로스크롤 */
             @media (max-width: 850px) {
                 section.main .block-container {
-                    padding-left: 0.5rem !important;
-                    padding-right: 0.5rem !important;
+                    padding-left: 0.45rem !important;
+                    padding-right: 0.45rem !important;
                 }
                 #dashboard-sticky-spacer {
-                    min-height: 132px !important;
+                    min-height: 168px !important;
+                    height: var(--dashboard-fixed-bar-height, 188px) !important;
                 }
                 .dashboard-filter-sticky,
                 .dashboard-filter-sticky-touch {
-                    left: 4px !important;
-                    right: 4px !important;
+                    left: max(4px, env(safe-area-inset-left, 0px)) !important;
+                    right: max(4px, env(safe-area-inset-right, 0px)) !important;
                     width: auto !important;
                     max-width: calc(100vw - 8px) !important;
                     padding: 4px 6px 0 6px !important;
+                }
+                .dashboard-filter-sticky [data-testid="stHorizontalBlock"] {
+                    flex-wrap: wrap !important;
+                    gap: 0.2rem 0.35rem !important;
+                }
+                .dashboard-filter-sticky [data-testid="column"] {
+                    min-width: calc(50% - 0.25rem) !important;
+                    flex: 1 1 calc(50% - 0.25rem) !important;
+                    max-width: 100% !important;
+                }
+                .dashboard-filter-sticky [data-testid="column"]:nth-child(4),
+                .dashboard-filter-sticky [data-testid="column"]:nth-child(5) {
+                    flex: 1 1 100% !important;
+                    min-width: 100% !important;
                 }
                 .dashboard-filter-sticky [role="tab"],
                 .dashboard-filter-sticky-touch [role="tab"] {
@@ -600,18 +656,33 @@ def inject_custom_css():
                 }
                 .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]) {
                     padding-top: 8px !important;
-                    scroll-margin-top: var(--dashboard-fixed-bar-height, 140px) !important;
+                    scroll-margin-top: var(--dashboard-fixed-bar-height, 188px) !important;
                 }
             }
 
-            /* iPad Mini 가로 — 필터 한 줄·탭 가로스크롤 여유 */
+            /* iPad Mini 7 가로 (CSS 1133×744) — 필터 한 줄, Safari 크롬 낮음 */
             @media (min-width: 851px) and (max-width: 1180px) and (orientation: landscape) {
+                .dashboard-filter-sticky [data-testid="stHorizontalBlock"] {
+                    flex-wrap: nowrap !important;
+                }
+                .dashboard-filter-sticky [data-testid="column"] {
+                    min-width: 0 !important;
+                    flex: 1 1 0 !important;
+                    max-width: none !important;
+                }
                 .dashboard-filter-sticky [role="tab"] {
                     font-size: 12px !important;
                     padding: 3px 9px !important;
                 }
                 #dashboard-sticky-spacer {
                     min-height: 120px !important;
+                }
+                html.dashboard-touch-mode .dashboard-filter-sticky-touch {
+                    top: max(2.4rem, env(safe-area-inset-top, 0px) + 1.5rem) !important;
+                    left: max(6px, env(safe-area-inset-left, 0px)) !important;
+                    right: max(6px, env(safe-area-inset-right, 0px)) !important;
+                    width: auto !important;
+                    max-width: none !important;
                 }
             }
 
@@ -5205,11 +5276,7 @@ def _dash_inject_filter_select_script() -> None:
 
 
 def _dash_inject_filter_select_script_for_run() -> None:
-    """필터 select JS — Mac: fragment rerun마다 주입. Cloud: delegation 1회면 iframe 생략."""
-    if _is_streamlit_cloud():
-        if st.session_state.get("_dash_filter_bind_injected_ver") == _DASH_FILTER_BIND_VER:
-            return
-        st.session_state["_dash_filter_bind_injected_ver"] = _DASH_FILTER_BIND_VER
+    """필터 select JS — 로컬·Cloud 공통: fragment rerun마다 주입 (DOM 교체 대응)."""
     _dash_inject_filter_select_script()
 
 
@@ -8159,7 +8226,7 @@ def inject_sticky_tabs_script():
     """필터+탭 상단 fixed.
     - 맥: 현재 안정 코드 100% 무손실 유지 (양식 깨짐 절대 없음)
     - iPad: 필터/검색창 터치 시 키보드를 강제로 내리거나 입력을 방해하던 스크롤 고정 족쇄 제거 패치
-    - Cloud: iPad 프록시 탭바 대신 Streamlit 네이티브 탭 유지(클릭·전환 보장)
+    - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
     components.html(
@@ -8171,8 +8238,8 @@ def inject_sticky_tabs_script():
             var cloudMode = __CLOUD_STICKY_MODE__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 21;
-            var STICKY_SCRIPT_VER_IPAD = 42; /* iPad Mini: 가로·세로 + Cloud 네이티브 탭 고정 */
+            var STICKY_SCRIPT_VER_MAC = 22;
+            var STICKY_SCRIPT_VER_IPAD = 43; /* 로컬=Cloud 네이티브 탭 + Mini 가로세로 */
             function bindDashboardFilterTextInputs() {
                 /* 필터 select UX → _dash_inject_filter_select_script (fragment rerun마다) */
             }
@@ -8194,17 +8261,14 @@ def inject_sticky_tabs_script():
                     (parentDoc.head || parentDoc.documentElement).appendChild(s);
                 }
                 s.textContent = (
-                    '#dashboard-ipad-h-tabs{display:block!important;overflow-x:auto!important;overflow-y:hidden!important;'
-                    + 'white-space:nowrap!important;width:100%!important;max-width:100%!important;height:46px!important;'
-                    + 'max-height:46px!important;-webkit-overflow-scrolling:touch!important;'
-                    + 'border-top:1px solid #E2E8F0!important;background:#fff!important;}'
-                    + '#dashboard-ipad-h-tabs button{display:inline-block!important;white-space:nowrap!important;'
-                    + 'width:auto!important;height:46px!important;padding:0 12px!important;margin:0!important;'
-                    + 'border:0!important;border-bottom:2px solid transparent!important;background:#fff!important;'
-                    + 'font-size:13px!important;font-weight:700!important;color:#1E293B!important;vertical-align:top!important;}'
-                    + '#dashboard-ipad-h-tabs button.dashboard-ipad-tab-on{color:#2563EB!important;border-bottom-color:#2563EB!important;}'
-                    + '.dashboard-ipad-hide-tabs{display:none!important;height:0!important;max-height:0!important;'
-                    + 'overflow:hidden!important;visibility:hidden!important;}'
+                    '.dashboard-filter-sticky [role="tablist"],.dashboard-tabs-in-filter{'
+                    + 'display:flex!important;flex-wrap:nowrap!important;overflow-x:auto!important;'
+                    + 'overflow-y:visible!important;-webkit-overflow-scrolling:touch!important;'
+                    + 'width:100%!important;max-width:100%!important;}'
+                    + '#dashboard-ipad-h-tabs{display:none!important;height:0!important;overflow:hidden!important;'
+                    + 'visibility:hidden!important;pointer-events:none!important;}'
+                    + '.dashboard-ipad-hide-tabs{display:flex!important;visibility:visible!important;'
+                    + 'height:auto!important;max-height:none!important;overflow-x:auto!important;}'
                 );
             }
             function ipadPatchScrollIntoView() {
@@ -8396,7 +8460,7 @@ def inject_sticky_tabs_script():
                 return false;
             }
             function ensureCloudStickyTabsNative(box) {
-                if (!cloudMode || !box) return;
+                if (!box) return;
                 var bar = parentDoc.getElementById('dashboard-ipad-h-tabs');
                 if (bar) { try { bar.remove(); } catch (eBar) {} }
                 box.classList.add('dashboard-filter-sticky-cloud');
@@ -8536,11 +8600,7 @@ def inject_sticky_tabs_script():
                     keep.style.removeProperty('overflow');
                     keep.style.setProperty('visibility', 'visible', 'important');
                     keep.style.setProperty('pointer-events', 'auto', 'important');
-                    if (cloudMode) {
-                        try { ensureCloudStickyTabsNative(filterBox); } catch (eCloud) {}
-                    } else if (touchMode) {
-                        try { ipadScrollTabs(filterBox); } catch (eSc) {}
-                    }
+                    try { ensureCloudStickyTabsNative(filterBox); } catch (eCloud) {}
                     if (host) hideStaleTabListsInHost(host, keep);
                 } else if (filterBox && filterBox.contains(keep)) {
                     keep.classList.add('dashboard-tabs-in-filter');
@@ -8710,11 +8770,14 @@ def inject_sticky_tabs_script():
                 try { bindDashboardFilterTextInputs(); } catch (eBind) {}
             }
             function ipadScrollTabs(box) {
-                /* Cloud(아이패드 Safari 포함): 프록시 탭바는 탭이 꼬이므로 네이티브만 사용 */
-                if (cloudMode) {
-                    try { ensureCloudStickyTabsNative(box); } catch (eCloudTab) {}
-                    return;
-                }
+                /* 로컬·Cloud·iPad 공통: 프록시 탭바는 고정탭을 꼬이게 하므로 네이티브만 사용 */
+                if (!box) return;
+                try { ensureCloudStickyTabsNative(box); } catch (eCloudTab) {}
+                try { ipadInjectTabHScrollCss(); } catch (eCss2) {}
+                var staleBar = parentDoc.getElementById('dashboard-ipad-h-tabs');
+                if (staleBar) { try { staleBar.remove(); } catch (eBar) {} }
+                return;
+                /* 아래 프록시 탭바 생성 코드는 사용하지 않음(고정탭 꼬임 방지) */
                 if (!box) return;
                 try { ipadInjectTabHScrollCss(); } catch (eCss2) {}
                 var list = null;
@@ -8794,11 +8857,7 @@ def inject_sticky_tabs_script():
                 if (!targetBox) return;
                 if (parentWin.__dashboardIpadFreezeLayout && targetBox.style.position === 'fixed') return;
                 if (isFilterDropdownOpen()) return;
-                if (cloudMode) {
-                    ensureCloudStickyTabsNative(targetBox);
-                } else {
-                    ipadScrollTabs(targetBox);
-                }
+                try { ensureCloudStickyTabsNative(targetBox); } catch (eNat) {}
                 targetBox.classList.add('dashboard-filter-sticky');
                 targetBox.classList.add('dashboard-filter-sticky-touch');
                 var header = parentDoc.querySelector('[data-testid="stHeader"]');
@@ -8807,12 +8866,23 @@ def inject_sticky_tabs_script():
                     var hb = header.getBoundingClientRect().bottom;
                     if (hb > 20) topPx = Math.round(hb);
                 }
+                var vv = parentWin.visualViewport;
+                var vw = (vv && vv.width) ? vv.width : (parentWin.innerWidth || 0);
+                var vh = (vv && vv.height) ? vv.height : (parentWin.innerHeight || 0);
+                var landscape = vw > vh;
+                if (landscape && vw <= 1180) {
+                    topPx = (header && header.getBoundingClientRect().bottom > 12)
+                        ? Math.round(header.getBoundingClientRect().bottom)
+                        : 36;
+                }
+                var side = (vw && vw <= 850) ? 4 : 8;
+                var maxW = Math.max(120, (vw || 0) - side * 2);
                 targetBox.style.setProperty('position', 'fixed', 'important');
                 targetBox.style.setProperty('top', topPx + 'px', 'important');
-                targetBox.style.setProperty('left', '8px', 'important');
-                targetBox.style.setProperty('right', '8px', 'important');
+                targetBox.style.setProperty('left', side + 'px', 'important');
+                targetBox.style.setProperty('right', side + 'px', 'important');
                 targetBox.style.setProperty('width', 'auto', 'important');
-                targetBox.style.setProperty('max-width', 'calc(100vw - 16px)', 'important');
+                targetBox.style.setProperty('max-width', (maxW ? (maxW + 'px') : 'calc(100vw - 16px)'), 'important');
                 targetBox.style.setProperty('z-index', '999999', 'important');
                 targetBox.style.setProperty('height', 'auto', 'important');
                 targetBox.style.setProperty('max-height', 'none', 'important');
@@ -8968,9 +9038,7 @@ def inject_sticky_tabs_script():
                     lastH = barHMac;
                 }
                 try { bindDashboardFilterTextInputs(); } catch (eBindMac) {}
-                if (cloudMode) {
-                    try { ensureCloudStickyTabsNative(filterBox); } catch (eCloudMac) {}
-                }
+                try { ensureCloudStickyTabsNative(filterBox); } catch (eCloudMac) {}
             }
             
             function mutationTouchesMainTabs(mutations) {
@@ -9013,7 +9081,7 @@ def inject_sticky_tabs_script():
                         if (isTabMountHealthy(fb, all) && !isFilterDropdownOpen()) {
                             var hNow = fb ? (fb.offsetHeight + 4) : lastH;
                             if (Math.abs(hNow - lastH) <= 1) {
-                                if (cloudMode && fb) {
+                                if (fb) {
                                     try { ensureCloudStickyTabsNative(fb); } catch (eCt) {}
                                 }
                                 return;
@@ -9144,7 +9212,7 @@ def inject_sticky_tabs_script():
                                 fixDuplicateMainTabs(true);
                                 var box = findFilterBox();
                                 if (box) {
-                                    if (cloudMode) ensureCloudStickyTabsNative(box);
+                                    try { ensureCloudStickyTabsNative(box); } catch (eNt) {}
                                     ipadApplyBoxStyles(box);
                                 }
                                 var sp = parentDoc.getElementById(SPACER_ID);
@@ -10179,6 +10247,62 @@ def render_frozen_styler_html(
     {click_js}</body></html>
     """
     components.html(page_html, height=height, scrolling=True)
+
+
+def _dash_consume_deferred_cloud_drive_sync() -> None:
+    """1pass UI를 유지한 채 Drive를 한 번만 확인. 매출·주소 등이 바뀐 경우에만 전체 rerun."""
+    if not _is_streamlit_cloud():
+        return
+    if st.session_state.get("_drive_deferred_sync_ran"):
+        st.session_state.pop("_drive_deferred_sync_pending", None)
+        return
+    if not st.session_state.get("_drive_deferred_sync_pending"):
+        return
+    if not st.session_state.get("_drive_deferred_sync_armed"):
+        st.session_state["_drive_deferred_sync_armed"] = True
+        return
+    if sync_dashboard_copy_on_boot is None:
+        st.session_state["_drive_deferred_sync_ran"] = True
+        st.session_state["_drive_copy_boot_sync_done"] = True
+        st.session_state.pop("_drive_deferred_sync_pending", None)
+        return
+    try:
+        res = sync_dashboard_copy_on_boot(
+            CACHE_DIR,
+            force_refresh=False,
+            include_worklog=False,
+        )
+    except Exception as exc:
+        res = {"ok": False, "error": str(exc), "copied": []}
+    st.session_state["_drive_deferred_sync_ran"] = True
+    st.session_state["_drive_copy_boot_sync_done"] = True
+    st.session_state.pop("_drive_deferred_sync_pending", None)
+    copied = (res or {}).get("copied") or []
+    if (
+        isinstance(res, dict)
+        and res.get("ok")
+        and copied
+        and _drive_boot_copy_affects_dashboard(copied)
+        and not st.session_state.get("_drive_copy_boot_rerun")
+    ):
+        try:
+            load_uploaded_files_from_meta.clear()
+            load_uploaded_files_from_bytes.clear()
+        except Exception:
+            pass
+        st.session_state["_dash_sales_cache_cleared"] = True
+        st.session_state["_drive_copy_boot_rerun"] = True
+        st.session_state["_dash_after_drive_boot"] = True
+        st.session_state["_dash_sticky_inject_ver"] = None
+        st.rerun()
+
+
+@st.fragment(run_every=datetime.timedelta(seconds=2))
+def _dash_cloud_drive_followup_fragment() -> None:
+    """첫 화면을 그린 뒤 2초 후 Drive smart sync. 캐시가 최신이면 재로딩 없음."""
+    _dash_consume_deferred_cloud_drive_sync()
+
+
 # ==========================================
 # 5. 메인 실행 흐름 및 영구 캐싱 관리
 # ==========================================
@@ -10194,7 +10318,7 @@ if (
     and not st.session_state.get("_drive_deferred_sync_ran")
     and _cache_has_dashboard_data(CACHE_DIR)
 ):
-    # 1pass: 캐시로 9~11 포함 전 탭 즉시 표시 → run 끝에 Drive smart sync
+    # 1pass: 캐시로 전 탭 즉시 표시. Drive는 fragment가 2초 뒤 확인(불필요 rerun 금지).
     st.session_state["_drive_copy_boot_sync_done"] = True
     st.session_state["_drive_deferred_sync_pending"] = True
 elif not st.session_state.get("_drive_copy_boot_sync_done") and sync_dashboard_copy_on_boot is not None:
@@ -10241,6 +10365,8 @@ if isinstance(_drive_autoload_res, dict):
                 pass
             st.session_state["_dash_sales_cache_cleared"] = True
             st.session_state["_drive_copy_boot_rerun"] = True
+            st.session_state["_dash_after_drive_boot"] = True
+            st.session_state["_dash_sticky_inject_ver"] = None
             st.rerun()
     elif _drive_autoload_res.get("ok") and _drive_autoload_res.get("skipped"):
         _note = _drive_autoload_res.get("note") or _drive_autoload_res.get("error") or ""
@@ -11039,11 +11165,11 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.caption("🔍 검색 v31q · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
             if _is_streamlit_cloud():
                 dev_caption(
-                    f"Cloud · sticky · nativeTabs · lazy9-11 · mountedKeep · bind{_DASH_FILTER_BIND_VER}"
+                    f"Cloud · 로컬동일 · nativeTabs · Mini가로세로 · lazy9-11 · bind{_DASH_FILTER_BIND_VER}"
                 )
             else:
                 dev_caption(
-                    f"Local · 통합12탭 · lazy9-11 · mountedKeep · filterReinject{_DASH_FILTER_BIND_VER}"
+                    f"Local · 통합12탭 · nativeTabs · Mini가로세로 · lazy9-11 · bind{_DASH_FILTER_BIND_VER}"
                 )
 
             df_base = df_base_opts
@@ -11274,14 +11400,16 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 46
-    _ACTIVE_TAB_INJECT_VER = 7
+    _STICKY_INJECT_VER = 47
+    _ACTIVE_TAB_INJECT_VER = 8
+    if st.session_state.pop("_dash_after_drive_boot", False):
+        st.session_state["_dash_sticky_inject_ver"] = None
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
         inject_sticky_tabs_script()
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 31
+        st.session_state["_ipad_sticky_ver"] = 32
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=12, heavy_indices=(9, 10, 11)
@@ -14467,8 +14595,6 @@ def _dash_filter_and_tabs_fragment() -> None:
 _dash_filter_and_tabs_fragment()
 
 
-# Cloud 2pass 부트: 1pass UI 표시 후 Drive smart sync (heavy 9~11 lazy)
-if st.session_state.pop("_drive_deferred_sync_pending", False):
-    st.session_state.pop("_drive_copy_boot_sync_done", None)
-    st.session_state["_drive_deferred_sync_ran"] = True
-    st.rerun()
+# Cloud: 시드 캐시로 먼저 그리고, Drive는 백그라운드 fragment에서만 확인
+if _is_streamlit_cloud() and st.session_state.get("_drive_deferred_sync_pending"):
+    _dash_cloud_drive_followup_fragment()
