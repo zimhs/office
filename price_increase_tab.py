@@ -38,7 +38,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-03c · 메일자동·고정바여백"
+PI_UI_BUILD = "2026-09-03d · 다음주소록·업로드저장"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -194,15 +194,50 @@ def _core_name(s: Any) -> str:
 
 
 @st.cache_data(show_spinner=False)
+def _read_contacts_csv_bytes(data: bytes) -> pd.DataFrame:
+    """다음/아웃룩/엑셀 주소록 CSV — 인코딩·구분자 자동 시도."""
+    if not data:
+        return pd.DataFrame()
+    # UTF-16 BOM ( occasional Outlook exports )
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        try:
+            return pd.read_csv(io.BytesIO(data), encoding="utf-16")
+        except Exception:
+            pass
+    encodings = ("utf-8-sig", "utf-8", "cp949", "euc-kr", "latin1")
+    seps = (",", ";", "\t")
+    last_err: Exception | None = None
+    for enc in encodings:
+        for sep in seps:
+            try:
+                df = pd.read_csv(io.BytesIO(data), encoding=enc, sep=sep, engine="python")
+            except Exception as e:
+                last_err = e
+                continue
+            if df is None or df.empty:
+                continue
+            # 열이 1개뿐이면 구분자 오판 가능성 → 다른 sep 계속
+            if len(df.columns) == 1 and sep != "\t":
+                only = str(df.columns[0])
+                if "," in only or ";" in only or "\t" in only:
+                    continue
+            return df
+    if last_err:
+        raise last_err
+    return pd.DataFrame()
+
+
+def _read_contacts_csv_path(path: str) -> pd.DataFrame:
+    with open(path, "rb") as f:
+        return _read_contacts_csv_bytes(f.read())
+
+
 def _load_mail_contacts_cached(path: str, mtime: float) -> pd.DataFrame:
     """mtime을 키에 넣어 파일 변경 시에만 다시 읽음."""
     try:
-        df = pd.read_csv(path, encoding="utf-8-sig")
+        df = _read_contacts_csv_path(path)
     except Exception:
-        try:
-            df = pd.read_csv(path, encoding="cp949")
-        except Exception:
-            return pd.DataFrame(columns=["거래처", "이메일", "비고"])
+        return pd.DataFrame(columns=["거래처", "이메일", "비고"])
     return _normalize_mail_df(df)
 
 
@@ -222,6 +257,8 @@ def _mail_contact_candidate_paths() -> list[str]:
     desk = os.path.join(home, "Desktop")
     names = (
         "mail_contacts.csv",
+        "daum-addrbook.csv",
+        "daum_addrbook.csv",
         "주소록.csv",
         "다음주소록.csv",
         "카카오주소록.csv",
@@ -275,10 +312,7 @@ def ensure_mail_contacts_autoload(path: str = PI_MAIL_CSV) -> tuple[pd.DataFrame
         if os.path.abspath(cand) == os.path.abspath(path):
             continue
         try:
-            try:
-                raw = pd.read_csv(cand, encoding="utf-8-sig")
-            except Exception:
-                raw = pd.read_csv(cand, encoding="cp949")
+            raw = _read_contacts_csv_path(cand)
             merged = _normalize_mail_df(raw)
         except Exception:
             continue
@@ -295,58 +329,184 @@ def ensure_mail_contacts_autoload(path: str = PI_MAIL_CSV) -> tuple[pd.DataFrame
     return load_mail_contacts(path), f"연락처 자동 적재: `{os.path.basename(best_src)}` → {len(best_df)}건"
 
 
-def _normalize_mail_df(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["거래처", "이메일", "비고"])
-    cols = {str(c).strip(): c for c in df.columns}
+def _col_key(label: Any) -> str:
+    return str(label or "").strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
+def _pick_mail_columns(df: pd.DataFrame) -> tuple[Any, Any, Any, Any]:
+    """(회사열, 이름열, 메일열, 비고열) — 다음/아웃룩 CSV 대응."""
+    company_c = None
     name_c = None
     mail_c = None
     note_c = None
-    for label, c in cols.items():
-        low = label.lower().replace(" ", "").replace("_", "")
-        if name_c is None and any(
-            k in low
-            for k in (
-                "거래처",
-                "이름",
-                "성명",
-                "상호",
-                "업체",
-                "회사명",
-                "회사",
-                "name",
-                "displayname",
-                "표시이름",
-                "연락처이름",
-            )
-        ):
+    # 점수제로 우선순위 높은 열 선택 (부분일치 오탐 완화)
+    company_score = -1
+    name_score = -1
+    mail_score = -1
+    for c in df.columns:
+        low = _col_key(c)
+        if not low or low.startswith("unnamed"):
+            continue
+        # 회사/상호 (매출 거래처 매칭용) — 회사전화·회사주소 제외
+        if any(x in low for x in ("회사전화", "회사주소", "회사fax", "회사팩스", "businessphone", "companymain")):
+            pass
+        else:
+            cs = -1
+            if low in ("회사", "회사명", "상호", "업체", "거래처", "company", "companyname", "organization", "org"):
+                cs = 100
+            elif any(k in low for k in ("회사명", "companyname", "거래처", "상호")):
+                cs = 80
+            elif low == "회사" or low.endswith("회사") or low.startswith("회사"):
+                if "전화" not in low and "주소" not in low and "팩스" not in low:
+                    cs = 70
+            elif "company" in low and "phone" not in low and "fax" not in low and "street" not in low:
+                cs = 60
+            if cs > company_score:
+                company_score = cs
+                company_c = c
+        # 이름/표시명
+        ns = -1
+        if low in ("이름", "성명", "표시이름", "displayname", "fullname", "fullname", "연락처이름"):
+            ns = 100
+        elif low in ("firstname", "first"):
+            ns = 50
+        elif low in ("lastname", "last"):
+            ns = 40
+        elif any(k in low for k in ("표시이름", "displayname", "fullname", "성명", "이름")):
+            if "파일" not in low and "username" not in low:
+                ns = 70
+        elif "name" in low and "username" not in low and "filename" not in low:
+            # First Name / Last Name / Full Name
+            if low in ("fullname", "fullname") or "full" in low or "display" in low:
+                ns = 90
+            elif "first" in low:
+                ns = 55
+            elif "last" in low:
+                ns = 45
+            else:
+                ns = 30
+        if ns > name_score:
+            name_score = ns
             name_c = c
-        if mail_c is None and any(
-            k in low for k in ("메일", "email", "e-mail", "이메일", "mail", "전자우편")
-        ):
+        # 이메일 (E-mail Address, 전자 메일 등)
+        ms = -1
+        if low in ("이메일", "메일", "email", "e-mail", "mail", "전자우편", "전자메일", "전자메일주소"):
+            ms = 100
+        elif any(k in low for k in ("emailaddress", "e-mailaddress", "전자메일", "이메일")):
+            ms = 90
+        elif low.startswith("email") or low.startswith("e-mail") or "메일주소" in low:
+            ms = 80
+        elif "email" in low or "e-mail" in low or (low.endswith("메일") and "스팸" not in low):
+            ms = 60
+        elif low == "mail" or low.endswith("mail"):
+            ms = 50
+        if ms > mail_score:
+            mail_score = ms
             mail_c = c
-        if note_c is None and any(k in low for k in ("비고", "메모", "소속", "그룹", "note", "조직")):
+        if note_c is None and any(k in low for k in ("비고", "메모", "소속", "그룹", "note", "부서", "department")):
             note_c = c
     if mail_c is None:
-        # 열 값에서 이메일 패턴 찾기
         for c in df.columns:
-            sample = df[c].astype(str).head(40).str.cat(sep=" ")
+            sample = df[c].astype(str).head(50).str.cat(sep=" ")
             if _EMAIL_RE.search(sample):
                 mail_c = c
                 break
-    if name_c is None:
-        for c in df.columns:
-            if c != mail_c:
-                name_c = c
-                break
-    out = pd.DataFrame()
-    out["거래처"] = df[name_c].astype(str).str.strip() if name_c is not None else ""
-    raw_mail = df[mail_c].astype(str) if mail_c is not None else ""
-    out["이메일"] = raw_mail.map(
-        lambda x: (_EMAIL_RE.search(str(x)).group(0) if _EMAIL_RE.search(str(x)) else "")
-    )
-    out["비고"] = df[note_c].astype(str).str.strip() if note_c is not None else ""
-    out = out[(out["거래처"] != "") & (out["거래처"].str.lower() != "nan") & (out["이메일"] != "")]
+    return company_c, name_c, mail_c, note_c
+
+
+def _extract_email_cell(val: Any) -> str:
+    s = str(val or "").strip()
+    if not s or s.lower() in ("nan", "none", "null"):
+        return ""
+    m = _EMAIL_RE.search(s)
+    return m.group(0) if m else ""
+
+
+def _normalize_mail_df(df: pd.DataFrame) -> pd.DataFrame:
+    """다음·아웃룩 주소록 → 거래처/이메일/비고.
+
+    매출 거래처는 보통 회사명이므로 회사열이 있으면 회사명을 우선 키로 쓰고,
+    이름(담당자)도 별도 행으로 넣어 둘 다 매칭 가능하게 한다.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["거래처", "이메일", "비고"])
+    # 헤더가 없는 경우 대비: 첫 행이 이메일처럼 보이면 그대로 진행
+    company_c, name_c, mail_c, note_c = _pick_mail_columns(df)
+    if mail_c is None and name_c is None and company_c is None:
+        return pd.DataFrame(columns=["거래처", "이메일", "비고"])
+
+    # First+Last Name 결합 (아웃룩)
+    first_c = last_c = None
+    for c in df.columns:
+        low = _col_key(c)
+        if low in ("firstname", "first", "이름(이름)", "이름"):
+            if first_c is None and ("last" not in low):
+                # '이름'은 전체 이름일 수도 있음 — First Name만 first_c
+                if low in ("firstname", "first"):
+                    first_c = c
+        if low in ("lastname", "last", "성"):
+            last_c = c
+
+    rows: list[dict[str, str]] = []
+    for _, r in df.iterrows():
+        em = _extract_email_cell(r.get(mail_c)) if mail_c is not None else ""
+        if not em:
+            # 행 전체에서 이메일 스캔
+            for c in df.columns:
+                em = _extract_email_cell(r.get(c))
+                if em:
+                    break
+        if not em:
+            continue
+        note = ""
+        if note_c is not None:
+            note = str(r.get(note_c) or "").strip()
+            if note.lower() == "nan":
+                note = ""
+        company = ""
+        if company_c is not None:
+            company = str(r.get(company_c) or "").strip()
+            if company.lower() == "nan":
+                company = ""
+        person = ""
+        # 아웃룩 First+Last 가 있으면 결합명을 우선
+        if first_c is not None:
+            fn = str(r.get(first_c) or "").strip()
+            ln = str(r.get(last_c) or "").strip() if last_c is not None else ""
+            if fn.lower() == "nan":
+                fn = ""
+            if ln.lower() == "nan":
+                ln = ""
+            if fn or ln:
+                # 한글 성은 앞, 영문은 First Last
+                if fn and ln and re.search(r"[가-힣]", fn + ln):
+                    person = f"{ln}{fn}".strip()
+                else:
+                    person = f"{fn} {ln}".strip()
+        if not person and name_c is not None:
+            person = str(r.get(name_c) or "").strip()
+            if person.lower() == "nan":
+                person = ""
+        # 회사 우선 + 이름 보조 (둘 다 있으면 두 키로 저장)
+        keys: list[str] = []
+        if company:
+            keys.append(company)
+        if person and _norm_name(person) not in {_norm_name(k) for k in keys}:
+            keys.append(person)
+        if not keys:
+            continue
+        for i, key in enumerate(keys):
+            n = note
+            if i == 0 and company and person and _norm_name(company) != _norm_name(person):
+                n = (f"{person} · {note}".strip(" ·") if note else person)
+            elif i > 0 and company:
+                n = (f"{company} · {note}".strip(" ·") if note else company)
+            rows.append({"거래처": key, "이메일": em, "비고": n})
+
+    out = pd.DataFrame(rows, columns=["거래처", "이메일", "비고"])
+    if out.empty:
+        return out
+    out = out[(out["거래처"] != "") & (out["이메일"] != "")]
     out = out.drop_duplicates(subset=["거래처", "이메일"], keep="last")
     return out.reset_index(drop=True)
 
@@ -2717,30 +2877,51 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
         )
         up = st.file_uploader("연락처 CSV 업로드", type=["csv"], key="pi_mail_upload")
         if up is not None:
-            try:
-                raw = pd.read_csv(up, encoding="utf-8-sig")
-            except Exception:
-                raw = pd.read_csv(up, encoding="cp949")
-            merged = _normalize_mail_df(raw)
-            if not merged.empty:
-                save_mail_contacts(merged)
-                st.session_state.pop("_pi_mail_autoload_done", None)
-                st.session_state["pi_email_mail_mtime"] = (
-                    float(os.path.getmtime(PI_MAIL_CSV)) if os.path.isfile(PI_MAIL_CSV) else 0.0
-                )
-                st.success(f"{len(merged)}건 저장")
-                mail_df = load_mail_contacts()
-                # 현재 선택 거래처 메일 즉시 재반영
-                cur_client = str(st.session_state.get("pi_single_client") or "").strip()
-                if cur_client:
-                    hit, _ = lookup_email_with_meta(cur_client, mail_df)
-                    st.session_state["pi_email_client"] = cur_client
-                    st.session_state["pi_single_email"] = hit
-            else:
-                st.error("이메일 열을 찾지 못했습니다. 이름·이메일 열이 있는 CSV인지 확인하세요.")
+            raw_bytes = up.getvalue()
+            file_id = f"{up.name}:{len(raw_bytes)}:{hash(raw_bytes)}"
+            already = st.session_state.get("_pi_mail_upload_id") == file_id
+            if not already:
+                try:
+                    raw = _read_contacts_csv_bytes(raw_bytes)
+                    merged = _normalize_mail_df(raw)
+                except Exception as e:
+                    st.error(f"CSV 읽기 실패: {e}")
+                    raw = pd.DataFrame()
+                    merged = pd.DataFrame(columns=["거래처", "이메일", "비고"])
+                if not merged.empty:
+                    save_mail_contacts(merged)
+                    st.session_state["_pi_mail_upload_id"] = file_id
+                    st.session_state.pop("_pi_mail_autoload_done", None)
+                    st.session_state["_pi_mail_saved_noted"] = False
+                    st.session_state["pi_email_mail_mtime"] = (
+                        float(os.path.getmtime(PI_MAIL_CSV)) if os.path.isfile(PI_MAIL_CSV) else 0.0
+                    )
+                    st.success(
+                        f"`{up.name}` → {len(merged)}건 저장 "
+                        "(회사명·이름 모두 매칭키로 등록)"
+                    )
+                    mail_df = load_mail_contacts()
+                    # 현재 선택 거래처 메일 즉시 재반영
+                    cur_client = str(st.session_state.get("pi_single_client") or "").strip()
+                    if cur_client:
+                        hit, matched = lookup_email_with_meta(cur_client, mail_df)
+                        st.session_state["pi_email_client"] = cur_client
+                        st.session_state.pop("pi_single_email", None)
+                        st.session_state["pi_single_email"] = hit
+                        st.session_state["pi_email_matched_as"] = matched
+                else:
+                    cols = list(raw.columns) if raw is not None and not raw.empty else []
+                    st.error(
+                        "이메일·이름/회사 열을 찾지 못했습니다. "
+                        "다음 주소록은 「아웃룩 주소록(.csv)」으로 내보내기 하세요."
+                    )
+                    if cols:
+                        st.caption("감지된 열: " + ", ".join(str(c) for c in cols[:20]))
+            elif not mail_df.empty:
+                st.caption(f"업로드 반영됨 · 등록 {len(mail_df)}건")
         if not mail_df.empty:
-            st.dataframe(mail_df, use_container_width=True, hide_index=True)
-            st.caption(f"등록 {len(mail_df)}건 · 거래처 선택 시 유사명 포함 자동 매칭")
+            st.dataframe(mail_df.head(200), use_container_width=True, hide_index=True)
+            st.caption(f"등록 {len(mail_df)}건 · 거래처 선택 시 회사명·유사명 자동 매칭")
         else:
             st.info("연락처 CSV가 없습니다. 업로드하거나 직접 입력하세요.")
             with st.form("pi_mail_manual"):
@@ -2757,7 +2938,11 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _pi_clear_widget_session_keys() -> None:
-    """defer 탭 복원 등으로 위젯 키가 session_state에 남으면 button 오류."""
+    """defer 탭 복원 시 button 등 충돌 키만 제거.
+
+    주의: pi_mail_upload / pi_single_* / 연락처·본문 키는 지우면
+    업로드·자동완성·선택값이 매 렌더마다 사라진다.
+    """
     for k in list(st.session_state.keys()):
         if not isinstance(k, str):
             continue
@@ -2765,26 +2950,14 @@ def _pi_clear_widget_session_keys() -> None:
             (
                 "pi_dialog_",
                 "pi_mail_compose_",
-                "pi_mail_pick_",
-                "pi_mail_all_",
-                "pi_mail_upload",
-                "pi_quick_",
                 "pi_smtp_",
-                "pi_single_",
-                "pi_letter_doc_",
-                "pi_letter_send_",
-                "pi_letter_body_",
+                "pi_pdf_preview_",
+                "pi_pdf_help",
                 "pi_body_reset",
-                "pi_include_price",
                 "pi_left_preview",
                 "pi_left_send",
                 "pi_left_summary",
                 "pi_left_big",
-                "pi_pdf_preview_",
-                "pi_pdf_help",
-                "pi_bulk_",
-                "pi_global_pct",
-                "pi_items_",
             )
         ):
             st.session_state.pop(k, None)
