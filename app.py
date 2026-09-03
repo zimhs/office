@@ -572,6 +572,55 @@ def inject_custom_css():
                 }
             }
 
+            /* iPad Mini 7 등 — 세로(좁은 폭) */
+            @media (max-width: 850px) {
+                section.main .block-container {
+                    padding-left: 0.5rem !important;
+                    padding-right: 0.5rem !important;
+                }
+                #dashboard-sticky-spacer {
+                    min-height: 132px !important;
+                }
+                .dashboard-filter-sticky,
+                .dashboard-filter-sticky-touch {
+                    left: 4px !important;
+                    right: 4px !important;
+                    width: auto !important;
+                    max-width: calc(100vw - 8px) !important;
+                    padding: 4px 6px 0 6px !important;
+                }
+                .dashboard-filter-sticky [role="tab"],
+                .dashboard-filter-sticky-touch [role="tab"] {
+                    font-size: 11px !important;
+                    padding: 4px 8px !important;
+                }
+                .dashboard-filter-sticky [data-testid="stWidgetLabel"],
+                .dashboard-filter-sticky label {
+                    font-size: 10px !important;
+                }
+                .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]) {
+                    padding-top: 8px !important;
+                    scroll-margin-top: var(--dashboard-fixed-bar-height, 140px) !important;
+                }
+            }
+
+            /* iPad Mini 가로 — 필터 한 줄·탭 가로스크롤 여유 */
+            @media (min-width: 851px) and (max-width: 1180px) and (orientation: landscape) {
+                .dashboard-filter-sticky [role="tab"] {
+                    font-size: 12px !important;
+                    padding: 3px 9px !important;
+                }
+                #dashboard-sticky-spacer {
+                    min-height: 120px !important;
+                }
+            }
+
+            @media (orientation: portrait) and (max-width: 850px) {
+                html.dashboard-touch-mode .dashboard-filter-sticky-touch {
+                    top: max(3.2rem, env(safe-area-inset-top, 0px) + 2.4rem) !important;
+                }
+            }
+
             @supports (top: env(safe-area-inset-top)) {
                 .dashboard-filter-sticky {
                     padding-left: max(10px, env(safe-area-inset-left)) !important;
@@ -8122,8 +8171,8 @@ def inject_sticky_tabs_script():
             var cloudMode = __CLOUD_STICKY_MODE__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 20; 
-            var STICKY_SCRIPT_VER_IPAD = 41; /* iPad: 검색창 방해 스크롤/포커스 족쇄 제거 */
+            var STICKY_SCRIPT_VER_MAC = 21;
+            var STICKY_SCRIPT_VER_IPAD = 42; /* iPad Mini: 가로·세로 + Cloud 네이티브 탭 고정 */
             function bindDashboardFilterTextInputs() {
                 /* 필터 select UX → _dash_inject_filter_select_script (fragment rerun마다) */
             }
@@ -8661,6 +8710,11 @@ def inject_sticky_tabs_script():
                 try { bindDashboardFilterTextInputs(); } catch (eBind) {}
             }
             function ipadScrollTabs(box) {
+                /* Cloud(아이패드 Safari 포함): 프록시 탭바는 탭이 꼬이므로 네이티브만 사용 */
+                if (cloudMode) {
+                    try { ensureCloudStickyTabsNative(box); } catch (eCloudTab) {}
+                    return;
+                }
                 if (!box) return;
                 try { ipadInjectTabHScrollCss(); } catch (eCss2) {}
                 var list = null;
@@ -9080,23 +9134,47 @@ def inject_sticky_tabs_script():
                 parentWin.addEventListener('orientationchange', function() {
                     parentWin.__dashboardIpadFreezeLayout = false;
                     parentWin.__dashboardIpadSpacerH = 0;
-                    
-                    var delays = [50, 150, 300, 500];
+                    try { parentWin.__dashboardIpadLastWidthSync = 0; } catch (eLw) {}
+
+                    var delays = [50, 150, 300, 500, 900];
                     delays.forEach(function(ms) {
                         setTimeout(function() {
-                            var box = findFilterBox();
-                            var sp = parentDoc.getElementById(SPACER_ID);
-                            if (box && sp) {
-                                var h = Math.round(box.getBoundingClientRect().height);
-                                if (h > 0) sp.style.setProperty('height', h + 'px', 'important');
-                                box.style.setProperty('transform', 'translate3d(0,0,0)', 'important');
-                            }
+                            try {
+                                parentWin.__dashboardIpadFreezeLayout = false;
+                                fixDuplicateMainTabs(true);
+                                var box = findFilterBox();
+                                if (box) {
+                                    if (cloudMode) ensureCloudStickyTabsNative(box);
+                                    ipadApplyBoxStyles(box);
+                                }
+                                var sp = parentDoc.getElementById(SPACER_ID);
+                                if (box && sp) {
+                                    var h = Math.round(box.getBoundingClientRect().height);
+                                    if (h > 0) {
+                                        sp.style.setProperty('height', h + 'px', 'important');
+                                        parentDoc.documentElement.style.setProperty(
+                                            '--dashboard-fixed-bar-height', h + 'px'
+                                        );
+                                    }
+                                    box.style.setProperty('transform', 'translate3d(0,0,0)', 'important');
+                                }
+                            } catch (eOr) {}
                         }, ms);
                     });
-                    
+
                     scheduleSync(120);
                     scheduleSync(450);
                 }, { passive: true });
+                /* visualViewport: 키보드·가로전환 시 바 높이 재맞춤 (iPad Mini Cellular) */
+                if (parentWin.visualViewport && !parentWin.__dashboardIpadVvBound) {
+                    parentWin.__dashboardIpadVvBound = true;
+                    parentWin.visualViewport.addEventListener('resize', function() {
+                        if (isIpadFilterLocked()) return;
+                        parentWin.__dashboardIpadFreezeLayout = false;
+                        scheduleSync(80);
+                        scheduleSync(280);
+                    }, { passive: true });
+                }
                 applyIpad0804Hack();
                 syncIpadWidthLoop(); 
             } else {
@@ -11196,14 +11274,14 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 45
-    _ACTIVE_TAB_INJECT_VER = 6
+    _STICKY_INJECT_VER = 46
+    _ACTIVE_TAB_INJECT_VER = 7
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
         inject_sticky_tabs_script()
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 30
+        st.session_state["_ipad_sticky_ver"] = 31
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=12, heavy_indices=(9, 10, 11)
