@@ -474,11 +474,11 @@ def inject_custom_css():
                 z-index: 990 !important;
                 background-color: #FFFFFF !important;
                 border: 1px solid #BFDBFE !important;
-                border-radius: 0 0 6px 6px !important;
+                border-radius: 6px !important;
                 padding: 1px 6px 0 6px !important;
                 box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.06) !important;
                 box-sizing: border-box !important;
-                overflow-x: hidden !important;
+                overflow-x: visible !important;
                 overflow-y: visible !important;
                 margin: 0 !important;
             }
