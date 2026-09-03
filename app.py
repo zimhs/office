@@ -15022,8 +15022,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.info("다른 탭은 정상 이용 가능합니다.")
 
     _dash_inject_filter_select_script_for_run()
-    # 로컬·Cloud 공통: fragment/탭 전환 후 고정바 spacer 재동기화 (콘텐츠 가림 방지)
-    _dash_inject_sticky_resync_script()
+    # 로컬·Cloud 공통: fragment/탭 전환·heavy 로드 후 고정바 1회 재동기화
+    _dash_inject_sticky_resync_script(force=True)
 
 
 _dash_filter_and_tabs_fragment()
