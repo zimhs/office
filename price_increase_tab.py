@@ -40,7 +40,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-03f · 미리보기·메일복구"
+PI_UI_BUILD = "2026-09-03g · 월평균사용량(공문숨김)"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -868,7 +868,9 @@ def classify_client_kind(name: str, sales_df: pd.DataFrame) -> str:
 
 def latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataFrame:
     """거래처 선택 시 최근 적용 단가 (품목별). session 캐시로 반복 계산·일괄 발송 부하 완화."""
-    empty = pd.DataFrame(columns=["품목명", "기존단가", "최근매출일", "출고량합"])
+    empty = pd.DataFrame(
+        columns=["품목명", "기존단가", "최근매출일", "출고량합", "월평균사용량"]
+    )
     if sales_df is None or sales_df.empty or not client:
         return empty
     token = str(st.session_state.get("pi_sales_cache_token") or "")
@@ -884,9 +886,29 @@ def latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataFrame:
     return out.copy()
 
 
+def _six_month_monthly_avg_qty(g: pd.DataFrame, date_col: Optional[str]) -> float:
+    """직전 6개월 출고량 합 ÷ 6 (월평균). 날짜 없으면 전체 합÷6."""
+    if g is None or g.empty:
+        return 0.0
+    qty = pd.to_numeric(g.get("출고량"), errors="coerce").fillna(0.0)
+    if date_col and date_col in g.columns and g[date_col].notna().any():
+        dts = pd.to_datetime(g[date_col], errors="coerce")
+        end = dts.max()
+        if pd.notna(end):
+            # 직전 6개월 윈도우 (말일 기준 대략 182일)
+            start = end - pd.DateOffset(months=6)
+            mask = (dts > start) & (dts <= end)
+            total = float(qty.loc[mask].sum()) if mask.any() else 0.0
+            return round(total / 6.0, 1)
+    total = float(qty.sum())
+    return round(total / 6.0, 1)
+
+
 def _compute_latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataFrame:
     """거래처별 최근 단가 실계산 (캐시 미스 시)."""
-    empty = pd.DataFrame(columns=["품목명", "기존단가", "최근매출일", "출고량합"])
+    empty = pd.DataFrame(
+        columns=["품목명", "기존단가", "최근매출일", "출고량합", "월평균사용량"]
+    )
     df = sales_df
     # 부모 선택 시 종속 포함
     if "거래처_원본" in df.columns:
@@ -909,6 +931,9 @@ def _compute_latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataF
     else:
         sub["출고량"] = 0.0
     date_col = "매출일_dt" if "매출일_dt" in sub.columns else None
+    if date_col is None and "매출일" in sub.columns:
+        sub["매출일_dt"] = pd.to_datetime(sub["매출일"], errors="coerce")
+        date_col = "매출일_dt"
     rows = []
     for item, g in sub.groupby("품목명", dropna=True):
         g2 = g[g["단가"] > 0]
@@ -933,6 +958,7 @@ def _compute_latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataF
                 "기존단가": round(price, 2),
                 "최근매출일": last_s,
                 "출고량합": float(g["출고량"].sum()),
+                "월평균사용량": _six_month_monthly_avg_qty(g, date_col),
             }
         )
     if not rows:
@@ -1809,11 +1835,13 @@ def _init_items_from_prices(client: str, price_df: pd.DataFrame, pct: float = 0.
     items = []
     for _, row in price_df.iterrows():
         old = float(row.get("기존단가") or 0)
+        avg_u = float(row.get("월평균사용량") or 0)
         items.append(
             {
                 "선택": True,
                 "품목명": str(row.get("품목명") or ""),
                 "기존단가": old,
+                "월평균사용량": avg_u,
                 "인상적용단가": old,
                 "비고": "",
                 "최근매출일": str(row.get("최근매출일") or ""),
@@ -1822,12 +1850,36 @@ def _init_items_from_prices(client: str, price_df: pd.DataFrame, pct: float = 0.
     return items
 
 
+def _enrich_items_monthly_avg(items: list[dict], price_df: pd.DataFrame) -> list[dict]:
+    """매출 기반 월평균사용량을 품목명으로 맞춰 채움(이미 있으면 매출값으로 갱신)."""
+    by_name: dict[str, float] = {}
+    if price_df is not None and not price_df.empty and "품목명" in price_df.columns:
+        for _, row in price_df.iterrows():
+            nm = str(row.get("품목명") or "").strip()
+            if nm:
+                by_name[nm] = float(row.get("월평균사용량") or 0)
+    out: list[dict] = []
+    for it in items or []:
+        row = dict(it)
+        nm = str(row.get("품목명") or "").strip()
+        if nm in by_name:
+            row["월평균사용량"] = by_name[nm]
+        elif "월평균사용량" not in row:
+            row["월평균사용량"] = 0.0
+        out.append(row)
+    return out
+
+
 def _normalize_items_selection(items: list[dict]) -> list[dict]:
     """기존 session 품목에 선택 플래그가 없으면 기본 True."""
     out: list[dict] = []
     for it in items or []:
         row = dict(it)
         row["선택"] = bool(row.get("선택", True))
+        try:
+            row["월평균사용량"] = float(row.get("월평균사용량") or 0)
+        except Exception:
+            row["월평균사용량"] = 0.0
         out.append(row)
     return out
 
@@ -1838,22 +1890,29 @@ def _selected_items(items: list[dict]) -> list[dict]:
 
 
 def _items_df_for_editor(items: list[dict]) -> pd.DataFrame:
-    """편집용 표: 선택 · 제품명 · 기존단가 · 인상단가 · 비고."""
+    """편집용 표: 선택 · 제품명 · 기존단가 · 직전6개월 월평균사용량 · 인상단가 · 비고.
+
+    월평균사용량은 화면 참고용이며 공문(PDF/엑셀)에는 넣지 않는다.
+    """
     rows = []
     for it in _normalize_items_selection(items):
         old = float(it.get("기존단가") or 0)
         new = float(it.get("인상적용단가") or 0)
+        avg_u = float(it.get("월평균사용량") or 0)
         rows.append(
             {
                 "선택": bool(it.get("선택", True)),
                 "제품명": str(it.get("품목명") or ""),
                 "기존단가": old,
+                "직전6개월 월평균사용량": avg_u,
                 "인상단가": new,
                 "비고": str(it.get("비고") or ""),
             }
         )
     if not rows:
-        return pd.DataFrame(columns=["선택", "제품명", "기존단가", "인상단가", "비고"])
+        return pd.DataFrame(
+            columns=["선택", "제품명", "기존단가", "직전6개월 월평균사용량", "인상단가", "비고"]
+        )
     return pd.DataFrame(rows)
 
 
@@ -1876,6 +1935,14 @@ def _items_from_editor_df(df: pd.DataFrame) -> list[dict]:
         else:
             old = row.get("단가")
         new = row.get("인상단가") if "인상단가" in row.index else row.get("인상적용단가")
+        avg_u = 0.0
+        for ak in ("직전6개월 월평균사용량", "월평균사용량"):
+            if ak in row.index:
+                try:
+                    avg_u = float(row.get(ak) or 0)
+                except Exception:
+                    avg_u = 0.0
+                break
         selected = True
         if "선택" in row.index:
             selected = bool(row.get("선택"))
@@ -1884,6 +1951,7 @@ def _items_from_editor_df(df: pd.DataFrame) -> list[dict]:
                 "선택": selected,
                 "품목명": name,
                 "기존단가": float(old or 0),
+                "월평균사용량": avg_u,
                 "인상적용단가": float(new or 0),
                 "비고": str(row.get("비고") or ""),
                 "최근매출일": str(row.get("최근매출일") or ""),
@@ -2779,7 +2847,8 @@ def _render_items_table(
     st.markdown("##### 단가 조정 내용")
     st.caption(
         "「선택」체크한 제품만 요율 적용·공문 단가표에 들어갑니다. "
-        "거래처 선택 시 품목·최종단가 자동 반영. %/인상금액은 계산용(공문 미표시)."
+        "「직전6개월 월평균사용량」은 화면 참고용이며 **공문(PDF·엑셀)에는 표시되지 않습니다.** "
+        "%/인상금액은 계산용(공문 미표시)."
     )
 
     mode = st.radio(
@@ -2847,12 +2916,19 @@ def _render_items_table(
             "기존단가": st.column_config.NumberColumn(
                 "기존단가", min_value=0.0, format="%.1f", width="small"
             ),
+            "직전6개월 월평균사용량": st.column_config.NumberColumn(
+                "직전6개월 월평균사용량",
+                format="%.1f",
+                width="medium",
+                help="최근 6개월 출고량 합÷6 · 화면 참고용(공문 미포함)",
+                disabled=True,
+            ),
             "인상단가": st.column_config.NumberColumn(
                 "인상단가", min_value=0.0, format="%.1f", width="small"
             ),
             "비고": st.column_config.TextColumn("비고", width="small"),
         },
-        column_order=["선택", "제품명", "기존단가", "인상단가", "비고"],
+        column_order=["선택", "제품명", "기존단가", "직전6개월 월평균사용량", "인상단가", "비고"],
         num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
@@ -3421,6 +3497,15 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 st.session_state[items_key] = _init_items_from_prices(
                     client, price_df, st.session_state[pct_key]
                 )
+            else:
+                # 기존 세션 품목에도 월평균 열 보강 · 에디터 한 번 갱신
+                st.session_state[items_key] = _enrich_items_monthly_avg(
+                    st.session_state[items_key], price_df
+                )
+                flag = f"{items_key}_avg_col_v1"
+                if not st.session_state.get(flag):
+                    _bump_editor_widget(items_key)
+                    st.session_state[flag] = True
             st.session_state["pi_last_client"] = client
 
             # 공문 본문 키 (거래처별)
