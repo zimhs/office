@@ -87,3 +87,9 @@ uproad/
 # 로컬 전용 비밀
 .streamlit/secrets.toml
 uploaded_cache/price_increase/smtp_local.toml
+
+# 로컬 실행 상태 (Update/Local)
+.dash_code_stamp
+.dash_force_restart
+.dash_8501.log
+.dash_8502.log
