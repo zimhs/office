@@ -130,6 +130,28 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         self.assertFalse(self.wt.worklog_date_exists_in_archive(d))
         self.assertFalse(os.path.isdir(os.path.join(self.root, "2027")))
 
+    def test_create_worklog_day_local_makes_sheet_without_overwrite(self):
+        d = date(2026, 9, 4)
+        tpl = os.path.join(self._tmp.name, "template.xlsx")
+        cache = os.path.join(self._tmp.name, "cache")
+        os.makedirs(cache, exist_ok=True)
+        _write_day_xlsx(tpl, "tpl")
+        with patch.object(self.wt, "WORKLOG_TEMPLATE", tpl), patch.object(self.wt, "WORKLOG_DIR", cache):
+            info = self.wt.create_worklog_day_local(d)
+            self.assertTrue(info["created"])
+            month_path = os.path.join(self.root, "2026", "9월.xlsx")
+            self.assertTrue(os.path.isfile(month_path))
+            self.assertTrue(os.path.isfile(os.path.join(cache, "2026-09-04.xlsx")))
+            again = self.wt.create_worklog_day_local(d)
+            self.assertFalse(again["created"])
+            dates = self.wt.list_saved_worklog_dates()
+            self.assertIn("2026-09-04", dates)
+        wb = load_workbook(os.path.join(self.root, "2026", "9월.xlsx"), read_only=True)
+        try:
+            self.assertIn("4", wb.sheetnames)
+        finally:
+            wb.close()
+
 
 if __name__ == "__main__":
     unittest.main()
