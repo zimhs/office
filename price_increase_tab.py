@@ -40,7 +40,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-03e · 로컬SMTP설정"
+PI_UI_BUILD = "2026-09-03f · 미리보기·메일복구"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -2664,7 +2664,7 @@ def _open_mail_compose_dialog(
     staff: str = "",
     items_n: int = 0,
 ) -> None:
-    """PDF 준비 후 메일 작성 팝업 오픈 (즉시 발송 안 함)."""
+    """PDF 준비 후 메일 작성 상태로 전환 (인라인 작성 · 즉시 발송 안 함)."""
     try:
         pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
         st.session_state["pi_pdf_bytes"] = pdf_bytes
@@ -2675,6 +2675,12 @@ def _open_mail_compose_dialog(
         st.session_state["pi_pdf_error"] = str(e)
         st.error(f"첨부 PDF 생성 실패: {e}")
         return
+    try:
+        xlsx = _build_letter_bytes(**letter_kwargs)
+        st.session_state["pi_dl_bytes"] = xlsx
+        st.session_state["pi_dl_name"] = pdf_name.replace(".pdf", ".xlsx")
+    except Exception:
+        pass
     st.session_state["pi_mail_draft"] = {
         "to": email,
         "subject": title,
@@ -2684,10 +2690,84 @@ def _open_mail_compose_dialog(
         "staff": staff,
         "items": items_n,
     }
-    # 위젯 초기값 (키로 제어)
     st.session_state["pi_mail_compose_subject"] = title
     st.session_state["pi_mail_compose_body"] = body
-    _pi_mail_compose_dialog()
+    st.session_state["pi_left_mode"] = "mail"
+
+
+def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
+    """왼쪽 패널: 메일 제목·본문 작성 + 최종 발송."""
+    draft = st.session_state.get("pi_mail_draft") or {}
+    to_addr = str(draft.get("to") or "")
+    pdf_name = str(draft.get("pdf_name") or "공문.pdf")
+    pdf_bytes = st.session_state.get("pi_pdf_bytes")
+    client = str(draft.get("client") or "")
+    staff = str(draft.get("staff") or "")
+    items_n = int(draft.get("items") or 0)
+
+    st.markdown("##### 메일 작성")
+    st.caption("바로 발송되지 않습니다. 본문 확인 후 「최종 발송」을 누르세요.")
+    st.text_input("수신", value=to_addr, disabled=True, key="pi_mail_inline_to")
+    if "pi_mail_compose_subject" not in st.session_state:
+        st.session_state["pi_mail_compose_subject"] = str(draft.get("subject") or "")
+    if "pi_mail_compose_body" not in st.session_state:
+        st.session_state["pi_mail_compose_body"] = str(draft.get("body") or "")
+    st.text_input("메일 제목", key="pi_mail_compose_subject")
+    st.text_area("메일 본문", height=260, key="pi_mail_compose_body")
+    if pdf_bytes:
+        st.caption(f"첨부 PDF: `{pdf_name}` · 준비됨 ({len(pdf_bytes):,} bytes)")
+    else:
+        st.error("첨부 PDF가 없습니다. 「엑셀 미리보기」로 공문을 먼저 생성하세요.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("작성 취소", use_container_width=True, key="pi_mail_inline_cancel"):
+            st.session_state["pi_left_mode"] = "summary"
+            st.session_state.pop("pi_mail_draft", None)
+            _pi_rerun()
+    with c2:
+        can_send = bool(to_addr and pdf_bytes and smtp_cfg.get("ready"))
+        do_final = st.button(
+            "최종 발송",
+            type="primary",
+            use_container_width=True,
+            key="pi_mail_inline_send",
+            disabled=not can_send,
+        )
+    if not smtp_cfg.get("ready"):
+        st.warning("SMTP 미연동 — 위에서 다음메일 계정을 저장·연결 테스트하세요.")
+    if do_final:
+        subject = str(st.session_state.get("pi_mail_compose_subject") or "").strip()
+        body = str(st.session_state.get("pi_mail_compose_body") or "")
+        if not subject:
+            st.error("메일 제목을 입력하세요.")
+            return
+        try:
+            ok, msg = send_mail_smtp(
+                to_addr=to_addr,
+                subject=subject,
+                body=body,
+                attachment_bytes=pdf_bytes,
+                attachment_name=pdf_name,
+            )
+            append_sent_log(
+                client=client,
+                email=to_addr,
+                subject=subject,
+                ok=ok,
+                mode="single",
+                staff=staff,
+                items=items_n,
+                msg=msg,
+            )
+            if ok:
+                st.success(msg or "발송 완료")
+                st.session_state["pi_left_mode"] = "summary"
+                st.session_state.pop("pi_mail_draft", None)
+            else:
+                st.error(msg or "발송 실패")
+        except Exception as e:
+            st.error(f"발송 오류: {e}")
 
 
 def _render_items_table(
@@ -3146,28 +3226,15 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _pi_clear_widget_session_keys() -> None:
-    """defer 탭 복원 시 button 등 충돌 키만 제거.
+    """defer 탭 복원 시 dialog 잔여 키만 제거.
 
-    주의: pi_mail_upload / pi_single_* / 연락처·본문 키는 지우면
-    업로드·자동완성·선택값이 매 렌더마다 사라진다.
+    절대 지우면 안 되는 것: pi_left_* 버튼, pi_mail_compose_* 작성칸,
+    pi_mail_upload, pi_single_* — 지우면 클릭·메일작성이 무시된다.
     """
     for k in list(st.session_state.keys()):
         if not isinstance(k, str):
             continue
-        if k.startswith(
-            (
-                "pi_dialog_",
-                "pi_mail_compose_",
-                "pi_smtp_",
-                "pi_pdf_preview_",
-                "pi_pdf_help",
-                "pi_body_reset",
-                "pi_left_preview",
-                "pi_left_send",
-                "pi_left_summary",
-                "pi_left_big",
-            )
-        ):
+        if k.startswith(("pi_dialog_",)):
             st.session_state.pop(k, None)
 
 
@@ -3181,31 +3248,74 @@ def _render_smtp_bar() -> dict:
         if st.button("SMTP 연결 테스트", use_container_width=True):
             ok, msg = test_smtp_connection(cfg)
             (st.success if ok else st.error)(msg)
+            if not ok:
+                st.caption(
+                    "연동됨으로 보여도 로그인이 실패하면 비밀번호·POP3/IMAP을 다시 확인하세요. "
+                    "아래「SMTP 계정 변경」에서 다시 저장 후 테스트."
+                )
     with c3:
         tpl = resolve_letter_template()
         st.caption(f"양식: `{os.path.basename(tpl)}`")
 
-    # 로컬: secrets 없어도 화면에서 다음메일 계정 저장
-    show_setup = (not cfg.get("ready")) or (not _pi_is_streamlit_cloud())
-    if show_setup:
-        with st.expander(
-            "🔐 SMTP 계정 설정 (다음메일)",
-            expanded=not bool(cfg.get("ready")),
-        ):
-            if _pi_is_streamlit_cloud():
-                st.caption(
-                    "Cloud는 Streamlit Secrets에 `smtp_user` / `smtp_password` 를 넣으세요."
+    # 미연동이면 expander 없이 바로 입력폼 표시
+    if not cfg.get("ready") and not _pi_is_streamlit_cloud():
+        st.info(
+            "**다음메일 SMTP 미연동** — 아래에 아이디·비밀번호를 넣고 「저장 · 연동」을 누르세요. "
+            "(다음메일 설정에서 POP3/IMAP 사용 ON)"
+        )
+        local = load_local_smtp()
+        u0 = str(cfg.get("user") or local.get("smtp_user") or "")
+        p0 = str(local.get("smtp_password") or "")
+        with st.form("pi_local_smtp_form"):
+            st.markdown("##### 🔐 SMTP 계정 설정 (다음메일)")
+            provider = st.selectbox(
+                "메일",
+                ["daum", "gmail", "naver"],
+                index=["daum", "gmail", "naver"].index(
+                    str(local.get("smtp_provider") or cfg.get("provider") or "daum")
                 )
+                if str(local.get("smtp_provider") or cfg.get("provider") or "daum")
+                in ("daum", "gmail", "naver")
+                else 0,
+            )
+            user = st.text_input("메일 아이디", value=u0, placeholder="아이디@daum.net")
+            password = st.text_input(
+                "메일 비밀번호", value=p0, type="password", placeholder="다음메일 비밀번호"
+            )
+            from_name = st.text_input(
+                "보내는 이름",
+                value=str(local.get("smtp_from_name") or cfg.get("from_name") or "신일가스"),
+            )
+            relax_ssl = st.checkbox(
+                "Mac SSL 오류 시 검증 완화 (CERTIFICATE_VERIFY_FAILED)",
+                value=True,
+            )
+            saved = st.form_submit_button("저장 · 연동", use_container_width=True)
+        if saved:
+            if not user or not password:
+                st.error("아이디와 비밀번호를 모두 입력하세요.")
             else:
-                st.caption(
-                    "다음메일 → 설정 → **POP3/IMAP 사용 ON** 후, "
-                    "아이디(전체메일)와 비밀번호를 저장하세요. "
-                    f"저장 위치: `{PI_SMTP_LOCAL}` (이 Mac에만 보관)"
+                path = save_local_smtp(
+                    user=user,
+                    password=password,
+                    provider=str(provider),
+                    from_name=from_name,
+                    ssl_verify="0" if relax_ssl else "1",
                 )
+                st.success(f"저장됨 → `{path}` · 연결 테스트로 확인하세요.")
+                _pi_rerun()
+        return smtp_settings()
+
+    if not _pi_is_streamlit_cloud():
+        with st.expander("🔐 SMTP 계정 변경 (다음메일)", expanded=False):
+            st.caption(
+                "로그인 실패 시 비밀번호를 다시 넣고 저장하세요. "
+                f"`{PI_SMTP_LOCAL}`"
+            )
             local = load_local_smtp()
             u0 = str(cfg.get("user") or local.get("smtp_user") or "")
             p0 = str(local.get("smtp_password") or "")
-            with st.form("pi_local_smtp_form"):
+            with st.form("pi_local_smtp_form_edit"):
                 provider = st.selectbox(
                     "메일",
                     ["daum", "gmail", "naver"],
@@ -3216,23 +3326,16 @@ def _render_smtp_bar() -> dict:
                     in ("daum", "gmail", "naver")
                     else 0,
                 )
-                user = st.text_input(
-                    "메일 아이디",
-                    value=u0,
-                    placeholder="아이디@daum.net",
-                )
+                user = st.text_input("메일 아이디", value=u0, placeholder="아이디@daum.net")
                 password = st.text_input(
-                    "메일 비밀번호",
-                    value=p0,
-                    type="password",
-                    placeholder="다음메일 비밀번호",
+                    "메일 비밀번호", value=p0, type="password", placeholder="다음메일 비밀번호"
                 )
                 from_name = st.text_input(
                     "보내는 이름",
                     value=str(local.get("smtp_from_name") or cfg.get("from_name") or "신일가스"),
                 )
                 relax_ssl = st.checkbox(
-                    "Mac SSL 오류 시 검증 완화 (CERTIFICATE_VERIFY_FAILED)",
+                    "Mac SSL 오류 시 검증 완화",
                     value=str(local.get("smtp_ssl_verify") or "0") in ("0", "false", "off"),
                 )
                 saved = st.form_submit_button("저장 · 연동", use_container_width=True)
@@ -3247,10 +3350,10 @@ def _render_smtp_bar() -> dict:
                         from_name=from_name,
                         ssl_verify="0" if relax_ssl else "1",
                     )
-                    st.success(f"저장됨 → `{path}` · 연결 테스트로 확인하세요.")
+                    st.success(f"저장됨 → `{path}`")
                     _pi_rerun()
-            if cfg.get("ready"):
-                st.caption("이미 연동됨. 비밀번호를 바꾸려면 다시 저장하세요.")
+    elif not cfg.get("ready"):
+        st.warning("Cloud Secrets에 `smtp_user` / `smtp_password` 를 넣으세요.")
     return smtp_settings()
 
 
@@ -3388,24 +3491,31 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
 
             with col_left:
                 st.markdown("##### 미리보기")
+                mode_hint = st.session_state.get("pi_left_mode") or "summary"
                 p1, p2, p3 = st.columns([1, 1, 1])
                 with p1:
                     do_preview = st.button(
                         "엑셀 미리보기",
                         use_container_width=True,
+                        type="primary" if mode_hint == "pdf" else "secondary",
                         key="pi_left_preview",
-                        help="업체 전송용 공문 PDF를 이 화면에 표시합니다. 메일 첨부와 동일합니다.",
+                        help="공문 PDF를 왼쪽에 표시합니다. (메일 첨부와 동일 · 엑셀도 함께 생성)",
                     )
                 with p2:
                     do_send = st.button(
                         "메일보내기",
-                        type="primary",
+                        type="primary" if mode_hint == "mail" else "secondary",
                         use_container_width=True,
                         key="pi_left_send",
-                        help="메일본문 작성 팝업을 연 뒤, 최종 발송합니다.",
+                        help="왼쪽에서 메일 본문을 작성한 뒤 최종 발송합니다.",
                     )
                 with p3:
-                    if st.button("요약 보기", use_container_width=True, key="pi_left_summary_btn"):
+                    if st.button(
+                        "요약 보기",
+                        use_container_width=True,
+                        type="primary" if mode_hint == "summary" else "secondary",
+                        key="pi_left_summary_btn",
+                    ):
                         st.session_state["pi_left_mode"] = "summary"
                         _pi_rerun()
 
@@ -3434,10 +3544,30 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         xlsx_name=xlsx_name,
                     )
                     mode = "pdf"
-                    if not st.session_state.get("pi_pdf_bytes") and st.session_state.get("pi_pdf_error"):
-                        st.warning("PDF 생성에 실패했습니다. 아래 안내를 확인하세요.")
+                    st.session_state["pi_left_mode"] = "pdf"
 
-                if mode in ("pdf", "excel"):
+                if do_send:
+                    if not email:
+                        st.error("수신 이메일을 입력하세요.")
+                    elif not smtp_cfg.get("ready"):
+                        st.error("SMTP 미연동 — 위에서 다음메일 계정을 저장하세요.")
+                    else:
+                        mail_body = _default_mail_body(client, effective_s, items_now)
+                        _open_mail_compose_dialog(
+                            client=client,
+                            email=email,
+                            title=title,
+                            body=mail_body,
+                            pdf_name=pdf_name,
+                            letter_kwargs=letter_kwargs,
+                            staff=staff if staff != "전체" else "",
+                            items_n=len(items_now),
+                        )
+                        mode = st.session_state.get("pi_left_mode") or "mail"
+
+                if mode == "mail":
+                    _render_pi_left_mail_compose(smtp_cfg=smtp_cfg)
+                elif mode in ("pdf", "excel"):
                     pdf_bytes = st.session_state.get("pi_pdf_bytes")
                     xlsx = st.session_state.get("pi_dl_bytes")
                     if not pdf_bytes:
@@ -3503,8 +3633,19 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             )
                     if pdf_bytes:
                         _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
-                    elif st.session_state.get("pi_pdf_error"):
-                        st.error(str(st.session_state.get("pi_pdf_error")))
+                    else:
+                        if st.session_state.get("pi_pdf_error"):
+                            st.error(str(st.session_state.get("pi_pdf_error")))
+                        st.info("PDF 대신 화면 양식으로 미리봅니다.")
+                        _render_letter_form_preview(
+                            client=client,
+                            title=title,
+                            doc_no=str(letter_kwargs.get("doc_no") or ""),
+                            send_date=letter_kwargs.get("send_date") or date.today(),
+                            effective_s=effective_s,
+                            letter_body=letter_body,
+                            items=items_now,
+                        )
                         if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
                             _pi_letter_preview_dialog()
                 else:
@@ -3525,24 +3666,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             mime="application/pdf",
                             key="pi_single_dl_pdf_keep",
                             use_container_width=True,
-                        )
-
-                if do_send:
-                    if not email:
-                        st.error("수신 이메일을 입력하세요.")
-                    elif not smtp_cfg.get("ready"):
-                        st.error("SMTP secrets 미설정")
-                    else:
-                        mail_body = _default_mail_body(client, effective_s, items_now)
-                        _open_mail_compose_dialog(
-                            client=client,
-                            email=email,
-                            title=title,
-                            body=mail_body,
-                            pdf_name=pdf_name,
-                            letter_kwargs=letter_kwargs,
-                            staff=staff if staff != "전체" else "",
-                            items_n=len(items_now),
                         )
     # ── 일괄 발송 (담당자 단위 · 거래처는 한 곳씩 개별 공문) ──
     with tab_bulk:
