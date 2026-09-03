@@ -1,6 +1,6 @@
 #!/bin/bash
 # 영업 대시보드(8501) — 업무일지·공문 통합 12탭
-# v2026-09-03 — 8502 분리 종료 · Chrome 탭 1개
+# v2026-09-03 — 8502 분리 종료 · Chrome 탭 1개 · Update 재시작 시 커넥트 에러 방지
 export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
 
 ROOT="${HOME}/Desktop/dashboard"
@@ -47,7 +47,18 @@ _save_code_stamp() {
   _code_stamp >"${ROOT}/.dash_code_stamp"
 }
 
+_consume_force_restart() {
+  if [ -f "${ROOT}/.dash_force_restart" ]; then
+    rm -f "${ROOT}/.dash_force_restart"
+    return 0
+  fi
+  return 1
+}
+
 _code_changed_since_start() {
+  if _consume_force_restart; then
+    return 0
+  fi
   local cur saved
   cur="$(_code_stamp)"
   saved=""
@@ -55,6 +66,7 @@ _code_changed_since_start() {
   [ -n "$saved" ] && [ "$cur" != "$saved" ]
 }
 
+# 이미 떠 있는 8501 탭만 앞으로 — URL은 건드리지 않음
 _chrome_ensure_tab() {
   osascript <<'APPLESCRIPT' 2>/dev/null
 tell application "Google Chrome"
@@ -92,7 +104,62 @@ APPLESCRIPT
   fi
 }
 
-# 서버가 이미 떠 있으면 재시작 없음 — 단, 코드 변경 시에는 재시작
+# 재시작 전에 8501 탭을 빈 페이지로 — Chrome이 죽은 서버에 커넥트 에러를 띄우지 않게
+_chrome_park_dashboard_tabs() {
+  osascript <<'APPLESCRIPT' 2>/dev/null || true
+tell application "Google Chrome"
+  repeat with w in windows
+    repeat with t in tabs of w
+      set theURL to URL of t
+      if (theURL starts with "http://127.0.0.1:8501") or (theURL starts with "http://localhost:8501") then
+        set URL of t to "about:blank#office-dashboard-park"
+      end if
+    end repeat
+  end repeat
+end tell
+APPLESCRIPT
+}
+
+# 서버가 살아난 뒤에만 8501로 복구 (주차 탭 포함)
+_chrome_load_dashboard() {
+  osascript <<'APPLESCRIPT' 2>/dev/null
+tell application "Google Chrome"
+  set u1 to "http://127.0.0.1:8501"
+  set win1 to missing value
+  set idx1 to 0
+
+  repeat with w in windows
+    set ti to 1
+    repeat with t in tabs of w
+      set theURL to URL of t
+      if (theURL starts with u1) or (theURL contains "localhost:8501") or (theURL contains "office-dashboard-park") then
+        set win1 to w
+        set idx1 to ti
+      end if
+      set ti to ti + 1
+    end repeat
+  end repeat
+
+  if win1 is not missing value then
+    set index of win1 to 1
+    set active tab index of win1 to idx1
+    set URL of tab idx1 of win1 to u1
+    activate
+    return
+  end if
+
+  make new window
+  set URL of active tab of window 1 to u1
+  activate
+end tell
+APPLESCRIPT
+  if [ $? -ne 0 ]; then
+    osascript -e 'display alert "Chrome 탭 열기 실패" message "Chrome이 실행 중인지, Automation 권한이 허용됐는지 확인하세요."'
+    return 1
+  fi
+}
+
+# 서버가 이미 떠 있으면 재시작 없음 — 단, 코드 변경·Update 강제 재시작은 예외
 if _up 8501; then
   if _code_changed_since_start; then
     osascript -e 'display notification "코드 변경 감지 — 서버 재시작합니다" with title "영업 대시보드"'
@@ -102,6 +169,8 @@ if _up 8501; then
     osascript -e 'display notification "8501 대시보드로 이동 (통합 12탭)" with title "영업 대시보드"'
     exit 0
   fi
+else
+  rm -f "${ROOT}/.dash_force_restart"
 fi
 
 _kill_ports() {
@@ -140,10 +209,11 @@ _run_bg() {
   return 1
 }
 
+_chrome_park_dashboard_tabs
 _kill_ports
 _run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패"'; exit 1; }
 
-_chrome_ensure_tab
+_chrome_load_dashboard
 touch "$STAMP"
 _save_code_stamp
 osascript -e 'display notification "Chrome · 8501 통합 대시보드 (업무일지·공문 포함)" with title "영업 대시보드"'

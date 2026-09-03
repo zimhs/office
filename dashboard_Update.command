@@ -1,6 +1,7 @@
 #!/bin/bash
 # Mac 로컬 — GitHub 최신 코드 받기 + 서버 재시작
-# 더블클릭: fetch → pull(또는 main 동기화) → Stop → Local (8501)
+# 더블클릭: fetch → pull(또는 main 동기화) → Chrome 주차 → 조용히 재시작
+# 서버를 먼저 끄면 Chrome이 죽은 8501에 커넥트 에러를 띄우므로, 탭을 먼저 치운다.
 export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
 
 ROOT="${HOME}/Desktop/dashboard"
@@ -39,9 +40,43 @@ _sync_to_origin_main() {
   git reset --hard origin/main >/dev/null 2>&1
 }
 
+_fetch_origin_main() {
+  local i
+  for i in 1 2 3; do
+    if git fetch origin main >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+# 8501 탭을 빈 페이지로 — 서버를 끄기 전에 Chrome 커넥트 에러를 막음
+_chrome_park_dashboard_tabs() {
+  osascript <<'APPLESCRIPT' 2>/dev/null || true
+tell application "Google Chrome"
+  repeat with w in windows
+    repeat with t in tabs of w
+      set theURL to URL of t
+      if (theURL starts with "http://127.0.0.1:8501") or (theURL starts with "http://localhost:8501") then
+        set URL of t to "about:blank#office-dashboard-park"
+      end if
+    end repeat
+  end repeat
+end tell
+APPLESCRIPT
+}
+
+_quiet_kill_dashboard() {
+  lsof -ti:8501 2>/dev/null | xargs kill -9 2>/dev/null || true
+  lsof -ti:8502 2>/dev/null | xargs kill -9 2>/dev/null || true
+  pkill -f "streamlit run.*8501" 2>/dev/null || true
+  pkill -f "streamlit run.*8502" 2>/dev/null || true
+}
+
 _notify "GitHub에서 최신 코드 받는 중…"
-if ! git fetch origin main 2>&1; then
-  osascript -e 'display alert "git fetch 실패" message "인터넷·GitHub 연결을 확인하세요."' 2>/dev/null || true
+if ! _fetch_origin_main; then
+  osascript -e 'display alert "git fetch 실패" message "인터넷·GitHub 연결을 확인하세요. 잠시 후 Update를 다시 실행해 보세요."' 2>/dev/null || true
   exit 1
 fi
 
@@ -79,8 +114,8 @@ PI_BUILD="$(
 [ -n "$PI_BUILD" ] || PI_BUILD="(공문빌드 확인불가)"
 
 if [ "$SYNCED_HARD" = true ]; then
-  osascript -e 'display alert "GitHub main과 동기화했습니다" message "로컬 git 커밋/수정은 제거되었을 수 있습니다. 필요하면 터미널에서 git stash list 로 확인하세요."' 2>/dev/null || true
   MSG="동기화 ${AFTER_SHORT} — 재시작 · ${PI_BUILD}"
+  _notify "GitHub main과 맞췄습니다. 로컬 수정은 제거되었을 수 있습니다."
 elif [ "$BEFORE" = "$AFTER" ]; then
   MSG="이미 최신 ${AFTER_SHORT} · ${PI_BUILD}"
 else
@@ -88,9 +123,11 @@ else
 fi
 _notify "$MSG"
 
-# 코드 stamp 지워서 Local이 반드시 재시작하도록
+# Local이 8501이 살아 있어도 반드시 재시작하도록
+: >"${ROOT}/.dash_force_restart"
 rm -f "${ROOT}/.dash_code_stamp"
 
-[ -x "${ROOT}/dashboard_Stop.command" ] && bash "${ROOT}/dashboard_Stop.command"
-sleep 2
+# Stop.command는 쓰지 않음 — 알림이 뜨고, Chrome이 죽은 8501에 남아 커넥트 에러가 깜빡임
+_chrome_park_dashboard_tabs
+_quiet_kill_dashboard
 exec "${ROOT}/dashboard_Local.command"
