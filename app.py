@@ -9212,7 +9212,9 @@ def inject_sticky_tabs_script():
                     tabsH = pinTabShell(tabList, topMac + filterH - 1, rectMac.left, rectMac.width);
                 }
                 var barHMac = Math.max(filterH + tabsH + 8, 120);
-                if (Math.abs(barHMac - lastH) > 1) {
+                // 초기 로딩/위젯 settle 과정에서 높이가 조금만 바뀌어도 탭이 분리돼 보일 수 있어
+                // 임계값을 더 낮춰 더 자주 스페이서/고정높이를 재맞춘다.
+                if (Math.abs(barHMac - lastH) > 0.2) {
                     var spacerMac = ensureSpacer(filterBox);
                     spacerMac.style.height = barHMac + 'px';
                     spacerMac.style.minHeight = '120px';
