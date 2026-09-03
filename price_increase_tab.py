@@ -19,6 +19,7 @@ from email.mime.text import MIMEText
 from email.utils import formataddr
 from typing import Any, Optional
 from urllib.parse import quote
+import sys
 
 import pandas as pd
 import streamlit as st
@@ -35,10 +36,11 @@ except Exception:  # pragma: no cover
 
 PI_DIR = os.path.join("uploaded_cache", "price_increase")
 PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
+PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-03d · 다음주소록·업로드저장"
+PI_UI_BUILD = "2026-09-03e · 로컬SMTP설정"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -84,6 +86,210 @@ def _ensure_dirs() -> None:
     os.makedirs(PI_DRAFTS, exist_ok=True)
 
 
+def _pi_is_streamlit_cloud() -> bool:
+    env = (os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT") or "").strip().lower()
+    if env in ("cloud", "streamlit_cloud"):
+        return True
+    try:
+        if os.path.isfile("/home/appuser/.streamlit/secrets.toml"):
+            # Streamlit Cloud 이미지에서 흔한 경로 (로컬 Mac은 아님)
+            if not sys.platform.startswith("darwin"):
+                return "STREAMLIT_SHARING" in os.environ or "STREAMLIT_CLOUD" in os.environ
+    except Exception:
+        pass
+    return bool(os.environ.get("STREAMLIT_CLOUD") or os.environ.get("STREAMLIT_SHARING"))
+
+
+def _parse_simple_toml_flat(text: str) -> dict[str, str]:
+    """평면 key = \"value\" 만 파싱 (smtp_local.toml용)."""
+    out: dict[str, str] = {}
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("["):
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        key = k.strip()
+        val = v.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+            val = val[1:-1]
+        out[key] = val
+    return out
+
+
+def load_local_smtp() -> dict[str, str]:
+    """로컬 Mac 전용 SMTP 저장본 (secrets.toml 없이도 연동)."""
+    path = PI_SMTP_LOCAL
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return _parse_simple_toml_flat(f.read())
+    except Exception:
+        return {}
+
+
+def save_local_smtp(
+    *,
+    user: str,
+    password: str,
+    provider: str = "daum",
+    from_name: str = "신일가스",
+    ssl_verify: str = "0",
+) -> str:
+    """smtp_local.toml 저장. 반환: 저장 경로."""
+    _ensure_dirs()
+    user = str(user or "").replace("\xa0", "").replace("\u200b", "").strip()
+    password = (
+        str(password or "")
+        .replace("\xa0", "")
+        .replace("\u200b", "")
+        .replace(" ", "")
+        .strip()
+    )
+    provider = (provider or "daum").strip().lower() or "daum"
+    from_name = str(from_name or "신일가스").strip() or "신일가스"
+    ssl_verify = "0" if str(ssl_verify).strip() in ("0", "false", "no", "off") else "1"
+    body = (
+        "# 로컬 공문 SMTP (git 무시 · 비밀번호 포함 — 공유 금지)\n"
+        f'smtp_provider = "{provider}"\n'
+        f'smtp_user = "{user}"\n'
+        f'smtp_password = "{password}"\n'
+        f'smtp_from_name = "{from_name}"\n'
+        f'smtp_ssl_verify = "{ssl_verify}"\n'
+    )
+    with open(PI_SMTP_LOCAL, "w", encoding="utf-8") as f:
+        f.write(body)
+    # Streamlit secrets에도 맞춰 두면 재시작 후 st.secrets 경로도 동작
+    try:
+        _upsert_streamlit_secrets_smtp(
+            user=user,
+            password=password,
+            provider=provider,
+            from_name=from_name,
+            ssl_verify=ssl_verify,
+        )
+    except Exception:
+        pass
+    return PI_SMTP_LOCAL
+
+
+def _upsert_streamlit_secrets_smtp(
+    *,
+    user: str,
+    password: str,
+    provider: str,
+    from_name: str,
+    ssl_verify: str,
+) -> None:
+    secrets_path = os.path.join(".streamlit", "secrets.toml")
+    os.makedirs(".streamlit", exist_ok=True)
+    existing = ""
+    if os.path.isfile(secrets_path):
+        with open(secrets_path, "r", encoding="utf-8") as f:
+            existing = f.read()
+    flat = _parse_simple_toml_flat(existing)
+    # 기존 비SMTP 키 유지: 원본에서 SMTP 관련 줄만 교체/추가
+    smtp_keys = {
+        "smtp_provider",
+        "smtp_host",
+        "smtp_port",
+        "smtp_user",
+        "smtp_password",
+        "smtp_from_name",
+        "smtp_ssl_verify",
+        "smtp_from",
+        "smtp_ssl",
+    }
+    lines_out: list[str] = []
+    for raw in existing.splitlines():
+        s = raw.strip()
+        if s and not s.startswith("#") and "=" in s and not s.startswith("["):
+            k = s.split("=", 1)[0].strip()
+            if k in smtp_keys:
+                continue
+        lines_out.append(raw)
+    # 끝에 평면 SMTP 블록 추가
+    while lines_out and lines_out[-1].strip() == "":
+        lines_out.pop()
+    if lines_out and lines_out[-1].strip():
+        lines_out.append("")
+    host = {
+        "daum": "smtp.daum.net",
+        "kakao": "smtp.daum.net",
+        "naver": "smtp.naver.com",
+        "gmail": "smtp.gmail.com",
+    }.get(provider, "smtp.daum.net")
+    lines_out.extend(
+        [
+            "# --- 공문 SMTP (로컬 저장) ---",
+            f'smtp_provider = "{provider}"',
+            f'smtp_host = "{host}"',
+            "smtp_port = 465",
+            f'smtp_user = "{user}"',
+            f'smtp_password = "{password}"',
+            f'smtp_from_name = "{from_name}"',
+            f'smtp_ssl_verify = "{ssl_verify}"',
+            "",
+        ]
+    )
+    with open(secrets_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines_out))
+    _ = flat  # keep parse for future merge needs
+
+
+def _local_smtp_get(*keys: str) -> str:
+    data = load_local_smtp()
+    if not data:
+        return ""
+    for k in keys:
+        if not k:
+            continue
+        v = str(data.get(k) or "").strip()
+        if v:
+            return v
+        low = str(k).strip().lower()
+        # SMTP_USER → smtp_user
+        if low.startswith("smtp_") or low in (
+            "mail_user",
+            "mail_password",
+            "mail_app_password",
+            "daum_mail_id",
+            "daum_mail_password",
+        ):
+            aliases = {
+                "smtp_user": ("smtp_user", "mail_user", "daum_mail_id"),
+                "SMTP_USER": ("smtp_user",),
+                "mail_user": ("smtp_user", "mail_user"),
+                "daum_mail_id": ("smtp_user", "daum_mail_id"),
+                "smtp_password": ("smtp_password", "mail_password", "mail_app_password", "daum_mail_password"),
+                "SMTP_PASSWORD": ("smtp_password",),
+                "mail_password": ("smtp_password", "mail_password"),
+                "mail_app_password": ("smtp_password", "mail_app_password"),
+                "daum_mail_password": ("smtp_password", "daum_mail_password"),
+                "smtp_provider": ("smtp_provider",),
+                "SMTP_PROVIDER": ("smtp_provider",),
+                "smtp_host": ("smtp_host",),
+                "SMTP_HOST": ("smtp_host",),
+                "smtp_port": ("smtp_port",),
+                "SMTP_PORT": ("smtp_port",),
+                "smtp_from": ("smtp_from",),
+                "SMTP_FROM": ("smtp_from",),
+                "smtp_from_name": ("smtp_from_name",),
+                "SMTP_FROM_NAME": ("smtp_from_name",),
+                "smtp_ssl": ("smtp_ssl",),
+                "SMTP_SSL": ("smtp_ssl",),
+                "smtp_ssl_verify": ("smtp_ssl_verify",),
+                "SMTP_SSL_VERIFY": ("smtp_ssl_verify",),
+            }
+            for alt in aliases.get(k, ()):
+                vv = str(data.get(alt) or "").strip()
+                if vv:
+                    return vv
+    return ""
+
+
 def _pi_rerun(*, full: bool = False) -> None:
     """버튼·저장 후 갱신. 기본은 공문 fragment만(전체 앱 로딩 생략).
 
@@ -98,7 +304,7 @@ def _pi_rerun(*, full: bool = False) -> None:
 
 
 def _secret_get(*keys: str) -> str:
-    """secrets.toml / Cloud secrets / env 에서 값 조회.
+    """secrets.toml / Cloud secrets / env / 로컬 smtp_local.toml 조회.
 
     평면 키(`smtp_user`)와 중첩(`[smtp].user`, `[mail].password`) 모두 지원.
     """
@@ -174,6 +380,10 @@ def _secret_get(*keys: str) -> str:
         v = (os.environ.get(k) or "").strip()
         if v:
             return v
+    # 로컬 저장본 (Mac · secrets 없을 때)
+    got = _local_smtp_get(*keys)
+    if got:
+        return got
     return ""
 
 
@@ -1271,17 +1481,15 @@ def smtp_settings() -> dict:
 def smtp_status_label(cfg: Optional[dict] = None) -> str:
     cfg = cfg or smtp_settings()
     if cfg.get("ready"):
-        return f"연동됨 · {cfg.get('user')} → {cfg.get('host')}:{cfg.get('port')}"
+        src = "로컬저장" if os.path.isfile(PI_SMTP_LOCAL) else "secrets"
+        return f"연동됨 · {cfg.get('user')} → {cfg.get('host')}:{cfg.get('port')} ({src})"
     has_user = bool(cfg.get("user"))
     has_pw = bool(cfg.get("password"))
     if not has_user and not has_pw:
-        return (
-            "미연동 — secrets에 smtp_user / smtp_password 필요 "
-            "(또는 [smtp] user·password)"
-        )
+        return "미연동 — 아래「SMTP 계정 설정」에서 다음메일 저장"
     if not has_user:
-        return "미연동 — smtp_user(또는 [smtp].user) 없음"
-    return "미연동 — smtp_password(또는 [smtp].password) 없음"
+        return "미연동 — 메일 아이디 없음"
+    return "미연동 — 메일 비밀번호 없음"
 
 
 def _smtp_ssl_contexts() -> list[ssl.SSLContext]:
@@ -1350,7 +1558,7 @@ def _smtp_run(
 def test_smtp_connection(cfg: Optional[dict] = None) -> tuple[bool, str]:
     cfg = cfg or smtp_settings()
     if not cfg.get("ready"):
-        return False, "smtp_user / smtp_password 가 secrets에 없습니다."
+        return False, "메일 아이디/비밀번호가 없습니다. 위「SMTP 계정 설정」에서 저장하세요."
     try:
         ok, note = _smtp_run(cfg, timeout=20, send_fn=None)
         host, port = cfg["host"], int(cfg["port"])
@@ -2976,7 +3184,74 @@ def _render_smtp_bar() -> dict:
     with c3:
         tpl = resolve_letter_template()
         st.caption(f"양식: `{os.path.basename(tpl)}`")
-    return cfg
+
+    # 로컬: secrets 없어도 화면에서 다음메일 계정 저장
+    show_setup = (not cfg.get("ready")) or (not _pi_is_streamlit_cloud())
+    if show_setup:
+        with st.expander(
+            "🔐 SMTP 계정 설정 (다음메일)",
+            expanded=not bool(cfg.get("ready")),
+        ):
+            if _pi_is_streamlit_cloud():
+                st.caption(
+                    "Cloud는 Streamlit Secrets에 `smtp_user` / `smtp_password` 를 넣으세요."
+                )
+            else:
+                st.caption(
+                    "다음메일 → 설정 → **POP3/IMAP 사용 ON** 후, "
+                    "아이디(전체메일)와 비밀번호를 저장하세요. "
+                    f"저장 위치: `{PI_SMTP_LOCAL}` (이 Mac에만 보관)"
+                )
+            local = load_local_smtp()
+            u0 = str(cfg.get("user") or local.get("smtp_user") or "")
+            p0 = str(local.get("smtp_password") or "")
+            with st.form("pi_local_smtp_form"):
+                provider = st.selectbox(
+                    "메일",
+                    ["daum", "gmail", "naver"],
+                    index=["daum", "gmail", "naver"].index(
+                        str(local.get("smtp_provider") or cfg.get("provider") or "daum")
+                    )
+                    if str(local.get("smtp_provider") or cfg.get("provider") or "daum")
+                    in ("daum", "gmail", "naver")
+                    else 0,
+                )
+                user = st.text_input(
+                    "메일 아이디",
+                    value=u0,
+                    placeholder="아이디@daum.net",
+                )
+                password = st.text_input(
+                    "메일 비밀번호",
+                    value=p0,
+                    type="password",
+                    placeholder="다음메일 비밀번호",
+                )
+                from_name = st.text_input(
+                    "보내는 이름",
+                    value=str(local.get("smtp_from_name") or cfg.get("from_name") or "신일가스"),
+                )
+                relax_ssl = st.checkbox(
+                    "Mac SSL 오류 시 검증 완화 (CERTIFICATE_VERIFY_FAILED)",
+                    value=str(local.get("smtp_ssl_verify") or "0") in ("0", "false", "off"),
+                )
+                saved = st.form_submit_button("저장 · 연동", use_container_width=True)
+            if saved:
+                if not user or not password:
+                    st.error("아이디와 비밀번호를 모두 입력하세요.")
+                else:
+                    path = save_local_smtp(
+                        user=user,
+                        password=password,
+                        provider=str(provider),
+                        from_name=from_name,
+                        ssl_verify="0" if relax_ssl else "1",
+                    )
+                    st.success(f"저장됨 → `{path}` · 연결 테스트로 확인하세요.")
+                    _pi_rerun()
+            if cfg.get("ready"):
+                st.caption("이미 연동됨. 비밀번호를 바꾸려면 다시 저장하세요.")
+    return smtp_settings()
 
 
 @st.fragment

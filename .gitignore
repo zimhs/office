@@ -82,6 +82,6 @@ uproad/
 엑셀원본.xlsx
 /탄산단가인상공문.xlsx
 
-# 로컬 원클릭 백업 (Mac dashboard 폴더)
-백업/snapshots/**
-!백업/README.txt
+# 로컬 전용 비밀
+.streamlit/secrets.toml
+uploaded_cache/price_increase/smtp_local.toml
