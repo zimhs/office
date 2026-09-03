@@ -4633,14 +4633,14 @@ def _dash_base_pivot_cache_key(start_date, end_date, sales_meta, manual_token):
 
 
 # 상단 필터 rerun 시 무거운 탭 생략용 — 탭 인덱스 = st.tabs 순서
-# Cloud(iPad): 업무일지·공문 포함 12탭 / Mac 로컬(8501): 10탭(8502 전용)
+# 로컬·Cloud 공통: 업무일지·시장조사·공문 포함 12탭 (8502 분리 종료)
 def _dash_cloud_merged_tabs() -> bool:
-    """Streamlit Cloud·iPad — 한 URL에 업무일지·공문 포함. Mac localhost 8501 은 False."""
-    return _is_streamlit_cloud()
+    """영업 대시보드에 업무일지·공문 포함(로컬 8501·Cloud 동일)."""
+    return True
 
 
 _DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER = 9, 10, 11
-_DASH_TAB_MARKET_LOCAL = 9
+_DASH_TAB_MARKET_LOCAL = 9  # 하위 호환(미사용)
 # 상단 필터와 무관 — 필터 변경 rerun 시 활성 탭이 아니면 생략 (0-based tab index)
 _DASH_LIGHT_DEFER_TAB_IDX = frozenset({5, 6, 7, 8})
 # 시장조사 — mr_v6_ 필터·캐시만 백업 (mr_dl_* 위젯 키 복원 시 download_button 오류 방지)
@@ -5287,10 +5287,11 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """heavy 탭 defer — Mac: 시장조사(9). Cloud: 업무일지·시장조사·공문(9~11) lazy.
+    """heavy 탭 defer — 업무일지·시장조사·공문(9~11) lazy (로컬·Cloud 공통).
 
     활성 탭·「화면 불러오기」·탭 클릭 remount 시에만 full render.
     한 번 연 탭은 filter 미변경 rerun에서도 stub 되돌리지 않음(탭 전환 유지).
+    검색/필터 변경 시 비활성 heavy는 stub → 이중 풀로딩 방지.
     """
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
@@ -10961,7 +10962,9 @@ def _dash_filter_and_tabs_fragment() -> None:
                     f"Cloud · sticky · nativeTabs · lazy9-11 · mountedKeep · bind{_DASH_FILTER_BIND_VER}"
                 )
             else:
-                dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · filterReinject{_DASH_FILTER_BIND_VER}")
+                dev_caption(
+                    f"Local · 통합12탭 · lazy9-11 · mountedKeep · filterReinject{_DASH_FILTER_BIND_VER}"
+                )
 
             df_base = df_base_opts
             df_staff_filtered = (
@@ -11173,58 +11176,38 @@ def _dash_filter_and_tabs_fragment() -> None:
     # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
     _dash_note_filter_change_for_heavy_tabs()
     _DASH_CLOUD_TABS = _dash_cloud_merged_tabs()
-    if _DASH_CLOUD_TABS:
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
-            [
-                "📌 영업 종합 요약",
-                "🏢 거래처 분석",
-                "📦 품목 및 단가 분석",
-                "👤 담당자 & 상세내역",
-                "📌 채권 관리",
-                "📍 카카오맵",
-                "🏭 설비 재고 현황",
-                "🛢️ 통합 탱크 재고",
-                "📈 수익성 분석",
-                "📝 일일업무일지",
-                "🔎 시장조사",
-                "📨 공문",
-            ]
-        )
-    else:
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(
-            [
-                "📌 영업 종합 요약",
-                "🏢 거래처 분석",
-                "📦 품목 및 단가 분석",
-                "👤 담당자 & 상세내역",
-                "📌 채권 관리",
-                "📍 카카오맵",
-                "🏭 설비 재고 현황",
-                "🛢️ 통합 탱크 재고",
-                "📈 수익성 분석",
-                "🔎 시장조사",
-            ]
-        )
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
+        [
+            "📌 영업 종합 요약",
+            "🏢 거래처 분석",
+            "📦 품목 및 단가 분석",
+            "👤 담당자 & 상세내역",
+            "📌 채권 관리",
+            "📍 카카오맵",
+            "🏭 설비 재고 현황",
+            "🛢️ 통합 탱크 재고",
+            "📈 수익성 분석",
+            "📝 일일업무일지",
+            "🔎 시장조사",
+            "📨 공문",
+        ]
+    )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 43
-    _ACTIVE_TAB_INJECT_VER = 3
-    _CLOUD_ACTIVE_TAB_INJECT_VER = 5
+    _STICKY_INJECT_VER = 44
+    _ACTIVE_TAB_INJECT_VER = 6
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
         inject_sticky_tabs_script()
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
         st.session_state["_ipad_sticky_ver"] = 30
-    if _DASH_CLOUD_TABS:
-        if st.session_state.get("_dash_cloud_active_tab_inject_ver") != _CLOUD_ACTIVE_TAB_INJECT_VER:
-            inject_dash_active_tab_cookie_script(
-                min_tabs=12, heavy_indices=(9, 10, 11)
-            )
-            st.session_state["_dash_cloud_active_tab_inject_ver"] = _CLOUD_ACTIVE_TAB_INJECT_VER
-    elif st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
-        inject_dash_active_tab_cookie_script(min_tabs=10, heavy_indices=(9,))
+    if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
+        inject_dash_active_tab_cookie_script(
+            min_tabs=12, heavy_indices=(9, 10, 11)
+        )
         st.session_state["_dash_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
+        st.session_state["_dash_cloud_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
     # Tab 1: 📌 영업 종합 요약
     with tab1:
         t1_c1, t1_c2 = st.columns([4, 1])
@@ -14275,7 +14258,7 @@ def _dash_filter_and_tabs_fragment() -> None:
 
     if _DASH_CLOUD_TABS:
         with tab10:
-            # 업무일지 — Cloud·iPad 전용 (Mac 로컬 8501·8502 분리)
+            # 업무일지 — 로컬·Cloud 공통 (8501 통합)
             try:
                 if _dash_should_defer_heavy_tab(_DASH_TAB_WORKLOG):
                     _dash_defer_heavy_stub(
@@ -14319,6 +14302,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         _tab_letter = tab12
         _tab_market_idx = _DASH_TAB_MARKET
     else:
+        # 하위 호환 분기(현재 _dash_cloud_merged_tabs=True 로 미사용)
         _tab_market = tab10
         _tab_letter = None
         _tab_market_idx = _DASH_TAB_MARKET_LOCAL
@@ -14360,7 +14344,7 @@ def _dash_filter_and_tabs_fragment() -> None:
 
     if _tab_letter is not None:
         with _tab_letter:
-            # 공문 — Cloud·iPad 전용
+            # 공문 — 로컬·Cloud 공통 (8501 통합)
             try:
                 if _dash_should_defer_heavy_tab(_DASH_TAB_LETTER):
                     _dash_defer_heavy_stub(

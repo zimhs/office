@@ -1,6 +1,6 @@
 #!/bin/bash
-# 메인(8501) + 업무일지(8502) — Chrome 창 1개 · 탭 2개 · 재실행 시 탭 추가 없음
-# v2026-08-30 — worklog_tab 등 변경 시 자동 재시작
+# 영업 대시보드(8501) — 업무일지·공문 통합 12탭
+# v2026-09-03 — 8502 분리 종료 · Chrome 탭 1개
 export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
 
 ROOT="${HOME}/Desktop/dashboard"
@@ -15,9 +15,7 @@ if [ "$HERE" != "$CANON" ] && [ -x "${CANON}/dashboard_Local.command" ]; then
 fi
 
 MAIN="${ROOT}/app.py"
-WORK="${ROOT}/업무일지/app.py"
 URL1="http://127.0.0.1:8501"
-URL2="http://127.0.0.1:8502"
 STAMP="${HOME}/.dashboard_browser_opened"
 LAUNCH_LOCK="${HOME}/.dashboard_local_launching"
 
@@ -39,10 +37,10 @@ _code_stamp() {
   printf "%s|%s|%s|%s|%s|%s" \
     "$(_mtime "${MAIN}")" \
     "$(_mtime "${ROOT}/market_research_tab.py")" \
-    "$(_mtime "${WORK}")" \
     "$(_mtime "${ROOT}/worklog_tab.py")" \
     "$(_mtime "${ROOT}/price_increase_tab.py")" \
-    "$(_mtime "${ROOT}/drive_autoload.py")"
+    "$(_mtime "${ROOT}/drive_autoload.py")" \
+    "$(_mtime "${ROOT}/cache_remote_sync.py")"
 }
 
 _save_code_stamp() {
@@ -57,16 +55,12 @@ _code_changed_since_start() {
   [ -n "$saved" ] && [ "$cur" != "$saved" ]
 }
 
-# Chrome CLI --new-window 는 '이전 세션 복원'으로 네이버·캘린더만 뜨는 경우가 있어 AppleScript 로만 탭 제어
-_chrome_ensure_tabs() {
+_chrome_ensure_tab() {
   osascript <<'APPLESCRIPT' 2>/dev/null
 tell application "Google Chrome"
   set u1 to "http://127.0.0.1:8501"
-  set u2 to "http://127.0.0.1:8502"
   set win1 to missing value
   set idx1 to 0
-  set win2 to missing value
-  set idx2 to 0
 
   repeat with w in windows
     set ti to 1
@@ -76,50 +70,19 @@ tell application "Google Chrome"
         set win1 to w
         set idx1 to ti
       end if
-      if theURL starts with u2 then
-        set win2 to w
-        set idx2 to ti
-      end if
       set ti to ti + 1
     end repeat
   end repeat
 
-  if win1 is not missing value and win2 is not missing value then
+  if win1 is not missing value then
     set index of win1 to 1
     set active tab index of win1 to idx1
     activate
     return
   end if
 
-  if win1 is missing value and win2 is missing value then
-    make new window
-    set URL of active tab of window 1 to u1
-    make new tab at end of window 1 with properties {URL:u2}
-    set active tab index of window 1 to 1
-    activate
-    return
-  end if
-
-  if win1 is not missing value then
-    set targetWin to win1
-    if win2 is missing value then
-      make new tab at end of targetWin with properties {URL:u2}
-    end if
-    set index of targetWin to 1
-    set active tab index of targetWin to idx1
-    activate
-    return
-  end if
-
-  set targetWin to win2
-  make new tab at end of targetWin with properties {URL:u1}
-  set index of targetWin to 1
-  repeat with ti from 1 to count of tabs of targetWin
-    if URL of tab ti of targetWin starts with u1 then
-      set active tab index of targetWin to ti
-      exit repeat
-    end if
-  end repeat
+  make new window
+  set URL of active tab of window 1 to u1
   activate
 end tell
 APPLESCRIPT
@@ -129,14 +92,14 @@ APPLESCRIPT
   fi
 }
 
-# ★ 서버가 이미 떠 있으면 재시작 없음 — 단, app.py 등 코드 변경 시에는 재시작
-if _up 8501 && _up 8502; then
+# 서버가 이미 떠 있으면 재시작 없음 — 단, 코드 변경 시에는 재시작
+if _up 8501; then
   if _code_changed_since_start; then
     osascript -e 'display notification "코드 변경 감지 — 서버 재시작합니다" with title "영업 대시보드"'
   else
-    _chrome_ensure_tabs
+    _chrome_ensure_tab
     touch "$STAMP"
-    osascript -e 'display notification "대시보드 탭으로 이동 (서버 유지 · 코드 변경 시 자동 재시작)" with title "영업 대시보드"'
+    osascript -e 'display notification "8501 대시보드로 이동 (통합 12탭)" with title "영업 대시보드"'
     exit 0
   fi
 fi
@@ -177,13 +140,10 @@ _run_bg() {
   return 1
 }
 
-[ -f "$WORK" ] || { osascript -e 'display alert "업무일지 없음"'; exit 1; }
-
 _kill_ports
-_run_bg 8502 "$WORK" || { osascript -e 'display alert "8502 시작 실패"'; exit 1; }
 _run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패"'; exit 1; }
 
-_chrome_ensure_tabs
+_chrome_ensure_tab
 touch "$STAMP"
 _save_code_stamp
-osascript -e 'display notification "Chrome · 8501+8502 탭 2개 (코드 반영됨)" with title "영업 대시보드"'
+osascript -e 'display notification "Chrome · 8501 통합 대시보드 (업무일지·공문 포함)" with title "영업 대시보드"'
