@@ -38,7 +38,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-03b · 통합12탭·연락처자동저장"
+PI_UI_BUILD = "2026-09-03c · 메일자동·고정바여백"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -2604,8 +2604,23 @@ def _collect_letter_kwargs(
     return kwargs, letter_body, items, effective_s
 
 
+def _pi_on_client_change() -> None:
+    """거래처 select 변경 시 수신메일 세션값 즉시 갱신."""
+    client = str(st.session_state.get("pi_single_client") or "").strip()
+    st.session_state["pi_email_client"] = client
+    mail_df = st.session_state.get("_pi_mail_df_cache")
+    hit = ""
+    if client and isinstance(mail_df, pd.DataFrame) and not mail_df.empty:
+        hit, matched = lookup_email_with_meta(client, mail_df)
+        st.session_state["pi_email_matched_as"] = matched
+    else:
+        st.session_state["pi_email_matched_as"] = ""
+    st.session_state["pi_single_email"] = hit
+
+
 def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
     """거래처 선택 시 연락처에서 메일 자동반영(유사명 포함)."""
+    st.session_state["_pi_mail_df_cache"] = mail_df
     auto_email, matched_as = lookup_email_with_meta(client, mail_df)
     try:
         mail_mtime = float(os.path.getmtime(PI_MAIL_CSV)) if os.path.isfile(PI_MAIL_CSV) else 0.0
@@ -2616,7 +2631,6 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
     cur_email = str(st.session_state.get("pi_single_email") or "").strip()
     client_changed = prev_client != client
     contacts_changed = prev_mtime != mail_mtime
-    # 거래처 변경·연락처 파일 갱신·빈칸+매칭성공 시 자동 채움
     should_fill = False
     if client_changed:
         should_fill = True
@@ -2627,18 +2641,26 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
     if should_fill:
         st.session_state["pi_email_client"] = client
         st.session_state["pi_email_mail_mtime"] = mail_mtime
+        # 위젯 키 갱신 전 기존 값 제거 → Streamlit이 이전 빈칸을 붙잡는 문제 방지
+        st.session_state.pop("pi_single_email", None)
         st.session_state["pi_single_email"] = auto_email
-    email = st.text_input("수신 이메일", key="pi_single_email")
+        st.session_state["pi_email_matched_as"] = matched_as
+    email = st.text_input("수신 이메일", key="pi_single_email", placeholder="name@example.com")
     if auto_email:
         if matched_as and _norm_name(matched_as) != _norm_name(client):
             st.caption(f"연락처 자동반영: `{auto_email}` ← {matched_as}")
         else:
             st.caption(f"연락처 자동반영: `{auto_email}`")
     elif mail_df is None or mail_df.empty:
-        st.caption("연락처 CSV 없음 · 직접 입력하거나 위 메일 연락처에서 업로드")
+        st.warning(
+            "연락처 CSV가 없어 자동반영할 수 없습니다. "
+            "위 **📇 메일 연락처 관리**에서 CSV를 한 번 업로드하거나, "
+            "아래에 이메일을 입력 후 「연락처에 저장」하세요. (다음부터 자동반영)"
+        )
     else:
-        st.caption("이름 불일치 시 「연락처에서 메일 고르기」에서 선택")
-    with st.expander("연락처에서 메일 고르기", expanded=False):
+        st.caption("이름 불일치 시 「연락처에서 메일 고르기」에서 선택 · 또는 아래 저장")
+    need_pick = (not bool(auto_email)) and mail_df is not None and not mail_df.empty
+    with st.expander("연락처에서 메일 고르기", expanded=need_pick):
         cands = suggest_mail_matches(client, mail_df, limit=40)
         if cands:
             pick_labels = ["— 유사 연락처 선택 —"] + [f"{r['거래처']}  ·  {r['이메일']}" for r in cands]
@@ -2665,16 +2687,21 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
         quick = st.text_input("직접 입력 후 이 거래처에 저장", key="pi_quick_email")
         if st.button("연락처에 저장", key="pi_quick_save"):
             q = str(quick or "").strip()
+            if not q:
+                q = str(st.session_state.get("pi_single_email") or "").strip()
             if q and "@" in q:
                 add = pd.DataFrame([{"거래처": client, "이메일": q, "비고": ""}])
-                out = pd.concat([mail_df, add], ignore_index=True) if not mail_df.empty else add
+                out = pd.concat([mail_df, add], ignore_index=True) if mail_df is not None and not mail_df.empty else add
                 out = out.drop_duplicates(subset=["거래처"], keep="last")
                 save_mail_contacts(out)
+                st.session_state["_pi_mail_df_cache"] = out
                 st.session_state["pi_single_email"] = q
                 st.session_state["pi_email_mail_mtime"] = (
                     float(os.path.getmtime(PI_MAIL_CSV)) if os.path.isfile(PI_MAIL_CSV) else 0.0
                 )
-                st.success(f"{client} → {q} 저장됨")
+                st.session_state.pop("_pi_mail_autoload_done", None)
+                st.session_state["_pi_mail_saved_noted"] = False
+                st.success(f"{client} → {q} 저장됨 (다음부터 자동반영)")
                 _pi_rerun()
             else:
                 st.error("올바른 이메일을 입력하세요.")
@@ -2801,10 +2828,12 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     dev_caption(cap)
 
     mail_df, autoload_note = ensure_mail_contacts_autoload()
+    st.session_state["_pi_mail_df_cache"] = mail_df
     smtp_cfg = _render_smtp_bar()
     if autoload_note:
         st.caption(autoload_note)
     mail_df = _render_mail_settings_expander(mail_df)
+    st.session_state["_pi_mail_df_cache"] = mail_df
 
     tab_single, tab_bulk, tab_hist = st.tabs(["개별 발송", "일괄 발송", "발송 이력"])
 
@@ -2816,7 +2845,12 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             staff = st.selectbox("담당자", staff_opts, key="pi_single_staff")
         clients = list_clients_for_staff(sales_df, staff)
         with r1c2:
-            client = st.selectbox("거래처", clients or [""], key="pi_single_client")
+            client = st.selectbox(
+                "거래처",
+                clients or [""],
+                key="pi_single_client",
+                on_change=_pi_on_client_change,
+            )
         with r1c3:
             kind = classify_client_kind(client, sales_df) if client else ""
             st.caption(f"유형: **{kind}**" if kind else "")
