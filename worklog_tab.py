@@ -3972,9 +3972,13 @@ def _render_worklog_input_panel(selected: date) -> None:
                     else: label += " · (비어 있음)"
 
                     exp_key = f"wl_exp_{iso2}_{i}"
-                    # 첫 로딩 시 일일업무 가독성을 위해 기본 펼침
-                    default_open = True
-                    if exp_key not in st.session_state: st.session_state[exp_key] = default_open
+                    # 가독성: 기본은 첫 항목만 펼침 (새 항목 추가는 해당 항목만 펼침)
+                    force_i = st.session_state.get(f"wl_force_expand_{iso2}")
+                    if exp_key not in st.session_state:
+                        if isinstance(force_i, int):
+                            st.session_state[exp_key] = i == force_i
+                        else:
+                            st.session_state[exp_key] = i == 0
 
                     with st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=exp_key):
                         if st.button("이 항목 삭제", key=f"wl_del_btn_{iso2}_{i}", use_container_width=True):
@@ -4334,6 +4338,11 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         f"<style>section.main {{ font-family:{_WL_FONT_STACK}; }}</style>",
         unsafe_allow_html=True,
     )
+    st.markdown(
+        "<div class='sub-header dashboard-tab-panel-head'>📝 일일업무일지</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption("왼쪽 미리보기 · 오른쪽 입력 · 항목은 필요할 때만 펼치세요.")
     dev_caption(f"업무일지 빌드 {_WL_UI_BUILD}")
     _filt_changed = _dashboard_filters_changed_this_run()
     _arch_root = resolve_worklog_archive_root()

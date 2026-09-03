@@ -3116,7 +3116,7 @@ def _render_pi_left_summary(
         st.dataframe(_items_df_for_editor(items), use_container_width=True, hide_index=True)
     else:
         st.caption("단가표 없음 · 공문 본문만 발송")
-    with st.expander("공문 본문 미리보기", expanded=True):
+    with st.expander("공문 본문 미리보기", expanded=False):
         st.text(letter_body or "(본문 없음)")
 
 
@@ -3542,22 +3542,37 @@ def _pi_clear_widget_session_keys() -> None:
 
 def _render_smtp_bar() -> dict:
     cfg = smtp_settings()
-    c1, c2, c3 = st.columns([2.5, 1.2, 1.2])
-    with c1:
-        st.caption(f"SMTP · {smtp_status_label(cfg)}")
-    with c2:
-        st.session_state.pop("pi_smtp_test", None)
-        if st.button("SMTP 연결 테스트", use_container_width=True):
-            ok, msg = test_smtp_connection(cfg)
-            (st.success if ok else st.error)(msg)
-            if not ok:
-                st.caption(
-                    "연동됨으로 보여도 로그인이 실패하면 비밀번호·POP3/IMAP을 다시 확인하세요. "
-                    "아래「SMTP 계정 변경」에서 다시 저장 후 테스트."
-                )
-    with c3:
-        tpl = resolve_letter_template()
-        st.caption(f"양식: `{os.path.basename(tpl)}`")
+    tpl = resolve_letter_template()
+    # 연동됨: 상단 공간을 덜 쓰도록 SMTP/테스트를 접힌 칸에 모음
+    if cfg.get("ready"):
+        with st.expander(
+            f"SMTP · {smtp_status_label(cfg)} · 양식 `{os.path.basename(tpl)}`",
+            expanded=False,
+        ):
+            t1, t2 = st.columns([1, 1])
+            with t1:
+                st.session_state.pop("pi_smtp_test", None)
+                if st.button("SMTP 연결 테스트", use_container_width=True, key="pi_smtp_test_btn"):
+                    ok, msg = test_smtp_connection(cfg)
+                    (st.success if ok else st.error)(msg)
+                    if not ok:
+                        st.caption(
+                            "연동됨으로 보여도 로그인이 실패하면 비밀번호·POP3/IMAP을 다시 확인하세요. "
+                            "아래「SMTP 계정 변경」에서 다시 저장 후 테스트."
+                        )
+            with t2:
+                st.caption(f"양식 경로: `{tpl}`")
+    else:
+        c1, c2, c3 = st.columns([2.5, 1.2, 1.2])
+        with c1:
+            st.caption(f"SMTP · {smtp_status_label(cfg)}")
+        with c2:
+            st.session_state.pop("pi_smtp_test", None)
+            if st.button("SMTP 연결 테스트", use_container_width=True, key="pi_smtp_test_btn"):
+                ok, msg = test_smtp_connection(cfg)
+                (st.success if ok else st.error)(msg)
+        with c3:
+            st.caption(f"양식: `{os.path.basename(tpl)}`")
 
     # 미연동이면 expander 없이 바로 입력폼 표시
     if not cfg.get("ready") and not _pi_is_streamlit_cloud():
@@ -3675,6 +3690,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
         "<div class='sub-header dashboard-tab-panel-head'>📨 공문</div>",
         unsafe_allow_html=True,
     )
+    st.caption("개별·일괄·이력 탭 · 왼쪽 미리보기 · 오른쪽에서 작성·발송")
     cap = f"빌드 {PI_UI_BUILD}"
     if latest_update_str:
         cap += f" · 매출 {latest_update_str}"
