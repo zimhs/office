@@ -40,7 +40,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-03h · 연락처수동·펼치기"
+PI_UI_BUILD = "2026-09-03i · 연락처통합접기"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -3332,7 +3332,7 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
 
 
 def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
-    with st.expander("📇 메일 연락처 관리", expanded=mail_df.empty):
+    with st.expander("📇 메일 연락처 관리", expanded=False):
         st.caption(
             f"CSV: `{PI_MAIL_CSV}` · 거래처명과 이메일을 등록해야 "
             "**수신 이메일이 자동 반영**됩니다. "
@@ -3422,7 +3422,7 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
             elif not mail_df.empty:
                 st.caption(f"업로드 반영됨 · 등록 {len(mail_df)}건")
 
-        # ── 등록 목록: 초성/알파벳 그룹 펼치기·접기 ──
+        # ── 등록 목록: 통합 펼치기·접기 (시작 시 항상 접힘) ──
         if mail_df is None or mail_df.empty:
             st.info("등록된 연락처가 없습니다. 위에서 수동 저장하거나 CSV를 업로드하세요.")
             return mail_df
@@ -3448,99 +3448,85 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
         st.caption(
             f"등록 {len(mail_df)}건"
             + (f" · 검색결과 {len(view)}건" if q else "")
-            + " · 그룹을 눌러 펼치기/접기"
+            + " · 아래를 눌러 전체 목록 펼치기/접기"
         )
         if view.empty:
             st.warning("검색 결과가 없습니다.")
             return mail_df
 
         view = view.sort_values("거래처", kind="mergesort")
-        groups: dict[str, list] = {}
-        for _, row in view.iterrows():
-            g = _contact_group_label(str(row.get("거래처") or ""))
-            groups.setdefault(g, []).append(row)
-
-        # 초성·알파벳 정렬
-        def _gkey(lab: str) -> tuple:
-            order = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"
-            if lab in order:
-                return (0, order.index(lab))
-            if lab.isalpha():
-                return (1, lab)
-            return (2, lab)
-
-        open_all = bool(q and str(q).strip()) or len(view) <= 12
-        for lab in sorted(groups.keys(), key=_gkey):
-            rows = groups[lab]
-            with st.expander(f"▶ {lab} · {len(rows)}건", expanded=open_all):
-                gdf = pd.DataFrame(
-                    [
-                        {
-                            "거래처": str(r.get("거래처") or "").strip(),
-                            "이메일": str(r.get("이메일") or "").strip(),
-                            "비고": (
-                                ""
-                                if str(r.get("비고") or "").strip().lower() == "nan"
-                                else str(r.get("비고") or "").strip()
-                            ),
-                        }
-                        for r in rows
-                    ]
-                )
-                st.dataframe(gdf, use_container_width=True, hide_index=True, height=min(280, 40 + 28 * len(gdf)))
-                labels = [f"{r['거래처']}  ·  {r['이메일']}" for _, r in gdf.iterrows()]
-                if not labels:
-                    continue
-                chosen = st.selectbox(
-                    "이 그룹에서 수정·삭제할 거래처",
-                    labels,
-                    key=f"pi_mail_grp_pick_{lab}",
-                )
-                # 선택 행
-                sel_nm, sel_em = "", ""
-                if "  ·  " in chosen:
-                    sel_nm, sel_em = chosen.split("  ·  ", 1)
-                else:
-                    sel_nm = chosen
-                sel_bg = ""
-                hit = gdf[gdf["거래처"].astype(str) == sel_nm]
-                if not hit.empty:
-                    sel_bg = str(hit.iloc[0].get("비고") or "")
-                    if not sel_em:
-                        sel_em = str(hit.iloc[0].get("이메일") or "")
-                with st.form(f"pi_mail_edit_grp_{lab}"):
-                    new_em = st.text_input("이메일 수정", value=sel_em)
-                    new_bg = st.text_input("비고 수정", value=sel_bg)
-                    b1, b2 = st.columns(2)
-                    with b1:
-                        do_save = st.form_submit_button("수정 저장", use_container_width=True)
-                    with b2:
-                        do_del = st.form_submit_button("삭제", use_container_width=True)
-                if do_save:
-                    try:
-                        mail_df = upsert_mail_contact(
-                            mail_df, client=sel_nm, email=new_em, note=new_bg
-                        )
-                        st.session_state["_pi_mail_df_cache"] = mail_df
-                        st.session_state["pi_email_mail_mtime"] = (
-                            float(os.path.getmtime(PI_MAIL_CSV))
-                            if os.path.isfile(PI_MAIL_CSV)
-                            else 0.0
-                        )
-                        st.success(f"수정됨: {sel_nm}")
-                        _pi_rerun()
-                    except ValueError as err:
-                        st.error(str(err))
-                if do_del:
-                    mail_df = delete_mail_contact(mail_df, sel_nm, sel_em)
+        gdf = pd.DataFrame(
+            [
+                {
+                    "거래처": str(r.get("거래처") or "").strip(),
+                    "이메일": str(r.get("이메일") or "").strip(),
+                    "비고": (
+                        ""
+                        if str(r.get("비고") or "").strip().lower() == "nan"
+                        else str(r.get("비고") or "").strip()
+                    ),
+                }
+                for _, r in view.iterrows()
+            ]
+        )
+        # 자음 분할 없이 통합 1개 expander · 시작 시 항상 접힘
+        with st.expander(f"등록 연락처 전체 · {len(gdf)}건", expanded=False):
+            st.dataframe(
+                gdf,
+                use_container_width=True,
+                hide_index=True,
+                height=min(420, 40 + 28 * min(len(gdf), 14)),
+            )
+            labels = [f"{r['거래처']}  ·  {r['이메일']}" for _, r in gdf.iterrows()]
+            chosen = st.selectbox(
+                "수정·삭제할 거래처",
+                labels,
+                key="pi_mail_list_pick",
+            )
+            sel_nm, sel_em = "", ""
+            if "  ·  " in chosen:
+                sel_nm, sel_em = chosen.split("  ·  ", 1)
+            else:
+                sel_nm = chosen
+            sel_bg = ""
+            hit = gdf[gdf["거래처"].astype(str) == sel_nm]
+            if not hit.empty:
+                sel_bg = str(hit.iloc[0].get("비고") or "")
+                if not sel_em:
+                    sel_em = str(hit.iloc[0].get("이메일") or "")
+            with st.form("pi_mail_edit_all"):
+                new_em = st.text_input("이메일 수정", value=sel_em)
+                new_bg = st.text_input("비고 수정", value=sel_bg)
+                b1, b2 = st.columns(2)
+                with b1:
+                    do_save = st.form_submit_button("수정 저장", use_container_width=True)
+                with b2:
+                    do_del = st.form_submit_button("삭제", use_container_width=True)
+            if do_save:
+                try:
+                    mail_df = upsert_mail_contact(
+                        mail_df, client=sel_nm, email=new_em, note=new_bg
+                    )
                     st.session_state["_pi_mail_df_cache"] = mail_df
                     st.session_state["pi_email_mail_mtime"] = (
                         float(os.path.getmtime(PI_MAIL_CSV))
                         if os.path.isfile(PI_MAIL_CSV)
                         else 0.0
                     )
-                    st.success(f"삭제됨: {sel_nm}")
+                    st.success(f"수정됨: {sel_nm}")
                     _pi_rerun()
+                except ValueError as err:
+                    st.error(str(err))
+            if do_del:
+                mail_df = delete_mail_contact(mail_df, sel_nm, sel_em)
+                st.session_state["_pi_mail_df_cache"] = mail_df
+                st.session_state["pi_email_mail_mtime"] = (
+                    float(os.path.getmtime(PI_MAIL_CSV))
+                    if os.path.isfile(PI_MAIL_CSV)
+                    else 0.0
+                )
+                st.success(f"삭제됨: {sel_nm}")
+                _pi_rerun()
     return mail_df
 
 
