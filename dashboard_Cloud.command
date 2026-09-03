@@ -28,6 +28,12 @@ trap 'rmdir "$LAUNCH_LOCK" 2>/dev/null' EXIT
 
 [ -f "${ROOT}/app.py" ] || { osascript -e 'display alert "dashboard 폴더 없음"'; exit 1; }
 
+# Chrome이 꺼져 있으면 먼저 기동해 체감 대기 후 AppleScript로 탭 1개 정리
+if ! pgrep -qx "Google Chrome" 2>/dev/null; then
+  open -a "Google Chrome" "$CLOUD" 2>/dev/null || true
+  sleep 0.8
+fi
+
 # Chrome CLI --new-window 는 세션 복원으로 네이버·캘린더 창이 따로 뜨는 경우가 있어 AppleScript 로만 탭 제어
 _chrome_ensure_cloud_tab() {
   osascript <<APPLESCRIPT 2>/dev/null

@@ -4398,6 +4398,18 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             align-self: flex-start;
             z-index: 99;
         }
+        /* iPad Mini 7 세로: 입력칸 sticky가 필터를 가리지 않게. 가로는 기존 유지 */
+        @media (max-width: 850px) {
+            div[data-testid="column"]:nth-of-type(2) {
+                position: static !important;
+                top: auto !important;
+            }
+        }
+        @media (min-width: 851px) and (max-width: 1180px) and (orientation: landscape) {
+            div[data-testid="column"]:nth-of-type(2) {
+                top: 3.2rem;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
