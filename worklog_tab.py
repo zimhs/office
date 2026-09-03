@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-31d · 실시간요약·ws안정"
+_WL_UI_BUILD = "2026-08-31i · ws안정+74단위"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -283,16 +283,6 @@ export default function (component) {
     inst.lines = normalize(next);
     return inst.lines;
   }
-  let softTimer = null;
-  function softEmit(next) {
-    localOnly(next);
-    if (softTimer) clearTimeout(softTimer);
-    softTimer = setTimeout(function () {
-      softTimer = null;
-      const cur = normalize(inst.lines || readDomLines());
-      setStateValue("lines", cur);
-    }, 280);
-  }
   function focusAt(idx) {
     requestAnimationFrame(() => {
       const el = root.querySelector('input[data-idx="' + idx + '"]');
@@ -342,9 +332,8 @@ export default function (component) {
         let j0 = j;
         let v = cur[j0] || "";
         if (displayUnits(v) <= maxU) {
-          // 입력 중: 로컬+디바운스 — 매 키 fragment rerun 시 Cached ForwardMsg MISS
+          // 타이핑 중 서버 동기화 금지 — blur·칸넘김·Enter만 emit (ForwardMsg MISS 방지)
           if (mode === "blur" || mode === "force") emit(cur, null);
-          else if (mode === "type") softEmit(cur);
           else localOnly(cur);
           return;
         }
@@ -368,35 +357,11 @@ export default function (component) {
       });
       input.addEventListener("focus", () => {
         if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
         setStateValue("focus", j);
-        setStateValue("caret", { s: s, e: e, j: j });
-      });
-      input.addEventListener("keyup", () => {
-        if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
-        setStateValue("caret", { s: s, e: e, j: j });
       });
       input.addEventListener("click", () => {
         if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
         setStateValue("focus", j);
-        setStateValue("caret", { s: s, e: e, j: j });
       });
       input.addEventListener("blur", () => {
         commitValue("blur");
@@ -445,7 +410,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v18",
+    "worklog_entry_lines_v23",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -900,8 +865,19 @@ def _set_body_font(cell) -> None:
 # 💡 [핵심] 글자 넘침 현상 원천 차단 (엄격한 max_units 설정)
 # =====================================================================
 # 14pt 바탕체 기준 내용칸 한 줄 한도 (한글 1자=2단위). 자동 다음칸 이동 임계값.
+def _excel_width_to_px(width: float) -> int:
+    """엑셀 열 너비 → px (화면 100% 기준, 원본과 동일 체감)."""
+    try:
+        w = float(width)
+    except (TypeError, ValueError):
+        w = 8.43
+    return max(10, int(w * 7 + 5))
+
+
 @lru_cache(maxsize=1)
-def _content_line_units() -> int: return 78  # 한글 39자 (기존 36자 + 3자)
+def _content_line_units() -> int:
+    return 74  # 한글 37자(74단위) — 기존 72 + 1자
+
 
 @lru_cache(maxsize=1)
 def _client_line_units() -> int: return 16  # 👈 한글 8자(16 단위)로 증가
@@ -953,6 +929,11 @@ def _spill_all_content(cells: dict) -> dict:
     cells = _spill_column(cells, WL_NEXT_ROWS, "D")
     cells = _spill_column(cells, WL_NOTE_ROWS, "D")
     return cells
+
+
+def _cells_for_preview_write(cells: dict) -> dict:
+    """미리보기/인쇄 xlsx — 한 줄이 칸을 넘지 않게 spill 후 반환."""
+    return _spill_all_content(dict(cells or {}))
 
 # 💡 템플릿 준비: git의 uploaded_cache/worklog/template.xlsx 를 우선 사용
 # (예전엔 ~/Desktop/업무일지.xlsx mtime이 더 新し면 덮어써서 로고·양식 반영이 깨짐)
@@ -1904,12 +1885,6 @@ def _wl_cell_font(cell, *, is_content: bool, is_client: bool, is_body_d: bool, i
         fsize_pt = 11.0
     return stack, fsize_pt
 
-def _excel_width_to_px(width: float) -> int:
-    """엑셀 열 너비 → px (화면 100% 기준, 원본과 동일 체감)."""
-    try: w = float(width)
-    except (TypeError, ValueError): w = 8.43
-    return max(10, int(w * 7 + 5))
-
 def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
     if load_workbook is None or not path or not os.path.exists(path): return 900, 1312
     try:
@@ -2422,7 +2397,7 @@ def _pack_entries_to_cells(d: date, entries: list[dict], next_day: list[str] | N
     for t_list, t_rows in ((next_day, WL_NEXT_ROWS), (notes, WL_NOTE_ROWS)):
         chunks = _panel_lines_to_cells(t_list, max_u)
         for i, r in enumerate(t_rows): cells[f"D{r}"] = chunks[i] if i < len(chunks) else ""
-    return cells
+    return _spill_all_content(cells)
 
 def _entries_from_cells(cells: dict) -> tuple[list[tuple[str, str]], list[str], list[str]]:
     rows = [_summary_row_from_entry(e) for e in _grouped_entries_from_cells(cells)]
@@ -2791,6 +2766,7 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(filled)
             lj = _last_used_line_index(synced)
             _remember_active_cell(iso, _entry_client_key(iso, entry_i, lj), len(str(synced[lj] or "")))
+            _maybe_refresh_left_on_line_change(iso, entry_i, synced, slot="cl")
 
     def _on_clients_focus_change() -> None:
         _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_client_key)
@@ -2861,6 +2837,7 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             except (TypeError, ValueError, IndexError):
                 lj = _last_used_line_index(synced)
                 _remember_active_cell(iso, _entry_line_key(iso, entry_i, lj), len(str(synced[lj] or "")))
+            _maybe_refresh_left_on_line_change(iso, entry_i, synced, slot="ln")
 
     def _on_lines_focus_change() -> None:
         _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_line_key)
@@ -2889,6 +2866,19 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     while filled and filled[-1] == "": filled.pop()
     st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(filled)
     return out
+
+
+def _maybe_refresh_left_on_line_change(iso: str, entry_i: int, lines: list[str], *, slot: str) -> None:
+    """줄(칸) 수가 바뀔 때만 왼쪽 요약/엑셀 미리보기 갱신 — 타이핑마다 로딩 방지."""
+    k = f"wl_left_refresh_{slot}_{iso}_{entry_i}"
+    n = len(_norm_editor_lines(lines))
+    prev = st.session_state.get(k)
+    st.session_state[k] = n
+    if prev is not None and int(prev) != n:
+        try:
+            _request_left_preview_refresh(date.fromisoformat(iso))
+        except Exception:
+            pass
 
 
 def _remember_active_cell(iso: str, fk: str, pos: int) -> None:
@@ -3195,6 +3185,28 @@ def _read_editor_entries(d: date) -> list[dict]:
         out.append({"client": client, "client_lines": client_lines, "content": content, "lines": lines, "blank_after": blank_after})
     return out or [{"client": "", "client_lines": [], "content": "", "lines": [], "blank_after": 1}]
 
+
+def _flush_entry_comp_to_live(iso: str, entry_count: int) -> None:
+    """저장 직전 — blur emit된 CCv2 lines를 live/session 키에 반영."""
+    for i in range(max(0, int(entry_count or 0))):
+        for comp_key, live_key, line_key, count_key, text_key in (
+            (_entry_lines_comp_key(iso, i), _entry_lines_live_key(iso, i), _entry_line_key, _entry_line_count_key, f"wl_ent_t_{iso}_{i}"),
+            (_entry_clients_comp_key(iso, i), _entry_clients_live_key(iso, i), _entry_client_key, _entry_client_count_key, f"wl_ent_c_{iso}_{i}"),
+        ):
+            cs = st.session_state.get(comp_key)
+            if not isinstance(cs, dict) or not isinstance(cs.get("lines"), list):
+                continue
+            synced = [str(x or "") for x in cs.get("lines")]
+            st.session_state[live_key] = synced
+            st.session_state[count_key(iso, i)] = len(synced)
+            for j, line in enumerate(synced):
+                st.session_state[line_key(iso, i, j)] = line
+            filled = list(synced)
+            while filled and filled[-1] == "":
+                filled.pop()
+            st.session_state[text_key] = "\n".join(filled)
+
+
 def _cells_from_widgets(d: date) -> dict:
     entries = _read_editor_entries(d)
     nk, ok = f"wl_next_area_{d.isoformat()}", f"wl_notes_area_{d.isoformat()}"
@@ -3302,7 +3314,7 @@ def _build_preview_file(d: date, cells: dict) -> str:
     _ensure_dirs()
     if not os.path.exists(WORKLOG_TEMPLATE): raise FileNotFoundError("업무일지 템플릿이 없습니다.")
     dst = _preview_path(d)
-    write_cells_to_path(dst, d, cells, force_template=True)
+    write_cells_to_path(dst, d, _cells_for_preview_write(cells), force_template=True)
     return dst
 
 def _excel_app_path() -> str | None:
@@ -3315,7 +3327,7 @@ def _print_xlsx_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"일일�
 def prepare_print_xlsx(d: date, cells: dict) -> str:
     _ensure_dirs()
     dst = _print_xlsx_path(d)
-    write_cells_to_path(dst, d, cells, force_template=True)
+    write_cells_to_path(dst, d, _cells_for_preview_write(cells), force_template=True)
     return os.path.abspath(dst)
 
 def open_excel_print_preview(xlsx_path: str, *, prefer_print_dialog: bool = True) -> tuple[bool, str]:
@@ -3597,7 +3609,7 @@ def _render_worklog_left_preview(selected: date) -> None:
     """왼쪽 요약/엑셀 — 입력 위젯 실시간 반영 (요약은 soft blank 제거)."""
     draft = _draft_cells_for_left_preview(selected)
     st.markdown("##### 업무일지 보기")
-    st.caption("입력 즉시 왼쪽 반영 · 엑셀 양식은 「엑셀 미리보기」")
+    st.caption("입력 즉시 반영 · 다음 칸 이동 시 왼쪽 요약·엑셀 미리보기 갱신")
     p1, p2 = st.columns(2)
     with p1:
         do_print = st.button(
@@ -3726,19 +3738,27 @@ def _sync_left_preview_snapshot(d: date, *, focus_sig: str | None = None) -> Non
 
 
 def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> None:
-    """저장·엑셀 미리보기 등 — 왼쪽 요약 스냅샷 갱신 + fragment rerun 예약."""
-    _sync_left_preview_snapshot(d, focus_sig=focus_sig)
+    """다음 칸 이동·Enter·저장 등 — 왼쪽 요약/엑셀 미리보기 갱신 예약."""
     iso = d.isoformat()
-    # 엑셀 미리보기 모드면 iframe 갱신 생략 (요약 보기로 돌아올 때 publish 반영)
-    if st.session_state.get(f"wl_left_excel_on_{iso}"):
-        return
+    if focus_sig is not None:
+        prev = st.session_state.get(f"wl_left_focus_sig_{iso}")
+        if prev == focus_sig:
+            return
+        st.session_state[f"wl_left_focus_sig_{iso}"] = focus_sig
     st.session_state["wl_need_left_refresh"] = True
+    if st.session_state.get(f"wl_left_excel_on_{iso}"):
+        for k in (
+            f"wl_left_excel_sig_v25_{iso}",
+            f"wl_left_excel_html_v25_{iso}",
+            f"wl_left_excel_h_v25_{iso}",
+        ):
+            st.session_state.pop(k, None)
 
 
 def _wl_finish_edit_fragment() -> None:
-    """편집 fragment 마무리 — 왼쪽 요약 갱신 시 fragment만 rerun (전체 앱·sync 생략)."""
+    """편집 fragment 마무리 — 왼쪽( fragment 밖) 갱신 시 전체 rerun."""
     if st.session_state.pop("wl_need_left_refresh", None):
-        _wl_rerun()
+        st.rerun()
 
 
 
@@ -3873,10 +3893,12 @@ def _render_worklog_input_panel(selected: date) -> None:
                     if 0 <= dlj < len(cur): cur.pop(dlj)
                     if not cur: cur = [""]
                     _apply_entry_lines(iso2, dei, cur, focus_j=min(dlj, max(len(cur) - 1, 0)))
+                    _request_left_preview_refresh(d)
 
                 ins_ln = st.session_state.pop(f"wl_do_insert_ln_{iso2}", None)
                 if isinstance(ins_ln, (list, tuple)) and len(ins_ln) == 2:
                     _insert_line_after(iso2, int(ins_ln[0]), int(ins_ln[1]))
+                    _request_left_preview_refresh(d)
 
                 del_cl = st.session_state.pop(f"wl_do_del_cl_{iso2}", None)
                 if isinstance(del_cl, (list, tuple)) and len(del_cl) == 2:
@@ -3885,14 +3907,17 @@ def _render_worklog_input_panel(selected: date) -> None:
                     if 0 <= dlj < len(cur): cur.pop(dlj)
                     if not cur: cur = [""]
                     _apply_entry_clients(iso2, dei, cur, focus_j=min(dlj, max(len(cur) - 1, 0)))
+                    _request_left_preview_refresh(d)
 
                 ins_cl = st.session_state.pop(f"wl_do_insert_cl_{iso2}", None)
                 if isinstance(ins_cl, (list, tuple)) and len(ins_cl) == 2:
                     _insert_client_after(iso2, int(ins_cl[0]), int(ins_cl[1]))
+                    _request_left_preview_refresh(d)
 
                 ent_req = st.session_state.pop(f"wl_do_enter_cell_{iso2}", None)
                 if isinstance(ent_req, dict):
                     _commit_enter_on_cell(str(ent_req.get("kind") or ""), iso2, int(ent_req.get("ei") or 0), int(ent_req.get("lj") or 0), str(ent_req.get("v") or ""))
+                    _request_left_preview_refresh(d)
 
                 sp_req = st.session_state.pop(f"wl_do_special_{iso2}", None)
                 if isinstance(sp_req, dict):
@@ -3951,7 +3976,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         st.session_state[f"wl_focus_caret_{iso2}"] = s
 
-                st.caption("입력 즉시 반영 · 왼쪽 요약도 타이핑과 함께 갱신됩니다.")
+                st.caption("같은 칸 타이핑은 가볍게 · 다음 칸(자동 줄바꿈·Enter) 시 왼쪽 미리보기 갱신")
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
                 _rem = _usage["remaining"]
@@ -3978,7 +4003,6 @@ def _render_worklog_input_panel(selected: date) -> None:
                     with st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=exp_key):
                         if st.button("이 항목 삭제", key=f"wl_del_btn_{iso2}_{i}", use_container_width=True):
                             st.session_state[f"wl_do_del_{iso2}"] = i
-                            _wl_rerun()
 
                         _cu = _client_line_units()
                         if int(st.session_state.get(_entry_client_count_key(iso2, i), 0) or 0) <= 0:
@@ -4027,7 +4051,6 @@ def _render_worklog_input_panel(selected: date) -> None:
 
                 if st.button("＋ 항목 추가", key=f"wl_add_btn_{iso2}", width="stretch"):
                     st.session_state[f"wl_do_add_{iso2}"] = True
-                    _wl_rerun()
 
                 st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
                 st.markdown(
@@ -4046,11 +4069,11 @@ def _render_worklog_input_panel(selected: date) -> None:
                 st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
 
                 if st.button("저장", type="primary", width="stretch", key=f"wl_save_btn_{iso2}"):
-                    # 클릭 직후 한 번 더 그려 입력 컴포넌트 값을 확정한 뒤 저장
+                    # 1회 rerun으로 blur 확정 후 다음 런에서 저장 (중복 rerun 금지)
                     st.session_state[f"wl_do_save_{iso2}"] = True
-                    _wl_rerun()
                 elif do_save:
                     try:
+                        _flush_entry_comp_to_live(iso2, n)
                         entries_now = _read_editor_entries(d)
                         usage_now = _content_row_usage(entries_now)
                         if usage_now.get("overflow"):
@@ -4405,14 +4428,16 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
     _render_worklog_sync_ui()
 
+    sel: date = st.session_state.get("worklog_selected") or selected
+    col_preview, col_edit = st.columns([1, 1.14], gap="small")
+    with col_preview:
+        _render_worklog_left_preview(sel)
+
     @st.fragment
     def _worklog_body() -> None:
-        sel: date = st.session_state.get("worklog_selected") or selected
-        col_preview, col_edit = st.columns([1, 1.14], gap="small")
-        with col_preview:
-            _render_worklog_left_preview(sel)
+        sel2: date = st.session_state.get("worklog_selected") or selected
         with col_edit:
-            _render_worklog_input_panel(sel)
+            _render_worklog_input_panel(sel2)
         _wl_finish_edit_fragment()
 
     _worklog_body()
