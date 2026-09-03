@@ -40,7 +40,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-03i · 연락처통합접기"
+PI_UI_BUILD = "2026-09-03j · 상태문구숨김"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -1603,15 +1603,28 @@ def smtp_settings() -> dict:
     }
 
 
+def _mask_email(addr: str) -> str:
+    """화면 표시용 이메일 마스킹 (예: ab***@gmail.com)."""
+    s = str(addr or "").strip()
+    if "@" not in s:
+        return s
+    local, _, domain = s.partition("@")
+    if len(local) <= 2:
+        masked = (local[:1] + "***") if local else "***"
+    else:
+        masked = local[:2] + "***"
+    return f"{masked}@{domain}"
+
+
 def smtp_status_label(cfg: Optional[dict] = None) -> str:
     cfg = cfg or smtp_settings()
     if cfg.get("ready"):
-        src = "로컬저장" if os.path.isfile(PI_SMTP_LOCAL) else "secrets"
-        return f"연동됨 · {cfg.get('user')} → {cfg.get('host')}:{cfg.get('port')} ({src})"
+        # 이메일·호스트는 화면에 노출하지 않음
+        return "연동됨"
     has_user = bool(cfg.get("user"))
     has_pw = bool(cfg.get("password"))
     if not has_user and not has_pw:
-        return "미연동 — 아래「SMTP 계정 설정」에서 다음메일 저장"
+        return "미연동 — 아래「SMTP 계정 설정」에서 저장"
     if not has_user:
         return "미연동 — 메일 아이디 없음"
     return "미연동 — 메일 비밀번호 없음"
@@ -3269,19 +3282,16 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
         st.session_state["pi_single_email"] = auto_email
         st.session_state["pi_email_matched_as"] = matched_as
     email = st.text_input("수신 이메일", key="pi_single_email", placeholder="name@example.com")
-    if auto_email:
-        if matched_as and _norm_name(matched_as) != _norm_name(client):
-            st.caption(f"연락처 자동반영: `{auto_email}` ← {matched_as}")
+    # 자동반영 안내·이메일 노출 캡션은 숨김 (수신 칸에만 채움)
+    if not auto_email:
+        if mail_df is None or mail_df.empty:
+            st.warning(
+                "연락처가 없어 자동반영할 수 없습니다. "
+                "위 **📇 메일 연락처 관리**에서 저장하거나, "
+                "아래에 이메일을 입력 후 「연락처에 저장」하세요."
+            )
         else:
-            st.caption(f"연락처 자동반영: `{auto_email}`")
-    elif mail_df is None or mail_df.empty:
-        st.warning(
-            "연락처 CSV가 없어 자동반영할 수 없습니다. "
-            "위 **📇 메일 연락처 관리**에서 CSV를 한 번 업로드하거나, "
-            "아래에 이메일을 입력 후 「연락처에 저장」하세요. (다음부터 자동반영)"
-        )
-    else:
-        st.caption("이름 불일치 시 「연락처에서 메일 고르기」에서 선택 · 또는 아래 저장")
+            st.caption("이름 불일치 시 「연락처에서 메일 고르기」에서 선택 · 또는 아래 저장")
     need_pick = (not bool(auto_email)) and mail_df is not None and not mail_df.empty
     with st.expander("연락처에서 메일 고르기", expanded=need_pick):
         cands = suggest_mail_matches(client, mail_df, limit=40)
@@ -3683,11 +3693,10 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
         cap += f" · 매출 {latest_update_str}"
     dev_caption(cap)
 
-    mail_df, autoload_note = ensure_mail_contacts_autoload()
+    mail_df, _autoload_note = ensure_mail_contacts_autoload()
     st.session_state["_pi_mail_df_cache"] = mail_df
     smtp_cfg = _render_smtp_bar()
-    if autoload_note:
-        st.caption(autoload_note)
+    # 연락처 자동사용 건수 안내 문구는 숨김
     mail_df = _render_mail_settings_expander(mail_df)
     st.session_state["_pi_mail_df_cache"] = mail_df
 
