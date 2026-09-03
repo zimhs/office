@@ -1603,19 +1603,6 @@ def smtp_settings() -> dict:
     }
 
 
-def _mask_email(addr: str) -> str:
-    """화면 표시용 이메일 마스킹 (예: ab***@gmail.com)."""
-    s = str(addr or "").strip()
-    if "@" not in s:
-        return s
-    local, _, domain = s.partition("@")
-    if len(local) <= 2:
-        masked = (local[:1] + "***") if local else "***"
-    else:
-        masked = local[:2] + "***"
-    return f"{masked}@{domain}"
-
-
 def smtp_status_label(cfg: Optional[dict] = None) -> str:
     cfg = cfg or smtp_settings()
     if cfg.get("ready"):
