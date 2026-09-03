@@ -11738,7 +11738,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 37
+        st.session_state["_ipad_sticky_ver"] = 38
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=12, heavy_indices=(9, 10, 11)
