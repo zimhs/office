@@ -5475,6 +5475,13 @@ def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
     active = _dash_active_tab_idx()
     on_this_tab = active is not None and int(active) == int(tab_idx)
 
+    # 첫 로딩에서 dash_active_tab 쿠키가 아직 주입되기 전이면 active가 None일 수 있다.
+    # 이때 heavy 탭을 stub으로만 렌더하면(「화면 불러오기」만 뜨면) 사용자 입장에서
+    # 탭이 제대로 "펼쳐져" 보이지 않는 문제가 생긴다.
+    # 단, 상단 필터가 바뀐 run은 제외한다.
+    if active is None and not st.session_state.get("_dash_filter_changed_flag", False):
+        return False
+
     if st.session_state.get("_dash_filter_changed_flag"):
         if on_this_tab:
             mounted[tab_idx] = True
@@ -9469,14 +9476,14 @@ def inject_sticky_tabs_script():
             } else {
                 /* Mac 전용 오리지널 환경 유지 (무손실 복원) */
                 var pollCount = 0;
-                parentWin.__dashboardStickyBootInterval = setInterval(function() {
+    parentWin.__dashboardStickyBootInterval = setInterval(function() {
                     if (!isFilterDropdownOpen()) syncFixedBar();
                     pollCount++;
-                    if (pollCount > 40) {
+                    if (pollCount > 25) {
                         clearInterval(parentWin.__dashboardStickyBootInterval);
                         parentWin.__dashboardStickyBootInterval = null;
                     }
-                }, 250);
+                }, 80);
                 var observer = new MutationObserver(function(mutations) {
                     var fb = findFilterBox();
                     var all = collectMainTabLists();
