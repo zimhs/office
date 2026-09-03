@@ -37,6 +37,7 @@ _STATIC_REL = (
     "vaporizer_cache.dat_name.txt",
     "integrated_cache.dat",
     "integrated_cache.dat_name.txt",
+    "price_increase/mail_contacts.csv",
 )
 
 

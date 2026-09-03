@@ -38,7 +38,7 @@ PI_MAIL_CSV = os.path.join(PI_DIR, "mail_contacts.csv")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-08-27j · 필터시중탭생략"
+PI_UI_BUILD = "2026-09-03a · 연락처자동·메일유사매칭·smtp중첩키"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
@@ -98,19 +98,78 @@ def _pi_rerun(*, full: bool = False) -> None:
 
 
 def _secret_get(*keys: str) -> str:
+    """secrets.toml / Cloud secrets / env 에서 값 조회.
+
+    평면 키(`smtp_user`)와 중첩(`[smtp].user`, `[mail].password`) 모두 지원.
+    """
+    nested_sections = ("smtp", "mail", "email", "daum", "gmail")
+
+    def _from_mapping(obj: Any, key: str) -> str:
+        if obj is None:
+            return ""
+        try:
+            if hasattr(obj, "get"):
+                v = obj.get(key)
+            else:
+                v = obj[key]
+        except Exception:
+            v = None
+        if v is None:
+            return ""
+        # nested section object — not a leaf value
+        if hasattr(v, "get") and not isinstance(v, (str, bytes, int, float, bool)):
+            return ""
+        s = str(v).strip()
+        return s
+
     try:
         secrets = getattr(st, "secrets", None)
-        if secrets is None:
-            return ""
-        for k in keys:
-            try:
-                v = secrets.get(k) if hasattr(secrets, "get") else secrets[k]
-            except Exception:
-                v = None
-            if v is not None and str(v).strip():
-                return str(v).strip()
     except Exception:
-        pass
+        secrets = None
+    if secrets is not None:
+        for k in keys:
+            got = _from_mapping(secrets, k)
+            if got:
+                return got
+            # smtp_user → section smtp, key user
+            low = str(k or "").strip().lower()
+            for sec in nested_sections:
+                prefix = f"{sec}_"
+                if low.startswith(prefix) and len(low) > len(prefix):
+                    leaf = low[len(prefix) :]
+                    try:
+                        section = secrets.get(sec) if hasattr(secrets, "get") else secrets[sec]
+                    except Exception:
+                        section = None
+                    got = _from_mapping(section, leaf)
+                    if got:
+                        return got
+                    # aliases inside section
+                    for alt in (leaf, "user", "username", "id", "password", "pass", "app_password"):
+                        if alt == leaf:
+                            continue
+                        if leaf in ("user", "username", "id") and alt in ("user", "username", "id"):
+                            got = _from_mapping(section, alt)
+                            if got:
+                                return got
+                        if leaf in ("password", "pass", "app_password") and alt in (
+                            "password",
+                            "pass",
+                            "app_password",
+                        ):
+                            got = _from_mapping(section, alt)
+                            if got:
+                                return got
+            # bare leaf inside [smtp]: user / password
+            if low in ("user", "username", "password", "host", "port", "from", "from_name", "provider"):
+                for sec in nested_sections:
+                    try:
+                        section = secrets.get(sec) if hasattr(secrets, "get") else secrets[sec]
+                    except Exception:
+                        section = None
+                    got = _from_mapping(section, low)
+                    if got:
+                        return got
     for k in keys:
         v = (os.environ.get(k) or "").strip()
         if v:
@@ -157,6 +216,80 @@ def load_mail_contacts(path: str = PI_MAIL_CSV) -> pd.DataFrame:
     return _load_mail_contacts_cached(path, mtime)
 
 
+def _mail_contact_candidate_paths() -> list[str]:
+    """로컬/Cloud에서 자동 적재할 주소록 CSV 후보."""
+    home = os.path.expanduser("~")
+    desk = os.path.join(home, "Desktop")
+    names = (
+        "mail_contacts.csv",
+        "주소록.csv",
+        "다음주소록.csv",
+        "카카오주소록.csv",
+        "contacts.csv",
+        "email_contacts.csv",
+    )
+    dirs = (
+        PI_DIR,
+        os.path.join("uploaded_cache", "price_increase"),
+        desk,
+        os.path.join(desk, "dashboard"),
+        os.path.join(desk, "업무"),
+        os.path.join(home, "Downloads"),
+        os.path.join(home, "Desktop", "dashboard", "uploaded_cache", "price_increase"),
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for d in dirs:
+        for n in names:
+            p = os.path.join(d, n)
+            ap = os.path.abspath(p)
+            if ap in seen:
+                continue
+            seen.add(ap)
+            out.append(p)
+    return out
+
+
+def ensure_mail_contacts_autoload(path: str = PI_MAIL_CSV) -> tuple[pd.DataFrame, str]:
+    """저장된 연락처를 읽고, 비어 있으면 Desktop/캐시 CSV를 자동 적재.
+
+    Returns: (mail_df, note) — note는 UI용 짧은 안내(없으면 '').
+    """
+    _ensure_dirs()
+    cur = load_mail_contacts(path)
+    if not cur.empty:
+        return cur, ""
+    # 이미 세션에서 자동적재 시도했으면 반복 스킵(업로더는 계속 가능)
+    if st.session_state.get("_pi_mail_autoload_done"):
+        return cur, ""
+    st.session_state["_pi_mail_autoload_done"] = True
+    best_df = pd.DataFrame(columns=["거래처", "이메일", "비고"])
+    best_src = ""
+    for cand in _mail_contact_candidate_paths():
+        if not os.path.isfile(cand):
+            continue
+        if os.path.abspath(cand) == os.path.abspath(path):
+            continue
+        try:
+            try:
+                raw = pd.read_csv(cand, encoding="utf-8-sig")
+            except Exception:
+                raw = pd.read_csv(cand, encoding="cp949")
+            merged = _normalize_mail_df(raw)
+        except Exception:
+            continue
+        if len(merged) > len(best_df):
+            best_df = merged
+            best_src = cand
+    if best_df.empty:
+        return cur, ""
+    try:
+        save_mail_contacts(best_df, path)
+    except Exception:
+        return best_df, f"자동 적재(메모리): `{os.path.basename(best_src)}` {len(best_df)}건"
+    return load_mail_contacts(path), f"연락처 자동 적재: `{os.path.basename(best_src)}` → {len(best_df)}건"
+
+
 def _normalize_mail_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=["거래처", "이메일", "비고"])
@@ -165,17 +298,34 @@ def _normalize_mail_df(df: pd.DataFrame) -> pd.DataFrame:
     mail_c = None
     note_c = None
     for label, c in cols.items():
-        low = label.lower().replace(" ", "")
-        if name_c is None and any(k in low for k in ("거래처", "이름", "성명", "상호", "업체", "name", "회사")):
+        low = label.lower().replace(" ", "").replace("_", "")
+        if name_c is None and any(
+            k in low
+            for k in (
+                "거래처",
+                "이름",
+                "성명",
+                "상호",
+                "업체",
+                "회사명",
+                "회사",
+                "name",
+                "displayname",
+                "표시이름",
+                "연락처이름",
+            )
+        ):
             name_c = c
-        if mail_c is None and any(k in low for k in ("메일", "email", "e-mail", "이메일", "mail")):
+        if mail_c is None and any(
+            k in low for k in ("메일", "email", "e-mail", "이메일", "mail", "전자우편")
+        ):
             mail_c = c
-        if note_c is None and any(k in low for k in ("비고", "메모", "소속", "그룹", "note")):
+        if note_c is None and any(k in low for k in ("비고", "메모", "소속", "그룹", "note", "조직")):
             note_c = c
     if mail_c is None:
         # 열 값에서 이메일 패턴 찾기
         for c in df.columns:
-            sample = df[c].astype(str).head(30).str.cat(sep=" ")
+            sample = df[c].astype(str).head(40).str.cat(sep=" ")
             if _EMAIL_RE.search(sample):
                 mail_c = c
                 break
@@ -187,9 +337,11 @@ def _normalize_mail_df(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame()
     out["거래처"] = df[name_c].astype(str).str.strip() if name_c is not None else ""
     raw_mail = df[mail_c].astype(str) if mail_c is not None else ""
-    out["이메일"] = raw_mail.map(lambda x: (_EMAIL_RE.search(str(x)).group(0) if _EMAIL_RE.search(str(x)) else ""))
+    out["이메일"] = raw_mail.map(
+        lambda x: (_EMAIL_RE.search(str(x)).group(0) if _EMAIL_RE.search(str(x)) else "")
+    )
     out["비고"] = df[note_c].astype(str).str.strip() if note_c is not None else ""
-    out = out[(out["거래처"] != "") & (out["거래처"] != "nan") & (out["이메일"] != "")]
+    out = out[(out["거래처"] != "") & (out["거래처"].str.lower() != "nan") & (out["이메일"] != "")]
     out = out.drop_duplicates(subset=["거래처", "이메일"], keep="last")
     return out.reset_index(drop=True)
 
@@ -953,9 +1105,18 @@ def smtp_settings() -> dict:
 
 def smtp_status_label(cfg: Optional[dict] = None) -> str:
     cfg = cfg or smtp_settings()
-    if not cfg.get("ready"):
-        return "미연동 — secrets에 smtp_user / smtp_password 필요"
-    return f"연동됨 · {cfg.get('user')} → {cfg.get('host')}:{cfg.get('port')}"
+    if cfg.get("ready"):
+        return f"연동됨 · {cfg.get('user')} → {cfg.get('host')}:{cfg.get('port')}"
+    has_user = bool(cfg.get("user"))
+    has_pw = bool(cfg.get("password"))
+    if not has_user and not has_pw:
+        return (
+            "미연동 — secrets에 smtp_user / smtp_password 필요 "
+            "(또는 [smtp] user·password)"
+        )
+    if not has_user:
+        return "미연동 — smtp_user(또는 [smtp].user) 없음"
+    return "미연동 — smtp_password(또는 [smtp].password) 없음"
 
 
 def _smtp_ssl_contexts() -> list[ssl.SSLContext]:
@@ -2439,13 +2600,35 @@ def _collect_letter_kwargs(
 
 
 def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
-    exact_email, _ = exact_mail_match(client, mail_df)
-    if st.session_state.get("pi_email_client") != client:
+    """거래처 선택 시 연락처에서 메일 자동반영(유사명 포함)."""
+    auto_email, matched_as = lookup_email_with_meta(client, mail_df)
+    try:
+        mail_mtime = float(os.path.getmtime(PI_MAIL_CSV)) if os.path.isfile(PI_MAIL_CSV) else 0.0
+    except OSError:
+        mail_mtime = 0.0
+    prev_client = st.session_state.get("pi_email_client")
+    prev_mtime = st.session_state.get("pi_email_mail_mtime")
+    cur_email = str(st.session_state.get("pi_single_email") or "").strip()
+    client_changed = prev_client != client
+    contacts_changed = prev_mtime != mail_mtime
+    # 거래처 변경·연락처 파일 갱신·빈칸+매칭성공 시 자동 채움
+    should_fill = False
+    if client_changed:
+        should_fill = True
+    elif contacts_changed:
+        should_fill = True
+    elif auto_email and not cur_email:
+        should_fill = True
+    if should_fill:
         st.session_state["pi_email_client"] = client
-        st.session_state["pi_single_email"] = exact_email
+        st.session_state["pi_email_mail_mtime"] = mail_mtime
+        st.session_state["pi_single_email"] = auto_email
     email = st.text_input("수신 이메일", key="pi_single_email")
-    if exact_email:
-        st.caption(f"연락처 자동반영: `{exact_email}`")
+    if auto_email:
+        if matched_as and _norm_name(matched_as) != _norm_name(client):
+            st.caption(f"연락처 자동반영: `{auto_email}` ← {matched_as}")
+        else:
+            st.caption(f"연락처 자동반영: `{auto_email}`")
     elif mail_df is None or mail_df.empty:
         st.caption("연락처 CSV 없음 · 직접 입력하거나 위 메일 연락처에서 업로드")
     else:
@@ -2483,6 +2666,9 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
                 out = out.drop_duplicates(subset=["거래처"], keep="last")
                 save_mail_contacts(out)
                 st.session_state["pi_single_email"] = q
+                st.session_state["pi_email_mail_mtime"] = (
+                    float(os.path.getmtime(PI_MAIL_CSV)) if os.path.isfile(PI_MAIL_CSV) else 0.0
+                )
                 st.success(f"{client} → {q} 저장됨")
                 _pi_rerun()
             else:
@@ -2494,7 +2680,8 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
     with st.expander("📇 메일 연락처 관리", expanded=mail_df.empty):
         st.caption(
             f"CSV: `{PI_MAIL_CSV}` · 거래처명과 이메일을 등록해야 "
-            "**수신 이메일이 자동 반영**됩니다. (다음 주소록 CSV 내보내기 후 업로드 가능)"
+            "**수신 이메일이 자동 반영**됩니다. "
+            "(저장본 자동 사용 · Desktop/다음 주소록 CSV도 자동 적재 · 수동 업로드 가능)"
         )
         up = st.file_uploader("연락처 CSV 업로드", type=["csv"], key="pi_mail_upload")
         if up is not None:
@@ -2505,10 +2692,23 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
             merged = _normalize_mail_df(raw)
             if not merged.empty:
                 save_mail_contacts(merged)
+                st.session_state.pop("_pi_mail_autoload_done", None)
+                st.session_state["pi_email_mail_mtime"] = (
+                    float(os.path.getmtime(PI_MAIL_CSV)) if os.path.isfile(PI_MAIL_CSV) else 0.0
+                )
                 st.success(f"{len(merged)}건 저장")
                 mail_df = load_mail_contacts()
+                # 현재 선택 거래처 메일 즉시 재반영
+                cur_client = str(st.session_state.get("pi_single_client") or "").strip()
+                if cur_client:
+                    hit, _ = lookup_email_with_meta(cur_client, mail_df)
+                    st.session_state["pi_email_client"] = cur_client
+                    st.session_state["pi_single_email"] = hit
+            else:
+                st.error("이메일 열을 찾지 못했습니다. 이름·이메일 열이 있는 CSV인지 확인하세요.")
         if not mail_df.empty:
             st.dataframe(mail_df, use_container_width=True, hide_index=True)
+            st.caption(f"등록 {len(mail_df)}건 · 거래처 선택 시 유사명 포함 자동 매칭")
         else:
             st.info("연락처 CSV가 없습니다. 업로드하거나 직접 입력하세요.")
             with st.form("pi_mail_manual"):
@@ -2519,6 +2719,7 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
                         add = pd.DataFrame([{"거래처": n, "이메일": e, "비고": ""}])
                         out = pd.concat([mail_df, add], ignore_index=True)
                         save_mail_contacts(out)
+                        st.session_state.pop("_pi_mail_autoload_done", None)
                         _pi_rerun()
     return mail_df
 
@@ -2594,8 +2795,10 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
         cap += f" · 매출 {latest_update_str}"
     dev_caption(cap)
 
-    mail_df = load_mail_contacts()
+    mail_df, autoload_note = ensure_mail_contacts_autoload()
     smtp_cfg = _render_smtp_bar()
+    if autoload_note:
+        st.caption(autoload_note)
     mail_df = _render_mail_settings_expander(mail_df)
 
     tab_single, tab_bulk, tab_hist = st.tabs(["개별 발송", "일괄 발송", "발송 이력"])
