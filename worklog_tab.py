@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-08-31d · 실시간요약·ws안정"
+_WL_UI_BUILD = "2026-09-04a · 추가버튼·로컬생성팝업"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1656,6 +1656,45 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
     except Exception:
         pass
     return path
+
+
+def create_worklog_day_local(d: date) -> dict:
+    """선택한 날짜의 엑셀 업무일지를 로컬에만 만든다 (캐시 + 월별 시트).
+
+    Drive/Cloud는 작성 후 「저장」할 때 반영. 이미 있으면 덮어쓰지 않는다.
+    """
+    _ensure_dirs()
+    path = worklog_path(d)
+    archive_exists = worklog_date_exists_in_archive(d)
+    local_exists = os.path.isfile(path)
+    archive = None
+    if not local_exists:
+        write_cells_to_path(path, d, _empty_cells(d), force_template=True)
+    if not archive_exists:
+        archive = upsert_worklog_archive_sheet(d, path, allow_overwrite=False)
+    else:
+        archive = worklog_archive_month_path(d, create_year=False)
+    _invalidate_saved_dates_cache()
+    _invalidate_worklog_presence_cache(d)
+    created = not (local_exists or archive_exists)
+    iso = d.isoformat()
+    st.session_state[f"wl_saved_ok_{iso}"] = True
+    ctx = dict(st.session_state.get(f"wl_open_ctx_{iso}") or {})
+    ctx["had_local"] = True
+    st.session_state[f"wl_open_ctx_{iso}"] = ctx
+    target = describe_worklog_archive_target(d)
+    if created:
+        msg = f"로컬 엑셀을 만들었습니다 · {target}"
+    else:
+        msg = f"이미 있는 날짜입니다 · {target}"
+    return {
+        "created": created,
+        "path": path,
+        "archive": archive,
+        "target": target,
+        "msg": msg,
+    }
+
 
 def _purge_worklog_day_preview_cache(d: date) -> None:
     """삭제 후 왼쪽 요약·엑셀 HTML 캐시 제거 (불필요한 재렌더·로딩 방지)."""
@@ -3449,6 +3488,34 @@ def _worklog_form_preview_dialog() -> None:
                 if ok: st.success(msg)
                 else: st.warning(msg)
 
+
+@st.dialog("엑셀 업무일지", width="large")
+def _worklog_created_dialog() -> None:
+    """추가 클릭 — 그 날짜 로컬 엑셀 생성 결과 + 양식 미리보기."""
+    info = st.session_state.get("wl_create_dialog") or {}
+    msg = str(info.get("msg") or "로컬 엑셀 업무일지")
+    target = str(info.get("target") or "")
+    if info.get("created"):
+        st.success(msg)
+    else:
+        st.info(msg)
+    if target:
+        st.caption(f"저장 위치: `{target}` · 작성은 오른쪽 입력 후 「저장」")
+    path = st.session_state.get("wl_dialog_preview_path")
+    if path and os.path.exists(str(path)):
+        path = str(path)
+        try:
+            scale = _WL_PREVIEW_SCALE
+            print_html = render_worklog_view_html(path, print_mode=False, auto_print=False, scale=scale)
+            _, frame_h = _scaled_view_frame_size(path, scale)
+            components.html(print_html, height=min(760, max(420, int(frame_h))), scrolling=True)
+        except Exception as e:
+            st.warning(f"미리보기 표시 실패: {e}")
+    if st.button("닫고 작성하기", type="primary", width="stretch", key="wl_create_dialog_close"):
+        st.session_state.pop("wl_create_dialog", None)
+        st.rerun()
+
+
 def _prepare_excel_preview(d: date, cells: dict) -> str:
     try: return prepare_print_xlsx(d, cells)
     except Exception: return _build_preview_file(d, cells)
@@ -3774,7 +3841,7 @@ def _render_worklog_input_panel(selected: date) -> None:
 
     with col_input:
             st.markdown("##### 업무 입력")
-            bar_date, bar_cal, bar_del = st.columns([2.4, 1.1, 0.7], gap="small")
+            bar_date, bar_cal, bar_add, bar_del = st.columns([2.1, 0.95, 0.75, 0.65], gap="small")
             with bar_date:
                 picked = st.date_input("업무일지 날짜", key="wl_date_pick", help="저장 후에도 날짜를 바꿀 수 있습니다.")
             with bar_cal:
@@ -3787,6 +3854,21 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["worklog_month"] = date(clicked.year, clicked.month, 1)
                         st.session_state["wl_date_sync"] = ""
                         st.rerun()
+            with bar_add:
+                st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
+                if st.button("추가", type="primary", width="stretch", key="wl_add_day_btn", help="이 날짜 엑셀 업무일지를 로컬에 만들고 팝업으로 확인"):
+                    try:
+                        info = create_worklog_day_local(selected)
+                        cells_now = read_worklog_cells(selected) if os.path.isfile(info.get("path") or "") else _empty_cells(selected)
+                        preview = _prepare_excel_preview(selected, cells_now)
+                        st.session_state["wl_dialog_preview_path"] = preview
+                        st.session_state["wl_create_dialog"] = info
+                        _worklog_created_dialog()
+                    except Exception as e:
+                        if _wl_quiet_ui():
+                            st.error("이 날짜 엑셀을 만들지 못했습니다. 템플릿을 확인해 주세요.")
+                        else:
+                            st.error(f"엑셀 생성 실패: {e}")
             with bar_del:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
                 with st.popover("삭제", width="content", key="wl_del_day_open", on_change="rerun"):
@@ -3798,6 +3880,11 @@ def _render_worklog_input_panel(selected: date) -> None:
                         key="wl_del_day_yes",
                         on_click=_on_confirm_delete_day,
                     )
+            if st.session_state.get("wl_create_dialog") and not st.session_state.get("wl_add_day_btn"):
+                try:
+                    _worklog_created_dialog()
+                except Exception:
+                    pass
 
             _iso_bar = selected.isoformat()
             _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
