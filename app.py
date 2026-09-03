@@ -716,7 +716,8 @@ def inject_custom_css():
                 padding-bottom: 48px !important;
                 padding-top: 4mm !important;
                 margin-top: 0 !important;
-                scroll-margin-top: var(--dashboard-fixed-bar-height, 96px) !important;
+                /* 큰 scroll-margin은 본문 클릭 시 scrollIntoView가 큰 공백을 만듦 */
+                scroll-margin-top: 4mm !important;
             }
             /* 고정바 바로 아래 본문 첫 블록 여백 제거(탭패널 4mm만 유지) */
             section.main .block-container {
@@ -798,8 +799,8 @@ def inject_custom_css():
                     font-size: 10px !important;
                 }
                 .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]) {
-                    padding-top: 0 !important;
-                    scroll-margin-top: var(--dashboard-fixed-bar-height, 140px) !important;
+                    padding-top: 4mm !important;
+                    scroll-margin-top: 4mm !important;
                 }
             }
 
@@ -8467,7 +8468,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 63
+    _sticky_py_ver = 64
     components.html(
         """
         <script>
@@ -8478,8 +8479,8 @@ def inject_sticky_tabs_script():
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 38;
-            var STICKY_SCRIPT_VER_IPAD = 59; /* v63: 고정바~본문 약 4mm 간격 */
+            var STICKY_SCRIPT_VER_MAC = 39;
+            var STICKY_SCRIPT_VER_IPAD = 60; /* v64: 본문 클릭 시 여백 폭증 방지 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
                 parentWin.__dashboardStickyMacReady = 0;
@@ -8548,48 +8549,19 @@ def inject_sticky_tabs_script():
                 } catch (eCss) {}
             }
             function tightenContentGap(filterBox) {
-                /* 고정바 하단~탭패널 상단을 ≈4mm(CONTENT_GAP_PX)로 맞춤 */
+                /* 스페이서는 고정바 실측 높이만. 클릭 후 scrollIntoView로
+                   탭패널 top이 바뀌면 gap이 음수/과대해져 여백이 폭증하므로
+                   viewport gap으로 높이를 키우거나 당기지 않는다. */
                 if (!filterBox || !isElementFixed(filterBox)) return lastH;
-                var want = CONTENT_GAP_PX;
-                var barBottom = 0;
-                try { barBottom = filterBox.getBoundingClientRect().bottom; } catch (eBb) { return lastH; }
-                var host = findMainTabsHost();
-                if (!host) return lastH;
-                var target = null;
-                try {
-                    target = host.querySelector('[role="tabpanel"]:not([hidden])') || host;
-                } catch (eTg) { target = host; }
-                var top = 0;
-                try { top = target.getBoundingClientRect().top; } catch (eTp) { return lastH; }
-                var gap = Math.round(top - barBottom);
-                if (gap >= want - 2 && gap <= want + 2) {
-                    return lastH;
-                }
-                if (gap > 220) gap = 220;
+                var filterH = Math.round(filterBox.getBoundingClientRect().height) || 0;
+                var barH = computeBarHeight(filterH);
+                if (barH < 48) return lastH;
+                if (lastH > 0 && Math.abs(barH - lastH) <= 12) return lastH;
                 var spacer = parentDoc.getElementById(SPACER_ID);
-                var cur = lastH || 0;
                 if (spacer) {
-                    cur = parseInt(spacer.style.height, 10) || spacer.offsetHeight || cur;
-                    var next = Math.max(48, cur + (want - gap));
-                    if (Math.abs(next - cur) >= 2) {
-                        setSpacerHeightPx(spacer, next);
-                        lastH = next;
-                        spacerFrozenH = next;
-                        cur = next;
-                    }
-                }
-                try {
-                    barBottom = filterBox.getBoundingClientRect().bottom;
-                    top = target.getBoundingClientRect().top;
-                    gap = Math.round(top - barBottom);
-                } catch (eRe) { gap = want; }
-                if (gap > want + 2) {
-                    var pull = Math.min(gap - want, 140);
-                    try {
-                        host.style.setProperty('margin-top', (-pull) + 'px', 'important');
-                    } catch (ePull) {}
-                } else if (gap < want - 2) {
-                    try { host.style.removeProperty('margin-top'); } catch (eClr2) {}
+                    setSpacerHeightPx(spacer, barH);
+                    lastH = barH;
+                    spacerFrozenH = barH;
                 }
                 return lastH;
             }
@@ -8647,27 +8619,35 @@ def inject_sticky_tabs_script():
                     + 'height:auto!important;max-height:none!important;overflow-x:auto!important;}'
                 );
             }
-            function ipadPatchScrollIntoView() {
-                if (parentWin.__dashboardIpadSivPatched) return;
-                parentWin.__dashboardIpadSivPatched = true;
+            function patchScrollIntoView() {
+                if (parentWin.__dashboardSivPatched) return;
+                parentWin.__dashboardSivPatched = true;
                 try {
                     var proto = parentWin.Element.prototype;
                     var orig = proto.scrollIntoView;
                     proto.scrollIntoView = function () {
                         try {
-                            if (this && this.closest && (
-                                this.closest('[role="tab"]') ||
-                                this.closest('[role="tablist"]') ||
-                                this.closest('[data-testid="stTab"]') ||
-                                this.closest('[data-testid="stTabs"]') ||
-                                this.closest('#dashboard-ipad-h-tabs') ||
-                                this.closest('.dashboard-filter-sticky')
-                            )) return;
+                            if (this && this.closest) {
+                                if (this.closest('[role="tab"]') ||
+                                    this.closest('[role="tablist"]') ||
+                                    this.closest('[data-testid="stTab"]') ||
+                                    this.closest('[data-testid="stTabs"]') ||
+                                    this.closest('#dashboard-ipad-h-tabs') ||
+                                    this.closest('.dashboard-filter-sticky') ||
+                                    this.closest('#dashboard-sticky-spacer')) return;
+                                /* 본문 클릭: Streamlit이 block:start + 큰 scroll-margin으로
+                                   고정바 아래 큰 흰 여백을 만듦 → nearest만 허용 */
+                                if (this.closest('[role="tabpanel"]') ||
+                                    this.closest('section.main')) {
+                                    return orig.call(this, { block: 'nearest', inline: 'nearest' });
+                                }
+                            }
                         } catch (eSiv) {}
                         return orig.apply(this, arguments);
                     };
                 } catch (eP) {}
             }
+            function ipadPatchScrollIntoView() { patchScrollIntoView(); }
             function ipadFreezeLayout() {
                 parentWin.__dashboardIpadFreezeLayout = true;
                 /* 부트 폴링만 정리. 5초 건강체크는 heavy 탭 후 탭줄 재장착을 위해 유지 */
@@ -8686,9 +8666,9 @@ def inject_sticky_tabs_script():
                    드롭다운을 강제 종료시키던 과도한 스크롤 방어 로직 완전 무력화 */
                 return;
             }
+            try { patchScrollIntoView(); } catch (eSivAll) {}
             if (isTouchPadEarly()) {
                 try { ipadInjectTabHScrollCss(); } catch (eCss) {}
-                try { ipadPatchScrollIntoView(); } catch (eSiv2) {}
                 try { ipadInstallScrollGuard(); } catch (eSg) {}
             }
             if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady === STICKY_SCRIPT_VER_IPAD) {
@@ -12101,7 +12081,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 63
+    _STICKY_INJECT_VER = 64
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
@@ -12110,7 +12090,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 44
+        st.session_state["_ipad_sticky_ver"] = 45
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=12, heavy_indices=(9, 10, 11)
