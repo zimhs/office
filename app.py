@@ -798,7 +798,7 @@ def inject_custom_css():
                     font-size: 10px !important;
                 }
                 .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]) {
-                    padding-top: 0 !important;
+                    padding-top: 4mm !important;
                     scroll-margin-top: var(--dashboard-fixed-bar-height, 140px) !important;
                 }
             }
