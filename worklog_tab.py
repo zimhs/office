@@ -1015,30 +1015,33 @@ def worklog_archive_path(d: date) -> str | None:
     return worklog_archive_month_path(d)
 
 
-def worklog_archive_year_dir(d: date) -> str | None:
-    """연도 폴더: …/일지/2026"""
+def worklog_archive_year_dir(d: date, *, create: bool = True) -> str | None:
+    """연도 폴더: …/일지/2026. create=True 이면 없을 때 자동 생성."""
     root = resolve_worklog_archive_root()
     if not root:
         return None
     year_dir = os.path.join(root, str(d.year))
-    try:
-        os.makedirs(year_dir, exist_ok=True)
-    except OSError:
+    if create:
+        try:
+            os.makedirs(year_dir, exist_ok=True)
+        except OSError:
+            return None
+    elif not os.path.isdir(year_dir):
         return None
     return year_dir
 
 
 def worklog_archive_month_dir(d: date) -> str | None:
     """구버전 월 하위폴더(…/2026/8월). 레거시 정리용."""
-    year_dir = worklog_archive_year_dir(d)
+    year_dir = worklog_archive_year_dir(d, create=False)
     if not year_dir:
         return None
     return os.path.join(year_dir, f"{d.month}월")
 
 
-def worklog_archive_month_path(d: date) -> str | None:
-    """달이 바뀌면 9월.xlsx 신규. 경로: …/일지/2026/8월.xlsx (연도 폴더 직하)."""
-    year_dir = worklog_archive_year_dir(d)
+def worklog_archive_month_path(d: date, *, create_year: bool = True) -> str | None:
+    """달이 바뀌면 9월.xlsx 신규. 경로: …/일지/2026/9월.xlsx (연도 폴더 직하)."""
+    year_dir = worklog_archive_year_dir(d, create=create_year)
     if not year_dir:
         return None
     return os.path.join(year_dir, f"{d.month}월.xlsx")
@@ -1046,7 +1049,7 @@ def worklog_archive_month_path(d: date) -> str | None:
 
 def _cleanup_legacy_day_archive_files(d: date, month_path: str | None) -> None:
     """예전 일자별 xlsx·구 월폴더 안 일자파일을 정리."""
-    year_dir = worklog_archive_year_dir(d)
+    year_dir = worklog_archive_year_dir(d, create=False)
     candidates: list[str] = []
     if year_dir:
         candidates.append(os.path.join(year_dir, f"{d.isoformat()}.xlsx"))
@@ -1127,7 +1130,7 @@ def worklog_date_exists_in_archive(d: date) -> bool:
         return cached
     titles = _worklog_archive_sheet_titles_for_lookup(d)
     found = False
-    month_path = worklog_archive_month_path(d)
+    month_path = worklog_archive_month_path(d, create_year=False)
     if month_path and os.path.exists(month_path) and load_workbook is not None:
         try:
             wb = load_workbook(month_path, read_only=True)
@@ -1139,7 +1142,7 @@ def worklog_date_exists_in_archive(d: date) -> bool:
         except Exception:
             pass
     if not found:
-        year_dir = worklog_archive_year_dir(d)
+        year_dir = worklog_archive_year_dir(d, create=False)
         if year_dir:
             for p in (
                 os.path.join(year_dir, f"{d.isoformat()}.xlsx"),
@@ -1458,18 +1461,11 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
     return month_path
 
 
-def delete_worklog_archive_sheet(d: date) -> str | None:
-    """월별 파일에서 해당 날짜 시트 삭제. 시트가 없으면 파일 삭제."""
-    if load_workbook is None:
-        return None
-    month_path = worklog_archive_month_path(d)
-    if not month_path:
+def delete_worklog_archive_sheet_at(month_path: str, d: date) -> str | None:
+    """지정한 월별 xlsx에서 해당 날짜 시트 삭제. 남은 시트가 없으면 파일 삭제."""
+    if load_workbook is None or not month_path or not os.path.exists(month_path):
         return None
     removed = None
-    # 레거시 일자 파일도 삭제
-    _cleanup_legacy_day_archive_files(d, month_path)
-    if not os.path.exists(month_path):
-        return removed
     try:
         wb = load_workbook(month_path)
         try:
@@ -1485,15 +1481,25 @@ def delete_worklog_archive_sheet(d: date) -> str | None:
                 except OSError:
                     pass
                 return month_path
-            wb.save(month_path)
+            if removed:
+                wb.save(month_path)
         finally:
             try:
                 wb.close()
             except Exception:
                 pass
     except Exception:
-        pass
+        return None
     return removed
+
+
+def delete_worklog_archive_sheet(d: date) -> str | None:
+    """월별 파일에서 해당 날짜 시트 삭제. 시트가 없으면 파일 삭제."""
+    month_path = worklog_archive_month_path(d, create_year=False)
+    if not month_path:
+        return None
+    _cleanup_legacy_day_archive_files(d, month_path)
+    return delete_worklog_archive_sheet_at(month_path, d)
 
 
 def worklog_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"{d.isoformat()}.xlsx")
@@ -1759,11 +1765,18 @@ def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
         if os.path.exists(path):
             try: os.remove(path); removed.append(os.path.basename(path))
             except OSError: pass
-    # 월별 통합 파일에서 해당 날짜 시트 제거
+    # 월별 통합 파일(Desktop/업무/일지/YYYY/N월.xlsx)에서 해당 날짜 시트 제거
     try:
         arch = delete_worklog_archive_sheet(d)
         if arch:
             removed.append(f"{os.path.basename(arch)}#{worklog_archive_sheet_title(d)}")
+            try:
+                from drive_autoload import push_worklog_month_archive_to_drive
+
+                if os.path.isfile(arch):
+                    push_worklog_month_archive_to_drive(arch, year=d.year, force=True)
+            except Exception:
+                pass
     except Exception:
         pass
     # 삭제 표시 — 동기화가 구 파일을 되살리지 않도록 원격 삭제 전에 기록

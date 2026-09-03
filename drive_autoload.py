@@ -596,19 +596,30 @@ def push_worklog_month_archive_to_drive(
 
 
 def delete_worklog_day_from_drive(d: date, local_dir: str = "./uploaded_cache/worklog") -> list[str]:
-    """Drive worklog 폴더에서 해당 일자 xlsx 삭제."""
+    """Drive worklog 일자 xlsx + 월별 N월.xlsx 시트 삭제."""
     removed: List[str] = []
     drive_dir = resolve_drive_worklog_dir()
-    if not drive_dir:
-        return removed
-    name = f"{d.isoformat()}.xlsx"
-    path = os.path.join(drive_dir, name)
-    if os.path.isfile(path):
-        try:
-            os.remove(path)
-            removed.append(name)
-        except OSError:
-            pass
+    if drive_dir:
+        name = f"{d.isoformat()}.xlsx"
+        path = os.path.join(drive_dir, name)
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+                removed.append(name)
+            except OSError:
+                pass
+    try:
+        from worklog_tab import delete_worklog_archive_sheet_at
+
+        arch_dir = resolve_drive_worklog_archive_dir(d.year)
+        if arch_dir:
+            month_p = os.path.join(arch_dir, f"{d.month}월.xlsx")
+            if os.path.isfile(month_p):
+                got = delete_worklog_archive_sheet_at(month_p, d)
+                if got:
+                    removed.append(f"일지/{d.year}/{d.month}월.xlsx#{d.day}")
+    except Exception:
+        pass
     return removed
 
 
