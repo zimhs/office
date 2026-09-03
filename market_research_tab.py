@@ -1382,7 +1382,8 @@ _MR_SHOW_COLS = [
     "시트",
     "병합건수",
 ]
-_MR_DISPLAY_LIMIT = 400
+_MR_DISPLAY_LIMIT = 100
+_MR_DISPLAY_LIMIT_MAX = 400
 _MR_EXCEL_LIMIT = 10000
 
 
@@ -1746,11 +1747,19 @@ def _mr_filter_and_results(
     )
 
     show_cols = [c for c in _MR_SHOW_COLS if c in view.columns]
-    limit = _MR_DISPLAY_LIMIT
+    limit = int(st.session_state.get("mr_display_limit") or _MR_DISPLAY_LIMIT)
+    limit = min(max(limit, _MR_DISPLAY_LIMIT), _MR_DISPLAY_LIMIT_MAX)
     n_view = len(view)
     cap_c, dl_c = st.columns([2.4, 1])
     with cap_c:
         st.caption(f"검색 결과 **{n_view:,}**건 · 화면에 {min(n_view, limit):,}건 표시")
+        if n_view > limit and limit < _MR_DISPLAY_LIMIT_MAX:
+            if st.button(
+                f"더 보기 (최대 {_MR_DISPLAY_LIMIT_MAX:,}건)",
+                key="mr_show_more_rows",
+            ):
+                st.session_state["mr_display_limit"] = _MR_DISPLAY_LIMIT_MAX
+                st.rerun(scope="fragment")
     with dl_c:
         if n_view > 0:
             xl_n = min(n_view, _MR_EXCEL_LIMIT)
@@ -1884,6 +1893,48 @@ def _mr_filter_results(
 
 
 
+@st.fragment
+def _mr_loaded_panel(latest_update_str: str = "") -> None:
+    """데이터 로드·지표·필터 — fragment로 셸(헤더·업로드) 먼저 그린 뒤 비동기 채움."""
+    with st.spinner("시장조사 데이터 불러오는 중…"):
+        df, raw_n, removed_n, cascade = _mr_load_tab_bundle()
+
+    if df.empty:
+        st.info(
+            "아직 목록이 비어 있습니다. 위에서 **새 시장조사 입력**으로 첫 건을 넣거나, "
+            "Drive「업무/시장조사」엑셀을 동기화하세요."
+        )
+        return
+
+    n_all = len(df)
+    n_survey = int((~df["_factory_only"]).sum())
+    n_merged_rows = int((df["병합건수"] > 1).sum()) if "병합건수" in df.columns else 0
+    n_complex = int((df["산업단지"] != "미분류").sum()) if "산업단지" in df.columns else 0
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(_metric_box("병합 후 업체", f"{n_all:,}"), unsafe_allow_html=True)
+    c2.markdown(_metric_box("조사·경쟁사", f"{n_survey:,}"), unsafe_allow_html=True)
+    c3.markdown(_metric_box("산업단지 분류", f"{n_complex:,}"), unsafe_allow_html=True)
+    c4.markdown(
+        _metric_box("원본→병합", f"{raw_n:,}→{n_all:,}"),
+        unsafe_allow_html=True,
+    )
+    if removed_n:
+        st.caption(
+            f"중복 {removed_n:,}건 병합 · 병합 업체 {n_merged_rows:,}곳. "
+            "단지명은 공장등록 DB + 주소 키워드로 붙입니다 (웹검색 없음)."
+        )
+
+    regions = sorted(
+        [r for r in df["지역"].dropna().unique().tolist() if r],
+        key=lambda x: (x == "미분류", x),
+    )
+    try:
+        _mr_filter_results(df, regions, cascade, latest_update_str)
+    except Exception as e:
+        st.error(f"시장조사 필터 표시 실패: {e}")
+        st.exception(e)
+
+
 def render_market_research_tab(latest_update_str: str = "") -> None:
     """시장조사 탭 UI."""
     st.markdown(
@@ -1895,10 +1946,7 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
         "엑셀 업로드·직접입력 가능 · 검색은 「적용」"
     )
 
-    with st.spinner("시장조사 데이터 불러오는 중…"):
-        df, raw_n, removed_n, cascade = _mr_load_tab_bundle()
-
-    with st.expander("📁 엑셀 업로드", expanded=True):
+    with st.expander("📁 엑셀 업로드", expanded=False):
         st.caption(
             "파일을 `uploaded_cache/market_research/uploads/`에 저장한 뒤 목록에 합칩니다. "
             "양식이 다르면 아래 **파싱 형식**을 지정하세요."
@@ -1981,7 +2029,7 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                         st.rerun()
             st.caption(f"저장 폴더: `{MR_UPLOAD_DIR}`")
 
-    with st.expander("✍️ 새 시장조사 입력", expanded=True):
+    with st.expander("✍️ 새 시장조사 입력", expanded=False):
         with st.form("mr_new_entry_form", clear_on_submit=True):
             r1c1, r1c2, r1c3 = st.columns([1.3, 0.9, 1.2])
             with r1c1:
@@ -2070,37 +2118,4 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                 "(맥이면 Drive「시장조사/직접입력_시장조사.json」에도 복사)"
             )
 
-    if df.empty:
-        st.info(
-            "아직 목록이 비어 있습니다. 위에서 **새 시장조사 입력**으로 첫 건을 넣거나, "
-            "Drive「업무/시장조사」엑셀을 동기화하세요."
-        )
-        return
-
-    n_all = len(df)
-    n_survey = int((~df["_factory_only"]).sum())
-    n_merged_rows = int((df["병합건수"] > 1).sum()) if "병합건수" in df.columns else 0
-    n_complex = int((df["산업단지"] != "미분류").sum()) if "산업단지" in df.columns else 0
-    c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(_metric_box("병합 후 업체", f"{n_all:,}"), unsafe_allow_html=True)
-    c2.markdown(_metric_box("조사·경쟁사", f"{n_survey:,}"), unsafe_allow_html=True)
-    c3.markdown(_metric_box("산업단지 분류", f"{n_complex:,}"), unsafe_allow_html=True)
-    c4.markdown(
-        _metric_box("원본→병합", f"{raw_n:,}→{n_all:,}"),
-        unsafe_allow_html=True,
-    )
-    if removed_n:
-        st.caption(
-            f"중복 {removed_n:,}건 병합 · 병합 업체 {n_merged_rows:,}곳. "
-            "단지명은 공장등록 DB + 주소 키워드로 붙입니다 (웹검색 없음)."
-        )
-
-    regions = sorted(
-        [r for r in df["지역"].dropna().unique().tolist() if r],
-        key=lambda x: (x == "미분류", x),
-    )
-    try:
-        _mr_filter_results(df, regions, cascade, latest_update_str)
-    except Exception as e:
-        st.error(f"시장조사 필터 표시 실패: {e}")
-        st.exception(e)
+    _mr_loaded_panel(latest_update_str)
