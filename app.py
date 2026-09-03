@@ -9268,7 +9268,7 @@ def inject_sticky_tabs_script():
                                     var fixedNow = false;
                                     try {
                                         fixedNow = (fb && ((fb.style && fb.style.getPropertyValue('position') === 'fixed')
-                                            || (parentWin.getComputedStyle && parentWin.getComputedStyle(fb).position === 'fixed'))));
+                                            || (parentWin.getComputedStyle && parentWin.getComputedStyle(fb).position === 'fixed')));
                                     } catch (eCss1) {}
                                     var tl = null;
                                     try { tl = findMainTabList(); } catch (eTl) {}
