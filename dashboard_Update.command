@@ -1,6 +1,6 @@
 #!/bin/bash
 # Mac 로컬 — GitHub 최신 코드 받기 + 서버 재시작
-# 더블클릭: fetch → pull(또는 main 동기화) → Stop → Local (8501+8502)
+# 더블클릭: fetch → pull(또는 main 동기화) → Stop → Local (8501)
 export PATH="/Library/Frameworks/Python.framework/Versions/3.13/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:${PATH}"
 
 ROOT="${HOME}/Desktop/dashboard"
@@ -64,8 +64,20 @@ fi
 
 AFTER="$(git rev-parse HEAD 2>/dev/null || echo none)"
 AFTER_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo "?")"
-PI_BUILD="$(grep -E '^PI_UI_BUILD\s*=' "${ROOT}/price_increase_tab.py" 2>/dev/null | head -1 | sed -E 's/^PI_UI_BUILD\s*=\s*//; s/^["'\'']//; s/["'\'']\s*$//')"
+# macOS BSD sed는 \s 미지원 → [[:space:]] 사용.
+# 따옴표가 남으면 display notification 이 -2740 (숫자 오류)로 끊김.
+PI_BUILD="$(
+  grep -E '^PI_UI_BUILD[[:space:]]*=' "${ROOT}/price_increase_tab.py" 2>/dev/null | head -1 \
+    | sed -E 's/^PI_UI_BUILD[[:space:]]*=[[:space:]]*//; s/^["'\'']//; s/["'\''][[:space:]]*$//; s/\r$//'
+)"
 [ -n "$PI_BUILD" ] || PI_BUILD="(공문빌드 확인불가)"
+
+_notify() {
+  # 환경변수로 전달 → 따옴표/숫자 조합이 AppleScript 문법을 깨지 않음
+  NOTIFY_BODY="$1" osascript >/dev/null 2>&1 <<'APPLESCRIPT' || true
+display notification (system attribute "NOTIFY_BODY") with title "영업 대시보드"
+APPLESCRIPT
+}
 
 if [ "$SYNCED_HARD" = true ]; then
   osascript -e 'display alert "GitHub main과 동기화했습니다" message "로컬 git 커밋/수정은 제거되었을 수 있습니다. 필요하면 터미널에서 git stash list 로 확인하세요."'
@@ -75,7 +87,7 @@ elif [ "$BEFORE" = "$AFTER" ]; then
 else
   MSG="갱신 ${AFTER_SHORT} — 재시작 · ${PI_BUILD}"
 fi
-osascript -e "display notification \"${MSG}\" with title \"영업 대시보드\""
+_notify "$MSG"
 
 # 코드 stamp 지워서 Local이 반드시 재시작하도록
 rm -f "${ROOT}/.dash_code_stamp"
