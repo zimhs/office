@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-04b · 추가·요약·달력·맥경로"
+_WL_UI_BUILD = "2026-09-04e · 미리보기 깜빡임 개선"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -842,6 +842,71 @@ _WL_SPECIAL_BAR = st.components.v2.component(
     html=_WL_SPECIAL_BAR_HTML,
     css=_WL_SPECIAL_BAR_CSS,
     js=_WL_SPECIAL_BAR_JS,
+)
+
+# 왼쪽 미리보기 — iframe(components.html) 재부착 없이 글자만 갱신
+_WL_PREVIEW_HOST_HTML = """<div class="wl-live-preview"></div>"""
+_WL_PREVIEW_HOST_CSS = """
+.wl-live-preview {
+  width: 100%;
+  max-height: 820px;
+  overflow: auto;
+  background: #fff;
+  box-sizing: border-box;
+}
+.wl-live-preview.excel {
+  max-height: 1100px;
+  border: 1px solid #94A3B8;
+}
+"""
+_WL_PREVIEW_HOST_JS = r"""
+const __wlPrev = new WeakMap();
+
+function applyPatches(root, patches) {
+  if (!root || !patches || typeof patches !== "object") return;
+  for (const key of Object.keys(patches)) {
+    const el = root.querySelector('[data-wl="' + key + '"]');
+    if (el) el.innerHTML = String(patches[key] ?? "");
+  }
+}
+
+export default function (component) {
+  const { data, parentElement } = component;
+  const host = parentElement.querySelector(".wl-live-preview");
+  if (!host) return;
+
+  const mode = String((data && data.mode) || "summary");
+  const html = String((data && data.html) || "");
+  const rev = String((data && data.rev) || "");
+  const height = Number((data && data.height) || 0);
+  const patches = (data && data.patches) || null;
+
+  host.className = "wl-live-preview" + (mode === "excel" ? " excel" : "");
+  if (height > 0) host.style.maxHeight = height + "px";
+
+  let inst = __wlPrev.get(host);
+  if (!inst) {
+    inst = { rev: "", mode: "", html: "" };
+    __wlPrev.set(host, inst);
+  }
+  if (html) inst.html = html;
+
+  if (inst.rev !== rev || inst.mode !== mode || !host.childElementCount) {
+    if (inst.html) {
+      inst.rev = rev;
+      inst.mode = mode;
+      host.innerHTML = inst.html;
+    }
+  }
+  if (patches) applyPatches(host, patches);
+}
+"""
+
+_WL_PREVIEW_HOST = st.components.v2.component(
+    "worklog_live_preview_v1",
+    html=_WL_PREVIEW_HOST_HTML,
+    css=_WL_PREVIEW_HOST_CSS,
+    js=_WL_PREVIEW_HOST_JS,
 )
 
 def _entry_lines_inst_key(iso: str, entry_i: int) -> str: return f"wl_lines_inst_{iso}_{entry_i}"
@@ -1777,6 +1842,9 @@ def _purge_worklog_day_preview_cache(d: date) -> None:
         f"wl_left_excel_sig_v24_{iso}",
         f"wl_left_excel_html_v24_{iso}",
         f"wl_left_excel_h_v24_{iso}",
+        f"wl_left_excel_html_v26_{iso}",
+        f"wl_left_excel_h_v26_{iso}",
+        f"wl_left_excel_skel_v26_{iso}",
         f"wl_form_sig_v14_{iso}",
         f"wl_remote_pull_tried_{iso}",
     ):
@@ -2246,7 +2314,17 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
                     f"text-overflow:{text_overflow};word-break:keep-all;"
                     f"{line_css}"
                 )
-            tds.append(f'<td{span} style="{style}">{esc}</td>')
+            wl_key = ""
+            if is_date:
+                wl_key = "date"
+            elif is_content:
+                wl_key = f"G{r}"
+            elif is_client:
+                wl_key = f"C{r}"
+            elif is_body_d:
+                wl_key = f"D{r}"
+            data_attr = f' data-wl="{wl_key}"' if wl_key else ""
+            tds.append(f'<td{span}{data_attr} style="{style}">{esc}</td>')
         rows_html.append(f'<tr style="height:{height_px}px;box-sizing:border-box;">{"".join(tds)}</tr>')
 
     colgroup = "".join(f'<col style="width:{w}px">' for w in col_widths)
@@ -3386,6 +3464,7 @@ def _publish_view_cells(d: date, cells: dict) -> None:
         f"wl_sum_sig_v25_{iso}", f"wl_sum_html_v25_{iso}",
         f"wl_left_excel_sig_v24_{iso}", f"wl_left_excel_html_v24_{iso}", f"wl_left_excel_h_v24_{iso}",
         f"wl_left_excel_sig_v25_{iso}", f"wl_left_excel_html_v25_{iso}", f"wl_left_excel_h_v25_{iso}",
+        f"wl_sum_sig_v26_{iso}", f"wl_sum_html_v26_{iso}",
     ):
         st.session_state.pop(k, None)
 
@@ -3649,11 +3728,79 @@ def _worklog_summary_html_body(full_html: str) -> str:
     return full_html
 
 
+def _wl_preview_cell_html(key: str, raw: Any) -> str:
+    """엑셀 미리보기 칸 패치용 — workbook_to_html 이스케이프와 동일."""
+    text = "" if raw is None else str(raw)
+    if text in (_WL_SOFT_BLANK, "\u00a0"):
+        text = ""
+    if key.startswith("G") and text.strip() == "" and text != "":
+        text = ""
+    if key.startswith("D") and not text.strip():
+        return "&nbsp;"
+    return html.escape(text).replace(" ", "&nbsp;").replace("\n", "<br>")
+
+
+def _wl_preview_patches(cells: dict | None) -> dict[str, str]:
+    src = cells or {}
+    out = {"date": html.escape(str(src.get("date") or ""))}
+    for r in WL_CLIENT_ROWS:
+        out[f"C{r}"] = _wl_preview_cell_html(f"C{r}", src.get(f"C{r}", ""))
+    for r in WL_CONTENT_ROWS:
+        out[f"G{r}"] = _wl_preview_cell_html(f"G{r}", src.get(f"G{r}", ""))
+    for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
+        out[f"D{r}"] = _wl_preview_cell_html(f"D{r}", src.get(f"D{r}", ""))
+    return out
+
+
+def _excel_preview_host_html(path: str, *, scale: float | None = None) -> str:
+    """엑셀 양식을 유지형 미리보기 호스트에 넣을 HTML (전체 문서/iframe 아님)."""
+    s = float(scale if scale is not None else _WL_PREVIEW_SCALE)
+    sheet = workbook_to_html(path, include_logo=True, layout_scale=1.0)
+    scale_css = f"zoom:{s};" if s != 1 else "zoom:1;"
+    fallback = (
+        f"@supports not (zoom: 1) {{ .sheet-scale {{ transform:scale({s});"
+        f"transform-origin:top left; }} }}"
+        if s != 1
+        else ""
+    )
+    return (
+        f"<style>{_WL_FONT_FACE_CSS}"
+        f" .wrap {{ overflow:visible; width:100%; background:#fff; box-sizing:border-box; }}"
+        f" .sheet-scale {{ {scale_css} width:fit-content; }}"
+        f" .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK} !important; }}"
+        f" .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }}"
+        f" {fallback}</style>"
+        f'<div class="wrap"><div class="sheet-scale">{sheet}</div></div>'
+    )
+
+
+def _mount_worklog_live_preview(
+    *,
+    key: str,
+    mode: str,
+    html: str,
+    rev: str,
+    height: int,
+    patches: dict[str, str] | None = None,
+) -> None:
+    _WL_PREVIEW_HOST(
+        key=key,
+        data={
+            "mode": mode,
+            "html": html or "",
+            "rev": str(rev or ""),
+            "height": int(height or 0),
+            "patches": patches or None,
+        },
+        default={},
+    )
+
+
 def _render_worklog_summary_block(selected: date, cells: dict) -> None:
-    """요약 카드 — iframe(components.html) 대신 markdown으로 깜빡임 최소화."""
+    """요약 카드 — 유지형 호스트에 HTML만 갱신 (iframe 재부착 없음)."""
     draft_sig = json.dumps({"cells": cells, "build": _WL_UI_BUILD}, ensure_ascii=False, sort_keys=True)
-    sum_sig_k = f"wl_sum_sig_v25_{selected.isoformat()}"
-    sum_html_k = f"wl_sum_html_v25_{selected.isoformat()}"
+    sum_sig_k = f"wl_sum_sig_v26_{selected.isoformat()}"
+    sum_html_k = f"wl_sum_html_v26_{selected.isoformat()}"
     if st.session_state.get(sum_sig_k) != draft_sig:
         view_html = render_readable_preview_html(selected, cells)
         st.session_state[sum_sig_k] = draft_sig
@@ -3664,10 +3811,16 @@ def _render_worklog_summary_block(selected: date, cells: dict) -> None:
             view_html = render_readable_preview_html(selected, cells)
             st.session_state[sum_html_k] = view_html
     body = _worklog_summary_html_body(view_html)
-    st.markdown(
+    host_html = (
         f'<style>{_WL_SUMMARY_PREVIEW_CSS}</style>'
-        f'<div class="wl-sum-preview" style="max-height:820px;overflow-y:auto;">{body}</div>',
-        unsafe_allow_html=True,
+        f'<div class="wl-sum-preview">{body}</div>'
+    )
+    _mount_worklog_live_preview(
+        key=f"wl_sum_host_{selected.isoformat()}",
+        mode="summary",
+        html=host_html,
+        rev=draft_sig,
+        height=820,
     )
 
 
@@ -3798,6 +3951,8 @@ def _render_worklog_left_preview(selected: date) -> None:
             form_sig = json.dumps(cells_now, ensure_ascii=False)
             st.session_state[f"wl_form_sig_v14_{selected.isoformat()}"] = form_sig
             st.session_state["_wl_force_form_sig"] = form_sig
+            st.session_state[f"wl_left_excel_rebuild_{selected.isoformat()}"] = True
+            st.session_state.pop(f"wl_left_excel_html_v26_{selected.isoformat()}", None)
             st.success("✅ 엑셀 미리보기 화면이 갱신되었습니다.")
             draft = dict(cells_now)
         except Exception as e:
@@ -3820,28 +3975,36 @@ def _render_worklog_left_preview(selected: date) -> None:
         if xlsx_left and os.path.exists(str(xlsx_left)):
             try:
                 cells_view = _draft_cells_for_left_preview(selected)
-                live_sig = json.dumps(cells_view, ensure_ascii=False, sort_keys=True)
-                sig_k = f"wl_left_excel_sig_v25_{selected.isoformat()}"
-                html_k = f"wl_left_excel_html_v25_{selected.isoformat()}"
-                h_k = f"wl_left_excel_h_v25_{selected.isoformat()}"
+                html_k = f"wl_left_excel_html_v26_{selected.isoformat()}"
+                h_k = f"wl_left_excel_h_v26_{selected.isoformat()}"
+                skel_k = f"wl_left_excel_skel_v26_{selected.isoformat()}"
+                rebuild_k = f"wl_left_excel_rebuild_{selected.isoformat()}"
                 scale_l = _WL_PREVIEW_SCALE
-                if st.session_state.get(sig_k) != live_sig:
+                need_skel = bool(st.session_state.pop(rebuild_k, None)) or not st.session_state.get(html_k)
+                if need_skel:
                     xlsx_left = _prepare_excel_preview(selected, cells_view)
                     st.session_state[_left_path_key] = xlsx_left
-                    st.session_state[sig_k] = live_sig
-                    excel_html = render_worklog_view_html(str(xlsx_left), print_mode=False, auto_print=False, scale=scale_l)
+                    inline = _excel_preview_host_html(str(xlsx_left), scale=scale_l)
                     _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
-                    st.session_state[html_k] = excel_html
+                    st.session_state[html_k] = inline
                     st.session_state[h_k] = fh
+                    st.session_state[skel_k] = str(int(st.session_state.get(skel_k) or 0) + 1)
                 else:
-                    excel_html = st.session_state.get(html_k)
+                    inline = st.session_state.get(html_k) or ""
                     fh = st.session_state.get(h_k)
-                    if not excel_html:
-                        excel_html = render_worklog_view_html(str(xlsx_left), print_mode=False, auto_print=False, scale=scale_l)
+                    if not inline:
+                        inline = _excel_preview_host_html(str(xlsx_left), scale=scale_l)
                         _, fh = _scaled_view_frame_size(str(xlsx_left), scale_l)
-                        st.session_state[html_k] = excel_html
+                        st.session_state[html_k] = inline
                         st.session_state[h_k] = fh
-                components.html(excel_html, height=min(1100, max(560, int(fh or 600))), scrolling=True)
+                _mount_worklog_live_preview(
+                    key=f"wl_excel_host_{selected.isoformat()}",
+                    mode="excel",
+                    html=inline,
+                    rev=str(st.session_state.get(skel_k) or "1"),
+                    height=min(1100, max(560, int(fh or 600))),
+                    patches=_wl_preview_patches(cells_view),
+                )
                 if st.button("크게 보기", width="stretch", key=f"wl_left_excel_big_{selected.isoformat()}"):
                     st.session_state["wl_dialog_preview_path"] = str(xlsx_left)
                     _worklog_form_preview_dialog()
@@ -4587,6 +4750,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             div[data-testid="column"]:nth-of-type(2) {
                 top: 3.2rem;
             }
+        }
+        div[class*="st-key-wl_sum_host_"],
+        div[class*="st-key-wl_excel_host_"] {
+            min-height: 240px;
         }
         </style>
         """,
