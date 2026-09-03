@@ -28,7 +28,17 @@ try:
     _WL_BUILD = str(getattr(_worklog_tab_mod, "_WL_UI_BUILD", "") or "").strip()
 except Exception:
     _WL_BUILD = ""
-_APP_BUILD = f"2026-08-30 · 업무일지공문2탭" + (f" · {_WL_BUILD}" if _WL_BUILD else "")
+try:
+    import price_increase_tab as _pi_tab_mod
+
+    _PI_BUILD = str(getattr(_pi_tab_mod, "PI_UI_BUILD", "") or "").strip()
+except Exception:
+    _PI_BUILD = ""
+_APP_BUILD = "2026-09-03 · 업무일지공문2탭"
+if _WL_BUILD:
+    _APP_BUILD += f" · {_WL_BUILD}"
+if _PI_BUILD:
+    _APP_BUILD += f" · 공문 {_PI_BUILD}"
 
 apply_dev_ui_gate()
 
