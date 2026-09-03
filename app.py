@@ -727,6 +727,21 @@ def inject_custom_css():
                 margin-top: 0 !important;
                 padding-top: 0 !important;
             }
+            /* Streamlit 세로 gap이 고정바 아래 큰 흰 여백을 만듦 → 필터/스페이서 있는 블록만 0 */
+            [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"]:has(#dashboard-sticky-spacer)),
+            [data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"]:has(#sticky-marker)) {
+                gap: 0 !important;
+                row-gap: 0 !important;
+            }
+            [data-testid="stElementContainer"]:has(> [data-testid="stTabs"]),
+            [data-testid="stElementContainer"]:has([data-testid="stTabs"]) {
+                margin-top: 0 !important;
+                padding-top: 0 !important;
+            }
+            [data-testid="stTabs"] {
+                margin-top: 0 !important;
+                padding-top: 0 !important;
+            }
             .dashboard-tab-panel-head.sub-header,
             .sub-header.dashboard-tab-panel-head {
                 margin-top: 0 !important;
@@ -8468,7 +8483,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 64
+    _sticky_py_ver = 65
     components.html(
         """
         <script>
@@ -8479,8 +8494,8 @@ def inject_sticky_tabs_script():
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 39;
-            var STICKY_SCRIPT_VER_IPAD = 60; /* v64: 본문 클릭 시 여백 폭증 방지 */
+            var STICKY_SCRIPT_VER_MAC = 40;
+            var STICKY_SCRIPT_VER_IPAD = 61; /* v65: 본문 4mm + 검색 캡션 제거 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
                 parentWin.__dashboardStickyMacReady = 0;
@@ -11843,7 +11858,6 @@ def _dash_filter_and_tabs_fragment() -> None:
             )
             selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
             st.session_state["dash_filter_items"] = list(selected_item)
-            st.caption("🔍 검색 v32 · ▼ 목록 스크롤 · 값 있으면 바로 적용 · 지우면 해당 칸만 전체")
             if _is_streamlit_cloud():
                 dev_caption(
                     f"Cloud · 로컬동일 · nativeTabs · Mini가로세로 · lazy9-11 · bind{_DASH_FILTER_BIND_VER}"
@@ -12081,7 +12095,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 64
+    _STICKY_INJECT_VER = 65
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
@@ -12090,7 +12104,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 45
+        st.session_state["_ipad_sticky_ver"] = 46
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=12, heavy_indices=(9, 10, 11)
