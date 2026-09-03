@@ -375,12 +375,15 @@ def inject_custom_css():
                 overflow: visible !important;
             }
 
-            /* 탭줄을 필터 고정바 내부로 옮긴 뒤 host의 빈 탭줄 껍데기 숨김
-               (로딩 중 잠깐 재생성돼도 분리 오류바로 보이지 않게) */
+            /* 통합 고정바 활성 시 host 탭줄을 CSS로 즉시 숨김
+               (JS remount 전에 Streamlit이 host tablist를 다시 만들어도 분리바로 안 보이게) */
             html.dashboard-tabs-pinned .dashboard-tabs-host-compact > div:has(> [role="tablist"]),
             html.dashboard-tabs-pinned .dashboard-tabs-host-compact > div.dashboard-tabs-list-shell,
             html.dashboard-tabs-pinned .dashboard-tabs-host-compact > div.dashboard-tabs-list-shell:empty,
-            html.dashboard-tabs-pinned div[data-testid="stTabs"] > div:has(> [role="tablist"]):not(:has([role="tabpanel"])) {
+            html.dashboard-tabs-pinned div[data-testid="stTabs"] > div:has(> [role="tablist"]):not(:has([role="tabpanel"])),
+            html:has(.dashboard-filter-sticky-with-tabs) div[data-testid="stTabs"] > div:has(> [role="tablist"]):not(:has([role="tabpanel"])),
+            html:has(.dashboard-filter-sticky-with-tabs) .dashboard-tabs-host-compact > div:has(> [role="tablist"]),
+            html:has(.dashboard-filter-sticky .dashboard-tabs-in-filter) div[data-testid="stTabs"] > div:has(> [role="tablist"]):not(:has([role="tabpanel"])) {
                 display: none !important;
                 height: 0 !important;
                 min-height: 0 !important;
@@ -5330,34 +5333,27 @@ def _dash_inject_filter_select_script_for_run() -> None:
 
 
 def _dash_inject_sticky_resync_script() -> None:
-    """fragment/탭 전환·heavy 탭 로드 후 고정바 위치만 짧게 재동기화."""
+    """fragment/탭 전환·heavy 탭 로드 후 고정바에 탭줄을 즉시 재장착."""
     components.html(
         """
         <script>
         (function () {
           var win = window.parent;
           var doc = win.document;
-          /* 연속 fragment rerun 시 remount 폭주 방지 */
           var now = Date.now();
-          if (win.__dashStickyResyncAt && (now - win.__dashStickyResyncAt) < 1200) return;
+          /* Cloud 로딩/fragment 중 분리바로 바뀌지 않도록 쿨다운을 짧게 */
+          var cool = 180;
+          if (win.__dashStickyResyncAt && (now - win.__dashStickyResyncAt) < cool) return;
           win.__dashStickyResyncAt = now;
-          function heavyLocked() {
-            try {
-              for (var i = 9; i <= 11; i++) {
-                if (sessionStorage.getItem('dash_heavy_lock_' + i) === '1') return true;
-              }
-            } catch (eL) {}
-            return false;
-          }
           function remountSticky() {
             try {
               if (typeof win.__dashboardUnpinBadFixed === 'function') {
                 try { win.__dashboardUnpinBadFixed(); } catch (eUn) {}
               }
               win.__dashboardIpadFreezeLayout = false;
-              /* heavy 로딩 중에는 중복 탭 정리만 약하게 — 강제 재장착 루프 방지 */
+              /* 항상 강제 재장착 — soft(false)는 로딩 중 host 탭이 남는 원인 */
               if (typeof win.__dashboardFixDuplicateTabs === 'function') {
-                win.__dashboardFixDuplicateTabs(false);
+                win.__dashboardFixDuplicateTabs(true);
               }
               if (typeof win.__dashboardEnsureTabsVisible === 'function') {
                 win.__dashboardEnsureTabsVisible();
@@ -5372,21 +5368,24 @@ def _dash_inject_sticky_resync_script() -> None:
                   ? (marker.closest('.dashboard-filter-sticky') ||
                      marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]'))
                   : null;
-                if (fb) win.__dashboardEnsureCloudStickyTabs(fb);
+                if (fb) {
+                  fb.classList.add('dashboard-filter-sticky-with-tabs');
+                  win.__dashboardEnsureCloudStickyTabs(fb);
+                }
               }
               if (typeof win.__dashboardMacScheduleSync === 'function') {
-                win.__dashboardMacScheduleSync(heavyLocked() ? 400 : 0);
+                win.__dashboardMacScheduleSync(0);
               }
               if (typeof win.__dashboardIpadScheduleSync === 'function') {
-                win.__dashboardIpadScheduleSync(heavyLocked() ? 400 : 0);
+                win.__dashboardIpadScheduleSync(0);
               }
-              if (!heavyLocked() && typeof win.__dashboardIpadPin === 'function') {
+              if (typeof win.__dashboardIpadPin === 'function') {
                 try { win.__dashboardIpadPin(); } catch (ePin) {}
               }
             } catch (e) {}
           }
-          /* 과다 재시도는 무한로딩·스크롤 끊김을 만듦 — 짧게 3회만 */
-          [0, 250, 900].forEach(function (ms) {
+          remountSticky();
+          [40, 160, 400].forEach(function (ms) {
             setTimeout(remountSticky, ms);
           });
         })();
@@ -8326,6 +8325,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
+    _sticky_py_ver = 55
     components.html(
         """
         <script>
@@ -8333,10 +8333,18 @@ def inject_sticky_tabs_script():
             var parentDoc = window.parent.document;
             var parentWin = window.parent;
             var cloudMode = __CLOUD_STICKY_MODE__;
+            var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 29;
-            var STICKY_SCRIPT_VER_IPAD = 50; /* 로딩 중 host 탭 노출 금지 → 통합 고정바 유지 */
+            var STICKY_SCRIPT_VER_MAC = 30;
+            var STICKY_SCRIPT_VER_IPAD = 51; /* Cloud 로딩 중 분리바 플리커 차단 */
+            /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
+            if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
+                parentWin.__dashboardStickyMacReady = 0;
+                parentWin.__dashboardStickyTouchReady = 0;
+                parentWin.__dashboardTabsUnifiedOk = false;
+                parentWin.__dashboardStickyPyVer = PY_STICKY_VER;
+            }
             function bindDashboardFilterTextInputs() {
                 /* 필터 select UX → _dash_inject_filter_select_script (fragment rerun마다) */
             }
@@ -8414,19 +8422,39 @@ def inject_sticky_tabs_script():
             }
             if (isTouchPadEarly() && parentWin.__dashboardStickyTouchReady === STICKY_SCRIPT_VER_IPAD) {
                 try {
+                    if (typeof parentWin.__dashboardFixDuplicateTabs === 'function') {
+                        parentWin.__dashboardFixDuplicateTabs(true);
+                    }
+                } catch (eDupI) {}
+                try {
                     if (typeof parentWin.__dashboardIpadPin === 'function') {
                         parentWin.__dashboardIpadPin();
                     }
                 } catch (ePin) {}
+                try {
+                    if (typeof parentWin.__dashboardIpadScheduleSync === 'function') {
+                        parentWin.__dashboardIpadScheduleSync(0);
+                    }
+                } catch (eSchI) {}
                 try { bindDashboardFilterTextInputs(); } catch (eBindIpad) {}
                 return;
             }
             if (!isTouchPadEarly() && parentWin.__dashboardStickyMacReady === STICKY_SCRIPT_VER_MAC) {
                 try {
                     if (typeof parentWin.__dashboardFixDuplicateTabs === 'function') {
-                        parentWin.__dashboardFixDuplicateTabs(false);
+                        parentWin.__dashboardFixDuplicateTabs(true);
                     }
                 } catch (eMacSkip) {}
+                try {
+                    if (typeof parentWin.__dashboardEnsureTabsVisible === 'function') {
+                        parentWin.__dashboardEnsureTabsVisible();
+                    }
+                } catch (eVisSkip) {}
+                try {
+                    if (typeof parentWin.__dashboardMacScheduleSync === 'function') {
+                        parentWin.__dashboardMacScheduleSync(0);
+                    }
+                } catch (eSchM) {}
                 try { bindDashboardFilterTextInputs(); } catch (eBindMac) {}
                 return;
             }
@@ -8480,16 +8508,10 @@ def inject_sticky_tabs_script():
                 return null;
             }
             function findMainTabList() {
-                var hosts = parentDoc.querySelectorAll('div[data-testid="stTabs"]');
-                var i, lists, j, el;
-                for (i = 0; i < hosts.length; i++) {
-                    lists = hosts[i].querySelectorAll('div[role="tablist"]');
-                    for (j = 0; j < lists.length; j++) {
-                        if (isMainTabList(lists[j])) return lists[j];
-                    }
-                }
-                lists = parentDoc.querySelectorAll('div[role="tablist"]');
+                var lists = parentDoc.querySelectorAll('div[role="tablist"]');
+                var i, el;
                 var inFilter = null;
+                var inHost = null;
                 for (i = 0; i < lists.length; i++) {
                     el = lists[i];
                     if (!isMainTabList(el)) continue;
@@ -8497,9 +8519,20 @@ def inject_sticky_tabs_script():
                         inFilter = inFilter || el;
                         continue;
                     }
-                    return el;
+                    inHost = inHost || el;
                 }
-                return inFilter;
+                /* 통합 고정바 모드에서는 필터 안 탭줄을 최우선 — host 쪽 새 사본을 잡으면 분리바로 보임 */
+                if (inFilter) return inFilter;
+                if (inHost) return inHost;
+                var hosts = parentDoc.querySelectorAll('div[data-testid="stTabs"]');
+                var j, lists2;
+                for (i = 0; i < hosts.length; i++) {
+                    lists2 = hosts[i].querySelectorAll('div[role="tablist"]');
+                    for (j = 0; j < lists2.length; j++) {
+                        if (isMainTabList(lists2[j])) return lists2[j];
+                    }
+                }
+                return null;
             }
             function findStickyMarker() {
                 var markers = parentDoc.querySelectorAll('#sticky-marker');
@@ -8639,6 +8672,12 @@ def inject_sticky_tabs_script():
                 } catch (eMp) {}
             }
             function revealHostTabLists(host) {
+                /* 마커/통합바가 있으면 host를 절대 드러내지 않음 (로딩 플리커 차단) */
+                try {
+                    if (parentWin.__dashboardTabsUnifiedOk) return;
+                    if (findStickyMarker()) return;
+                    if (parentDoc.querySelector('.dashboard-filter-sticky-with-tabs')) return;
+                } catch (eGuard) {}
                 if (!host) return;
                 try { host.classList.remove('dashboard-tabs-host-compact'); } catch (eHc) {}
                 var nodes = host.querySelectorAll(
@@ -8700,8 +8739,12 @@ def inject_sticky_tabs_script():
                     if (host) hideStaleTabListsInHost(host, keepInFilter);
                     return false;
                 }
-                if (parentWin.__dashboardTabsUnifiedOk) {
+                if (parentWin.__dashboardTabsUnifiedOk || findStickyMarker()) {
                     markTabsPinned(true);
+                    if (host) {
+                        host.classList.add('dashboard-tabs-host-compact');
+                        hideStaleTabListsInHost(host, null);
+                    }
                     return false;
                 }
                 markTabsPinned(false);
@@ -8730,18 +8773,18 @@ def inject_sticky_tabs_script():
                 var t = null;
                 var i;
                 for (i = 0; i < all.length; i++) {
-                    if (filterBox.contains(all[i]) && all[i].classList.contains('dashboard-tabs-in-filter')) {
+                    if (filterBox.contains(all[i])) {
                         t = all[i];
-                        break;
+                        if (all[i].classList.contains('dashboard-tabs-in-filter')) break;
                     }
                 }
                 if (!t) return false;
-                /* 로딩 중 잠깐 중복 tablist가 생겨도 필터 안 탭이 살아 있으면 건강으로 본다 */
+                /* 로딩 중 탭 개수가 잠깐 적을 수 있어 하한을 낮춤 */
                 var tabs = t.querySelectorAll('[role="tab"], [data-testid="stTab"]');
-                if (tabs.length < 8) return false;
+                if (tabs.length < 4) return false;
                 try {
                     var r = t.getBoundingClientRect();
-                    if (r.width < 8 || r.height < 8) return false;
+                    if (r.width < 8 || r.height < 4) return false;
                 } catch (eSz) {
                     return false;
                 }
@@ -8752,6 +8795,16 @@ def inject_sticky_tabs_script():
                 var host = findMainTabsHost();
                 var all = collectMainTabLists();
                 if (!all.length) {
+                    /* DOM 공백 순간에도 host를 드러내지 않음 */
+                    if (filterBox || parentWin.__dashboardTabsUnifiedOk || findStickyMarker()) {
+                        markTabsPinned(true);
+                        if (host) {
+                            host.classList.add('dashboard-tabs-host-compact');
+                            hideStaleTabListsInHost(host, null);
+                        }
+                        parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
+                        return false;
+                    }
                     markTabsPinned(false);
                     revealHostTabLists(host);
                     parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
@@ -9316,6 +9369,15 @@ def inject_sticky_tabs_script():
             }
             function syncFixedBar() {
                 cleanupOrphanStickyFilters();
+                /* CSS :has(.dashboard-filter-sticky-with-tabs)가 host를 바로 숨기도록 선표시 */
+                try {
+                    var preFb = findFilterBox();
+                    if (preFb) {
+                        preFb.classList.add('dashboard-filter-sticky');
+                        preFb.classList.add('dashboard-filter-sticky-with-tabs');
+                        markTabsPinned(true);
+                    }
+                } catch (ePre) {}
                 /* 먼저 강제 재장착 — ensureTabsNeverInvisible가 host를 드러내기 전에 통합바로 복구 */
                 try { fixDuplicateMainTabs(true); } catch (eSf) {}
                 try { ensureTabsNeverInvisible(); } catch (eVis0) {}
@@ -9411,6 +9473,12 @@ def inject_sticky_tabs_script():
                     if (all.length > 1 || unhealthy) {
                         fixDuplicateMainTabs(true);
                         all = collectMainTabLists();
+                        /* 비건강이면 딜레이 전에 즉시 한 번 더 맞춤 — Cloud 분리바 플리커 차단 */
+                        if (!parentWin.__dashStickySyncing) {
+                            parentWin.__dashStickySyncing = true;
+                            try { syncFixedBar(); } catch (eImm) {}
+                            parentWin.__dashStickySyncing = false;
+                        }
                     } else {
                         fixDuplicateMainTabs(false);
                     }
@@ -9441,7 +9509,10 @@ def inject_sticky_tabs_script():
                 if (isFilterDropdownOpen() && collectMainTabLists().length <= 1) return;
                 if (syncTimer) clearTimeout(syncTimer);
                 var delay = ms || 40;
-                delay = Math.max(delay, touchMode ? 350 : 280);
+                var stillBad = false;
+                try { stillBad = !isTabMountHealthy(findFilterBox(), collectMainTabLists()); } catch (eBad) {}
+                if (cloudMode) delay = Math.max(delay, stillBad ? 40 : 80);
+                else delay = Math.max(delay, touchMode ? 350 : 120);
                 syncTimer = setTimeout(syncFixedBar, delay);
             }
 
@@ -9625,9 +9696,12 @@ def inject_sticky_tabs_script():
                     var fb = findFilterBox();
                     var all = collectMainTabLists();
                     var unhealthy = !isTabMountHealthy(fb, all);
-                    if (!mutationTouchesMainTabs(mutations) && !unhealthy) return;
-                    if (all.length > 1 || unhealthy) fixDuplicateMainTabs(true);
-                    scheduleSync(unhealthy ? 80 : 280);
+                    /* 필터가 있고 비건강이면 mutation 필터와 무관하게 즉시 재장착 */
+                    if (!unhealthy && !mutationTouchesMainTabs(mutations)) return;
+                    if (all.length > 1 || unhealthy) {
+                        try { fixDuplicateMainTabs(true); } catch (eObs) {}
+                    }
+                    scheduleSync(unhealthy || cloudMode ? 40 : 160);
                 });
                 observer.observe(parentDoc.body, {
                     childList: true,
@@ -9653,22 +9727,24 @@ def inject_sticky_tabs_script():
                 if (sidebar) {
                     sidebar.addEventListener('transitionend', function() { scheduleSync(100); });
                 }
-                /* 건강할 때는 위치만 보정. 과한 fixDuplicate는 heavy 탭 로딩 루프를 만든다 */
+                /* Cloud/로딩: 비건강이면 강제 remount로 분리바 복구 */
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
                     if (isFilterDropdownOpen()) return;
                     try { unpinBadFixedShells(); } catch (eUn) {}
                     var fb = findFilterBox();
                     var all = collectMainTabLists();
                     if (!isTabMountHealthy(fb, all)) {
-                        try { fixDuplicateMainTabs(false); } catch (eMacHt) {}
+                        try { fixDuplicateMainTabs(true); } catch (eMacHt) {}
                     }
                     syncFixedBar();
-                }, 4000);
+                }, cloudMode ? 1500 : 4000);
                 syncFixedBar();
             }
         })();
         </script>
-        """.replace("__CLOUD_STICKY_MODE__", _cloud_sticky_js),
+        """.replace("__CLOUD_STICKY_MODE__", _cloud_sticky_js).replace(
+            "__PY_STICKY_INJECT_VER__", str(_sticky_py_ver)
+        ),
         height=0,
         width=0,
     )
@@ -11775,7 +11851,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 54
+    _STICKY_INJECT_VER = 55
     _ACTIVE_TAB_INJECT_VER = 10
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
@@ -11784,7 +11860,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 39
+        st.session_state["_ipad_sticky_ver"] = 40
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=12, heavy_indices=(9, 10, 11)
