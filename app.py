@@ -5590,11 +5590,19 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
     """heavy 탭(업무일지·시장조사·공문) lazy.
 
-    - 세션 첫 워밍: 세 탭을 한 번 풀로딩(시장조사는 `_tab_bundle.pkl`로 수 ms).
-    - 이후 필터 변경 시 비활성 heavy는 stub → 시장조사 UI 재렌더 비용 제거.
+    - 로컬: 항상 풀로딩(펼침). 「화면 불러오기」 stub 없음.
+    - Cloud 세션 첫 워밍: 세 탭을 한 번 풀로딩(시장조사는 `_tab_bundle.pkl`로 수 ms).
+    - Cloud 이후 필터 변경 시 비활성 heavy는 stub → 시장조사 UI 재렌더 비용 제거.
     - 해당 탭을 누르면 다시 full render.
     """
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
+    # 로컬 맥/데스크톱: 시작부터 세 탭을 펼쳐 렌더
+    if not _is_streamlit_cloud():
+        for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
+            mounted[i] = True
+        st.session_state["_dash_heavy_warmed"] = True
+        return False
+
     if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
         mounted[tab_idx] = True
         return False
