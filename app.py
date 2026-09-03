@@ -10962,7 +10962,9 @@ def _dash_filter_and_tabs_fragment() -> None:
                     f"Cloud · sticky · nativeTabs · lazy9-11 · mountedKeep · bind{_DASH_FILTER_BIND_VER}"
                 )
             else:
-                dev_caption(f"필터 빌드 {_DASH_FILTER_UI_REV} · filterReinject{_DASH_FILTER_BIND_VER}")
+                dev_caption(
+                    f"Local · 통합12탭 · lazy9-11 · mountedKeep · filterReinject{_DASH_FILTER_BIND_VER}"
+                )
 
             df_base = df_base_opts
             df_staff_filtered = (
