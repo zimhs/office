@@ -375,15 +375,20 @@ def inject_custom_css():
                 overflow: visible !important;
             }
 
-            /* 탭줄을 필터 고정바 내부로 옮긴 뒤 host의 빈 탭줄 껍데기 숨김 */
+            /* 탭줄을 필터 고정바 내부로 옮긴 뒤 host의 빈 탭줄 껍데기 숨김
+               (로딩 중 잠깐 재생성돼도 분리 오류바로 보이지 않게) */
             html.dashboard-tabs-pinned .dashboard-tabs-host-compact > div:has(> [role="tablist"]),
-            html.dashboard-tabs-pinned .dashboard-tabs-host-compact > div.dashboard-tabs-list-shell:empty {
+            html.dashboard-tabs-pinned .dashboard-tabs-host-compact > div.dashboard-tabs-list-shell,
+            html.dashboard-tabs-pinned .dashboard-tabs-host-compact > div.dashboard-tabs-list-shell:empty,
+            html.dashboard-tabs-pinned div[data-testid="stTabs"] > div:has(> [role="tablist"]):not(:has([role="tabpanel"])) {
                 display: none !important;
                 height: 0 !important;
                 min-height: 0 !important;
                 margin: 0 !important;
                 padding: 0 !important;
                 overflow: hidden !important;
+                visibility: hidden !important;
+                pointer-events: none !important;
             }
 
             .dashboard-tabs-host-compact > div[role="tabpanel"],
@@ -8330,8 +8335,8 @@ def inject_sticky_tabs_script():
             var cloudMode = __CLOUD_STICKY_MODE__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 28;
-            var STICKY_SCRIPT_VER_IPAD = 49; /* 탭줄을 필터 고정바 내부에 장착 */
+            var STICKY_SCRIPT_VER_MAC = 29;
+            var STICKY_SCRIPT_VER_IPAD = 50; /* 로딩 중 host 탭 노출 금지 → 통합 고정바 유지 */
             function bindDashboardFilterTextInputs() {
                 /* 필터 select UX → _dash_inject_filter_select_script (fragment rerun마다) */
             }
@@ -8671,15 +8676,36 @@ def inject_sticky_tabs_script():
                 var filterBox = findFilterBox();
                 var host = findMainTabsHost();
                 var all = collectMainTabLists();
+                var bar = parentDoc.getElementById('dashboard-ipad-h-tabs');
+                if (bar) { try { bar.remove(); } catch (eBar) {} }
                 if (isTabMountHealthy(filterBox, all)) {
                     markTabsPinned(true);
+                    parentWin.__dashboardTabsUnifiedOk = true;
                     if (host) host.classList.add('dashboard-tabs-host-compact');
                     return true;
                 }
+                /* 로딩/리런 중 잠깐 떨어지면 host 탭을 드러내지 않는다.
+                   host를 드러내면 정상 통합바 → 분리 오류바로 바뀌는 플리커가 난다. */
+                if (filterBox) {
+                    markTabsPinned(true);
+                    if (host) host.classList.add('dashboard-tabs-host-compact');
+                    try { fixDuplicateMainTabs(true); } catch (eRm) {}
+                    all = collectMainTabLists();
+                    if (isTabMountHealthy(filterBox, all)) {
+                        parentWin.__dashboardTabsUnifiedOk = true;
+                        return true;
+                    }
+                    var keepInFilter = null;
+                    try { keepInFilter = filterBox.querySelector('[role="tablist"].dashboard-tabs-in-filter'); } catch (eK) {}
+                    if (host) hideStaleTabListsInHost(host, keepInFilter);
+                    return false;
+                }
+                if (parentWin.__dashboardTabsUnifiedOk) {
+                    markTabsPinned(true);
+                    return false;
+                }
                 markTabsPinned(false);
                 revealHostTabLists(host);
-                var bar = parentDoc.getElementById('dashboard-ipad-h-tabs');
-                if (bar) { try { bar.remove(); } catch (eBar) {} }
                 return collectMainTabLists().length >= 1;
             }
             parentWin.__dashboardEnsureTabsVisible = ensureTabsNeverInvisible;
@@ -8699,10 +8725,18 @@ def inject_sticky_tabs_script():
                 list.style.removeProperty('transform');
             }
             function isTabMountHealthy(filterBox, all) {
-                /* 건강 = 탭줄 1개가 필터 고정바 내부에 장착됨 */
-                if (!filterBox || !all || all.length !== 1) return false;
-                var t = all[0];
-                if (!(filterBox.contains(t) && t.classList.contains('dashboard-tabs-in-filter'))) return false;
+                /* 건강 = 필터 고정바 안에 메인 탭줄이 보이고 클릭 가능 */
+                if (!filterBox || !all || !all.length) return false;
+                var t = null;
+                var i;
+                for (i = 0; i < all.length; i++) {
+                    if (filterBox.contains(all[i]) && all[i].classList.contains('dashboard-tabs-in-filter')) {
+                        t = all[i];
+                        break;
+                    }
+                }
+                if (!t) return false;
+                /* 로딩 중 잠깐 중복 tablist가 생겨도 필터 안 탭이 살아 있으면 건강으로 본다 */
                 var tabs = t.querySelectorAll('[role="tab"], [data-testid="stTab"]');
                 if (tabs.length < 8) return false;
                 try {
@@ -8732,7 +8766,13 @@ def inject_sticky_tabs_script():
                 }
                 var keep = null;
                 var i;
-                if (host) {
+                /* 이미 필터에 있는 탭줄을 우선 유지 (로딩 중 host에 새 tablist가 생겨도 통합바 유지) */
+                if (filterBox) {
+                    for (i = 0; i < all.length; i++) {
+                        if (filterBox.contains(all[i])) { keep = all[i]; break; }
+                    }
+                }
+                if (!keep && host) {
                     for (i = 0; i < all.length; i++) {
                         if (host.contains(all[i])) { keep = all[i]; break; }
                     }
@@ -8799,13 +8839,21 @@ def inject_sticky_tabs_script():
                     }
                 }
                 if (!moved) {
-                    keep.classList.remove('dashboard-tabs-in-filter');
-                    keep.removeAttribute('data-dashboard-orphan-tabs');
-                    keep.style.removeProperty('display');
-                    keep.style.setProperty('visibility', 'visible', 'important');
-                    keep.style.setProperty('pointer-events', 'auto', 'important');
-                    markTabsPinned(false);
-                    revealHostTabLists(host);
+                    /* 이동 실패해도 host를 드러내지 않는다 — 분리 오류바로 바뀌는 걸 막음 */
+                    if (filterBox) {
+                        markTabsPinned(true);
+                        if (host) hideStaleTabListsInHost(host, keep);
+                        keep.style.setProperty('visibility', 'visible', 'important');
+                        keep.style.setProperty('pointer-events', 'auto', 'important');
+                    } else {
+                        keep.classList.remove('dashboard-tabs-in-filter');
+                        keep.removeAttribute('data-dashboard-orphan-tabs');
+                        keep.style.removeProperty('display');
+                        keep.style.setProperty('visibility', 'visible', 'important');
+                        keep.style.setProperty('pointer-events', 'auto', 'important');
+                        markTabsPinned(false);
+                        revealHostTabLists(host);
+                    }
                 }
                 parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
                 return moved || isTabMountHealthy(filterBox, collectMainTabLists());
@@ -9268,7 +9316,8 @@ def inject_sticky_tabs_script():
             }
             function syncFixedBar() {
                 cleanupOrphanStickyFilters();
-                try { fixDuplicateMainTabs(false); } catch (eSf) {}
+                /* 먼저 강제 재장착 — ensureTabsNeverInvisible가 host를 드러내기 전에 통합바로 복구 */
+                try { fixDuplicateMainTabs(true); } catch (eSf) {}
                 try { ensureTabsNeverInvisible(); } catch (eVis0) {}
                 if (touchMode) {
                     if (isFilterDropdownOpen()) return;
@@ -9280,7 +9329,7 @@ def inject_sticky_tabs_script():
                 var tabList = findMainTabList();
                 if (!filterBox || !tabList) {
                     parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
-                    if (parentWin.__dashTabRetry < 25) scheduleSync(200);
+                    if (parentWin.__dashTabRetry < 40) scheduleSync(120);
                     return;
                 }
                 var mains = collectMainTabLists();
@@ -9289,11 +9338,12 @@ def inject_sticky_tabs_script():
                     tabList = findMainTabList() || tabList;
                     if (!mounted || !filterBox.contains(tabList)) {
                         parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
-                        if (parentWin.__dashTabRetry < 25) scheduleSync(180);
+                        if (parentWin.__dashTabRetry < 40) scheduleSync(100);
                         return;
                     }
                 }
                 parentWin.__dashTabRetry = 0;
+                parentWin.__dashboardTabsUnifiedOk = true;
                 var rectMac = getMainRect();
                 if (!rectMac) return;
                 var topMac = getTopOffsetMac();
@@ -9367,27 +9417,23 @@ def inject_sticky_tabs_script():
                     try { ensureTabsNeverInvisible(); } catch (eVis) {}
                     if (!touchMode) {
                         var fb = findFilterBox();
+                        all = collectMainTabLists();
                         if (isTabMountHealthy(fb, all) && !isFilterDropdownOpen()) {
                             var hNow = fb ? (fb.offsetHeight + 4) : lastH;
                             if (Math.abs(hNow - lastH) <= 1) {
-                                /* 시장조사(heavy) 탭 전환에서 마커 정리/DOM 교체로 fixed 스타일이
-                                   잠깐 풀린 경우가 있어, 실제 fixed 상태가 아니면 early return 금지 */
                                 try {
                                     var fixedNow = false;
                                     try {
                                         fixedNow = (fb && ((fb.style && fb.style.getPropertyValue('position') === 'fixed')
                                             || (parentWin.getComputedStyle && parentWin.getComputedStyle(fb).position === 'fixed')));
                                     } catch (eCss1) {}
-                                    if (fixedNow && isTabMountHealthy(fb, all)) {
+                                    if (fixedNow) {
                                         if (fb) {
                                             try { ensureCloudStickyTabsNative(fb); } catch (eCt) {}
                                         }
                                         return;
                                     }
-                                } catch (eFix1) {
-                                    /* 고정 상태 체크 실패 시: 안전을 위해 early return하지 않는다 */
-                                }
-                                /* fixed 상태가 아니면 syncFixedBar 경로로 내려가서 복구 */
+                                } catch (eFix1) {}
                             }
                         }
                     }
@@ -11729,7 +11775,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 53
+    _STICKY_INJECT_VER = 54
     _ACTIVE_TAB_INJECT_VER = 10
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
@@ -11738,7 +11784,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 38
+        st.session_state["_ipad_sticky_ver"] = 39
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=12, heavy_indices=(9, 10, 11)
