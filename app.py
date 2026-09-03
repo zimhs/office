@@ -5281,39 +5281,65 @@ def _dash_inject_filter_select_script_for_run() -> None:
 
 
 def _dash_inject_sticky_resync_script() -> None:
-    """fragment/탭 전환 후 고정바·spacer 재동기화 (로컬·Cloud)."""
+    """fragment/탭 전환·heavy 탭 로드 후 고정바에 탭줄을 여러 번 재장착."""
     components.html(
         """
         <script>
         (function () {
           var win = window.parent;
-          try {
-            if (typeof win.__dashboardFixDuplicateTabs === 'function') {
-              win.__dashboardFixDuplicateTabs(true);
+          var doc = win.document;
+          function findFilterBox() {
+            var markers = doc.querySelectorAll('#sticky-marker');
+            var marker = null;
+            for (var i = markers.length - 1; i >= 0; i--) {
+              if (markers[i].isConnected) { marker = markers[i]; break; }
             }
-            if (typeof win.__dashboardEnsureCloudStickyTabs === 'function') {
-              var fb = win.document.getElementById('sticky-marker');
-              if (fb) {
-                fb = fb.closest('.dashboard-filter-sticky') ||
-                     fb.closest('div[data-testid="stVerticalBlockBorderWrapper"]');
-              }
-              if (fb) win.__dashboardEnsureCloudStickyTabs(fb);
+            if (!marker) return null;
+            return marker.closest('.dashboard-filter-sticky') ||
+                   marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]') ||
+                   marker.closest('div[data-testid="stVerticalBlock"]');
+          }
+          function isMainTabList(el) {
+            return !!(el && el.textContent && el.textContent.indexOf('📌 영업 종합 요약') !== -1);
+          }
+          function collectMainTabLists() {
+            var out = [];
+            var lists = doc.querySelectorAll('div[role="tablist"]');
+            for (var i = 0; i < lists.length; i++) {
+              if (isMainTabList(lists[i])) out.push(lists[i]);
             }
-            if (typeof win.__dashboardMacScheduleSync === 'function') {
-              win.__dashboardMacScheduleSync(0);
-              win.__dashboardMacScheduleSync(250);
-              return;
-            }
-            if (typeof win.__dashboardIpadScheduleSync === 'function') {
+            return out;
+          }
+          function remountSticky() {
+            try {
               win.__dashboardIpadFreezeLayout = false;
-              win.__dashboardIpadScheduleSync(0);
-              win.__dashboardIpadScheduleSync(300);
-              return;
-            }
-            if (typeof win.__dashboardIpadPin === 'function') {
-              win.__dashboardIpadPin();
-            }
-          } catch (e) {}
+              if (typeof win.__dashboardFixDuplicateTabs === 'function') {
+                win.__dashboardFixDuplicateTabs(true);
+              }
+              var fb = findFilterBox();
+              if (fb && typeof win.__dashboardEnsureCloudStickyTabs === 'function') {
+                win.__dashboardEnsureCloudStickyTabs(fb);
+              }
+              var lists = collectMainTabLists();
+              if (fb && lists.length && !fb.contains(lists[0]) &&
+                  typeof win.__dashboardFixDuplicateTabs === 'function') {
+                win.__dashboardFixDuplicateTabs(true);
+              }
+              if (typeof win.__dashboardMacScheduleSync === 'function') {
+                win.__dashboardMacScheduleSync(0);
+              }
+              if (typeof win.__dashboardIpadScheduleSync === 'function') {
+                win.__dashboardIpadScheduleSync(0);
+              }
+              if (typeof win.__dashboardIpadPin === 'function') {
+                try { win.__dashboardIpadPin(); } catch (ePin) {}
+              }
+            } catch (e) {}
+          }
+          /* heavy(업무일지·시장조사·공문) DOM이 늦게 붙어도 탭줄이 고정바에 남도록 재시도 */
+          [0, 60, 160, 320, 640, 1100, 1800].forEach(function (ms) {
+            setTimeout(remountSticky, ms);
+          });
         })();
         </script>
         """,
@@ -8238,8 +8264,8 @@ def inject_sticky_tabs_script():
             var cloudMode = __CLOUD_STICKY_MODE__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 22;
-            var STICKY_SCRIPT_VER_IPAD = 43; /* 로컬=Cloud 네이티브 탭 + Mini 가로세로 */
+            var STICKY_SCRIPT_VER_MAC = 23;
+            var STICKY_SCRIPT_VER_IPAD = 44; /* heavy 탭 로드 후 고정탭 재장착 */
             function bindDashboardFilterTextInputs() {
                 /* 필터 select UX → _dash_inject_filter_select_script (fragment rerun마다) */
             }
@@ -8294,11 +8320,8 @@ def inject_sticky_tabs_script():
             }
             function ipadFreezeLayout() {
                 parentWin.__dashboardIpadFreezeLayout = true;
+                /* 부트 폴링만 정리. 5초 건강체크는 heavy 탭 후 탭줄 재장착을 위해 유지 */
                 try {
-                    if (parentWin.__dashboardStickyTouchInterval) {
-                        clearInterval(parentWin.__dashboardStickyTouchInterval);
-                        parentWin.__dashboardStickyTouchInterval = null;
-                    }
                     if (parentWin.__dashboardStickyBootInterval) {
                         clearInterval(parentWin.__dashboardStickyBootInterval);
                         parentWin.__dashboardStickyBootInterval = null;
@@ -8855,8 +8878,11 @@ def inject_sticky_tabs_script():
             }
             function ipadApplyBoxStyles(targetBox) {
                 if (!targetBox) return;
-                if (parentWin.__dashboardIpadFreezeLayout && targetBox.style.position === 'fixed') return;
                 if (isFilterDropdownOpen()) return;
+                var mountLists = collectMainTabLists();
+                var mountBad = !isTabMountHealthy(targetBox, mountLists);
+                if (mountBad) parentWin.__dashboardIpadFreezeLayout = false;
+                if (parentWin.__dashboardIpadFreezeLayout && targetBox.style.position === 'fixed' && !mountBad) return;
                 try { ensureCloudStickyTabsNative(targetBox); } catch (eNat) {}
                 targetBox.classList.add('dashboard-filter-sticky');
                 targetBox.classList.add('dashboard-filter-sticky-touch');
@@ -9068,9 +9094,14 @@ def inject_sticky_tabs_script():
             function scheduleSync(ms) {
                 try {
                     cleanupOrphanStickyFilters();
-                    if (touchMode && (parentWin.__dashboardIpadFreezeLayout || isIpadFilterLocked())) return;
                     var all = collectMainTabLists();
-                    if (all.length > 1) {
+                    var fb0 = findFilterBox();
+                    var unhealthy = !isTabMountHealthy(fb0, all);
+                    if (touchMode && unhealthy) {
+                        parentWin.__dashboardIpadFreezeLayout = false;
+                    }
+                    if (touchMode && !unhealthy && (parentWin.__dashboardIpadFreezeLayout || isIpadFilterLocked())) return;
+                    if (all.length > 1 || unhealthy) {
                         fixDuplicateMainTabs(true);
                         all = collectMainTabLists();
                     } else {
@@ -9134,13 +9165,29 @@ def inject_sticky_tabs_script():
                 }, 200);
                 
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
-                    if (!isIpadFilterLocked() && !isFilterDropdownOpen()) applyIpad0804Hack();
+                    if (isIpadFilterLocked() || isFilterDropdownOpen()) return;
+                    var box = findFilterBox();
+                    var all = collectMainTabLists();
+                    if (!isTabMountHealthy(box, all)) {
+                        parentWin.__dashboardIpadFreezeLayout = false;
+                        try { fixDuplicateMainTabs(true); } catch (eHt) {}
+                        applyIpad0804Hack();
+                        return;
+                    }
+                    if (!parentWin.__dashboardIpadFreezeLayout) applyIpad0804Hack();
                 }, 5000);
                 
                 var observer = new MutationObserver(function() {
                     if (isIpadFilterLocked() || isFilterDropdownOpen()) return;
                     var box = findFilterBox();
                     if (!box) return;
+                    var all = collectMainTabLists();
+                    /* heavy 탭 로드로 탭줄이 고정바 밖으로 빠지면 무조건 재장착 */
+                    if (!isTabMountHealthy(box, all)) {
+                        parentWin.__dashboardIpadFreezeLayout = false;
+                        scheduleSync(40);
+                        return;
+                    }
                     if (box.style.position === 'fixed') return;
                     parentWin.__dashboardIpadFreezeLayout = false;
                     ipadPinFilterBox();
@@ -9257,10 +9304,12 @@ def inject_sticky_tabs_script():
                     }
                 }, 250);
                 var observer = new MutationObserver(function(mutations) {
-                    if (!mutationTouchesMainTabs(mutations)) return;
-                    var n = collectMainTabLists().length;
-                    if (n > 1) fixDuplicateMainTabs(true);
-                    else scheduleSync(320);
+                    var fb = findFilterBox();
+                    var all = collectMainTabLists();
+                    var unhealthy = !isTabMountHealthy(fb, all);
+                    if (!mutationTouchesMainTabs(mutations) && !unhealthy) return;
+                    if (all.length > 1 || unhealthy) fixDuplicateMainTabs(true);
+                    scheduleSync(unhealthy ? 80 : 280);
                 });
                 observer.observe(parentDoc.body, {
                     childList: true,
@@ -9286,9 +9335,16 @@ def inject_sticky_tabs_script():
                 if (sidebar) {
                     sidebar.addEventListener('transitionend', function() { scheduleSync(100); });
                 }
+                /* heavy 탭 로드 후 탭줄 유실을 빨리 복구 (8초→2.5초) */
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
-                    if (!isFilterDropdownOpen()) syncFixedBar();
-                }, 8000);
+                    if (isFilterDropdownOpen()) return;
+                    var fb = findFilterBox();
+                    var all = collectMainTabLists();
+                    if (!isTabMountHealthy(fb, all)) {
+                        try { fixDuplicateMainTabs(true); } catch (eMacHt) {}
+                    }
+                    syncFixedBar();
+                }, 2500);
                 syncFixedBar();
             }
         })();
@@ -11400,7 +11456,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 47
+    _STICKY_INJECT_VER = 48
     _ACTIVE_TAB_INJECT_VER = 8
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
@@ -11409,7 +11465,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         inject_ipad_plotly_controls()
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
-        st.session_state["_ipad_sticky_ver"] = 32
+        st.session_state["_ipad_sticky_ver"] = 33
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=12, heavy_indices=(9, 10, 11)
