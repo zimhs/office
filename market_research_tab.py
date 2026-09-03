@@ -228,7 +228,10 @@ def _best_complex(values) -> str:
 
 
 def merge_duplicate_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """같은 업체키 행을 1건으로 병합. (병합 DF, 제거된 중복 건수)."""
+    """같은 업체키 행을 1건으로 병합. (병합 DF, 제거된 중복 건수).
+
+    단일 행 그룹은 벡터로 통과시키고, 중복 키만 Python 병합한다.
+    """
     if df.empty:
         return df, 0
     work = df.copy()
@@ -237,32 +240,36 @@ def merge_duplicate_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     work["업체키"] = work["업체명"].map(_company_key)
     work = work[work["업체키"].astype(str).str.len() >= 2]
     before = len(work)
+    if before == 0:
+        return work.reset_index(drop=True), 0
+    vc = work["업체키"].value_counts(sort=False)
+    dup_keys = set(vc[vc > 1].index)
+    singles = work[~work["업체키"].isin(dup_keys)].copy()
+    singles["병합건수"] = 1
+    if not dup_keys:
+        return singles.reset_index(drop=True), 0
     groups = []
-    for key, g in work.groupby("업체키", sort=False):
-        if len(g) == 1:
-            row = g.iloc[0].to_dict()
-            row["병합건수"] = 1
-            groups.append(row)
-            continue
-        row = {
-            "업체키": key,
-            "업체명": _best_text(g["업체명"]),
-            "지역": _best_region(g["지역"]),
-            "산업단지": _best_complex(g["산업단지"]),
-            "주소": _best_text(g["주소"]),
-            "업종": _merge_unique_text(g["업종"], max_parts=6),
-            "사용가스": _merge_unique_text(g["사용가스"], max_parts=8),
-            "공급사": _merge_unique_text(g["공급사"], max_parts=8),
-            "담당자": _merge_unique_text(g["담당자"], max_parts=6),
-            "연락처": _merge_unique_text(g["연락처"], max_parts=6),
-            "비고": _merge_unique_text(g["비고"], max_parts=10),
-            "출처": _merge_unique_text(g["출처"], max_parts=8),
-            "파일": _merge_unique_text(g["파일"], max_parts=6),
-            "시트": _merge_unique_text(g["시트"], max_parts=8),
-            "병합건수": int(len(g)),
-        }
-        groups.append(row)
-    out = pd.DataFrame(groups)
+    for key, g in work[work["업체키"].isin(dup_keys)].groupby("업체키", sort=False):
+        groups.append(
+            {
+                "업체키": key,
+                "업체명": _best_text(g["업체명"]),
+                "지역": _best_region(g["지역"]),
+                "산업단지": _best_complex(g["산업단지"]),
+                "주소": _best_text(g["주소"]),
+                "업종": _merge_unique_text(g["업종"], max_parts=6),
+                "사용가스": _merge_unique_text(g["사용가스"], max_parts=8),
+                "공급사": _merge_unique_text(g["공급사"], max_parts=8),
+                "담당자": _merge_unique_text(g["담당자"], max_parts=6),
+                "연락처": _merge_unique_text(g["연락처"], max_parts=6),
+                "비고": _merge_unique_text(g["비고"], max_parts=10),
+                "출처": _merge_unique_text(g["출처"], max_parts=8),
+                "파일": _merge_unique_text(g["파일"], max_parts=6),
+                "시트": _merge_unique_text(g["시트"], max_parts=8),
+                "병합건수": int(len(g)),
+            }
+        )
+    out = pd.concat([singles, pd.DataFrame(groups)], ignore_index=True, sort=False)
     removed = before - len(out)
     return out.reset_index(drop=True), removed
 
@@ -1342,22 +1349,30 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
 
 @st.cache_data(show_spinner=False, ttl=600)
 def _cached_cache_signature() -> str:
-    """xlsx·manifest mtime 스캔 — 매 rerun walk 방지."""
+    """xlsx·manifest 시그니처.
+
+    name+size(+소파일 content hash)만 사용 — mtime 제외.
+    Cloud git checkout 시 mtime이 바뀌어도 커밋된 `_tab_bundle.pkl`이
+    그대로 hit 되게 한다 (콜드 파싱 ~8초 방지).
+    """
+    import hashlib
+
     root = MR_CACHE_DIR
     if not os.path.isdir(root):
         return "empty"
     parts = []
     for p in _list_xlsx(root):
         try:
-            parts.append(f"{p.name}:{os.path.getmtime(p):.0f}:{os.path.getsize(p)}")
+            parts.append(f"{p.name}:{os.path.getsize(p)}")
         except OSError:
             parts.append(p.name)
     for extra in (_manual_entries_path(), MR_UPLOAD_MANIFEST):
         try:
-            if os.path.exists(extra):
-                parts.append(
-                    f"{Path(extra).name}:{os.path.getmtime(extra):.0f}:{os.path.getsize(extra)}"
-                )
+            if not os.path.exists(extra):
+                continue
+            raw = Path(extra).read_bytes()
+            digest = hashlib.md5(raw).hexdigest()[:12]
+            parts.append(f"{Path(extra).name}:{len(raw)}:{digest}")
         except OSError:
             parts.append(f"{Path(extra).name}:0")
     return "|".join(parts) or "empty"

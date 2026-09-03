@@ -5504,16 +5504,42 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """heavy 탭(업무일지·시장조사·공문) — 항상 펼쳐서 풀로딩.
+    """heavy 탭(업무일지·시장조사·공문) lazy.
 
-    stub/「화면 불러오기」없이 세 탭 UI·데이터를 처음부터 렌더한다.
-    (고정바 소실은 sticky CSS/장착 로직으로 별도 방어)
+    - 세션 첫 워밍: 세 탭을 한 번 풀로딩(시장조사는 `_tab_bundle.pkl`로 수 ms).
+    - 이후 필터 변경 시 비활성 heavy는 stub → 시장조사 UI 재렌더 비용 제거.
+    - 해당 탭을 누르면 다시 full render.
     """
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
-    # force 플래그도 소비해 두고 항상 full render
-    st.session_state.pop(f"_dash_force_tab_{tab_idx}", None)
-    mounted[tab_idx] = True
-    return False
+    if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
+        mounted[tab_idx] = True
+        return False
+
+    # 세션당 1회 워밍 — 세 heavy를 펼쳐 로딩 (사전 bundle이면 시장조사 거의 즉시)
+    if not st.session_state.get("_dash_heavy_warmed"):
+        for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
+            mounted[i] = True
+        st.session_state["_dash_heavy_warmed"] = True
+        return False
+
+    active = _dash_active_tab_idx()
+    on_this_tab = active is not None and int(active) == int(tab_idx)
+
+    if st.session_state.get("_dash_filter_changed_flag"):
+        if on_this_tab:
+            mounted[tab_idx] = True
+            return False
+        mounted[tab_idx] = False
+        return True
+
+    if mounted.get(tab_idx):
+        return False
+
+    if on_this_tab:
+        mounted[tab_idx] = True
+        return False
+
+    return True
 
 
 def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: tuple[str, ...]) -> None:

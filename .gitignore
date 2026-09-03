@@ -71,6 +71,8 @@ uploaded_cache/market_research/uploads/**
 uploaded_cache/market_research/_merged_frame.pkl
 uploaded_cache/market_research/_merged_frame.sig
 uploaded_cache/market_research/_merged_frame.pkl.tmp
+# `_tab_bundle.pkl` / `_tab_bundle.sig` 는 Cloud 콜드스타트 방지용으로 커밋함
+uploaded_cache/market_research/_tab_bundle.pkl.tmp
 worklog_tab.py.final_*
 
 # 로컬 전용·불필요 (dashboard 폴더 정리 대상)
