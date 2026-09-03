@@ -9262,10 +9262,33 @@ def inject_sticky_tabs_script():
                         if (isTabMountHealthy(fb, all) && !isFilterDropdownOpen()) {
                             var hNow = fb ? (fb.offsetHeight + 4) : lastH;
                             if (Math.abs(hNow - lastH) <= 1) {
-                                if (fb) {
-                                    try { ensureCloudStickyTabsNative(fb); } catch (eCt) {}
+                                /* 시장조사(heavy) 탭 전환에서 마커 정리/DOM 교체로 fixed 스타일이
+                                   잠깐 풀린 경우가 있어, 실제 fixed 상태가 아니면 early return 금지 */
+                                try {
+                                    var fixedNow = false;
+                                    try {
+                                        fixedNow = (fb && ((fb.style && fb.style.getPropertyValue('position') === 'fixed')
+                                            || (parentWin.getComputedStyle && parentWin.getComputedStyle(fb).position === 'fixed'))));
+                                    } catch (eCss1) {}
+                                    var tl = null;
+                                    try { tl = findMainTabList(); } catch (eTl) {}
+                                    var tabFixedNow = true;
+                                    try {
+                                        if (tl) {
+                                            tabFixedNow = ((tl.style && tl.style.getPropertyValue('position') === 'fixed')
+                                                || (parentWin.getComputedStyle && parentWin.getComputedStyle(tl).position === 'fixed'));
+                                        }
+                                    } catch (eCss2) {}
+                                    if (fixedNow && tabFixedNow) {
+                                        if (fb) {
+                                            try { ensureCloudStickyTabsNative(fb); } catch (eCt) {}
+                                        }
+                                        return;
+                                    }
+                                } catch (eFix1) {
+                                    /* 고정 상태 체크 실패 시: 안전을 위해 early return하지 않는다 */
                                 }
-                                return;
+                                /* fixed 상태가 아니면 syncFixedBar 경로로 내려가서 복구 */
                             }
                         }
                     }
