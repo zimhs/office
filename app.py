@@ -4270,6 +4270,7 @@ end run
                 os.unlink(body_path)
             except Exception:
                 pass
+@st.cache_data(show_spinner=False, max_entries=256)
 def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0f"):
     fig = go.Figure()
     sorted_years = sorted(pivot_df.columns, key=lambda x: str(x))
@@ -4323,6 +4324,7 @@ def create_stacked_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0
         
     fig.update_layout(**layout_args)
     return fig
+@st.cache_data(show_spinner=False, max_entries=256)
 def create_grouped_bar_chart(pivot_df, title_text="", y_suffix="", y_format=",.0f"):
     """월별 × 연도 비교용 그룹 막대그래프 (스택 아님). 블루 톤으로 통일."""
     fig = go.Figure()
