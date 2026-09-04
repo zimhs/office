@@ -320,17 +320,61 @@ def inject_custom_css():
                 box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
                 margin-bottom: 8px;
             }
-            .metric-label { color: #64748B; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
-            .metric-value { color: #0F172A; font-size: 20px; font-weight: 700; }
+            .metric-label { color: #475569; font-size: 14px; font-weight: 600; margin-bottom: 6px; letter-spacing: 0; }
+            .metric-value { color: #0F172A; font-size: 22px; font-weight: 750; letter-spacing: -0.02em; }
             
             .sub-header {
-                color: #1E3A8A;
-                font-size: 17px;
-                font-weight: 700;
+                color: #0F172A;
+                font-size: 18px;
+                font-weight: 750;
+                letter-spacing: -0.02em;
+                line-height: 1.35;
                 margin-top: 0 !important;
-                margin-bottom: 12px;
-                border-left: 4px solid #1E3A8A;
-                padding-left: 10px;
+                margin-bottom: 14px;
+                border-left: 4px solid #1D4ED8;
+                padding-left: 12px;
+            }
+
+            /* 탭 본문 가독성 — 칼럼·위젯 순서·고정바는 그대로, 글씨·대비·줄간격만 */
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) p,
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) li,
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) [data-testid="stMarkdown"] p {
+                font-size: 15px !important;
+                line-height: 1.55 !important;
+                color: #1E293B !important;
+            }
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) [data-testid="stCaptionContainer"],
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) small[data-testid="stCaptionContainer"] {
+                display: block !important;
+                font-size: 13.5px !important;
+                line-height: 1.5 !important;
+                color: #475569 !important;
+                font-weight: 500 !important;
+            }
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) [data-testid="stWidgetLabel"] p,
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) [data-testid="stWidgetLabel"] label,
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) label {
+                font-size: 13.5px !important;
+                font-weight: 650 !important;
+                color: #0F172A !important;
+                line-height: 1.4 !important;
+            }
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) [data-testid="stExpander"] summary,
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) [data-testid="stExpander"] summary p {
+                font-size: 14.5px !important;
+                font-weight: 650 !important;
+                color: #0F172A !important;
+                line-height: 1.4 !important;
+            }
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) [data-testid="stDataFrame"] {
+                font-size: 13.5px !important;
+            }
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) h1,
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) h2,
+            [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) h3 {
+                color: #0F172A !important;
+                letter-spacing: -0.02em;
+                line-height: 1.35 !important;
             }
 
             .dashboard-tabs-host-compact [role="tabpanel"] {
@@ -4953,7 +4997,7 @@ def _dash_cloud_merged_tabs() -> bool:
 
 _DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER = 9, 10, 11
 _DASH_TAB_MARKET_LOCAL = 9  # 하위 호환(미사용)
-# 상단 필터와 무관 — 필터 변경 rerun 시 활성 탭이 아니면 생략 (0-based tab index)
+# 예전 필터-rerun 생략 대상(카카오맵·설비·탱크·수익성). 지금은 모든 탭을 시작부터 펼침.
 _DASH_LIGHT_DEFER_TAB_IDX = frozenset({5, 6, 7, 8})
 # 시장조사 — mr_v6_ 필터·캐시만 백업 (mr_dl_* 위젯 키 복원 시 download_button 오류 방지)
 _DASH_MR_STATE_PREFIXES = ("mr_v6_", "_mr_ipad", "_mr_cache", "_mr_mod", "_mr_data")
@@ -5611,15 +5655,9 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_should_defer_light_tab(tab_idx: int) -> bool:
-    """지도·설비·탱크·수익성 — 상단 영업 필터와 무관, 필터 rerun 시 활성 탭만 렌더."""
-    if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
-        return False
-    if not st.session_state.get("_dash_filter_changed_flag"):
-        return False
-    active = _dash_active_tab_idx()
-    if active is not None and int(active) == int(tab_idx):
-        return False
-    return int(tab_idx) in _DASH_LIGHT_DEFER_TAB_IDX
+    """카카오맵·설비·탱크·수익성 — 시작부터 펼침. stub/화면 불러오기 없음."""
+    st.session_state.pop(f"_dash_force_tab_{tab_idx}", None)
+    return False
 
 
 def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
@@ -5633,50 +5671,17 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """heavy 탭(업무일지·시장조사·공문) lazy.
+    """업무일지·시장조사·공문 — 시작부터 펼침. stub/화면 불러오기 없음.
 
-    - 로컬: 항상 풀로딩(펼침). 「화면 불러오기」 stub 없음.
-    - Cloud 세션 첫 워밍: 세 탭을 한 번 풀로딩(시장조사는 `_tab_bundle.pkl`로 수 ms).
-    - Cloud 이후 필터 변경 시 비활성 heavy는 stub → 시장조사 UI 재렌더 비용 제거.
-    - 해당 탭을 누르면 다시 full render.
+    #165 이후 Cloud는 필터 변경 때 다시 stub로 접혔다. 로컬·Cloud 모두 풀로딩으로 되돌린다.
     """
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
-    # 로컬 맥/데스크톱: 시작부터 세 탭을 펼쳐 렌더
-    if not _is_streamlit_cloud():
-        for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
-            mounted[i] = True
-        st.session_state["_dash_heavy_warmed"] = True
-        return False
-
-    if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
-        mounted[tab_idx] = True
-        return False
-
-    # 세션당 1회 워밍 — 세 heavy를 펼쳐 로딩 (사전 bundle이면 시장조사 거의 즉시)
-    if not st.session_state.get("_dash_heavy_warmed"):
-        for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
-            mounted[i] = True
-        st.session_state["_dash_heavy_warmed"] = True
-        return False
-
-    active = _dash_active_tab_idx()
-    on_this_tab = active is not None and int(active) == int(tab_idx)
-
-    if st.session_state.get("_dash_filter_changed_flag"):
-        if on_this_tab:
-            mounted[tab_idx] = True
-            return False
-        mounted[tab_idx] = False
-        return True
-
-    if mounted.get(tab_idx):
-        return False
-
-    if on_this_tab:
-        mounted[tab_idx] = True
-        return False
-
-    return True
+    st.session_state.pop(f"_dash_force_tab_{tab_idx}", None)
+    for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
+        mounted[i] = True
+    st.session_state["_dash_heavy_warmed"] = True
+    mounted[tab_idx] = True
+    return False
 
 
 def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: tuple[str, ...]) -> None:
@@ -11927,11 +11932,11 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.session_state["dash_filter_items"] = list(selected_item)
             if _is_streamlit_cloud():
                 dev_caption(
-                    f"Cloud · 로컬동일 · nativeTabs · Mini가로세로 · lazy9-11 · bind{_DASH_FILTER_BIND_VER}"
+                    f"Cloud · 로컬동일 · nativeTabs · Mini가로세로 · expand-all · bind{_DASH_FILTER_BIND_VER}"
                 )
             else:
                 dev_caption(
-                    f"Local · 통합12탭 · nativeTabs · Mini가로세로 · lazy9-11 · bind{_DASH_FILTER_BIND_VER}"
+                    f"Local · 통합12탭 · nativeTabs · Mini가로세로 · expand-all · bind{_DASH_FILTER_BIND_VER}"
                 )
 
             df_base = df_base_opts
