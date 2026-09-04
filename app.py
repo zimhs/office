@@ -336,76 +336,103 @@ def inject_custom_css():
                 border: 1px solid #CBD5E1;
                 border-left: 4px solid #1D4ED8;
                 border-radius: 12px;
-                padding: 18px 20px 16px;
-                margin: 10px 0 16px;
+                padding: 14px 16px 12px;
+                margin: 8px 0 12px;
                 box-shadow: 0 4px 10px -2px rgba(15, 23, 42, 0.08);
             }
             .tab2-corp-title {
                 color: #0F172A;
-                font-size: 18px;
+                font-size: 17px;
                 font-weight: 750;
                 letter-spacing: -0.02em;
-                line-height: 1.35;
-                margin: 0 0 6px 0;
+                line-height: 1.3;
+                margin: 0 0 2px 0;
             }
             .tab2-corp-meta {
-                color: #475569;
-                font-size: 14px;
+                color: #64748B;
+                font-size: 13px;
                 font-weight: 600;
-                line-height: 1.45;
-                margin: 0 0 12px 0;
+                line-height: 1.4;
+                margin: 0 0 8px 0;
             }
             .tab2-corp-card .sec-title,
             .tab2-corp-sec .sec-title {
                 color: #0F172A;
-                font-size: 15px;
+                font-size: 13.5px;
                 font-weight: 750;
                 letter-spacing: -0.01em;
-                margin: 14px 0 8px;
-                padding-top: 10px;
+                margin: 10px 0 6px;
+                padding-top: 8px;
                 border-top: 1px solid #E2E8F0;
             }
             .tab2-corp-card > .sec-title:first-of-type {
                 border-top: 0;
                 padding-top: 0;
-                margin-top: 4px;
+                margin-top: 2px;
+            }
+            .tab2-corp-grid {
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 8px;
+            }
+            .tab2-corp-grid.fin {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                margin-bottom: 8px;
             }
             .tab2-corp-grid .row {
-                display: grid;
-                grid-template-columns: 7.2rem minmax(0, 1fr);
-                gap: 6px 14px;
-                padding: 8px 0;
-                border-bottom: 1px solid #F1F5F9;
-                align-items: start;
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                min-width: 0;
+                padding: 8px 10px;
+                background: #F8FAFC;
+                border: 1px solid #E2E8F0;
+                border-radius: 8px;
             }
-            .tab2-corp-grid .row:last-child { border-bottom: 0; }
+            .tab2-corp-grid .row.wide { grid-column: 1 / -1; }
+            .tab2-corp-grid .row.fin {
+                background: #EFF6FF;
+                border-color: #BFDBFE;
+            }
             .tab2-corp-grid .k {
-                color: #475569;
-                font-size: 14px;
+                color: #64748B;
+                font-size: 12px;
                 font-weight: 700;
-                line-height: 1.45;
+                line-height: 1.3;
             }
             .tab2-corp-grid .v {
                 color: #0F172A;
-                font-size: 16px;
-                font-weight: 650;
-                line-height: 1.5;
+                font-size: 15px;
+                font-weight: 700;
+                line-height: 1.4;
                 word-break: break-word;
             }
             .tab2-corp-op {
                 display: inline-block;
-                font-size: 15px !important;
+                font-size: 14px !important;
                 font-weight: 750 !important;
-                line-height: 1.45;
+                line-height: 1.4;
+                margin-left: 8px;
             }
             .tab2-corp-sec {
-                margin-top: 4px;
+                margin-top: 2px;
             }
             .tab2-corp-sec a {
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 650;
                 color: #1D4ED8;
-                line-height: 1.45;
+                line-height: 1.4;
+            }
+            .tab2-corp-audit-line {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 4px 8px;
+                font-size: 14px;
+                line-height: 1.4;
+            }
+            @media (max-width: 850px) {
+                .tab2-corp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             }
             
             .sub-header {
@@ -13667,11 +13694,18 @@ def _dash_filter_and_tabs_fragment() -> None:
                         if vv:
                             _rows_fac.append((lab, html.escape(vv)))
 
-                def _grid_html(rows):
-                    parts = ['<div class="tab2-corp-grid">']
+                def _grid_html(rows, *, wide_keys=(), fin_keys=(), extra_class=""):
+                    cls = "tab2-corp-grid" + (f" {extra_class}" if extra_class else "")
+                    parts = [f'<div class="{cls}">']
                     for k, v in rows:
+                        row_cls = ["row"]
+                        if k in wide_keys:
+                            row_cls.append("wide")
+                        if k in fin_keys:
+                            row_cls.append("fin")
                         parts.append(
-                            f'<div class="row"><span class="k">{html.escape(k)}</span>'
+                            f'<div class="{" ".join(row_cls)}">'
+                            f'<span class="k">{html.escape(k)}</span>'
                             f'<span class="v">{v}</span></div>'
                         )
                     parts.append("</div>")
@@ -13681,16 +13715,17 @@ def _dash_filter_and_tabs_fragment() -> None:
                 if _latest_audit:
                     _audit_html += (
                         f'<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
-                        f'<div style="font-size:15px;margin-bottom:6px;line-height:1.45;">'
+                        f'<div class="tab2-corp-audit-line">'
                         f'<a href="{html.escape(_latest_audit["url"])}" target="_blank" rel="noopener">'
                         f'{html.escape(_latest_audit["date"])} · {html.escape(_latest_audit["name"])}'
-                        f"</a></div>"
+                        f"</a>"
                     )
                     if _op:
                         _audit_html += (
                             f'<span class="tab2-corp-op" style="color:{_op_color};">'
                             f"감사의견: {html.escape(_op)}</span>"
                         )
+                    _audit_html += "</div>"
                     if _gc_flag and _gc_issue:
                         _audit_html += (
                             f'<div style="margin-top:8px;padding:10px 12px;border:1px solid #FECACA;'
@@ -13714,7 +13749,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 if _rows_fac:
                     _fac_html = (
                         '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
-                        + _grid_html(_rows_fac)
+                        + _grid_html(_rows_fac, wide_keys=("주생산품",))
                         + "</div>"
                     )
                 elif _f_info.get("error") and "키 없음" not in str(_f_info.get("error")):
@@ -13744,7 +13779,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                     f'<div class="tab2-corp-title">🏢 {html.escape(str(_matched or _corp_query_name))}</div>'
                     f'<div class="tab2-corp-meta">{html.escape(_src_line)}</div>'
                     '<div class="sec-title">기본 · 재무</div>'
-                    f"{_grid_html(_rows_basic + _rows_fin)}"
+                    f"{_grid_html(_rows_fin, fin_keys=('매출액', '영업이익'), extra_class='fin')}"
+                    f"{_grid_html(_rows_basic, wide_keys=('주소',))}"
                     f"{_fac_html}"
                     f"{_audit_html}"
                     "</div>"

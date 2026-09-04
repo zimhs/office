@@ -38,6 +38,8 @@ class Tab2CorpToggleTest(unittest.TestCase):
         self.assertIn(".tab2-corp-card", self.src)
         self.assertIn(".tab2-corp-title", self.src)
         self.assertIn(".tab2-corp-grid .v", self.src)
+        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", self.src)
+        self.assertIn("wide_keys", self.src)
 
     def test_no_audit_dict_empty_crash(self):
         self.assertNotIn("_latest_audit.empty", self.src)
