@@ -11291,13 +11291,12 @@ def _dash_consume_deferred_cloud_drive_sync() -> None:
         st.session_state.pop("_drive_deferred_sync_pending", None)
         return
     try:
-        # Streamlit Cloud는 리붓마다 시드 파일을 새로 체크아웃해 로컬 mtime이 항상
-        # "방금"이 되므로, mtime 기반 신선도 비교(force_refresh=False)로는 Drive의
-        # 실제 최신본이 "오래된 것"으로 오판되어 반영되지 않는다. 부팅 자동로드는
-        # Drive를 최신 원본으로 강제 반영해 아이패드 리붓/새로고침 시 자동 갱신.
+        # 클라우드 원격 로드는 Drive md5Checksum(없으면 size)으로 내용을 비교하므로
+        # (drive_remote_fetch) 실제로 바뀐 파일만 받아온다. force_refresh 불필요:
+        # 변경이 없으면 다운로드도, 아래 rerun/재렌더도 생기지 않아 부팅이 가볍다.
         res = sync_dashboard_copy_on_boot(
             CACHE_DIR,
-            force_refresh=True,
+            force_refresh=False,
             include_worklog=False,
         )
     except Exception as exc:
@@ -11320,8 +11319,9 @@ def _dash_consume_deferred_cloud_drive_sync() -> None:
             pass
         st.session_state["_dash_sales_cache_cleared"] = True
         st.session_state["_drive_copy_boot_rerun"] = True
-        st.session_state["_dash_after_drive_boot"] = True
-        st.session_state["_dash_sticky_inject_ver"] = None
+        # 고정바 스크립트를 강제 재주입하지 않는다. 재주입은 부팅 중 잘못된 높이 측정으로
+        # 본문이 고정바 밑으로 밀려 들어가고 로딩감을 키운다. 스티키 스크립트의
+        # MutationObserver/interval 이 데이터 갱신 후 DOM 변화를 스스로 재측정한다.
         st.rerun()
 
 
@@ -11356,11 +11356,11 @@ elif not st.session_state.get("_drive_copy_boot_sync_done") and sync_dashboard_c
         and not st.session_state.get("_drive_copy_boot_sync_done")
     )
     try:
-        # 클라우드도 부팅 시 Drive를 최신 원본으로 강제 반영(위 fragment와 동일 이유:
-        # 새로 체크아웃된 시드의 mtime이 항상 최신이라 비교가 무의미). 맥은 기존과 동일하게 True.
+        # 클라우드는 md5 비교(drive_remote_fetch)로 변경분만 받아오므로 force_refresh 불필요.
+        # 맥(로컬)은 기존과 동일하게 Drive 마운트에서 강제 반영(not _on_cloud_boot=True).
         _drive_autoload_res = sync_dashboard_copy_on_boot(
             CACHE_DIR,
-            force_refresh=True,
+            force_refresh=not _on_cloud_boot,
             include_worklog=not _cloud_2pass_sync,
         )
         st.session_state["_drive_copy_boot_sync_done"] = True
@@ -11395,8 +11395,8 @@ if isinstance(_drive_autoload_res, dict):
                 pass
             st.session_state["_dash_sales_cache_cleared"] = True
             st.session_state["_drive_copy_boot_rerun"] = True
-            st.session_state["_dash_after_drive_boot"] = True
-            st.session_state["_dash_sticky_inject_ver"] = None
+            # 고정바 강제 재주입 안 함(스티키 observer가 자체 재측정). 본문이 바 밑으로
+            # 밀리는 문제와 로딩감 증가 방지.
             st.rerun()
     elif _drive_autoload_res.get("ok") and _drive_autoload_res.get("skipped"):
         _note = _drive_autoload_res.get("note") or _drive_autoload_res.get("error") or ""
