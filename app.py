@@ -660,7 +660,12 @@ def inject_custom_css():
                 display: none !important;
             }
 
-            .dashboard-filter-sticky {
+            /* rerun 직후 JS가 dashboard-filter-sticky 클래스를 붙이기 전에도, 마커가 든
+               필터 컨테이너(st.container(border=True))를 즉시 동일 스타일로 고정한다.
+               → 거래처 변경 시 필터+탭이 잠깐 일반 흐름으로 처졌다 위로 튀는 "흔들림" 방지.
+               (JS findFilterBox 가 클래스를 붙이는 대상과 동일 요소) */
+            .dashboard-filter-sticky,
+            [data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker) {
                 position: fixed !important;
                 top: var(--dashboard-bar-top, 2.75rem) !important;
                 left: var(--dashboard-bar-left, 0px) !important;
