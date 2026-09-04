@@ -11291,9 +11291,13 @@ def _dash_consume_deferred_cloud_drive_sync() -> None:
         st.session_state.pop("_drive_deferred_sync_pending", None)
         return
     try:
+        # Streamlit Cloud는 리붓마다 시드 파일을 새로 체크아웃해 로컬 mtime이 항상
+        # "방금"이 되므로, mtime 기반 신선도 비교(force_refresh=False)로는 Drive의
+        # 실제 최신본이 "오래된 것"으로 오판되어 반영되지 않는다. 부팅 자동로드는
+        # Drive를 최신 원본으로 강제 반영해 아이패드 리붓/새로고침 시 자동 갱신.
         res = sync_dashboard_copy_on_boot(
             CACHE_DIR,
-            force_refresh=False,
+            force_refresh=True,
             include_worklog=False,
         )
     except Exception as exc:
@@ -11352,9 +11356,11 @@ elif not st.session_state.get("_drive_copy_boot_sync_done") and sync_dashboard_c
         and not st.session_state.get("_drive_copy_boot_sync_done")
     )
     try:
+        # 클라우드도 부팅 시 Drive를 최신 원본으로 강제 반영(위 fragment와 동일 이유:
+        # 새로 체크아웃된 시드의 mtime이 항상 최신이라 비교가 무의미). 맥은 기존과 동일하게 True.
         _drive_autoload_res = sync_dashboard_copy_on_boot(
             CACHE_DIR,
-            force_refresh=not _on_cloud_boot,
+            force_refresh=True,
             include_worklog=not _cloud_2pass_sync,
         )
         st.session_state["_drive_copy_boot_sync_done"] = True
