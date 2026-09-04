@@ -1443,6 +1443,71 @@ def _score_text_vs_loc_tokens(text, tokens):
     return sum(1 for t in tokens if t and t in blob)
 
 
+def _factory_err_is_fatal(err: str) -> bool:
+    """키 오류만 즉시 중단. 빈 본문·타임아웃은 재시도 대상."""
+    s = str(err or "")
+    return any(
+        x in s
+        for x in (
+            "SERVICE_KEY",
+            "등록되지 않은 서비스키",
+            "UNAUTHORIZED",
+            "만료",
+            "폐기",
+            "INVALID_SERVICE_KEY",
+        )
+    )
+
+
+def _factory_err_is_transient(err: str) -> bool:
+    s = str(err or "").lower()
+    return any(
+        x in s
+        for x in (
+            "empty_body",
+            "timeout",
+            "해외ip",
+            "timed out",
+            "connection",
+            "max retries",
+            "temporarily",
+        )
+    )
+
+
+def _api_clear_soft_block(*flags: str) -> None:
+    for flag in flags:
+        st.session_state.pop(flag, None)
+        st.session_state.pop(f"{flag}_n", None)
+        st.session_state.pop(f"{flag}_until", None)
+
+
+def _api_should_skip(flag: str) -> bool:
+    """연속 실패 후에만 잠깐 쉬고, 쿨다운이 끝나면 다시 시도."""
+    until = float(st.session_state.get(f"{flag}_until") or 0)
+    if until and until > time.time():
+        return True
+    if until and until <= time.time():
+        _api_clear_soft_block(flag)
+    return False
+
+
+def _api_note_fail(flag: str, *, threshold: int = 3, cooldown_s: float = 90) -> None:
+    n = int(st.session_state.get(f"{flag}_n") or 0) + 1
+    st.session_state[f"{flag}_n"] = n
+    if n >= int(threshold):
+        st.session_state[flag] = True
+        st.session_state[f"{flag}_until"] = time.time() + float(cooldown_s)
+
+
+def _api_note_ok(flag: str) -> None:
+    _api_clear_soft_block(flag)
+
+
+class _LookupTransientError(RuntimeError):
+    """캐시에 넣지 말 일시 오류 (타임아웃·빈 본문)."""
+
+
 # --- 공장등록(팩토리온) 공공데이터 — tab2 기업정보 보강용 ---
 FACTORY_KEY_FILE = os.path.join(CACHE_DIR, "factory_api_key.txt")
 FACTORY_API_PROD_URL = (
@@ -1642,10 +1707,17 @@ def _factory_is_auth_error(err):
     )
 
 
-def _factory_http_get(url, api_key, extra_params, timeout=1.5):
-    """data.go.kr 호출 (해외 IP 차단 무한로딩 방지 1.5초 컷 패치 완료)"""
-    if st.session_state.get("factory_is_blocked"):
-        return {"OpenAPI_ServiceResponse": {"cmmMsgHeader": {"errMsg": "BLOCKED", "returnAuthMsg": "EMPTY_BODY (해외IP 차단됨)"}}}
+def _factory_http_get(url, api_key, extra_params, timeout=10):
+    """data.go.kr 호출. 짧은 타임아웃·1회 실패로 세션을 영구 차단하지 않음."""
+    if _api_should_skip("factory_is_blocked"):
+        return {
+            "OpenAPI_ServiceResponse": {
+                "cmmMsgHeader": {
+                    "errMsg": "COOLDOWN",
+                    "returnAuthMsg": "공장등록 서버가 잠시 응답이 없습니다. 「다시 조회」를 눌러 주세요.",
+                }
+            }
+        }
 
     raw_key = str(api_key or "").strip()
     decoded = urllib.parse.unquote(raw_key)
@@ -1662,47 +1734,78 @@ def _factory_http_get(url, api_key, extra_params, timeout=1.5):
     if "%" in raw_key and raw_key not in (encoded, decoded):
         attempts.append(("raw", raw_key))
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; office-dashboard/1.0)",
+        "Accept": "application/json, application/xml, text/xml, */*",
+    }
     last_payload = None
     last_auth_err = ""
+    last_net_err = ""
     for mode, key in attempts:
         for resp_type in ("json", "xml"):
             q = {"pageNo": "1", "numOfRows": "20", "type": resp_type}
             q.update(base_extra)
-            try:
-                if mode == "params":
-                    params = dict(q)
-                    params["serviceKey"] = key
-                    # 🚀 신분증(User-Agent) 장착 완료!
-                    r = requests.get(url, params=params, headers={'User-Agent': 'Mozilla/5.0'}, timeout=timeout)
-                else:
-                    qs = urllib.parse.urlencode(q, doseq=True)
-                    # 🚀 신분증(User-Agent) 장착 완료!
-                    r = requests.get(f"{url}?serviceKey={key}&{qs}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=timeout)
-                
-                payload = _factory_parse_response_text(r.text)
-                last_payload = payload
-                items, err = _factory_extract_items(payload)
-                
-                if items or not err:
-                    return payload
-                
-                if _factory_is_auth_error(err):
-                    last_auth_err = err
+            for try_i in range(2):
+                try:
+                    if mode == "params":
+                        params = dict(q)
+                        params["serviceKey"] = key
+                        r = requests.get(url, params=params, headers=headers, timeout=timeout)
+                    else:
+                        qs = urllib.parse.urlencode(q, doseq=True)
+                        r = requests.get(
+                            f"{url}?serviceKey={key}&{qs}",
+                            headers=headers,
+                            timeout=timeout,
+                        )
+                    payload = _factory_parse_response_text(r.text)
+                    last_payload = payload
+                    items, err = _factory_extract_items(payload)
+                    if items or not err:
+                        _api_note_ok("factory_is_blocked")
+                        return payload
+                    if _factory_is_auth_error(err):
+                        last_auth_err = err
+                        break
+                    if _factory_err_is_transient(err) and try_i == 0:
+                        time.sleep(0.4)
+                        continue
                     break
-            except Exception as e:
-                err_str = str(e).lower()
-                if "timeout" in err_str or "connection" in err_str or "max retries" in err_str:
-                    st.session_state.factory_is_blocked = True
-                    return {"OpenAPI_ServiceResponse": {"cmmMsgHeader": {"errMsg": "TIMEOUT", "returnAuthMsg": "EMPTY_BODY (해외IP 차단/타임아웃)"}}}
-                
-                last_payload = {
-                    "OpenAPI_ServiceResponse": {
-                        "cmmMsgHeader": {
-                            "errMsg": "REQUEST_FAIL",
-                            "returnAuthMsg": str(e),
+                except Exception as e:
+                    last_net_err = str(e)
+                    err_str = last_net_err.lower()
+                    retryable = any(
+                        x in err_str
+                        for x in ("timeout", "timed out", "connection", "max retries", "reset")
+                    )
+                    if retryable and try_i == 0:
+                        time.sleep(0.5)
+                        continue
+                    if retryable:
+                        _api_note_fail("factory_is_blocked", threshold=3, cooldown_s=90)
+                        last_payload = {
+                            "OpenAPI_ServiceResponse": {
+                                "cmmMsgHeader": {
+                                    "errMsg": "TIMEOUT",
+                                    "returnAuthMsg": (
+                                        "공장등록 서버 응답이 느립니다. "
+                                        "잠시 후 「다시 조회」를 눌러 주세요."
+                                    ),
+                                }
+                            }
                         }
-                    }
-                }
+                    else:
+                        last_payload = {
+                            "OpenAPI_ServiceResponse": {
+                                "cmmMsgHeader": {
+                                    "errMsg": "REQUEST_FAIL",
+                                    "returnAuthMsg": last_net_err,
+                                }
+                            }
+                        }
+                    break
+            if last_auth_err:
+                break
 
     if last_auth_err:
         return {
@@ -1717,7 +1820,7 @@ def _factory_http_get(url, api_key, extra_params, timeout=1.5):
         "OpenAPI_ServiceResponse": {
             "cmmMsgHeader": {
                 "errMsg": "NO_RESPONSE",
-                "returnAuthMsg": "공장등록 API 응답을 받지 못했습니다.",
+                "returnAuthMsg": last_net_err or "공장등록 API 응답을 받지 못했습니다.",
             }
         }
     }
@@ -1795,7 +1898,7 @@ def _factory_row_to_info(prod_row, land_row=None):
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def fetch_factory_registry(company_name, address=None, api_key=None, _cache_v=4):
+def fetch_factory_registry(company_name, address=None, api_key=None, _cache_v=5):
     """공장등록 생산정보+필지정보 조회. 상호+주소로 동명 오매칭 방지."""
     empty = {
         "ok": False,
@@ -1839,20 +1942,8 @@ def fetch_factory_registry(company_name, address=None, api_key=None, _cache_v=4)
             items, err = _factory_extract_items(payload)
             if err and not items:
                 last_err = err
-                if any(
-                    x in str(err)
-                    for x in (
-                        "SERVICE_KEY",
-                        "등록되지 않은 서비스키",
-                        "UNAUTHORIZED",
-                        "만료",
-                        "폐기",
-                        "응답이 비어",
-                        "EMPTY_BODY",
-                        "SERVICE_KEY_ERROR",
-                    )
-                ):
-                    return [], err, True  # fatal
+                if _factory_err_is_fatal(err):
+                    return [], err, True
                 continue
             if items:
                 found = items
@@ -1902,6 +1993,8 @@ def fetch_factory_registry(company_name, address=None, api_key=None, _cache_v=4)
                 "(미등록·500㎡ 미만·상호 불일치 가능)"
             )
         )
+        if _factory_err_is_transient(empty["error"]):
+            raise _LookupTransientError(empty["error"])
         return empty
 
     best_prod, score = _factory_pick_best(prod_items, loc_tokens, candidates)
@@ -1968,14 +2061,14 @@ def fetch_factory_registry(company_name, address=None, api_key=None, _cache_v=4)
 
 
 def _dart_pick_corp_by_address(dart, name, loc_tokens, max_check=2):
-    """동명 법인 중 주소(adres)가 거래처 주소와 맞는 항목 우선 선택. (타임아웃 감지 즉시 영구 차단 패치)"""
-    if st.session_state.get("dart_is_blocked"):
+    """동명 법인 중 주소(adres)가 거래처 주소와 맞는 항목 우선 선택."""
+    if _api_should_skip("dart_is_blocked"):
         return None, 0
         
     def _check_timeout(e):
         err_str = str(e).lower()
-        if "timeout" in err_str or "connection" in err_str or "max retries" in err_str:
-            st.session_state.dart_is_blocked = True
+        if any(x in err_str for x in ("timeout", "timed out", "connection", "max retries")):
+            _api_note_fail("dart_is_blocked", threshold=3, cooldown_s=90)
             return True
         return False
 
@@ -2001,7 +2094,8 @@ def _dart_pick_corp_by_address(dart, name, loc_tokens, max_check=2):
         except Exception:
             pass
 
-    if st.session_state.get("dart_is_blocked"): return None, 0
+    if _api_should_skip("dart_is_blocked"):
+        return None, 0
 
     if not rows:
         code = None
@@ -2017,7 +2111,8 @@ def _dart_pick_corp_by_address(dart, name, loc_tokens, max_check=2):
     best = None
     best_score = -1
     for row in rows[:max_check]:
-        if st.session_state.get("dart_is_blocked"): break
+        if _api_should_skip("dart_is_blocked"):
+            break
         code = str(row.get("corp_code") or "").strip()
         ci = row
         if code:
@@ -2112,34 +2207,99 @@ def _make_opendart_reader(dart_api_key: str):
 
 
 def get_opendart_reader(dart_api_key):
-    """OpenDartReader 재사용. 연결 실패 시 None 반환 및 재시도 영구 차단 패치"""
+    """OpenDartReader 재사용. 1회 실패로 세션을 영구 차단하지 않음."""
     key = str(dart_api_key or "").strip()
-    
-    # [핵심] 이미 한 번이라도 차단당한 적이 있으면 아예 시도조차 하지 않고 즉시 0.1초 컷!
-    if not key or OpenDartReader is None or st.session_state.get("dart_is_blocked"):
+    if not key or OpenDartReader is None or _api_should_skip("dart_is_blocked"):
         return None
-        
+
     import socket
     old_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(10.0) # 연결 대기 시간 1.5초로 강제 고정
+    socket.setdefaulttimeout(20.0)
+    last_err = None
     try:
-        return _make_opendart_reader(key)
-    except Exception as e:
-        try:
-            _make_opendart_reader.clear()
-        except Exception:
-            pass
-        st.session_state["_opendart_last_error"] = str(e)
-        # [핵심] 연결에 실패하면 '차단됨' 도장을 찍어서 다음 거래처부터는 절대 헛고생하지 않도록 방어
-        st.session_state.dart_is_blocked = True 
+        for try_i in range(2):
+            try:
+                reader = _make_opendart_reader(key)
+                _api_note_ok("dart_is_blocked")
+                return reader
+            except Exception as e:
+                last_err = e
+                try:
+                    _make_opendart_reader.clear()
+                except Exception:
+                    pass
+                if try_i == 0:
+                    time.sleep(0.6)
+                    continue
+                st.session_state["_opendart_last_error"] = str(e)
+                _api_note_fail("dart_is_blocked", threshold=3, cooldown_s=90)
+                return None
         return None
     finally:
         socket.setdefaulttimeout(old_timeout)
+        if last_err and st.session_state.get("_opendart_last_error") is None:
+            st.session_state["_opendart_last_error"] = str(last_err)
+
+
+def _opendart_rest_json(endpoint: str, params: dict, timeout: float = 12):
+    """OpenDART REST. Reader가 실패해도 재무/개요를 직접 가져온다."""
+    r = requests.get(
+        f"https://opendart.fss.or.kr/api/{endpoint}",
+        params=params,
+        timeout=timeout,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; office-dashboard/1.0)"},
+    )
+    if r.status_code != 200 or not str(r.text or "").strip():
+        raise TimeoutError(f"DART empty HTTP {r.status_code}")
+    return r.json()
+
+
+def _opendart_finstate_rest(api_key: str, corp_code: str, year: int):
+    key = str(api_key or "").strip()
+    code = str(corp_code or "").strip()
+    if not key or not code:
+        return None
+    for reprt in ("11011", "11012", "11013"):
+        try:
+            data = _opendart_rest_json(
+                "fnlttSinglAcnt.json",
+                {
+                    "crtfc_key": key,
+                    "corp_code": code,
+                    "bsns_year": str(year),
+                    "reprt_code": reprt,
+                },
+            )
+        except Exception:
+            continue
+        if str(data.get("status") or "") == "000" and data.get("list"):
+            try:
+                return pd.DataFrame(data["list"])
+            except Exception:
+                return None
+    return None
+
+
+def _opendart_company_rest(api_key: str, corp_code: str):
+    key = str(api_key or "").strip()
+    code = str(corp_code or "").strip()
+    if not key or not code:
+        return None
+    try:
+        data = _opendart_rest_json(
+            "company.json",
+            {"crtfc_key": key, "corp_code": code},
+        )
+    except Exception:
+        return None
+    if str(data.get("status") or "") in ("000", "0", ""):
+        return data
+    return None
 
 
 @st.cache_data(show_spinner=False, max_entries=100)
-def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cache_v=10):
-    """기업정보 조회 (비상장/차단 무한로딩 원천 차단 패치)"""
+def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cache_v=11):
+    """기업정보 조회. DART 1회 실패로 세션을 영구 차단하지 않음."""
     import socket
     
     import re
@@ -2158,8 +2318,8 @@ def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cach
     }
     dart_success = False
 
-    if st.session_state.get("dart_is_blocked"):
-        info["dart_error"] = "해외 IP 차단으로 DART 조회를 생략합니다."
+    if _api_should_skip("dart_is_blocked"):
+        info["dart_error"] = "DART 서버가 잠시 응답이 없습니다. 「다시 조회」를 눌러 주세요."
     elif not dart_api_key:
         info["dart_error"] = "사이드바에 DART API 키가 없습니다."
     elif OpenDartReader is None:
@@ -2178,15 +2338,18 @@ def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cach
 
                 def _is_timeout(e):
                     err_str = str(e).lower()
-                    # [핵심 1] Timeout뿐만 아니라 WAF 차단 페이지(HTML)로 인한 JSON 에러도 완벽하게 차단 감지!
-                    if "timeout" in err_str or "connection" in err_str or "max retries" in err_str or "jsondecode" in err_str or "expecting value" in err_str:
-                        st.session_state.dart_is_blocked = True
+                    if any(
+                        x in err_str
+                        for x in ("timeout", "timed out", "connection", "max retries")
+                    ):
+                        _api_note_fail("dart_is_blocked", threshold=3, cooldown_s=90)
                         return True
                     return False
 
                 # 1. 빠르고 가벼운 로컬 캐시에서 먼저 상호를 뒤져서 확실한 법인코드를 확보!
                 for name in candidates:
-                    if st.session_state.get("dart_is_blocked"): break
+                    if _api_should_skip("dart_is_blocked"):
+                        break
                     try:
                         picked, score = _dart_pick_corp_by_address(dart, name, loc_tokens)
                         if picked and picked.get("corp_code"):
@@ -2207,7 +2370,7 @@ def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cach
                         info["matched_name"] = corp_info.get("corp_name") or corp_info.get("stock_name") or matched
                         info["corp_code"] = corp_code
 
-                    if not st.session_state.get("dart_is_blocked"):
+                    if not _api_should_skip("dart_is_blocked"):
                         this_year = datetime.date.today().year
                         fin_state = None
                         fin_year_used = None
@@ -2220,7 +2383,15 @@ def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cach
                                     fin_year_used = yr
                                     break
                             except Exception as e:
-                                if _is_timeout(e): break
+                                if _is_timeout(e):
+                                    break
+                        if fin_state is None:
+                            for yr in [this_year - 1, this_year - 2, this_year - 3]:
+                                fs = _opendart_finstate_rest(dart_api_key, corp_code, yr)
+                                if fs is not None and not getattr(fs, "empty", True):
+                                    fin_state = fs
+                                    fin_year_used = yr
+                                    break
 
                         if fin_state is not None:
                             sales_row = _pick_fin_account(fin_state, exact_names=["매출액", "수익(매출액)", "영업수익"], contains_names=["매출액"])
@@ -12928,11 +13099,17 @@ def _dash_filter_and_tabs_fragment() -> None:
                     _f_info = {"ok": False, "error": "공장등록 API 키 없음"}
                 else:
                     with st.spinner("공장등록 정보 조회 중…"):
-                        _f_info = fetch_factory_registry(
-                            _matched or _corp_query_name,
-                            address=_addr_for_lookup,
-                            api_key=_load_factory_api_key(),
-                        )
+                        try:
+                            _f_info = fetch_factory_registry(
+                                _matched or _corp_query_name,
+                                address=_addr_for_lookup,
+                                api_key=_load_factory_api_key(),
+                            )
+                        except _LookupTransientError as _fe:
+                            _f_info = {
+                                "ok": False,
+                                "error": str(_fe) or "공장등록 서버 응답이 지연됩니다. 「다시 조회」를 눌러 주세요.",
+                            }
                     st.session_state["_tab2_factory_memo"] = {
                         "key": _f_memo_key,
                         "info": dict(_f_info) if isinstance(_f_info, dict) else {},
@@ -12999,6 +13176,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                         st.session_state.pop("_tab2_corp_memo", None)
                         st.session_state.pop("_tab2_factory_memo", None)
                         st.session_state.pop("_tab2_force_audit_parse", None)
+                        _api_clear_soft_block("dart_is_blocked", "factory_is_blocked")
                         st.rerun()
                 with _toolbar[1]:
                     if _touch_corp and _latest_audit and not _audit_sum:
