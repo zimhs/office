@@ -773,6 +773,9 @@ def inject_custom_css():
                 margin-top: 0 !important;
                 margin-bottom: 4px !important;
             }
+            .dashboard-tab-panel-head.dash-gap-4mm {
+                margin-top: 4mm !important;
+            }
 
             .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]) {
                 padding-bottom: 48px !important;
@@ -819,6 +822,9 @@ def inject_custom_css():
             .sub-header.dashboard-tab-panel-head {
                 margin-top: 0 !important;
                 padding-top: 0 !important;
+            }
+            .sub-header.dashboard-tab-panel-head.dash-gap-4mm {
+                margin-top: 4mm !important;
             }
 
             /* Streamlit 기본 스크롤 복구 */
@@ -12197,7 +12203,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_total})</div><div class='metric-value'>{cur_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
         m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_total < 0 else '#2563EB'};'>{mom_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
         m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_total < 0 else '#2563EB'};'>{avg_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
-        st.markdown("<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 연도별 월 매출 추이</div>", unsafe_allow_html=True)
+        st.markdown("<div class='sub-header dashboard-tab-panel-head dash-gap-4mm'>📊 전체 영업 연도별 월 매출 추이</div>", unsafe_allow_html=True)
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
