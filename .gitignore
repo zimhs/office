@@ -2,7 +2,9 @@
 __pycache__/
 *.pyc
 .agents/
-.cursor/
+.cursor/*
+!.cursor/environment.json
+!.cursor/install.sh
 *.bak*
 app.py.bak*
 app.py.base*
