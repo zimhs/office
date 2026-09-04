@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -154,7 +155,7 @@ def _list_children(folder_id: str) -> Tuple[List[dict], Optional[str]]:
     while True:
         params: Dict[str, Any] = {
             "q": f"'{folder_id}' in parents and trashed=false",
-            "fields": "nextPageToken,files(id,name,mimeType,modifiedTime)",
+            "fields": "nextPageToken,files(id,name,mimeType,modifiedTime,md5Checksum,size)",
             "pageSize": 1000,
         }
         if page_token:
@@ -201,12 +202,40 @@ def _drive_modified_ts(meta: dict) -> float:
         return 0.0
 
 
-def _remote_newer_than_cache(meta: dict, dst: str, *, force_refresh: bool) -> bool:
-    """Drive 파일이 로컬보다 새로울 때만 다운로드 (Cloud 부트 가속)."""
+def _md5_file(path: str) -> str:
+    try:
+        h = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
+def _remote_differs_from_cache(meta: dict, dst: str, *, force_refresh: bool) -> bool:
+    """Drive 파일이 로컬 캐시와 다를 때만 다운로드.
+
+    Streamlit Cloud는 리붓마다 시드를 새로 체크아웃해 로컬 mtime이 신뢰 불가하므로
+    (항상 "방금"), Drive의 md5Checksum(없으면 size)으로 내용 자체를 비교한다.
+    이래야 force_refresh 없이도 최신본을 받아오고(예전 데이터 잔존 방지), 내용이 같으면
+    다운로드/재렌더도 건너뛰어 부팅이 가볍다. md5·size가 없을 때만 modifiedTime fallback.
+    """
     if force_refresh:
         return True
     if not os.path.isfile(dst):
         return True
+    remote_md5 = str(meta.get("md5Checksum") or "").strip()
+    if remote_md5:
+        local_md5 = _md5_file(dst)
+        if local_md5:
+            return local_md5 != remote_md5
+    remote_size = meta.get("size")
+    if remote_size is not None:
+        try:
+            return int(remote_size) != os.path.getsize(dst)
+        except (OSError, ValueError, TypeError):
+            return True
     remote_ts = _drive_modified_ts(meta)
     if remote_ts <= 0:
         return False
@@ -277,7 +306,7 @@ def sync_drive_copy_from_remote(
             continue
         rel = drive_to_rel[src_name]
         dst = os.path.join(cache_dir, rel)
-        if not _remote_newer_than_cache(meta, dst, force_refresh=force_refresh):
+        if not _remote_differs_from_cache(meta, dst, force_refresh=force_refresh):
             continue
         raw, derr = _drive_download(str(meta.get("id")))
         if raw and _write_bytes(dst, raw):
@@ -311,7 +340,7 @@ def sync_drive_copy_from_remote(
             if not meta:
                 continue
             dst = os.path.join(sales_dir, sn)
-            if not _remote_newer_than_cache(meta, dst, force_refresh=force_refresh):
+            if not _remote_differs_from_cache(meta, dst, force_refresh=force_refresh):
                 continue
             raw, _ = _drive_download(str(meta.get("id")))
             if raw and _write_bytes(dst, raw):
@@ -331,7 +360,7 @@ def sync_drive_copy_from_remote(
                 if not _WORKLOG_DAY_RE.match(wname) and wname != "template.xlsx":
                     continue
                 wdst = os.path.join(wl_dir, wname)
-                if not _remote_newer_than_cache(wf, wdst, force_refresh=force_refresh):
+                if not _remote_differs_from_cache(wf, wdst, force_refresh=force_refresh):
                     continue
                 raw, _ = _drive_download(str(wf.get("id")))
                 if raw and _write_bytes(wdst, raw):

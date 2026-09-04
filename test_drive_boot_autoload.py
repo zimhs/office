@@ -1,10 +1,12 @@
-"""클라우드 부팅 Drive 자동로드 신선도 검증.
+"""클라우드 부팅 Drive 자동로드 신선도/성능/레이아웃 회귀 검증.
 
 Streamlit Cloud는 리붓마다 시드 파일을 새로 체크아웃해 로컬 mtime이 항상 "방금"이
-된다. 이 경우 mtime 기반 비교(force_refresh=False)는 Drive의 실제 최신본을 "오래된
-것"으로 오판해 반영하지 못한다(예전 데이터 잔존). 부팅 자동로드가 force_refresh=True
-로 Drive를 강제 반영해야 최신본이 자동으로 로드된다는 것을 검증한다.
+된다. 그래서 mtime 비교로는 Drive 최신본이 "오래된 것"으로 오판돼 반영되지 않았다
+(예전 데이터 잔존). 이를 mtime 대신 md5(내용) 비교로 바꿔서:
+  1) force_refresh 없이도 변경된 파일은 최신본으로 받아오고,
+  2) 내용이 같으면 다운로드/재렌더를 건너뛰어(성능) 부팅 시 고정바 강제 재주입도 없앤다.
 """
+import hashlib
 import os
 import tempfile
 import unittest
@@ -15,68 +17,86 @@ import drive_remote_fetch as drf
 _STALE = b"OLD,data\n1,old\n"
 _LATEST = b"NEW,data\n1,latest\n"
 
-# Drive 쪽 modifiedTime을 과거로 둬서, 방금 체크아웃된 로컬 시드(mtime=now)보다
-# "오래된 것"처럼 보이게 만든다 (실제 클라우드 리붓 상황 재현).
-_DRIVE_META = {
-    "id": "file-addr",
-    "name": "주소.csv",
-    "mimeType": "text/csv",
-    "modifiedTime": "2020-01-01T00:00:00Z",
-}
+
+def _md5(b: bytes) -> str:
+    return hashlib.md5(b).hexdigest()
 
 
-class DriveBootAutoloadFreshnessTest(unittest.TestCase):
-    def _make_cache_with_stale_seed(self, tmp: str) -> str:
+def _meta(content: bytes) -> dict:
+    # 실제 Drive 메타처럼 md5Checksum/size 포함. modifiedTime은 과거(mtime 오판 유발용).
+    return {
+        "id": "file-addr",
+        "name": "주소.csv",
+        "mimeType": "text/csv",
+        "modifiedTime": "2020-01-01T00:00:00Z",
+        "md5Checksum": _md5(content),
+        "size": str(len(content)),
+    }
+
+
+class DriveBootMd5FreshnessTest(unittest.TestCase):
+    def _seed(self, tmp: str, content: bytes) -> str:
         os.makedirs(tmp, exist_ok=True)
         dst = os.path.join(tmp, "address.csv")
         with open(dst, "wb") as f:
-            f.write(_STALE)
-        # 방금 체크아웃된 시드처럼 mtime을 현재로 (기본값이 곧 now)
+            f.write(content)  # 방금 체크아웃된 시드처럼 mtime=now
         return dst
 
-    def _run_sync(self, tmp: str, *, force_refresh: bool):
+    def _run(self, tmp: str, *, drive_content: bytes, force_refresh: bool):
+        dl = mock.Mock(return_value=(drive_content, None))
         with mock.patch.object(drf, "resolve_drive_uproad_folder_id", return_value="folder-123"), \
              mock.patch.object(drf, "drive_remote_configured", return_value=True), \
-             mock.patch.object(drf, "_list_children", return_value=([_DRIVE_META], None)), \
-             mock.patch.object(drf, "_drive_download", return_value=(_LATEST, None)):
-            return drf.sync_drive_copy_from_remote(tmp, force_refresh=force_refresh)
+             mock.patch.object(drf, "_list_children", return_value=([_meta(drive_content)], None)), \
+             mock.patch.object(drf, "_drive_download", dl):
+            res = drf.sync_drive_copy_from_remote(tmp, force_refresh=force_refresh)
+        return res, dl
 
-    def test_stale_seed_not_updated_without_force(self):
-        """버그 재현: mtime이 최신인 시드는 force_refresh=False로는 갱신 안 됨."""
+    def test_stale_seed_updated_by_md5_without_force(self):
+        """mtime이 최신인 시드라도, md5가 다르면 force 없이 최신본을 받아온다(예전 데이터 수정)."""
         with tempfile.TemporaryDirectory() as tmp:
-            dst = self._make_cache_with_stale_seed(tmp)
-            res = self._run_sync(tmp, force_refresh=False)
-            self.assertTrue(res.get("ok"))
-            with open(dst, "rb") as f:
-                self.assertEqual(f.read(), _STALE, "force_refresh=False 는 예전 데이터를 그대로 둔다(버그)")
-
-    def test_force_refresh_pulls_latest(self):
-        """수정 검증: force_refresh=True 는 Drive 최신본을 강제 반영."""
-        with tempfile.TemporaryDirectory() as tmp:
-            dst = self._make_cache_with_stale_seed(tmp)
-            res = self._run_sync(tmp, force_refresh=True)
+            dst = self._seed(tmp, _STALE)
+            res, dl = self._run(tmp, drive_content=_LATEST, force_refresh=False)
             self.assertTrue(res.get("ok"))
             self.assertIn("주소.csv", res.get("copied") or [])
+            dl.assert_called()  # 실제 다운로드 발생
             with open(dst, "rb") as f:
-                self.assertEqual(f.read(), _LATEST, "force_refresh=True 는 Drive 최신본으로 갱신한다")
+                self.assertEqual(f.read(), _LATEST)
+
+    def test_same_content_skips_download(self):
+        """내용(md5)이 같으면 다운로드/갱신을 건너뛴다(부팅 가벼움 · 불필요 rerun 방지)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            dst = self._seed(tmp, _LATEST)
+            res, dl = self._run(tmp, drive_content=_LATEST, force_refresh=False)
+            self.assertTrue(res.get("ok"))
+            self.assertNotIn("주소.csv", res.get("copied") or [])
+            dl.assert_not_called()  # 동일 → 다운로드 안 함
+            with open(dst, "rb") as f:
+                self.assertEqual(f.read(), _LATEST)
 
 
-class BootPathUsesForceRefreshTest(unittest.TestCase):
-    """app.py 의 클라우드 부팅 자동로드가 force_refresh=True 를 쓰는지 소스 확인."""
+class BootPathRegressionTest(unittest.TestCase):
+    """app.py 클라우드 부팅 자동로드가 (a) force_refresh=False (md5 위임) 이고
+    (b) 고정바를 강제 재주입하지 않는지 소스로 확인 (레이아웃/성능 회귀 방지)."""
 
-    def test_followup_fragment_uses_force_refresh_true(self):
+    def _segment(self) -> str:
         path = os.path.join(os.path.dirname(__file__), "app.py")
         with open(path, encoding="utf-8") as f:
             src = f.read()
-        # 부팅 지연 동기화 블록에 force_refresh=False 가 남아 있으면 안 됨
         marker = "def _dash_consume_deferred_cloud_drive_sync"
         self.assertIn(marker, src)
-        seg = src.split(marker, 1)[1].split("def ", 1)[0]
-        # 주석(설명문)에 등장하는 문자열은 제외하고 실제 코드 라인만 검사
-        code_lines = [ln for ln in seg.splitlines() if not ln.lstrip().startswith("#")]
-        code = "\n".join(code_lines)
-        self.assertIn("force_refresh=True", code)
-        self.assertNotIn("force_refresh=False", code)
+        seg = src.split(marker, 1)[1].split("\ndef ", 1)[0]
+        # 주석 라인 제외 (설명문에 등장하는 키워드가 검사에 걸리지 않도록)
+        return "\n".join(ln for ln in seg.splitlines() if not ln.lstrip().startswith("#"))
+
+    def test_boot_uses_force_refresh_false(self):
+        code = self._segment()
+        self.assertIn("force_refresh=False", code)
+        self.assertNotIn("force_refresh=True", code)
+
+    def test_boot_does_not_force_sticky_reinject(self):
+        code = self._segment()
+        self.assertNotIn("_dash_after_drive_boot", code)
+        self.assertNotIn("_dash_sticky_inject_ver", code)
 
 
 if __name__ == "__main__":
