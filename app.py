@@ -322,6 +322,91 @@ def inject_custom_css():
             }
             .metric-label { color: #475569; font-size: 14px; font-weight: 600; margin-bottom: 6px; letter-spacing: 0; }
             .metric-value { color: #0F172A; font-size: 22px; font-weight: 750; letter-spacing: -0.02em; }
+
+            /* 거래처 분석 — 기업정보 펼침 카드 가독성 (조회 로직은 그대로) */
+            .tab2-kakao-addr {
+                font-size: 14px !important;
+                font-weight: 650 !important;
+                line-height: 1.45 !important;
+                margin-top: 6px !important;
+                word-break: break-word;
+            }
+            .tab2-corp-card {
+                background: #FFFFFF;
+                border: 1px solid #CBD5E1;
+                border-left: 4px solid #1D4ED8;
+                border-radius: 12px;
+                padding: 18px 20px 16px;
+                margin: 10px 0 16px;
+                box-shadow: 0 4px 10px -2px rgba(15, 23, 42, 0.08);
+            }
+            .tab2-corp-title {
+                color: #0F172A;
+                font-size: 18px;
+                font-weight: 750;
+                letter-spacing: -0.02em;
+                line-height: 1.35;
+                margin: 0 0 6px 0;
+            }
+            .tab2-corp-meta {
+                color: #475569;
+                font-size: 14px;
+                font-weight: 600;
+                line-height: 1.45;
+                margin: 0 0 12px 0;
+            }
+            .tab2-corp-card .sec-title,
+            .tab2-corp-sec .sec-title {
+                color: #0F172A;
+                font-size: 15px;
+                font-weight: 750;
+                letter-spacing: -0.01em;
+                margin: 14px 0 8px;
+                padding-top: 10px;
+                border-top: 1px solid #E2E8F0;
+            }
+            .tab2-corp-card > .sec-title:first-of-type {
+                border-top: 0;
+                padding-top: 0;
+                margin-top: 4px;
+            }
+            .tab2-corp-grid .row {
+                display: grid;
+                grid-template-columns: 7.2rem minmax(0, 1fr);
+                gap: 6px 14px;
+                padding: 8px 0;
+                border-bottom: 1px solid #F1F5F9;
+                align-items: start;
+            }
+            .tab2-corp-grid .row:last-child { border-bottom: 0; }
+            .tab2-corp-grid .k {
+                color: #475569;
+                font-size: 14px;
+                font-weight: 700;
+                line-height: 1.45;
+            }
+            .tab2-corp-grid .v {
+                color: #0F172A;
+                font-size: 16px;
+                font-weight: 650;
+                line-height: 1.5;
+                word-break: break-word;
+            }
+            .tab2-corp-op {
+                display: inline-block;
+                font-size: 15px !important;
+                font-weight: 750 !important;
+                line-height: 1.45;
+            }
+            .tab2-corp-sec {
+                margin-top: 4px;
+            }
+            .tab2-corp-sec a {
+                font-size: 15px;
+                font-weight: 650;
+                color: #1D4ED8;
+                line-height: 1.45;
+            }
             
             .sub-header {
                 color: #0F172A;
@@ -12877,9 +12962,17 @@ def _dash_filter_and_tabs_fragment() -> None:
                             else:
                                 st.info("👆 위 버튼을 눌러 기업 정보를 먼저 수집하세요.")
             with btn_c2:
-                btn_label = "🏢 기업정보 닫기" if st.session_state.show_corp_info else "🏢 기업 기본/재무정보 보기"
-                if st.button(btn_label, key="btn_dart_info", width="stretch"):
-                    st.session_state.show_corp_info = not st.session_state.show_corp_info
+                _corp_open = bool(st.session_state.show_corp_info)
+                btn_label = "🏢 기업정보 닫기" if _corp_open else "🏢 기업정보 보기"
+                if st.button(
+                    btn_label,
+                    key="btn_dart_info",
+                    width="stretch",
+                    type="primary" if _corp_open else "secondary",
+                    help="기업 기본/재무·공장등록 패널을 펼치거나 닫습니다.",
+                ):
+                    st.session_state.show_corp_info = not _corp_open
+                    st.rerun()
             with btn_c3:
                 # 주소록 주소 우선, 없으면 거래처명으로 카카오맵 검색
                 if selected_client and selected_client != "전체 거래처":
@@ -13001,13 +13094,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                             "latest_audit": _latest_audit,
                             "audit_sum": {},
                         }
-                        # 📊 DART 재무제표 표 화면에 출력하기
-                        st.markdown("##### 📊 DART 재무제표 요약")
-                        st.error(f"🕵️‍♂️ 파이썬 검색 단어: {_lookup} / 기업코드: {c_info.get('corp_code')}")
-                        if _latest_audit is not None and not _latest_audit.empty:
-                         st.dataframe(_latest_audit, use_container_width=True)
-                        else:
-                         st.info("💡 다트에 등록된 재무제표가 없는 기업(비상장 등)입니다.")
                 # 감사 본문 추출: 맥은 자동, iPad는 버튼(동일 데이터·무손실)
                 _want_audit_parse = bool(st.session_state.get("_tab2_force_audit_parse"))
                 if (
@@ -13052,16 +13138,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                             "audit_sum": dict(_audit_sum) if _audit_sum else {},
                         }
                         st.session_state.pop("_tab2_force_audit_parse", None)
-                          # 📊 DART 재무제표 표 화면에 출력하기
-                        st.markdown("##### 📊 DART 재무제표 요약")
-                    
-                        # 👉 파이썬이 무슨 단어로 검색했는지 화면에 박제하기!
-                        st.error(f"🕵️‍♂️ 파이썬 검색 단어: {_lookup} / 기업코드: {c_info.get('corp_code')}")
-                    
-                        if _latest_audit is not None and not _latest_audit.empty:
-                            st.dataframe(_latest_audit, use_container_width=True)
-                        else:
-                            st.info("💡 다트에 등록된 재무제표가 없는 기업(비상장 등)입니다.")
                 def _autosave_factory_api_key():
                     v = str(st.session_state.get("tab2_factory_api_key_input") or "").strip()
                     if not v:
@@ -13235,7 +13311,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 if _latest_audit:
                     _audit_html += (
                         f'<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
-                        f'<div style="font-size:13px;margin-bottom:4px;">'
+                        f'<div style="font-size:15px;margin-bottom:6px;line-height:1.45;">'
                         f'<a href="{html.escape(_latest_audit["url"])}" target="_blank" rel="noopener">'
                         f'{html.escape(_latest_audit["date"])} · {html.escape(_latest_audit["name"])}'
                         f"</a></div>"
@@ -13248,20 +13324,20 @@ def _dash_filter_and_tabs_fragment() -> None:
                     if _gc_flag and _gc_issue:
                         _audit_html += (
                             f'<div style="margin-top:8px;padding:10px 12px;border:1px solid #FECACA;'
-                            f'border-radius:8px;background:#FEF2F2;color:#7F1D1D;font-size:13px;'
-                            f'line-height:1.45;">{html.escape(_gc_issue)}</div>'
+                            f'border-radius:8px;background:#FEF2F2;color:#7F1D1D;font-size:15px;'
+                            f'line-height:1.5;">{html.escape(_gc_issue)}</div>'
                         )
                     elif _audit_sum:
                         _gc_cap = _corp_val((_audit_sum or {}).get("going_concern")) or "관련 문구 없음"
                         _audit_html += (
-                            f'<div style="margin-top:6px;font-size:12px;color:#64748B;">'
+                            f'<div style="margin-top:6px;font-size:14px;color:#475569;line-height:1.45;">'
                             f"계속기업: {html.escape(_gc_cap)}</div>"
                         )
                     _audit_html += "</div>"
                 elif dart_api_key and OpenDartReader is not None:
                     _audit_html = (
                         '<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
-                        '<div style="font-size:12px;color:#64748B;">최근 감사보고서 공시 없음</div></div>'
+                        '<div style="font-size:14px;color:#475569;line-height:1.45;">최근 감사보고서 공시 없음</div></div>'
                     )
 
                 _fac_html = ""
@@ -13274,7 +13350,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 elif _f_info.get("error") and "키 없음" not in str(_f_info.get("error")):
                     _fac_html = (
                         '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
-                        f'<div style="font-size:12px;color:#64748B;">{html.escape(str(_f_info.get("error")))}'
+                        f'<div style="font-size:14px;color:#475569;line-height:1.45;">{html.escape(str(_f_info.get("error")))}'
                         "</div></div>"
                     )
 
@@ -13283,23 +13359,27 @@ def _dash_filter_and_tabs_fragment() -> None:
                     _src_bits.append(str(c_info.get("source")))
                 if _f_info.get("ok"):
                     _src_bits.append("팩토리온")
-                _src_line = " · ".join(dict.fromkeys(_src_bits)) if _src_bits else ""
+                if _ccode:
+                    _src_bits.append(f"기업코드 {_ccode}")
+                if _matched and str(_matched) != str(_corp_query_name):
+                    _src_bits.append(f"매칭 {_matched}")
+                _src_line = " · ".join(dict.fromkeys(_src_bits)) if _src_bits else "조회 결과"
 
                 st.markdown(
-                    f"""
-        <div class="tab2-corp-card">
-          <h4>🏢 {html.escape(str(_corp_query_name))}
-            <span style="font-size:12px;font-weight:500;color:#94A3B8;margin-left:8px;">
-              {html.escape(_src_line)}</span>
-          </h4>
-          <div class="sec-title">기본 · 재무</div>
-          {_grid_html(_rows_basic + _rows_fin)}
-          {_fac_html}
-          {_audit_html}
-        </div>
-        """,
+                    "<div class='sub-header dashboard-tab-panel-head'>🏢 기업 기본 · 재무정보</div>",
                     unsafe_allow_html=True,
                 )
+                _card_html = (
+                    '<div class="tab2-corp-card">'
+                    f'<div class="tab2-corp-title">🏢 {html.escape(str(_matched or _corp_query_name))}</div>'
+                    f'<div class="tab2-corp-meta">{html.escape(_src_line)}</div>'
+                    '<div class="sec-title">기본 · 재무</div>'
+                    f"{_grid_html(_rows_basic + _rows_fin)}"
+                    f"{_fac_html}"
+                    f"{_audit_html}"
+                    "</div>"
+                )
+                st.markdown(_card_html, unsafe_allow_html=True)
 
                 if (_rev == "정보 없음" or _prf == "정보 없음") and c_info.get("dart_error"):
                     st.caption(f"DART: {c_info.get('dart_error')}")
