@@ -2234,16 +2234,173 @@ def _fmt_dart_amount(val):
         return s if s else "정보 없음"
 
 
-def _pick_fin_account(fin_state, exact_names, contains_names=None):
-    if fin_state is None or fin_state.empty or "account_nm" not in fin_state.columns:
+def _fmt_dart_amount_with_year(val, year=""):
+    s = _fmt_dart_amount(val) if not isinstance(val, str) else (val.strip() or "정보 없음")
+    if s in ("", "정보 없음"):
+        return s
+    y = str(year or "").strip()
+    if y and f"({y})" not in s:
+        return f"{s} ({y})"
+    return s
+
+
+def _parse_dart_money_cell(raw):
+    """표 셀 → 정수 금액. 주석번호·빈칸은 None."""
+    s = str(raw or "").strip().replace("\xa0", " ")
+    s = s.replace("원", "").replace(" ", "")
+    s = s.replace("−", "-").replace("–", "-")
+    if not s or s in ("-", "—", "–"):
         return None
-    acc = fin_state["account_nm"].astype(str)
+    neg = False
+    if s.startswith("(") and s.endswith(")"):
+        neg = True
+        s = s[1:-1]
+    if s[:1] in ("△", "▲"):
+        neg = True
+        s = s[1:]
+    if not re.fullmatch(r"-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d{4,}(?:\.\d+)?", s):
+        return None
+    try:
+        n = int(float(s.replace(",", "")))
+    except Exception:
+        return None
+    return -abs(n) if neg else n
+
+
+def _is_revenue_label(label):
+    s = re.sub(r"\s+", "", str(label or ""))
+    if re.search(r"매출원가|매출총이익|매출채권|매출액의|순매출", s):
+        return False
+    return bool(re.search(r"매출액|수익\(매출액\)|^영업수익$", s))
+
+
+def _is_operating_profit_label(label):
+    s = re.sub(r"\s+", "", str(label or ""))
+    if re.search(r"영업이익률|영업외|영업비용", s):
+        return False
+    return "영업이익" in s or "영업손익" in s
+
+
+def _pick_current_amount(cells, unit_mult=1):
+    nums = []
+    for c in cells:
+        n = _parse_dart_money_cell(c)
+        if n is None:
+            continue
+        nums.append((n, "," in str(c)))
+    if not nums:
+        return None
+    if len(nums) >= 2 and (not nums[0][1]) and abs(nums[0][0]) <= 99:
+        nums = nums[1:]
+    return int(nums[0][0]) * int(unit_mult or 1)
+
+
+def _detect_amount_unit_mult(text):
+    t = str(text or "")
+    if re.search(r"단위\s*[:：]?\s*백만원", t):
+        return 1_000_000
+    if re.search(r"단위\s*[:：]?\s*천원", t):
+        return 1_000
+    return 1
+
+
+def _extract_income_amounts(html_or_text):
+    """손익계산서 HTML/텍스트에서 매출액·영업이익(당기)을 뽑는다."""
+    revenue = None
+    profit = None
+    raw = str(html_or_text or "")
+    if not raw.strip():
+        return {"revenue": "", "profit": ""}
+
+    def _apply_row(label, rest, unit_mult):
+        nonlocal revenue, profit
+        if revenue is None and _is_revenue_label(label):
+            revenue = _pick_current_amount(rest, unit_mult)
+        elif profit is None and _is_operating_profit_label(label):
+            profit = _pick_current_amount(rest, unit_mult)
+
+    if "<" in raw and re.search(r"<t[dh]\b", raw, flags=re.I):
+        soup = BeautifulSoup(raw, "html.parser")
+        for table in soup.find_all("table"):
+            prev = table.find_previous(["p", "div", "span", "h3", "h4"])
+            ctx = (prev.get_text(" ", strip=True) if prev else "") + " "
+            ctx += table.get_text(" ", strip=True)[:160]
+            unit_mult = _detect_amount_unit_mult(ctx)
+            for tr in table.find_all("tr"):
+                cells = [td.get_text(" ", strip=True) for td in tr.find_all(["td", "th"])]
+                if len(cells) < 2:
+                    continue
+                label, rest = cells[0], cells[1:]
+                if rest and re.fullmatch(r"[Ⅰ-ⅫIVXivx.\s]+", str(label or "")):
+                    label = str(label) + str(rest[0])
+                    rest = rest[1:]
+                _apply_row(label, rest, unit_mult)
+            if revenue is not None and profit is not None:
+                break
+
+    if revenue is None or profit is None:
+        text = BeautifulSoup(raw, "html.parser").get_text(" ", strip=True) if "<" in raw else raw
+        text_one = re.sub(r"\s+", " ", text)
+        unit_mult = _detect_amount_unit_mult(text_one[:500])
+
+        def _from_text(pat):
+            m = re.search(pat, text_one)
+            if not m:
+                return None
+            window = text_one[m.end() : m.end() + 96]
+            tokens = re.findall(
+                r"[\(△▲]?\s*\d{1,3}(?:,\d{3})+(?:\.\d+)?\s*\)?|\d{5,}",
+                window,
+            )
+            return _pick_current_amount(tokens, unit_mult)
+
+        if revenue is None:
+            revenue = _from_text(r"(?:수익\(매출액\)|매출액)(?!\s*(?:의|원가|총이익|채권))")
+        if profit is None:
+            profit = _from_text(r"영업이익(?:\s*\(\s*손실\s*\))?(?!\s*률)")
+
+    return {
+        "revenue": _fmt_dart_amount(revenue) if revenue is not None else "",
+        "profit": _fmt_dart_amount(profit) if profit is not None else "",
+    }
+
+
+def _year_from_audit_item(audit):
+    name = str((audit or {}).get("name") or "")
+    m = re.search(r"(20\d{2})", name)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _pick_fin_account(fin_state, exact_names, contains_names=None, account_ids=None):
+    if fin_state is None or getattr(fin_state, "empty", True):
+        return None
+    df = fin_state
+    if "sj_div" in df.columns:
+        is_df = df[df["sj_div"].astype(str).isin(["IS", "CIS", "IS1"])]
+        if not is_df.empty:
+            df = is_df
+    if "fs_div" in df.columns:
+        ofs = df[df["fs_div"].astype(str).str.upper() == "OFS"]
+        if not ofs.empty:
+            df = ofs
+    if account_ids and "account_id" in df.columns:
+        ids = df["account_id"].astype(str)
+        for aid in account_ids:
+            rows = df[ids == aid]
+            if not rows.empty:
+                return rows.iloc[0]
+    if "account_nm" not in df.columns:
+        return None
+    acc = df["account_nm"].astype(str)
     for nm in exact_names:
-        rows = fin_state[acc == nm]
+        rows = df[acc == nm]
         if not rows.empty:
             return rows.iloc[0]
+    skip = re.compile(r"원가|총이익|채권|률|영업외")
     for nm in contains_names or []:
-        rows = fin_state[acc.str.contains(nm, na=False)]
+        rows = df[acc.str.contains(nm, na=False) & ~acc.str.contains(skip, na=False)]
         if not rows.empty:
             return rows.iloc[0]
     return None
@@ -2344,17 +2501,22 @@ def _opendart_finstate_rest(api_key: str, corp_code: str, year: int):
     code = str(corp_code or "").strip()
     if not key or not code:
         return None
-    for reprt in ("11011", "11012", "11013"):
+    attempts = [
+        ("fnlttSinglAcnt.json", "11011", {}),
+        ("fnlttSinglAcntAll.json", "11011", {"fs_div": "OFS"}),
+        ("fnlttSinglAcntAll.json", "11011", {"fs_div": "CFS"}),
+        ("fnlttSinglAcnt.json", "11012", {}),
+    ]
+    for endpoint, reprt, extra in attempts:
         try:
-            data = _opendart_rest_json(
-                "fnlttSinglAcnt.json",
-                {
-                    "crtfc_key": key,
-                    "corp_code": code,
-                    "bsns_year": str(year),
-                    "reprt_code": reprt,
-                },
-            )
+            params = {
+                "crtfc_key": key,
+                "corp_code": code,
+                "bsns_year": str(year),
+                "reprt_code": reprt,
+            }
+            params.update(extra)
+            data = _opendart_rest_json(endpoint, params)
         except Exception:
             continue
         if str(data.get("status") or "") == "000" and data.get("list"):
@@ -2383,7 +2545,7 @@ def _opendart_company_rest(api_key: str, corp_code: str):
 
 
 @st.cache_data(show_spinner=False, max_entries=100)
-def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cache_v=11):
+def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cache_v=12):
     """기업정보 조회. DART 1회 실패로 세션을 영구 차단하지 않음."""
     import socket
     
@@ -2459,8 +2621,8 @@ def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cach
                         this_year = datetime.date.today().year
                         fin_state = None
                         fin_year_used = None
-                        # 재무제표는 최근 3년만, 헛고생 없이 딱 찾은 법인코드로만 찌르기
-                        for yr in [this_year - 1, this_year - 2, this_year - 3]:
+                        fin_years = [this_year - 1, this_year - 2, this_year - 3, this_year - 4]
+                        for yr in fin_years:
                             try:
                                 fs = dart.finstate(corp_code, yr)
                                 if fs is not None and not getattr(fs, "empty", True):
@@ -2470,8 +2632,29 @@ def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cach
                             except Exception as e:
                                 if _is_timeout(e):
                                     break
+                        if fin_state is None and hasattr(dart, "finstate_all"):
+                            for yr in fin_years[:3]:
+                                if _api_should_skip("dart_is_blocked"):
+                                    break
+                                for fs_div in ("OFS", "CFS"):
+                                    try:
+                                        try:
+                                            fs = dart.finstate_all(
+                                                corp_code, yr, reprt_code="11011", fs_div=fs_div
+                                            )
+                                        except TypeError:
+                                            fs = dart.finstate_all(corp_code, yr)
+                                        if fs is not None and not getattr(fs, "empty", True):
+                                            fin_state = fs
+                                            fin_year_used = yr
+                                            break
+                                    except Exception as e:
+                                        if _is_timeout(e):
+                                            break
+                                if fin_state is not None:
+                                    break
                         if fin_state is None:
-                            for yr in [this_year - 1, this_year - 2, this_year - 3]:
+                            for yr in fin_years:
                                 fs = _opendart_finstate_rest(dart_api_key, corp_code, yr)
                                 if fs is not None and not getattr(fs, "empty", True):
                                     fin_state = fs
@@ -2479,22 +2662,75 @@ def get_company_info_hybrid(company_name, dart_api_key=None, address=None, _cach
                                     break
 
                         if fin_state is not None:
-                            sales_row = _pick_fin_account(fin_state, exact_names=["매출액", "수익(매출액)", "영업수익"], contains_names=["매출액"])
-                            profit_row = _pick_fin_account(fin_state, exact_names=["영업이익", "영업이익(손실)"], contains_names=["영업이익"])
+                            sales_row = _pick_fin_account(
+                                fin_state,
+                                exact_names=["매출액", "수익(매출액)", "영업수익"],
+                                contains_names=["매출액", "영업수익"],
+                                account_ids=("ifrs-full_Revenue", "ifrs_Revenue", "dart_Revenue"),
+                            )
+                            profit_row = _pick_fin_account(
+                                fin_state,
+                                exact_names=["영업이익", "영업이익(손실)", "영업손익"],
+                                contains_names=["영업이익"],
+                                account_ids=(
+                                    "ifrs-full_OperatingIncomeLoss",
+                                    "ifrs_OperatingIncomeLoss",
+                                    "dart_OperatingIncomeLoss",
+                                ),
+                            )
                             if sales_row is not None and "thstrm_amount" in sales_row.index:
-                                info["revenue"] = _fmt_dart_amount(sales_row["thstrm_amount"])
+                                info["revenue"] = _fmt_dart_amount_with_year(
+                                    sales_row["thstrm_amount"], fin_year_used
+                                )
                             if profit_row is not None and "thstrm_amount" in profit_row.index:
-                                info["profit"] = _fmt_dart_amount(profit_row["thstrm_amount"])
-                            
+                                info["profit"] = _fmt_dart_amount_with_year(
+                                    profit_row["thstrm_amount"], fin_year_used
+                                )
+
                             if info["revenue"] != "정보 없음" or info["profit"] != "정보 없음":
                                 info["source"] = f"금융감독원 DART ({fin_year_used})"
                                 dart_success = True
+                                info["dart_error"] = ""
                             else:
                                 info["source"] = "금융감독원 DART 기업개요"
                                 info["dart_error"] = "재무제표 내 매출액/영업이익을 찾을 수 없습니다."
                         else:
                             info["source"] = "금융감독원 DART 기업개요"
-                            info["dart_error"] = "최근 3년 내 구조화된 OpenAPI 재무제표가 없습니다."
+                            info["dart_error"] = "최근 공시 구조화 재무제표가 없습니다. 감사보고서 손익을 확인합니다."
+
+                        if (
+                            (info["revenue"] == "정보 없음" or info["profit"] == "정보 없음")
+                            and not _api_should_skip("dart_is_blocked")
+                        ):
+                            try:
+                                _audits = list_dart_audit_reports(
+                                    corp_code or matched, dart_api_key, years_back=4
+                                )
+                            except Exception:
+                                _audits = []
+                            if not _audits:
+                                _pub = _public_dart_latest_audit(
+                                    corp_code=corp_code, corp_name=matched or clean_name
+                                )
+                                if _pub:
+                                    _audits = [_pub]
+                            if _audits:
+                                _ay = _year_from_audit_item(_audits[0])
+                                _income = extract_dart_audit_income(
+                                    _audits[0].get("rcept_no"), dart_api_key
+                                )
+                                if info["revenue"] == "정보 없음" and _income.get("revenue"):
+                                    info["revenue"] = _fmt_dart_amount_with_year(
+                                        _income["revenue"], _ay
+                                    )
+                                if info["profit"] == "정보 없음" and _income.get("profit"):
+                                    info["profit"] = _fmt_dart_amount_with_year(
+                                        _income["profit"], _ay
+                                    )
+                                if info["revenue"] != "정보 없음" or info["profit"] != "정보 없음":
+                                    info["source"] = f"DART 감사보고서 손익계산서 ({_ay or '최근'})"
+                                    dart_success = True
+                                    info["dart_error"] = ""
                             
         except Exception as e:
             info["dart_error"] = str(e)
@@ -2640,6 +2876,61 @@ def list_dart_audit_reports(corp_key, dart_api_key, years_back=4, _cache_v=1):
         return []
 
 
+@st.cache_data(show_spinner=False, max_entries=40)
+def extract_dart_audit_income(rcept_no, dart_api_key, _cache_v=1):
+    """감사보고서 손익계산서에서 매출액·영업이익만 추출."""
+    out = {"revenue": "", "profit": "", "source": ""}
+    if not rcept_no:
+        return out
+    htmls = []
+    try:
+        pl_html = _fetch_dart_pl_html(rcept_no)
+        if pl_html:
+            htmls.append(pl_html)
+    except Exception:
+        pass
+    if not htmls and dart_api_key and OpenDartReader is not None:
+        dart = get_opendart_reader(dart_api_key)
+        if dart is not None:
+            try:
+                subs = dart.sub_docs(str(rcept_no), match="손익")
+                if subs is not None and not getattr(subs, "empty", True):
+                    titles = subs["title"].astype(str)
+                    prefer = [
+                        i
+                        for i, t in enumerate(titles)
+                        if "손익계산서" in str(t) and "포괄" not in str(t)
+                    ]
+                    if not prefer:
+                        prefer = [
+                            i for i, t in enumerate(titles) if "손익" in str(t)
+                        ][:2]
+                    for i in prefer[:2]:
+                        htmls.append(
+                            _dart_fetch_url_html(str(subs.iloc[i].get("url") or ""))
+                        )
+            except Exception:
+                pass
+            if not any(htmls):
+                try:
+                    doc = dart.document(str(rcept_no))
+                    if doc:
+                        htmls.append(str(doc))
+                except Exception:
+                    pass
+    for html_doc in htmls:
+        found = _extract_income_amounts(html_doc)
+        if found.get("revenue"):
+            out["revenue"] = found["revenue"]
+        if found.get("profit"):
+            out["profit"] = found["profit"]
+        if out["revenue"] and out["profit"]:
+            break
+    if out["revenue"] or out["profit"]:
+        out["source"] = "DART 감사보고서 손익계산서"
+    return out
+
+
 def _dart_fetch_url_html(url, timeout=10):
     headers = {
         "User-Agent": (
@@ -2655,6 +2946,108 @@ def _dart_fetch_url_html(url, timeout=10):
     except Exception:
         return ""
     return ""
+
+
+def _parse_dart_viewer_section(main_html, title_key="손익계산서"):
+    """dsaf001/main.do 트리에서 해당 목차의 viewer 파라미터를 찾는다."""
+    key = re.sub(r"\s+", "", str(title_key or ""))
+    if not main_html or not key:
+        return None
+    for m in re.finditer(
+        r"\[['\"]text['\"]\]\s*=\s*['\"]([^'\"]+)['\"]\s*;([\s\S]{0,500})",
+        str(main_html),
+    ):
+        title = re.sub(r"\s+", "", m.group(1))
+        if key not in title or "포괄" in title:
+            continue
+        blob = m.group(2)
+
+        def _g(field):
+            mm = re.search(
+                rf"\[['\"]{field}['\"]\]\s*=\s*['\"]([^'\"]+)['\"]", blob
+            )
+            return mm.group(1) if mm else ""
+
+        dcm, ele = _g("dcmNo"), _g("eleId")
+        if dcm and ele:
+            return {
+                "dcmNo": dcm,
+                "eleId": ele,
+                "offset": _g("offset"),
+                "length": _g("length"),
+                "dtd": _g("dtd") or "html",
+            }
+    return None
+
+
+def _public_dart_latest_audit(corp_code="", corp_name=""):
+    """OpenAPI 목록이 비어도 공개 검색에서 최근 감사보고서 접수번호를 찾는다."""
+    data = {
+        "currentPage": "1",
+        "maxResults": "10",
+        "sort": "date",
+        "series": "desc",
+        "startDate": f"{datetime.date.today().year - 4}0101",
+        "endDate": datetime.date.today().strftime("%Y%m%d"),
+        "finalReport": "recent",
+    }
+    if corp_code:
+        data["textCrpCik"] = str(corp_code).strip()
+    if corp_name:
+        data["textCrpNm"] = str(corp_name).strip()
+    if not data.get("textCrpCik") and not data.get("textCrpNm"):
+        return None
+    try:
+        r = requests.post(
+            "https://dart.fss.or.kr/dsab001/search.ax",
+            data=data,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://dart.fss.or.kr/dsab001/main.do",
+            },
+            timeout=12,
+        )
+    except Exception:
+        return None
+    if r.status_code != 200 or not r.text:
+        return None
+    soup = BeautifulSoup(r.text, "html.parser")
+    for a in soup.select("a[href]"):
+        href = str(a.get("href") or "")
+        m = re.search(r"rcpNo=(\d{14})", href)
+        if not m:
+            continue
+        title = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
+        if "감사보고서" not in title:
+            continue
+        return {
+            "name": title,
+            "date": "",
+            "rcept_no": m.group(1),
+            "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={m.group(1)}",
+        }
+    return None
+
+
+def _fetch_dart_pl_html(rcept_no):
+    """감사보고서 뷰어에서 손익계산서 HTML을 직접 가져온다."""
+    rcp = str(rcept_no or "").strip()
+    if not rcp:
+        return ""
+    main = _dart_fetch_url_html(f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcp}")
+    sec = _parse_dart_viewer_section(main, "손익계산서")
+    if not sec:
+        return ""
+    q = (
+        f"https://dart.fss.or.kr/report/viewer.do?rcpNo={rcp}"
+        f"&dcmNo={sec['dcmNo']}&eleId={sec['eleId']}"
+    )
+    if sec.get("offset"):
+        q += f"&offset={sec['offset']}&length={sec['length']}&dtd={sec['dtd']}"
+    return _dart_fetch_url_html(q)
 
 
 def _parse_audit_note_company_overview(html_doc):
@@ -2794,7 +3187,7 @@ def _extract_going_concern_issue(text):
 
 
 @st.cache_data(show_spinner=False, max_entries=30)
-def parse_dart_audit_report_summary(rcept_no, dart_api_key, _cache_v=5):
+def parse_dart_audit_report_summary(rcept_no, dart_api_key, _cache_v=6):
     """감사보고서에서 (1) 독립된 감사인 의견·계속기업 이슈
     (2) 주석 '회사의 개요'~지분율을 함께 추출한다."""
     empty = {
@@ -2965,45 +3358,21 @@ def parse_dart_audit_report_summary(rcept_no, dart_api_key, _cache_v=5):
         else:
             result["emphasis"] = "강조사항 문구를 찾지 못함"
 
-        # 손익계산서 하위문서에서 매출/영업이익 보강
+        # 손익계산서 표에서 매출/영업이익 (주석번호가 아닌 당기 금액)
         try:
-            subs_pl = dart.sub_docs(str(rcept_no), match="손익계산서")
-            if subs_pl is not None and not getattr(subs_pl, "empty", True):
-                hit = subs_pl[subs_pl["title"].astype(str).str.contains("손익", na=False)]
-                row = hit.iloc[0] if not hit.empty else subs_pl.iloc[0]
-                pl_html = _fetch_url(str(row.get("url") or ""))
-                pl_text = _html_to_text(pl_html) if pl_html else ""
-                pl_one = re.sub(r"\s+", " ", pl_text)
-                for label, key in (("매출액", "revenue"), ("영업이익", "profit")):
-                    if result.get(key):
-                        continue
-                    m = re.search(
-                        rf"{label}\s*[:：]?\s*\(?\s*([-]?[\d,]+)\s*\)?",
-                        pl_one,
-                    )
-                    if m:
-                        raw = m.group(1).replace(",", "")
-                        try:
-                            result[key] = f"{int(raw):,} 원"
-                        except Exception:
-                            result[key] = m.group(1)
+            income = extract_dart_audit_income(rcept_no, dart_api_key)
+            if income.get("revenue"):
+                result["revenue"] = income["revenue"]
+            if income.get("profit"):
+                result["profit"] = income["profit"]
         except Exception:
             pass
-
         if not result.get("revenue") or not result.get("profit"):
-            for label, key in (("매출액", "revenue"), ("영업이익", "profit")):
-                if result.get(key):
-                    continue
-                m = re.search(
-                    rf"{label}\s*[:：]?\s*\(?\s*([-]?[\d,]+)\s*\)?",
-                    text_one,
-                )
-                if m:
-                    raw = m.group(1).replace(",", "")
-                    try:
-                        result[key] = f"{int(raw):,} 원"
-                    except Exception:
-                        result[key] = m.group(1)
+            found = _extract_income_amounts(text)
+            if not result.get("revenue") and found.get("revenue"):
+                result["revenue"] = found["revenue"]
+            if not result.get("profit") and found.get("profit"):
+                result["profit"] = found["profit"]
 
         # 주석: 1. 회사의 개요 ~ 지분율
         try:
@@ -13047,6 +13416,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     str(dart_api_key or ""),
                     str(_addr_for_lookup or ""),
                     "ov" if _corp_query_is_override else "sel",
+                    "fin_v2",
                 )
                 _memo = st.session_state.get("_tab2_corp_memo")
                 _use_memo = (
