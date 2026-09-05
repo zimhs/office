@@ -15652,3 +15652,26 @@ _dash_filter_and_tabs_fragment()
 # Cloud: 시드 캐시로 먼저 그리고, Drive는 백그라운드 fragment에서만 확인
 if _is_streamlit_cloud() and st.session_state.get("_drive_deferred_sync_pending"):
     _dash_cloud_drive_followup_fragment()
+
+
+# 첫 렌더(로그인·기본 로딩) 후 지도(tab5)를 뒤에서 1회 자동 활성화 — 로컬·Cloud·iPad 공통.
+# 사용자가 「지도 새로고침/조회」를 누르지 않아도, 다른 작업 중 백그라운드에서 거래처
+# 지오코딩을 미리 수행해 둔다(좌표는 디스크 캐시에 저장 → 이후 즉시 로드).
+# 첫 페인트는 방해하지 않도록 arming(1 tick) 후 다음 tick에 1회만 활성화.
+@st.fragment(run_every=datetime.timedelta(seconds=2))
+def _dash_map_autowarm_fragment() -> None:
+    if st.session_state.get("show_map"):
+        st.session_state["_dash_map_autowarm_done"] = True
+    if st.session_state.get("_dash_map_autowarm_done"):
+        return
+    if not st.session_state.get("_dash_map_autowarm_armed"):
+        st.session_state["_dash_map_autowarm_armed"] = True
+        return
+    st.session_state["show_map"] = True
+    st.session_state["map_force_rebuild"] = True
+    st.session_state["_dash_map_autowarm_done"] = True
+    st.rerun()
+
+
+if not st.session_state.get("_dash_map_autowarm_done"):
+    _dash_map_autowarm_fragment()
