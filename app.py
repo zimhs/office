@@ -5793,13 +5793,22 @@ def _dash_inject_sticky_resync_script(*, force: bool = False) -> None:
           win.__dashStickyResyncAt = now;
           function stickyAlreadyHealthy() {
             try {
-              var inFilter = doc.querySelector(
-                '.dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter'
-              );
-              if (!inFilter) return false;
-              var fb = inFilter.closest('.dashboard-filter-sticky') ||
-                inFilter.closest('div[data-testid="stVerticalBlockBorderWrapper"]');
+              /* 현재(라이브) #sticky-marker 가 속한 필터 박스를 기준으로 판정한다.
+                 rerun 직후 새 박스엔 아직 탭이 안 옮겨졌는데, 예전(잔류) 박스의 in-filter
+                 탭줄을 보고 healthy로 오판해 remount(탭 이동)를 건너뛰면, 첫 거래처 검색 때
+                 탭바가 고정되지 않고 하단으로 떨어진다. 그 오판을 방지. */
+              var marker = null;
+              var ms = doc.querySelectorAll('#sticky-marker');
+              for (var mi = ms.length - 1; mi >= 0; mi--) {
+                if (ms[mi].isConnected) { marker = ms[mi]; break; }
+              }
+              var fb = marker
+                ? (marker.closest('.dashboard-filter-sticky') ||
+                   marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]'))
+                : null;
               if (!fb) return false;
+              var inFilter = fb.querySelector('[role="tablist"].dashboard-tabs-in-filter');
+              if (!inFilter) return false;
               var pos = (fb.style && fb.style.position) || '';
               try {
                 if (!pos && win.getComputedStyle) pos = win.getComputedStyle(fb).position || '';
