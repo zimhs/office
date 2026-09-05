@@ -566,9 +566,11 @@ def inject_custom_css():
                ⚠️ host 탭줄 숨김은 필터 안에 .dashboard-tabs-in-filter 가 있을 때만.
                (장착 전에 숨기면 탭바가 통째로 사라짐 — Cloud heavy 탭 무한로딩처럼 보임) */
             html:has(.dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter) .dashboard-filter-sticky {
-                border: 1px solid #BFDBFE !important;
-                border-radius: 6px !important;
-                box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.06) !important;
+                /* 좌·우·상 테두리 제거, 하단 구분선만 유지 → 본문과 이질감 제거 */
+                border: none !important;
+                border-bottom: 1px solid #BFDBFE !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
             }
             html:has(.dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter) .dashboard-filter-sticky::after {
                 display: none !important;
@@ -599,6 +601,8 @@ def inject_custom_css():
                 overflow-y: hidden !important;
                 margin: 0 !important;
                 padding: 0 6px 2px 6px !important;
+                /* 탭바를 위로 2mm 올려 고정바 하단 구분선과 겹치지 않게 */
+                transform: translateY(-2mm) !important;
                 pointer-events: auto !important;
                 position: relative !important;
                 top: auto !important;
@@ -652,9 +656,11 @@ def inject_custom_css():
             }
 
             .dashboard-filter-sticky.dashboard-filter-sticky-with-tabs {
-                border: 1px solid #BFDBFE !important;
-                border-radius: 6px !important;
-                box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.06) !important;
+                /* 좌·우·상 테두리 제거, 하단 구분선만 유지 */
+                border: none !important;
+                border-bottom: 1px solid #BFDBFE !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
             }
             .dashboard-filter-sticky.dashboard-filter-sticky-with-tabs::after {
                 display: none !important;
@@ -673,10 +679,12 @@ def inject_custom_css():
                 max-width: var(--dashboard-bar-width, 100%) !important;
                 z-index: 990 !important;
                 background-color: #FFFFFF !important;
-                border: 1px solid #BFDBFE !important;
-                border-radius: 6px !important;
+                /* 좌·우·상 테두리 제거, 하단 구분선만 유지 → 본문과 이질감 제거 */
+                border: none !important;
+                border-bottom: 1px solid #BFDBFE !important;
+                border-radius: 0 !important;
                 padding: 1px 6px 0 6px !important;
-                box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.06) !important;
+                box-shadow: none !important;
                 box-sizing: border-box !important;
                 overflow-x: visible !important;
                 overflow-y: visible !important;
