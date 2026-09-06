@@ -821,6 +821,7 @@ export default function (component) {
   // → 특수기호를 "지금 커서 있는 칸"(거래처/내용/익일/특이)에 정확히 넣기 위함.
   var capturedKey = "";
   var capturedS = 0;
+  var capturedEl = null;
   function resolveActiveFieldKey() {
     try {
       var el = document.activeElement;
@@ -867,6 +868,7 @@ export default function (component) {
     var r = resolveActiveFieldKey();
     capturedKey = r.key;
     capturedS = r.s;
+    try { capturedEl = document.activeElement; } catch (e) { capturedEl = null; }
   }
   if (root.dataset.token !== token || root.childElementCount !== chars.length) {
     root.dataset.token = token;
@@ -887,6 +889,24 @@ export default function (component) {
             try { ev.preventDefault(); } catch (e1) {}
             try { ev.stopPropagation(); } catch (e2) {}
           }
+          // 거래처/내용 에디터(.wl-lines input)면 브라우저에서 바로 삽입한다.
+          // 서버 왕복(pick→rerun) 없이 처리 → 입력칸이 다시 그려지며 "밑으로 껌벅 내려갔다
+          // 올라오는" 현상과 깜박임이 사라진다. 커밋은 에디터의 input 리스너(디바운스)가 담당.
+          try {
+            var el = capturedEl;
+            if (el && el.closest && el.closest(".wl-lines") &&
+                el.dataset && el.dataset.idx != null && typeof el.value === "string") {
+              var v = String(el.value || "");
+              var p = capturedS;
+              if (typeof p !== "number" || p < 0 || p > v.length) p = v.length;
+              el.value = v.slice(0, p) + symbol + v.slice(p);
+              try { el.focus({ preventScroll: true }); } catch (eF) {}
+              try { el.setSelectionRange(p + symbol.length, p + symbol.length); } catch (eR) {}
+              try { el.dispatchEvent(new Event("input", { bubbles: true })); } catch (eE) {}
+              return;
+            }
+          } catch (eIns) {}
+          // 그 외(익일/특이 등 네이티브 칸)는 기존 서버 경로로 삽입
           try {
             setTriggerValue("pick", JSON.stringify({ ch: symbol, t: Date.now(), fkey: capturedKey, s: capturedS }));
           } catch (err) {}
