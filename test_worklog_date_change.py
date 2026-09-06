@@ -108,6 +108,28 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertEqual(self.ss["worklog_selected"], new)
         self.assertEqual(self.ss["wl_date_pick"], new)
 
+    def test_archive_only_7th_moves_to_3rd_updates_calendar_dots(self):
+        old, new = date(2026, 9, 7), date(2026, 9, 3)
+        self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
+        os.remove(self.wt.worklog_path(old))
+        self.wt._invalidate_saved_dates_cache()
+        self.ss.pop(f"wl_arch_exists_{old.isoformat()}", None)
+        self.ss.pop(f"wl_presence_{old.isoformat()}_fast", None)
+        self.ss.pop(f"wl_presence_{old.isoformat()}_all", None)
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertTrue(self.wt.worklog_date_exists_in_archive(old))
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt._empty_cells(d)):
+            err = self.wt.apply_worklog_date_change(old, new)
+        self.assertEqual(err, "")
+        self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
+        self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "7일 내용")
+        saved = self.wt.list_saved_worklog_dates()
+        self.assertIn(new.isoformat(), saved)
+        self.assertNotIn(old.isoformat(), saved)
+        cal = self.wt._saved_dates_for_calendar()
+        self.assertIn(new.isoformat(), cal)
+        self.assertNotIn(old.isoformat(), cal)
+
     def test_saved_7th_overwrites_existing_3rd(self):
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.wt.save_worklog_cells(old, self._cells(old, "A", "7일 내용"), force=True, allow_overwrite=True)
