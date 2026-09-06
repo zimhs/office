@@ -803,6 +803,58 @@ export default function (component) {
     root.className = "wl-sp";
     parentElement.appendChild(root);
   }
+  // 버튼을 누르는 순간(pointerdown) 실제로 커서가 있던 입력칸과 캐럿 위치를 캡처한다.
+  // (pointerup/click 시점엔 포커스가 버튼으로 옮겨가 activeElement가 바뀌므로)
+  // → 특수기호를 "지금 커서 있는 칸"(거래처/내용/익일/특이)에 정확히 넣기 위함.
+  var capturedKey = "";
+  var capturedS = 0;
+  function resolveActiveFieldKey() {
+    try {
+      var el = document.activeElement;
+      if (!el || !el.closest) return { key: "", s: 0 };
+      var s = 0;
+      try { s = (typeof el.selectionStart === "number") ? el.selectionStart : 0; } catch (e0) {}
+      var pick = function (cls) { return String(cls).replace(/^st-key-/, ""); };
+      var w = el.closest('[class*="st-key-wl_next_area_"],[class*="st-key-wl_notes_area_"]');
+      if (w) {
+        var c0 = Array.prototype.find.call(w.classList || [], function (c) {
+          var q = String(c); return q.indexOf("st-key-wl_next_area_") !== -1 || q.indexOf("st-key-wl_notes_area_") !== -1;
+        });
+        if (c0) return { key: pick(c0), s: s };
+      }
+      w = el.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]');
+      if (w) {
+        var c1 = Array.prototype.find.call(w.classList || [], function (c) {
+          var q = String(c); return q.indexOf("st-key-wl_ent_ln_") !== -1 || q.indexOf("st-key-wl_ent_cl_") !== -1;
+        });
+        if (c1) {
+          var k1 = pick(c1);
+          var m1 = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(k1);
+          if (m1) return { key: m1[1] + "_" + m1[2] + "_" + m1[3] + "_" + m1[4], s: s };
+        }
+      }
+      w = el.closest('[class*="st-key-wl_clients_comp_"],[class*="st-key-wl_lines_comp_"]');
+      if (w) {
+        var c2 = Array.prototype.find.call(w.classList || [], function (c) {
+          var q = String(c); return q.indexOf("st-key-wl_clients_comp_") !== -1 || q.indexOf("st-key-wl_lines_comp_") !== -1;
+        });
+        if (c2) {
+          var m2 = /^st-key-(wl_clients_comp|wl_lines_comp)_(\d{4}-\d{2}-\d{2})_(\d+)/.exec(String(c2));
+          if (m2) {
+            var kind = m2[1] === "wl_clients_comp" ? "wl_ent_cl" : "wl_ent_ln";
+            var idx = (el.dataset && el.dataset.idx != null) ? el.dataset.idx : 0;
+            return { key: kind + "_" + m2[2] + "_" + m2[3] + "_" + idx, s: s };
+          }
+        }
+      }
+      return { key: "", s: 0 };
+    } catch (e) { return { key: "", s: 0 }; }
+  }
+  function captureActive() {
+    var r = resolveActiveFieldKey();
+    capturedKey = r.key;
+    capturedS = r.s;
+  }
   if (root.dataset.token !== token || root.childElementCount !== chars.length) {
     root.dataset.token = token;
     root.innerHTML = "";
@@ -823,10 +875,12 @@ export default function (component) {
             try { ev.stopPropagation(); } catch (e2) {}
           }
           try {
-            setTriggerValue("pick", JSON.stringify({ ch: symbol, t: Date.now() }));
+            setTriggerValue("pick", JSON.stringify({ ch: symbol, t: Date.now(), fkey: capturedKey, s: capturedS }));
           } catch (err) {}
         };
       })(ch);
+      btn.addEventListener("pointerdown", captureActive, true);
+      btn.addEventListener("mousedown", captureActive, true);
       btn.addEventListener("pointerup", fire);
       btn.addEventListener("click", fire);
       root.appendChild(btn);
@@ -3206,11 +3260,25 @@ def _insert_special_char_auto(iso: str, ch: str, entry_count: int) -> bool:
 def _process_pending_special_char(iso: str, entry_count: int) -> bool:
     """pending 특수기호 삽입. 성공하면 True(호출측에서 fragment rerun 권장)."""
     pending = st.session_state.pop(f"wl_pending_sp_{iso}", None)
+    _fk = str(st.session_state.pop(f"wl_pending_sp_fk_{iso}", "") or "")
+    _fs = st.session_state.pop(f"wl_pending_sp_s_{iso}", 0)
     if not pending:
         return False
     ch = str(pending or "")
     if not ch:
         return False
+    # 버튼 누른 순간 커서가 있던 칸을 캡처했으면, 그 칸을 active로 지정해 정확히 삽입한다.
+    # (레이스로 active_cell_key가 갱신 안 돼 내용칸으로 잘못 들어가던 문제 방지. 못 잡았으면 기존 동작)
+    if _fk and (iso in _fk) and (
+        _fk.startswith("wl_ent_ln_")
+        or _fk.startswith("wl_ent_cl_")
+        or _fk.startswith("wl_next_area_")
+        or _fk.startswith("wl_notes_area_")
+    ):
+        try:
+            _remember_active_cell(iso, _fk, int(_fs or 0))
+        except (TypeError, ValueError):
+            _remember_active_cell(iso, _fk, 0)
     try:
         if _insert_special_char_auto(iso, ch, entry_count):
             st.session_state["wl_special_msg"] = f"「{ch}」삽입"
@@ -3225,41 +3293,57 @@ def _process_pending_special_char(iso: str, entry_count: int) -> bool:
     return False
 
 
-def _queue_special_char(iso: str, ch: str) -> None:
-    """특수기호 pending만 설정. 절대 여기서 rerun 하지 않음(재시도 오류 방지)."""
+def _queue_special_char(iso: str, ch: str, fkey: str = "", s: int = 0) -> None:
+    """특수기호 pending만 설정. 절대 여기서 rerun 하지 않음(재시도 오류 방지).
+
+    fkey/s: 버튼 누른 순간 캡처한 "커서가 있던 칸"과 위치 (있으면 그 칸에 정확히 삽입).
+    """
     ch = str(ch or "")
     if not ch:
         return
     st.session_state[f"wl_pending_sp_{iso}"] = ch
+    st.session_state[f"wl_pending_sp_fk_{iso}"] = str(fkey or "")
+    try:
+        st.session_state[f"wl_pending_sp_s_{iso}"] = int(s or 0)
+    except (TypeError, ValueError):
+        st.session_state[f"wl_pending_sp_s_{iso}"] = 0
 
 
-def _parse_special_pick_raw(raw: Any) -> tuple[str, str]:
-    """컴포넌트 pick 트리거 → (문자, dedupe signature)."""
+def _parse_special_pick_raw(raw: Any) -> tuple[str, str, str, int]:
+    """컴포넌트 pick 트리거 → (문자, dedupe signature, 포커스칸 key, 캐럿 s).
+
+    fkey/s 는 버튼 pointerdown 시점에 캡처한 "커서가 있던 칸"과 위치(없으면 "",0).
+    """
     if raw is None:
-        return "", ""
+        return "", "", "", 0
     try:
         if isinstance(raw, str) and raw.startswith("{"):
             obj = json.loads(raw)
             ch = str(obj.get("ch") or "")
+            fkey = str(obj.get("fkey") or "")
+            try:
+                s = int(obj.get("s") or 0)
+            except (TypeError, ValueError):
+                s = 0
             sig = f"{ch}\0{obj.get('t')}"
-            return ch, sig
+            return ch, sig, fkey, s
         ch = str(raw)
-        return ch, f"{ch}\0plain"
+        return ch, f"{ch}\0plain", "", 0
     except Exception:
         ch = str(raw or "")
-        return ch, f"{ch}\0err"
+        return ch, f"{ch}\0err", "", 0
 
 
 def _consume_special_pick(iso: str, raw: Any) -> None:
     """pick 한 번만 pending에 넣고, 동일 시그니처 중복은 무시."""
-    ch, sig = _parse_special_pick_raw(raw)
+    ch, sig, fkey, s = _parse_special_pick_raw(raw)
     if not ch or not sig:
         return
     done_k = f"wl_sp_pick_done_{iso}"
     if st.session_state.get(done_k) == sig:
         return
     st.session_state[done_k] = sig
-    _queue_special_char(iso, ch)
+    _queue_special_char(iso, ch, fkey, s)
 
 
 def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> bool:
