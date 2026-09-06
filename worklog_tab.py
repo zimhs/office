@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-06f · 저장 후 7일→3일 이동"
+_WL_UI_BUILD = "2026-09-06g · 달력 •도 3일로 이동"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1685,6 +1685,17 @@ def list_saved_worklog_dates() -> set[str]:
     st.session_state["wl_saved_dates_cache"] = out
     return out
 
+
+def _saved_dates_for_calendar() -> set[str]:
+    """달력 • — 디스크 저장일 + 방금 옮긴 날짜."""
+    saved = set(list_saved_worklog_dates())
+    sel = st.session_state.get("worklog_selected")
+    if isinstance(sel, date):
+        iso = sel.isoformat()
+        if st.session_state.get(f"wl_saved_ok_{iso}") or os.path.exists(worklog_path(sel)):
+            saved.add(iso)
+    return saved
+
 def format_worklog_date(d: date) -> str:
     weeks = "월화수목금토일"
     return f"{d.strftime('%Y-%m-%d')} ({weeks[d.weekday()]})"
@@ -1707,11 +1718,7 @@ def _empty_cells(d: date) -> dict:
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS: cells[f"D{r}"] = ""
     return cells
 
-def read_worklog_cells(d: date) -> dict:
-    path = worklog_path(d)
-    if not os.path.exists(path) or load_workbook is None: return _empty_cells(d)
-    wb = load_workbook(path, data_only=False)
-    ws = wb.active
+def _cells_from_worksheet(ws, d: date) -> dict:
     cells = {"date": format_worklog_date(d)}
     for r in WL_CLIENT_ROWS:
         v = ws.cell(r, 3).value
@@ -1722,10 +1729,44 @@ def read_worklog_cells(d: date) -> dict:
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
         v = ws.cell(r, 4).value
         cells[f"D{r}"] = "" if v is None else str(v)
-    c_date = ws[WL_DATE_CELL].value
-    if c_date is not None and not str(c_date).startswith("="): cells["date"] = str(c_date)
-    wb.close()
+    try:
+        c_date = ws[WL_DATE_CELL].value
+        if c_date is not None and not str(c_date).startswith("="):
+            cells["date"] = str(c_date)
+    except Exception:
+        pass
     return cells
+
+
+def read_worklog_cells(d: date) -> dict:
+    path = worklog_path(d)
+    if not os.path.exists(path) or load_workbook is None:
+        arch = read_worklog_cells_from_archive(d)
+        return arch if arch is not None else _empty_cells(d)
+    wb = load_workbook(path, data_only=False)
+    try:
+        return _cells_from_worksheet(wb.active, d)
+    finally:
+        wb.close()
+
+
+def read_worklog_cells_from_archive(d: date) -> dict | None:
+    if load_workbook is None:
+        return None
+    month_path = worklog_archive_month_path(d, create_year=False)
+    if not month_path or not os.path.exists(month_path):
+        return None
+    try:
+        wb = load_workbook(month_path, data_only=False)
+        try:
+            name = _resolve_archive_sheet_name(wb.sheetnames, d)
+            if not name:
+                return None
+            return _cells_from_worksheet(wb[name], d)
+        finally:
+            wb.close()
+    except Exception:
+        return None
 
 # 💡 강제 템플릿 덮어쓰기 로직 적용
 def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool = False) -> None:
@@ -2101,14 +2142,62 @@ def _worklog_cells_have_draft(cells: dict | None) -> bool:
     return any(str(src.get(f"D{r}", "") or "").strip() for r in WL_NEXT_ROWS + WL_NOTE_ROWS)
 
 
-def _worklog_day_has_saved_or_draft(d: date) -> bool:
+def _worklog_day_is_persisted(d: date) -> bool:
+    """로컬 파일·월별 시트·방금 저장 표시가 있으면 저장된 날."""
+    iso = d.isoformat()
     if os.path.exists(worklog_path(d)):
+        return True
+    if st.session_state.get(f"wl_saved_ok_{iso}"):
+        return True
+    ctx = st.session_state.get(f"wl_open_ctx_{iso}") or {}
+    if ctx.get("had_local"):
+        return True
+    try:
+        if iso in list_saved_worklog_dates():
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(worklog_date_exists_in_archive(d))
+    except Exception:
+        return False
+
+
+def _worklog_day_has_saved_or_draft(d: date) -> bool:
+    if _worklog_day_is_persisted(d):
         return True
     try:
         cells = _cells_from_widgets(d)
     except Exception:
         cells = read_worklog_cells(d)
     return _worklog_cells_have_draft(cells)
+
+
+def _load_cells_for_reassign(old: date) -> dict:
+    try:
+        cells = _cells_from_widgets(old)
+        if _worklog_cells_have_draft(cells):
+            return cells
+    except Exception:
+        pass
+    cells = read_worklog_cells(old)
+    if _worklog_cells_have_draft(cells):
+        return cells
+    arch = read_worklog_cells_from_archive(old)
+    return arch if arch is not None else cells
+
+
+def _patch_saved_dates_after_move(old: date, new: date) -> None:
+    """달력 • 를 즉시 맞춘다. 7일 빼고 3일 넣음."""
+    cached = st.session_state.get("wl_saved_dates_cache")
+    if isinstance(cached, set):
+        cached.discard(old.isoformat())
+        cached.add(new.isoformat())
+        st.session_state["wl_saved_dates_cache"] = cached
+    else:
+        _invalidate_saved_dates_cache()
+    _invalidate_worklog_presence_cache(old)
+    _invalidate_worklog_presence_cache(new)
 
 
 def _mark_worklog_day_writable(d: date, *, had_local: bool) -> None:
@@ -2185,13 +2274,14 @@ def reassign_worklog_date(old: date, new: date, *, overwrite_dest: bool = True) 
         ok, block_msg = check_worklog_save_allowed(new, had_local_at_open=False)
         if not ok:
             raise FileExistsError(block_msg)
-    try: cells = _cells_from_widgets(old)
-    except Exception: cells = read_worklog_cells(old)
+    cells = _load_cells_for_reassign(old)
     cells["date"] = format_worklog_date(new)
-    old_saved = os.path.exists(worklog_path(old))
-    if old_saved or _worklog_cells_have_draft(cells):
+    old_local = os.path.exists(worklog_path(old))
+    old_persisted = _worklog_day_is_persisted(old)
+    should_write = old_persisted or old_local or _worklog_cells_have_draft(cells)
+    if should_write:
         save_worklog_cells(new, cells, force=True, allow_overwrite=overwrite_dest)
-    if old_saved:
+    if old_persisted or old_local:
         for path in (worklog_path(old), _preview_path(old), _print_xlsx_path(old)):
             if os.path.exists(path):
                 try: os.remove(path)
@@ -2209,7 +2299,6 @@ def reassign_worklog_date(old: date, new: date, *, overwrite_dest: bool = True) 
             _schedule_worklog_remote_delete(old)
         except Exception:
             pass
-        _invalidate_worklog_presence_cache(old)
     entries = _grouped_entries_from_cells(cells) or [{"client": "", "content": "", "lines": [], "blank_after": 1}]
     _, nd, nt = _entries_from_cells(cells)
     _clear_date_widget_state(old)
@@ -2222,8 +2311,8 @@ def reassign_worklog_date(old: date, new: date, *, overwrite_dest: bool = True) 
     st.session_state[f"wl_pending_sync_{new.isoformat()}"] = {"entries": entries, "next": "\n".join(nd), "notes": "\n".join(nt), "msg": ""}
     _mark_worklog_day_writable(new, had_local=True)
     _invalidate_saved_dates_cache()
-    _invalidate_worklog_presence_cache(new)
-    return "moved" if old_saved else "retargeted"
+    _patch_saved_dates_after_move(old, new)
+    return "moved" if should_write else "retargeted"
 
 def _cell_fill_color(cell) -> str | None:
     try:
@@ -3906,12 +3995,16 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
     with nav[3]:
         if st.button("오늘", key="wl_today", width="stretch"):
             today = date.today()
-            st.session_state["worklog_selected"] = today
-            st.session_state["worklog_month"] = date(today.year, today.month, 1)
-            st.session_state["wl_date_sync"] = ""
-            _wl_rerun()
+            if today != selected:
+                err = apply_worklog_date_change(selected, today)
+                if err:
+                    st.session_state["wl_date_err"] = err
+                _wl_rerun(full=True)
+            else:
+                st.session_state["worklog_month"] = date(today.year, today.month, 1)
+                _wl_rerun()
 
-    st.caption("• = 저장됨 · 날짜 탭 = 그날 보기 · 위 날짜칸 = 이 일지 날짜 변경")
+    st.caption("• = 저장됨 · 날짜를 바꾸면 • 도 그 날로 이동합니다")
     weeks = ["월", "화", "수", "목", "금", "토", "일"]
     head = st.columns(7, gap="small")
     for i, w in enumerate(weeks):
@@ -4281,7 +4374,7 @@ def _render_worklog_input_panel(selected: date) -> None:
         _wl_rerun(full=True)
         return
 
-    saved = list_saved_worklog_dates()
+    saved = _saved_dates_for_calendar()
     try:
         _gauge_usage = _content_row_usage(_read_editor_entries(selected))
     except Exception:
@@ -4309,10 +4402,11 @@ def _render_worklog_input_panel(selected: date) -> None:
                 with st.popover("📅 달력", width="content"):
                     clicked = _render_month_calendar(selected, saved)
                     if clicked is not None and clicked != selected:
-                        _clear_date_widget_state(selected)
-                        st.session_state["worklog_selected"] = clicked
-                        st.session_state["worklog_month"] = date(clicked.year, clicked.month, 1)
-                        st.session_state["wl_date_sync"] = ""
+                        err = apply_worklog_date_change(selected, clicked)
+                        if err:
+                            st.session_state["wl_date_err"] = err
+                            st.session_state["wl_date_pick"] = selected
+                            st.session_state["wl_date_sync"] = selected.isoformat()
                         _wl_rerun(full=True)
                         return
             with bar_del:
