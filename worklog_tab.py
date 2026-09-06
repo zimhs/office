@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-04f · 추가버튼 제거"
+_WL_UI_BUILD = "2026-09-06a · 버튼먹통 복구"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -223,7 +223,7 @@ export default function (component) {
 
   let inst = __wlLinesInst.get(root);
   if (!inst) {
-    inst = { lines: null, rev: null, rebuilding: false };
+    inst = { lines: null, rev: null, rebuilding: false, lastEmitted: null };
     __wlLinesInst.set(root, inst);
   }
 
@@ -275,6 +275,13 @@ export default function (component) {
   function emit(next, focusIdx) {
     const out = normalize(next);
     inst.lines = out;
+    const sig = out.join("\n");
+    // 값이 같으면 Python rerun을 만들지 않는다.
+    // (blur/클릭마다 setStateValue → 저장·추가 버튼 클릭이 삼켜지거나 Cached ForwardMsg MISS)
+    if (sig === inst.lastEmitted && typeof focusIdx !== "number") {
+      return out;
+    }
+    inst.lastEmitted = sig;
     setStateValue("lines", out);
     if (typeof focusIdx === "number") setStateValue("focus", focusIdx);
     return out;
@@ -366,39 +373,11 @@ export default function (component) {
       input.addEventListener("compositionend", () => {
         commitValue("type");
       });
-      input.addEventListener("focus", () => {
-        if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
-        setStateValue("focus", j);
-        setStateValue("caret", { s: s, e: e, j: j });
-      });
-      input.addEventListener("keyup", () => {
-        if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
-        setStateValue("caret", { s: s, e: e, j: j });
-      });
-      input.addEventListener("click", () => {
-        if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
-        setStateValue("focus", j);
-        setStateValue("caret", { s: s, e: e, j: j });
-      });
       input.addEventListener("blur", () => {
+        if (softTimer) {
+          clearTimeout(softTimer);
+          softTimer = null;
+        }
         commitValue("blur");
       });
       input.addEventListener("keydown", (e) => {
@@ -439,12 +418,14 @@ export default function (component) {
     //  무너졌다 복구돼 "밑으로 껌벅 내려갔다 올라오는" 현상이 생긴다.)
     if (inputs.length === next.length && inputs.length > 0) {
       inst.lines = next;
+      inst.lastEmitted = next.join("\n");
       for (let k = 0; k < inputs.length; k++) {
         if (inputs[k].value !== next[k]) inputs[k].value = next[k];
       }
       if (Number.isFinite(focusReq) && focusReq >= 0) focusAt(focusReq);
     } else {
       inst.lines = next;
+      inst.lastEmitted = next.join("\n");
       rebuild(Number.isFinite(focusReq) ? focusReq : -1);
     }
   } else if (!root.childElementCount) {
@@ -458,7 +439,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v18",
+    "worklog_entry_lines_v19",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -471,6 +452,12 @@ export default function (component) {
   const focusKey = (data && data.focus_key) || "";
   const focusCaret = data && data.focus_caret != null && data.focus_caret !== "" ? Number(data.focus_caret) : null;
   let lastSent = ""; let lastSig = ""; let lastAt = 0;
+  // remount 때마다 document 리스너가 쌓이면 click/focus마다 setTriggerValue가
+  // 폭주하고 Cached ForwardMsg MISS → 저장·추가 등 버튼이 전부 먹통이 된다.
+  if (typeof window !== "undefined" && window.__wlEnterHookOff) {
+    try { window.__wlEnterHookOff(); } catch (eOff) {}
+    window.__wlEnterHookOff = null;
+  }
 
   function resolveKey(t) {
     if (!t) return null;
@@ -693,45 +680,6 @@ export default function (component) {
 
   document.addEventListener("keydown", onKey, true);
 
-  function emitFocus(key) {
-    try { setTriggerValue("focus", String(key || "")); } catch (e) {}
-  }
-  function emitCaret(key, s, e) {
-    try {
-      setTriggerValue("caret", JSON.stringify({ key: key, s: s, e: e, t: Date.now() }));
-    } catch (e) {}
-  }
-  const onFocusIn = (e) => {
-    const info = resolveKey(e.target);
-    if (!info) return;
-    let s = 0;
-    let en = 0;
-    try {
-      s = typeof e.target.selectionStart === "number" ? e.target.selectionStart : 0;
-      en = typeof e.target.selectionEnd === "number" ? e.target.selectionEnd : s;
-    } catch (err) {}
-    emitFocus(info.key);
-    emitCaret(info.key, s, en);
-  };
-  // 익일업무·특이사항 textarea: keyup caret emit 금지
-  // 내용/거래처 input: keyup마다 rerun → Cached ForwardMsg MISS (click/focusin만)
-  const onSel = (e) => {
-    const info = resolveKey(e.target);
-    if (!info) return;
-    const tag = String(e.target.tagName || "").toUpperCase();
-    if (tag === "TEXTAREA") return;
-    if (e.type === "keyup") return;
-    let s = 0;
-    let en = 0;
-    try {
-      s = typeof e.target.selectionStart === "number" ? e.target.selectionStart : 0;
-      en = typeof e.target.selectionEnd === "number" ? e.target.selectionEnd : s;
-    } catch (err) {}
-    emitCaret(info.key, s, en);
-  };
-  document.addEventListener("focusin", onFocusIn, true);
-  document.addEventListener("click", onSel, true);
-
   if (focusKey) {
     const go = () => {
       const el = findInputForFocusKey(focusKey);
@@ -743,16 +691,16 @@ export default function (component) {
     go(); setTimeout(go, 50); setTimeout(go, 150); setTimeout(go, 350); setTimeout(go, 600);
   }
 
-  return () => {
+  const off = () => {
     document.removeEventListener("keydown", onKey, true);
-    document.removeEventListener("focusin", onFocusIn, true);
-    document.removeEventListener("click", onSel, true);
   };
+  if (typeof window !== "undefined") window.__wlEnterHookOff = off;
+  return off;
 }
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v23",
+    "worklog_cell_nav_hook_v24",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -1981,6 +1929,21 @@ def _schedule_worklog_remote_delete(d: date) -> None:
     threading.Thread(target=_worklog_remote_delete_job, args=(d,), daemon=True).start()
 
 
+def _queue_worklog_save(iso: str) -> None:
+    """저장 버튼 on_click — 스크립트 시작 전에 플래그를 세워 같은 런에서 저장."""
+    st.session_state[f"wl_do_save_{iso}"] = True
+
+
+def _queue_worklog_add(iso: str) -> None:
+    """항목 추가 on_click — fragment를 한 번 더 rerun 하지 않는다."""
+    st.session_state[f"wl_do_add_{iso}"] = True
+
+
+def _queue_worklog_del_entry(iso: str, idx: int) -> None:
+    """항목 삭제 on_click."""
+    st.session_state[f"wl_do_del_{iso}"] = int(idx)
+
+
 def _on_confirm_delete_day() -> None:
     """확정 on_click — 위젯 생성 전에 실행되어 popover를 안전하게 닫음."""
     d = st.session_state.get("worklog_selected")
@@ -2843,8 +2806,14 @@ def _set_comp_lines_state(iso: str, entry_i: int, chunks: list[str], *, focus_j:
     if isinstance(prev.get("caret"), dict):
         new_state["caret"] = dict(prev.get("caret") or {})
     # 위젯 키는 중첩 mutate 금지 — 통째로 교체. 이전 값 잔존 시 pop 후 재설정.
-    st.session_state.pop(ck, None)
-    st.session_state[ck] = new_state
+    # 이미 instantiate된 CCv2 키를 건드리면 StreamlitAPIException → 탭 ERROR → 버튼 전부 먹통.
+    try:
+        st.session_state.pop(ck, None)
+        st.session_state[ck] = new_state
+    except StreamlitAPIException:
+        _bump_entry_lines_comp_inst(iso, entry_i)
+        ck = _entry_lines_comp_key(iso, entry_i)
+        st.session_state[ck] = new_state
     if focus_j is not None:
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, int(fj))
     st.session_state[_entry_lines_live_key(iso, entry_i)] = list(chunks)
@@ -2945,8 +2914,13 @@ def _set_comp_clients_state(iso: str, entry_i: int, chunks: list[str], *, focus_
     new_state = {"lines": list(chunks), "focus": fj}
     if isinstance(prev.get("caret"), dict):
         new_state["caret"] = dict(prev.get("caret") or {})
-    st.session_state.pop(ck, None)
-    st.session_state[ck] = new_state
+    try:
+        st.session_state.pop(ck, None)
+        st.session_state[ck] = new_state
+    except StreamlitAPIException:
+        _bump_entry_clients_comp_inst(iso, entry_i)
+        ck = _entry_clients_comp_key(iso, entry_i)
+        st.session_state[ck] = new_state
     if focus_j is not None:
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, int(fj))
     st.session_state[_entry_clients_live_key(iso, entry_i)] = list(chunks)
@@ -4383,9 +4357,13 @@ def _render_worklog_input_panel(selected: date) -> None:
                             st.session_state[exp_key] = i == 0
 
                     with st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=exp_key):
-                        if st.button("이 항목 삭제", key=f"wl_del_btn_{iso2}_{i}", use_container_width=True):
-                            st.session_state[f"wl_do_del_{iso2}"] = i
-                            _wl_rerun()
+                        st.button(
+                            "이 항목 삭제",
+                            key=f"wl_del_btn_{iso2}_{i}",
+                            use_container_width=True,
+                            on_click=_queue_worklog_del_entry,
+                            args=(iso2, i),
+                        )
 
                         _cu = _client_line_units()
                         if int(st.session_state.get(_entry_client_count_key(iso2, i), 0) or 0) <= 0:
@@ -4432,9 +4410,13 @@ def _render_worklog_input_panel(selected: date) -> None:
                         _ent_rows = (_usage["per_entry"][i] if i < len(_usage["per_entry"]) else max(_filled, 1))
                         st.caption(f"이 항목 약 {_ent_rows}행 사용 · 전체 남은 {_rem}행 (마지막 칸 G{_usage['last_row']})")
 
-                if st.button("＋ 항목 추가", key=f"wl_add_btn_{iso2}", width="stretch"):
-                    st.session_state[f"wl_do_add_{iso2}"] = True
-                    _wl_rerun()
+                st.button(
+                    "＋ 항목 추가",
+                    key=f"wl_add_btn_{iso2}",
+                    width="stretch",
+                    on_click=_queue_worklog_add,
+                    args=(iso2,),
+                )
 
                 st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
                 st.markdown(
@@ -4452,11 +4434,15 @@ def _render_worklog_input_panel(selected: date) -> None:
                 st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
                 st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
 
-                if st.button("저장", type="primary", width="stretch", key=f"wl_save_btn_{iso2}"):
-                    # 클릭 직후 한 번 더 그려 입력 컴포넌트 값을 확정한 뒤 저장
-                    st.session_state[f"wl_do_save_{iso2}"] = True
-                    _wl_rerun()
-                elif do_save:
+                st.button(
+                    "저장",
+                    type="primary",
+                    width="stretch",
+                    key=f"wl_save_btn_{iso2}",
+                    on_click=_queue_worklog_save,
+                    args=(iso2,),
+                )
+                if do_save:
                     try:
                         entries_now = _read_editor_entries(d)
                         usage_now = _content_row_usage(entries_now)
@@ -4559,13 +4545,12 @@ def _render_worklog_input_panel(selected: date) -> None:
                     focus_key = None
                     focus_caret = None
 
-                # 💡 [핵심] on_enter_change 이벤트 핸들러 형식 맞춤
+                # Enter 줄바꿈만 서버로. focus/caret trigger는 클릭마다 rerun·ERROR를 만들어 버튼을 죽인다.
                 _WL_ENTER_HOOK(
                     key=f"wl_enter_hook_{iso2}",
                     data={"iso": iso2, "focus_key": focus_key if isinstance(focus_key, str) else "", "focus_caret": (int(focus_caret) if isinstance(focus_caret, (int, float)) else ""), "client_max_u": _client_line_units(), "content_max_u": _content_line_units()},
                     on_enter_change=_on_enter_trigger,
-                    on_focus_change=_on_focus_trigger,
-                    on_caret_change=_on_caret_trigger,
+                    height=1,
                 )
             _sp_msg = st.session_state.pop("wl_special_msg", None)
             if _sp_msg:
@@ -4823,6 +4808,25 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         div[class*="st-key-wl_sum_host_"],
         div[class*="st-key-wl_excel_host_"] {
             min-height: 240px;
+        }
+        /* JS-only Enter hook이 빈 박스로 저장 버튼을 덮지 않게 */
+        div[class*="st-key-wl_enter_hook_"] {
+            height: 0 !important;
+            min-height: 0 !important;
+            max-height: 0 !important;
+            overflow: hidden !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            pointer-events: none !important;
+        }
+        div[class*="st-key-wl_save_btn_"] button,
+        div[class*="st-key-wl_add_btn_"] button,
+        div[class*="st-key-wl_del_btn_"] button,
+        div[class*="st-key-wl_print_btn"] button,
+        div[class*="st-key-wl_open_print_btn"] button {
+            position: relative !important;
+            z-index: 5 !important;
+            pointer-events: auto !important;
         }
         </style>
         """,
