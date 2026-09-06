@@ -86,6 +86,14 @@ class WorklogButtonRestoreTest(unittest.TestCase):
         self.assertEqual(self.ss.get("wl_lines_inst_2026-09-06_0"), 1)
         self.assertEqual(self.ss.get("wl_lines_comp_2026-09-06_0_i1")["lines"], ["새줄", ""])
 
+    def test_date_input_moves_saved_day_instead_of_switching(self):
+        with open(self.wt.__file__, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("on_change=_on_wl_date_pick_change", src)
+        self.assertIn("def apply_worklog_date_change", src)
+        self.assertIn("저장됨 · 날짜를 바꾸면 이 일지가 그 날짜로 이동합니다.", src)
+        self.assertNotIn("if os.path.exists(worklog_path(picked)):", src)
+
 
 if __name__ == "__main__":
     unittest.main()
