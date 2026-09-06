@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-04f · 추가버튼 제거"
+_WL_UI_BUILD = "2026-09-06d · 저장 후 날짜 변경"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -223,7 +223,7 @@ export default function (component) {
 
   let inst = __wlLinesInst.get(root);
   if (!inst) {
-    inst = { lines: null, rev: null, rebuilding: false };
+    inst = { lines: null, rev: null, rebuilding: false, lastEmitted: null };
     __wlLinesInst.set(root, inst);
   }
 
@@ -275,6 +275,13 @@ export default function (component) {
   function emit(next, focusIdx) {
     const out = normalize(next);
     inst.lines = out;
+    const sig = out.join("\n");
+    // 값이 같으면 Python rerun을 만들지 않는다.
+    // (blur/클릭마다 setStateValue → 저장·추가 버튼 클릭이 삼켜지거나 Cached ForwardMsg MISS)
+    if (sig === inst.lastEmitted && typeof focusIdx !== "number") {
+      return out;
+    }
+    inst.lastEmitted = sig;
     setStateValue("lines", out);
     if (typeof focusIdx === "number") setStateValue("focus", focusIdx);
     return out;
@@ -282,16 +289,6 @@ export default function (component) {
   function localOnly(next) {
     inst.lines = normalize(next);
     return inst.lines;
-  }
-  let softTimer = null;
-  function softEmit(next) {
-    localOnly(next);
-    if (softTimer) clearTimeout(softTimer);
-    softTimer = setTimeout(function () {
-      softTimer = null;
-      const cur = normalize(inst.lines || readDomLines());
-      setStateValue("lines", cur);
-    }, 280);
   }
   function focusAt(idx) {
     requestAnimationFrame(() => {
@@ -342,9 +339,9 @@ export default function (component) {
         let j0 = j;
         let v = cur[j0] || "";
         if (displayUnits(v) <= maxU) {
-          // 입력 중: 로컬+디바운스 — 매 키 fragment rerun 시 Cached ForwardMsg MISS
+          // 입력 중에는 로컬만. 한글 음절마다 setStateValue 하면
+          // Cached ForwardMsg MISS → ERROR → 버튼 전부 먹통.
           if (mode === "blur" || mode === "force") emit(cur, null);
-          else if (mode === "type") softEmit(cur);
           else localOnly(cur);
           return;
         }
@@ -365,38 +362,6 @@ export default function (component) {
       });
       input.addEventListener("compositionend", () => {
         commitValue("type");
-      });
-      input.addEventListener("focus", () => {
-        if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
-        setStateValue("focus", j);
-        setStateValue("caret", { s: s, e: e, j: j });
-      });
-      input.addEventListener("keyup", () => {
-        if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
-        setStateValue("caret", { s: s, e: e, j: j });
-      });
-      input.addEventListener("click", () => {
-        if (inst.rebuilding) return;
-        let s = 0;
-        let e = 0;
-        try {
-          s = typeof input.selectionStart === "number" ? input.selectionStart : 0;
-          e = typeof input.selectionEnd === "number" ? input.selectionEnd : s;
-        } catch (err) {}
-        setStateValue("focus", j);
-        setStateValue("caret", { s: s, e: e, j: j });
       });
       input.addEventListener("blur", () => {
         commitValue("blur");
@@ -439,12 +404,14 @@ export default function (component) {
     //  무너졌다 복구돼 "밑으로 껌벅 내려갔다 올라오는" 현상이 생긴다.)
     if (inputs.length === next.length && inputs.length > 0) {
       inst.lines = next;
+      inst.lastEmitted = next.join("\n");
       for (let k = 0; k < inputs.length; k++) {
         if (inputs[k].value !== next[k]) inputs[k].value = next[k];
       }
       if (Number.isFinite(focusReq) && focusReq >= 0) focusAt(focusReq);
     } else {
       inst.lines = next;
+      inst.lastEmitted = next.join("\n");
       rebuild(Number.isFinite(focusReq) ? focusReq : -1);
     }
   } else if (!root.childElementCount) {
@@ -458,7 +425,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v18",
+    "worklog_entry_lines_v20",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -471,6 +438,12 @@ export default function (component) {
   const focusKey = (data && data.focus_key) || "";
   const focusCaret = data && data.focus_caret != null && data.focus_caret !== "" ? Number(data.focus_caret) : null;
   let lastSent = ""; let lastSig = ""; let lastAt = 0;
+  // remount 때마다 document 리스너가 쌓이면 click/focus마다 setTriggerValue가
+  // 폭주하고 Cached ForwardMsg MISS → 저장·추가 등 버튼이 전부 먹통이 된다.
+  if (typeof window !== "undefined" && window.__wlEnterHookOff) {
+    try { window.__wlEnterHookOff(); } catch (eOff) {}
+    window.__wlEnterHookOff = null;
+  }
 
   function resolveKey(t) {
     if (!t) return null;
@@ -693,45 +666,6 @@ export default function (component) {
 
   document.addEventListener("keydown", onKey, true);
 
-  function emitFocus(key) {
-    try { setTriggerValue("focus", String(key || "")); } catch (e) {}
-  }
-  function emitCaret(key, s, e) {
-    try {
-      setTriggerValue("caret", JSON.stringify({ key: key, s: s, e: e, t: Date.now() }));
-    } catch (e) {}
-  }
-  const onFocusIn = (e) => {
-    const info = resolveKey(e.target);
-    if (!info) return;
-    let s = 0;
-    let en = 0;
-    try {
-      s = typeof e.target.selectionStart === "number" ? e.target.selectionStart : 0;
-      en = typeof e.target.selectionEnd === "number" ? e.target.selectionEnd : s;
-    } catch (err) {}
-    emitFocus(info.key);
-    emitCaret(info.key, s, en);
-  };
-  // 익일업무·특이사항 textarea: keyup caret emit 금지
-  // 내용/거래처 input: keyup마다 rerun → Cached ForwardMsg MISS (click/focusin만)
-  const onSel = (e) => {
-    const info = resolveKey(e.target);
-    if (!info) return;
-    const tag = String(e.target.tagName || "").toUpperCase();
-    if (tag === "TEXTAREA") return;
-    if (e.type === "keyup") return;
-    let s = 0;
-    let en = 0;
-    try {
-      s = typeof e.target.selectionStart === "number" ? e.target.selectionStart : 0;
-      en = typeof e.target.selectionEnd === "number" ? e.target.selectionEnd : s;
-    } catch (err) {}
-    emitCaret(info.key, s, en);
-  };
-  document.addEventListener("focusin", onFocusIn, true);
-  document.addEventListener("click", onSel, true);
-
   if (focusKey) {
     const go = () => {
       const el = findInputForFocusKey(focusKey);
@@ -743,16 +677,16 @@ export default function (component) {
     go(); setTimeout(go, 50); setTimeout(go, 150); setTimeout(go, 350); setTimeout(go, 600);
   }
 
-  return () => {
+  const off = () => {
     document.removeEventListener("keydown", onKey, true);
-    document.removeEventListener("focusin", onFocusIn, true);
-    document.removeEventListener("click", onSel, true);
   };
+  if (typeof window !== "undefined") window.__wlEnterHookOff = off;
+  return off;
 }
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v23",
+    "worklog_cell_nav_hook_v24",
     js=_WL_ENTER_HOOK_JS,
 )
 
@@ -994,6 +928,34 @@ _WL_PREVIEW_HOST = st.components.v2.component(
     html=_WL_PREVIEW_HOST_HTML,
     css=_WL_PREVIEW_HOST_CSS,
     js=_WL_PREVIEW_HOST_JS,
+)
+
+_WL_PRINT_LAUNCH_JS = r"""
+export default function (component) {
+  const { data } = component;
+  const html = (data && data.html) || "";
+  const n = String((data && data.n) || "");
+  if (!html || !n) return;
+  try {
+    if (window.__wlPrintN === n) return;
+    window.__wlPrintN = n;
+  } catch (e0) {}
+  let w = null;
+  try { w = window.open("", "_blank"); } catch (e1) { w = null; }
+  if (!w) return;
+  try {
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  } catch (e2) {
+    try { w.close(); } catch (e3) {}
+  }
+}
+"""
+
+_WL_PRINT_LAUNCH = st.components.v2.component(
+    "worklog_print_launch_v1",
+    js=_WL_PRINT_LAUNCH_JS,
 )
 
 def _entry_lines_inst_key(iso: str, entry_i: int) -> str: return f"wl_lines_inst_{iso}_{entry_i}"
@@ -1981,6 +1943,21 @@ def _schedule_worklog_remote_delete(d: date) -> None:
     threading.Thread(target=_worklog_remote_delete_job, args=(d,), daemon=True).start()
 
 
+def _queue_worklog_save(iso: str) -> None:
+    """저장 버튼 on_click — 스크립트 시작 전에 플래그를 세워 같은 런에서 저장."""
+    st.session_state[f"wl_do_save_{iso}"] = True
+
+
+def _queue_worklog_add(iso: str) -> None:
+    """항목 추가 on_click — fragment를 한 번 더 rerun 하지 않는다."""
+    st.session_state[f"wl_do_add_{iso}"] = True
+
+
+def _queue_worklog_del_entry(iso: str, idx: int) -> None:
+    """항목 삭제 on_click."""
+    st.session_state[f"wl_do_del_{iso}"] = int(idx)
+
+
 def _on_confirm_delete_day() -> None:
     """확정 on_click — 위젯 생성 전에 실행되어 popover를 안전하게 닫음."""
     d = st.session_state.get("worklog_selected")
@@ -2079,6 +2056,89 @@ def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
     st.session_state["_wl_drive_sync_ts"] = time.time()
     return removed
 
+def _worklog_cells_have_draft(cells: dict | None) -> bool:
+    src = cells or {}
+    if any(str(src.get(f"G{r}", "") or "").strip() or str(src.get(f"C{r}", "") or "").strip() for r in WL_CONTENT_ROWS):
+        return True
+    return any(str(src.get(f"D{r}", "") or "").strip() for r in WL_NEXT_ROWS + WL_NOTE_ROWS)
+
+
+def _worklog_day_has_saved_or_draft(d: date) -> bool:
+    if os.path.exists(worklog_path(d)):
+        return True
+    try:
+        cells = _cells_from_widgets(d)
+    except Exception:
+        cells = read_worklog_cells(d)
+    return _worklog_cells_have_draft(cells)
+
+
+def _switch_worklog_selected_date(new: date) -> None:
+    st.session_state["worklog_selected"] = new
+    st.session_state["worklog_month"] = date(new.year, new.month, 1)
+    st.session_state["wl_date_pick"] = new
+    st.session_state["wl_date_sync"] = new.isoformat()
+
+
+def apply_worklog_date_change(old: date, new: date) -> str:
+    """업무일지 날짜 변경. 저장본/입력이 있으면 그 일지를 새 날짜로 옮긴다.
+
+    대상 날짜에 이미 일지가 있으면 에러 문자열을 반환하고 이동하지 않는다.
+    빈 날은 날짜만 전환한다. 성공 시 빈 문자열.
+    """
+    if old == new:
+        return ""
+    dest_local = os.path.exists(worklog_path(new))
+    dest_arch = False
+    if not dest_local:
+        try:
+            dest_arch = worklog_date_exists_in_archive(new)
+        except Exception:
+            dest_arch = False
+    if dest_local or dest_arch:
+        return (
+            f"{new.isoformat()} 일지가 이미 있습니다. "
+            "다른 날짜를 고르거나 그 날짜를 삭제한 뒤 다시 옮겨 주세요."
+        )
+    if _worklog_day_has_saved_or_draft(old):
+        try:
+            reassign_worklog_date(old, new)
+        except (FileExistsError, WorklogSaveBlockedError) as e:
+            return str(e)
+        return ""
+    _clear_date_widget_state(old)
+    _switch_worklog_selected_date(new)
+    return ""
+
+
+def _on_wl_date_pick_change() -> None:
+    """날짜칸 on_change — rerun 금지. 다음 런 시작에서 이동을 처리한다."""
+    picked = st.session_state.get("wl_date_pick")
+    selected = st.session_state.get("worklog_selected")
+    if isinstance(picked, date) and isinstance(selected, date) and picked != selected:
+        st.session_state["wl_pending_date_change"] = (selected.isoformat(), picked.isoformat())
+
+
+def _run_pending_worklog_date_change() -> bool:
+    """대기 중인 날짜 변경을 적용. 처리했으면 True."""
+    pending = st.session_state.pop("wl_pending_date_change", None)
+    if not pending:
+        return False
+    try:
+        old = date.fromisoformat(str(pending[0]))
+        new = date.fromisoformat(str(pending[1]))
+    except Exception:
+        return False
+    err = apply_worklog_date_change(old, new)
+    if err:
+        st.session_state["wl_date_err"] = err
+        _switch_worklog_selected_date(old)
+        return True
+    st.session_state.pop("wl_date_err", None)
+    st.session_state["wl_need_app_rerun"] = True
+    return True
+
+
 def reassign_worklog_date(old: date, new: date) -> str:
     if old == new: return "same"
     ok, block_msg = check_worklog_save_allowed(new, had_local_at_open=False)
@@ -2088,18 +2148,31 @@ def reassign_worklog_date(old: date, new: date) -> str:
     except Exception: cells = read_worklog_cells(old)
     cells["date"] = format_worklog_date(new)
     old_saved = os.path.exists(worklog_path(old))
-    if old_saved or any(str(cells.get(f"G{r}", "") or "").strip() or str(cells.get(f"C{r}", "") or "").strip() for r in WL_CONTENT_ROWS) or any(str(cells.get(f"D{r}", "") or "").strip() for r in WL_NEXT_ROWS + WL_NOTE_ROWS):
-        save_worklog_cells(new, cells, force=False, allow_overwrite=False)
+    if old_saved or _worklog_cells_have_draft(cells):
+        save_worklog_cells(new, cells, force=True, allow_overwrite=False)
     if old_saved:
         for path in (worklog_path(old), _preview_path(old), _print_xlsx_path(old)):
             if os.path.exists(path):
                 try: os.remove(path)
                 except OSError: pass
+        try:
+            delete_worklog_archive_sheet(old)
+        except Exception:
+            pass
+        try:
+            from worklog_remote_sync import mark_worklog_day_deleted
+            mark_worklog_day_deleted(old.isoformat(), WORKLOG_DIR)
+        except Exception:
+            pass
+        try:
+            _schedule_worklog_remote_delete(old)
+        except Exception:
+            pass
+        _invalidate_worklog_presence_cache(old)
     entries = _grouped_entries_from_cells(cells) or [{"client": "", "content": "", "lines": [], "blank_after": 1}]
     _, nd, nt = _entries_from_cells(cells)
     _clear_date_widget_state(old)
-    st.session_state["worklog_selected"] = new
-    st.session_state["worklog_month"] = date(new.year, new.month, 1)
+    _switch_worklog_selected_date(new)
     st.session_state[_boot_key(new)] = True
     st.session_state[_entries_key(new)] = entries
     st.session_state[_next_key(new)] = "\n".join(nd)
@@ -2107,6 +2180,7 @@ def reassign_worklog_date(old: date, new: date) -> str:
     st.session_state[f"wl_entry_count_{new.isoformat()}"] = len(entries)
     st.session_state[f"wl_pending_sync_{new.isoformat()}"] = {"entries": entries, "next": "\n".join(nd), "notes": "\n".join(nt), "msg": ""}
     _invalidate_saved_dates_cache()
+    _invalidate_worklog_presence_cache(new)
     return "moved" if old_saved else "retargeted"
 
 def _cell_fill_color(cell) -> str | None:
@@ -2843,8 +2917,14 @@ def _set_comp_lines_state(iso: str, entry_i: int, chunks: list[str], *, focus_j:
     if isinstance(prev.get("caret"), dict):
         new_state["caret"] = dict(prev.get("caret") or {})
     # 위젯 키는 중첩 mutate 금지 — 통째로 교체. 이전 값 잔존 시 pop 후 재설정.
-    st.session_state.pop(ck, None)
-    st.session_state[ck] = new_state
+    # 이미 instantiate된 CCv2 키를 건드리면 StreamlitAPIException → 탭 ERROR → 버튼 전부 먹통.
+    try:
+        st.session_state.pop(ck, None)
+        st.session_state[ck] = new_state
+    except StreamlitAPIException:
+        _bump_entry_lines_comp_inst(iso, entry_i)
+        ck = _entry_lines_comp_key(iso, entry_i)
+        st.session_state[ck] = new_state
     if focus_j is not None:
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, int(fj))
     st.session_state[_entry_lines_live_key(iso, entry_i)] = list(chunks)
@@ -2945,8 +3025,13 @@ def _set_comp_clients_state(iso: str, entry_i: int, chunks: list[str], *, focus_
     new_state = {"lines": list(chunks), "focus": fj}
     if isinstance(prev.get("caret"), dict):
         new_state["caret"] = dict(prev.get("caret") or {})
-    st.session_state.pop(ck, None)
-    st.session_state[ck] = new_state
+    try:
+        st.session_state.pop(ck, None)
+        st.session_state[ck] = new_state
+    except StreamlitAPIException:
+        _bump_entry_clients_comp_inst(iso, entry_i)
+        ck = _entry_clients_comp_key(iso, entry_i)
+        st.session_state[ck] = new_state
     if focus_j is not None:
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, int(fj))
     st.session_state[_entry_clients_live_key(iso, entry_i)] = list(chunks)
@@ -3077,15 +3162,11 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             lj = _last_used_line_index(synced)
             _remember_active_cell(iso, _entry_client_key(iso, entry_i, lj), len(str(synced[lj] or "")))
 
-    def _on_clients_focus_change() -> None:
-        _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_client_key)
-
     result = _WL_LINES_EDITOR(
         key=ck,
         data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "variant": "client", "rev": int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0)},
-        default={"lines": lines, "focus": focus_n}, 
+        default={"lines": lines},
         on_lines_change=_on_clients_change,
-        on_focus_change=_on_clients_focus_change
     )
     
     forced = st.session_state.pop(f"wl_force_comp_clients_{iso}_{entry_i}", None)
@@ -3147,15 +3228,11 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
                 lj = _last_used_line_index(synced)
                 _remember_active_cell(iso, _entry_line_key(iso, entry_i, lj), len(str(synced[lj] or "")))
 
-    def _on_lines_focus_change() -> None:
-        _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_line_key)
-
     result = _WL_LINES_EDITOR(
         key=ck,
         data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "variant": "content", "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0)},
-        default={"lines": lines, "focus": focus_n}, 
+        default={"lines": lines},
         on_lines_change=_on_lines_change,
-        on_focus_change=_on_lines_focus_change
     )
     
     forced = st.session_state.pop(f"wl_force_comp_lines_{iso}_{entry_i}", None)
@@ -3661,6 +3738,7 @@ def open_excel_print_preview(xlsx_path: str, *, prefer_print_dialog: bool = True
         except Exception as e2: return False, f"실행 실패: {e2}"
 
 def _launch_browser_print_dialog(xlsx_path: str) -> None:
+    """인쇄 HTML을 새 창으로 연다. 큰 iframe을 본문에 붙이지 않아 로딩처럼 보이지 않게."""
     st.session_state["wl_print_panel"] = False
     abs_path = os.path.abspath(xlsx_path)
     if not os.path.exists(abs_path): st.error("인쇄용 파일이 없습니다."); return
@@ -3668,22 +3746,26 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     try: mtime = os.path.getmtime(abs_path)
     except OSError: mtime = 0.0
     cached, meta = st.session_state.get(cache_k), st.session_state.get(meta_k) or {}
-    cache_ver = "v24"
+    cache_ver = "v25"
     if isinstance(cached, str) and cached and meta.get("mtime") == mtime and meta.get("path") == abs_path and meta.get("ver") == cache_ver:
-        stamped, preview_h = cached, int(meta.get("h") or 720)
+        stamped = cached
+        nonce = int(st.session_state.get("wl_print_n", 0)) + 1
+        st.session_state["wl_print_n"] = nonce
     else:
         try:
             doc_html = render_worklog_view_html(abs_path, print_mode=True, auto_print=True, scale=1.0)
-            _, raw_h = _worklog_sheet_pixel_size(abs_path)
-            preview_h = min(920, max(420, int(raw_h * _a4_print_fit(*_worklog_sheet_pixel_size(abs_path), path=abs_path)) + 72))
         except Exception as e: st.error(f"인쇄 문서 준비 실패: {e}"); return
         nonce = int(st.session_state.get("wl_print_n", 0)) + 1
         st.session_state["wl_print_n"] = nonce
         stamped = doc_html.replace("<body>", f'<body data-wl-print="{nonce}">', 1)
         st.session_state[cache_k] = stamped
-        st.session_state[meta_k] = {"mtime": mtime, "path": abs_path, "h": preview_h, "ver": cache_ver}
-    components.html(stamped, height=preview_h, scrolling=True)
-    st.caption("맞춤(줄여서)·축소·확대로 조절한 뒤 인쇄하세요.")
+        st.session_state[meta_k] = {"mtime": mtime, "path": abs_path, "ver": cache_ver}
+    _WL_PRINT_LAUNCH(
+        key=f"wl_print_launch_{nonce}",
+        data={"html": stamped, "n": str(nonce)},
+        height=1,
+    )
+    st.caption("인쇄 창이 안 열리면 브라우저에서 팝업을 허용해 주세요.")
 
 def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = False) -> None:
     st.session_state["wl_print_panel"] = True
@@ -3787,7 +3869,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
             st.session_state["wl_date_sync"] = ""
             _wl_rerun()
 
-    st.caption("• = 저장됨 · 날짜 탭 → 해당일")
+    st.caption("• = 저장됨 · 날짜 탭 = 그날 보기 · 위 날짜칸 = 이 일지 날짜 변경")
     weeks = ["월", "화", "수", "목", "금", "토", "일"]
     head = st.columns(7, gap="small")
     for i, w in enumerate(weeks):
@@ -3989,7 +4071,7 @@ def _render_worklog_left_preview(selected: date) -> None:
     """왼쪽 요약/엑셀 — 입력 위젯 실시간 반영 (요약은 soft blank 제거)."""
     draft = _draft_cells_for_left_preview(selected)
     st.markdown("##### 업무일지 보기")
-    st.caption("입력 즉시 왼쪽 반영 · 엑셀 양식은 「엑셀 미리보기」")
+    st.caption("칸을 나가면 왼쪽 반영 · 엑셀 양식은 「엑셀 미리보기」")
     p1, p2 = st.columns(2)
     with p1:
         do_print = st.button(
@@ -4007,15 +4089,17 @@ def _render_worklog_left_preview(selected: date) -> None:
         sig = json.dumps(cells_dl, ensure_ascii=False, sort_keys=True)
         sig_k = f"wl_print_cells_sig_{selected.isoformat()}"
         path_k = f"wl_print_cells_path_{selected.isoformat()}"
-        out = os.path.abspath(_prepare_excel_preview(selected, cells_dl))
         prev_sig = st.session_state.get(sig_k)
-        prev_path = st.session_state.get(path_k) or ""
-        if prev_sig != sig or prev_path != out:
-            st.session_state.pop(f"wl_print_html_cache_{out}", None)
-            st.session_state.pop(f"wl_print_html_meta_{out}", None)
-            if prev_path and prev_path != out:
-                st.session_state.pop(f"wl_print_html_cache_{prev_path}", None)
-                st.session_state.pop(f"wl_print_html_meta_{prev_path}", None)
+        prev_path = str(st.session_state.get(path_k) or "")
+        if prev_sig == sig and prev_path and os.path.isfile(prev_path):
+            st.session_state[f"wl_left_excel_path_{selected.isoformat()}"] = prev_path
+            return prev_path
+        out = os.path.abspath(_prepare_excel_preview(selected, cells_dl))
+        if prev_path and prev_path != out:
+            st.session_state.pop(f"wl_print_html_cache_{prev_path}", None)
+            st.session_state.pop(f"wl_print_html_meta_{prev_path}", None)
+        st.session_state.pop(f"wl_print_html_cache_{out}", None)
+        st.session_state.pop(f"wl_print_html_meta_{out}", None)
         st.session_state[sig_k] = sig
         st.session_state[path_k] = out
         st.session_state[f"wl_left_excel_path_{selected.isoformat()}"] = out
@@ -4150,6 +4234,10 @@ def _render_worklog_input_panel(selected: date) -> None:
         selected = st.session_state.get("worklog_selected") or selected
         _wl_rerun(full=True)
         return
+    if _run_pending_worklog_date_change() or st.session_state.pop("wl_need_app_rerun", None):
+        selected = st.session_state.get("worklog_selected") or selected
+        _wl_rerun(full=True)
+        return
 
     saved = list_saved_worklog_dates()
     try:
@@ -4165,7 +4253,15 @@ def _render_worklog_input_panel(selected: date) -> None:
             st.markdown("##### 업무 입력")
             bar_date, bar_cal, bar_del = st.columns([2.4, 1.1, 0.7], gap="small")
             with bar_date:
-                picked = st.date_input("업무일지 날짜", key="wl_date_pick", help="저장 후에도 날짜를 바꿀 수 있습니다.")
+                picked = st.date_input(
+                    "업무일지 날짜",
+                    value=selected,
+                    format="YYYY/MM/DD",
+                    key="wl_date_pick",
+                    disabled=False,
+                    on_change=_on_wl_date_pick_change,
+                    help="저장한 뒤에도 날짜를 바꾸면 이 일지가 그 날짜로 옮겨집니다.",
+                )
             with bar_cal:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
                 with st.popover("📅 달력", width="content"):
@@ -4175,7 +4271,8 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["worklog_selected"] = clicked
                         st.session_state["worklog_month"] = date(clicked.year, clicked.month, 1)
                         st.session_state["wl_date_sync"] = ""
-                        st.rerun()
+                        _wl_rerun(full=True)
+                        return
             with bar_del:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
                 with st.popover("삭제", width="content", key="wl_del_day_open", on_change="rerun"):
@@ -4191,23 +4288,20 @@ def _render_worklog_input_panel(selected: date) -> None:
             _iso_bar = selected.isoformat()
             _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
             _render_worklog_special_chars(_iso_bar, _n_bar)
+            _date_err = st.session_state.pop("wl_date_err", None)
+            if _date_err:
+                st.error(_date_err)
+            elif os.path.exists(worklog_path(selected)):
+                st.caption("저장됨 · 날짜를 바꾸면 이 일지가 그 날짜로 이동합니다.")
 
             if isinstance(picked, date) and picked != selected:
-                if os.path.exists(worklog_path(picked)):
-                    _clear_date_widget_state(selected)
-                    st.session_state["worklog_selected"] = picked
-                    st.session_state["worklog_month"] = date(picked.year, picked.month, 1)
-                    st.session_state["wl_date_sync"] = ""
-                    st.rerun()
-                else:
-                    try:
-                        reassign_worklog_date(selected, picked)
-                        st.session_state["wl_date_sync"] = ""
-                        st.rerun()
-                    except FileExistsError as e:
-                        st.error(str(e))
-                        st.session_state["wl_date_sync"] = ""
-                        st.rerun()
+                err = apply_worklog_date_change(selected, picked)
+                if err:
+                    st.session_state["wl_date_err"] = err
+                    st.session_state["wl_date_pick"] = selected
+                    st.session_state["wl_date_sync"] = selected.isoformat()
+                _wl_rerun(full=True)
+                return
 
             iso = selected.isoformat()
             ek = _entries_key(selected)
@@ -4353,7 +4447,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         st.session_state[f"wl_focus_caret_{iso2}"] = s
 
-                st.caption("입력 즉시 반영 · 왼쪽 요약도 타이핑과 함께 갱신됩니다.")
+                st.caption("입력은 바로 칸에 남고 · 칸을 나가거나 Enter 하면 왼쪽 요약이 갱신됩니다.")
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
                 _rem = _usage["remaining"]
@@ -4383,9 +4477,13 @@ def _render_worklog_input_panel(selected: date) -> None:
                             st.session_state[exp_key] = i == 0
 
                     with st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=exp_key):
-                        if st.button("이 항목 삭제", key=f"wl_del_btn_{iso2}_{i}", use_container_width=True):
-                            st.session_state[f"wl_do_del_{iso2}"] = i
-                            _wl_rerun()
+                        st.button(
+                            "이 항목 삭제",
+                            key=f"wl_del_btn_{iso2}_{i}",
+                            use_container_width=True,
+                            on_click=_queue_worklog_del_entry,
+                            args=(iso2, i),
+                        )
 
                         _cu = _client_line_units()
                         if int(st.session_state.get(_entry_client_count_key(iso2, i), 0) or 0) <= 0:
@@ -4432,9 +4530,13 @@ def _render_worklog_input_panel(selected: date) -> None:
                         _ent_rows = (_usage["per_entry"][i] if i < len(_usage["per_entry"]) else max(_filled, 1))
                         st.caption(f"이 항목 약 {_ent_rows}행 사용 · 전체 남은 {_rem}행 (마지막 칸 G{_usage['last_row']})")
 
-                if st.button("＋ 항목 추가", key=f"wl_add_btn_{iso2}", width="stretch"):
-                    st.session_state[f"wl_do_add_{iso2}"] = True
-                    _wl_rerun()
+                st.button(
+                    "＋ 항목 추가",
+                    key=f"wl_add_btn_{iso2}",
+                    width="stretch",
+                    on_click=_queue_worklog_add,
+                    args=(iso2,),
+                )
 
                 st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
                 st.markdown(
@@ -4452,11 +4554,15 @@ def _render_worklog_input_panel(selected: date) -> None:
                 st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
                 st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
 
-                if st.button("저장", type="primary", width="stretch", key=f"wl_save_btn_{iso2}"):
-                    # 클릭 직후 한 번 더 그려 입력 컴포넌트 값을 확정한 뒤 저장
-                    st.session_state[f"wl_do_save_{iso2}"] = True
-                    _wl_rerun()
-                elif do_save:
+                st.button(
+                    "저장",
+                    type="primary",
+                    width="stretch",
+                    key=f"wl_save_btn_{iso2}",
+                    on_click=_queue_worklog_save,
+                    args=(iso2,),
+                )
+                if do_save:
                     try:
                         entries_now = _read_editor_entries(d)
                         usage_now = _content_row_usage(entries_now)
@@ -4559,13 +4665,12 @@ def _render_worklog_input_panel(selected: date) -> None:
                     focus_key = None
                     focus_caret = None
 
-                # 💡 [핵심] on_enter_change 이벤트 핸들러 형식 맞춤
+                # Enter 줄바꿈만 서버로. focus/caret trigger는 클릭마다 rerun·ERROR를 만들어 버튼을 죽인다.
                 _WL_ENTER_HOOK(
                     key=f"wl_enter_hook_{iso2}",
                     data={"iso": iso2, "focus_key": focus_key if isinstance(focus_key, str) else "", "focus_caret": (int(focus_caret) if isinstance(focus_caret, (int, float)) else ""), "client_max_u": _client_line_units(), "content_max_u": _content_line_units()},
                     on_enter_change=_on_enter_trigger,
-                    on_focus_change=_on_focus_trigger,
-                    on_caret_change=_on_caret_trigger,
+                    height=1,
                 )
             _sp_msg = st.session_state.pop("wl_special_msg", None)
             if _sp_msg:
@@ -4779,6 +4884,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     selected: date = st.session_state["worklog_selected"]
 
     _run_pending_worklog_day_delete()
+    if _run_pending_worklog_date_change():
+        selected = st.session_state.get("worklog_selected") or selected
+        st.session_state.pop("wl_need_app_rerun", None)
 
     _boot = not st.session_state.get("_wl_boot_sync_done")
     _prepare_worklog_day_state(selected, skip_remote_pull=_filt_changed or _boot)
@@ -4791,7 +4899,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         _render_worklog_print_panel()
         return
 
-    if st.session_state.get("wl_date_sync") != selected.isoformat():
+    if not st.session_state.get("wl_pending_date_change") and st.session_state.get("wl_date_sync") != selected.isoformat():
         st.session_state["wl_date_pick"] = selected
         st.session_state["wl_date_sync"] = selected.isoformat()
 
@@ -4824,6 +4932,33 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         div[class*="st-key-wl_excel_host_"] {
             min-height: 240px;
         }
+        /* JS-only Enter hook이 빈 박스로 저장 버튼을 덮지 않게 */
+        div[class*="st-key-wl_enter_hook_"] {
+            height: 0 !important;
+            min-height: 0 !important;
+            max-height: 0 !important;
+            overflow: hidden !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            pointer-events: none !important;
+        }
+        /* 저장 후에도 날짜칸이 잠긴 것처럼 보이지 않게 */
+        div[class*="st-key-wl_date_pick"] [data-baseweb="input"],
+        div[class*="st-key-wl_date_pick"] input {
+            background-color: #ffffff !important;
+            color: #111827 !important;
+            cursor: pointer !important;
+            opacity: 1 !important;
+        }
+        div[class*="st-key-wl_save_btn_"] button,
+        div[class*="st-key-wl_add_btn_"] button,
+        div[class*="st-key-wl_del_btn_"] button,
+        div[class*="st-key-wl_print_btn"] button,
+        div[class*="st-key-wl_open_print_btn"] button {
+            position: relative !important;
+            z-index: 5 !important;
+            pointer-events: auto !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -4831,14 +4966,20 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
     _render_worklog_sync_ui()
 
+    col_preview, col_edit = st.columns([1, 1.14], gap="small")
+
     @st.fragment
-    def _worklog_body() -> None:
+    def _worklog_left() -> None:
         sel: date = st.session_state.get("worklog_selected") or selected
-        col_preview, col_edit = st.columns([1, 1.14], gap="small")
-        with col_preview:
-            _render_worklog_left_preview(sel)
-        with col_edit:
-            _render_worklog_input_panel(sel)
+        _render_worklog_left_preview(sel)
+
+    @st.fragment
+    def _worklog_right() -> None:
+        sel: date = st.session_state.get("worklog_selected") or selected
+        _render_worklog_input_panel(sel)
         _wl_finish_edit_fragment()
 
-    _worklog_body()
+    with col_preview:
+        _worklog_left()
+    with col_edit:
+        _worklog_right()
