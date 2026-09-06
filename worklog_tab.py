@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-06e · 이동 후 이 날짜에 저장"
+_WL_UI_BUILD = "2026-09-06f · 저장 후 7일→3일 이동"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -2129,28 +2129,16 @@ def _switch_worklog_selected_date(new: date) -> None:
 
 
 def apply_worklog_date_change(old: date, new: date) -> str:
-    """업무일지 날짜 변경. 저장본/입력이 있으면 그 일지를 새 날짜로 옮긴다.
+    """저장된 7일도 날짜칸을 3일로 바꾸면 그 일지가 3일이 된다.
 
-    대상 날짜에 이미 일지가 있으면 에러 문자열을 반환하고 이동하지 않는다.
+    내용이 있는 날을 옮길 때는 대상 날짜가 있어도 이 일지로 덮어쓴다.
     빈 날은 날짜만 전환한다. 성공 시 빈 문자열.
     """
     if old == new:
         return ""
-    dest_local = os.path.exists(worklog_path(new))
-    dest_arch = False
-    if not dest_local:
-        try:
-            dest_arch = worklog_date_exists_in_archive(new)
-        except Exception:
-            dest_arch = False
-    if dest_local or dest_arch:
-        return (
-            f"{new.isoformat()} 일지가 이미 있습니다. "
-            "다른 날짜를 고르거나 그 날짜를 삭제한 뒤 다시 옮겨 주세요."
-        )
     if _worklog_day_has_saved_or_draft(old):
         try:
-            reassign_worklog_date(old, new)
+            reassign_worklog_date(old, new, overwrite_dest=True)
         except (FileExistsError, WorklogSaveBlockedError) as e:
             return str(e)
         return ""
@@ -2191,17 +2179,18 @@ def _run_pending_worklog_date_change() -> bool:
     return True
 
 
-def reassign_worklog_date(old: date, new: date) -> str:
+def reassign_worklog_date(old: date, new: date, *, overwrite_dest: bool = True) -> str:
     if old == new: return "same"
-    ok, block_msg = check_worklog_save_allowed(new, had_local_at_open=False)
-    if not ok:
-        raise FileExistsError(block_msg)
+    if not overwrite_dest:
+        ok, block_msg = check_worklog_save_allowed(new, had_local_at_open=False)
+        if not ok:
+            raise FileExistsError(block_msg)
     try: cells = _cells_from_widgets(old)
     except Exception: cells = read_worklog_cells(old)
     cells["date"] = format_worklog_date(new)
     old_saved = os.path.exists(worklog_path(old))
     if old_saved or _worklog_cells_have_draft(cells):
-        save_worklog_cells(new, cells, force=True, allow_overwrite=False)
+        save_worklog_cells(new, cells, force=True, allow_overwrite=overwrite_dest)
     if old_saved:
         for path in (worklog_path(old), _preview_path(old), _print_xlsx_path(old)):
             if os.path.exists(path):
@@ -4313,7 +4302,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                     key="wl_date_pick",
                     disabled=False,
                     on_change=_on_wl_date_pick_change,
-                    help="날짜를 바꾼 뒤 저장하면 이 날짜로 저장됩니다.",
+                    help="7일에 저장돼 있어도 3일로 바꾸면 이 일지가 3일이 됩니다.",
                 )
             with bar_cal:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
@@ -4345,7 +4334,7 @@ def _render_worklog_input_panel(selected: date) -> None:
             if _date_err:
                 st.error(_date_err)
             elif os.path.exists(worklog_path(selected)):
-                st.caption("저장됨 · 날짜를 바꾼 뒤 저장하면 이 날짜로 저장됩니다.")
+                st.caption("저장됨 · 날짜를 3일처럼 바꾸면 이 일지가 그 날짜로 이동합니다.")
 
             if isinstance(picked, date) and picked != selected:
                 err = apply_worklog_date_change(selected, picked)
