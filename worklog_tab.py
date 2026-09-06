@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-06d · 저장 후 날짜 변경"
+_WL_UI_BUILD = "2026-09-06e · 이동 후 이 날짜에 저장"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1943,9 +1943,47 @@ def _schedule_worklog_remote_delete(d: date) -> None:
     threading.Thread(target=_worklog_remote_delete_job, args=(d,), daemon=True).start()
 
 
+def _take_day_action_flags(iso: str) -> dict:
+    return {
+        "save": bool(st.session_state.pop(f"wl_do_save_{iso}", None)),
+        "add": bool(st.session_state.pop(f"wl_do_add_{iso}", None)),
+        "del": st.session_state.pop(f"wl_do_del_{iso}", None),
+    }
+
+
+def _put_day_action_flags(iso: str, flags: dict | None) -> None:
+    if not flags:
+        return
+    if flags.get("save"):
+        st.session_state[f"wl_do_save_{iso}"] = True
+    if flags.get("add"):
+        st.session_state[f"wl_do_add_{iso}"] = True
+    if flags.get("del") is not None:
+        st.session_state[f"wl_do_del_{iso}"] = flags["del"]
+
+
+def _merge_day_action_flags(*groups: dict | None) -> dict:
+    out = {"save": False, "add": False, "del": None}
+    for g in groups:
+        if not g:
+            continue
+        out["save"] = out["save"] or bool(g.get("save"))
+        out["add"] = out["add"] or bool(g.get("add"))
+        if g.get("del") is not None:
+            out["del"] = g.get("del")
+    return out
+
+
 def _queue_worklog_save(iso: str) -> None:
-    """저장 버튼 on_click — 스크립트 시작 전에 플래그를 세워 같은 런에서 저장."""
-    st.session_state[f"wl_do_save_{iso}"] = True
+    """저장 버튼 on_click — 날짜칸이 바뀌었으면 그 날짜로 저장한다."""
+    picked = st.session_state.get("wl_date_pick")
+    selected = st.session_state.get("worklog_selected")
+    target_iso = iso
+    if isinstance(picked, date):
+        target_iso = picked.isoformat()
+        if isinstance(selected, date) and selected != picked:
+            st.session_state["wl_pending_date_change"] = (selected.isoformat(), target_iso)
+    st.session_state[f"wl_do_save_{target_iso}"] = True
 
 
 def _queue_worklog_add(iso: str) -> None:
@@ -2073,6 +2111,16 @@ def _worklog_day_has_saved_or_draft(d: date) -> bool:
     return _worklog_cells_have_draft(cells)
 
 
+def _mark_worklog_day_writable(d: date, *, had_local: bool) -> None:
+    """이동·저장 후 이 날짜에 다시 저장할 수 있게 연다."""
+    iso = d.isoformat()
+    ctx = dict(st.session_state.get(f"wl_open_ctx_{iso}") or {})
+    ctx["had_local"] = bool(had_local)
+    st.session_state[f"wl_open_ctx_{iso}"] = ctx
+    if had_local:
+        st.session_state[f"wl_saved_ok_{iso}"] = True
+
+
 def _switch_worklog_selected_date(new: date) -> None:
     st.session_state["worklog_selected"] = new
     st.session_state["worklog_month"] = date(new.year, new.month, 1)
@@ -2129,12 +2177,16 @@ def _run_pending_worklog_date_change() -> bool:
         new = date.fromisoformat(str(pending[1]))
     except Exception:
         return False
+    old_flags = _take_day_action_flags(old.isoformat())
+    new_flags = _take_day_action_flags(new.isoformat())
     err = apply_worklog_date_change(old, new)
     if err:
         st.session_state["wl_date_err"] = err
         _switch_worklog_selected_date(old)
+        _put_day_action_flags(old.isoformat(), old_flags)
         return True
     st.session_state.pop("wl_date_err", None)
+    _put_day_action_flags(new.isoformat(), _merge_day_action_flags(old_flags, new_flags))
     st.session_state["wl_need_app_rerun"] = True
     return True
 
@@ -2179,6 +2231,7 @@ def reassign_worklog_date(old: date, new: date) -> str:
     st.session_state[_notes_key(new)] = "\n".join(nt)
     st.session_state[f"wl_entry_count_{new.isoformat()}"] = len(entries)
     st.session_state[f"wl_pending_sync_{new.isoformat()}"] = {"entries": entries, "next": "\n".join(nd), "notes": "\n".join(nt), "msg": ""}
+    _mark_worklog_day_writable(new, had_local=True)
     _invalidate_saved_dates_cache()
     _invalidate_worklog_presence_cache(new)
     return "moved" if old_saved else "retargeted"
@@ -4260,7 +4313,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                     key="wl_date_pick",
                     disabled=False,
                     on_change=_on_wl_date_pick_change,
-                    help="저장한 뒤에도 날짜를 바꾸면 이 일지가 그 날짜로 옮겨집니다.",
+                    help="날짜를 바꾼 뒤 저장하면 이 날짜로 저장됩니다.",
                 )
             with bar_cal:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
@@ -4292,7 +4345,7 @@ def _render_worklog_input_panel(selected: date) -> None:
             if _date_err:
                 st.error(_date_err)
             elif os.path.exists(worklog_path(selected)):
-                st.caption("저장됨 · 날짜를 바꾸면 이 일지가 그 날짜로 이동합니다.")
+                st.caption("저장됨 · 날짜를 바꾼 뒤 저장하면 이 날짜로 저장됩니다.")
 
             if isinstance(picked, date) and picked != selected:
                 err = apply_worklog_date_change(selected, picked)
@@ -4564,6 +4617,13 @@ def _render_worklog_input_panel(selected: date) -> None:
                 )
                 if do_save:
                     try:
+                        picked = st.session_state.get("wl_date_pick")
+                        if isinstance(picked, date) and picked != d:
+                            err = apply_worklog_date_change(d, picked)
+                            if err:
+                                raise WorklogSaveBlockedError(err)
+                            d = picked
+                            iso2 = d.isoformat()
                         entries_now = _read_editor_entries(d)
                         usage_now = _content_row_usage(entries_now)
                         if usage_now.get("overflow"):
@@ -4578,7 +4638,9 @@ def _render_worklog_input_panel(selected: date) -> None:
                             )
                             open_ctx = st.session_state.get(f"wl_open_ctx_{iso2}") or {}
                             had_local = bool(open_ctx.get("had_local")) or bool(st.session_state.get(f"wl_saved_ok_{iso2}"))
-                            # 저장 클릭 = 로컬·아카이브·Drive·Cloud 반영 (Cloud에만 있던 날도 맥에서 저장 가능)
+                            if not had_local and os.path.isfile(worklog_path(d)):
+                                had_local = True
+                            # 저장 클릭 = 날짜칸 기준 로컬·아카이브·Drive·Cloud 반영
                             path = save_worklog_cells(d, cells, force=True, allow_overwrite=had_local)
                             st.session_state[f"wl_saved_ok_{iso2}"] = True
                             ctx = dict(open_ctx)
