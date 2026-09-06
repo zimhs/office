@@ -60,6 +60,22 @@ class WorklogDateChangeTest(unittest.TestCase):
         cells["G8"] = content
         return cells
 
+    def test_set_date_pick_queues_when_widget_already_exists(self):
+        real_setitem = _FakeSS.__setitem__
+
+        def _setitem(d, k, v):
+            if k == "wl_date_pick":
+                raise self.wt.StreamlitAPIException("cannot be modified after the widget is instantiated")
+            return real_setitem(d, k, v)
+
+        with patch.object(_FakeSS, "__setitem__", _setitem):
+            self.wt._set_wl_date_pick(date(2026, 9, 3))
+        self.assertEqual(self.ss.get("_wl_date_pick_next"), date(2026, 9, 3))
+        self.assertEqual(self.ss.get("wl_date_sync"), "2026-09-03")
+        self.wt._flush_queued_date_pick()
+        self.assertEqual(self.ss.get("wl_date_pick"), date(2026, 9, 3))
+        self.assertIsNone(self.ss.get("_wl_date_pick_next"))
+
     def test_on_change_queues_pending_date_move(self):
         self.ss["worklog_selected"] = date(2026, 9, 7)
         self.ss["wl_date_pick"] = date(2026, 9, 8)
