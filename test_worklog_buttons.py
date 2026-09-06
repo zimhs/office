@@ -31,16 +31,19 @@ class WorklogButtonRestoreTest(unittest.TestCase):
         self.assertTrue(self.ss[f"wl_do_add_{iso}"])
         self.assertEqual(self.ss[f"wl_do_del_{iso}"], 2)
 
-    def test_lines_editor_skips_unchanged_emit(self):
+    def test_lines_editor_does_not_emit_while_typing(self):
         js = self.wt._WL_LINES_JS
         self.assertIn("lastEmitted", js)
-        self.assertIn("Cached ForwardMsg MISS", js)
+        self.assertNotIn("function softEmit", js)
+        self.assertIn("else localOnly(cur);", js)
+        self.assertIn("mode === \"blur\"", js)
 
     def test_component_names_bumped_for_cache(self):
         with open(self.wt.__file__, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn('"worklog_entry_lines_v19"', src)
+        self.assertIn('"worklog_entry_lines_v20"', src)
         self.assertIn('"worklog_cell_nav_hook_v24"', src)
+        self.assertNotIn('"worklog_entry_lines_v19"', src)
         self.assertNotIn('"worklog_entry_lines_v18"', src)
         self.assertNotIn('"worklog_cell_nav_hook_v23"', src)
 

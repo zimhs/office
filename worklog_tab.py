@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-06a · 버튼먹통 복구"
+_WL_UI_BUILD = "2026-09-06b · 입력중 ERROR 제거"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -290,16 +290,6 @@ export default function (component) {
     inst.lines = normalize(next);
     return inst.lines;
   }
-  let softTimer = null;
-  function softEmit(next) {
-    localOnly(next);
-    if (softTimer) clearTimeout(softTimer);
-    softTimer = setTimeout(function () {
-      softTimer = null;
-      const cur = normalize(inst.lines || readDomLines());
-      setStateValue("lines", cur);
-    }, 280);
-  }
   function focusAt(idx) {
     requestAnimationFrame(() => {
       const el = root.querySelector('input[data-idx="' + idx + '"]');
@@ -349,9 +339,9 @@ export default function (component) {
         let j0 = j;
         let v = cur[j0] || "";
         if (displayUnits(v) <= maxU) {
-          // 입력 중: 로컬+디바운스 — 매 키 fragment rerun 시 Cached ForwardMsg MISS
+          // 입력 중에는 로컬만. 한글 음절마다 setStateValue 하면
+          // Cached ForwardMsg MISS → ERROR → 버튼 전부 먹통.
           if (mode === "blur" || mode === "force") emit(cur, null);
-          else if (mode === "type") softEmit(cur);
           else localOnly(cur);
           return;
         }
@@ -374,10 +364,6 @@ export default function (component) {
         commitValue("type");
       });
       input.addEventListener("blur", () => {
-        if (softTimer) {
-          clearTimeout(softTimer);
-          softTimer = null;
-        }
         commitValue("blur");
       });
       input.addEventListener("keydown", (e) => {
@@ -439,7 +425,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v19",
+    "worklog_entry_lines_v20",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -3051,15 +3037,11 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             lj = _last_used_line_index(synced)
             _remember_active_cell(iso, _entry_client_key(iso, entry_i, lj), len(str(synced[lj] or "")))
 
-    def _on_clients_focus_change() -> None:
-        _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_client_key)
-
     result = _WL_LINES_EDITOR(
         key=ck,
         data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "variant": "client", "rev": int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0)},
-        default={"lines": lines, "focus": focus_n}, 
+        default={"lines": lines},
         on_lines_change=_on_clients_change,
-        on_focus_change=_on_clients_focus_change
     )
     
     forced = st.session_state.pop(f"wl_force_comp_clients_{iso}_{entry_i}", None)
@@ -3121,15 +3103,11 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
                 lj = _last_used_line_index(synced)
                 _remember_active_cell(iso, _entry_line_key(iso, entry_i, lj), len(str(synced[lj] or "")))
 
-    def _on_lines_focus_change() -> None:
-        _sync_editor_focus_from_comp(iso, entry_i, ck, _entry_line_key)
-
     result = _WL_LINES_EDITOR(
         key=ck,
         data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "variant": "content", "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0)},
-        default={"lines": lines, "focus": focus_n}, 
+        default={"lines": lines},
         on_lines_change=_on_lines_change,
-        on_focus_change=_on_lines_focus_change
     )
     
     forced = st.session_state.pop(f"wl_force_comp_lines_{iso}_{entry_i}", None)
@@ -3963,7 +3941,7 @@ def _render_worklog_left_preview(selected: date) -> None:
     """왼쪽 요약/엑셀 — 입력 위젯 실시간 반영 (요약은 soft blank 제거)."""
     draft = _draft_cells_for_left_preview(selected)
     st.markdown("##### 업무일지 보기")
-    st.caption("입력 즉시 왼쪽 반영 · 엑셀 양식은 「엑셀 미리보기」")
+    st.caption("칸을 나가면 왼쪽 반영 · 엑셀 양식은 「엑셀 미리보기」")
     p1, p2 = st.columns(2)
     with p1:
         do_print = st.button(
@@ -4327,7 +4305,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         st.session_state[f"wl_focus_caret_{iso2}"] = s
 
-                st.caption("입력 즉시 반영 · 왼쪽 요약도 타이핑과 함께 갱신됩니다.")
+                st.caption("입력은 바로 칸에 남고 · 칸을 나가거나 Enter 하면 왼쪽 요약이 갱신됩니다.")
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
                 _rem = _usage["remaining"]
