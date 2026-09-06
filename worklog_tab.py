@@ -432,8 +432,21 @@ export default function (component) {
 
   if (inst.rev !== rev) {
     inst.rev = rev;
-    inst.lines = normalize(incoming);
-    rebuild(Number.isFinite(focusReq) ? focusReq : -1);
+    const next = normalize(incoming);
+    const inputs = root.querySelectorAll("input[data-idx]");
+    // 행 수가 같으면 innerHTML 전체 재생성 없이 값만 제자리로 갱신한다.
+    // (특수기호 삽입 등으로 rev만 오를 때 전체 rebuild 하면 입력칸이 잠깐 높이 0으로
+    //  무너졌다 복구돼 "밑으로 껌벅 내려갔다 올라오는" 현상이 생긴다.)
+    if (inputs.length === next.length && inputs.length > 0) {
+      inst.lines = next;
+      for (let k = 0; k < inputs.length; k++) {
+        if (inputs[k].value !== next[k]) inputs[k].value = next[k];
+      }
+      if (Number.isFinite(focusReq) && focusReq >= 0) focusAt(focusReq);
+    } else {
+      inst.lines = next;
+      rebuild(Number.isFinite(focusReq) ? focusReq : -1);
+    }
   } else if (!root.childElementCount) {
     if (!inst.lines) inst.lines = normalize(incoming);
     rebuild(Number.isFinite(focusReq) ? focusReq : -1);
