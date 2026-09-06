@@ -3214,8 +3214,9 @@ def _process_pending_special_char(iso: str, entry_count: int) -> bool:
     try:
         if _insert_special_char_auto(iso, ch, entry_count):
             st.session_state["wl_special_msg"] = f"「{ch}」삽입"
-            # 바 리마운트(동일 기호 연속 클릭 인식)
-            st.session_state[f"wl_sp_token_{iso}"] = str(int(time.time() * 1000) % 1_000_000_000)
+            # 바를 리마운트하지 않는다: 버튼 클릭마다 pick 페이로드에 타임스탬프(t)를 실어
+            # 보내므로 동일 기호 연속 클릭도 이미 구분·인식된다. 예전엔 wl_sp_token 을 매번
+            # 바꿔 바(iframe innerHTML)를 통째로 다시 그렸는데, 그게 화면 깜박임의 원인이었다.
             return True
         st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
     except StreamlitAPIException:
