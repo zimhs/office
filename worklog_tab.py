@@ -146,7 +146,8 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-07i · 저장 시 예전 날짜만 삭제 · 삭제는 그 날만"
+_WL_UI_BUILD = "2026-09-07j · 저장된 날로는 이동 불가 · 날짜 변경 로딩 축소"
+_WL_MOVE_BLOCK_MSG = "이미 저장된 데이터가 있으면 자료를 옮길 수 없습니다."
 
 
 class WorklogSaveBlockedError(Exception):
@@ -2311,11 +2312,13 @@ def _switch_worklog_selected_date(new: date) -> None:
 def apply_worklog_date_change(old: date, new: date) -> str:
     """저장된 7일도 날짜칸을 3일로 바꾸면 그 일지가 3일이 된다.
 
-    내용이 있는 날을 옮길 때는 대상 날짜가 있어도 이 일지로 덮어쓴다.
+    대상 날짜에 이미 저장된 데이터가 있으면 옮기지 않는다.
     빈 날은 날짜만 전환한다. 성공 시 빈 문자열.
     """
     if old == new:
         return ""
+    if _worklog_dest_has_saved_data(new):
+        return _WL_MOVE_BLOCK_MSG
     if _worklog_day_has_saved_or_draft(old):
         try:
             reassign_worklog_date(old, new, overwrite_dest=True)
@@ -2381,12 +2384,46 @@ def _worklog_editor_occupied(d: date) -> bool:
         return False
 
 
+def _worklog_dest_has_saved_data(d: date) -> bool:
+    """이미 저장된 일지가 있는지. 빈 시트·잔여 빈 파일은 제외."""
+    path = worklog_path(d)
+    if os.path.isfile(path):
+        try:
+            if _worklog_cells_have_draft(read_worklog_cells(d)):
+                return True
+        except Exception:
+            return True
+    try:
+        return bool(worklog_archive_has_saved_content(d))
+    except Exception:
+        return False
+
+
+def _block_move_to_saved_date(stay: date) -> None:
+    st.session_state["wl_date_err"] = _WL_MOVE_BLOCK_MSG
+    _set_wl_date_pick(stay)
+    st.session_state["wl_skip_sync_once"] = True
+
+
+def try_retarget_worklog_editor_date(old: date, new: date) -> bool:
+    """빈 날짜면 화면 내용만 옮긴다. 저장본이 있으면 False + 안내."""
+    if old == new:
+        return True
+    if _worklog_dest_has_saved_data(new):
+        _block_move_to_saved_date(old)
+        return False
+    retarget_worklog_editor_date(old, new)
+    st.session_state["wl_skip_sync_once"] = True
+    return True
+
+
 def _open_worklog_saved_date(new: date) -> None:
     """저장된 날을 연다. 지금 편집 중인 다른 날 내용은 복사·삭제하지 않는다."""
     st.session_state["worklog_month"] = date(new.year, new.month, 1)
     _switch_worklog_selected_date(new)
     st.session_state.pop("wl_date_err", None)
     st.session_state.pop("wl_pending_date_change", None)
+    st.session_state["wl_skip_sync_once"] = True
 
 
 def retarget_worklog_editor_date(old: date, new: date) -> None:
@@ -2424,12 +2461,16 @@ def retarget_worklog_editor_date(old: date, new: date) -> None:
 
 
 def commit_worklog_date_save(source: date, target: date, cells: dict) -> str:
-    """고른 날짜에 덮어 저장하고, 예전 날짜 데이터만 삭제한다.
+    """고른 날짜에 저장하고, 예전 날짜 데이터만 삭제한다.
 
-    삭제 버튼과 달리 지금 저장한 날짜 위젯은 건드리지 않는다.
+    대상에 이미 저장된 데이터가 있고 다른 날에서 옮기는 중이면 막는다.
     """
     cells = dict(cells or {})
     cells["date"] = format_worklog_date(target)
+    moving = source != target or bool(_take_purge_dates(target))
+    if moving and _worklog_dest_has_saved_data(target):
+        st.session_state["wl_date_err"] = _WL_MOVE_BLOCK_MSG
+        raise WorklogSaveBlockedError(_WL_MOVE_BLOCK_MSG)
     path = save_worklog_cells(target, cells, force=True, allow_overwrite=True)
     purge = _take_purge_dates(target)
     if source != target and source not in purge:
@@ -2461,24 +2502,23 @@ def consume_left_date_pick_move(selected: date) -> tuple[date, bool]:
     picked = st.session_state.get("wl_date_pick")
     if not isinstance(picked, date) or picked == selected:
         return selected, False
-    retarget_worklog_editor_date(selected, picked)
-    st.session_state["wl_need_app_rerun"] = True
+    if not try_retarget_worklog_editor_date(selected, picked):
+        return selected, False
     return picked, True
 
 
 def _on_wl_date_pick_change() -> None:
-    """저장 전 날짜만 바꾼다. 파일은 저장 버튼에서 기록한다."""
+    """저장 전 날짜만 바꾼다. 저장된 날짜로는 옮기지 않는다."""
     st.session_state["_wl_date_pick_live"] = False
     picked = st.session_state.get("wl_date_pick")
     selected = st.session_state.get("worklog_selected")
     if not isinstance(picked, date) or not isinstance(selected, date) or picked == selected:
         return
-    retarget_worklog_editor_date(selected, picked)
-    st.session_state["wl_need_app_rerun"] = True
+    try_retarget_worklog_editor_date(selected, picked)
 
 
 def _on_wl_cal_day(iso: str) -> None:
-    """달력 날짜. 이미 저장된 날(•)은 그 날을 열기만 하고, 빈 날은 지금 내용을 옮긴다."""
+    """달력 날짜. 이미 저장된 날(•)은 그 날을 열고, 빈 날은 지금 내용을 옮긴다."""
     try:
         new = date.fromisoformat(iso)
     except ValueError:
@@ -2488,11 +2528,10 @@ def _on_wl_cal_day(iso: str) -> None:
     if not isinstance(old, date) or old == new:
         return
     st.session_state["_wl_date_pick_live"] = False
-    if _worklog_editor_occupied(new):
+    if _worklog_dest_has_saved_data(new):
         _open_worklog_saved_date(new)
-    else:
-        retarget_worklog_editor_date(old, new)
-    st.session_state["wl_need_app_rerun"] = True
+        return
+    try_retarget_worklog_editor_date(old, new)
 
 
 def _run_pending_worklog_date_change() -> bool:
@@ -2507,10 +2546,10 @@ def _run_pending_worklog_date_change() -> bool:
         return False
     old_flags = _take_day_action_flags(old.isoformat())
     new_flags = _take_day_action_flags(new.isoformat())
-    retarget_worklog_editor_date(old, new)
-    st.session_state.pop("wl_date_err", None)
-    _put_day_action_flags(new.isoformat(), _merge_day_action_flags(old_flags, new_flags))
-    st.session_state["wl_need_app_rerun"] = True
+    if try_retarget_worklog_editor_date(old, new):
+        _put_day_action_flags(new.isoformat(), _merge_day_action_flags(old_flags, new_flags))
+    else:
+        _put_day_action_flags(old.isoformat(), _merge_day_action_flags(old_flags, new_flags))
     return True
 
 
@@ -4247,7 +4286,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
             args=(date.today().isoformat(),),
         )
 
-    st.caption("• = 저장됨 · 저장 전에 날짜를 바꾸세요. 저장하면 예전 날짜는 삭제됩니다")
+    st.caption("• = 저장됨 · 빈 날짜로만 옮김 · 저장된 날(•)은 열기만 합니다")
     weeks = ["월", "화", "수", "목", "금", "토", "일"]
     head = st.columns(7, gap="small")
     for i, w in enumerate(weeks):
@@ -4627,7 +4666,7 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             format="YYYY/MM/DD",
             key="wl_date_pick",
             on_change=_on_wl_date_pick_change,
-            help="저장 전에 날짜를 바꿀 수 있습니다. 저장하면 예전 날짜 데이터는 삭제됩니다.",
+            help="빈 날짜로만 옮길 수 있습니다. 이미 저장된 날짜로는 옮길 수 없습니다.",
         )
         st.session_state["_wl_date_pick_live"] = True
     with bar_cal:
@@ -4649,9 +4688,9 @@ def _render_worklog_date_toolbar(selected: date) -> None:
     if _date_err:
         st.error(_date_err)
     elif os.path.exists(worklog_path(selected)):
-        st.caption("저장됨 · 저장 전에 날짜를 바꿀 수 있습니다. 저장하면 예전 날짜 기록은 삭제됩니다.")
+        st.caption("저장됨 · 빈 날짜로 옮긴 뒤 저장하면 예전 날짜는 삭제됩니다.")
     else:
-        st.caption("저장 전에 날짜를 바꿀 수 있습니다. 저장하면 예전 날짜 기록은 삭제됩니다.")
+        st.caption("빈 날짜로만 옮길 수 있습니다. 이미 저장된 데이터가 있으면 자료를 옮길 수 없습니다.")
 
 
 def _render_worklog_input_panel(selected: date) -> None:
@@ -4660,10 +4699,9 @@ def _render_worklog_input_panel(selected: date) -> None:
         selected = st.session_state.get("worklog_selected") or selected
         _wl_rerun(full=True)
         return
-    if _run_pending_worklog_date_change() or st.session_state.pop("wl_need_app_rerun", None):
-        selected = st.session_state.get("worklog_selected") or selected
-        _wl_rerun(full=True)
-        return
+    _run_pending_worklog_date_change()
+    st.session_state.pop("wl_need_app_rerun", None)
+    selected = st.session_state.get("worklog_selected") or selected
 
     try:
         _gauge_usage = _content_row_usage(_read_editor_entries(selected))
@@ -5280,7 +5318,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         st.session_state.pop("wl_need_app_rerun", None)
 
     _boot = not st.session_state.get("_wl_boot_sync_done")
-    _prepare_worklog_day_state(selected, skip_remote_pull=_filt_changed or _boot)
+    _prepare_worklog_day_state(selected, skip_remote_pull=True)
     if _boot:
         st.session_state["_wl_boot_sync_done"] = True
     else:
