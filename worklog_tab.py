@@ -692,179 +692,6 @@ _WL_ENTER_HOOK = st.components.v2.component(
 )
 
 # 자주 쓰는 순 (앞쪽 = 우선 표시)
-_WL_SPECIAL_CHARS = [
-    "※", "★", "☆", "○", "●", "◎", "→", "·", "△", "▲", "■", "□",
-    "「", "」", "【", "】", "～", "←", "✓", "①", "②", "③", "◇", "◆",
-]
-
-_WL_SPECIAL_BAR_HTML = """
-<div class="wl-sp"></div>
-"""
-
-_WL_SPECIAL_BAR_CSS = """
-.wl-sp {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 5px;
-  width: 100%;
-  max-width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
-  -webkit-overflow-scrolling: touch;
-  scroll-behavior: smooth;
-  padding: 2px 2px 6px;
-  box-sizing: border-box;
-}
-.wl-sp button {
-  flex: 0 0 auto;
-  min-width: 2.1rem;
-  width: 2.1rem;
-  height: 2.1rem;
-  margin: 0;
-  padding: 0;
-  border: 1px solid #cbd5e1;
-  border-radius: 0.4rem;
-  background: #ffffff;
-  color: #0f172a;
-  font-size: 1.05rem;
-  line-height: 2.1rem;
-  text-align: center;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-user-select: none;
-  user-select: none;
-}
-.wl-sp button:hover { background: #e2e8f0; }
-.wl-sp button:active { background: #dbeafe; }
-"""
-
-_WL_SPECIAL_BAR_JS = r"""
-export default function (component) {
-  const { data, parentElement, setTriggerValue } = component;
-  const chars = (data && data.chars) || [];
-  const token = String((data && data.token) || "");
-
-  let root = parentElement.querySelector(".wl-sp");
-  if (!root) {
-    root = document.createElement("div");
-    root.className = "wl-sp";
-    parentElement.appendChild(root);
-  }
-  // 버튼을 누르는 순간(pointerdown) 실제로 커서가 있던 입력칸과 캐럿 위치를 캡처한다.
-  // (pointerup/click 시점엔 포커스가 버튼으로 옮겨가 activeElement가 바뀌므로)
-  // → 특수기호를 "지금 커서 있는 칸"(거래처/내용/익일/특이)에 정확히 넣기 위함.
-  var capturedKey = "";
-  var capturedS = 0;
-  var capturedEl = null;
-  function resolveActiveFieldKey() {
-    try {
-      var el = document.activeElement;
-      if (!el || !el.closest) return { key: "", s: 0 };
-      var s = 0;
-      try { s = (typeof el.selectionStart === "number") ? el.selectionStart : 0; } catch (e0) {}
-      var pick = function (cls) { return String(cls).replace(/^st-key-/, ""); };
-      var w = el.closest('[class*="st-key-wl_next_area_"],[class*="st-key-wl_notes_area_"]');
-      if (w) {
-        var c0 = Array.prototype.find.call(w.classList || [], function (c) {
-          var q = String(c); return q.indexOf("st-key-wl_next_area_") !== -1 || q.indexOf("st-key-wl_notes_area_") !== -1;
-        });
-        if (c0) return { key: pick(c0), s: s };
-      }
-      w = el.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]');
-      if (w) {
-        var c1 = Array.prototype.find.call(w.classList || [], function (c) {
-          var q = String(c); return q.indexOf("st-key-wl_ent_ln_") !== -1 || q.indexOf("st-key-wl_ent_cl_") !== -1;
-        });
-        if (c1) {
-          var k1 = pick(c1);
-          var m1 = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(k1);
-          if (m1) return { key: m1[1] + "_" + m1[2] + "_" + m1[3] + "_" + m1[4], s: s };
-        }
-      }
-      w = el.closest('[class*="st-key-wl_clients_comp_"],[class*="st-key-wl_lines_comp_"]');
-      if (w) {
-        var c2 = Array.prototype.find.call(w.classList || [], function (c) {
-          var q = String(c); return q.indexOf("st-key-wl_clients_comp_") !== -1 || q.indexOf("st-key-wl_lines_comp_") !== -1;
-        });
-        if (c2) {
-          var m2 = /^st-key-(wl_clients_comp|wl_lines_comp)_(\d{4}-\d{2}-\d{2})_(\d+)/.exec(String(c2));
-          if (m2) {
-            var kind = m2[1] === "wl_clients_comp" ? "wl_ent_cl" : "wl_ent_ln";
-            var idx = (el.dataset && el.dataset.idx != null) ? el.dataset.idx : 0;
-            return { key: kind + "_" + m2[2] + "_" + m2[3] + "_" + idx, s: s };
-          }
-        }
-      }
-      return { key: "", s: 0 };
-    } catch (e) { return { key: "", s: 0 }; }
-  }
-  function captureActive() {
-    var r = resolveActiveFieldKey();
-    capturedKey = r.key;
-    capturedS = r.s;
-    try { capturedEl = document.activeElement; } catch (e) { capturedEl = null; }
-  }
-  if (root.dataset.token !== token || root.childElementCount !== chars.length) {
-    root.dataset.token = token;
-    root.innerHTML = "";
-    for (let i = 0; i < chars.length; i++) {
-      const ch = String(chars[i] || "");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = ch;
-      btn.title = ch + " 삽입";
-      const fire = (function (symbol) {
-        let lastAt = 0;
-        return function (ev) {
-          const now = Date.now();
-          if (now - lastAt < 280) return;
-          lastAt = now;
-          if (ev) {
-            try { ev.preventDefault(); } catch (e1) {}
-            try { ev.stopPropagation(); } catch (e2) {}
-          }
-          // 거래처/내용 에디터(.wl-lines input)면 브라우저에서 바로 삽입한다.
-          // 서버 왕복(pick→rerun) 없이 처리 → 입력칸이 다시 그려지며 "밑으로 껌벅 내려갔다
-          // 올라오는" 현상과 깜박임이 사라진다. 커밋은 에디터의 input 리스너(디바운스)가 담당.
-          try {
-            var el = capturedEl;
-            if (el && el.closest && el.closest(".wl-lines") &&
-                el.dataset && el.dataset.idx != null && typeof el.value === "string") {
-              var v = String(el.value || "");
-              var p = capturedS;
-              if (typeof p !== "number" || p < 0 || p > v.length) p = v.length;
-              el.value = v.slice(0, p) + symbol + v.slice(p);
-              try { el.focus({ preventScroll: true }); } catch (eF) {}
-              try { el.setSelectionRange(p + symbol.length, p + symbol.length); } catch (eR) {}
-              try { el.dispatchEvent(new Event("input", { bubbles: true })); } catch (eE) {}
-              return;
-            }
-          } catch (eIns) {}
-          // 그 외(익일/특이 등 네이티브 칸)는 기존 서버 경로로 삽입
-          try {
-            setTriggerValue("pick", JSON.stringify({ ch: symbol, t: Date.now(), fkey: capturedKey, s: capturedS }));
-          } catch (err) {}
-        };
-      })(ch);
-      btn.addEventListener("pointerdown", captureActive, true);
-      btn.addEventListener("mousedown", captureActive, true);
-      btn.addEventListener("pointerup", fire);
-      btn.addEventListener("click", fire);
-      root.appendChild(btn);
-    }
-  }
-
-  return () => {};
-}
-"""
-
-_WL_SPECIAL_BAR = st.components.v2.component(
-    "worklog_special_bar_v9",
-    html=_WL_SPECIAL_BAR_HTML,
-    css=_WL_SPECIAL_BAR_CSS,
-    js=_WL_SPECIAL_BAR_JS,
-)
 
 # 왼쪽 미리보기 — iframe(components.html) 재부착 없이 글자만 갱신
 _WL_PREVIEW_HOST_HTML = """<div class="wl-live-preview"></div>"""
@@ -3698,45 +3525,6 @@ def _remember_active_cell(iso: str, fk: str, pos: int) -> None:
     st.session_state[f"wl_focus_caret_{iso}"] = pos
 
 
-def _read_cell_value(iso: str, fk: str) -> str:
-    if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
-        return str(st.session_state.get(fk, "") or "")
-    m = re.match(r"^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)", fk)
-    if not m or m.group(2) != iso:
-        return ""
-    kind, ei, lj = m.group(1), int(m.group(3)), int(m.group(4))
-    if kind == "wl_ent_ln":
-        lines = _lines_from_entry_widgets(iso, ei, keep_trailing_empty=True)
-    else:
-        lines = _clients_from_widgets(iso, ei, keep_trailing_empty=True)
-    while len(lines) <= lj:
-        lines.append("")
-    return str(lines[lj] or "")
-
-
-def _insert_special_char_at_active(iso: str, ch: str) -> bool:
-    fk = str(st.session_state.get("wl_active_cell_key") or st.session_state.get(f"wl_focus_ln_{iso}") or "")
-    if not (
-        fk.startswith("wl_ent_ln_")
-        or fk.startswith("wl_ent_cl_")
-        or fk.startswith("wl_next_area_")
-        or fk.startswith("wl_notes_area_")
-    ):
-        return False
-    pos = int(st.session_state.get(f"wl_focus_caret_{iso}") or 0)
-    sel = st.session_state.get("wl_active_cell_sel")
-    if isinstance(sel, (list, tuple)) and len(sel) >= 1:
-        try:
-            pos = int(sel[0])
-        except (TypeError, ValueError):
-            pass
-    val = _read_cell_value(iso, fk)
-    pos = max(0, min(pos, len(val)))
-    new_val = val[:pos] + ch + val[pos:]
-    _apply_special_insert(iso, fk, new_val, pos + len(ch), ch)
-    return True
-
-
 def _sync_editor_focus_from_comp(iso: str, entry_i: int, comp_key: str, key_fn) -> None:
     cur = st.session_state.get(comp_key)
     if not isinstance(cur, dict):
@@ -3762,219 +3550,6 @@ def _last_used_line_index(lines: list[str]) -> int:
             return j
     return 0
 
-
-def _resolve_special_entry_i(iso: str, entry_count: int) -> int:
-    n = max(1, int(entry_count or 1))
-    for i in range(n - 1, -1, -1):
-        if st.session_state.get(f"wl_exp_{iso}_{i}"):
-            return i
-    return n - 1
-
-
-def _insert_special_char_auto(iso: str, ch: str, entry_count: int) -> bool:
-    """넣을 칸 선택 없이 삽입.
-    1) 직전에 편집한 칸(active)이 있으면 그곳
-    2) 없으면 펼쳐진(또는 마지막) 항목의 내용 칸 끝에 추가
-    """
-    ch = str(ch or "")
-    if not ch:
-        return False
-    fk = str(st.session_state.get("wl_active_cell_key") or st.session_state.get(f"wl_focus_ln_{iso}") or "")
-    if (
-        fk.startswith(f"wl_ent_ln_{iso}_")
-        or fk.startswith(f"wl_ent_cl_{iso}_")
-        or fk == f"wl_next_area_{iso}"
-        or fk == f"wl_notes_area_{iso}"
-    ):
-        if _insert_special_char_at_active(iso, ch):
-            m = re.match(r"^wl_ent_(?:ln|cl)_\d{4}-\d{2}-\d{2}_(\d+)_", fk)
-            if m:
-                st.session_state[f"wl_force_expand_{iso}"] = int(m.group(1))
-            return True
-    ei = _resolve_special_entry_i(iso, entry_count)
-    st.session_state[f"wl_force_expand_{iso}"] = ei
-    lines = _lines_from_entry_widgets(iso, ei, keep_trailing_empty=True)
-    if not lines:
-        lines = [""]
-    lj = _last_used_line_index(lines)
-    while len(lines) <= lj:
-        lines.append("")
-    val = str(lines[lj] or "")
-    new_val = val + ch
-    _apply_special_insert(iso, f"wl_ent_ln_{iso}_{ei}_{lj}", new_val, len(new_val), ch)
-    return True
-
-
-def _process_pending_special_char(iso: str, entry_count: int) -> bool:
-    """pending 특수기호 삽입. 성공하면 True(호출측에서 fragment rerun 권장)."""
-    pending = st.session_state.pop(f"wl_pending_sp_{iso}", None)
-    _fk = str(st.session_state.pop(f"wl_pending_sp_fk_{iso}", "") or "")
-    _fs = st.session_state.pop(f"wl_pending_sp_s_{iso}", 0)
-    if not pending:
-        return False
-    ch = str(pending or "")
-    if not ch:
-        return False
-    # 버튼 누른 순간 커서가 있던 칸을 캡처했으면, 그 칸을 active로 지정해 정확히 삽입한다.
-    # (레이스로 active_cell_key가 갱신 안 돼 내용칸으로 잘못 들어가던 문제 방지. 못 잡았으면 기존 동작)
-    if _fk and (iso in _fk) and (
-        _fk.startswith("wl_ent_ln_")
-        or _fk.startswith("wl_ent_cl_")
-        or _fk.startswith("wl_next_area_")
-        or _fk.startswith("wl_notes_area_")
-    ):
-        try:
-            _remember_active_cell(iso, _fk, int(_fs or 0))
-        except (TypeError, ValueError):
-            _remember_active_cell(iso, _fk, 0)
-    try:
-        if _insert_special_char_auto(iso, ch, entry_count):
-            st.session_state["wl_special_msg"] = f"「{ch}」삽입"
-            # 바를 리마운트하지 않는다: 버튼 클릭마다 pick 페이로드에 타임스탬프(t)를 실어
-            # 보내므로 동일 기호 연속 클릭도 이미 구분·인식된다. 예전엔 wl_sp_token 을 매번
-            # 바꿔 바(iframe innerHTML)를 통째로 다시 그렸는데, 그게 화면 깜박임의 원인이었다.
-            return True
-        st.session_state["wl_special_msg"] = "특수기호를 넣지 못했습니다."
-    except StreamlitAPIException:
-        # 재시도 루프 방지 — pending을 되돌리지 않음
-        st.session_state["wl_special_msg"] = "특수기호 적용에 실패했습니다. 칸을 선택한 뒤 다시 눌러 주세요."
-    return False
-
-
-def _queue_special_char(iso: str, ch: str, fkey: str = "", s: int = 0) -> None:
-    """특수기호 pending만 설정. 절대 여기서 rerun 하지 않음(재시도 오류 방지).
-
-    fkey/s: 버튼 누른 순간 캡처한 "커서가 있던 칸"과 위치 (있으면 그 칸에 정확히 삽입).
-    """
-    ch = str(ch or "")
-    if not ch:
-        return
-    st.session_state[f"wl_pending_sp_{iso}"] = ch
-    st.session_state[f"wl_pending_sp_fk_{iso}"] = str(fkey or "")
-    try:
-        st.session_state[f"wl_pending_sp_s_{iso}"] = int(s or 0)
-    except (TypeError, ValueError):
-        st.session_state[f"wl_pending_sp_s_{iso}"] = 0
-
-
-def _parse_special_pick_raw(raw: Any) -> tuple[str, str, str, int]:
-    """컴포넌트 pick 트리거 → (문자, dedupe signature, 포커스칸 key, 캐럿 s).
-
-    fkey/s 는 버튼 pointerdown 시점에 캡처한 "커서가 있던 칸"과 위치(없으면 "",0).
-    """
-    if raw is None:
-        return "", "", "", 0
-    try:
-        if isinstance(raw, str) and raw.startswith("{"):
-            obj = json.loads(raw)
-            ch = str(obj.get("ch") or "")
-            fkey = str(obj.get("fkey") or "")
-            try:
-                s = int(obj.get("s") or 0)
-            except (TypeError, ValueError):
-                s = 0
-            sig = f"{ch}\0{obj.get('t')}"
-            return ch, sig, fkey, s
-        ch = str(raw)
-        return ch, f"{ch}\0plain", "", 0
-    except Exception:
-        ch = str(raw or "")
-        return ch, f"{ch}\0err", "", 0
-
-
-def _consume_special_pick(iso: str, raw: Any) -> None:
-    """pick 한 번만 pending에 넣고, 동일 시그니처 중복은 무시."""
-    ch, sig, fkey, s = _parse_special_pick_raw(raw)
-    if not ch or not sig:
-        return
-    done_k = f"wl_sp_pick_done_{iso}"
-    if st.session_state.get(done_k) == sig:
-        return
-    st.session_state[done_k] = sig
-    _queue_special_char(iso, ch, fkey, s)
-
-
-def _render_worklog_special_chars(iso: str, entry_count: int = 1) -> bool:
-    """날짜 아래: 접기 없이 한 줄 가로 스크롤. 삽입은 pending 경로.
-    특수기호를 방금 넣었으면 True (호출측에서 fragment rerun).
-    """
-    st.markdown(
-        """<style>
-        div[class*="st-key-wl_sp_bar_"] {
-          width: 100% !important;
-          max-width: 100% !important;
-          margin: 0.15rem 0 0.25rem !important;
-          padding: 0 !important;
-        }
-        div[class*="st-key-wl_sp_bar_"] iframe {
-          width: 100% !important;
-          min-height: 2.35rem !important;
-          height: 2.35rem !important;
-          border: none !important;
-          display: block !important;
-        }
-        </style>""",
-        unsafe_allow_html=True,
-    )
-
-    def _on_pick() -> None:
-        # 콜백 시점에는 session_state 뷰가 비어 있을 수 있어 반환값 경로를 우선한다.
-        # 여기선 보조로 한 번 더 시도.
-        stt = st.session_state.get(f"wl_sp_bar_{iso}")
-        raw = None
-        if isinstance(stt, dict):
-            raw = stt.get("pick")
-        else:
-            raw = getattr(stt, "pick", None) if stt is not None else None
-        _consume_special_pick(iso, raw)
-
-    token = str(st.session_state.get(f"wl_sp_token_{iso}") or "2")
-    result = _WL_SPECIAL_BAR(
-        key=f"wl_sp_bar_{iso}",
-        data={"iso": iso, "chars": list(_WL_SPECIAL_CHARS), "token": token},
-        on_pick_change=_on_pick,
-        width="stretch",
-        height=40,
-    )
-    # 주 경로: 컴포넌트 반환값의 trigger(pick) — 콜백보다 안정적
-    raw = None
-    if result is not None:
-        raw = getattr(result, "pick", None)
-        if raw is None and isinstance(result, dict):
-            raw = result.get("pick")
-    _consume_special_pick(iso, raw)
-    # 바로 삽입해 내용 칸에 반영 (이후 fragment rerun으로 UI 확정)
-    return _process_pending_special_char(iso, entry_count)
-
-def _apply_special_insert(iso: str, fk: str, val: str, pos: int, ch: str) -> None:
-    val, pos = str(val or ""), max(0, min(int(pos or 0), len(str(val or ""))))
-    if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
-        if not fk.endswith(f"_{iso}"):
-            return
-        st.session_state[fk] = val
-        st.session_state[f"wl_focus_ln_{iso}"] = fk
-        st.session_state["wl_active_cell_key"] = fk
-        st.session_state["wl_active_cell_sel"] = (pos, pos)
-        st.session_state[f"wl_focus_caret_{iso}"] = pos
-        st.session_state["wl_special_msg"] = f"「{ch}」삽입" if ch else "특수문자 삽입"
-        return
-    m = re.match(r"^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)", fk)
-    if not m or m.group(2) != iso: return
-    kind, ei, lj = m.group(1), int(m.group(3)), int(m.group(4))
-    if kind == "wl_ent_ln":
-        cur = _lines_from_entry_widgets(iso, ei, keep_trailing_empty=True)
-        while len(cur) <= lj: cur.append("")
-        cur[lj] = val
-        _apply_entry_lines(iso, ei, cur, focus_j=lj, bump_gen=True)
-    else:
-        cur = _clients_from_widgets(iso, ei, keep_trailing_empty=True)
-        while len(cur) <= lj: cur.append("")
-        cur[lj] = val
-        _apply_entry_clients(iso, ei, cur, focus_j=lj)
-    st.session_state["wl_active_cell_key"] = st.session_state.get(f"wl_focus_ln_{iso}") or fk
-    st.session_state["wl_active_cell_sel"] = (pos, pos)
-    st.session_state[f"wl_focus_caret_{iso}"] = pos
-    st.session_state["wl_special_msg"] = f"「{ch}」삽입" if ch else "특수문자 삽입"
 
 def _seed_entry_lines(iso: str, entry_i: int, content: str, *, focus_j: int | None = None, focus_last: bool = False) -> None:
     max_u = _content_line_units()
@@ -4282,7 +3857,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
     if "worklog_month" not in st.session_state: st.session_state["worklog_month"] = date(selected.year, selected.month, 1)
     month_anchor: date = st.session_state["worklog_month"]
 
-    st.markdown("""<style>div[data-testid="stPopoverBody"] { max-width: 268px !important; width: 268px !important; padding: 0.35rem 0.45rem 0.5rem !important; } div[data-testid="stPopoverBody"] div[class*="st-key-wl_day_"] button, div[data-testid="stPopoverBody"] div[class*="st-key-wl_prev_month"] button, div[data-testid="stPopoverBody"] div[class*="st-key-wl_next_month"] button, div[data-testid="stPopoverBody"] div[class*="st-key-wl_today"] button { min-height: 1.55rem !important; height: 1.55rem !important; padding: 0 0.15rem !important; font-size: 0.7rem !important; line-height: 1.1 !important; border-radius: 5px !important; } div[data-testid="stPopoverBody"] [data-testid="stCaptionContainer"] { font-size: 0.65rem !important; margin-bottom: 0.15rem !important; } div[data-testid="stPopoverBody"] [data-testid="stHorizontalBlock"] { gap: 0.2rem !important; } div[data-testid="stPopoverBody"] [data-testid="column"] { padding: 0 !important; }</style>""", unsafe_allow_html=True)
+    st.markdown("""<style>div[data-testid="stPopoverBody"] { max-width: 340px !important; width: 340px !important; padding: 0.55rem 0.6rem 0.65rem !important; } div[data-testid="stPopoverBody"] div[class*="st-key-wl_day_"] button, div[data-testid="stPopoverBody"] div[class*="st-key-wl_prev_month"] button, div[data-testid="stPopoverBody"] div[class*="st-key-wl_next_month"] button, div[data-testid="stPopoverBody"] div[class*="st-key-wl_today"] button { min-height: 2.15rem !important; height: 2.15rem !important; padding: 0 0.2rem !important; font-size: 0.95rem !important; font-weight: 600 !important; line-height: 1.1 !important; border-radius: 7px !important; } div[data-testid="stPopoverBody"] [data-testid="stCaptionContainer"] { font-size: 0.74rem !important; margin-bottom: 0.3rem !important; } div[data-testid="stPopoverBody"] [data-testid="stHorizontalBlock"] { gap: 0.3rem !important; } div[data-testid="stPopoverBody"] [data-testid="column"] { padding: 0 !important; }</style>""", unsafe_allow_html=True)
 
     nav = st.columns([0.85, 0.85, 2.6, 1.2], gap="small")
     with nav[0]:
@@ -4298,7 +3873,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
             st.session_state["worklog_month"] = date(y, m, 1)
             _wl_rerun()
     with nav[2]:
-        st.markdown(f"<div style='text-align:center;font-weight:700;font-size:12px;padding:2px 0;line-height:1.2;'>{month_anchor.year}년 {month_anchor.month}월</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align:center;font-weight:800;font-size:16px;padding:3px 0;line-height:1.2;color:#0F172A;'>{month_anchor.year}년 {month_anchor.month}월</div>", unsafe_allow_html=True)
     with nav[3]:
         st.button(
             "오늘",
@@ -4313,7 +3888,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
     head = st.columns(7, gap="small")
     for i, w in enumerate(weeks):
         color = "#DC2626" if i == 6 else ("#2563EB" if i == 5 else "#64748B")
-        head[i].markdown(f"<div style='text-align:center;font-size:10px;font-weight:600;color:{color};line-height:1;padding:0 0 1px 0;'>{w}</div>", unsafe_allow_html=True)
+        head[i].markdown(f"<div style='text-align:center;font-size:13px;font-weight:700;color:{color};line-height:1;padding:2px 0 4px 0;'>{w}</div>", unsafe_allow_html=True)
 
     cal = calendar.Calendar(firstweekday=0)
     clicked = None
@@ -4322,7 +3897,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
         for i, day in enumerate(week):
             with cols[i]:
                 if day == 0:
-                    st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='height:2.15rem'></div>", unsafe_allow_html=True)
                     continue
                 d = date(month_anchor.year, month_anchor.month, day)
                 is_sel = d == selected
@@ -4736,10 +4311,6 @@ def _render_worklog_input_panel(selected: date) -> None:
             _render_row_remain_gauge(_gauge_usage, height_px=700)
 
     with col_input:
-            _iso_bar = selected.isoformat()
-            _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
-            _render_worklog_special_chars(_iso_bar, _n_bar)
-
             iso = selected.isoformat()
             ek = _entries_key(selected)
             if ek not in st.session_state or not st.session_state[ek]: st.session_state[ek] = [{"client": "", "content": ""}]
@@ -4826,12 +4397,6 @@ def _render_worklog_input_panel(selected: date) -> None:
                 ent_req = st.session_state.pop(f"wl_do_enter_cell_{iso2}", None)
                 if isinstance(ent_req, dict):
                     _commit_enter_on_cell(str(ent_req.get("kind") or ""), iso2, int(ent_req.get("ei") or 0), int(ent_req.get("lj") or 0), str(ent_req.get("v") or ""))
-
-                sp_req = st.session_state.pop(f"wl_do_special_{iso2}", None)
-                if isinstance(sp_req, dict):
-                    try: _sp_pos = int(sp_req.get("s") or 0)
-                    except (TypeError, ValueError): _sp_pos = 0
-                    _apply_special_insert(iso2, str(sp_req.get("key") or ""), str(sp_req.get("v") if sp_req.get("v") is not None else ""), _sp_pos, str(sp_req.get("ch") or ""))
 
                 def _on_enter_trigger():
                     hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
@@ -5119,9 +4684,6 @@ def _render_worklog_input_panel(selected: date) -> None:
                     on_enter_change=_on_enter_trigger,
                     height=1,
                 )
-            _sp_msg = st.session_state.pop("wl_special_msg", None)
-            if _sp_msg:
-                st.caption(_sp_msg)
             _wl_entry_editor()
 
 
