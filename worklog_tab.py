@@ -2385,6 +2385,9 @@ def _on_wl_cal_day(iso: str) -> None:
         return
     st.session_state["_wl_date_pick_live"] = False
     _open_worklog_saved_date(new)
+    # 달력이 fragment 안에서 렌더되므로, 날짜 변경 시 다음 run에서 전체 rerun을 유도해
+    # 편집칸·왼쪽 미리보기까지 새 날짜로 갱신한다(월 이동은 flag 없이 fragment만 갱신).
+    st.session_state["_wl_cal_need_full"] = True
 
 
 def _run_pending_worklog_date_change() -> bool:
@@ -4273,7 +4276,15 @@ def _render_worklog_date_toolbar(selected: date) -> None:
     with bar_cal:
         st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
         with st.popover("📅 달력", width="content"):
-            _render_month_calendar(selected, saved)
+            @st.fragment
+            def _wl_calendar_fragment():
+                # 날짜 클릭(날짜 변경)이면 편집·미리보기까지 갱신하도록 전체 rerun.
+                if st.session_state.pop("_wl_cal_need_full", False):
+                    st.rerun()
+                # 월 이동(◀▶)은 이 fragment 안에서 _wl_rerun()이 fragment 스코프로만
+                # 다시 그려 전체 탭 재렌더 없이 빠르다(선택 날짜·저장목록은 그대로).
+                _render_month_calendar(selected, saved)
+            _wl_calendar_fragment()
     with bar_del:
         st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
         _flush_worklog_delete_popover()
