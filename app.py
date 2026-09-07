@@ -14604,7 +14604,12 @@ def _dash_filter_and_tabs_fragment() -> None:
         </body></html>"""
                         components.html(_leaflet_html, height=620, scrolling=False)
                     else:
-                        fig_map = px.scatter_mapbox(
+                        # plotly 호환: 신버전은 scatter_map(MapLibre, map_style/map_layers),
+                        # 구버전은 scatter_mapbox(mapbox_style/mapbox_layers). 최신 plotly에서
+                        # scatter_mapbox 가 제거돼 앱 전체가 막히던 문제 방지.
+                        _new_map_api = hasattr(px, "scatter_map")
+                        _mk_scatter = px.scatter_map if _new_map_api else px.scatter_mapbox
+                        fig_map = _mk_scatter(
                             map_df,
                             lat="lat",
                             lon="lon",
@@ -14617,17 +14622,15 @@ def _dash_filter_and_tabs_fragment() -> None:
                         )
                         fig_map.update_traces(marker=dict(size=14, opacity=0.9))
                         if "일반" in map_style_choice:
-                            mapbox_layers = [
+                            _vw_layers = [
                                 {"below": 'traces', "sourcetype": "raster", "source": [vworld_base]}
                             ]
                         else:
-                            mapbox_layers = [
+                            _vw_layers = [
                                 {"below": 'traces', "sourcetype": "raster", "source": [vworld_sat]},
                                 {"below": 'traces', "sourcetype": "raster", "source": [vworld_hybrid]}
                             ]
-                        fig_map.update_layout(
-                            mapbox_style="white-bg",
-                            mapbox_layers=mapbox_layers,
+                        _map_layout_common = dict(
                             margin={"r": 0, "t": 10, "l": 0, "b": 0},
                             legend=dict(
                                 orientation="h",
@@ -14637,6 +14640,10 @@ def _dash_filter_and_tabs_fragment() -> None:
                                 x=0.5
                             )
                         )
+                        if _new_map_api:
+                            fig_map.update_layout(map_style="white-bg", map_layers=_vw_layers, **_map_layout_common)
+                        else:
+                            fig_map.update_layout(mapbox_style="white-bg", mapbox_layers=_vw_layers, **_map_layout_common)
                         render_plotly_chart(fig_map, use_container_width=True, key=dynamic_key, allow_drag=True)
                     if invalid_clients:
                         with st.expander("⚠️ 지도에 표시되지 않은 거래처 (주소 정보 없음 또는 좌표 변환 실패)"):
