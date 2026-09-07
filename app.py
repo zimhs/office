@@ -15676,6 +15676,12 @@ if _is_streamlit_cloud() and st.session_state.get("_drive_deferred_sync_pending"
 # 첫 페인트는 방해하지 않도록 arming(1 tick) 후 다음 tick에 1회만 활성화.
 @st.fragment(run_every=datetime.timedelta(seconds=2))
 def _dash_map_autowarm_fragment() -> None:
+    # iPad(터치)에서는 지도 자동 활성화를 건너뛴다: 지도 렌더·거래처 지오코딩이 무거워
+    # 로그인/첫 로딩이 길어지는 원인. iPad는 예전처럼 「지도 새로고침/조회」 버튼으로만 로드.
+    # 맥 데스크톱·Cloud(데스크톱)는 is_touch_ui()=False 라 기존 동작 그대로(로직·레이아웃 불변).
+    if is_touch_ui():
+        st.session_state["_dash_map_autowarm_done"] = True
+        return
     if st.session_state.get("show_map"):
         st.session_state["_dash_map_autowarm_done"] = True
     if st.session_state.get("_dash_map_autowarm_done"):
