@@ -76,11 +76,41 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertEqual(self.ss.get("wl_date_pick"), date(2026, 9, 3))
         self.assertIsNone(self.ss.get("_wl_date_pick_next"))
 
-    def test_on_change_queues_pending_date_move(self):
-        self.ss["worklog_selected"] = date(2026, 9, 7)
-        self.ss["wl_date_pick"] = date(2026, 9, 8)
-        self.wt._on_wl_date_pick_change()
-        self.assertEqual(self.ss["wl_pending_date_change"], ("2026-09-07", "2026-09-08"))
+    def test_set_date_pick_queues_when_widget_live(self):
+        self.ss["_wl_date_pick_live"] = True
+        self.ss["wl_date_pick"] = date(2026, 9, 7)
+        self.wt._set_wl_date_pick(date(2026, 9, 3))
+        self.assertEqual(self.ss.get("_wl_date_pick_next"), date(2026, 9, 3))
+        self.assertEqual(self.ss.get("wl_date_pick"), date(2026, 9, 7))
+        self.assertEqual(self.ss.get("wl_date_sync"), "2026-09-03")
+
+    def test_on_change_moves_saved_7th_to_3rd(self):
+        old, new = date(2026, 9, 7), date(2026, 9, 3)
+        self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
+        self.ss["worklog_selected"] = old
+        self.ss["wl_date_pick"] = new
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
+            self.wt._on_wl_date_pick_change()
+        self.assertEqual(self.ss["wl_pending_date_change"], (old.isoformat(), new.isoformat()))
+        self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
+        self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "7일 내용")
+        self.assertTrue(self.ss.get("wl_need_app_rerun"))
+
+    def test_left_date_pick_consumes_move_before_widget(self):
+        old, new = date(2026, 9, 7), date(2026, 9, 3)
+        self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
+        self.ss["worklog_selected"] = old
+        self.ss["wl_date_pick"] = new
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
+            got, moved = self.wt.consume_left_date_pick_move(old)
+        self.assertTrue(moved)
+        self.assertEqual(got, new)
+        self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "7일 내용")
+        self.assertTrue(self.ss.get("wl_need_app_rerun"))
 
     def test_apply_after_save_moves_file_archive_and_session(self):
         old, new = date(2026, 9, 7), date(2026, 9, 8)
