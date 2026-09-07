@@ -4316,10 +4316,16 @@ def _render_worklog_input_panel(selected: date) -> None:
             # 저장된 날짜에서는 입력 에디터를 렌더하지 않으므로, 저장 데이터 로드 시 발생하던
             # 항목 익스팬더 중복 키(StreamlitDuplicateElementKey) 크래시도 함께 예방된다.
             if iso in _saved_dates_for_calendar():
-                st.warning(
-                    "📌 이 날짜에는 **이미 저장된 업무일지**가 있습니다.\n\n"
-                    "내용을 바꾸려면 위 **🗑️ 삭제** 버튼으로 기존 데이터를 삭제한 뒤 다시 입력하세요.\n\n"
-                    "왼쪽 미리보기에서 저장된 내용을 확인할 수 있습니다."
+                # st.warning/st.info 는 일반 모드에서 dev_mode 게이트로 숨겨지므로,
+                # 항상 보이는 마크다운 박스로 안내한다(빈 화면처럼 보이는 문제 방지).
+                st.markdown(
+                    "<div style='background:#FEF3C7;border:1px solid #F59E0B;border-radius:8px;"
+                    "padding:14px 16px;color:#92400E;font-size:14px;line-height:1.65;margin-top:0.3rem;'>"
+                    "📌 <b>이 날짜에는 이미 저장된 업무일지가 있습니다.</b><br>"
+                    "내용을 바꾸려면 오른쪽 위 <b>🗑️ 삭제</b> 버튼으로 기존 데이터를 삭제한 뒤 다시 입력하세요.<br>"
+                    "<span style='color:#B45309;'>왼쪽 미리보기에서 저장된 내용을 확인할 수 있습니다.</span>"
+                    "</div>",
+                    unsafe_allow_html=True,
                 )
                 return
             ek = _entries_key(selected)
