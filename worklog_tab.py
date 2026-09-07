@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-07j · 저장된 날로는 이동 불가 · 날짜 변경 로딩 축소"
+_WL_UI_BUILD = "2026-09-07k · 달력은 보기·삭제 · 확정 시 팝업 닫힘"
 _WL_MOVE_BLOCK_MSG = "이미 저장된 데이터가 있으면 자료를 옮길 수 없습니다."
 
 
@@ -2049,15 +2049,40 @@ def _queue_worklog_del_entry(iso: str, idx: int) -> None:
     st.session_state[f"wl_do_del_{iso}"] = int(idx)
 
 
+def _queue_close_delete_popover() -> None:
+    """삭제 확정 후 팝업을 닫는다.
+
+    콜백에서 popover 키를 False로 두면 Streamlit이 프론트 상태(열림)로 다시 덮는다.
+    위젯을 그리기 전에 인스턴스를 올려 닫힌 팝업으로 다시 단다.
+    """
+    st.session_state["wl_del_day_force_close"] = True
+    st.session_state["wl_skip_sync_once"] = True
+
+
+def _worklog_delete_popover_key() -> str:
+    inst = int(st.session_state.get("wl_del_day_inst") or 0)
+    return f"wl_del_day_open_{inst}"
+
+
+def _flush_worklog_delete_popover() -> None:
+    """삭제 popover를 만들기 전에 호출. force_close면 닫힌 새 인스턴스로 교체."""
+    if not st.session_state.pop("wl_del_day_force_close", None):
+        return
+    inst = int(st.session_state.get("wl_del_day_inst") or 0)
+    st.session_state.pop("wl_del_day_open", None)
+    st.session_state.pop(f"wl_del_day_open_{inst}", None)
+    st.session_state[f"wl_del_day_open_{inst}"] = False
+    st.session_state["wl_del_day_inst"] = inst + 1
+
+
 def _on_confirm_delete_day() -> None:
-    """확정 on_click — 위젯 생성 전에 실행되어 popover를 안전하게 닫음."""
+    """확정 on_click — 삭제를 예약하고 팝업 닫힘을 다음 렌더에서 확정한다."""
     d = st.session_state.get("worklog_selected")
     if isinstance(d, date):
         st.session_state["wl_do_delete_day"] = d.isoformat()
     elif isinstance(d, str) and d:
         st.session_state["wl_do_delete_day"] = d
-    st.session_state["wl_skip_sync_once"] = True
-    st.session_state["wl_del_day_open"] = False
+    _queue_close_delete_popover()
 
 
 def _run_pending_worklog_day_delete() -> bool:
@@ -2073,10 +2098,10 @@ def _run_pending_worklog_day_delete() -> bool:
         st.session_state["wl_purge_dates"] = prev
         if st.session_state.get("wl_date_retarget_from") == str(del_iso):
             st.session_state.pop("wl_date_retarget_from", None)
-        st.session_state["wl_skip_sync_once"] = True
-        st.session_state["wl_del_day_open"] = False
+        _queue_close_delete_popover()
         return True
     except Exception:
+        _queue_close_delete_popover()
         return False
 
 
@@ -2518,20 +2543,17 @@ def _on_wl_date_pick_change() -> None:
 
 
 def _on_wl_cal_day(iso: str) -> None:
-    """달력 날짜. 이미 저장된 날(•)은 그 날을 열고, 빈 날은 지금 내용을 옮긴다."""
+    """오른쪽 달력: 보기만. 지금 편집 내용을 그 날짜로 옮기지 않는다."""
     try:
         new = date.fromisoformat(iso)
     except ValueError:
         return
     st.session_state["worklog_month"] = date(new.year, new.month, 1)
     old = st.session_state.get("worklog_selected")
-    if not isinstance(old, date) or old == new:
+    if isinstance(old, date) and old == new:
         return
     st.session_state["_wl_date_pick_live"] = False
-    if _worklog_dest_has_saved_data(new):
-        _open_worklog_saved_date(new)
-        return
-    try_retarget_worklog_editor_date(old, new)
+    _open_worklog_saved_date(new)
 
 
 def _run_pending_worklog_date_change() -> bool:
@@ -4286,7 +4308,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
             args=(date.today().isoformat(),),
         )
 
-    st.caption("• = 저장됨 · 빈 날짜로만 옮김 · 저장된 날(•)은 열기만 합니다")
+    st.caption("• = 저장됨 · 보기 전용 · 날짜를 누르면 그 날을 엽니다")
     weeks = ["월", "화", "수", "목", "금", "토", "일"]
     head = st.columns(7, gap="small")
     for i, w in enumerate(weeks):
@@ -4666,7 +4688,7 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             format="YYYY/MM/DD",
             key="wl_date_pick",
             on_change=_on_wl_date_pick_change,
-            help="빈 날짜로만 옮길 수 있습니다. 이미 저장된 날짜로는 옮길 수 없습니다.",
+            help="편집용. 빈 날짜로 옮겨 저장할 수 있습니다. 값이 있는 날짜로는 옮길 수 없습니다.",
         )
         st.session_state["_wl_date_pick_live"] = True
     with bar_cal:
@@ -4675,7 +4697,8 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             _render_month_calendar(selected, saved)
     with bar_del:
         st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
-        with st.popover("삭제", width="content", key="wl_del_day_open", on_change="rerun"):
+        _flush_worklog_delete_popover()
+        with st.popover("삭제", width="content", key=_worklog_delete_popover_key()):
             st.caption(f"{selected.isoformat()} 일지만 삭제 · 다른 날짜는 그대로 둡니다")
             st.button(
                 "확정",
@@ -4688,9 +4711,9 @@ def _render_worklog_date_toolbar(selected: date) -> None:
     if _date_err:
         st.error(_date_err)
     elif os.path.exists(worklog_path(selected)):
-        st.caption("저장됨 · 빈 날짜로 옮긴 뒤 저장하면 예전 날짜는 삭제됩니다.")
+        st.caption("저장됨 · 왼쪽 날짜칸은 빈 날짜로만 옮김 · 달력은 보기·삭제")
     else:
-        st.caption("빈 날짜로만 옮길 수 있습니다. 이미 저장된 데이터가 있으면 자료를 옮길 수 없습니다.")
+        st.caption("왼쪽 날짜칸: 빈 날짜로만 옮김 · 달력: 보기 · 삭제 확정 시 팝업이 닫힙니다.")
 
 
 def _render_worklog_input_panel(selected: date) -> None:
