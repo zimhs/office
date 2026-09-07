@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-07h · 저장 전 날짜 변경 · 저장 시 예전 날짜 삭제"
+_WL_UI_BUILD = "2026-09-07i · 저장 시 예전 날짜만 삭제 · 삭제는 그 날만"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -2031,8 +2031,8 @@ def _queue_worklog_save(iso: str) -> None:
     target_iso = iso
     if isinstance(picked, date):
         target_iso = picked.isoformat()
-        if isinstance(selected, date) and selected != picked and not st.session_state.get("wl_date_retarget_from"):
-            st.session_state["wl_date_retarget_from"] = selected.isoformat()
+        if isinstance(selected, date) and selected != picked:
+            _remember_purge_date(selected)
     st.session_state[f"wl_do_save_{target_iso}"] = True
     if target_iso != iso:
         st.session_state[f"wl_do_save_{iso}"] = True
@@ -2068,6 +2068,10 @@ def _run_pending_worklog_day_delete() -> bool:
         d_del = date.fromisoformat(str(del_iso))
         delete_worklog_day(d_del, remote=False)
         _schedule_worklog_remote_delete(d_del)
+        prev = [str(x) for x in (st.session_state.get("wl_purge_dates") or []) if str(x) != str(del_iso)]
+        st.session_state["wl_purge_dates"] = prev
+        if st.session_state.get("wl_date_retarget_from") == str(del_iso):
+            st.session_state.pop("wl_date_retarget_from", None)
         st.session_state["wl_skip_sync_once"] = True
         st.session_state["wl_del_day_open"] = False
         return True
@@ -2075,48 +2079,61 @@ def _run_pending_worklog_day_delete() -> bool:
         return False
 
 
-def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
+def purge_worklog_day_files(d: date, *, remote: bool = False) -> list[str]:
+    """그 날짜의 저장 파일·월별 시트만 지운다. 다른 날짜 위젯은 건드리지 않는다."""
     _ensure_dirs()
     iso = d.isoformat()
     removed: list[str] = []
-    targets = [worklog_path(d), os.path.join(WORKLOG_DIR, f"_preview_{iso}.xlsx"), os.path.join(WORKLOG_DIR, f"일일업무일지_{iso}_인쇄.xlsx")]
+    targets = [
+        worklog_path(d),
+        os.path.join(WORKLOG_DIR, f"_preview_{iso}.xlsx"),
+        os.path.join(WORKLOG_DIR, f"일일업무일지_{iso}_인쇄.xlsx"),
+    ]
     try:
         from drive_autoload import resolve_drive_worklog_dir
         _ddr = resolve_drive_worklog_dir()
-        if _ddr: targets.append(os.path.join(_ddr, f"{iso}.xlsx"))
-    except Exception: pass
-    for name in os.listdir(WORKLOG_DIR):
-        if iso in name and name.endswith(".xlsx") and name != "template.xlsx": targets.append(os.path.join(WORKLOG_DIR, name))
+        if _ddr:
+            targets.append(os.path.join(_ddr, f"{iso}.xlsx"))
+    except Exception:
+        pass
+    try:
+        for name in os.listdir(WORKLOG_DIR):
+            if name == "template.xlsx" or not name.endswith(".xlsx"):
+                continue
+            if name == f"{iso}.xlsx" or name.startswith(f"{iso}_") or name.startswith(f"_preview_{iso}") or name.startswith(f"일일업무일지_{iso}"):
+                targets.append(os.path.join(WORKLOG_DIR, name))
+    except OSError:
+        pass
     seen: set[str] = set()
     for path in targets:
-        if path in seen: continue
+        if path in seen:
+            continue
         seen.add(path)
         if os.path.exists(path):
-            try: os.remove(path); removed.append(os.path.basename(path))
-            except OSError: pass
-    # 월별 통합 파일(Desktop/업무/일지/YYYY/N월.xlsx)에서 해당 날짜 시트 제거
+            try:
+                os.remove(path)
+                removed.append(os.path.basename(path))
+            except OSError:
+                pass
     try:
         arch = delete_worklog_archive_sheet(d)
         if arch:
             removed.append(f"{os.path.basename(arch)}#{worklog_archive_sheet_title(d)}")
             try:
                 from drive_autoload import push_worklog_month_archive_to_drive
-
                 if os.path.isfile(arch):
                     push_worklog_month_archive_to_drive(arch, year=d.year, force=True)
             except Exception:
                 pass
     except Exception:
         pass
-    # 삭제 표시 — 동기화가 구 파일을 되살리지 않도록 원격 삭제 전에 기록
     try:
         from worklog_remote_sync import mark_worklog_day_deleted
         mark_worklog_day_deleted(iso, WORKLOG_DIR)
     except Exception:
         pass
-    cloud_note = ""
     if remote:
-        extra, cloud_note = _delete_worklog_day_remote_sync(d)
+        extra, _note = _delete_worklog_day_remote_sync(d)
         removed.extend(extra)
         try:
             from worklog_remote_sync import invalidate_gist_days_cache
@@ -2126,6 +2143,13 @@ def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
     _invalidate_saved_dates_cache()
     _invalidate_worklog_presence_cache(d)
     _purge_worklog_day_preview_cache(d)
+    return removed
+
+
+def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
+    """선택한 그 날짜만 삭제. 옮긴 다른 날짜 파일·입력은 유지한다."""
+    iso = d.isoformat()
+    removed = purge_worklog_day_files(d, remote=remote)
     _clear_date_widget_state(d)
     st.session_state.pop(f"wl_open_ctx_{iso}", None)
     st.session_state.pop(f"wl_saved_ok_{iso}", None)
@@ -2138,11 +2162,11 @@ def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
     msg = f"삭제 완료" + (f": {', '.join(removed)}" if removed else " (저장본 없음, 입력만 초기화)")
     if not remote:
         msg += " · Cloud/Drive 정리 중"
-    else:
-        msg += cloud_note
     st.session_state[f"wl_pending_sync_{iso}"] = {"entries": empty, "next": "", "notes": "", "msg": msg}
-    try: _publish_view_cells(d, _empty_cells(d))
-    except Exception: st.session_state.pop(_view_cells_key(d), None)
+    try:
+        _publish_view_cells(d, _empty_cells(d))
+    except Exception:
+        st.session_state.pop(_view_cells_key(d), None)
     st.session_state["_wl_drive_sync_ts"] = time.time()
     return removed
 
@@ -2303,6 +2327,68 @@ def apply_worklog_date_change(old: date, new: date) -> str:
     return ""
 
 
+def _remember_purge_date(d: date) -> None:
+    """저장 때 지울 예전 날짜. 날짜만 바꾼 뒤에도 잃지 않게 목록으로 쌓는다."""
+    iso = d.isoformat()
+    prev = [str(x) for x in (st.session_state.get("wl_purge_dates") or []) if x]
+    if iso not in prev:
+        prev.append(iso)
+    st.session_state["wl_purge_dates"] = prev
+    if not st.session_state.get("wl_date_retarget_from"):
+        st.session_state["wl_date_retarget_from"] = iso
+
+
+def _take_purge_dates(target: date) -> list[date]:
+    raw = [str(x) for x in (st.session_state.get("wl_purge_dates") or []) if x]
+    rf = st.session_state.get("wl_date_retarget_from")
+    if isinstance(rf, str) and rf:
+        raw.append(rf)
+    out: list[date] = []
+    seen: set[str] = set()
+    for iso in raw:
+        try:
+            d = date.fromisoformat(iso)
+        except ValueError:
+            continue
+        if d == target or d.isoformat() in seen:
+            continue
+        seen.add(d.isoformat())
+        out.append(d)
+    return out
+
+
+def _worklog_editor_occupied(d: date) -> bool:
+    """화면 세션이나 저장본이 있으면 그 날짜를 연다 (내용을 덮어 복사하지 않음)."""
+    if st.session_state.get(_boot_key(d)) and _entries_key(d) in st.session_state:
+        entries = st.session_state.get(_entries_key(d)) or []
+        if any(str((e or {}).get("content") or "").strip() or str((e or {}).get("client") or "").strip() for e in entries if isinstance(e, dict)):
+            return True
+        if str(st.session_state.get(_next_key(d), "") or "").strip() or str(st.session_state.get(_notes_key(d), "") or "").strip():
+            return True
+    if os.path.isfile(worklog_path(d)):
+        try:
+            return _worklog_cells_have_draft(read_worklog_cells(d))
+        except Exception:
+            return True
+    try:
+        if d.isoformat() in _saved_dates_for_calendar():
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(worklog_archive_has_saved_content(d))
+    except Exception:
+        return False
+
+
+def _open_worklog_saved_date(new: date) -> None:
+    """저장된 날을 연다. 지금 편집 중인 다른 날 내용은 복사·삭제하지 않는다."""
+    st.session_state["worklog_month"] = date(new.year, new.month, 1)
+    _switch_worklog_selected_date(new)
+    st.session_state.pop("wl_date_err", None)
+    st.session_state.pop("wl_pending_date_change", None)
+
+
 def retarget_worklog_editor_date(old: date, new: date) -> None:
     """저장 전 날짜만 바꾼다. 파일·월별 시트는 건드리지 않는다.
 
@@ -2320,8 +2406,7 @@ def retarget_worklog_editor_date(old: date, new: date) -> None:
     _, nd, nt = _entries_from_cells(cells)
     next_txt = "\n".join(nd)
     notes_txt = "\n".join(nt)
-    if not st.session_state.get("wl_date_retarget_from"):
-        st.session_state["wl_date_retarget_from"] = old.isoformat()
+    _remember_purge_date(old)
     _clear_date_widget_state(old)
     _switch_worklog_selected_date(new)
     st.session_state[_boot_key(new)] = True
@@ -2339,26 +2424,34 @@ def retarget_worklog_editor_date(old: date, new: date) -> None:
 
 
 def commit_worklog_date_save(source: date, target: date, cells: dict) -> str:
-    """고른 날짜에 덮어 저장하고, 예전 날짜 데이터는 삭제한다.
+    """고른 날짜에 덮어 저장하고, 예전 날짜 데이터만 삭제한다.
 
-    로컬 일자파일·월별 시트·달력 • 까지 지운다. 이미 있습니다로 막지 않는다.
+    삭제 버튼과 달리 지금 저장한 날짜 위젯은 건드리지 않는다.
     """
     cells = dict(cells or {})
     cells["date"] = format_worklog_date(target)
     path = save_worklog_cells(target, cells, force=True, allow_overwrite=True)
-    if source != target:
-        delete_worklog_day(source, remote=False)
+    purge = _take_purge_dates(target)
+    if source != target and source not in purge:
+        purge.append(source)
+    for old in purge:
+        purge_worklog_day_files(old, remote=False)
         try:
-            _schedule_worklog_remote_delete(source)
+            _schedule_worklog_remote_delete(old)
         except Exception:
             pass
+        try:
+            _clear_date_widget_state(old)
+        except Exception:
+            pass
+        _invalidate_worklog_presence_cache(old)
     _switch_worklog_selected_date(target)
     _mark_worklog_day_writable(target, had_local=True)
     st.session_state.pop("wl_date_err", None)
     st.session_state.pop("wl_date_retarget_from", None)
+    st.session_state.pop("wl_purge_dates", None)
     st.session_state.pop("wl_pending_date_change", None)
     _invalidate_saved_dates_cache()
-    _invalidate_worklog_presence_cache(source)
     _invalidate_worklog_presence_cache(target)
     return path
 
@@ -2385,7 +2478,7 @@ def _on_wl_date_pick_change() -> None:
 
 
 def _on_wl_cal_day(iso: str) -> None:
-    """오른쪽 달력 날짜 버튼 — 화면만 그 날짜로."""
+    """달력 날짜. 이미 저장된 날(•)은 그 날을 열기만 하고, 빈 날은 지금 내용을 옮긴다."""
     try:
         new = date.fromisoformat(iso)
     except ValueError:
@@ -2395,7 +2488,10 @@ def _on_wl_cal_day(iso: str) -> None:
     if not isinstance(old, date) or old == new:
         return
     st.session_state["_wl_date_pick_live"] = False
-    retarget_worklog_editor_date(old, new)
+    if _worklog_editor_occupied(new):
+        _open_worklog_saved_date(new)
+    else:
+        retarget_worklog_editor_date(old, new)
     st.session_state["wl_need_app_rerun"] = True
 
 
@@ -4333,7 +4429,9 @@ def _dashboard_filters_changed_this_run() -> bool:
 def _prepare_worklog_day_state(selected: date, *, skip_remote_pull: bool = False) -> None:
     """날짜별 위젯 초기화 + 저장 직후 pending 시드 (페이지 rerun 시 1회)."""
     iso = selected.isoformat()
-    if not skip_remote_pull and not os.path.isfile(worklog_path(selected)):
+    pending_move = st.session_state.get(f"wl_pending_sync_{iso}")
+    moving = bool(st.session_state.get("wl_date_retarget_from") or st.session_state.get("wl_purge_dates"))
+    if not skip_remote_pull and not os.path.isfile(worklog_path(selected)) and not isinstance(pending_move, dict) and not moving:
         if _try_pull_remote_worklog_day(selected):
             iso = selected.isoformat()
     open_k = f"wl_open_ctx_{iso}"
@@ -4539,7 +4637,7 @@ def _render_worklog_date_toolbar(selected: date) -> None:
     with bar_del:
         st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
         with st.popover("삭제", width="content", key="wl_del_day_open", on_change="rerun"):
-            st.caption("이 날짜 일지 전체 삭제")
+            st.caption(f"{selected.isoformat()} 일지만 삭제 · 다른 날짜는 그대로 둡니다")
             st.button(
                 "확정",
                 type="primary",
