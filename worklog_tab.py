@@ -4312,6 +4312,16 @@ def _render_worklog_input_panel(selected: date) -> None:
 
     with col_input:
             iso = selected.isoformat()
+            # 이미 저장된 날짜는 입력을 막고 안내만 표시한다(수정하려면 기존 데이터 삭제 후 재입력).
+            # 저장된 날짜에서는 입력 에디터를 렌더하지 않으므로, 저장 데이터 로드 시 발생하던
+            # 항목 익스팬더 중복 키(StreamlitDuplicateElementKey) 크래시도 함께 예방된다.
+            if iso in _saved_dates_for_calendar():
+                st.warning(
+                    "📌 이 날짜에는 **이미 저장된 업무일지**가 있습니다.\n\n"
+                    "내용을 바꾸려면 위 **🗑️ 삭제** 버튼으로 기존 데이터를 삭제한 뒤 다시 입력하세요.\n\n"
+                    "왼쪽 미리보기에서 저장된 내용을 확인할 수 있습니다."
+                )
+                return
             ek = _entries_key(selected)
             if ek not in st.session_state or not st.session_state[ek]: st.session_state[ek] = [{"client": "", "content": ""}]
 
