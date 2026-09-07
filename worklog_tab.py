@@ -1903,7 +1903,10 @@ def _flush_worklog_delete_popover() -> None:
     st.session_state.pop("wl_del_day_open", None)
     st.session_state.pop(f"wl_del_day_open_{inst}", None)
     st.session_state[f"wl_del_day_open_{inst}"] = False
-    st.session_state["wl_del_day_inst"] = inst + 1
+    new_inst = inst + 1
+    st.session_state["wl_del_day_inst"] = new_inst
+    # 새 인스턴스 팝오버 상태도 명시적으로 '닫힘'으로 미리 세팅(위젯 렌더 전이라 프론트 덮어쓰기 없음).
+    st.session_state[f"wl_del_day_open_{new_inst}"] = False
 
 
 def _on_confirm_delete_day() -> None:
