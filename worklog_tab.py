@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-06h · 날짜칸 위젯 예외 제거"
+_WL_UI_BUILD = "2026-09-07b · 왼쪽 날짜칸이면 내용 이동"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -2212,6 +2212,7 @@ def _mark_worklog_day_writable(d: date, *, had_local: bool) -> None:
 
 def _flush_queued_date_pick() -> None:
     """날짜칸 위젯을 그리기 전에, 이전 런에서 미뤄 둔 값을 넣는다."""
+    st.session_state["_wl_date_pick_live"] = False
     nxt = st.session_state.pop("_wl_date_pick_next", None)
     if isinstance(nxt, date):
         st.session_state["wl_date_pick"] = nxt
@@ -2219,13 +2220,15 @@ def _flush_queued_date_pick() -> None:
 
 
 def _set_wl_date_pick(d: date) -> None:
-    """날짜칸 키는 위젯 생성 뒤에 쓰면 StreamlitAPIException → 다음 런으로 미룬다."""
+    """위젯이 이미 뜨면 키를 쓰지 않고 다음 런으로만 넘긴다."""
+    st.session_state["wl_date_sync"] = d.isoformat()
+    if st.session_state.get("_wl_date_pick_live"):
+        st.session_state["_wl_date_pick_next"] = d
+        return
     try:
         st.session_state["wl_date_pick"] = d
-        st.session_state["wl_date_sync"] = d.isoformat()
-    except StreamlitAPIException:
+    except Exception:
         st.session_state["_wl_date_pick_next"] = d
-        st.session_state["wl_date_sync"] = d.isoformat()
 
 
 def _switch_worklog_selected_date(new: date) -> None:
@@ -2253,12 +2256,44 @@ def apply_worklog_date_change(old: date, new: date) -> str:
     return ""
 
 
+def consume_left_date_pick_move(selected: date) -> tuple[date, bool]:
+    """왼쪽 날짜칸(wl_date_pick)이 selected와 다르면 이 일지 내용을 그 날짜로 옮긴다.
+
+    위젯을 그리기 전에 호출한다. (처리된 날짜, 이동/전환을 시도했는지).
+    """
+    picked = st.session_state.get("wl_date_pick")
+    if not isinstance(picked, date) or picked == selected:
+        return selected, False
+    err = apply_worklog_date_change(selected, picked)
+    if err:
+        st.session_state["wl_date_err"] = err
+        _set_wl_date_pick(selected)
+        return selected, True
+    st.session_state.pop("wl_date_err", None)
+    st.session_state["wl_need_app_rerun"] = True
+    return st.session_state.get("worklog_selected") or picked, True
+
+
 def _on_wl_date_pick_change() -> None:
-    """날짜칸 on_change — rerun 금지. 다음 런 시작에서 이동을 처리한다."""
+    """왼쪽 업무일지 날짜칸 변경 = 이 일지를 그 날짜로 이동.
+
+    fragment 안에서는 콜백 직후 스크립트가 끊길 수 있어, 이동을 여기서 바로 적용하고
+    다음 런 시작용 pending도 남겨 둔다. 위젯 키는 콜백에서만 되돌린다.
+    """
+    st.session_state["_wl_date_pick_live"] = False
     picked = st.session_state.get("wl_date_pick")
     selected = st.session_state.get("worklog_selected")
-    if isinstance(picked, date) and isinstance(selected, date) and picked != selected:
-        st.session_state["wl_pending_date_change"] = (selected.isoformat(), picked.isoformat())
+    if not isinstance(picked, date) or not isinstance(selected, date) or picked == selected:
+        return
+    st.session_state["wl_pending_date_change"] = (selected.isoformat(), picked.isoformat())
+    err = apply_worklog_date_change(selected, picked)
+    if err:
+        st.session_state.pop("wl_pending_date_change", None)
+        st.session_state["wl_date_err"] = err
+        _set_wl_date_pick(selected)
+        st.session_state["worklog_selected"] = selected
+        return
+    st.session_state["wl_need_app_rerun"] = True
 
 
 def _run_pending_worklog_date_change() -> bool:
@@ -4387,8 +4422,13 @@ def _render_worklog_input_panel(selected: date) -> None:
         selected = st.session_state.get("worklog_selected") or selected
         _wl_rerun(full=True)
         return
-    if _run_pending_worklog_date_change() or st.session_state.pop("wl_need_app_rerun", None):
+    if _run_pending_worklog_date_change():
         selected = st.session_state.get("worklog_selected") or selected
+        _wl_rerun(full=True)
+        return
+    # 왼쪽 날짜칸은 fragment 안에서만 바뀌므로, 위젯을 그리기 전에 내용 이동을 끝낸다.
+    selected, _left_moved = consume_left_date_pick_move(selected)
+    if _left_moved or st.session_state.pop("wl_need_app_rerun", None):
         _wl_rerun(full=True)
         return
 
@@ -4413,8 +4453,9 @@ def _render_worklog_input_panel(selected: date) -> None:
                     key="wl_date_pick",
                     disabled=False,
                     on_change=_on_wl_date_pick_change,
-                    help="7일에 저장돼 있어도 3일로 바꾸면 이 일지가 3일이 됩니다.",
+                    help="왼쪽 날짜칸을 바꾸면 이 일지 내용이 그 날짜로 이동합니다.",
                 )
+                st.session_state["_wl_date_pick_live"] = True
             with bar_cal:
                 st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
                 with st.popover("📅 달력", width="content"):
@@ -4445,13 +4486,15 @@ def _render_worklog_input_panel(selected: date) -> None:
             if _date_err:
                 st.error(_date_err)
             elif os.path.exists(worklog_path(selected)):
-                st.caption("저장됨 · 날짜를 3일처럼 바꾸면 이 일지가 그 날짜로 이동합니다.")
+                st.caption("저장됨 · 왼쪽 날짜칸을 3일처럼 바꾸면 이 일지 내용이 그 날짜로 이동합니다.")
 
             if isinstance(picked, date) and picked != selected:
-                err = apply_worklog_date_change(selected, picked)
-                if err:
-                    st.session_state["wl_date_err"] = err
-                    _set_wl_date_pick(selected)
+                _, _late_moved = consume_left_date_pick_move(selected)
+                if not _late_moved:
+                    err = apply_worklog_date_change(selected, picked)
+                    if err:
+                        st.session_state["wl_date_err"] = err
+                        _set_wl_date_pick(selected)
                 _wl_rerun(full=True)
                 return
 
@@ -5047,6 +5090,10 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     _flush_queued_date_pick()
     _run_pending_worklog_day_delete()
     if _run_pending_worklog_date_change():
+        selected = st.session_state.get("worklog_selected") or selected
+        st.session_state.pop("wl_need_app_rerun", None)
+    selected, _tab_moved = consume_left_date_pick_move(selected)
+    if _tab_moved:
         selected = st.session_state.get("worklog_selected") or selected
         st.session_state.pop("wl_need_app_rerun", None)
 
