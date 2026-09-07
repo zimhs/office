@@ -19,6 +19,10 @@ from typing import Any
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit.errors import StreamlitAPIException
+try:
+    from streamlit.errors import StreamlitDuplicateElementKey as _WLDupKeyError
+except Exception:  # 구버전 호환
+    _WLDupKeyError = Exception
 
 from dev_mode import dev_caption, is_dev_mode
 
@@ -4312,16 +4316,6 @@ def _render_worklog_input_panel(selected: date) -> None:
 
     with col_input:
             iso = selected.isoformat()
-            # 이미 저장된 날짜는 입력을 막고 안내만 표시한다(수정하려면 기존 데이터 삭제 후 재입력).
-            # 저장된 날짜에서는 입력 에디터를 렌더하지 않으므로, 저장 데이터 로드 시 발생하던
-            # 항목 익스팬더 중복 키(StreamlitDuplicateElementKey) 크래시도 함께 예방된다.
-            if iso in _saved_dates_for_calendar():
-                st.warning(
-                    "📌 이 날짜에는 **이미 저장된 업무일지**가 있습니다.\n\n"
-                    "내용을 바꾸려면 위 **🗑️ 삭제** 버튼으로 기존 데이터를 삭제한 뒤 다시 입력하세요.\n\n"
-                    "왼쪽 미리보기에서 저장된 내용을 확인할 수 있습니다."
-                )
-                return
             ek = _entries_key(selected)
             if ek not in st.session_state or not st.session_state[ek]: st.session_state[ek] = [{"client": "", "content": ""}]
 
@@ -4488,7 +4482,16 @@ def _render_worklog_input_panel(selected: date) -> None:
                         else:
                             st.session_state[exp_key] = i == 0
 
-                    with st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=exp_key):
+                    # 항목 익스팬더: 같은 키가 한 run 에 두 번 등록되면 StreamlitDuplicateElementKey
+                    # 로 탭 전체가 흰 화면 크래시가 났다(일부 Streamlit 버전, 저장 데이터 로드 시).
+                    # 중복이면 유니크 키로 재생성해 크래시를 원천 차단(정상 경우는 안정 키 그대로).
+                    try:
+                        _exp_ctx = st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=exp_key)
+                    except _WLDupKeyError:
+                        _dupc = int(st.session_state.get("_wl_exp_dedup_ctr", 0)) + 1
+                        st.session_state["_wl_exp_dedup_ctr"] = _dupc
+                        _exp_ctx = st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=f"{exp_key}__dup{_dupc}")
+                    with _exp_ctx:
                         st.button(
                             "이 항목 삭제",
                             key=f"wl_del_btn_{iso2}_{i}",
