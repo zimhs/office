@@ -92,8 +92,10 @@ class WorklogButtonRestoreTest(unittest.TestCase):
         self.assertIn("on_change=_on_wl_date_pick_change", src)
         self.assertIn("def apply_worklog_date_change", src)
         self.assertIn("def _set_wl_date_pick", src)
+        self.assertIn("def _render_worklog_date_toolbar", src)
         self.assertIn("consume_left_date_pick_move", src)
         self.assertIn("왼쪽 날짜칸을 3일처럼 바꾸면 이 일지 내용이 그 날짜로 이동합니다.", src)
+        self.assertNotIn('value=selected,', src)
         self.assertNotIn("if os.path.exists(worklog_path(picked)):", src)
         self.assertNotIn('st.session_state["wl_date_pick"] = selected', src)
 
