@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-07f · 날짜 바꾸고 저장하면 그 날짜에 기록"
+_WL_UI_BUILD = "2026-09-07g · 날짜 바꾸고 저장하면 그 날짜에 기록"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -4164,7 +4164,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
             args=(date.today().isoformat(),),
         )
 
-    st.caption("• = 저장됨 · 날짜를 바꾸면 • 도 그 날로 이동합니다")
+    st.caption("• = 저장됨 · 날짜를 바꾸고 저장하면 그 날짜에 기록됩니다")
     weeks = ["월", "화", "수", "목", "금", "토", "일"]
     head = st.columns(7, gap="small")
     for i, w in enumerate(weeks):
@@ -4565,6 +4565,8 @@ def _render_worklog_date_toolbar(selected: date) -> None:
         st.error(_date_err)
     elif os.path.exists(worklog_path(selected)):
         st.caption("저장됨 · 날짜를 바꾸고 저장하면 그 날짜에 기록됩니다.")
+    else:
+        st.caption("날짜를 바꾸고 저장하면 그 날짜에 기록됩니다.")
 
 
 def _render_worklog_input_panel(selected: date) -> None:
