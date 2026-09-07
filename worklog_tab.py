@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-07g · 날짜 바꾸고 저장하면 그 날짜에 기록"
+_WL_UI_BUILD = "2026-09-07h · 저장 전 날짜 변경 · 저장 시 예전 날짜 삭제"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1702,14 +1702,8 @@ def list_saved_worklog_dates() -> set[str]:
 
 
 def _saved_dates_for_calendar() -> set[str]:
-    """달력 • — 디스크 저장일 + 방금 옮긴 날짜."""
-    saved = set(list_saved_worklog_dates())
-    sel = st.session_state.get("worklog_selected")
-    if isinstance(sel, date):
-        iso = sel.isoformat()
-        if st.session_state.get(f"wl_saved_ok_{iso}") or os.path.exists(worklog_path(sel)):
-            saved.add(iso)
-    return saved
+    """달력 • — 실제로 저장된 날짜만. 날짜만 바꾼 상태는 예전 날에 •가 남는다."""
+    return set(list_saved_worklog_dates())
 
 def format_worklog_date(d: date) -> str:
     weeks = "월화수목금토일"
@@ -2037,7 +2031,7 @@ def _queue_worklog_save(iso: str) -> None:
     target_iso = iso
     if isinstance(picked, date):
         target_iso = picked.isoformat()
-        if isinstance(selected, date) and selected != picked:
+        if isinstance(selected, date) and selected != picked and not st.session_state.get("wl_date_retarget_from"):
             st.session_state["wl_date_retarget_from"] = selected.isoformat()
     st.session_state[f"wl_do_save_{target_iso}"] = True
     if target_iso != iso:
@@ -2310,9 +2304,9 @@ def apply_worklog_date_change(old: date, new: date) -> str:
 
 
 def retarget_worklog_editor_date(old: date, new: date) -> None:
-    """날짜칸만 바꾼다. 파일은 건드리지 않고 화면 내용만 새 날짜로 옮긴다.
+    """저장 전 날짜만 바꾼다. 파일·월별 시트는 건드리지 않는다.
 
-    저장은 사용자가 저장을 누를 때 새 날짜에 덮어 쓴다. 이미 있습니다 오류를 내지 않는다.
+    화면 내용만 새 날짜로 옮긴다. 예전 날짜 데이터는 저장 버튼을 누를 때 삭제한다.
     """
     if old == new:
         return
@@ -2339,30 +2333,23 @@ def retarget_worklog_editor_date(old: date, new: date) -> None:
         "entries": entries, "next": next_txt, "notes": notes_txt, "msg": "",
     }
     _seed_day_entry_widgets(new, entries, next_txt, notes_txt)
-    _mark_worklog_day_writable(new, had_local=True)
+    st.session_state.pop(f"wl_saved_ok_{new.isoformat()}", None)
     st.session_state.pop("wl_date_err", None)
     st.session_state.pop("wl_pending_date_change", None)
 
 
 def commit_worklog_date_save(source: date, target: date, cells: dict) -> str:
-    """화면 내용을 target 날짜에 덮어 저장한다. 이미 있습니다로 막지 않는다.
+    """고른 날짜에 덮어 저장하고, 예전 날짜 데이터는 삭제한다.
 
-    source가 다르면 예전 날짜 로컬·월별 시트를 지운다.
+    로컬 일자파일·월별 시트·달력 • 까지 지운다. 이미 있습니다로 막지 않는다.
     """
     cells = dict(cells or {})
     cells["date"] = format_worklog_date(target)
     path = save_worklog_cells(target, cells, force=True, allow_overwrite=True)
     if source != target:
-        try:
-            delete_worklog_day(source, remote=False)
-        except Exception:
-            pass
+        delete_worklog_day(source, remote=False)
         try:
             _schedule_worklog_remote_delete(source)
-        except Exception:
-            pass
-        try:
-            _clear_date_widget_state(source)
         except Exception:
             pass
     _switch_worklog_selected_date(target)
@@ -2387,7 +2374,7 @@ def consume_left_date_pick_move(selected: date) -> tuple[date, bool]:
 
 
 def _on_wl_date_pick_change() -> None:
-    """왼쪽 날짜칸 변경 — 화면만 새 날짜로. 저장은 저장 버튼에서 그 날짜에 덮어 쓴다."""
+    """저장 전 날짜만 바꾼다. 파일은 저장 버튼에서 기록한다."""
     st.session_state["_wl_date_pick_live"] = False
     picked = st.session_state.get("wl_date_pick")
     selected = st.session_state.get("worklog_selected")
@@ -4164,7 +4151,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
             args=(date.today().isoformat(),),
         )
 
-    st.caption("• = 저장됨 · 날짜를 바꾸고 저장하면 그 날짜에 기록됩니다")
+    st.caption("• = 저장됨 · 저장 전에 날짜를 바꾸세요. 저장하면 예전 날짜는 삭제됩니다")
     weeks = ["월", "화", "수", "목", "금", "토", "일"]
     head = st.columns(7, gap="small")
     for i, w in enumerate(weeks):
@@ -4542,7 +4529,7 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             format="YYYY/MM/DD",
             key="wl_date_pick",
             on_change=_on_wl_date_pick_change,
-            help="날짜를 바꾼 뒤 저장을 누르면 이 내용이 그 날짜에 저장됩니다.",
+            help="저장 전에 날짜를 바꿀 수 있습니다. 저장하면 예전 날짜 데이터는 삭제됩니다.",
         )
         st.session_state["_wl_date_pick_live"] = True
     with bar_cal:
@@ -4564,9 +4551,9 @@ def _render_worklog_date_toolbar(selected: date) -> None:
     if _date_err:
         st.error(_date_err)
     elif os.path.exists(worklog_path(selected)):
-        st.caption("저장됨 · 날짜를 바꾸고 저장하면 그 날짜에 기록됩니다.")
+        st.caption("저장됨 · 저장 전에 날짜를 바꿀 수 있습니다. 저장하면 예전 날짜 기록은 삭제됩니다.")
     else:
-        st.caption("날짜를 바꾸고 저장하면 그 날짜에 기록됩니다.")
+        st.caption("저장 전에 날짜를 바꿀 수 있습니다. 저장하면 예전 날짜 기록은 삭제됩니다.")
 
 
 def _render_worklog_input_panel(selected: date) -> None:
