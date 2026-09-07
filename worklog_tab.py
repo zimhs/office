@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-06g · 달력 •도 3일로 이동"
+_WL_UI_BUILD = "2026-09-06h · 날짜칸 위젯 예외 제거"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -2210,11 +2210,28 @@ def _mark_worklog_day_writable(d: date, *, had_local: bool) -> None:
         st.session_state[f"wl_saved_ok_{iso}"] = True
 
 
+def _flush_queued_date_pick() -> None:
+    """날짜칸 위젯을 그리기 전에, 이전 런에서 미뤄 둔 값을 넣는다."""
+    nxt = st.session_state.pop("_wl_date_pick_next", None)
+    if isinstance(nxt, date):
+        st.session_state["wl_date_pick"] = nxt
+        st.session_state["wl_date_sync"] = nxt.isoformat()
+
+
+def _set_wl_date_pick(d: date) -> None:
+    """날짜칸 키는 위젯 생성 뒤에 쓰면 StreamlitAPIException → 다음 런으로 미룬다."""
+    try:
+        st.session_state["wl_date_pick"] = d
+        st.session_state["wl_date_sync"] = d.isoformat()
+    except StreamlitAPIException:
+        st.session_state["_wl_date_pick_next"] = d
+        st.session_state["wl_date_sync"] = d.isoformat()
+
+
 def _switch_worklog_selected_date(new: date) -> None:
     st.session_state["worklog_selected"] = new
     st.session_state["worklog_month"] = date(new.year, new.month, 1)
-    st.session_state["wl_date_pick"] = new
-    st.session_state["wl_date_sync"] = new.isoformat()
+    _set_wl_date_pick(new)
 
 
 def apply_worklog_date_change(old: date, new: date) -> str:
@@ -4365,6 +4382,7 @@ def _wl_finish_edit_fragment() -> None:
 
 def _render_worklog_input_panel(selected: date) -> None:
     """오른쪽 게이지+입력. 칸 이동 시 published 스냅샷 갱신(동일 fragment rerun)."""
+    _flush_queued_date_pick()
     if _run_pending_worklog_day_delete():
         selected = st.session_state.get("worklog_selected") or selected
         _wl_rerun(full=True)
@@ -4405,8 +4423,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                         err = apply_worklog_date_change(selected, clicked)
                         if err:
                             st.session_state["wl_date_err"] = err
-                            st.session_state["wl_date_pick"] = selected
-                            st.session_state["wl_date_sync"] = selected.isoformat()
+                            _set_wl_date_pick(selected)
                         _wl_rerun(full=True)
                         return
             with bar_del:
@@ -4434,8 +4451,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                 err = apply_worklog_date_change(selected, picked)
                 if err:
                     st.session_state["wl_date_err"] = err
-                    st.session_state["wl_date_pick"] = selected
-                    st.session_state["wl_date_sync"] = selected.isoformat()
+                    _set_wl_date_pick(selected)
                 _wl_rerun(full=True)
                 return
 
@@ -5028,6 +5044,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         st.session_state["worklog_selected"] = date.today()
     selected: date = st.session_state["worklog_selected"]
 
+    _flush_queued_date_pick()
     _run_pending_worklog_day_delete()
     if _run_pending_worklog_date_change():
         selected = st.session_state.get("worklog_selected") or selected
@@ -5044,9 +5061,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         _render_worklog_print_panel()
         return
 
+    _flush_queued_date_pick()
     if not st.session_state.get("wl_pending_date_change") and st.session_state.get("wl_date_sync") != selected.isoformat():
-        st.session_state["wl_date_pick"] = selected
-        st.session_state["wl_date_sync"] = selected.isoformat()
+        _set_wl_date_pick(selected)
 
     st.markdown(
         """<style>div[class*="st-key-wl_del_day_open"] button, div[class*="st-key-wl_del_day_yes"] button { font-size: 0.72rem !important; padding: 0.12rem 0.4rem !important; min-height: 1.55rem !important; }</style>""",
