@@ -464,6 +464,39 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "3일 내용")
         self.assertEqual((self.ss.get(self.wt._entries_key(new)) or [{}])[0].get("content"), "3일 내용")
 
+    def test_calendar_empty_day_opens_without_moving(self):
+        """오른쪽 달력의 빈 날짜는 보기만. 왼쪽 날짜칸처럼 내용을 옮기지 않는다."""
+        old, new = date(2026, 9, 7), date(2026, 9, 3)
+        self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
+        self.ss["worklog_selected"] = old
+        self.ss[self.wt._boot_key(old)] = True
+        self.ss[self.wt._entries_key(old)] = [{"client": "거래처7", "content": "7일 내용", "lines": ["7일 내용"]}]
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
+            self.wt._on_wl_cal_day(new.isoformat())
+        self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertEqual(self.wt.read_worklog_cells(old).get("G8"), "7일 내용")
+        self.assertFalse(self.ss.get("wl_date_retarget_from"))
+        self.assertNotIn(old.isoformat(), self.ss.get("wl_purge_dates") or [])
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(new)))
+
+    def test_confirm_delete_closes_popover_on_flush(self):
+        """확정 클릭 후 위젯을 그리기 전에 팝업 인스턴스를 올려 닫는다."""
+        d = date(2026, 9, 3)
+        self.ss["worklog_selected"] = d
+        self.ss["wl_del_day_inst"] = 0
+        self.ss["wl_del_day_open_0"] = True
+        self.wt._on_confirm_delete_day()
+        self.assertEqual(self.ss.get("wl_do_delete_day"), d.isoformat())
+        self.assertTrue(self.ss.get("wl_del_day_force_close"))
+        self.assertEqual(self.wt._worklog_delete_popover_key(), "wl_del_day_open_0")
+        self.wt._flush_worklog_delete_popover()
+        self.assertFalse(self.ss.get("wl_del_day_force_close"))
+        self.assertEqual(self.ss.get("wl_del_day_inst"), 1)
+        self.assertEqual(self.wt._worklog_delete_popover_key(), "wl_del_day_open_1")
+        self.assertFalse(self.ss.get("wl_del_day_open_1"))
+        self.assertIs(self.ss.get("wl_del_day_open_0"), False)
+
     def test_delete_old_date_does_not_wipe_moved_date(self):
         """예전 날짜 삭제 버튼은 그 날만 지우고, 옮긴 날짜 데이터는 남긴다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
