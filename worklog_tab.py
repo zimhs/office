@@ -1909,13 +1909,19 @@ def _flush_worklog_delete_popover() -> None:
     st.session_state[f"wl_del_day_open_{new_inst}"] = False
 
 
+def _on_cancel_delete_day() -> None:
+    """삭제 인라인 확인 취소 — 확인 UI만 닫는다."""
+    st.session_state["wl_del_confirm_open"] = False
+
+
 def _on_confirm_delete_day() -> None:
-    """확정 on_click — 삭제를 예약하고 팝업 닫힘을 다음 렌더에서 확정한다."""
+    """확정 on_click — 삭제를 예약하고 인라인 확인 UI를 닫는다."""
     d = st.session_state.get("worklog_selected")
     if isinstance(d, date):
         st.session_state["wl_do_delete_day"] = d.isoformat()
     elif isinstance(d, str) and d:
         st.session_state["wl_do_delete_day"] = d
+    st.session_state["wl_del_confirm_open"] = False
     _queue_close_delete_popover()
 
 
@@ -4279,16 +4285,16 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             _render_month_calendar(selected, saved)
     with bar_del:
         st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
-        _flush_worklog_delete_popover()
-        with st.popover("삭제", width="content", key=_worklog_delete_popover_key()):
-            st.caption(f"{selected.isoformat()} 일지만 삭제 · 다른 날짜는 그대로 둡니다")
-            st.button(
-                "확정",
-                type="primary",
-                width="content",
-                key="wl_del_day_yes",
-                on_click=_on_confirm_delete_day,
-            )
+        if st.button("삭제", width="content", key="wl_del_open_btn"):
+            st.session_state["wl_del_confirm_open"] = True
+    # 삭제 확인 — 팝오버 대신 세션 상태 기반 인라인 UI. 확정/취소 후 확실히 사라진다.
+    # (st.popover 를 코드로 닫으면 프론트가 다시 열어버려 '깜박→부활'하는 문제를 회피)
+    if st.session_state.get("wl_del_confirm_open"):
+        with st.container(border=True):
+            st.caption(f"🗑️ {selected.isoformat()} 일지만 삭제 · 다른 날짜는 그대로 둡니다")
+            _dc1, _dc2 = st.columns([1, 1], gap="small")
+            _dc1.button("확정 삭제", type="primary", width="stretch", key="wl_del_day_yes", on_click=_on_confirm_delete_day)
+            _dc2.button("취소", width="stretch", key="wl_del_day_no", on_click=_on_cancel_delete_day)
     _date_err = st.session_state.pop("wl_date_err", None)
     if _date_err:
         st.error(_date_err)
