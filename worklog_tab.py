@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-07b · 왼쪽 날짜칸이면 내용 이동"
+_WL_UI_BUILD = "2026-09-07g · 날짜 바꾸고 저장하면 그 날짜에 기록"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1227,8 +1227,13 @@ def _invalidate_worklog_presence_cache(d: date | None = None) -> None:
     """날짜 존재 캐시 무효화 (저장·삭제 후)."""
     if d is not None:
         iso = d.isoformat()
-        st.session_state.pop(f"wl_arch_exists_{iso}", None)
-        st.session_state.pop(f"wl_presence_{iso}", None)
+        for k in (
+            f"wl_arch_exists_{iso}",
+            f"wl_presence_{iso}",
+            f"wl_presence_{iso}_fast",
+            f"wl_presence_{iso}_all",
+        ):
+            st.session_state.pop(k, None)
         return
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and (k.startswith("wl_arch_exists_") or k.startswith("wl_presence_")):
@@ -1361,19 +1366,29 @@ def detect_worklog_date_presence(d: date, *, include_remote: bool = True) -> dic
 def check_worklog_save_allowed(d: date, *, had_local_at_open: bool) -> tuple[bool, str]:
     """날짜 중복 시 후입력 저장 차단.
 
-    로컬 캐시·월별 xlsx(Desktop/업무/일지)만 차단.
+    달력에 • 가 없는 날은 무조건 허용한다 (빈 시트·남은 일자파일·캐시 불일치).
+    • 가 있어도 칸이 비어 있으면 허용. 실제 내용이 있는 • 날만 차단.
+    had_local_at_open=True(덮어쓰기/이미 연 날)면 로컬 파일이 없어도 허용.
     Cloud Gist·Drive에만 있으면 맥 로컬 저장은 허용 (저장 시 로컬+아카이브 반영).
     """
-    if had_local_at_open and os.path.isfile(worklog_path(d)):
+    if had_local_at_open:
         return True, ""
-    local = os.path.isfile(worklog_path(d))
-    archive = worklog_date_exists_in_archive(d) if not local else False
-    if not local and not archive:
+    iso = d.isoformat()
+    if iso not in _saved_dates_for_calendar():
+        return True, ""
+    local_has = False
+    if os.path.isfile(worklog_path(d)):
+        try:
+            local_has = _worklog_cells_have_draft(read_worklog_cells(d))
+        except Exception:
+            local_has = True
+    archive_has = worklog_archive_has_saved_content(d) if not local_has else False
+    if not local_has and not archive_has:
         return True, ""
     locs: list[str] = []
-    if local:
+    if local_has:
         locs.append("로컬 캐시")
-    if archive:
+    if archive_has:
         root = resolve_worklog_archive_root()
         if root:
             locs.append(f"일지/{d.year}/{d.month}월.xlsx")
@@ -2016,15 +2031,17 @@ def _merge_day_action_flags(*groups: dict | None) -> dict:
 
 
 def _queue_worklog_save(iso: str) -> None:
-    """저장 버튼 on_click — 날짜칸이 바뀌었으면 그 날짜로 저장한다."""
+    """저장 버튼 on_click — 날짜칸이 가리키는 날에 덮어 저장한다."""
     picked = st.session_state.get("wl_date_pick")
     selected = st.session_state.get("worklog_selected")
     target_iso = iso
     if isinstance(picked, date):
         target_iso = picked.isoformat()
         if isinstance(selected, date) and selected != picked:
-            st.session_state["wl_pending_date_change"] = (selected.isoformat(), target_iso)
+            st.session_state["wl_date_retarget_from"] = selected.isoformat()
     st.session_state[f"wl_do_save_{target_iso}"] = True
+    if target_iso != iso:
+        st.session_state[f"wl_do_save_{iso}"] = True
 
 
 def _queue_worklog_add(iso: str) -> None:
@@ -2142,6 +2159,42 @@ def _worklog_cells_have_draft(cells: dict | None) -> bool:
     return any(str(src.get(f"D{r}", "") or "").strip() for r in WL_NEXT_ROWS + WL_NOTE_ROWS)
 
 
+def _read_leftover_archive_day_cells(d: date) -> dict | None:
+    """구 경로 일자파일(…/2026/2026-09-03.xlsx)에 내용이 있으면 읽는다."""
+    if load_workbook is None:
+        return None
+    year_dir = worklog_archive_year_dir(d, create=False)
+    if not year_dir:
+        return None
+    for p in (
+        os.path.join(year_dir, f"{d.isoformat()}.xlsx"),
+        os.path.join(year_dir, f"{d.month}월", f"{d.isoformat()}.xlsx"),
+    ):
+        if not os.path.isfile(p):
+            continue
+        try:
+            wb = load_workbook(p, data_only=False)
+            try:
+                return _cells_from_worksheet(wb.active, d)
+            finally:
+                wb.close()
+        except Exception:
+            continue
+    return None
+
+
+def worklog_archive_has_saved_content(d: date) -> bool:
+    """월별 시트·구 일자파일에 실제 입력(거래처/내용/예정/비고)이 있는지.
+
+    시트만 있고 칸이 비어 있으면 False — 달력 • 없는 날과 같게 취급한다.
+    """
+    cells = read_worklog_cells_from_archive(d)
+    if cells is not None and _worklog_cells_have_draft(cells):
+        return True
+    leftover = _read_leftover_archive_day_cells(d)
+    return leftover is not None and _worklog_cells_have_draft(leftover)
+
+
 def _worklog_day_is_persisted(d: date) -> bool:
     """로컬 파일·월별 시트·방금 저장 표시가 있으면 저장된 날."""
     iso = d.isoformat()
@@ -2256,48 +2309,111 @@ def apply_worklog_date_change(old: date, new: date) -> str:
     return ""
 
 
-def consume_left_date_pick_move(selected: date) -> tuple[date, bool]:
-    """왼쪽 날짜칸(wl_date_pick)이 selected와 다르면 이 일지 내용을 그 날짜로 옮긴다.
+def retarget_worklog_editor_date(old: date, new: date) -> None:
+    """날짜칸만 바꾼다. 파일은 건드리지 않고 화면 내용만 새 날짜로 옮긴다.
 
-    위젯을 그리기 전에 호출한다. (처리된 날짜, 이동/전환을 시도했는지).
+    저장은 사용자가 저장을 누를 때 새 날짜에 덮어 쓴다. 이미 있습니다 오류를 내지 않는다.
     """
+    if old == new:
+        return
+    try:
+        cells = _cells_from_widgets(old)
+    except Exception:
+        cells = read_worklog_cells(old)
+    cells = dict(cells or _empty_cells(new))
+    cells["date"] = format_worklog_date(new)
+    entries = _grouped_entries_from_cells(cells) or [{"client": "", "content": "", "lines": [""], "blank_after": 1}]
+    _, nd, nt = _entries_from_cells(cells)
+    next_txt = "\n".join(nd)
+    notes_txt = "\n".join(nt)
+    if not st.session_state.get("wl_date_retarget_from"):
+        st.session_state["wl_date_retarget_from"] = old.isoformat()
+    _clear_date_widget_state(old)
+    _switch_worklog_selected_date(new)
+    st.session_state[_boot_key(new)] = True
+    st.session_state[_entries_key(new)] = entries
+    st.session_state[_next_key(new)] = next_txt
+    st.session_state[_notes_key(new)] = notes_txt
+    st.session_state[f"wl_entry_count_{new.isoformat()}"] = len(entries)
+    st.session_state[f"wl_pending_sync_{new.isoformat()}"] = {
+        "entries": entries, "next": next_txt, "notes": notes_txt, "msg": "",
+    }
+    _seed_day_entry_widgets(new, entries, next_txt, notes_txt)
+    _mark_worklog_day_writable(new, had_local=True)
+    st.session_state.pop("wl_date_err", None)
+    st.session_state.pop("wl_pending_date_change", None)
+
+
+def commit_worklog_date_save(source: date, target: date, cells: dict) -> str:
+    """화면 내용을 target 날짜에 덮어 저장한다. 이미 있습니다로 막지 않는다.
+
+    source가 다르면 예전 날짜 로컬·월별 시트를 지운다.
+    """
+    cells = dict(cells or {})
+    cells["date"] = format_worklog_date(target)
+    path = save_worklog_cells(target, cells, force=True, allow_overwrite=True)
+    if source != target:
+        try:
+            delete_worklog_day(source, remote=False)
+        except Exception:
+            pass
+        try:
+            _schedule_worklog_remote_delete(source)
+        except Exception:
+            pass
+        try:
+            _clear_date_widget_state(source)
+        except Exception:
+            pass
+    _switch_worklog_selected_date(target)
+    _mark_worklog_day_writable(target, had_local=True)
+    st.session_state.pop("wl_date_err", None)
+    st.session_state.pop("wl_date_retarget_from", None)
+    st.session_state.pop("wl_pending_date_change", None)
+    _invalidate_saved_dates_cache()
+    _invalidate_worklog_presence_cache(source)
+    _invalidate_worklog_presence_cache(target)
+    return path
+
+
+def consume_left_date_pick_move(selected: date) -> tuple[date, bool]:
+    """왼쪽 날짜칸이 selected와 다르면 화면 내용만 그 날짜로 옮긴다. 파일 저장은 하지 않는다."""
     picked = st.session_state.get("wl_date_pick")
     if not isinstance(picked, date) or picked == selected:
         return selected, False
-    err = apply_worklog_date_change(selected, picked)
-    if err:
-        st.session_state["wl_date_err"] = err
-        _set_wl_date_pick(selected)
-        return selected, True
-    st.session_state.pop("wl_date_err", None)
+    retarget_worklog_editor_date(selected, picked)
     st.session_state["wl_need_app_rerun"] = True
-    return st.session_state.get("worklog_selected") or picked, True
+    return picked, True
 
 
 def _on_wl_date_pick_change() -> None:
-    """왼쪽 업무일지 날짜칸 변경 = 이 일지를 그 날짜로 이동.
-
-    fragment 안에서는 콜백 직후 스크립트가 끊길 수 있어, 이동을 여기서 바로 적용하고
-    다음 런 시작용 pending도 남겨 둔다. 위젯 키는 콜백에서만 되돌린다.
-    """
+    """왼쪽 날짜칸 변경 — 화면만 새 날짜로. 저장은 저장 버튼에서 그 날짜에 덮어 쓴다."""
     st.session_state["_wl_date_pick_live"] = False
     picked = st.session_state.get("wl_date_pick")
     selected = st.session_state.get("worklog_selected")
     if not isinstance(picked, date) or not isinstance(selected, date) or picked == selected:
         return
-    st.session_state["wl_pending_date_change"] = (selected.isoformat(), picked.isoformat())
-    err = apply_worklog_date_change(selected, picked)
-    if err:
-        st.session_state.pop("wl_pending_date_change", None)
-        st.session_state["wl_date_err"] = err
-        _set_wl_date_pick(selected)
-        st.session_state["worklog_selected"] = selected
+    retarget_worklog_editor_date(selected, picked)
+    st.session_state["wl_need_app_rerun"] = True
+
+
+def _on_wl_cal_day(iso: str) -> None:
+    """오른쪽 달력 날짜 버튼 — 화면만 그 날짜로."""
+    try:
+        new = date.fromisoformat(iso)
+    except ValueError:
         return
+    st.session_state["worklog_month"] = date(new.year, new.month, 1)
+    old = st.session_state.get("worklog_selected")
+    if not isinstance(old, date) or old == new:
+        return
+    st.session_state["_wl_date_pick_live"] = False
+    retarget_worklog_editor_date(old, new)
     st.session_state["wl_need_app_rerun"] = True
 
 
 def _run_pending_worklog_date_change() -> bool:
-    """대기 중인 날짜 변경을 적용. 처리했으면 True."""
+    """대기 중인 날짜 변경은 화면만 옮긴다. 파일은 저장 버튼에서 기록한다."""
     pending = st.session_state.pop("wl_pending_date_change", None)
     if not pending:
         return False
@@ -2308,12 +2424,7 @@ def _run_pending_worklog_date_change() -> bool:
         return False
     old_flags = _take_day_action_flags(old.isoformat())
     new_flags = _take_day_action_flags(new.isoformat())
-    err = apply_worklog_date_change(old, new)
-    if err:
-        st.session_state["wl_date_err"] = err
-        _switch_worklog_selected_date(old)
-        _put_day_action_flags(old.isoformat(), old_flags)
-        return True
+    retarget_worklog_editor_date(old, new)
     st.session_state.pop("wl_date_err", None)
     _put_day_action_flags(new.isoformat(), _merge_day_action_flags(old_flags, new_flags))
     st.session_state["wl_need_app_rerun"] = True
@@ -4045,18 +4156,15 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
     with nav[2]:
         st.markdown(f"<div style='text-align:center;font-weight:700;font-size:12px;padding:2px 0;line-height:1.2;'>{month_anchor.year}년 {month_anchor.month}월</div>", unsafe_allow_html=True)
     with nav[3]:
-        if st.button("오늘", key="wl_today", width="stretch"):
-            today = date.today()
-            if today != selected:
-                err = apply_worklog_date_change(selected, today)
-                if err:
-                    st.session_state["wl_date_err"] = err
-                _wl_rerun(full=True)
-            else:
-                st.session_state["worklog_month"] = date(today.year, today.month, 1)
-                _wl_rerun()
+        st.button(
+            "오늘",
+            key="wl_today",
+            width="stretch",
+            on_click=_on_wl_cal_day,
+            args=(date.today().isoformat(),),
+        )
 
-    st.caption("• = 저장됨 · 날짜를 바꾸면 • 도 그 날로 이동합니다")
+    st.caption("• = 저장됨 · 날짜를 바꾸고 저장하면 그 날짜에 기록됩니다")
     weeks = ["월", "화", "수", "목", "금", "토", "일"]
     head = st.columns(7, gap="small")
     for i, w in enumerate(weeks):
@@ -4076,7 +4184,14 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
                 is_sel = d == selected
                 has = d.isoformat() in saved
                 label = f"{day}•" if has else f"{day}"
-                if st.button(label, key=f"wl_day_{d.isoformat()}", width="stretch", type="primary" if is_sel else "secondary"): clicked = d
+                st.button(
+                    label,
+                    key=f"wl_day_{d.isoformat()}",
+                    width="stretch",
+                    type="primary" if is_sel else "secondary",
+                    on_click=_on_wl_cal_day,
+                    args=(d.isoformat(),),
+                )
     return clicked
 
 
@@ -4415,24 +4530,56 @@ def _wl_finish_edit_fragment() -> None:
 
 
 
+def _render_worklog_date_toolbar(selected: date) -> None:
+    """날짜칸·달력·삭제. fragment 밖에 두어 날짜를 바꾸면 전체 rerun으로 내용이 이동한다."""
+    saved = _saved_dates_for_calendar()
+    bar_date, bar_cal, bar_del = st.columns([2.4, 1.1, 0.7], gap="small")
+    with bar_date:
+        if "wl_date_pick" not in st.session_state:
+            _set_wl_date_pick(selected)
+        st.date_input(
+            "업무일지 날짜",
+            format="YYYY/MM/DD",
+            key="wl_date_pick",
+            on_change=_on_wl_date_pick_change,
+            help="날짜를 바꾼 뒤 저장을 누르면 이 내용이 그 날짜에 저장됩니다.",
+        )
+        st.session_state["_wl_date_pick_live"] = True
+    with bar_cal:
+        st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
+        with st.popover("📅 달력", width="content"):
+            _render_month_calendar(selected, saved)
+    with bar_del:
+        st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
+        with st.popover("삭제", width="content", key="wl_del_day_open", on_change="rerun"):
+            st.caption("이 날짜 일지 전체 삭제")
+            st.button(
+                "확정",
+                type="primary",
+                width="content",
+                key="wl_del_day_yes",
+                on_click=_on_confirm_delete_day,
+            )
+    _date_err = st.session_state.pop("wl_date_err", None)
+    if _date_err:
+        st.error(_date_err)
+    elif os.path.exists(worklog_path(selected)):
+        st.caption("저장됨 · 날짜를 바꾸고 저장하면 그 날짜에 기록됩니다.")
+    else:
+        st.caption("날짜를 바꾸고 저장하면 그 날짜에 기록됩니다.")
+
+
 def _render_worklog_input_panel(selected: date) -> None:
     """오른쪽 게이지+입력. 칸 이동 시 published 스냅샷 갱신(동일 fragment rerun)."""
-    _flush_queued_date_pick()
     if _run_pending_worklog_day_delete():
         selected = st.session_state.get("worklog_selected") or selected
         _wl_rerun(full=True)
         return
-    if _run_pending_worklog_date_change():
+    if _run_pending_worklog_date_change() or st.session_state.pop("wl_need_app_rerun", None):
         selected = st.session_state.get("worklog_selected") or selected
         _wl_rerun(full=True)
         return
-    # 왼쪽 날짜칸은 fragment 안에서만 바뀌므로, 위젯을 그리기 전에 내용 이동을 끝낸다.
-    selected, _left_moved = consume_left_date_pick_move(selected)
-    if _left_moved or st.session_state.pop("wl_need_app_rerun", None):
-        _wl_rerun(full=True)
-        return
 
-    saved = _saved_dates_for_calendar()
     try:
         _gauge_usage = _content_row_usage(_read_editor_entries(selected))
     except Exception:
@@ -4443,60 +4590,9 @@ def _render_worklog_input_panel(selected: date) -> None:
             _render_row_remain_gauge(_gauge_usage, height_px=700)
 
     with col_input:
-            st.markdown("##### 업무 입력")
-            bar_date, bar_cal, bar_del = st.columns([2.4, 1.1, 0.7], gap="small")
-            with bar_date:
-                picked = st.date_input(
-                    "업무일지 날짜",
-                    value=selected,
-                    format="YYYY/MM/DD",
-                    key="wl_date_pick",
-                    disabled=False,
-                    on_change=_on_wl_date_pick_change,
-                    help="왼쪽 날짜칸을 바꾸면 이 일지 내용이 그 날짜로 이동합니다.",
-                )
-                st.session_state["_wl_date_pick_live"] = True
-            with bar_cal:
-                st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
-                with st.popover("📅 달력", width="content"):
-                    clicked = _render_month_calendar(selected, saved)
-                    if clicked is not None and clicked != selected:
-                        err = apply_worklog_date_change(selected, clicked)
-                        if err:
-                            st.session_state["wl_date_err"] = err
-                            _set_wl_date_pick(selected)
-                        _wl_rerun(full=True)
-                        return
-            with bar_del:
-                st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
-                with st.popover("삭제", width="content", key="wl_del_day_open", on_change="rerun"):
-                    st.caption("이 날짜 일지 전체 삭제")
-                    st.button(
-                        "확정",
-                        type="primary",
-                        width="content",
-                        key="wl_del_day_yes",
-                        on_click=_on_confirm_delete_day,
-                    )
-
             _iso_bar = selected.isoformat()
             _n_bar = int(st.session_state.get(f"wl_entry_count_{_iso_bar}", 1) or 1)
             _render_worklog_special_chars(_iso_bar, _n_bar)
-            _date_err = st.session_state.pop("wl_date_err", None)
-            if _date_err:
-                st.error(_date_err)
-            elif os.path.exists(worklog_path(selected)):
-                st.caption("저장됨 · 왼쪽 날짜칸을 3일처럼 바꾸면 이 일지 내용이 그 날짜로 이동합니다.")
-
-            if isinstance(picked, date) and picked != selected:
-                _, _late_moved = consume_left_date_pick_move(selected)
-                if not _late_moved:
-                    err = apply_worklog_date_change(selected, picked)
-                    if err:
-                        st.session_state["wl_date_err"] = err
-                        _set_wl_date_pick(selected)
-                _wl_rerun(full=True)
-                return
 
             iso = selected.isoformat()
             ek = _entries_key(selected)
@@ -4759,33 +4855,34 @@ def _render_worklog_input_panel(selected: date) -> None:
                 )
                 if do_save:
                     try:
+                        source_d = d
                         picked = st.session_state.get("wl_date_pick")
-                        if isinstance(picked, date) and picked != d:
-                            err = apply_worklog_date_change(d, picked)
-                            if err:
-                                raise WorklogSaveBlockedError(err)
-                            d = picked
-                            iso2 = d.isoformat()
-                        entries_now = _read_editor_entries(d)
+                        retarget_from = st.session_state.get("wl_date_retarget_from")
+                        if isinstance(retarget_from, str) and retarget_from:
+                            try:
+                                source_d = date.fromisoformat(retarget_from)
+                            except ValueError:
+                                source_d = d
+                        target_d = picked if isinstance(picked, date) else d
+                        pack_d = d
+                        pack_iso = pack_d.isoformat()
+                        entries_now = _read_editor_entries(pack_d)
                         usage_now = _content_row_usage(entries_now)
                         if usage_now.get("overflow"):
                             st.error(f"내용칸 용량 초과: {usage_now['used']}/{usage_now['total']}행. 칸을 줄이거나 항목 사이 빈 칸 수를 낮춘 뒤 다시 저장하세요.")
                         else:
-                            next_txt = str(st.session_state.get(f"wl_next_area_{iso2}", "") or "")
-                            notes_txt = str(st.session_state.get(f"wl_notes_area_{iso2}", "") or "")
+                            next_txt = str(st.session_state.get(f"wl_next_area_{pack_iso}", "") or "")
+                            notes_txt = str(st.session_state.get(f"wl_notes_area_{pack_iso}", "") or "")
                             cells = _pack_entries_to_cells(
-                                d, entries_now,
+                                target_d, entries_now,
                                 _textarea_lines(next_txt),
                                 _textarea_lines(notes_txt),
                             )
-                            open_ctx = st.session_state.get(f"wl_open_ctx_{iso2}") or {}
-                            had_local = bool(open_ctx.get("had_local")) or bool(st.session_state.get(f"wl_saved_ok_{iso2}"))
-                            if not had_local and os.path.isfile(worklog_path(d)):
-                                had_local = True
-                            # 저장 클릭 = 날짜칸 기준 로컬·아카이브·Drive·Cloud 반영
-                            path = save_worklog_cells(d, cells, force=True, allow_overwrite=had_local)
+                            path = commit_worklog_date_save(source_d, target_d, cells)
+                            d = target_d
+                            iso2 = d.isoformat()
                             st.session_state[f"wl_saved_ok_{iso2}"] = True
-                            ctx = dict(open_ctx)
+                            ctx = dict(st.session_state.get(f"wl_open_ctx_{iso2}") or {})
                             ctx["had_local"] = True
                             st.session_state[f"wl_open_ctx_{iso2}"] = ctx
                             _publish_view_cells(d, cells)
@@ -5108,8 +5205,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         _render_worklog_print_panel()
         return
 
-    _flush_queued_date_pick()
-    if not st.session_state.get("wl_pending_date_change") and st.session_state.get("wl_date_sync") != selected.isoformat():
+    if "wl_date_pick" not in st.session_state:
         _set_wl_date_pick(selected)
 
     st.markdown(
@@ -5191,4 +5287,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     with col_preview:
         _worklog_left()
     with col_edit:
+        st.markdown("##### 업무 입력")
+        _render_worklog_date_toolbar(st.session_state.get("worklog_selected") or selected)
         _worklog_right()
