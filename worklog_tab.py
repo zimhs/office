@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-07b · 왼쪽 날짜칸이면 내용 이동"
+_WL_UI_BUILD = "2026-09-07c · 빈 날짜는 저장 허용"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1227,8 +1227,13 @@ def _invalidate_worklog_presence_cache(d: date | None = None) -> None:
     """날짜 존재 캐시 무효화 (저장·삭제 후)."""
     if d is not None:
         iso = d.isoformat()
-        st.session_state.pop(f"wl_arch_exists_{iso}", None)
-        st.session_state.pop(f"wl_presence_{iso}", None)
+        for k in (
+            f"wl_arch_exists_{iso}",
+            f"wl_presence_{iso}",
+            f"wl_presence_{iso}_fast",
+            f"wl_presence_{iso}_all",
+        ):
+            st.session_state.pop(k, None)
         return
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and (k.startswith("wl_arch_exists_") or k.startswith("wl_presence_")):
@@ -1361,19 +1366,26 @@ def detect_worklog_date_presence(d: date, *, include_remote: bool = True) -> dic
 def check_worklog_save_allowed(d: date, *, had_local_at_open: bool) -> tuple[bool, str]:
     """날짜 중복 시 후입력 저장 차단.
 
-    로컬 캐시·월별 xlsx(Desktop/업무/일지)만 차단.
+    실제로 거래처/내용이 있는 로컬·월별 일지만 차단.
+    빈 시트·남은 일자파일처럼 달력 •가 없는 날은 저장·이동을 허용한다.
+    had_local_at_open=True(덮어쓰기/이미 연 날)면 로컬 파일이 없어도 허용.
     Cloud Gist·Drive에만 있으면 맥 로컬 저장은 허용 (저장 시 로컬+아카이브 반영).
     """
-    if had_local_at_open and os.path.isfile(worklog_path(d)):
+    if had_local_at_open:
         return True, ""
-    local = os.path.isfile(worklog_path(d))
-    archive = worklog_date_exists_in_archive(d) if not local else False
-    if not local and not archive:
+    local_has = False
+    if os.path.isfile(worklog_path(d)):
+        try:
+            local_has = _worklog_cells_have_draft(read_worklog_cells(d))
+        except Exception:
+            local_has = True
+    archive_has = worklog_archive_has_saved_content(d) if not local_has else False
+    if not local_has and not archive_has:
         return True, ""
     locs: list[str] = []
-    if local:
+    if local_has:
         locs.append("로컬 캐시")
-    if archive:
+    if archive_has:
         root = resolve_worklog_archive_root()
         if root:
             locs.append(f"일지/{d.year}/{d.month}월.xlsx")
@@ -2140,6 +2152,42 @@ def _worklog_cells_have_draft(cells: dict | None) -> bool:
     if any(str(src.get(f"G{r}", "") or "").strip() or str(src.get(f"C{r}", "") or "").strip() for r in WL_CONTENT_ROWS):
         return True
     return any(str(src.get(f"D{r}", "") or "").strip() for r in WL_NEXT_ROWS + WL_NOTE_ROWS)
+
+
+def _read_leftover_archive_day_cells(d: date) -> dict | None:
+    """구 경로 일자파일(…/2026/2026-09-03.xlsx)에 내용이 있으면 읽는다."""
+    if load_workbook is None:
+        return None
+    year_dir = worklog_archive_year_dir(d, create=False)
+    if not year_dir:
+        return None
+    for p in (
+        os.path.join(year_dir, f"{d.isoformat()}.xlsx"),
+        os.path.join(year_dir, f"{d.month}월", f"{d.isoformat()}.xlsx"),
+    ):
+        if not os.path.isfile(p):
+            continue
+        try:
+            wb = load_workbook(p, data_only=False)
+            try:
+                return _cells_from_worksheet(wb.active, d)
+            finally:
+                wb.close()
+        except Exception:
+            continue
+    return None
+
+
+def worklog_archive_has_saved_content(d: date) -> bool:
+    """월별 시트·구 일자파일에 실제 입력(거래처/내용/예정/비고)이 있는지.
+
+    시트만 있고 칸이 비어 있으면 False — 달력 • 없는 날과 같게 취급한다.
+    """
+    cells = read_worklog_cells_from_archive(d)
+    if cells is not None and _worklog_cells_have_draft(cells):
+        return True
+    leftover = _read_leftover_archive_day_cells(d)
+    return leftover is not None and _worklog_cells_have_draft(leftover)
 
 
 def _worklog_day_is_persisted(d: date) -> bool:
