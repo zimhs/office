@@ -4992,22 +4992,19 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
 
     _render_worklog_sync_ui()
 
-    col_preview, col_edit = st.columns([1, 1.14], gap="small")
-
+    # 업무일지 전체(미리보기+달력툴바+편집칸)를 하나의 fragment로 묶는다.
+    # 달력 날짜 클릭·월 이동 등 업무일지 내부 조작이 대시보드 12탭 전체를 다시 그리지 않고
+    # 업무일지 영역만 fragment 스코프로 갱신 → 달력 클릭/날짜 이동 로딩이 크게 짧아진다.
     @st.fragment
-    def _worklog_left() -> None:
+    def _worklog_body() -> None:
         sel: date = st.session_state.get("worklog_selected") or selected
-        _render_worklog_left_preview(sel)
+        col_preview, col_edit = st.columns([1, 1.14], gap="small")
+        with col_preview:
+            _render_worklog_left_preview(sel)
+        with col_edit:
+            st.markdown("##### 업무 입력")
+            _render_worklog_date_toolbar(sel)
+            _render_worklog_input_panel(sel)
+            _wl_finish_edit_fragment()
 
-    @st.fragment
-    def _worklog_right() -> None:
-        sel: date = st.session_state.get("worklog_selected") or selected
-        _render_worklog_input_panel(sel)
-        _wl_finish_edit_fragment()
-
-    with col_preview:
-        _worklog_left()
-    with col_edit:
-        st.markdown("##### 업무 입력")
-        _render_worklog_date_toolbar(st.session_state.get("worklog_selected") or selected)
-        _worklog_right()
+    _worklog_body()
