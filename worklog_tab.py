@@ -146,7 +146,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-07c · 빈 날짜는 저장 허용"
+_WL_UI_BUILD = "2026-09-07d · 달력 • 없는 날은 저장"
 
 
 class WorklogSaveBlockedError(Exception):
@@ -1366,12 +1366,15 @@ def detect_worklog_date_presence(d: date, *, include_remote: bool = True) -> dic
 def check_worklog_save_allowed(d: date, *, had_local_at_open: bool) -> tuple[bool, str]:
     """날짜 중복 시 후입력 저장 차단.
 
-    실제로 거래처/내용이 있는 로컬·월별 일지만 차단.
-    빈 시트·남은 일자파일처럼 달력 •가 없는 날은 저장·이동을 허용한다.
+    달력에 • 가 없는 날은 무조건 허용한다 (빈 시트·남은 일자파일·캐시 불일치).
+    • 가 있어도 칸이 비어 있으면 허용. 실제 내용이 있는 • 날만 차단.
     had_local_at_open=True(덮어쓰기/이미 연 날)면 로컬 파일이 없어도 허용.
     Cloud Gist·Drive에만 있으면 맥 로컬 저장은 허용 (저장 시 로컬+아카이브 반영).
     """
     if had_local_at_open:
+        return True, ""
+    iso = d.isoformat()
+    if iso not in _saved_dates_for_calendar():
         return True, ""
     local_has = False
     if os.path.isfile(worklog_path(d)):

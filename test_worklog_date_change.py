@@ -317,6 +317,39 @@ class WorklogDateChangeTest(unittest.TestCase):
                 dest, self._cells(dest, "후입력", "막혀야 함"), force=True, allow_overwrite=False,
             )
 
+    def test_no_calendar_dot_never_blocks(self):
+        """달력에 3일 •가 없으면, 아카이브에 파일이 있어도 저장·이동을 막지 않는다."""
+        dest = date(2026, 9, 3)
+        leftover = os.path.join(self.arch, "2026", f"{dest.isoformat()}.xlsx")
+        os.makedirs(os.path.dirname(leftover), exist_ok=True)
+        _write_template(leftover)
+        wb = load_workbook(leftover)
+        try:
+            wb.active["C8"] = "잔여"
+            wb.active["G8"] = "달력에 안 보이는 잔여"
+            wb.save(leftover)
+        finally:
+            wb.close()
+        self.assertTrue(self.wt.worklog_date_exists_in_archive(dest))
+        self.assertTrue(self.wt.worklog_archive_has_saved_content(dest))
+        self.assertNotIn(dest.isoformat(), self.wt._saved_dates_for_calendar())
+        ok, msg = self.wt.check_worklog_save_allowed(dest, had_local_at_open=False)
+        self.assertTrue(ok, msg)
+        src = date(2026, 9, 7)
+        self.wt.save_worklog_cells(src, self._cells(src, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
+            err = self.wt.apply_worklog_date_change(src, dest)
+        self.assertEqual(err, "")
+        self.assertEqual(self.wt.read_worklog_cells(dest).get("G8"), "7일 내용")
+
+    def test_stale_saved_cache_without_dot_allows_save(self):
+        dest = date(2026, 9, 3)
+        self._make_archive_only(dest, self._cells(dest, "기존", "있는 내용"))
+        self.ss["wl_saved_dates_cache"] = set()
+        self.assertNotIn(dest.isoformat(), self.wt._saved_dates_for_calendar())
+        ok, msg = self.wt.check_worklog_save_allowed(dest, had_local_at_open=False)
+        self.assertTrue(ok, msg)
+
 
 if __name__ == "__main__":
     unittest.main()
