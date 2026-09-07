@@ -94,16 +94,20 @@ class WorklogButtonRestoreTest(unittest.TestCase):
         self.assertIn("def _set_wl_date_pick", src)
         self.assertIn("def _render_worklog_date_toolbar", src)
         self.assertIn("consume_left_date_pick_move", src)
-        self.assertIn("저장 전에 날짜를 바꿀 수 있습니다. 저장하면 예전 날짜 기록은 삭제됩니다.", src)
+        self.assertIn("이미 저장된 데이터가 있으면 자료를 옮길 수 없습니다.", src)
+        self.assertIn("def try_retarget_worklog_editor_date", src)
         self.assertNotIn("날짜를 바꾸면 • 도 그 날로 이동합니다", src)
         self.assertIn("def commit_worklog_date_save", src)
         self.assertIn("allow_overwrite=True", src)
-        self.assertIn("2026-09-07i", src)
+        self.assertIn("2026-09-07j", src)
         self.assertIn("purge_worklog_day_files", src)
         self.assertIn("def _open_worklog_saved_date", src)
         self.assertNotIn('value=selected,', src)
         self.assertNotIn("if os.path.exists(worklog_path(picked)):", src)
         self.assertNotIn('st.session_state["wl_date_pick"] = selected', src)
+        self.assertIn("skip_remote_pull=True", src)
+        self.assertNotIn('["wl_need_app_rerun"] = True', src)
+        self.assertNotIn('["wl_need_app_rerun"] = 1', src)
 
 
 if __name__ == "__main__":
