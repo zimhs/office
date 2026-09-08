@@ -8939,7 +8939,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 73
+    _sticky_py_ver = 74
     components.html(
         """
         <script>
@@ -8994,19 +8994,18 @@ def inject_sticky_tabs_script():
             var lastViewportW = 0;
             var lastGeoKey = '';
             /* 고정바 하단과 본문 사이 목표 간격 (~4mm) */
-            var CONTENT_GAP_PX = cloudMode ? 36 : 15;
+            var CONTENT_GAP_PX = 15; /* ~4mm. 로컬 수치 유지. Cloud도 같은 간격 */
             function computeBarHeight(filterH, filterBox) {
                 var h = Math.max(48, Math.round(filterH || 0));
                 if (!cloudMode) return h;
-                /* Cloud: 고정바 실제 하단(viewport) − 본문 시작. 헤더 overlay 때문에
-                   필터 높이만 밀면 제목/버튼이 탭 밑에 들어간다. 로컬은 위 return. */
+                /* Cloud: 스페이서는 고정바 하단까지. 4mm는 탭패널 padding. 로컬은 위 return. */
                 try {
                     var box = filterBox || parentDoc.querySelector('.dashboard-filter-sticky');
                     if (box && isElementFixed(box)) {
                         var bottom = box.getBoundingClientRect().bottom;
                         var mainEl = parentDoc.querySelector('section.main');
                         var mainTop = mainEl ? mainEl.getBoundingClientRect().top : 0;
-                        var need = Math.round(bottom - mainTop) + 16;
+                        var need = Math.round(bottom - mainTop);
                         if (need > 48 && need < 420) h = Math.max(h, need);
                     } else {
                         h += Math.max(0, getTopOffsetMac());
@@ -9095,7 +9094,7 @@ def inject_sticky_tabs_script():
                     + 'html.dashboard-cloud-clipfix [data-testid="stTabs"]{'
                     + 'padding-top:0!important;margin-top:0!important;}'
                     + 'html.dashboard-cloud-clipfix [data-testid="stTabs"] '
-                    + '[role="tabpanel"]:not([hidden]){padding-top:72px!important;}'
+                    + '[role="tabpanel"]:not([hidden]){padding-top:15px!important;}'
                     + '#dashboard-cloud-content-pad{display:block!important;width:100%!important;'
                     + 'margin:0!important;padding:0!important;border:0!important;'
                     + 'line-height:0!important;pointer-events:none!important;}'
@@ -9139,8 +9138,7 @@ def inject_sticky_tabs_script():
                 return pad;
             }
             function pushCloudContentBelowBar(filterBox) {
-                /* Cloud만: 로컬 snap(위로 당김) 대신, 화면에 보이는 첫 줄이
-                   고정바 아래에 오도록 pad를 키운다. 줄이지는 않음. */
+                /* Cloud만: 고정바 아래 4mm. 겹치면 pad를 키우고, 너무 떨어지면 줄인다. */
                 if (!cloudMode || !filterBox || !isElementFixed(filterBox)) return;
                 var host = findMainTabsHost();
                 if (!host) return;
@@ -9150,14 +9148,16 @@ def inject_sticky_tabs_script():
                 var pad = ensureCloudContentPad(panel);
                 var target = firstCloudContentEl(panel);
                 if (!target || target === pad) target = panel;
-                var barBottom = filterBox.getBoundingClientRect().bottom;
-                var top = target.getBoundingClientRect().top;
-                var need = Math.round(barBottom + 24 - top);
+                var gap = Math.round(
+                    target.getBoundingClientRect().top - filterBox.getBoundingClientRect().bottom
+                );
+                var extra = gap - CONTENT_GAP_PX;
                 var curH = Math.round(pad.getBoundingClientRect().height) || 0;
-                if (need <= 2) return;
-                var nextH = curH + need;
-                if (nextH > 240) nextH = 240;
-                if (nextH <= curH) return;
+                if (Math.abs(extra) <= 3) return;
+                var nextH = curH - extra;
+                if (nextH < 0) nextH = 0;
+                if (nextH > 80) nextH = 80;
+                if (Math.abs(nextH - curH) < 2) return;
                 pad.style.setProperty('height', nextH + 'px', 'important');
                 pad.style.setProperty('min-height', nextH + 'px', 'important');
             }
@@ -11644,14 +11644,14 @@ def inject_cloud_clip_fix_css():
         }
         .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]),
         [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) {
-            padding-top: 72px !important;
+            padding-top: 15px !important;
         }
         .st-key-tab2_action_btns {
-            margin-top: 10px !important;
-            padding-top: 6px !important;
+            margin-top: 0 !important;
+            padding-top: 0 !important;
         }
         .dashboard-cloud-tab2-head-gap {
-            height: 16px !important;
+            height: 0 !important;
             width: 100% !important;
             flex-shrink: 0 !important;
         }
@@ -12798,7 +12798,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 73
+    _STICKY_INJECT_VER = 74
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None

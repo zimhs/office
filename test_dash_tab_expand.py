@@ -45,7 +45,7 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         )[0]
         self.assertIn("if _is_streamlit_cloud():", warm)
         self.assertIn("function pushCloudContentBelowBar", src)
-        self.assertIn("need = Math.round(bottom - mainTop) + 16;", src)
+        self.assertIn("need = Math.round(bottom - mainTop);", src)
         self.assertIn("streamlit.app", src)
         self.assertIn("function detectCloudHost", src)
         self.assertIn("function firstCloudContentEl", src)
@@ -53,7 +53,7 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("os.path.isdir(\"/mount/src\")", src)
         self.assertIn("/home/adminuser", src)
         self.assertIn("if (!cloudMode) return h;", src)
-        self.assertIn("padding-top: 72px !important;", cloud_css)
+        self.assertIn("padding-top: 15px !important;", cloud_css)
         tab2 = src.split("# Tab 2:", 1)[1].split("with tab3:", 1)[0]
         self.assertIn("dashboard-cloud-tab2-head-gap", tab2)
         self.assertIn("if _is_streamlit_cloud():", tab2)
