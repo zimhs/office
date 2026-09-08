@@ -12214,13 +12214,6 @@ if not _is_streamlit_cloud():
         st.rerun()
 else:
     if st.sidebar.button(
-        "☁️ Drive 복사본으로 동기화",
-        help="맥 캐시 → Google Drive「dashboard 복사본/uproad」. Cloud·iPad는 재시작 시 여기서 자동 로드.",
-    ):
-        st.session_state.pop("_drive_synced_this_upload", None)
-        _run_cache_to_drive_sync(force=True)
-        st.rerun()
-    if st.sidebar.button(
         "↻ Drive 복사본에서 가져오기",
         help="Google Drive uproad 폴더 → 캐시. Cloud에서 최신 반영.",
     ):

@@ -61,6 +61,7 @@ class LocalSidebarButtonSourceTest(unittest.TestCase):
         marker = 'Desktop/dashboard/uproad 의 CSV'
         self.assertIn(marker, src)
         self.assertIn("sync_local_uproad_into_cache", src)
+        self.assertEqual(src.count('"☁️ Drive 복사본으로 동기화"'), 1)
         # 가져오기 버튼은 Cloud 전용 분기에만
         pull_idx = src.find("Drive 복사본에서 가져오기")
         self.assertGreater(pull_idx, 0)
