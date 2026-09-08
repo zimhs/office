@@ -129,5 +129,89 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("clickClearRerunBtn(fieldKey)", src)
 
 
+class WorklogDraftSurviveFilterTest(unittest.TestCase):
+    """상단 검색/필터 후 일일업무일지로 돌아와도 미저장 초안이 남아야 한다."""
+
+    def test_worklog_restore_does_not_pop_drafts(self):
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        restore = src.split("def _dash_restore_session_keys", 1)[1].split(
+            "def _dash_should_defer_light_tab", 1
+        )[0]
+        self.assertIn('store_key != "_dash_bak_worklog"', restore)
+        self.assertIn("미저장 초안", restore)
+
+    def test_worklog_draft_keys_are_state_not_widgets(self):
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        prefixes = src.split("_DASH_WL_STATE_PREFIXES = (", 1)[1].split(")", 1)[0]
+        for p in (
+            "wl_entries_",
+            "wl_next_",
+            "wl_notes_",
+            "wl_lines_live_",
+            "wl_clients_live_",
+            "worklog_booted_",
+        ):
+            self.assertIn(f'"{p}"', prefixes)
+        classifier = src.split("def _dash_is_wl_widget_key", 1)[1].split(
+            "_DASH_FILTER_ALL_STAFF", 1
+        )[0]
+        state_idx = classifier.find("_DASH_WL_STATE_PREFIXES")
+        wl_idx = classifier.find('key.startswith("wl_")')
+        self.assertGreater(state_idx, -1)
+        self.assertGreater(wl_idx, -1)
+        self.assertLess(state_idx, wl_idx)
+
+    def _load_restore_helpers(self):
+        import types
+
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        prefix_src = src[
+            src.find("# 업무일지 — 편집 상태") : src.find("_DASH_FILTER_ALL_STAFF")
+        ]
+        restore_src = src[
+            src.find("def _dash_restore_session_keys") : src.find(
+                "def _dash_should_defer_light_tab"
+            )
+        ]
+        ns = {
+            "st": types.SimpleNamespace(session_state={}),
+            "_dash_is_mr_widget_key": lambda key: False,
+            "_dash_is_pi_widget_key": lambda key: False,
+        }
+        exec(prefix_src + restore_src, ns)
+        return ns
+
+    def test_restore_keeps_unsaved_worklog_drafts(self):
+        ns = self._load_restore_helpers()
+        st = ns["st"]
+        iso = "2026-09-09"
+        st.session_state.update(
+            {
+                "_dash_bak_worklog": {"worklog_selected": iso},
+                f"wl_entries_{iso}": [{"client": "테스트거래처", "content": "초안내용"}],
+                f"wl_next_area_{iso}": "익일 초안",
+                f"wl_notes_area_{iso}": "특이 초안",
+                f"wl_lines_live_{iso}_0": ["줄1", ""],
+                f"worklog_booted_{iso}": True,
+                "wl_date_pick": iso,
+            }
+        )
+        ns["_dash_restore_session_keys"]("_dash_bak_worklog")
+        self.assertEqual(st.session_state[f"wl_next_area_{iso}"], "익일 초안")
+        self.assertEqual(st.session_state[f"wl_notes_area_{iso}"], "특이 초안")
+        self.assertEqual(
+            st.session_state[f"wl_entries_{iso}"][0]["client"], "테스트거래처"
+        )
+        self.assertTrue(st.session_state[f"worklog_booted_{iso}"])
+        self.assertEqual(st.session_state[f"wl_lines_live_{iso}_0"], ["줄1", ""])
+        self.assertEqual(st.session_state["wl_date_pick"], iso)
+        self.assertFalse(ns["_dash_is_wl_widget_key"](f"wl_entries_{iso}"))
+        self.assertFalse(ns["_dash_is_wl_widget_key"](f"wl_next_area_{iso}"))
+        self.assertTrue(ns["_dash_is_wl_widget_key"]("wl_date_pick"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5570,9 +5570,10 @@ def _dash_is_pi_widget_key(key: str) -> bool:
     return isinstance(key, str) and key.startswith(_DASH_PI_WIDGET_PREFIXES)
 
 
-# 업무일지 — 편집 상태만 백업 (wl_date_pick 등 위젯 키 복원·이중 로딩 방지)
+# 업무일지 — 편집 상태 + 미저장 초안 (상단 필터 rerun 후에도 유지)
 _DASH_WL_STATE_PREFIXES = (
     "worklog_selected",
+    "worklog_booted_",
     "wl_last_",
     "wl_saved_dates",
     "wl_print_panel",
@@ -5588,6 +5589,18 @@ _DASH_WL_STATE_PREFIXES = (
     "wl_do_delete",
     "wl_skip_sync",
     "wl_del_day",
+    "wl_entries_",
+    "wl_next_",
+    "wl_notes_",
+    "wl_lines_live_",
+    "wl_clients_live_",
+    "wl_ent_t_",
+    "wl_ent_c_",
+    "wl_ent_lc_",
+    "wl_ent_clc_",
+    "wl_ent_gap_",
+    "wl_entry_count_",
+    "wl_exp_",
     "_wl_last_",
     "_wl_drive_sync",
     "_wl_dash_filter_sig",
@@ -5622,7 +5635,9 @@ _DASH_WL_WIDGET_PREFIXES = (
 def _dash_is_wl_widget_key(key: str) -> bool:
     if not isinstance(key, str):
         return False
-    if key.startswith("wl_") and not any(key.startswith(p) for p in _DASH_WL_STATE_PREFIXES):
+    if any(key.startswith(p) for p in _DASH_WL_STATE_PREFIXES):
+        return False
+    if key.startswith("wl_"):
         return True
     return key.startswith(_DASH_WL_WIDGET_PREFIXES)
 
@@ -6293,7 +6308,9 @@ def _dash_restore_session_keys(store_key: str) -> None:
             continue
         if k not in st.session_state:
             st.session_state[k] = v
-    if widget_fn is not None:
+    # 업무일지: 상단 필터 rerun 때 미저장 초안(거래처/내용/익일/특이)을 지우지 않는다.
+    # 시장조사·공문은 기존처럼 위젯 키를 비워 이중 instantiate를 막는다.
+    if widget_fn is not None and store_key != "_dash_bak_worklog":
         for k in list(st.session_state.keys()):
             if widget_fn(k):
                 st.session_state.pop(k, None)
