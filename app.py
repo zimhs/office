@@ -5785,7 +5785,7 @@ def _dash_on_filter_clear_item() -> None:
     _dash_clear_one_filter(_DASH_FILTER_ITEM_KEY)
 
 
-_DASH_FILTER_BIND_VER = 9
+_DASH_FILTER_BIND_VER = 12
 
 
 def _dash_inject_filter_select_script() -> None:
@@ -5805,6 +5805,8 @@ def _dash_inject_filter_select_script() -> None:
           var BIND_VER = {_DASH_FILTER_BIND_VER};
           var KEYS = {keys_js};
           var ALL = {all_js};
+          var DATE_KEYS = ['dash_filter_start', 'dash_filter_end'];
+          var ALL_KEYS = KEYS.concat(DATE_KEYS);
           var clearPending = false;
           win.__dashboardBindFilterSelectsExternal = true;
           function isDropdownOpen() {{
@@ -5834,16 +5836,16 @@ def _dash_inject_filter_select_script() -> None:
           function findInput(el) {{
             if (!el || !el.closest) return null;
             if (el.tagName === 'INPUT') {{
-              for (var i = 0; i < KEYS.length; i++) {{
-                if (el.closest('[class*="st-key-' + KEYS[i] + '"]')) return el;
+              for (var i = 0; i < ALL_KEYS.length; i++) {{
+                if (el.closest('[class*="st-key-' + ALL_KEYS[i] + '"]')) return el;
               }}
               return null;
             }}
-            for (var j = 0; j < KEYS.length; j++) {{
-              var wrap = el.closest('[class*="st-key-' + KEYS[j] + '"]');
+            for (var j = 0; j < ALL_KEYS.length; j++) {{
+              var wrap = el.closest('[class*="st-key-' + ALL_KEYS[j] + '"]');
               if (!wrap) continue;
               var inp = wrap.querySelector(
-                '[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input[role="combobox"], input'
+                '[data-baseweb="select"] input, [data-testid="stSelectbox"] input, [data-testid="stTextInput"] input, input[role="combobox"], input'
               );
               if (inp) return inp;
             }}
@@ -5851,14 +5853,20 @@ def _dash_inject_filter_select_script() -> None:
           }}
           function fieldMeta(inp) {{
             if (!inp) return null;
+            var d;
+            for (d = 0; d < DATE_KEYS.length; d++) {{
+              if (inp.closest('[class*="st-key-' + DATE_KEYS[d] + '"]')) {{
+                return {{ key: DATE_KEYS[d], allLabel: '', isDate: true }};
+              }}
+            }}
             for (var i = 0; i < KEYS.length; i++) {{
               if (inp.closest('[class*="st-key-' + KEYS[i] + '"]')) {{
-                return {{ key: KEYS[i], allLabel: ALL[i] }};
+                return {{ key: KEYS[i], allLabel: ALL[i], isDate: false }};
               }}
             }}
             return null;
           }}
-          function setValueQuiet(inp, val) {{
+          function setValueQuiet(inp, val, skipEvent) {{
             /* change 이벤트는 Streamlit rerun·IME 중단을 일으켜 보내지 않음 */
             if (!inp) return;
             try {{
@@ -5868,6 +5876,7 @@ def _dash_inject_filter_select_script() -> None:
             }} catch (eSet) {{
               inp.value = val;
             }}
+            if (skipEvent) return;
             try {{ inp.dispatchEvent(new win.Event('input', {{ bubbles: true }})); }} catch (eIn) {{}}
           }}
           function isPlaceholder(inp, allLabel) {{
@@ -5876,17 +5885,66 @@ def _dash_inject_filter_select_script() -> None:
             if (isAllLabel(v)) return true;
             return !!(allLabel && v === String(allLabel).trim());
           }}
-          function clearPlaceholderOnly(inp, allLabel) {{
-            /* '전체 거래처/품목/담당자'일 때만 비움. 이미 친 검색어는 절대 지우지 않음 */
-            if (!inp || !isPlaceholder(inp, allLabel)) return false;
+          function holdCleared(inp, prev) {{
+            /* Baseweb이 선택값을 다시 채워도, 새 입력이 올 때까지 빈 칸 유지 */
+            var wrap = null;
+            try {{ wrap = inp.closest('[class*="st-key-"]'); }} catch (eW) {{}}
+            var left = 30;
+            function tick() {{
+              var cur = (wrap && wrap.querySelector(
+                '[data-baseweb="select"] input, [data-testid="stSelectbox"] input, input'
+              )) || inp;
+              if (!cur) return;
+              if (cur.dataset.dashFilterUserTyped === '1') return;
+              if (cur.dataset.dashFilterComposing === '1') return;
+              var now = String(cur.value || '').trim();
+              var keep = String(cur.dataset.dashFilterPrev || prev || '').trim();
+              if (now && (isAllLabel(now) || now === keep)) {{
+                cur.dataset.dashFilterClearingToType = '1';
+                cur.dataset.dashFilterTyping = '1';
+                var metaH = fieldMeta(cur);
+                setValueQuiet(cur, '', !!(metaH && metaH.isDate));
+                try {{
+                  cur.setSelectionRange(0, String(cur.value || '').length);
+                  cur.select();
+                }} catch (eSel) {{}}
+              }}
+              left -= 1;
+              if (left > 0) {{
+                try {{ win.requestAnimationFrame(tick); }} catch (eR) {{
+                  setTimeout(tick, 16);
+                }}
+              }} else {{
+                setTimeout(function () {{
+                  if (cur) delete cur.dataset.dashFilterClearingToType;
+                }}, 400);
+              }}
+            }}
+            try {{ win.requestAnimationFrame(tick); }} catch (eR2) {{
+              setTimeout(tick, 16);
+            }}
+          }}
+          function clearForNewInput(inp, allLabel) {{
+            /* 클릭 시 김혁수·전체 거래처 등 현재 값을 비워 바로 새 검색어 입력 */
+            if (!inp) return false;
             if (inp.dataset.dashFilterComposing === '1') return false;
-            inp.dataset.dashFilterPrev = String(inp.value || '').trim() || allLabel;
+            if (inp.dataset.dashFilterUserTyped === '1' && !String(inp.value || '').trim()) {{
+              return false;
+            }}
+            var v = String(inp.value || '').trim();
+            if (!v) return false;
+            inp.dataset.dashFilterPrev = v || allLabel;
             inp.dataset.dashFilterTyping = '1';
             inp.dataset.dashFilterClearingToType = '1';
-            setValueQuiet(inp, '');
-            setTimeout(function () {{
-              delete inp.dataset.dashFilterClearingToType;
-            }}, 200);
+            delete inp.dataset.dashFilterUserTyped;
+            var metaC = fieldMeta(inp);
+            setValueQuiet(inp, '', !!(metaC && metaC.isDate));
+            try {{
+              inp.focus();
+              inp.setSelectionRange(0, String(inp.value || '').length);
+              inp.select();
+            }} catch (eF) {{}}
+            holdCleared(inp, v);
             return true;
           }}
           function clickClearRerunBtn(fieldKey) {{
@@ -5934,7 +5992,7 @@ def _dash_inject_filter_select_script() -> None:
             if (!inp || inp.dataset.dashFilterClearingToType) return;
             if (inp.dataset.dashFilterComposing === '1') return;
             var meta = fieldMeta(inp);
-            if (!meta) return;
+            if (!meta || meta.isDate) return;
             var v = String(inp.value || '').trim();
             var prev = String(inp.dataset.dashFilterPrev || '').trim();
             if (v) return;
@@ -5943,25 +6001,62 @@ def _dash_inject_filter_select_script() -> None:
             if (isDropdownOpen()) return;
             onFieldEmptied(meta.key, meta.allLabel);
           }}
+          function bindDirectInputs() {{
+            var i, wrap, inp, meta;
+            for (i = 0; i < ALL_KEYS.length; i++) {{
+              wrap = findWrap(ALL_KEYS[i]);
+              if (!wrap) continue;
+              inp = wrap.querySelector(
+                '[data-baseweb="select"] input, [data-testid="stSelectbox"] input, [data-testid="stTextInput"] input, input'
+              );
+              if (!inp || inp.dataset.dashFilterBound === String(BIND_VER)) continue;
+              inp.dataset.dashFilterBound = String(BIND_VER);
+              meta = fieldMeta(inp);
+              if (!meta) continue;
+              (function (box, info) {{
+                function go() {{ clearForNewInput(box, info.allLabel); }}
+                box.addEventListener('pointerdown', go, true);
+                box.addEventListener('mousedown', go, true);
+                box.addEventListener('focus', go, true);
+                box.addEventListener('click', go, true);
+              }})(inp, meta);
+            }}
+          }}
           function installDelegation() {{
-            if (win.__dashFilterDelegationVer >= BIND_VER) return;
             win.__dashFilterDelegationVer = BIND_VER;
             function onFilterPress(e) {{
               var inp = findInput(e.target);
               if (!inp) return;
               var meta = fieldMeta(inp);
               if (!meta) return;
-              clearPlaceholderOnly(inp, meta.allLabel);
+              clearForNewInput(inp, meta.allLabel);
             }}
+            if (win.__dashFilterOnPress) {{
+              try {{ doc.removeEventListener('pointerdown', win.__dashFilterOnPress, true); }} catch (eRp) {{}}
+              try {{ doc.removeEventListener('mousedown', win.__dashFilterOnPress, true); }} catch (eRm) {{}}
+              try {{ doc.removeEventListener('click', win.__dashFilterOnPress, true); }} catch (eRc) {{}}
+            }}
+            win.__dashFilterOnPress = onFilterPress;
             doc.addEventListener('pointerdown', onFilterPress, true);
             doc.addEventListener('mousedown', onFilterPress, true);
-            doc.addEventListener('focusin', function (e) {{
+            doc.addEventListener('click', onFilterPress, true);
+            if (win.__dashFilterOnFocus) {{
+              try {{ doc.removeEventListener('focusin', win.__dashFilterOnFocus, true); }} catch (eRf) {{}}
+            }}
+            win.__dashFilterOnFocus = function (e) {{
               var inp = findInput(e.target);
               if (!inp) return;
               var meta = fieldMeta(inp);
               if (!meta) return;
-              clearPlaceholderOnly(inp, meta.allLabel);
-            }}, true);
+              clearForNewInput(inp, meta.allLabel);
+            }};
+            doc.addEventListener('focusin', win.__dashFilterOnFocus, true);
+            bindDirectInputs();
+            if (!win.__dashFilterBindTimer) {{
+              win.__dashFilterBindTimer = setInterval(bindDirectInputs, 800);
+            }}
+            if (win.__dashFilterExtraBound) return;
+            win.__dashFilterExtraBound = true;
             doc.addEventListener('compositionstart', function (e) {{
               var inp = findInput(e.target);
               if (!inp) return;
@@ -5995,6 +6090,7 @@ def _dash_inject_filter_select_script() -> None:
               var v = String(inp.value || '').trim();
               if (v && !isAllLabel(v)) {{
                 inp.dataset.dashFilterTyping = '1';
+                inp.dataset.dashFilterUserTyped = '1';
                 inp.dataset.dashFilterPrev = v;
                 try {{ doc.cookie = 'dash_filter_clear=; path=/; max-age=0; SameSite=Lax'; }} catch (e4) {{}}
                 return;
@@ -6012,6 +6108,17 @@ def _dash_inject_filter_select_script() -> None:
               var inp = findInput(e.target);
               if (!inp) return;
               if (inp.dataset.dashFilterComposing === '1') return;
+              var metaB = fieldMeta(inp);
+              if (metaB && metaB.isDate) {{
+                var dv = String(inp.value || '').trim();
+                if (!dv) {{
+                  var prevD = String(inp.dataset.dashFilterPrev || '').trim();
+                  if (prevD) setValueQuiet(inp, prevD, true);
+                  delete inp.dataset.dashFilterClearingToType;
+                  delete inp.dataset.dashFilterTyping;
+                }}
+                return;
+              }}
               setTimeout(function () {{ maybeEmptied(inp); }}, 0);
             }}, true);
           }}

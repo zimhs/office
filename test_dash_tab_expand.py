@@ -121,7 +121,11 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("def _dash_on_filter_clear_client", src)
         self.assertIn('key="_dash_filter_clear_client_btn"', src)
         self.assertIn("_dash_filter_clear_client_btn", src)
-        self.assertIn("_DASH_FILTER_BIND_VER = 9", src)
+        self.assertIn("_DASH_FILTER_BIND_VER = 12", src)
+        self.assertIn("function bindDirectInputs", src)
+        self.assertIn("function clearForNewInput", src)
+        self.assertIn("function holdCleared", src)
+        self.assertIn("DATE_KEYS = ['dash_filter_start', 'dash_filter_end']", src)
         self.assertIn("clickClearRerunBtn(fieldKey)", src)
 
 
