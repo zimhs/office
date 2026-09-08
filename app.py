@@ -764,6 +764,31 @@ def inject_custom_css():
                 z-index: 1000003 !important;
             }
 
+            /* 맥 로컬·Cloud: 좌 >> · 우 메뉴는 그대로 두고, Streamlit 헤더만 버튼 높이로
+               줄여 고정바를 그 바로 아래까지 올린다. (iPad touch-mode 규칙은 위쪽 유지) */
+            html:not(.dashboard-touch-mode) [data-testid="stHeader"] {
+                min-height: 2.75rem !important;
+                height: 2.75rem !important;
+                overflow: visible !important;
+                background: #FFFFFF !important;
+            }
+            html:not(.dashboard-touch-mode) [data-testid="stToolbar"],
+            html:not(.dashboard-touch-mode) [data-testid="stDecoration"] {
+                display: flex !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                min-height: 2.75rem !important;
+                height: 2.75rem !important;
+                align-items: center !important;
+            }
+            html:not(.dashboard-touch-mode) [data-testid="collapsedControl"],
+            html:not(.dashboard-touch-mode) [data-testid="stSidebarCollapsedControl"] {
+                display: flex !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                z-index: 1000003 !important;
+            }
+
             html.dashboard-touch-mode [data-testid="stSidebar"],
             html.dashboard-touch-mode [data-testid="stSidebarBackdrop"],
             html.dashboard-touch-mode section[data-testid="stSidebar"] {
@@ -9017,7 +9042,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 84
+    _sticky_py_ver = 85
     components.html(
         """
         <script>
@@ -9542,24 +9567,27 @@ def inject_sticky_tabs_script():
             }
             var touchMode = isTouchPad();
             function getTopOffsetMac() {
-                var header = parentDoc.querySelector('[data-testid="stHeader"]');
-                var got = 46;
-                if (header) {
-                    var rect = header.getBoundingClientRect();
-                    if (rect.bottom > 0) got = Math.round(rect.bottom);
-                    else if (header.offsetHeight > 0) got = header.offsetHeight;
+                /* 로컬·Cloud: 좌 >> · 우 Share 줄을 가리지 않고, 그 바로 아래까지 고정바를 올린다. */
+                var bot = 0;
+                var sels = [
+                    '[data-testid="stHeader"]',
+                    '[data-testid="stToolbar"]',
+                    '[data-testid="stDecoration"]',
+                    '[data-testid="stStatusWidget"]',
+                    '[data-testid="collapsedControl"]',
+                    '[data-testid="stSidebarCollapsedControl"]'
+                ];
+                var i, el, r;
+                for (i = 0; i < sels.length; i++) {
+                    el = parentDoc.querySelector(sels[i]);
+                    if (!el) continue;
+                    r = el.getBoundingClientRect();
+                    if (r.width < 2 || r.height < 2) continue;
+                    if (r.bottom > bot) bot = r.bottom;
                 }
-                if (cloudMode) {
-                    var ids = ['stToolbar', 'stDecoration', 'stStatusWidget'];
-                    var ii;
-                    for (ii = 0; ii < ids.length; ii++) {
-                        var chrome = parentDoc.querySelector('[data-testid="' + ids[ii] + '"]');
-                        if (!chrome) continue;
-                        var cb = chrome.getBoundingClientRect().bottom;
-                        if (cb > got) got = Math.round(cb);
-                    }
-                    return Math.max(got, 64);
-                }
+                var got = Math.round(bot);
+                if (got < 28) got = 36;
+                if (got > 96) got = 96;
                 return got;
             }
             function getMainRect() {
@@ -13097,7 +13125,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 84
+    _STICKY_INJECT_VER = 85
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None

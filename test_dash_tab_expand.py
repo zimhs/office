@@ -59,6 +59,14 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("z-index: 100000 !important;", cloud_css)
         self.assertNotIn("z-index: 100000 !important;", shared)
         self.assertIn("cloudMode ? '100' : '990'", src)
+        self.assertIn("Math.round(bot)", src)
+        self.assertNotIn("return Math.max(got, 64)", src)
+        self.assertIn("stSidebarCollapsedControl", src)
+        self.assertIn(
+            "html:not(.dashboard-touch-mode) [data-testid=\"stHeader\"]",
+            src,
+        )
+        self.assertIn("맥 로컬·Cloud: 좌 >>", src)
         self.assertIn("function cloudAvoidSidebarOverlap", src)
         self.assertIn("function syncIpadTopShield", src)
         self.assertIn("var topPx = 44", src)
