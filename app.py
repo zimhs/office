@@ -720,7 +720,7 @@ def inject_custom_css():
 
             .dashboard-filter-sticky-touch {
                 z-index: 999999 !important;
-                top: 3.65rem !important;
+                top: 4px !important;
                 border: 2px solid #2563EB !important;
                 border-top: 3px solid #2563EB !important;
                 border-radius: 0 0 8px 8px !important;
@@ -730,7 +730,7 @@ def inject_custom_css():
                 background-color: #FFFFFF !important;
             }
 
-            /* iPad만: 고정바 위·옆 틈으로 본문이 비치지 않게. 맥 실드 z-index 989는 그대로 */
+            /* iPad만: 고정바 위 틈만 가림. 맥 실드 z-index 989는 그대로 */
             html.dashboard-touch-mode #dashboard-top-shield {
                 background: #FFFFFF !important;
                 z-index: 999990 !important;
@@ -739,11 +739,23 @@ def inject_custom_css():
                 width: 100% !important;
             }
 
-            html.dashboard-touch-mode [data-testid="stHeader"],
+            /* iPad만: Streamlit 헤더가 고정바 위에 큰 흰 칸을 만들지 않게. 햄버거는 유지 */
+            html.dashboard-touch-mode [data-testid="stHeader"] {
+                position: fixed !important;
+                top: 0 !important;
+                height: 0 !important;
+                min-height: 0 !important;
+                overflow: visible !important;
+                background: transparent !important;
+                z-index: 1000002 !important;
+            }
             html.dashboard-touch-mode [data-testid="stToolbar"],
             html.dashboard-touch-mode [data-testid="stDecoration"] {
-                z-index: 1000001 !important;
-                position: relative !important;
+                display: none !important;
+            }
+            html.dashboard-touch-mode [data-testid="collapsedControl"],
+            html.dashboard-touch-mode [data-testid="stSidebarCollapsedControl"] {
+                z-index: 1000003 !important;
             }
 
             html.dashboard-touch-mode [data-testid="stSidebar"],
@@ -1047,7 +1059,7 @@ def inject_custom_css():
                     height: var(--dashboard-fixed-bar-height, 0px) !important;
                 }
                 html.dashboard-touch-mode .dashboard-filter-sticky-touch {
-                    top: max(2.4rem, env(safe-area-inset-top, 0px) + 1.5rem) !important;
+                    top: 4px !important;
                     left: max(6px, env(safe-area-inset-left, 0px)) !important;
                     right: max(6px, env(safe-area-inset-right, 0px)) !important;
                     width: auto !important;
@@ -1057,7 +1069,7 @@ def inject_custom_css():
 
             @media (orientation: portrait) and (max-width: 850px) {
                 html.dashboard-touch-mode .dashboard-filter-sticky-touch {
-                    top: max(3.2rem, env(safe-area-inset-top, 0px) + 2.4rem) !important;
+                    top: 4px !important;
                 }
             }
 
@@ -8999,7 +9011,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 82
+    _sticky_py_ver = 83
     components.html(
         """
         <script>
@@ -9042,7 +9054,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 41;
-            var STICKY_SCRIPT_VER_IPAD = 68; /* v68: 실드가 고정바를 덮지 않게. 맥 수치 무손실 */
+            var STICKY_SCRIPT_VER_IPAD = 69; /* v69: 고정바 최상단 표시. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
                 parentWin.__dashboardStickyMacReady = 0;
@@ -10038,7 +10050,7 @@ def inject_sticky_tabs_script():
                 }
                 var h = Math.round(topPx) || 0;
                 if (h < 0) h = 0;
-                if (h > 96) h = 96;
+                if (h > 8) h = 8;
                 shield.style.setProperty('display', 'block', 'important');
                 shield.style.setProperty('position', 'fixed', 'important');
                 shield.style.setProperty('top', '0', 'important');
@@ -10211,8 +10223,7 @@ def inject_sticky_tabs_script():
                 if (mountBad) parentWin.__dashboardIpadFreezeLayout = false;
                 if (parentWin.__dashboardIpadFreezeLayout && targetBox.style.position === 'fixed' && !mountBad) {
                     try {
-                        var frozenR = targetBox.getBoundingClientRect();
-                        syncIpadTopShield(Math.round(frozenR.top));
+                        syncIpadTopShield(4);
                     } catch (eShF) {}
                     return;
                 }
@@ -10220,21 +10231,10 @@ def inject_sticky_tabs_script():
                 try { ensureTabsNeverInvisible(); } catch (eVisI) {}
                 targetBox.classList.add('dashboard-filter-sticky');
                 targetBox.classList.add('dashboard-filter-sticky-touch');
-                var header = parentDoc.querySelector('[data-testid="stHeader"]');
-                var topPx = 40;
-                if (header) {
-                    var hb = header.getBoundingClientRect().bottom;
-                    if (hb > 20) topPx = Math.round(hb);
-                }
+                var topPx = 4;
                 var vv = parentWin.visualViewport;
                 var vw = (vv && vv.width) ? vv.width : (parentWin.innerWidth || 0);
                 var vh = (vv && vv.height) ? vv.height : (parentWin.innerHeight || 0);
-                var landscape = vw > vh;
-                if (landscape && vw <= 1180) {
-                    topPx = (header && header.getBoundingClientRect().bottom > 12)
-                        ? Math.round(header.getBoundingClientRect().bottom)
-                        : 36;
-                }
                 var side = (vw && vw <= 850) ? 4 : 8;
                 var maxW = Math.max(120, (vw || 0) - side * 2);
                 var tabList = findMainTabList();
@@ -13082,7 +13082,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 82
+    _STICKY_INJECT_VER = 83
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
