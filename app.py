@@ -747,6 +747,7 @@ def inject_custom_css():
                 overflow-x: hidden !important;
                 overflow-y: auto !important;
                 -webkit-overflow-scrolling: touch !important;
+                touch-action: pan-y;
             }
             html.dashboard-touch-mode section.main,
             html.dashboard-touch-mode section.main .block-container {
@@ -8988,7 +8989,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 78
+    _sticky_py_ver = 80
     components.html(
         """
         <script>
@@ -9031,7 +9032,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 41;
-            var STICKY_SCRIPT_VER_IPAD = 64; /* v64: iPad 고정바-본문 여백 재시도. 맥 수치 무손실 */
+            var STICKY_SCRIPT_VER_IPAD = 66; /* v66: 스크롤 떨림 중지. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
                 parentWin.__dashboardStickyMacReady = 0;
@@ -9244,11 +9245,24 @@ def inject_sticky_tabs_script():
                 pad.style.setProperty('height', nextH + 'px', 'important');
                 pad.style.setProperty('min-height', nextH + 'px', 'important');
             }
+            function getIpadScrollY() {
+                var y = 0;
+                try {
+                    var app = parentDoc.querySelector('[data-testid="stAppViewContainer"]');
+                    if (app) y = Math.max(y, app.scrollTop || 0);
+                } catch (eApp) {}
+                try { y = Math.max(y, parentWin.scrollY || 0); } catch (eW) {}
+                try { y = Math.max(y, parentDoc.documentElement.scrollTop || 0); } catch (eH) {}
+                try { y = Math.max(y, parentDoc.body.scrollTop || 0); } catch (eB) {}
+                return y;
+            }
             function closeIpadBarGap(filterBox) {
-                /* iPad만: 스페이서 높이로 고정바-본문 간격을 4mm로 맞춤.
-                   맥북 로컬·Cloud는 호출하지 않음. iOS window.scrollY 오검출은 무시. */
+                /* iPad만: 맨 위에서만 스페이서로 4mm 맞춤. 스크롤 중 높이 변경은 튕김. */
                 if (!filterBox || !isElementFixed(filterBox)) return;
                 try { if (!isTouchPadEarly()) return; } catch (eNoPad) { return; }
+                try { if (parentWin.__dashboardIpadFreezeLayout) return; } catch (eFz) {}
+                try { if (isIpadFilterLocked()) return; } catch (eLk) {}
+                try { if (getIpadScrollY() > 12) return; } catch (eY) { return; }
                 var spacer = parentDoc.getElementById(SPACER_ID);
                 if (!spacer) return;
                 var host = findMainTabsHost();
@@ -10034,6 +10048,18 @@ def inject_sticky_tabs_script():
             }
             function markIpadScrolling() {
                 parentWin.__dashboardIpadScrollLockUntil = Date.now() + 1500;
+                try {
+                    if (parentWin.__dashboardIpadGapTimer) {
+                        clearTimeout(parentWin.__dashboardIpadGapTimer);
+                    }
+                    parentWin.__dashboardIpadGapTimer = setTimeout(function () {
+                        try {
+                            if (getIpadScrollY() > 12) return;
+                            var box = parentWin.__dashboardIpadTarget || findFilterBox();
+                            if (box) closeIpadBarGap(box);
+                        } catch (eEnd) {}
+                    }, 1600);
+                } catch (eT) {}
             }
             function isIpadFilterLocked() {
                 try {
@@ -10226,10 +10252,11 @@ def inject_sticky_tabs_script():
             parentWin.__dashboardIpadPin = ipadPinFilterBox;
             
             function syncIpadWidthLoop() {
-                try {
-                    var gapBox = parentWin.__dashboardIpadTarget || findFilterBox();
-                    if (gapBox) closeIpadBarGap(gapBox);
-                } catch (eGap) {}
+                /* 동결 후 RAF 중단. 스크롤 중 스페이서 재측정이 드드드 떨림의 원인 */
+                if (parentWin.__dashboardIpadFreezeLayout) {
+                    parentWin.__dashboardIpadRaf = null;
+                    return;
+                }
                 if (!parentWin.__dashboardIpadFreezeLayout) {
                     var targetBox = parentWin.__dashboardIpadTarget || findFilterBox();
                     var spacer = parentWin.__dashboardIpadSpacer || parentDoc.getElementById(SPACER_ID);
@@ -10650,6 +10677,9 @@ def inject_sticky_tabs_script():
                     spacerFreezeUntil = 0;
                     lastH = 0;
                     try { parentWin.__dashboardIpadLastWidthSync = 0; } catch (eLw) {}
+                    try {
+                        if (!parentWin.__dashboardIpadRaf) syncIpadWidthLoop();
+                    } catch (eRaf2) {}
 
                     var delays = [50, 150, 300, 500, 900];
                     delays.forEach(function(ms) {
@@ -10672,12 +10702,24 @@ def inject_sticky_tabs_script():
                     scheduleSync(120);
                     scheduleSync(450);
                 }, { passive: true });
-                /* visualViewport: 키보드·가로전환 시 바 높이 재맞춤 (iPad Mini Cellular) */
+                /* visualViewport: 가로/세로 전환만 재측정.
+                   Safari 주소창 접힘(높이만 변함)은 스크롤마다 resize가 나와 고정바가 떨림. */
                 if (parentWin.visualViewport && !parentWin.__dashboardIpadVvBound) {
                     parentWin.__dashboardIpadVvBound = true;
+                    try {
+                        parentWin.__dashboardIpadVvW = parentWin.visualViewport.width || 0;
+                    } catch (eVw0) { parentWin.__dashboardIpadVvW = 0; }
                     parentWin.visualViewport.addEventListener('resize', function() {
                         if (isIpadFilterLocked()) return;
+                        var w = 0;
+                        try { w = parentWin.visualViewport.width || 0; } catch (eVw) {}
+                        var prev = parentWin.__dashboardIpadVvW || 0;
+                        parentWin.__dashboardIpadVvW = w;
+                        if (prev && Math.abs(w - prev) < 24) return;
                         parentWin.__dashboardIpadFreezeLayout = false;
+                        try {
+                            if (!parentWin.__dashboardIpadRaf) syncIpadWidthLoop();
+                        } catch (eRaf) {}
                         scheduleSync(80);
                         scheduleSync(280);
                     }, { passive: true });
@@ -12999,7 +13041,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 78
+    _STICKY_INJECT_VER = 80
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
