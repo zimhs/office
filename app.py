@@ -719,7 +719,7 @@ def inject_custom_css():
             }
 
             .dashboard-filter-sticky-touch {
-                z-index: 999999 !important;
+                z-index: 999980 !important;
                 top: 2.75rem !important;
                 border: 2px solid #2563EB !important;
                 border-top: 3px solid #2563EB !important;
@@ -730,24 +730,30 @@ def inject_custom_css():
                 background-color: #FFFFFF !important;
             }
 
-            /* iPad만: 고정바 위 틈만 가림. 맥 실드 z-index 989는 그대로 */
+            /* iPad만: 흰 가림막이 좌 >> · 우 메뉴를 덮지 않게 끔.
+               맥 실드 z-index 989는 그대로 */
             html.dashboard-touch-mode #dashboard-top-shield {
-                background: #FFFFFF !important;
-                z-index: 999990 !important;
-                left: 0 !important;
-                right: 0 !important;
-                width: 100% !important;
+                display: none !important;
+                height: 0 !important;
+                z-index: 1 !important;
+                pointer-events: none !important;
             }
 
-            /* iPad만: 최상단 Streamlit 줄(좌 >> · 우 Share 등)은 보이게.
+            /* iPad만: 최상단 Streamlit 줄(좌 >> · 우 Share 등)은 고정바보다 위.
                고정 필터바는 그 아래에 둔다. */
             html.dashboard-touch-mode [data-testid="stHeader"] {
                 position: fixed !important;
                 top: 0 !important;
+                left: 0 !important;
+                right: 0 !important;
                 height: auto !important;
                 min-height: 2.5rem !important;
                 overflow: visible !important;
                 background: #FFFFFF !important;
+                opacity: 1 !important;
+                visibility: visible !important;
+                display: flex !important;
+                pointer-events: auto !important;
                 z-index: 1000002 !important;
             }
             html.dashboard-touch-mode [data-testid="stToolbar"],
@@ -755,12 +761,19 @@ def inject_custom_css():
                 display: flex !important;
                 visibility: visible !important;
                 opacity: 1 !important;
+                pointer-events: auto !important;
+                z-index: 1000003 !important;
             }
+            html.dashboard-touch-mode [data-testid="stToolbar"] button,
+            html.dashboard-touch-mode [data-testid="stToolbar"] a,
+            html.dashboard-touch-mode [data-testid="stExpandSidebarButton"],
+            html.dashboard-touch-mode [data-testid="stMainMenu"],
             html.dashboard-touch-mode [data-testid="collapsedControl"],
             html.dashboard-touch-mode [data-testid="stSidebarCollapsedControl"] {
                 display: flex !important;
                 visibility: visible !important;
                 opacity: 1 !important;
+                pointer-events: auto !important;
                 z-index: 1000003 !important;
             }
 
@@ -9042,7 +9055,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 85
+    _sticky_py_ver = 86
     components.html(
         """
         <script>
@@ -9433,6 +9446,82 @@ def inject_sticky_tabs_script():
                         && parentWin.matchMedia('(hover: none) and (pointer: coarse)').matches) return true;
                 } catch (e3) {}
                 return false;
+            }
+            function injectIpadChromeCss() {
+                /* parent head에 직접 주입 — st.markdown CSS가 iframe에 갇혀도
+                   좌 >> · 우 Share 줄이 흰 가림막/고정바 아래로 깔리지 않게. */
+                var id = 'dashboard-ipad-chrome-css';
+                var s = parentDoc.getElementById(id);
+                if (!s) {
+                    s = parentDoc.createElement('style');
+                    s.id = id;
+                    (parentDoc.head || parentDoc.documentElement).appendChild(s);
+                }
+                s.textContent = (
+                    'html.dashboard-touch-mode #dashboard-top-shield{'
+                    + 'display:none!important;height:0!important;z-index:1!important;pointer-events:none!important;}'
+                    + 'html.dashboard-touch-mode [data-testid="stHeader"]{'
+                    + 'position:fixed!important;top:0!important;left:0!important;right:0!important;'
+                    + 'height:auto!important;min-height:2.5rem!important;overflow:visible!important;'
+                    + 'background:#fff!important;opacity:1!important;visibility:visible!important;'
+                    + 'display:flex!important;pointer-events:auto!important;z-index:1000002!important;}'
+                    + 'html.dashboard-touch-mode [data-testid="stToolbar"],'
+                    + 'html.dashboard-touch-mode [data-testid="stDecoration"]{'
+                    + 'display:flex!important;visibility:visible!important;opacity:1!important;'
+                    + 'pointer-events:auto!important;z-index:1000003!important;}'
+                    + 'html.dashboard-touch-mode [data-testid="stToolbar"] button,'
+                    + 'html.dashboard-touch-mode [data-testid="stToolbar"] a,'
+                    + 'html.dashboard-touch-mode [data-testid="stExpandSidebarButton"],'
+                    + 'html.dashboard-touch-mode [data-testid="stMainMenu"],'
+                    + 'html.dashboard-touch-mode [data-testid="collapsedControl"],'
+                    + 'html.dashboard-touch-mode [data-testid="stSidebarCollapsedControl"]{'
+                    + 'display:flex!important;visibility:visible!important;opacity:1!important;'
+                    + 'pointer-events:auto!important;z-index:1000003!important;}'
+                    + 'html.dashboard-touch-mode .dashboard-filter-sticky-touch{'
+                    + 'z-index:999980!important;}'
+                );
+            }
+            function ensureIpadChromeVisible() {
+                try { injectIpadChromeCss(); } catch (eC) {}
+                var sels = [
+                    '[data-testid="stHeader"]',
+                    '[data-testid="stToolbar"]',
+                    '[data-testid="stDecoration"]',
+                    '[data-testid="stExpandSidebarButton"]',
+                    '[data-testid="stMainMenu"]',
+                    '[data-testid="collapsedControl"]',
+                    '[data-testid="stSidebarCollapsedControl"]'
+                ];
+                var i, el;
+                for (i = 0; i < sels.length; i++) {
+                    el = parentDoc.querySelector(sels[i]);
+                    if (!el) continue;
+                    el.style.setProperty('display', 'flex', 'important');
+                    el.style.setProperty('visibility', 'visible', 'important');
+                    el.style.setProperty('opacity', '1', 'important');
+                    el.style.setProperty('pointer-events', 'auto', 'important');
+                    el.style.setProperty('z-index', i === 0 ? '1000002' : '1000003', 'important');
+                }
+                try {
+                    var header = parentDoc.querySelector('[data-testid="stHeader"]');
+                    if (header) {
+                        header.style.setProperty('position', 'fixed', 'important');
+                        header.style.setProperty('top', '0', 'important');
+                        header.style.setProperty('background', '#FFFFFF', 'important');
+                    }
+                } catch (eH) {}
+                try {
+                    var btns = parentDoc.querySelectorAll(
+                        '[data-testid="stToolbar"] button, [data-testid="stToolbar"] a'
+                    );
+                    for (i = 0; i < btns.length; i++) {
+                        btns[i].style.setProperty('display', 'flex', 'important');
+                        btns[i].style.setProperty('visibility', 'visible', 'important');
+                        btns[i].style.setProperty('opacity', '1', 'important');
+                        btns[i].style.setProperty('pointer-events', 'auto', 'important');
+                        btns[i].style.setProperty('z-index', '1000003', 'important');
+                    }
+                } catch (eB) {}
             }
             function ipadInjectTabHScrollCss() {
                 var id = 'dashboard-ipad-tab-hscroll';
@@ -10075,26 +10164,15 @@ def inject_sticky_tabs_script():
                 shield.style.setProperty('pointer-events', 'none', 'important');
             }
             function syncIpadTopShield(topPx) {
-                /* iPad만: 고정바 '위' 틈만 가림. 바 높이까지 덮으면 필터·탭이 가려짐. */
+                /* iPad: 흰 가림막이 좌 >> · 우 메뉴를 덮지 않게 숨김.
+                   헤더(흰색)가 그 자리를 차지한다. */
                 var shield = parentDoc.getElementById(SHIELD_ID);
-                if (!shield) {
-                    shield = parentDoc.createElement('div');
-                    shield.id = SHIELD_ID;
-                    parentDoc.body.appendChild(shield);
-                }
-                var h = Math.round(topPx) || 0;
-                if (h < 0) h = 0;
-                if (h > 96) h = 96;
-                shield.style.setProperty('display', 'block', 'important');
-                shield.style.setProperty('position', 'fixed', 'important');
-                shield.style.setProperty('top', '0', 'important');
-                shield.style.setProperty('left', '0', 'important');
-                shield.style.setProperty('right', '0', 'important');
-                shield.style.setProperty('width', '100%', 'important');
-                shield.style.setProperty('height', h + 'px', 'important');
-                shield.style.setProperty('background', '#FFFFFF', 'important');
-                shield.style.setProperty('z-index', '999990', 'important');
+                if (!shield) return;
+                shield.style.setProperty('display', 'none', 'important');
+                shield.style.setProperty('height', '0', 'important');
+                shield.style.setProperty('z-index', '1', 'important');
                 shield.style.setProperty('pointer-events', 'none', 'important');
+                try { ensureIpadChromeVisible(); } catch (eCh) {}
             }
             function mountTabs(filterBox, tabList) {
                 return remountLiveTabList(filterBox, tabList);
@@ -10289,7 +10367,8 @@ def inject_sticky_tabs_script():
                 targetBox.style.setProperty('right', side + 'px', 'important');
                 targetBox.style.setProperty('width', 'auto', 'important');
                 targetBox.style.setProperty('max-width', (maxW ? (maxW + 'px') : 'calc(100vw - 16px)'), 'important');
-                targetBox.style.setProperty('z-index', '999999', 'important');
+                targetBox.style.setProperty('z-index', '999980', 'important');
+                try { ensureIpadChromeVisible(); } catch (eCh2) {}
                 targetBox.style.setProperty('height', 'auto', 'important');
                 targetBox.style.setProperty('max-height', 'none', 'important');
                 targetBox.style.setProperty('overflow', 'visible', 'important');
@@ -10637,6 +10716,8 @@ def inject_sticky_tabs_script():
 
             if (touchMode) {
                 parentDoc.documentElement.classList.add('dashboard-touch-mode');
+                try { injectIpadChromeCss(); } catch (eCh0) {}
+                try { ensureIpadChromeVisible(); } catch (eCh1) {}
                 
                 parentDoc.addEventListener('focusin', function(e) {
                     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') {
@@ -13125,7 +13206,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 85
+    _STICKY_INJECT_VER = 86
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
