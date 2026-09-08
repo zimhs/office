@@ -6,10 +6,13 @@ API 키·일지 원본 등은 복사하지 않음.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
-from typing import Dict, List, Optional, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from worklog_remote_sync import _sha256_file
@@ -34,6 +37,94 @@ _SALES_NAME_RE = re.compile(r"^20\d{2}(\d{2})?\.csv$", re.IGNORECASE)
 _SKIP_ANNUAL_IF_MONTHLY = True
 
 _DONE = False
+
+# 사이드바에서 올린 채권은 Drive 자동로드가 예전 파일로 덮지 못하게 스탬프로 보호
+DEBT_CACHE_REL = "debt.csv"
+DEBT_UPLOAD_STAMP = ".debt_upload_stamp.json"
+
+
+def _file_sha256(path: str) -> str:
+    if _sha256_file is not None:
+        try:
+            got = _sha256_file(path) or ""
+            if got:
+                return str(got)
+        except Exception:
+            pass
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
+def write_debt_upload_stamp(cache_dir: str, sha256: str) -> None:
+    """업로드한 채권 바이트 지문을 남겨 Drive가 예전 파일로 덮지 못하게 한다."""
+    if not cache_dir or not sha256:
+        return
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        payload = {"sha256": str(sha256), "ts": time.time()}
+        path = os.path.join(cache_dir, DEBT_UPLOAD_STAMP)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def read_debt_upload_stamp(cache_dir: str) -> Dict[str, Any]:
+    path = os.path.join(cache_dir, DEBT_UPLOAD_STAMP)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and data.get("sha256"):
+            return data
+    except (OSError, TypeError, ValueError):
+        pass
+    return {}
+
+
+def local_debt_upload_should_keep(
+    cache_dir: str,
+    *,
+    drive_src: Optional[str] = None,
+    remote_ts: float = 0.0,
+    remote_md5: str = "",
+) -> bool:
+    """로컬 debt.csv가 방금 올린 본이고 Drive가 더 오래되면 True (덮어쓰기 금지)."""
+    dst = os.path.join(cache_dir, DEBT_CACHE_REL)
+    if not os.path.isfile(dst):
+        return False
+    stamp = read_debt_upload_stamp(cache_dir)
+    local_sha = _file_sha256(dst)
+    stamped = bool(stamp and stamp.get("sha256") and stamp.get("sha256") == local_sha)
+    drive_mtime = 0.0
+    if drive_src and os.path.isfile(drive_src):
+        try:
+            drive_mtime = float(os.path.getmtime(drive_src))
+        except OSError:
+            drive_mtime = 0.0
+    try:
+        local_mtime = float(os.path.getmtime(dst))
+    except OSError:
+        local_mtime = 0.0
+    other_ts = max(float(remote_ts or 0.0), drive_mtime)
+    if stamped:
+        stamp_ts = float(stamp.get("ts") or 0.0)
+        # 업로드 시각이 Drive 파일보다 같거나 더 최근이면 로컬 유지
+        if stamp_ts >= other_ts - 1.0:
+            return True
+        # Drive가 업로드 이후 더 최신이면(다른 기기) 허용
+        return False
+    # 스탬프 없어도 로컬이 Drive보다 분명 더 최신이면 유지
+    if other_ts > 0 and local_mtime > other_ts + 1.0:
+        return True
+    return False
 
 
 def resolve_drive_dashboard_copy() -> Optional[str]:
@@ -151,13 +242,198 @@ def _list_drive_sales(drive_root: str) -> List[str]:
     return sorted(keep)
 
 
+def resolve_local_uproad_dir(app_root: Optional[str] = None) -> Optional[str]:
+    """프로젝트의 uproad 폴더. Finder에선 uproad, 디스크엔 끝 공백(uproad )일 수 있음.
+
+    app_root를 주면 그 폴더만 본다. 없으면 앱 위치·cwd를 찾는다.
+    """
+    candidates: List[str] = []
+    if app_root:
+        candidates.append(app_root)
+    else:
+        candidates.append(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            candidates.append(os.getcwd())
+        except OSError:
+            pass
+    seen: set[str] = set()
+    for root in candidates:
+        root = os.path.abspath(root)
+        if root in seen:
+            continue
+        seen.add(root)
+        exact = os.path.join(root, "uproad")
+        if os.path.isdir(exact):
+            return exact
+        try:
+            for name in os.listdir(root):
+                if name.strip() == "uproad" and os.path.isdir(os.path.join(root, name)):
+                    return os.path.join(root, name)
+        except OSError:
+            continue
+    return None
+
+
+def _find_named_file(folder: str, want_name: str) -> Optional[str]:
+    """NFC·앞뒤 공백을 무시하고 파일명을 찾는다 (맥 한글 파일명)."""
+    import unicodedata
+
+    direct = os.path.join(folder, want_name)
+    if os.path.isfile(direct):
+        return direct
+    want_n = unicodedata.normalize("NFC", want_name).strip()
+    try:
+        for name in os.listdir(folder):
+            if unicodedata.normalize("NFC", name).strip() != want_n:
+                continue
+            path = os.path.join(folder, name)
+            if os.path.isfile(path):
+                return path
+    except OSError:
+        pass
+    return None
+
+
+def _list_local_uproad_sales(folder: str) -> List[Tuple[str, str]]:
+    """매출 CSV. 파일명 앞 공백(예: ' 202609.csv')은 정규화해서 가져온다."""
+    dest_to_src: Dict[str, str] = {}
+    try:
+        for name in os.listdir(folder):
+            dest = name.strip()
+            if not _SALES_NAME_RE.match(dest):
+                continue
+            src = os.path.join(folder, name)
+            if os.path.isfile(src):
+                dest_to_src[dest] = src
+    except OSError:
+        return []
+    kept = set(_list_drive_sales_from_names(list(dest_to_src)))
+    return [(dest, dest_to_src[dest]) for dest in sorted(kept) if dest in dest_to_src]
+
+
+def _list_drive_sales_from_names(names: List[str]) -> List[str]:
+    if not _SKIP_ANNUAL_IF_MONTHLY:
+        return sorted(names)
+    by_year: Dict[str, List[str]] = {}
+    for n in names:
+        m = re.match(r"^(20\d{2})(\d{2})?\.csv$", n, re.I)
+        if not m:
+            continue
+        by_year.setdefault(m.group(1), []).append(n)
+    keep = set()
+    for y, grp in by_year.items():
+        monthlies = [n for n in grp if re.match(rf"^{y}\d{{2}}\.csv$", n, re.I)]
+        annuals = [n for n in grp if re.match(rf"^{y}\.csv$", n, re.I)]
+        if monthlies:
+            keep.update(monthlies)
+        else:
+            keep.update(annuals)
+    return sorted(keep)
+
+
+def sync_local_uproad_into_cache(
+    cache_dir: str = "./uploaded_cache",
+    *,
+    uproad_dir: Optional[str] = None,
+    include_worklog: bool = True,
+) -> dict:
+    """로컬 dashboard/uproad → uploaded_cache. 동기화 버튼의 로컬 기준 경로."""
+    src_root = uproad_dir or resolve_local_uproad_dir()
+    if not src_root or not os.path.isdir(src_root):
+        return {
+            "ok": False,
+            "skipped": True,
+            "copied": [],
+            "source": src_root,
+            "error": "로컬 uproad 폴더 없음 (Desktop/dashboard/uproad)",
+        }
+
+    copied: List[str] = []
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        sales_dir = os.path.join(cache_dir, "sales")
+        os.makedirs(sales_dir, exist_ok=True)
+
+        for src_name, rel, name_txt in _CACHE_MAP:
+            src = _find_named_file(src_root, src_name)
+            if not src:
+                continue
+            dst = os.path.join(cache_dir, rel)
+            if _atomic_copy(src, dst):
+                copied.append(src_name)
+                if name_txt:
+                    try:
+                        with open(dst + "_name.txt", "w", encoding="utf-8") as f:
+                            f.write(name_txt)
+                    except Exception:
+                        pass
+                if rel == DEBT_CACHE_REL:
+                    sha = _file_sha256(dst)
+                    if sha:
+                        write_debt_upload_stamp(cache_dir, sha)
+
+        wanted_sales = _list_local_uproad_sales(src_root)
+        if wanted_sales:
+            wanted_set = {dest for dest, _src in wanted_sales}
+            try:
+                for existing in os.listdir(sales_dir):
+                    if existing.endswith(".csv") and existing not in wanted_set:
+                        try:
+                            os.remove(os.path.join(sales_dir, existing))
+                            copied.append(f"-sales/{existing}")
+                        except Exception:
+                            pass
+            except OSError:
+                pass
+            for dest, src in wanted_sales:
+                dst = os.path.join(sales_dir, dest)
+                if _atomic_copy(src, dst):
+                    copied.append(f"sales/{dest}")
+
+        if include_worklog:
+            wl_src = os.path.join(src_root, "worklog")
+            if os.path.isdir(wl_src):
+                wl_local = os.path.join(cache_dir, "worklog")
+                os.makedirs(wl_local, exist_ok=True)
+                try:
+                    for wname in os.listdir(wl_src):
+                        if not _is_worklog_day_file(wname) and wname != "template.xlsx":
+                            continue
+                        src = os.path.join(wl_src, wname)
+                        dst = os.path.join(wl_local, wname)
+                        if os.path.isfile(src) and _atomic_copy(src, dst):
+                            copied.append(f"worklog/{wname}")
+                except OSError:
+                    pass
+
+        return {
+            "ok": True,
+            "skipped": False,
+            "copied": copied,
+            "source": src_root,
+            "checked": len(copied),
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "skipped": False,
+            "copied": copied,
+            "source": src_root,
+            "error": str(e),
+        }
+
+
 def sync_drive_copy_into_cache(
     cache_dir: str = "./uploaded_cache",
     *,
     force_refresh: bool = False,
     include_worklog: bool = True,
+    protect_newer_local: bool = True,
 ) -> dict:
     """Drive 복사본 → uploaded_cache. 프로세스당 1회 (force_refresh 시 항상 Drive 우선).
+
+    protect_newer_local: 사이드바에서 올린 채권(debt.csv)이 Drive보다 최신이면 덮지 않음.
+    수동「가져오기」만 False.
 
     Returns:
         {ok, source, copied: [..], skipped: bool, error?}
@@ -186,6 +462,12 @@ def sync_drive_copy_into_cache(
         for src_name, rel, name_txt in _CACHE_MAP:
             src = os.path.join(drive_root, src_name)
             dst = os.path.join(cache_dir, rel)
+            if (
+                protect_newer_local
+                and rel == DEBT_CACHE_REL
+                and local_debt_upload_should_keep(cache_dir, drive_src=src)
+            ):
+                continue
             if not force_refresh and not _should_replace(src, dst):
                 continue
             if not os.path.isfile(src):
@@ -259,11 +541,13 @@ def sync_dashboard_copy_on_boot(
     *,
     force_refresh: bool = True,
     include_worklog: bool = False,
+    protect_newer_local: bool = True,
 ) -> dict:
     """재시작·재부팅 시 dashboard 복사본/uproad 최신 데이터 로드.
 
     맥: Drive Desktop 마운트 / Cloud: Drive API (drive_remote_fetch).
     Cloud 부트: force_refresh=False·include_worklog=False 로 CSV만 빠르게 확인.
+    사이드바에서 올린 채권은 protect_newer_local=True 이면 Drive 옛 파일로 덮지 않음.
     """
     local_root = resolve_drive_dashboard_copy()
     if local_root:
@@ -271,6 +555,7 @@ def sync_dashboard_copy_on_boot(
             cache_dir,
             force_refresh=force_refresh,
             include_worklog=include_worklog,
+            protect_newer_local=protect_newer_local,
         )
     try:
         from drive_remote_fetch import sync_drive_copy_from_remote
@@ -279,6 +564,7 @@ def sync_dashboard_copy_on_boot(
             cache_dir,
             force_refresh=force_refresh,
             include_worklog=include_worklog,
+            protect_newer_local=protect_newer_local,
         )
     except Exception as e:
         return {

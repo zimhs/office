@@ -15,11 +15,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from drive_autoload import (
+    DEBT_CACHE_REL,
     DRIVE_COPY_NAME,
     _CACHE_MAP,
     _SALES_NAME_RE,
     _SKIP_ANNUAL_IF_MONTHLY,
     _atomic_copy,
+    local_debt_upload_should_keep,
 )
 
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
@@ -270,6 +272,7 @@ def sync_drive_copy_from_remote(
     *,
     force_refresh: bool = False,
     include_worklog: bool = True,
+    protect_newer_local: bool = True,
 ) -> dict:
     """Cloud: Drive uproad 폴더 → uploaded_cache (Gist 대체)."""
     folder_id = resolve_drive_uproad_folder_id()
@@ -306,6 +309,16 @@ def sync_drive_copy_from_remote(
             continue
         rel = drive_to_rel[src_name]
         dst = os.path.join(cache_dir, rel)
+        if (
+            protect_newer_local
+            and rel == DEBT_CACHE_REL
+            and local_debt_upload_should_keep(
+                cache_dir,
+                remote_ts=_drive_modified_ts(meta),
+                remote_md5=str(meta.get("md5Checksum") or ""),
+            )
+        ):
+            continue
         if not _remote_differs_from_cache(meta, dst, force_refresh=force_refresh):
             continue
         raw, derr = _drive_download(str(meta.get("id")))

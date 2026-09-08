@@ -28,5 +28,44 @@ class DashTabExpandTest(unittest.TestCase):
         self.assertEqual(found, set(_DEFER_FNS))
 
 
+class CloudClipFixIsolationTest(unittest.TestCase):
+    def test_cloud_clip_css_not_inside_shared_inject(self):
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        shared = src.split("def inject_custom_css():", 1)[1].split("def parse_date_series_robust", 1)[0]
+        self.assertNotIn("dashboard-cloud-tab2-head-gap", shared)
+        self.assertIn("def inject_cloud_clip_fix_css", src)
+        self.assertIn("if _is_streamlit_cloud():\n    inject_cloud_clip_fix_css()", src)
+        cloud_css = src.split("def inject_cloud_clip_fix_css():", 1)[1].split(
+            "# 5. 메인 실행 흐름", 1
+        )[0]
+        self.assertNotIn("#dashboard-sticky-spacer", cloud_css)
+        warm = src.split("def _dash_map_autowarm_fragment", 1)[1].split(
+            "if not st.session_state.get(\"_dash_map_autowarm_done\")", 1
+        )[0]
+        self.assertIn("if _is_streamlit_cloud():", warm)
+        self.assertIn("function pushCloudContentBelowBar", src)
+        self.assertIn("need = Math.round(bottom - mainTop) + 16;", src)
+        self.assertIn("streamlit.app", src)
+        self.assertIn("function detectCloudHost", src)
+        self.assertIn("function firstCloudContentEl", src)
+        self.assertIn("dashboard-cloud-content-pad", src)
+        self.assertIn("os.path.isdir(\"/mount/src\")", src)
+        self.assertIn("/home/adminuser", src)
+        self.assertIn("if (!cloudMode) return h;", src)
+        self.assertIn("padding-top: 72px !important;", cloud_css)
+        tab2 = src.split("# Tab 2:", 1)[1].split("with tab3:", 1)[0]
+        self.assertIn("dashboard-cloud-tab2-head-gap", tab2)
+        self.assertIn("if _is_streamlit_cloud():", tab2)
+
+    def test_cloud_command_opens_one_tab(self):
+        with open("dashboard_Cloud.command", encoding="utf-8") as f:
+            src = f.read()
+        self.assertNotIn('open -a "Google Chrome" "$CLOUD"', src)
+        self.assertIn('open -a "Google Chrome"', src)
+        self.assertIn("make new tab at end of tabs of keepWin", src)
+        self.assertIn('if seenCloud then', src)
+
+
 if __name__ == "__main__":
     unittest.main()

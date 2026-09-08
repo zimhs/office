@@ -5,6 +5,7 @@ import sys
 import html
 import json
 import glob
+import hashlib
 import time
 import importlib
 import subprocess
@@ -125,11 +126,15 @@ try:
         sync_cache_to_drive_copy,
         sync_dashboard_copy_on_boot,
         sync_drive_copy_into_cache,
+        sync_local_uproad_into_cache,
+        write_debt_upload_stamp,
     )
 except Exception:  # pragma: no cover
     sync_drive_copy_into_cache = None  # type: ignore
     sync_cache_to_drive_copy = None  # type: ignore
     sync_dashboard_copy_on_boot = None  # type: ignore
+    sync_local_uproad_into_cache = None  # type: ignore
+    write_debt_upload_stamp = None  # type: ignore
 
 
 def _is_local_macos() -> bool:
@@ -138,16 +143,38 @@ def _is_local_macos() -> bool:
 
 
 def _is_streamlit_cloud() -> bool:
-    """Streamlit Community Cloud 여부. 로컬 맥 Desktop은 False."""
+    """Streamlit Community Cloud 여부. 로컬 맥 Desktop(localhost)은 False."""
     try:
         env = (os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT") or "").strip().lower()
         if env == "cloud":
             return True
     except Exception:
         pass
+    for _k in ("STREAMLIT_CLOUD", "IS_STREAMLIT_CLOUD"):
+        _v = (os.environ.get(_k) or "").strip().lower()
+        if _v in ("1", "true", "yes"):
+            return True
     try:
+        if os.path.isdir("/mount/src"):
+            return True
         cwd = os.path.abspath(os.getcwd())
         if cwd.startswith("/mount/src"):
+            return True
+    except Exception:
+        pass
+    try:
+        home = (os.environ.get("HOME") or "").rstrip("/")
+        if home == "/home/adminuser":
+            return True
+    except Exception:
+        pass
+    try:
+        ctx = getattr(st, "context", None)
+        headers = getattr(ctx, "headers", None) if ctx is not None else None
+        host = ""
+        if headers:
+            host = str(headers.get("host") or headers.get("Host") or "")
+        if "streamlit.app" in host.lower():
             return True
     except Exception:
         pass
@@ -4800,6 +4827,121 @@ def load_debt_file(debt_bytes):
     except Exception:
         pass
     return pd.DataFrame()
+
+
+def debt_bytes_fingerprint(debt_bytes) -> str:
+    """채권 원본 바이트 지문. 행 수가 같아도 금액이 바뀌면 달라진다."""
+    if not debt_bytes:
+        return ""
+    return hashlib.sha256(bytes(debt_bytes)).hexdigest()
+
+
+def debt_frame_fingerprint(df) -> tuple:
+    """필터 세션표가 옛 데이터를 재사용하지 않도록 내용 지문."""
+    if df is None or getattr(df, "empty", True):
+        return ("empty",)
+    month_cols = [c for c in df.columns if c not in ("거래처", "구분")]
+    try:
+        if month_cols:
+            total = float(
+                df[month_cols].apply(pd.to_numeric, errors="coerce").fillna(0).to_numpy().sum()
+            )
+        else:
+            total = 0.0
+    except Exception:
+        total = 0.0
+    n_clients = int(df["거래처"].nunique()) if "거래처" in df.columns else 0
+    return (int(len(df)), n_clients, tuple(str(c) for c in month_cols), round(total, 2))
+
+
+def persist_debt_bytes(debt_bytes, cache_path: str, folder_csv: str = "채권.csv") -> bool:
+    """업로드 바이트를 캐시(+폴더 채권.csv)에 원자적 기록. Drive보다 이 파일이 진실."""
+    if not debt_bytes or not cache_path:
+        return False
+    parent = os.path.dirname(cache_path) or "."
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError:
+        pass
+    tmp = cache_path + ".uploading"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(debt_bytes)
+        os.replace(tmp, cache_path)
+    except Exception:
+        try:
+            with open(cache_path, "wb") as f:
+                f.write(debt_bytes)
+        except Exception:
+            return False
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+    try:
+        with open(folder_csv, "wb") as f:
+            f.write(debt_bytes)
+    except Exception:
+        pass
+    sha = debt_bytes_fingerprint(debt_bytes)
+    if write_debt_upload_stamp is not None:
+        try:
+            write_debt_upload_stamp(parent, sha)
+        except Exception:
+            pass
+    return True
+
+
+def clear_debt_runtime_caches(session=None) -> None:
+    """파싱·스타일·화면 세션표를 버려 새 채권이 바로 보이게 한다."""
+    for fn in (
+        load_debt_file,
+        apply_debt_style_fast,
+        compute_debt_status_by_client,
+        compute_debt_od_meta_from_raw,
+    ):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+    if session is None:
+        try:
+            session = st.session_state
+        except Exception:
+            session = None
+    if session is None:
+        return
+    for key in (
+        "_dash_debt_filter_sig",
+        "_dash_staff_debt_df",
+        "_dash_filtered_debt_df",
+        "debt_od_filters",
+    ):
+        try:
+            session.pop(key, None)
+        except Exception:
+            pass
+
+
+def resolve_cached_debt_bytes(cache_path: str, folder_csv: str = "채권.csv"):
+    """업로드 없을 때: 캐시(debt.csv)만 진실. 다른 채권*.csv 최신 mtime에 끌려가지 않음."""
+    if cache_path and os.path.isfile(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                return f.read(), f"캐시:{os.path.basename(cache_path)}"
+        except OSError:
+            pass
+    if folder_csv and os.path.isfile(folder_csv):
+        try:
+            with open(folder_csv, "rb") as f:
+                raw = f.read()
+            if raw and persist_debt_bytes(raw, cache_path, folder_csv):
+                return raw, f"폴더:{folder_csv}"
+            return raw, f"폴더:{folder_csv}"
+        except OSError:
+            pass
+    return None, "없음"
 def _parse_sales_filename_year_month(file_name: str):
     """파일명에서 (연도YYYY, 월MM|None) 추출. 2026.csv / 202608.csv / 202607.csv."""
     base = os.path.basename(str(file_name or ""))
@@ -8797,7 +8939,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 66
+    _sticky_py_ver = 73
     components.html(
         """
         <script>
@@ -8805,6 +8947,22 @@ def inject_sticky_tabs_script():
             var parentDoc = window.parent.document;
             var parentWin = window.parent;
             var cloudMode = __CLOUD_STICKY_MODE__;
+            function detectCloudHost() {
+                var names = [];
+                try { names.push(String((parentWin.location && parentWin.location.hostname) || "")); } catch (e1) {}
+                try { names.push(String((parentDoc.location && parentDoc.location.hostname) || "")); } catch (e2) {}
+                try { names.push(String(window.location.hostname || "")); } catch (e3) {}
+                try { names.push(String((parentWin.location && parentWin.location.href) || "")); } catch (e4) {}
+                try { names.push(String(parentDoc.referrer || "")); } catch (e5) {}
+                var i, s;
+                for (i = 0; i < names.length; i++) {
+                    s = String(names[i] || "").toLowerCase();
+                    if (s.indexOf("streamlit.app") !== -1) return true;
+                    if (s.indexOf("streamlitusercontent.com") !== -1) return true;
+                }
+                return false;
+            }
+            try { if (!cloudMode && detectCloudHost()) cloudMode = true; } catch (eHn) {}
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
@@ -8819,6 +8977,10 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardStickyPyVer = PY_STICKY_VER;
             }
             try { parentDoc.documentElement.classList.add('dashboard-tabs-unified'); } catch (eUni0) {}
+            try {
+                if (cloudMode) parentDoc.documentElement.classList.add('dashboard-cloud-clipfix');
+            } catch (eCloudClip) {}
+            try { if (cloudMode) injectCloudClipCss(); } catch (eCloudCss) {}
             function bindDashboardFilterTextInputs() {
                 /* 필터 select UX → _dash_inject_filter_select_script (fragment rerun마다) */
             }
@@ -8832,9 +8994,27 @@ def inject_sticky_tabs_script():
             var lastViewportW = 0;
             var lastGeoKey = '';
             /* 고정바 하단과 본문 사이 목표 간격 (~4mm) */
-            var CONTENT_GAP_PX = 15;
-            function computeBarHeight(filterH) {
-                return Math.max(48, Math.round(filterH || 0));
+            var CONTENT_GAP_PX = cloudMode ? 36 : 15;
+            function computeBarHeight(filterH, filterBox) {
+                var h = Math.max(48, Math.round(filterH || 0));
+                if (!cloudMode) return h;
+                /* Cloud: 고정바 실제 하단(viewport) − 본문 시작. 헤더 overlay 때문에
+                   필터 높이만 밀면 제목/버튼이 탭 밑에 들어간다. 로컬은 위 return. */
+                try {
+                    var box = filterBox || parentDoc.querySelector('.dashboard-filter-sticky');
+                    if (box && isElementFixed(box)) {
+                        var bottom = box.getBoundingClientRect().bottom;
+                        var mainEl = parentDoc.querySelector('section.main');
+                        var mainTop = mainEl ? mainEl.getBoundingClientRect().top : 0;
+                        var need = Math.round(bottom - mainTop) + 16;
+                        if (need > 48 && need < 420) h = Math.max(h, need);
+                    } else {
+                        h += Math.max(0, getTopOffsetMac());
+                    }
+                } catch (eNeed) {
+                    try { h += Math.max(0, getTopOffsetMac()); } catch (e2) {}
+                }
+                return h;
             }
             function collapseAround(el, depth) {
                 if (!el) return;
@@ -8884,7 +9064,7 @@ def inject_sticky_tabs_script():
                    viewport gap으로 스페이서를 키우지 않는다. */
                 if (!filterBox || !isElementFixed(filterBox)) return lastH;
                 var filterH = Math.round(filterBox.getBoundingClientRect().height) || 0;
-                var barH = computeBarHeight(filterH);
+                var barH = computeBarHeight(filterH, filterBox);
                 if (barH < 48) return lastH;
                 if (lastH > 0 && Math.abs(barH - lastH) <= 12) {
                     try { snapContentToBar(filterBox); } catch (eSn0) {}
@@ -8899,7 +9079,94 @@ def inject_sticky_tabs_script():
                 try { snapContentToBar(filterBox); } catch (eSn1) {}
                 return lastH;
             }
+            function injectCloudClipCss() {
+                if (!cloudMode) return;
+                var id = 'dashboard-cloud-clipfix-js';
+                var s = parentDoc.getElementById(id);
+                if (!s) {
+                    s = parentDoc.createElement('style');
+                    s.id = id;
+                    (parentDoc.head || parentDoc.documentElement).appendChild(s);
+                }
+                s.textContent = (
+                    'html.dashboard-cloud-clipfix .dashboard-filter-sticky '
+                    + '[role="tablist"].dashboard-tabs-in-filter{transform:none!important;}'
+                    + 'html.dashboard-cloud-clipfix .dashboard-tabs-host-compact,'
+                    + 'html.dashboard-cloud-clipfix [data-testid="stTabs"]{'
+                    + 'padding-top:0!important;margin-top:0!important;}'
+                    + 'html.dashboard-cloud-clipfix [data-testid="stTabs"] '
+                    + '[role="tabpanel"]:not([hidden]){padding-top:72px!important;}'
+                    + '#dashboard-cloud-content-pad{display:block!important;width:100%!important;'
+                    + 'margin:0!important;padding:0!important;border:0!important;'
+                    + 'line-height:0!important;pointer-events:none!important;}'
+                );
+            }
+            function firstCloudContentEl(panel) {
+                var sels = [
+                    '.dashboard-tab-panel-head',
+                    '.st-key-tab2_action_btns',
+                    '[data-testid="stMetric"]',
+                    '[data-testid="stButton"]',
+                    '.sub-header'
+                ];
+                var i, el;
+                for (i = 0; i < sels.length; i++) {
+                    el = panel.querySelector(sels[i]);
+                    if (el && el.offsetHeight > 4) return el;
+                }
+                var kids = panel.querySelectorAll('[data-testid="stElementContainer"]');
+                for (i = 0; i < kids.length; i++) {
+                    el = kids[i];
+                    if (!el || el.id === 'dashboard-cloud-content-pad') continue;
+                    if (el.querySelector && el.querySelector('#dashboard-cloud-content-pad')) continue;
+                    if (el.classList && el.classList.contains('dashboard-cloud-tab2-head-gap')) continue;
+                    if ((el.getBoundingClientRect().height || 0) > 12) return el;
+                }
+                return panel;
+            }
+            function ensureCloudContentPad(panel) {
+                var id = 'dashboard-cloud-content-pad';
+                var pad = parentDoc.getElementById(id);
+                if (!pad) {
+                    pad = parentDoc.createElement('div');
+                    pad.id = id;
+                    pad.setAttribute('aria-hidden', 'true');
+                }
+                if (pad.parentElement !== panel) {
+                    if (panel.firstChild) panel.insertBefore(pad, panel.firstChild);
+                    else panel.appendChild(pad);
+                }
+                return pad;
+            }
+            function pushCloudContentBelowBar(filterBox) {
+                /* Cloud만: 로컬 snap(위로 당김) 대신, 화면에 보이는 첫 줄이
+                   고정바 아래에 오도록 pad를 키운다. 줄이지는 않음. */
+                if (!cloudMode || !filterBox || !isElementFixed(filterBox)) return;
+                var host = findMainTabsHost();
+                if (!host) return;
+                var panel = host.querySelector('[role="tabpanel"]:not([hidden])');
+                if (!panel) return;
+                try { host.style.setProperty('margin-top', '0', 'important'); } catch (eM) {}
+                var pad = ensureCloudContentPad(panel);
+                var target = firstCloudContentEl(panel);
+                if (!target || target === pad) target = panel;
+                var barBottom = filterBox.getBoundingClientRect().bottom;
+                var top = target.getBoundingClientRect().top;
+                var need = Math.round(barBottom + 24 - top);
+                var curH = Math.round(pad.getBoundingClientRect().height) || 0;
+                if (need <= 2) return;
+                var nextH = curH + need;
+                if (nextH > 240) nextH = 240;
+                if (nextH <= curH) return;
+                pad.style.setProperty('height', nextH + 'px', 'important');
+                pad.style.setProperty('min-height', nextH + 'px', 'important');
+            }
             function snapContentToBar(filterBox) {
+                /* Cloud: 로컬처럼 위로 당기지 않음. pushCloudContentBelowBar가 내린다. */
+                if (cloudMode) {
+                    try { pushCloudContentBelowBar(filterBox); } catch (ePush) {}
+                    return;
+                }
                 /* 스크롤이 맨 위일 때만 본문을 바 아래 4mm로 당긴다.
                    클릭 후 scrollIntoView로 생긴 가짜 큰 간격은 무시(여백 폭증 방지). */
                 if (!filterBox || !isElementFixed(filterBox)) return;
@@ -8932,7 +9199,7 @@ def inject_sticky_tabs_script():
             }
             function applySpacerForBar(filterBox, filterH, force) {
                 if (!filterBox) return lastH;
-                var barH = computeBarHeight(filterH);
+                var barH = computeBarHeight(filterH, filterBox);
                 var now = Date.now();
                 var vw = parentWin.innerWidth || 0;
                 var vwChanged = !!(lastViewportW && Math.abs(vw - lastViewportW) > 8);
@@ -9097,15 +9364,24 @@ def inject_sticky_tabs_script():
             var touchMode = isTouchPad();
             function getTopOffsetMac() {
                 var header = parentDoc.querySelector('[data-testid="stHeader"]');
-                if (!header) return 46;
-                var rect = header.getBoundingClientRect();
-                if (rect.bottom > 0) {
-                    return Math.round(rect.bottom);
+                var got = 46;
+                if (header) {
+                    var rect = header.getBoundingClientRect();
+                    if (rect.bottom > 0) got = Math.round(rect.bottom);
+                    else if (header.offsetHeight > 0) got = header.offsetHeight;
                 }
-                if (header.offsetHeight > 0) {
-                    return header.offsetHeight;
+                if (cloudMode) {
+                    var ids = ['stToolbar', 'stDecoration', 'stStatusWidget'];
+                    var ii;
+                    for (ii = 0; ii < ids.length; ii++) {
+                        var chrome = parentDoc.querySelector('[data-testid="' + ids[ii] + '"]');
+                        if (!chrome) continue;
+                        var cb = chrome.getBoundingClientRect().bottom;
+                        if (cb > got) got = Math.round(cb);
+                    }
+                    return Math.max(got, 64);
                 }
-                return 46;
+                return got;
             }
             function getMainRect() {
                 var block = parentDoc.querySelector('section.main .block-container');
@@ -11314,6 +11590,8 @@ def _dash_consume_deferred_cloud_drive_sync() -> None:
         st.session_state["_drive_copy_boot_sync_done"] = True
         st.session_state.pop("_drive_deferred_sync_pending", None)
         return
+    # 동기화 전에 표시 — 끝나기 전 fragment가 또 돌면 Drive 호출이 겹쳐 무한 로딩처럼 보임
+    st.session_state["_drive_deferred_sync_ran"] = True
     try:
         # 클라우드 원격 로드는 Drive md5Checksum(없으면 size)으로 내용을 비교하므로
         # (drive_remote_fetch) 실제로 바뀐 파일만 받아온다. force_refresh 불필요:
@@ -11325,7 +11603,6 @@ def _dash_consume_deferred_cloud_drive_sync() -> None:
         )
     except Exception as exc:
         res = {"ok": False, "error": str(exc), "copied": []}
-    st.session_state["_drive_deferred_sync_ran"] = True
     st.session_state["_drive_copy_boot_sync_done"] = True
     st.session_state.pop("_drive_deferred_sync_pending", None)
     copied = (res or {}).get("copied") or []
@@ -11355,10 +11632,41 @@ def _dash_cloud_drive_followup_fragment() -> None:
     _dash_consume_deferred_cloud_drive_sync()
 
 
+def inject_cloud_clip_fix_css():
+    """Cloud 전용: 고정 탭바 아래 거래처 분석 제목/버튼이 가리지 않게.
+    이 함수는 Cloud에서만 호출되므로 여기 선택자는 로컬에 적용되지 않는다."""
+    st.markdown(
+        """
+        <style>
+        /* 스페이서 height는 JS만 잡는다. CSS로 키우면 측정↔재동기화가 무한 로딩처럼 보임 */
+        .dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter {
+            transform: none !important;
+        }
+        .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]),
+        [data-testid="stTabs"] [role="tabpanel"]:not([hidden]) {
+            padding-top: 72px !important;
+        }
+        .st-key-tab2_action_btns {
+            margin-top: 10px !important;
+            padding-top: 6px !important;
+        }
+        .dashboard-cloud-tab2-head-gap {
+            height: 16px !important;
+            width: 100% !important;
+            flex-shrink: 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ==========================================
 # 5. 메인 실행 흐름 및 영구 캐싱 관리
 # ==========================================
 inject_custom_css()
+if _is_streamlit_cloud():
+    inject_cloud_clip_fix_css()
 st.sidebar.header("📁 데이터 업로드 및 유지")
 _render_cloud_sync_banner()
 # Drive「dashboard 복사본/uproad」→ uploaded_cache (재시작·재부팅 시 최신 우선)
@@ -11456,7 +11764,14 @@ if st.session_state.pop("_drive_restore_after_clear", False):
 
 address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
 industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)", type=["csv"])
-debt_file_up = st.sidebar.file_uploader("채권 데이터 (채권.csv)", type=["csv"])
+if "_debt_uploader_nonce" not in st.session_state:
+    st.session_state["_debt_uploader_nonce"] = 0
+debt_file_up = st.sidebar.file_uploader(
+    "채권 데이터 (채권.csv)",
+    type=["csv"],
+    key=f"debt_csv_uploader_{st.session_state['_debt_uploader_nonce']}",
+    help="같은 이름(채권.csv)을 다시 올려도 새 내용으로 교체합니다. 이전 캐시는 버립니다.",
+)
 uploaded_files_up = st.sidebar.file_uploader("매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True)
 st.sidebar.markdown("---")
 st.sidebar.subheader("🏭 설비 재고 관리 (선택)")
@@ -11682,76 +11997,40 @@ else:
     ind_bytes = None
 if debt_file_up is not None:
     debt_bytes = debt_file_up.getvalue()
-    # Google Drive 동기화 중 부분쓰기/충돌 완화: tmp → replace
-    _debt_tmp = debt_cache_path + ".uploading"
-    try:
-        with open(_debt_tmp, "wb") as f:
-            f.write(debt_bytes)
-        os.replace(_debt_tmp, debt_cache_path)
-    except Exception:
-        with open(debt_cache_path, "wb") as f:
-            f.write(debt_bytes)
-        try:
-            if os.path.exists(_debt_tmp):
-                os.remove(_debt_tmp)
-        except Exception:
-            pass
-    # 폴더의 채권.csv와도 맞춰 두면 Finder에서 바꾼 것과 사이드바 업로드가 어긋나지 않음
-    try:
-        with open("채권.csv", "wb") as f:
-            f.write(debt_bytes)
-    except Exception:
-        pass
-    try:
-        load_debt_file.clear()
-    except Exception:
-        pass
-    st.session_state["_debt_source"] = f"업로드:{getattr(debt_file_up, 'name', '채권.csv')}"
-else:
-    # ★ 핵심: uploaded_cache/debt.csv 가 있으면 예전엔 폴더 채권.csv를 영원히 무시했음
-    # → mtime이 더 최신인 쪽을 사용 (폴더 파일 교체 반영)
-    _debt_candidates = []
-    if os.path.exists(debt_cache_path):
-        try:
-            st_ = os.stat(debt_cache_path)
-            _debt_candidates.append(
-                (st_.st_mtime, st_.st_size, debt_cache_path, "캐시")
-            )
-        except Exception:
-            pass
-    for f_name in os.listdir("."):
-        if f_name.startswith("채권") and f_name.endswith(".csv"):
+    _debt_sha = debt_bytes_fingerprint(debt_bytes)
+    _debt_prev = st.session_state.get("_debt_applied_sha")
+    _debt_wrote = persist_debt_bytes(debt_bytes, debt_cache_path, "채권.csv")
+    if _debt_wrote and _debt_sha != _debt_prev:
+        clear_debt_runtime_caches()
+        st.session_state["_debt_applied_sha"] = _debt_sha
+        st.session_state["_debt_uploader_nonce"] = int(
+            st.session_state.get("_debt_uploader_nonce") or 0
+        ) + 1
+        # 같은 파일명 재업로드가 옛 위젯 내용을 붙잡는 것 방지 + Drive에 새 본 반영
+        if sync_cache_to_drive_copy is not None:
             try:
-                st_ = os.stat(f_name)
-                _debt_candidates.append(
-                    (st_.st_mtime, st_.st_size, f_name, f"폴더:{f_name}")
-                )
+                sync_cache_to_drive_copy(CACHE_DIR, force=False)
             except Exception:
                 pass
-    debt_bytes = None
-    if _debt_candidates:
-        _debt_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        _mtime, _size, _path, _label = _debt_candidates[0]
-        with open(_path, "rb") as f:
-            debt_bytes = f.read()
+            st.session_state["_drive_synced_this_upload"] = True
         st.session_state["_debt_source"] = (
-            f"{_label} · {int(_size):,}B"
+            f"업로드:{getattr(debt_file_up, 'name', '채권.csv')} · {_debt_sha[:8]}"
         )
-        # 캐시가 오래됐으면 최신 폴더 파일로 캐시 갱신
-        if _path != debt_cache_path and debt_bytes:
-            try:
-                _debt_tmp = debt_cache_path + ".uploading"
-                with open(_debt_tmp, "wb") as f:
-                    f.write(debt_bytes)
-                os.replace(_debt_tmp, debt_cache_path)
-                load_debt_file.clear()
-            except Exception:
-                try:
-                    with open(debt_cache_path, "wb") as f:
-                        f.write(debt_bytes)
-                    load_debt_file.clear()
-                except Exception:
-                    pass
+        st.rerun()
+    st.session_state["_debt_source"] = (
+        f"업로드:{getattr(debt_file_up, 'name', '채권.csv')} · {_debt_sha[:8]}"
+    )
+else:
+    # 업로드 위젯이 비면 캐시(debt.csv)만 읽는다. 다른 채권*.csv mtime에 끌려가지 않음.
+    debt_bytes, _debt_label = resolve_cached_debt_bytes(debt_cache_path, "채권.csv")
+    _debt_sha = debt_bytes_fingerprint(debt_bytes)
+    if _debt_sha and _debt_sha != st.session_state.get("_debt_applied_sha"):
+        clear_debt_runtime_caches()
+        st.session_state["_debt_applied_sha"] = _debt_sha
+    if debt_bytes:
+        st.session_state["_debt_source"] = (
+            f"{_debt_label} · {len(debt_bytes):,}B · {_debt_sha[:8]}"
+        )
     else:
         st.session_state["_debt_source"] = "없음"
 if tank_file_up is not None:
@@ -11873,51 +12152,107 @@ if _drive_upload_hit and sync_cache_to_drive_copy is not None:
 elif not _drive_upload_hit:
     st.session_state.pop("_drive_synced_this_upload", None)
 
-if st.sidebar.button(
-    "☁️ Drive 복사본으로 동기화",
-    help="맥 캐시 → Google Drive「dashboard 복사본/uproad」. Cloud·iPad는 재시작 시 여기서 자동 로드.",
-):
-    st.session_state.pop("_drive_synced_this_upload", None)
-    _run_cache_to_drive_sync(force=True)
-    st.rerun()
-
-if st.sidebar.button(
-    "↻ Drive 복사본에서 가져오기",
-    help="Google Drive uproad 폴더 → 캐시 (Cloud·맥 공통). 맥에서 동기화 후 눌러 최신 반영.",
-):
-    if sync_dashboard_copy_on_boot is not None:
-        try:
-            _dr = sync_dashboard_copy_on_boot(
-                CACHE_DIR,
-                force_refresh=True,
-                include_worklog=True,
-            )
+if not _is_streamlit_cloud():
+    if st.sidebar.button(
+        "☁️ Drive 복사본으로 동기화",
+        help="Desktop/dashboard/uproad 의 CSV·매출을 캐시로 가져옵니다. (폴더명이 기준)",
+    ):
+        st.session_state.pop("_drive_synced_this_upload", None)
+        _pull = None
+        if sync_local_uproad_into_cache is not None:
             try:
-                load_uploaded_files_from_meta.clear()
-                load_uploaded_files_from_bytes.clear()
-            except Exception:
-                pass
-            st.session_state["_dash_sales_cache_cleared"] = True
-            for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
-                st.session_state.pop(_pk, None)
-            _dn = len((_dr or {}).get("copied") or [])
-            if isinstance(_dr, dict) and _dr.get("error"):
-                st.session_state["_drive_pull_msg"] = ("error", str(_dr.get("error")))
-            elif _dn > 0:
-                st.session_state["_drive_pull_msg"] = ("ok", _dn)
-            else:
-                st.session_state["_drive_pull_msg"] = ("same", None)
-            st.rerun()
-        except Exception as _de:
-            st.sidebar.warning(str(_de))
+                _pull = sync_local_uproad_into_cache(CACHE_DIR, include_worklog=True)
+            except Exception as _pe:
+                _pull = {"ok": False, "skipped": False, "copied": [], "error": str(_pe)}
+        else:
+            _pull = {"ok": False, "skipped": True, "copied": [], "error": "로컬 uproad 동기화 함수 없음"}
+        try:
+            load_uploaded_files_from_meta.clear()
+            load_uploaded_files_from_bytes.clear()
+            load_debt_file.clear()
+        except Exception:
+            pass
+        clear_debt_runtime_caches()
+        st.session_state.pop("_debt_applied_sha", None)
+        st.session_state["_dash_sales_cache_cleared"] = True
+        for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
+            st.session_state.pop(_pk, None)
+        _push = None
+        if isinstance(_pull, dict) and _pull.get("ok") and sync_cache_to_drive_copy is not None:
+            try:
+                _push = sync_cache_to_drive_copy(CACHE_DIR, force=True)
+            except Exception as _dpe:
+                _push = {"ok": False, "error": str(_dpe)}
+        _msg = dict(_pull or {})
+        _msg["local_uproad"] = True
+        _msg["drive_push"] = _push
+        st.session_state["_drive_sync_out_msg"] = _msg
+        st.rerun()
+else:
+    if st.sidebar.button(
+        "☁️ Drive 복사본으로 동기화",
+        help="맥 캐시 → Google Drive「dashboard 복사본/uproad」. Cloud·iPad는 재시작 시 여기서 자동 로드.",
+    ):
+        st.session_state.pop("_drive_synced_this_upload", None)
+        _run_cache_to_drive_sync(force=True)
+        st.rerun()
+    if st.sidebar.button(
+        "↻ Drive 복사본에서 가져오기",
+        help="Google Drive uproad 폴더 → 캐시. Cloud에서 최신 반영.",
+    ):
+        if sync_dashboard_copy_on_boot is not None:
+            try:
+                _dr = sync_dashboard_copy_on_boot(
+                    CACHE_DIR,
+                    force_refresh=True,
+                    include_worklog=True,
+                    protect_newer_local=False,
+                )
+                try:
+                    load_uploaded_files_from_meta.clear()
+                    load_uploaded_files_from_bytes.clear()
+                    load_debt_file.clear()
+                except Exception:
+                    pass
+                clear_debt_runtime_caches()
+                st.session_state.pop("_debt_applied_sha", None)
+                st.session_state["_dash_sales_cache_cleared"] = True
+                for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
+                    st.session_state.pop(_pk, None)
+                _dn = len((_dr or {}).get("copied") or [])
+                if isinstance(_dr, dict) and _dr.get("error"):
+                    st.session_state["_drive_pull_msg"] = ("error", str(_dr.get("error")))
+                elif _dn > 0:
+                    st.session_state["_drive_pull_msg"] = ("ok", _dn)
+                else:
+                    st.session_state["_drive_pull_msg"] = ("same", None)
+                st.rerun()
+            except Exception as _de:
+                st.sidebar.warning(str(_de))
 
 _drive_out = st.session_state.pop("_drive_sync_out_msg", None)
 if isinstance(_drive_out, dict):
-    if _drive_out.get("ok") and not _drive_out.get("skipped"):
-        _copied = [x for x in (_drive_out.get("copied") or []) if not str(x).startswith("-")]
-        _nc = len(_copied)
-        _checked = int(_drive_out.get("checked") or 0)
-        _src = _drive_out.get("source") or ""
+    _copied = [x for x in (_drive_out.get("copied") or []) if not str(x).startswith("-")]
+    _nc = len(_copied)
+    _checked = int(_drive_out.get("checked") or 0)
+    _src = _drive_out.get("source") or ""
+    if _drive_out.get("local_uproad"):
+        if _drive_out.get("ok") and _nc:
+            st.sidebar.success(f"로컬 uproad에서 {_nc}개 가져옴")
+            if _src:
+                st.sidebar.caption(f"출처: {_src}")
+            _push = _drive_out.get("drive_push") or {}
+            if isinstance(_push, dict) and _push.get("ok") and not _push.get("skipped"):
+                _pn = len([x for x in (_push.get("copied") or []) if not str(x).startswith("-")])
+                if _pn:
+                    st.sidebar.caption(f"Drive 복사본에도 {_pn}개 반영")
+        elif _drive_out.get("ok"):
+            st.sidebar.info("로컬 uproad와 캐시가 같거나 가져올 파일이 없습니다.")
+            if _src:
+                st.sidebar.caption(f"출처: {_src}")
+        else:
+            st.sidebar.warning(f"로컬 uproad 동기화 실패: {_drive_out.get('error') or '알 수 없음'}")
+    elif _drive_out.get("ok") and not _drive_out.get("skipped"):
         if _nc:
             st.sidebar.success(f"Drive 복사본 반영 완료 · {_nc}개")
         elif _checked:
@@ -11962,6 +12297,14 @@ if st.sidebar.button(
     st.session_state["_dash_sales_cache_cleared"] = True
     for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
         st.session_state.pop(_pk, None)
+    st.session_state.pop("_debt_applied_sha", None)
+    try:
+        _stamp = os.path.join(CACHE_DIR, ".debt_upload_stamp.json")
+        if os.path.exists(_stamp):
+            os.remove(_stamp)
+    except Exception:
+        pass
+    clear_debt_runtime_caches()
     if _is_streamlit_cloud():
         st.session_state["_drive_restore_after_clear"] = True
     st.rerun()
@@ -12296,10 +12639,12 @@ def _dash_filter_and_tabs_fragment() -> None:
         cur_month_sales_client = prev_month_sales_client = mom_rate_client = avg_monthly_sales_client = avg_rate_client = 0.0
         latest_month_str_client = "-"
     # 담당자만 반영한 채권(거래처 선택 무관) — 연체개월수 요약표용
+    # 행 수가 같아도 금액이 바뀌면 지문이 달라져 옛 세션표를 버린다.
     _debt_filter_sig = (
         tuple(selected_staff or ()),
         selected_client,
-        int(len(debt_df)),
+        st.session_state.get("_debt_applied_sha") or debt_bytes_fingerprint(debt_bytes),
+        debt_frame_fingerprint(debt_df),
     )
     if st.session_state.get("_dash_debt_filter_sig") != _debt_filter_sig:
         st.session_state["_dash_debt_filter_sig"] = _debt_filter_sig
@@ -12453,7 +12798,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 66
+    _STICKY_INJECT_VER = 73
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
@@ -12893,6 +13238,11 @@ def _dash_filter_and_tabs_fragment() -> None:
 
     # Tab 2: 🏢 거래처 분석
     with tab2:
+        if _is_streamlit_cloud():
+            st.markdown(
+                "<div class='dashboard-cloud-tab2-head-gap' aria-hidden='true'></div>",
+                unsafe_allow_html=True,
+            )
         t2_c1, t2_c2 = st.columns([4, 1])
         t2_c1.markdown(f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
         t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
@@ -15680,6 +16030,10 @@ def _dash_map_autowarm_fragment() -> None:
     # 로그인/첫 로딩이 길어지는 원인. iPad는 예전처럼 「지도 새로고침/조회」 버튼으로만 로드.
     # 맥 데스크톱·Cloud(데스크톱)는 is_touch_ui()=False 라 기존 동작 그대로(로직·레이아웃 불변).
     if is_touch_ui():
+        st.session_state["_dash_map_autowarm_done"] = True
+        return
+    # Cloud 시작 직후 전 거래처 지오코딩+rerun 은 화면이 멈춘 것처럼 보임. 로컬은 기존 유지.
+    if _is_streamlit_cloud():
         st.session_state["_dash_map_autowarm_done"] = True
         return
     if st.session_state.get("show_map"):
