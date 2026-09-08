@@ -54,8 +54,10 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("/home/adminuser", src)
         self.assertIn("if (!cloudMode) return h;", src)
         self.assertIn("padding-top: 15px !important;", cloud_css)
-        self.assertIn("z-index: 10050 !important;", cloud_css)
-        self.assertNotIn("z-index: 10050 !important;", shared)
+        self.assertIn("z-index: 100000 !important;", cloud_css)
+        self.assertNotIn("z-index: 100000 !important;", shared)
+        self.assertIn("cloudMode ? '100' : '990'", src)
+        self.assertIn("function cloudAvoidSidebarOverlap", src)
         tab2 = src.split("# Tab 2:", 1)[1].split("with tab3:", 1)[0]
         self.assertIn("dashboard-cloud-tab2-head-gap", tab2)
         self.assertIn("if _is_streamlit_cloud():", tab2)

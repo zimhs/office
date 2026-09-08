@@ -8963,7 +8963,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 74
+    _sticky_py_ver = 75
     components.html(
         """
         <script>
@@ -9124,10 +9124,13 @@ def inject_sticky_tabs_script():
                     + 'line-height:0!important;pointer-events:none!important;}'
                     + 'html.dashboard-cloud-clipfix [data-testid="stSidebar"],'
                     + 'html.dashboard-cloud-clipfix section[data-testid="stSidebar"]{'
-                    + 'z-index:10050!important;}'
+                    + 'z-index:100000!important;isolation:isolate!important;}'
                     + 'html.dashboard-cloud-clipfix [data-testid="stSidebarCollapsedControl"],'
                     + 'html.dashboard-cloud-clipfix [data-testid="collapsedControl"]{'
-                    + 'z-index:10051!important;}'
+                    + 'z-index:100001!important;}'
+                    + 'html.dashboard-cloud-clipfix .dashboard-filter-sticky,'
+                    + 'html.dashboard-cloud-clipfix [data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker){'
+                    + 'z-index:100!important;}'
                 );
             }
             function firstCloudContentEl(panel) {
@@ -9416,6 +9419,28 @@ def inject_sticky_tabs_script():
             function getMainRect() {
                 var block = parentDoc.querySelector('section.main .block-container');
                 return block ? block.getBoundingClientRect() : null;
+            }
+            function cloudAvoidSidebarOverlap(rect) {
+                /* Cloud만: 오버레이 사이드바 위로 고정바가 덮지 않게 왼쪽을 비움. 로컬 좌표는 그대로. */
+                if (!cloudMode || !rect) return rect;
+                try {
+                    var sb = parentDoc.querySelector('[data-testid="stSidebar"]');
+                    if (!sb) return rect;
+                    var sbR = sb.getBoundingClientRect();
+                    if (!(sbR.width > 48) || sbR.right <= 8) return rect;
+                    var nLeft = Math.max(Math.round(rect.left), Math.round(sbR.right));
+                    var rightEdge = Math.round(rect.left + rect.width);
+                    var nWidth = Math.max(280, rightEdge - nLeft);
+                    return {
+                        left: nLeft,
+                        width: nWidth,
+                        top: rect.top || 0,
+                        bottom: rect.bottom || 0,
+                        height: rect.height || 0
+                    };
+                } catch (eAv) {
+                    return rect;
+                }
             }
             function isMainTabList(el) {
                 if (!el || !el.textContent) return false;
@@ -10227,6 +10252,7 @@ def inject_sticky_tabs_script():
                     var vwFallback = parentWin.innerWidth || 1200;
                     rectMac = { left: 16, width: Math.max(320, vwFallback - 32), top: 0, bottom: 0, height: 0 };
                 }
+                try { if (cloudMode) rectMac = cloudAvoidSidebarOverlap(rectMac); } catch (eCloudGeo) {}
                 var topMac = getTopOffsetMac();
                 /* 부팅 중 top/left/width 동결 — 좌표 재계산이 고정바를 두둑 흔듦 */
                 var vwNow = parentWin.innerWidth || 0;
@@ -10255,7 +10281,7 @@ def inject_sticky_tabs_script():
                 filterBox.style.setProperty('left', rectMac.left + 'px', 'important');
                 filterBox.style.setProperty('width', rectMac.width + 'px', 'important');
                 filterBox.style.setProperty('max-width', rectMac.width + 'px', 'important');
-                filterBox.style.setProperty('z-index', '990', 'important');
+                filterBox.style.setProperty('z-index', cloudMode ? '100' : '990', 'important');
                 filterBox.style.setProperty('overflow', 'visible', 'important');
                 /* 필터 fixed 슬롯만 접기(스페이서가 이 슬롯 안에 있으면 접지 않음) */
                 try {
@@ -11685,14 +11711,19 @@ def inject_cloud_clip_fix_css():
             width: 100% !important;
             flex-shrink: 0 !important;
         }
-        /* 고정바 z-index 990보다 위. 로컬 inject_custom_css는 그대로 */
+        /* Cloud만: 사이드바를 고정바(인라인 z-index) 위에. 로컬 inject_custom_css는 그대로 */
         [data-testid="stSidebar"],
         section[data-testid="stSidebar"] {
-            z-index: 10050 !important;
+            z-index: 100000 !important;
+            isolation: isolate !important;
         }
         [data-testid="stSidebarCollapsedControl"],
         [data-testid="collapsedControl"] {
-            z-index: 10051 !important;
+            z-index: 100001 !important;
+        }
+        .dashboard-filter-sticky,
+        [data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker) {
+            z-index: 100 !important;
         }
         </style>
         """,
@@ -12845,7 +12876,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 74
+    _STICKY_INJECT_VER = 75
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
