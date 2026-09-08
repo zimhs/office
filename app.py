@@ -727,6 +727,16 @@ def inject_custom_css():
                 padding: 8px 10px 0 10px !important;
                 box-shadow: 0 8px 14px -4px rgba(37, 99, 235, 0.18) !important;
                 margin-top: 0 !important;
+                background-color: #FFFFFF !important;
+            }
+
+            /* iPad만: 고정바 위·옆 틈으로 본문이 비치지 않게. 맥 실드 z-index 989는 그대로 */
+            html.dashboard-touch-mode #dashboard-top-shield {
+                background: #FFFFFF !important;
+                z-index: 999990 !important;
+                left: 0 !important;
+                right: 0 !important;
+                width: 100% !important;
             }
 
             html.dashboard-touch-mode [data-testid="stHeader"],
@@ -8989,7 +8999,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 80
+    _sticky_py_ver = 81
     components.html(
         """
         <script>
@@ -9032,7 +9042,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 41;
-            var STICKY_SCRIPT_VER_IPAD = 66; /* v66: 스크롤 떨림 중지. 맥 수치 무손실 */
+            var STICKY_SCRIPT_VER_IPAD = 67; /* v67: 고정바 위로 본문 비침 차단. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
                 parentWin.__dashboardStickyMacReady = 0;
@@ -10018,6 +10028,28 @@ def inject_sticky_tabs_script():
                 shield.style.setProperty('z-index', '989', 'important');
                 shield.style.setProperty('pointer-events', 'none', 'important');
             }
+            function syncIpadTopShield(topPx, barBottom) {
+                /* iPad만: 고정바 상단·좌우 틈을 가려 스크롤 본문이 바 위로 비치지 않게.
+                   맥북 syncTopShield(z-index 989)는 그대로. */
+                var shield = parentDoc.getElementById(SHIELD_ID);
+                if (!shield) {
+                    shield = parentDoc.createElement('div');
+                    shield.id = SHIELD_ID;
+                    parentDoc.body.appendChild(shield);
+                }
+                var h = Math.max(Math.round(topPx) || 0, Math.round(barBottom) || 0);
+                if (h < 48) h = 48;
+                shield.style.setProperty('display', 'block', 'important');
+                shield.style.setProperty('position', 'fixed', 'important');
+                shield.style.setProperty('top', '0', 'important');
+                shield.style.setProperty('left', '0', 'important');
+                shield.style.setProperty('right', '0', 'important');
+                shield.style.setProperty('width', '100%', 'important');
+                shield.style.setProperty('height', h + 'px', 'important');
+                shield.style.setProperty('background', '#FFFFFF', 'important');
+                shield.style.setProperty('z-index', '999990', 'important');
+                shield.style.setProperty('pointer-events', 'none', 'important');
+            }
             function mountTabs(filterBox, tabList) {
                 return remountLiveTabList(filterBox, tabList);
             }
@@ -10177,7 +10209,13 @@ def inject_sticky_tabs_script():
                 var mountLists = collectMainTabLists();
                 var mountBad = !isTabMountHealthy(targetBox, mountLists);
                 if (mountBad) parentWin.__dashboardIpadFreezeLayout = false;
-                if (parentWin.__dashboardIpadFreezeLayout && targetBox.style.position === 'fixed' && !mountBad) return;
+                if (parentWin.__dashboardIpadFreezeLayout && targetBox.style.position === 'fixed' && !mountBad) {
+                    try {
+                        var frozenR = targetBox.getBoundingClientRect();
+                        syncIpadTopShield(Math.round(frozenR.top), frozenR.bottom);
+                    } catch (eShF) {}
+                    return;
+                }
                 try { ensureCloudStickyTabsNative(targetBox); } catch (eNat) {}
                 try { ensureTabsNeverInvisible(); } catch (eVisI) {}
                 targetBox.classList.add('dashboard-filter-sticky');
@@ -10236,6 +10274,10 @@ def inject_sticky_tabs_script():
                 } catch (eSlotI) {}
                 applySpacerForBar(targetBox, filterH, true);
                 try { snapContentToBar(targetBox); } catch (eSnapI) {}
+                try {
+                    var barRect = targetBox.getBoundingClientRect();
+                    syncIpadTopShield(topPx, barRect.bottom);
+                } catch (eShI) {}
                 parentWin.__dashboardIpadTarget = targetBox;
                 parentWin.__dashboardIpadSpacer = parentDoc.getElementById(SPACER_ID);
                 ipadFreezeLayout();
@@ -13041,7 +13083,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 80
+    _STICKY_INJECT_VER = 81
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
