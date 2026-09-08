@@ -9122,6 +9122,12 @@ def inject_sticky_tabs_script():
                     + '#dashboard-cloud-content-pad{display:block!important;width:100%!important;'
                     + 'margin:0!important;padding:0!important;border:0!important;'
                     + 'line-height:0!important;pointer-events:none!important;}'
+                    + 'html.dashboard-cloud-clipfix [data-testid="stSidebar"],'
+                    + 'html.dashboard-cloud-clipfix section[data-testid="stSidebar"]{'
+                    + 'z-index:10050!important;}'
+                    + 'html.dashboard-cloud-clipfix [data-testid="stSidebarCollapsedControl"],'
+                    + 'html.dashboard-cloud-clipfix [data-testid="collapsedControl"]{'
+                    + 'z-index:10051!important;}'
                 );
             }
             function firstCloudContentEl(panel) {
@@ -11678,6 +11684,15 @@ def inject_cloud_clip_fix_css():
             height: 0 !important;
             width: 100% !important;
             flex-shrink: 0 !important;
+        }
+        /* 고정바 z-index 990보다 위. 로컬 inject_custom_css는 그대로 */
+        [data-testid="stSidebar"],
+        section[data-testid="stSidebar"] {
+            z-index: 10050 !important;
+        }
+        [data-testid="stSidebarCollapsedControl"],
+        [data-testid="collapsedControl"] {
+            z-index: 10051 !important;
         }
         </style>
         """,
