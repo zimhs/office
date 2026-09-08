@@ -1050,6 +1050,31 @@ def inject_custom_css():
                 }
             }
 
+            /* iPad만: 필터 fixed 슬롯·Cloud 패드가 고정바 아래 흰 여백을 만들지 않게.
+               맥북(로컬·Cloud)은 dashboard-touch-mode가 없어 적용되지 않음. */
+            html.dashboard-touch-mode [data-testid="stElementContainer"]:has(.dashboard-filter-sticky):not(:has(#dashboard-sticky-spacer)) {
+                height: 0 !important;
+                min-height: 0 !important;
+                max-height: 0 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: visible !important;
+                flex: 0 0 0 !important;
+            }
+            html.dashboard-touch-mode #dashboard-cloud-content-pad {
+                height: 0 !important;
+                min-height: 0 !important;
+                max-height: 0 !important;
+            }
+            /* 아이패드·터치만 (맥북 hover 있음 → 미적용) */
+            @media (hover: none) and (pointer: coarse) {
+                #dashboard-cloud-content-pad {
+                    height: 0 !important;
+                    min-height: 0 !important;
+                    max-height: 0 !important;
+                }
+            }
+
             @supports (top: env(safe-area-inset-top)) {
                 .dashboard-filter-sticky {
                     padding-left: max(10px, env(safe-area-inset-left)) !important;
@@ -8963,7 +8988,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 75
+    _sticky_py_ver = 78
     components.html(
         """
         <script>
@@ -8971,27 +8996,42 @@ def inject_sticky_tabs_script():
             var parentDoc = window.parent.document;
             var parentWin = window.parent;
             var cloudMode = __CLOUD_STICKY_MODE__;
-            function detectCloudHost() {
-                var names = [];
-                try { names.push(String((parentWin.location && parentWin.location.hostname) || "")); } catch (e1) {}
-                try { names.push(String((parentDoc.location && parentDoc.location.hostname) || "")); } catch (e2) {}
-                try { names.push(String(window.location.hostname || "")); } catch (e3) {}
-                try { names.push(String((parentWin.location && parentWin.location.href) || "")); } catch (e4) {}
-                try { names.push(String(parentDoc.referrer || "")); } catch (e5) {}
-                var i, s;
-                for (i = 0; i < names.length; i++) {
-                    s = String(names[i] || "").toLowerCase();
-                    if (s.indexOf("streamlit.app") !== -1) return true;
-                    if (s.indexOf("streamlitusercontent.com") !== -1) return true;
+            function isLocalDesktopHost() {
+                var hosts = [];
+                try { hosts.push(String((parentWin.location && parentWin.location.hostname) || "")); } catch (eL1) {}
+                try { hosts.push(String((parentDoc.location && parentDoc.location.hostname) || "")); } catch (eL2) {}
+                var i, h;
+                for (i = 0; i < hosts.length; i++) {
+                    h = String(hosts[i] || "").toLowerCase();
+                    if (h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1") return true;
                 }
                 return false;
             }
-            try { if (!cloudMode && detectCloudHost()) cloudMode = true; } catch (eHn) {}
+            function detectCloudHost() {
+                /* 로컬 Desktop(localhost)은 절대 Cloud로 보지 않음.
+                   components.html iframe 의 streamlitusercontent 주소는 로컬에도 있어서 쓰면 안 됨. */
+                if (isLocalDesktopHost()) return false;
+                var names = [];
+                try { names.push(String((parentWin.location && parentWin.location.hostname) || "")); } catch (e1) {}
+                try { names.push(String((parentDoc.location && parentDoc.location.hostname) || "")); } catch (e2) {}
+                try { names.push(String((parentWin.location && parentWin.location.href) || "")); } catch (e4) {}
+                var i, s;
+                for (i = 0; i < names.length; i++) {
+                    s = String(names[i] || "").toLowerCase();
+                    if (s.indexOf("localhost") !== -1 || s.indexOf("127.0.0.1") !== -1) return false;
+                    if (s.indexOf("streamlit.app") !== -1) return true;
+                }
+                return false;
+            }
+            try {
+                if (isLocalDesktopHost()) cloudMode = false;
+                else if (!cloudMode && detectCloudHost()) cloudMode = true;
+            } catch (eHn) {}
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 41;
-            var STICKY_SCRIPT_VER_IPAD = 62; /* v66: 본문을 고정바 아래 4mm로 당김 */
+            var STICKY_SCRIPT_VER_IPAD = 64; /* v64: iPad 고정바-본문 여백 재시도. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
                 parentWin.__dashboardStickyMacReady = 0;
@@ -9003,6 +9043,11 @@ def inject_sticky_tabs_script():
             try { parentDoc.documentElement.classList.add('dashboard-tabs-unified'); } catch (eUni0) {}
             try {
                 if (cloudMode) parentDoc.documentElement.classList.add('dashboard-cloud-clipfix');
+                else {
+                    parentDoc.documentElement.classList.remove('dashboard-cloud-clipfix');
+                    var _oldCloudCss = parentDoc.getElementById('dashboard-cloud-clipfix-js');
+                    if (_oldCloudCss) _oldCloudCss.remove();
+                }
             } catch (eCloudClip) {}
             try { if (cloudMode) injectCloudClipCss(); } catch (eCloudCss) {}
             function bindDashboardFilterTextInputs() {
@@ -9022,6 +9067,9 @@ def inject_sticky_tabs_script():
             function computeBarHeight(filterH, filterBox) {
                 var h = Math.max(48, Math.round(filterH || 0));
                 if (!cloudMode) return h;
+                /* iPad Cloud: 맥북 Cloud 공식(bar.bottom-main.top)은 Safari에서
+                   스페이서가 과대해짐. 필터 높이만 쓰고 closeIpadBarGap이 4mm로 맞춤. */
+                try { if (isTouchPadEarly()) return h; } catch (eIpadH) {}
                 /* Cloud: 스페이서는 고정바 하단까지. 4mm는 탭패널 padding. 로컬은 위 return. */
                 try {
                     var box = filterBox || parentDoc.querySelector('.dashboard-filter-sticky');
@@ -9131,12 +9179,14 @@ def inject_sticky_tabs_script():
                     + 'html.dashboard-cloud-clipfix .dashboard-filter-sticky,'
                     + 'html.dashboard-cloud-clipfix [data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker){'
                     + 'z-index:100!important;}'
+                    + 'html.dashboard-cloud-clipfix.dashboard-touch-mode #dashboard-cloud-content-pad{'
+                    + 'height:0!important;min-height:0!important;max-height:0!important;}'
                 );
             }
             function firstCloudContentEl(panel) {
                 var sels = [
-                    '.dashboard-tab-panel-head',
                     '.st-key-tab2_action_btns',
+                    '.dashboard-tab-panel-head',
                     '[data-testid="stMetric"]',
                     '[data-testid="stButton"]',
                     '.sub-header'
@@ -9194,8 +9244,45 @@ def inject_sticky_tabs_script():
                 pad.style.setProperty('height', nextH + 'px', 'important');
                 pad.style.setProperty('min-height', nextH + 'px', 'important');
             }
+            function closeIpadBarGap(filterBox) {
+                /* iPad만: 스페이서 높이로 고정바-본문 간격을 4mm로 맞춤.
+                   맥북 로컬·Cloud는 호출하지 않음. iOS window.scrollY 오검출은 무시. */
+                if (!filterBox || !isElementFixed(filterBox)) return;
+                try { if (!isTouchPadEarly()) return; } catch (eNoPad) { return; }
+                var spacer = parentDoc.getElementById(SPACER_ID);
+                if (!spacer) return;
+                var host = findMainTabsHost();
+                if (!host) return;
+                var panel = host.querySelector('[role="tabpanel"]:not([hidden])');
+                if (!panel) return;
+                var target = panel;
+                try {
+                    var el = firstCloudContentEl(panel);
+                    if (el) target = el;
+                } catch (eT) {}
+                var gap = Math.round(
+                    target.getBoundingClientRect().top - filterBox.getBoundingClientRect().bottom
+                );
+                var extra = gap - CONTENT_GAP_PX;
+                if (Math.abs(extra) <= 3) return;
+                var curH = Math.round(spacer.getBoundingClientRect().height) || lastH || 0;
+                var nextH = curH - extra;
+                if (nextH < 48) nextH = 48;
+                if (nextH > 420) nextH = 420;
+                if (Math.abs(nextH - curH) < 2) return;
+                setSpacerHeightPx(spacer, nextH);
+                lastH = nextH;
+                spacerFrozenH = nextH;
+            }
             function snapContentToBar(filterBox) {
-                /* Cloud: 로컬처럼 위로 당기지 않음. pushCloudContentBelowBar가 내린다. */
+                /* 맥북 Cloud: 로컬처럼 위로 당기지 않음. pushCloudContentBelowBar가 내린다.
+                   iPad: Safari 과대여백은 스페이서로 닫음. 맥 분기는 그대로. */
+                var ipadNow = false;
+                try { ipadNow = isTouchPadEarly(); } catch (eIpadC) { ipadNow = false; }
+                if (ipadNow) {
+                    try { closeIpadBarGap(filterBox); } catch (eClose) {}
+                    return;
+                }
                 if (cloudMode) {
                     try { pushCloudContentBelowBar(filterBox); } catch (ePush) {}
                     return;
@@ -9260,10 +9347,25 @@ def inject_sticky_tabs_script():
                 return lastH;
             }
             function isTouchPadEarly() {
-                var ua = navigator.userAgent || '';
-                var ios = /iPad|iPhone|iPod/.test(ua);
-                var ipadOs = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
-                return ios || ipadOs;
+                function fromNav(nav) {
+                    if (!nav) return false;
+                    var ua = String(nav.userAgent || '');
+                    if (/iPad|iPhone|iPod/.test(ua)) return true;
+                    var pts = nav.maxTouchPoints || 0;
+                    if (nav.platform === 'MacIntel' && pts > 1) return true;
+                    return false;
+                }
+                try { if (fromNav(navigator)) return true; } catch (e0) {}
+                try { if (fromNav(parentWin.navigator)) return true; } catch (e1) {}
+                try {
+                    if (parentDoc.documentElement
+                        && parentDoc.documentElement.classList.contains('dashboard-touch-mode')) return true;
+                } catch (e2) {}
+                try {
+                    if (parentWin.matchMedia
+                        && parentWin.matchMedia('(hover: none) and (pointer: coarse)').matches) return true;
+                } catch (e3) {}
+                return false;
             }
             function ipadInjectTabHScrollCss() {
                 var id = 'dashboard-ipad-tab-hscroll';
@@ -9389,10 +9491,12 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardIpadRaf = null;
             }
             function isTouchPad() {
-                var ua = navigator.userAgent || '';
-                var ios = /iPad|iPhone|iPod/.test(ua);
-                var ipadOs = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
-                return ios || ipadOs;
+                try { return isTouchPadEarly(); } catch (eTp) {
+                    var ua = navigator.userAgent || '';
+                    var ios = /iPad|iPhone|iPod/.test(ua);
+                    var ipadOs = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+                    return ios || ipadOs;
+                }
             }
             var touchMode = isTouchPad();
             function getTopOffsetMac() {
@@ -9423,6 +9527,7 @@ def inject_sticky_tabs_script():
             function cloudAvoidSidebarOverlap(rect) {
                 /* Cloud만: 오버레이 사이드바 위로 고정바가 덮지 않게 왼쪽을 비움. 로컬 좌표는 그대로. */
                 if (!cloudMode || !rect) return rect;
+                try { if (isLocalDesktopHost()) return rect; } catch (eLoc) {}
                 try {
                     var sb = parentDoc.querySelector('[data-testid="stSidebar"]');
                     if (!sb) return rect;
@@ -10089,6 +10194,20 @@ def inject_sticky_tabs_script():
                 }
                 var filterH = Math.max(48, Math.round(targetBox.getBoundingClientRect().height) || 0);
                 publishBarGeometry(topPx, side, maxW || Math.max(120, (vw || 0) - side * 2), filterH);
+                /* iPad만: 맥 syncFixedBar와 같이 필터 슬롯을 접어 본문 위 빈 키를 없앰 */
+                try {
+                    var slot = targetBox.closest('[data-testid="stElementContainer"]') || targetBox.parentElement;
+                    var spChk = parentDoc.getElementById(SPACER_ID);
+                    if (slot && slot !== targetBox && !(spChk && slot.contains(spChk))) {
+                        slot.style.setProperty('height', '0', 'important');
+                        slot.style.setProperty('min-height', '0', 'important');
+                        slot.style.setProperty('max-height', '0', 'important');
+                        slot.style.setProperty('margin', '0', 'important');
+                        slot.style.setProperty('padding', '0', 'important');
+                        slot.style.setProperty('overflow', 'visible', 'important');
+                        slot.style.setProperty('border', 'none', 'important');
+                    }
+                } catch (eSlotI) {}
                 applySpacerForBar(targetBox, filterH, true);
                 try { snapContentToBar(targetBox); } catch (eSnapI) {}
                 parentWin.__dashboardIpadTarget = targetBox;
@@ -10107,6 +10226,10 @@ def inject_sticky_tabs_script():
             parentWin.__dashboardIpadPin = ipadPinFilterBox;
             
             function syncIpadWidthLoop() {
+                try {
+                    var gapBox = parentWin.__dashboardIpadTarget || findFilterBox();
+                    if (gapBox) closeIpadBarGap(gapBox);
+                } catch (eGap) {}
                 if (!parentWin.__dashboardIpadFreezeLayout) {
                     var targetBox = parentWin.__dashboardIpadTarget || findFilterBox();
                     var spacer = parentWin.__dashboardIpadSpacer || parentDoc.getElementById(SPACER_ID);
@@ -12876,7 +12999,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 75
+    _STICKY_INJECT_VER = 78
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
@@ -13321,9 +13444,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                 "<div class='dashboard-cloud-tab2-head-gap' aria-hidden='true'></div>",
                 unsafe_allow_html=True,
             )
-        t2_c1, t2_c2 = st.columns([4, 1])
-        t2_c1.markdown(f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{selected_client}] 영업 실적 및 요약</div>", unsafe_allow_html=True)
-        t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
 
         if "show_corp_info" not in st.session_state:
             st.session_state.show_corp_info = False
@@ -13898,6 +14018,12 @@ def _dash_filter_and_tabs_fragment() -> None:
                         else ""
                     )
                 )
+        t2_c1, t2_c2 = st.columns([4, 1])
+        t2_c1.markdown(
+            f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{selected_client}] 영업 실적 및 요약</div>",
+            unsafe_allow_html=True,
+        )
+        t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
         m1, m2, m3, m4 = st.columns(4)
         # 지정 거래처 총 거래매출 · 부가세 별도(VAT 제외)
         tot_sales_c = df_client_filtered["매출액"].sum() / 10000 if not df_client_filtered.empty else 0.0
@@ -13909,6 +14035,10 @@ def _dash_filter_and_tabs_fragment() -> None:
         m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
         if not df_client_filtered.empty:
             pivot_m_client = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
+            st.markdown(
+                f"<div class='sub-header dashboard-tab-panel-head'>📊 [{selected_client}] 연도별 월 매출 추이</div>",
+                unsafe_allow_html=True,
+            )
             cl, cr = st.columns([1, 1])
             with cl:
                 pivot_m_client_disp = get_display_df_with_sum(pivot_m_client, "연간 합계")
@@ -13918,7 +14048,68 @@ def _dash_filter_and_tabs_fragment() -> None:
                     create_stacked_bar_chart(pivot_m_client, title_text=""),
                     use_container_width=True, key="tab2_client_total_chart"
                 )
-            # —— 매출 비교를 품목별 상세 분석보다 위에 배치 (tab2 전용 순서) ——
+            # —— 품목별 상세 분석을 매출 비교보다 위에 배치 (tab2 · 로컬·Cloud·iPad 동일) ——
+            st.markdown("---")
+            st.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
+
+            client_available_items = sorted(df_client_filtered["품목명"].unique())
+            if client_available_items:
+                item_ratios = {}
+                if not df_client_filtered.empty:
+                    latest_dt_c = df_client_filtered["매출일_dt"].max()
+                    if pd.notnull(latest_dt_c):
+                        latest_ym = latest_dt_c.strftime("%Y-%m")
+                        df_cm = df_client_filtered[df_client_filtered["매출일_dt"].dt.strftime("%Y-%m") == latest_ym]
+                        tot_sales = df_cm["매출액"].sum()
+                        if tot_sales > 0:
+                            grp = df_cm.groupby("품목명")["매출액"].sum()
+                            for item, val in grp.items():
+                                item_ratios[item] = (val / tot_sales) * 100
+                def format_item_with_ratio(item_name):
+                    pct = item_ratios.get(item_name, 0.0)
+                    return f"{item_name} (당월 {pct:.1f}%)"
+                sel_col1_c, sel_col2_c = st.columns([1, 1])
+                with sel_col1_c:
+                    selected_target_item_c = st.selectbox(
+                        "🔍 분석할 품목 선택 (전체 거래 품목)",
+                        options=client_available_items,
+                        format_func=format_item_with_ratio,
+                        key="client_item_selectbox"
+                    )
+                with sel_col2_c:
+                    selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
+
+                client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
+
+                i_col_left_c, i_col_right_c = st.columns([1, 1])
+                with i_col_left_c:
+                    client_item_pivot_disp = get_display_df_with_sum(client_item_pivot, "연간 합계")
+                    # tab2 표 색상 통일: Blues 그라데이션
+                    if "비중" in selected_metric_c:
+                        st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.1f}%", "Blues", axis=None), use_container_width=True, height=460)
+                        y_suf_c, y_fmt_c = "%", ",.1f"
+                    elif "출고량" in selected_metric_c:
+                        if selected_target_item_c in target_items:
+                            y_suf_c, y_fmt_c = " 천kg", ",.1f"
+                        elif "LPG" in str(selected_target_item_c).upper():
+                            y_suf_c, y_fmt_c = " kg", ",.0f"
+                        else:
+                            y_suf_c, y_fmt_c = " 개(병)", ",.0f"
+                        st.dataframe(style_with_sum(client_item_pivot_disp, f"{{:{y_fmt_c}}}", "Blues", axis=None), use_container_width=True, height=460)
+                    else:
+                        st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
+                        y_suf_c, y_fmt_c = " 만원", ",.0f"
+
+                with i_col_right_c:
+                    render_plotly_chart(
+                        create_stacked_bar_chart(
+                            client_item_pivot,
+                            title_text="",
+                            y_suffix=y_suf_c,
+                            y_format=y_fmt_c
+                        ),
+                        use_container_width=True, key="tab2_client_item_chart"
+                    )
             st.markdown("---")
             _client_years = sorted(
                 {str(y) for y in df_client_filtered["연도"].dropna().unique()},
@@ -14026,67 +14217,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                                 use_container_width=True,
                                 key="tab2_cur_year_item_share",
                             )
-            st.markdown("---")
-            st.markdown(f"<div class='sub-header dashboard-tab-panel-head'>📦 [{selected_client}] 품목별 상세 분석</div>", unsafe_allow_html=True)
-    
-            client_available_items = sorted(df_client_filtered["품목명"].unique())
-            if client_available_items:
-                item_ratios = {}
-                if not df_client_filtered.empty:
-                    latest_dt_c = df_client_filtered["매출일_dt"].max()
-                    if pd.notnull(latest_dt_c):
-                        latest_ym = latest_dt_c.strftime("%Y-%m")
-                        df_cm = df_client_filtered[df_client_filtered["매출일_dt"].dt.strftime("%Y-%m") == latest_ym]
-                        tot_sales = df_cm["매출액"].sum()
-                        if tot_sales > 0:
-                            grp = df_cm.groupby("품목명")["매출액"].sum()
-                            for item, val in grp.items():
-                                item_ratios[item] = (val / tot_sales) * 100
-                def format_item_with_ratio(item_name):
-                    pct = item_ratios.get(item_name, 0.0)
-                    return f"{item_name} (당월 {pct:.1f}%)"
-                sel_col1_c, sel_col2_c = st.columns([1, 1])
-                with sel_col1_c:
-                    selected_target_item_c = st.selectbox(
-                        "🔍 분석할 품목 선택 (전체 거래 품목)", 
-                        options=client_available_items, 
-                        format_func=format_item_with_ratio,
-                        key="client_item_selectbox"
-                    )
-                with sel_col2_c:
-                    selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
-            
-                client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
-        
-                i_col_left_c, i_col_right_c = st.columns([1, 1])
-                with i_col_left_c:
-                    client_item_pivot_disp = get_display_df_with_sum(client_item_pivot, "연간 합계")
-                    # tab2 표 색상 통일: Blues 그라데이션
-                    if "비중" in selected_metric_c:
-                        st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.1f}%", "Blues", axis=None), use_container_width=True, height=460)
-                        y_suf_c, y_fmt_c = "%", ",.1f"
-                    elif "출고량" in selected_metric_c:
-                        if selected_target_item_c in target_items:
-                            y_suf_c, y_fmt_c = " 천kg", ",.1f"
-                        elif "LPG" in str(selected_target_item_c).upper():
-                            y_suf_c, y_fmt_c = " kg", ",.0f"
-                        else:
-                            y_suf_c, y_fmt_c = " 개(병)", ",.0f"
-                        st.dataframe(style_with_sum(client_item_pivot_disp, f"{{:{y_fmt_c}}}", "Blues", axis=None), use_container_width=True, height=460)
-                    else:
-                        st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
-                        y_suf_c, y_fmt_c = " 만원", ",.0f"
-                
-                with i_col_right_c:
-                    render_plotly_chart(
-                        create_stacked_bar_chart(
-                            client_item_pivot, 
-                            title_text="", 
-                            y_suffix=y_suf_c, 
-                            y_format=y_fmt_c
-                        ),
-                        use_container_width=True, key="tab2_client_item_chart"
-                    )
     # Tab 3: 📦 품목 및 단가 분석
     with tab3:
         t3_c1, t3_c2 = st.columns([4, 1])

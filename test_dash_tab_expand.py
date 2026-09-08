@@ -48,6 +48,8 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("need = Math.round(bottom - mainTop);", src)
         self.assertIn("streamlit.app", src)
         self.assertIn("function detectCloudHost", src)
+        self.assertIn("function isLocalDesktopHost", src)
+        self.assertIn("if (isLocalDesktopHost()) return false;", src)
         self.assertIn("function firstCloudContentEl", src)
         self.assertIn("dashboard-cloud-content-pad", src)
         self.assertIn("os.path.isdir(\"/mount/src\")", src)
@@ -58,9 +60,27 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertNotIn("z-index: 100000 !important;", shared)
         self.assertIn("cloudMode ? '100' : '990'", src)
         self.assertIn("function cloudAvoidSidebarOverlap", src)
+        self.assertIn("function closeIpadBarGap", src)
+        self.assertIn("if (isTouchPadEarly()) return h", src)
+        self.assertIn("fromNav(parentWin.navigator)", src)
+        self.assertIn("dashboard-cloud-clipfix.dashboard-touch-mode", src)
+        self.assertIn("if (!cloudMode) return h;", src)
         tab2 = src.split("# Tab 2:", 1)[1].split("with tab3:", 1)[0]
         self.assertIn("dashboard-cloud-tab2-head-gap", tab2)
         self.assertIn("if _is_streamlit_cloud():", tab2)
+        self.assertIn("영업 실적 및 요약", tab2)
+        self.assertIn("연도별 월 매출 추이", tab2)
+        self.assertLess(
+            tab2.find("영업 실적 및 요약"),
+            tab2.find("연도별 월 매출 추이"),
+        )
+        self.assertLess(
+            tab2.find("품목별 상세 분석"),
+            tab2.find("매출 비교 ("),
+        )
+        _summary_idx = tab2.find("영업 실적 및 요약")
+        _btn_idx = tab2.find("tab2_action_btns")
+        self.assertGreater(_summary_idx, _btn_idx)
 
     def test_cloud_command_opens_one_tab(self):
         with open("dashboard_Cloud.command", encoding="utf-8") as f:
