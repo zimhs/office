@@ -61,9 +61,14 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("cloudMode ? '100' : '990'", src)
         self.assertIn("function cloudAvoidSidebarOverlap", src)
         self.assertIn("function syncIpadTopShield", src)
-        self.assertIn("var topPx = 4", src)
-        self.assertIn("top: 4px !important", src)
-        self.assertIn("height: 0 !important", src)
+        self.assertIn("var topPx = 44", src)
+        self.assertIn("최상단 Streamlit 줄", src)
+        self.assertNotIn(
+            "html.dashboard-touch-mode [data-testid=\"stToolbar\"],\n"
+            "            html.dashboard-touch-mode [data-testid=\"stDecoration\"] {\n"
+            "                display: none !important;",
+            src,
+        )
         self.assertNotIn("Math.max(Math.round(topPx) || 0, Math.round(barBottom)", src)
         self.assertIn("html.dashboard-touch-mode #dashboard-top-shield", src)
         self.assertIn("Safari 주소창 접힘", src)

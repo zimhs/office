@@ -720,7 +720,7 @@ def inject_custom_css():
 
             .dashboard-filter-sticky-touch {
                 z-index: 999999 !important;
-                top: 4px !important;
+                top: 2.75rem !important;
                 border: 2px solid #2563EB !important;
                 border-top: 3px solid #2563EB !important;
                 border-radius: 0 0 8px 8px !important;
@@ -739,22 +739,28 @@ def inject_custom_css():
                 width: 100% !important;
             }
 
-            /* iPad만: Streamlit 헤더가 고정바 위에 큰 흰 칸을 만들지 않게. 햄버거는 유지 */
+            /* iPad만: 최상단 Streamlit 줄(좌 >> · 우 Share 등)은 보이게.
+               고정 필터바는 그 아래에 둔다. */
             html.dashboard-touch-mode [data-testid="stHeader"] {
                 position: fixed !important;
                 top: 0 !important;
-                height: 0 !important;
-                min-height: 0 !important;
+                height: auto !important;
+                min-height: 2.5rem !important;
                 overflow: visible !important;
-                background: transparent !important;
+                background: #FFFFFF !important;
                 z-index: 1000002 !important;
             }
             html.dashboard-touch-mode [data-testid="stToolbar"],
             html.dashboard-touch-mode [data-testid="stDecoration"] {
-                display: none !important;
+                display: flex !important;
+                visibility: visible !important;
+                opacity: 1 !important;
             }
             html.dashboard-touch-mode [data-testid="collapsedControl"],
             html.dashboard-touch-mode [data-testid="stSidebarCollapsedControl"] {
+                display: flex !important;
+                visibility: visible !important;
+                opacity: 1 !important;
                 z-index: 1000003 !important;
             }
 
@@ -1059,7 +1065,7 @@ def inject_custom_css():
                     height: var(--dashboard-fixed-bar-height, 0px) !important;
                 }
                 html.dashboard-touch-mode .dashboard-filter-sticky-touch {
-                    top: 4px !important;
+                    top: 2.75rem !important;
                     left: max(6px, env(safe-area-inset-left, 0px)) !important;
                     right: max(6px, env(safe-area-inset-right, 0px)) !important;
                     width: auto !important;
@@ -1069,7 +1075,7 @@ def inject_custom_css():
 
             @media (orientation: portrait) and (max-width: 850px) {
                 html.dashboard-touch-mode .dashboard-filter-sticky-touch {
-                    top: 4px !important;
+                    top: 2.75rem !important;
                 }
             }
 
@@ -9011,7 +9017,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 83
+    _sticky_py_ver = 84
     components.html(
         """
         <script>
@@ -9054,7 +9060,7 @@ def inject_sticky_tabs_script():
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
             var STICKY_SCRIPT_VER_MAC = 41;
-            var STICKY_SCRIPT_VER_IPAD = 69; /* v69: 고정바 최상단 표시. 맥 수치 무손실 */
+            var STICKY_SCRIPT_VER_IPAD = 70; /* v70: 좌 >> · 우 Share 표시. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
                 parentWin.__dashboardStickyMacReady = 0;
@@ -10050,7 +10056,7 @@ def inject_sticky_tabs_script():
                 }
                 var h = Math.round(topPx) || 0;
                 if (h < 0) h = 0;
-                if (h > 8) h = 8;
+                if (h > 96) h = 96;
                 shield.style.setProperty('display', 'block', 'important');
                 shield.style.setProperty('position', 'fixed', 'important');
                 shield.style.setProperty('top', '0', 'important');
@@ -10223,7 +10229,8 @@ def inject_sticky_tabs_script():
                 if (mountBad) parentWin.__dashboardIpadFreezeLayout = false;
                 if (parentWin.__dashboardIpadFreezeLayout && targetBox.style.position === 'fixed' && !mountBad) {
                     try {
-                        syncIpadTopShield(4);
+                        var frozenR = targetBox.getBoundingClientRect();
+                        syncIpadTopShield(Math.round(frozenR.top));
                     } catch (eShF) {}
                     return;
                 }
@@ -10231,7 +10238,15 @@ def inject_sticky_tabs_script():
                 try { ensureTabsNeverInvisible(); } catch (eVisI) {}
                 targetBox.classList.add('dashboard-filter-sticky');
                 targetBox.classList.add('dashboard-filter-sticky-touch');
-                var topPx = 4;
+                /* iPad: 최상단 >> · Share 줄을 가리지 않게 그 바로 아래에 고정바 */
+                var topPx = 44;
+                try {
+                    var header = parentDoc.querySelector('[data-testid="stHeader"]');
+                    if (header) {
+                        var hb = header.getBoundingClientRect().bottom;
+                        if (hb > 24 && hb < 96) topPx = Math.round(hb);
+                    }
+                } catch (eHd) {}
                 var vv = parentWin.visualViewport;
                 var vw = (vv && vv.width) ? vv.width : (parentWin.innerWidth || 0);
                 var vh = (vv && vv.height) ? vv.height : (parentWin.innerHeight || 0);
@@ -13082,7 +13097,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 83
+    _STICKY_INJECT_VER = 84
     _ACTIVE_TAB_INJECT_VER = 12
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
