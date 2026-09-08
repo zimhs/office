@@ -5681,7 +5681,19 @@ def _dash_on_filter_clear_rerun() -> None:
     _dash_consume_filter_clear_cookie()
 
 
-_DASH_FILTER_BIND_VER = 8
+def _dash_on_filter_clear_staff() -> None:
+    _dash_clear_one_filter(_DASH_FILTER_STAFF_KEY)
+
+
+def _dash_on_filter_clear_client() -> None:
+    _dash_clear_one_filter(_DASH_FILTER_CLIENT_KEY)
+
+
+def _dash_on_filter_clear_item() -> None:
+    _dash_clear_one_filter(_DASH_FILTER_ITEM_KEY)
+
+
+_DASH_FILTER_BIND_VER = 9
 
 
 def _dash_inject_filter_select_script() -> None:
@@ -5785,12 +5797,24 @@ def _dash_inject_filter_select_script() -> None:
             }}, 200);
             return true;
           }}
-          function clickClearRerunBtn() {{
-            var btn = doc.querySelector('[class*="st-key-_dash_filter_clear_rerun_btn"] button');
+          function clickClearRerunBtn(fieldKey) {{
+            var map = {{
+              '{_DASH_FILTER_STAFF_KEY}': '_dash_filter_clear_staff_btn',
+              '{_DASH_FILTER_CLIENT_KEY}': '_dash_filter_clear_client_btn',
+              '{_DASH_FILTER_ITEM_KEY}': '_dash_filter_clear_item_btn'
+            }};
+            var labelMap = {{
+              '{_DASH_FILTER_STAFF_KEY}': '필터지우기_담당자',
+              '{_DASH_FILTER_CLIENT_KEY}': '필터지우기_거래처',
+              '{_DASH_FILTER_ITEM_KEY}': '필터지우기_품목'
+            }};
+            var k = map[fieldKey] || '_dash_filter_clear_rerun_btn';
+            var btn = doc.querySelector('[class*="st-key-' + k + '"] button');
             if (btn) try {{ btn.click(); return; }} catch (e1) {{}}
+            var want = labelMap[fieldKey] || '필터지우기적용';
             var buttons = doc.querySelectorAll('button');
             for (var i = 0; i < buttons.length; i++) {{
-              if ((buttons[i].textContent || '').indexOf('필터지우기적용') >= 0) {{
+              if ((buttons[i].textContent || '').indexOf(want) >= 0) {{
                 try {{ buttons[i].click(); return; }} catch (e2) {{}}
               }}
             }}
@@ -5811,7 +5835,7 @@ def _dash_inject_filter_select_script() -> None:
                 delete inp2.dataset.dashFilterComposing;
               }}
             }}
-            clickClearRerunBtn();
+            clickClearRerunBtn(fieldKey);
             setTimeout(function () {{ clearPending = false; }}, 400);
           }}
           function maybeEmptied(inp) {{
@@ -12451,7 +12475,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.markdown("<div id='sticky-marker' style='display:none;'></div>", unsafe_allow_html=True)
             st.markdown(
                 """<style>
-                div[class*="st-key-_dash_filter_clear_rerun_btn"] {
+                div[class*="st-key-_dash_filter_clear_"] {
                   display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important;
                 }
                 </style>""",
@@ -12461,6 +12485,21 @@ def _dash_filter_and_tabs_fragment() -> None:
                 "필터지우기적용",
                 key="_dash_filter_clear_rerun_btn",
                 on_click=_dash_on_filter_clear_rerun,
+            )
+            st.button(
+                "필터지우기_담당자",
+                key="_dash_filter_clear_staff_btn",
+                on_click=_dash_on_filter_clear_staff,
+            )
+            st.button(
+                "필터지우기_거래처",
+                key="_dash_filter_clear_client_btn",
+                on_click=_dash_on_filter_clear_client,
+            )
+            st.button(
+                "필터지우기_품목",
+                key="_dash_filter_clear_item_btn",
+                on_click=_dash_on_filter_clear_item,
             )
             fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1, 1.15, 1.35, 1.15])
             start_date = fc1.text_input("📅 조회 시작", "200101", key="dash_filter_start")

@@ -66,6 +66,15 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("make new tab at end of tabs of keepWin", src)
         self.assertIn('if seenCloud then', src)
 
+    def test_filter_clear_uses_per_field_buttons(self):
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("def _dash_on_filter_clear_client", src)
+        self.assertIn('key="_dash_filter_clear_client_btn"', src)
+        self.assertIn("_dash_filter_clear_client_btn", src)
+        self.assertIn("_DASH_FILTER_BIND_VER = 9", src)
+        self.assertIn("clickClearRerunBtn(fieldKey)", src)
+
 
 if __name__ == "__main__":
     unittest.main()
