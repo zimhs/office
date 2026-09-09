@@ -99,7 +99,7 @@ class WorklogButtonRestoreTest(unittest.TestCase):
         self.assertNotIn("날짜를 바꾸면 • 도 그 날로 이동합니다", src)
         self.assertIn("def commit_worklog_date_save", src)
         self.assertIn("allow_overwrite=True", src)
-        self.assertIn("2026-09-07k", src)
+        self.assertIn("2026-09-08a", src)
         self.assertIn("purge_worklog_day_files", src)
         self.assertIn("def _open_worklog_saved_date", src)
         self.assertIn("def _flush_worklog_delete_popover", src)

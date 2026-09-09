@@ -84,38 +84,67 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertEqual(self.ss.get("wl_date_pick"), date(2026, 9, 7))
         self.assertEqual(self.ss.get("wl_date_sync"), "2026-09-03")
 
-    def test_on_change_retargets_without_writing_files(self):
+    def test_draft_date_change_still_retargets(self):
+        """저장 전 초안은 빈 날짜로 화면만 옮긴다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
-        self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
         self.ss["worklog_selected"] = old
         self.ss["wl_date_pick"] = new
-        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self._cells(d, "거래처A", "초안")):
             self.wt._on_wl_date_pick_change()
         self.assertEqual(self.ss["worklog_selected"], new)
         self.assertEqual(self.ss.get("wl_date_retarget_from"), old.isoformat())
         self.assertIn(old.isoformat(), self.ss.get("wl_purge_dates") or [])
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
+
+    def test_save_after_saved_date_change_keeps_old(self):
+        """저장 → 날짜 변경 → 새 날 저장해도 예전 날 자료는 남는다."""
+        old, new = date(2026, 9, 7), date(2026, 9, 3)
+        self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
+        self.ss["worklog_selected"] = old
+        self.ss[f"wl_saved_ok_{old.isoformat()}"] = True
+        self.ss["wl_date_pick"] = new
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
+            self.wt._on_wl_date_pick_change()
+        self.wt.commit_worklog_date_save(new, new, self._cells(new, "거래처3", "3일 신규"))
+        self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertEqual(self.wt.read_worklog_cells(old).get("G8"), "7일 내용")
+        self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
+        self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "3일 신규")
+
+    def test_on_change_after_save_keeps_old_file(self):
+        """저장한 뒤 날짜만 바꾸면 예전 날 자료는 그대로 둔다."""
+        old, new = date(2026, 9, 7), date(2026, 9, 3)
+        self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
+        self.ss["worklog_selected"] = old
+        self.ss[f"wl_saved_ok_{old.isoformat()}"] = True
+        self.ss["wl_date_pick"] = new
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
+            self.wt._on_wl_date_pick_change()
+        self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertFalse(self.ss.get("wl_date_retarget_from"))
+        self.assertNotIn(old.isoformat(), self.ss.get("wl_purge_dates") or [])
         self.assertFalse(self.ss.get("wl_date_err"))
         self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertEqual(self.wt.read_worklog_cells(old).get("G8"), "7일 내용")
         self.assertTrue(self.wt.worklog_date_exists_in_archive(old))
         self.assertFalse(os.path.isfile(self.wt.worklog_path(new)))
-        self.assertFalse(self.ss.get(f"wl_saved_ok_{new.isoformat()}"))
         cal = self.wt._saved_dates_for_calendar()
         self.assertIn(old.isoformat(), cal)
         self.assertNotIn(new.isoformat(), cal)
         self.assertTrue(self.ss.get("wl_skip_sync_once"))
-        self.assertFalse(self.ss.get("wl_need_app_rerun"))
 
     def test_cannot_move_onto_saved_3rd(self):
-        """이미 저장된 3일로는 7일 자료를 옮길 수 없다."""
+        """저장한 7일에서 저장된 3일로 바꾸면 7일은 남고 3일을 연다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.wt.save_worklog_cells(old, self._cells(old, "A", "7일 내용"), force=True, allow_overwrite=True)
         self.wt.save_worklog_cells(new, self._cells(new, "B", "3일 옛내용"), force=True, allow_overwrite=True)
         self.ss["worklog_selected"] = old
+        self.ss[f"wl_saved_ok_{old.isoformat()}"] = True
         self.ss["wl_date_pick"] = new
         with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
             self.wt._on_wl_date_pick_change()
-        self.assertEqual(self.ss["worklog_selected"], old)
-        self.assertEqual(self.ss.get("wl_date_err"), self.wt._WL_MOVE_BLOCK_MSG)
+        self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertFalse(self.ss.get("wl_date_err"))
         self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
         self.assertEqual(self.wt.read_worklog_cells(old).get("G8"), "7일 내용")
         self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "3일 옛내용")
@@ -134,6 +163,8 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertEqual(self.ss["worklog_selected"], new)
         self.assertFalse(self.ss.get("wl_date_err"))
         self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertEqual(self.wt.read_worklog_cells(old).get("G8"), "7일 내용")
+        self.assertNotIn(old.isoformat(), self.ss.get("wl_purge_dates") or [])
         self.assertTrue(self.ss.get("wl_skip_sync_once"))
         self.assertFalse(self.ss.get("wl_need_app_rerun"))
 
@@ -286,32 +317,22 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "3일 옛내용")
 
     def test_date_change_before_save_then_save_deletes_old(self):
-        """저장 전 날짜 변경은 예전 데이터를 남기고, 저장하면 예전 날짜를 삭제한다."""
+        """저장 전(초안) 날짜 변경은 예전 데이터를 남기고, 저장하면 예전 날짜를 삭제한다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
-        self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
         self.ss["worklog_selected"] = old
         self.ss["wl_date_pick"] = new
-        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self._cells(d, "거래처7", "7일 내용")):
             self.wt._on_wl_date_pick_change()
-        self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
-        self.assertTrue(self.wt.worklog_date_exists_in_archive(old))
-        self.assertFalse(os.path.isfile(self.wt.worklog_path(new)))
-        cal = self.wt._saved_dates_for_calendar()
-        self.assertIn(old.isoformat(), cal)
-        self.assertNotIn(new.isoformat(), cal)
+        self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertEqual(self.ss.get("wl_date_retarget_from"), old.isoformat())
         cells = self._cells(new, "거래처7", "7일 내용")
         self.wt.commit_worklog_date_save(
             date.fromisoformat(self.ss["wl_date_retarget_from"]), new, cells,
         )
         self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
-        self.assertFalse(self.wt.worklog_date_exists_in_archive(old))
         self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
-        self.assertTrue(self.wt.worklog_date_exists_in_archive(new))
         self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "7일 내용")
         self.assertIsNone(self.ss.get("wl_date_retarget_from"))
-        cal = self.wt._saved_dates_for_calendar()
-        self.assertNotIn(old.isoformat(), cal)
-        self.assertIn(new.isoformat(), cal)
 
     def test_save_after_move_overwrites_new_date(self):
         old, new = date(2026, 9, 7), date(2026, 9, 8)

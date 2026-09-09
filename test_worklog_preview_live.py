@@ -57,6 +57,8 @@ class WorklogPreviewLiveTest(unittest.TestCase):
             self.assertIn('data-wl="G8"', html)
             self.assertIn('data-wl="D40"', html)
             self.assertIn("상세하러간다", html)
+            self.assertIn("word-break:break-all", html)
+            self.assertIn("white-space:pre-wrap", html)
         finally:
             os.unlink(tmp.name)
 
@@ -72,6 +74,7 @@ class WorklogPreviewLiveTest(unittest.TestCase):
             self.assertIn("wl-sheet", html)
             self.assertIn("sheet-scale", html)
             self.assertIn("data-wl=", html)
+            self.assertIn("word-break:break-all", html)
         finally:
             os.unlink(tmp.name)
 

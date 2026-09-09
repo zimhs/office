@@ -150,7 +150,7 @@ _WL_PREVIEW_SCALE = 0.65
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-07k · 달력은 보기·삭제 · 확정 시 팝업 닫힘"
+_WL_UI_BUILD = "2026-09-08a · 저장 후 날짜변경은 보기 · 내용칸 줄바꿈"
 _WL_MOVE_BLOCK_MSG = "이미 저장된 데이터가 있으면 자료를 옮길 수 없습니다."
 
 
@@ -847,7 +847,7 @@ def _set_body_font(cell) -> None:
 # =====================================================================
 # 14pt 바탕체 기준 내용칸 한 줄 한도 (한글 1자=2단위). 자동 다음칸 이동 임계값.
 @lru_cache(maxsize=1)
-def _content_line_units() -> int: return 78  # 한글 39자 (기존 36자 + 3자)
+def _content_line_units() -> int: return 76  # 한글 39자 (기존 36자 + 3자)
 
 @lru_cache(maxsize=1)
 def _client_line_units() -> int: return 16  # 👈 한글 8자(16 단위)로 증가
@@ -1639,7 +1639,7 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
             cell = ws.cell(r, 7)
             cell.value = (cells.get(f"G{r}", "") or None)
             _set_body_font(cell)
-            try: cell.alignment = cell.alignment.copy(wrapText=False, shrinkToFit=False)
+            try: cell.alignment = cell.alignment.copy(wrapText=True, shrinkToFit=False, vertical="top")
             except Exception: pass
         except AttributeError: pass
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
@@ -1647,7 +1647,7 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
             cell = ws.cell(r, 4)
             cell.value = (cells.get(f"D{r}", "") or None)
             _set_body_font(cell)
-            try: cell.alignment = cell.alignment.copy(wrapText=False, shrinkToFit=False)
+            try: cell.alignment = cell.alignment.copy(wrapText=True, shrinkToFit=False, vertical="top")
             except Exception: pass
         except AttributeError: pass
     wb.save(path)
@@ -2267,9 +2267,22 @@ def _block_move_to_saved_date(stay: date) -> None:
     st.session_state["wl_skip_sync_once"] = True
 
 
+def _worklog_day_already_saved(d: date) -> bool:
+    """이 날짜에 이미 저장한 일지가 있으면 True. 날짜 변경 시 지우지 않기 위함."""
+    if st.session_state.get(f"wl_saved_ok_{d.isoformat()}"):
+        return True
+    return _worklog_dest_has_saved_data(d)
+
+
 def try_retarget_worklog_editor_date(old: date, new: date) -> bool:
-    """빈 날짜면 화면 내용만 옮긴다. 저장본이 있으면 False + 안내."""
+    """빈 날짜면 화면 내용만 옮긴다. 저장본이 있으면 False + 안내.
+
+    이미 저장한 날은 옮기지 않고 그 날짜를 연다(저장 데이터가 지워지지 않음).
+    """
     if old == new:
+        return True
+    if _worklog_day_already_saved(old):
+        _open_worklog_saved_date(new)
         return True
     if _worklog_dest_has_saved_data(new):
         _block_move_to_saved_date(old)
@@ -2370,7 +2383,7 @@ def consume_left_date_pick_move(selected: date) -> tuple[date, bool]:
 
 
 def _on_wl_date_pick_change() -> None:
-    """저장 전 날짜만 바꾼다. 저장된 날짜로는 옮기지 않는다."""
+    """저장 전(초안)만 빈 날짜로 옮긴다. 이미 저장한 날은 보기만 하고 자료를 지우지 않는다."""
     st.session_state["_wl_date_pick_live"] = False
     picked = st.session_state.get("wl_date_pick")
     selected = st.session_state.get("worklog_selected")
@@ -2718,9 +2731,15 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
             else:
                 esc = html.escape(text).replace(" ", "&nbsp;").replace("\n", "<br>")
                 
-            if is_content or is_client: white, overflow, text_overflow = "nowrap", "visible", "clip"
-            elif is_vertical: white, overflow, text_overflow = "normal", "hidden", "clip"
-            else: white, overflow, text_overflow = "pre-wrap", "visible", "clip"
+            if is_content:
+                # 인쇄창과 같이 칸 안에서만 줄바꿈 (한글 연속문자 포함)
+                white, overflow, text_overflow, break_css = "pre-wrap", "hidden", "clip", "break-all"
+            elif is_client:
+                white, overflow, text_overflow, break_css = "nowrap", "hidden", "clip", "keep-all"
+            elif is_vertical:
+                white, overflow, text_overflow, break_css = "normal", "hidden", "clip", "keep-all"
+            else:
+                white, overflow, text_overflow, break_css = "pre-wrap", "hidden", "clip", "break-word"
                 
             c0 = c - WL_MIN_COL
             span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
@@ -2747,7 +2766,8 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
                     f"text-align:{ha};vertical-align:{va};"
                     f"background:{fill};{border}"
                     f"{pad_css}white-space:{white};overflow:{overflow};"
-                    f"text-overflow:{text_overflow};word-break:keep-all;"
+                    f"text-overflow:{text_overflow};word-break:{break_css};"
+                    f"overflow-wrap:anywhere;"
                     f"{line_css}"
                 )
             wl_key = ""
@@ -2887,7 +2907,7 @@ def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: floa
     else:
         print_media = "@media print { html, body { overflow:visible !important; } }"
     
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap" rel="stylesheet"><style>{_WL_FONT_FACE_CSS} @page {{ size: A4 portrait; margin: {page_margins}; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"6px" if not print_mode else "0"}; box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:0; }} .sheet-scale {{ {scale_css} }} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} {fallback_block} {print_media}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap" rel="stylesheet"><style>{_WL_FONT_FACE_CSS} @page {{ size: A4 portrait; margin: {page_margins}; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"6px" if not print_mode else "0"}; box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:0; }} .sheet-scale {{ {scale_css} }} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet td[data-wl^="G"] {{ white-space:pre-wrap !important; overflow:hidden !important; word-break:break-all !important; overflow-wrap:anywhere !important; }} {fallback_block} {print_media}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     try: n = int((ent or {}).get("blank_after", default))
@@ -3769,7 +3789,7 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     try: mtime = os.path.getmtime(abs_path)
     except OSError: mtime = 0.0
     cached, meta = st.session_state.get(cache_k), st.session_state.get(meta_k) or {}
-    cache_ver = "v25"
+    cache_ver = "v26"
     if isinstance(cached, str) and cached and meta.get("mtime") == mtime and meta.get("path") == abs_path and meta.get("ver") == cache_ver:
         stamped = cached
         nonce = int(st.session_state.get("wl_print_n", 0)) + 1
@@ -3972,6 +3992,8 @@ def _excel_preview_host_html(path: str, *, scale: float | None = None) -> str:
         f" .sheet-scale {{ {scale_css} width:fit-content; }}"
         f" .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK} !important; }}"
         f" .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }}"
+        f" .wl-sheet td[data-wl^='G'] {{ white-space:pre-wrap !important; overflow:hidden !important;"
+        f" word-break:break-all !important; overflow-wrap:anywhere !important; max-width:100% !important; }}"
         f" {fallback}</style>"
         f'<div class="wrap"><div class="sheet-scale">{sheet}</div></div>'
     )
@@ -4273,7 +4295,7 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             format="YYYY/MM/DD",
             key="wl_date_pick",
             on_change=_on_wl_date_pick_change,
-            help="편집용. 빈 날짜로 옮겨 저장할 수 있습니다. 값이 있는 날짜로는 옮길 수 없습니다.",
+            help="저장 전에는 빈 날짜로 옮길 수 있습니다. 저장한 뒤에는 날짜만 바꿔도 그 날 자료는 그대로 둡니다.",
         )
         st.session_state["_wl_date_pick_live"] = True
     with bar_cal:
@@ -4296,9 +4318,9 @@ def _render_worklog_date_toolbar(selected: date) -> None:
     if _date_err:
         st.error(_date_err)
     elif os.path.exists(worklog_path(selected)):
-        st.caption("저장됨 · 왼쪽 날짜칸은 빈 날짜로만 옮김 · 달력은 보기·삭제")
+        st.caption("저장됨 · 날짜를 바꿔도 이 날 자료는 유지 · 달력은 보기·삭제")
     else:
-        st.caption("왼쪽 날짜칸: 빈 날짜로만 옮김 · 달력: 보기 · 삭제 확정 시 팝업이 닫힙니다.")
+        st.caption("저장 전: 빈 날짜로만 옮김 · 저장 후: 날짜 변경해도 자료 유지 · 달력: 보기")
 
 
 def _render_worklog_input_panel(selected: date) -> None:
