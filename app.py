@@ -1295,6 +1295,9 @@ def apply_forward_unit_price(unit_price_df, qty_df, years, all_months):
         for m in all_months
         if f"{yr[2:]}년 {m}" in filled.columns
     ]
+    # pandas 2.x: int64 열에 278.55 같은 소수 단가를 넣으면 TypeError
+    for col in chron_cols:
+        filled[col] = pd.to_numeric(filled[col], errors="coerce").fillna(0.0).astype(np.float64)
     for idx in filled.index:
         last_price = 0.0
         for col in chron_cols:
@@ -6855,11 +6858,19 @@ def render_month_expandable_week_table(
     fmt_kind="qty",
     cmap_name="Blues",
     height=460,
+    *,
+    emit=True,
 ):
     """월 행 클릭 → 1~4주 펼침/접힘. tab1 4대품목 전용.
     그라데이션=상단 Blues와 동일, 글씨 크기는 고정(부모 복사 금지·레이아웃 안정).
-    iPad: table-layout auto + 가로 스크롤로 연도·숫자 잘림 방지. 맥 레이아웃 무손실."""
+    iPad: table-layout auto + 가로 스크롤로 연도·숫자 잘림 방지. 맥 레이아웃 무손실.
+    emit=False 이면 HTML만 반환(미리 계산용)."""
+    empty_html = (
+        "<div style='font-size:12px;color:#64748B;padding:8px;'>표시할 품목 데이터가 없습니다.</div>"
+    )
     if month_pivot is None or month_pivot.empty:
+        if not emit:
+            return empty_html
         st.info("표시할 품목 데이터가 없습니다.")
         return
     week_labels = ["1주", "2주", "3주", "4주"]
@@ -7066,8 +7077,200 @@ def render_month_expandable_week_table(
     </script>
     </body></html>
     """
+    if not emit:
+        return page_html
     components.html(page_html, height=height, scrolling=False)
 
+
+_TAB1_BULK4_METRICS = ("매출액 (만원)", "출고량", "총매출 대비 비중 (%)")
+_TAB1_BULK4_WEEKS = ("1주", "2주", "3주", "4주")
+
+
+def _tab1_week_labels(dt_series):
+    d = pd.to_numeric(dt_series.dt.day, errors="coerce").fillna(31).astype(int).clip(1, 31)
+    w = ((d - 1) // 7 + 1).clip(upper=4)
+    return w.map({1: "1주", 2: "2주", 3: "3주", 4: "4주"})
+
+
+def _tab1_reindex_month(pvt, all_months, years):
+    yrs = [str(y) for y in years]
+    out = pvt.copy() if pvt is not None else pd.DataFrame()
+    if out.empty:
+        return pd.DataFrame(0.0, index=all_months, columns=yrs)
+    out.columns = out.columns.astype(str)
+    return out.reindex(index=all_months, fill_value=0).reindex(columns=yrs, fill_value=0)
+
+
+def _tab1_reindex_week(pvt, all_months, years):
+    yrs = [str(y) for y in years]
+    idx = pd.MultiIndex.from_product([all_months, _TAB1_BULK4_WEEKS], names=["월", "주차"])
+    out = pvt.copy() if pvt is not None else pd.DataFrame()
+    if out.empty:
+        return pd.DataFrame(0.0, index=idx, columns=yrs)
+    out.columns = out.columns.astype(str)
+    return out.reindex(index=idx, fill_value=0).reindex(columns=yrs, fill_value=0)
+
+
+def _tab1_bulk4_one(sub, item, metric, tot_m, tot_w, all_months, years):
+    """4대 품목 1개 피벗. 잘린 소량 df만 사용 (전체 매출 df 해시 없음)."""
+    yrs = [str(y) for y in years]
+    empty_m = pd.DataFrame(0.0, index=all_months, columns=yrs)
+    empty_w = pd.DataFrame(
+        0.0,
+        index=pd.MultiIndex.from_product([all_months, _TAB1_BULK4_WEEKS], names=["월", "주차"]),
+        columns=yrs,
+    )
+    if sub is None or sub.empty:
+        return empty_m, empty_w
+    d = sub[sub["품목명"] == item]
+    if d.empty:
+        return empty_m, empty_w
+    if metric == "매출액 (만원)":
+        m = d.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+        w = d.pivot_table(index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+    elif "출고량" in str(metric):
+        m = d.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
+        w = d.pivot_table(index=["월", "주차"], columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
+    else:
+        mi = d.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
+        wi = d.pivot_table(index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum").fillna(0)
+        m = (mi / tot_m.replace(0, np.nan) * 100).fillna(0)
+        w = (wi / tot_w.replace(0, np.nan) * 100).fillna(0)
+    return _tab1_reindex_month(m, all_months, years), _tab1_reindex_week(w, all_months, years)
+
+
+def _tab1_bulk4_ensure_pack(
+    df_base,
+    target_items,
+    all_months,
+    years,
+    latest_update_str="",
+    selected_staff=None,
+    selected_item=None,
+    selected_client="",
+):
+    """필터가 바뀔 때만 4대 품목 12뷰를 미리 계산. 라디오 전환은 조회만."""
+    items = list(target_items or [])
+    months = list(all_months or [])
+    yrs = [str(y) for y in (years or ())]
+    sig = (
+        str(latest_update_str or ""),
+        tuple(items),
+        tuple(months),
+        tuple(yrs),
+        str(st.session_state.get("dash_filter_start", "")),
+        str(st.session_state.get("dash_filter_end", "")),
+        tuple(selected_staff or ()),
+        tuple(selected_item or ()),
+        str(selected_client or ""),
+        int(len(df_base)) if df_base is not None else 0,
+    )
+    prev = st.session_state.get("_tab1_bulk4_pack")
+    if prev and prev.get("sig") == sig:
+        return
+    views = {}
+    if df_base is None or getattr(df_base, "empty", True) or not items or not months:
+        st.session_state["_tab1_bulk4_pack"] = {"sig": sig, "items": items, "views": views}
+        return
+    cols = [c for c in ("품목명", "월", "연도", "매출액", "출고량", "매출일_dt") if c in df_base.columns]
+    sub = df_base.loc[df_base["품목명"].isin(items), cols]
+    if sub.empty or "매출일_dt" not in sub.columns:
+        st.session_state["_tab1_bulk4_pack"] = {"sig": sig, "items": items, "views": views}
+        return
+    sub = sub.dropna(subset=["매출일_dt"]).copy()
+    sub["연도"] = sub["연도"].astype(str)
+    sub["주차"] = _tab1_week_labels(sub["매출일_dt"])
+    tot_m = df_base.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
+    tot_m = _tab1_reindex_month(tot_m, months, yrs)
+    tot_src = df_base[["월", "연도", "매출액", "매출일_dt"]].dropna(subset=["매출일_dt"]).copy()
+    tot_src["연도"] = tot_src["연도"].astype(str)
+    tot_src["주차"] = _tab1_week_labels(tot_src["매출일_dt"])
+    tot_w = tot_src.pivot_table(
+        index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum"
+    ).fillna(0)
+    tot_w = _tab1_reindex_week(tot_w, months, yrs)
+    htmls = {}
+    for it in items:
+        for met in _TAB1_BULK4_METRICS:
+            mp, wp = _tab1_bulk4_one(sub, it, met, tot_m, tot_w, months, yrs)
+            views[(it, met)] = (mp, wp)
+            if "비중" in met:
+                fk, cm = "pct", "Purples"
+            elif "출고량" in met:
+                fk, cm = "qty", "Greens"
+            else:
+                fk, cm = "amt", "Blues"
+            htmls[(it, met)] = render_month_expandable_week_table(
+                mp, wp, fmt_kind=fk, cmap_name=cm, height=460, emit=False
+            )
+    st.session_state["_tab1_bulk4_pack"] = {
+        "sig": sig, "items": items, "views": views, "htmls": htmls
+    }
+
+
+@st.fragment
+def render_tab1_bulk4_item_panel():
+    """품목 라디오는 이 패널만 rerun. DataFrame을 인자로 넘기지 않음(해시 로딩 방지)."""
+    pack = st.session_state.get("_tab1_bulk4_pack") or {}
+    items = pack.get("items") or list(target_items)
+    st.markdown(
+        "<div class='sub-header dashboard-tab-panel-head'>📦 주요 4대 품목 상세 분석</div>",
+        unsafe_allow_html=True,
+    )
+    sel_col1, sel_col2 = st.columns([1, 1])
+    with sel_col1:
+        selected_target_item = st.radio(
+            "🔍 분석할 품목 선택", items, horizontal=True, key="overall_item_radio"
+        )
+    with sel_col2:
+        selected_metric = st.radio(
+            "📊 분석 지표 선택",
+            list(_TAB1_BULK4_METRICS),
+            horizontal=True,
+            key="overall_metric_radio",
+        )
+    views = pack.get("views") or {}
+    htmls = pack.get("htmls") or {}
+    item_pivot, week_year_pivot = views.get((selected_target_item, selected_metric), (None, None))
+    if item_pivot is None:
+        yrs = [str(y) for y in (years or ())]
+        months = list(all_months)
+        item_pivot = pd.DataFrame(0.0, index=months, columns=yrs)
+        week_year_pivot = pd.DataFrame(
+            0.0,
+            index=pd.MultiIndex.from_product([months, _TAB1_BULK4_WEEKS], names=["월", "주차"]),
+            columns=yrs,
+        )
+    if "비중" in selected_metric:
+        y_suf, y_fmt, _fmt_kind, _cmap = "%", ",.1f", "pct", "Purples"
+    elif "출고량" in selected_metric:
+        y_suf, y_fmt, _fmt_kind, _cmap = " 천kg", ",.1f", "qty", "Greens"
+    else:
+        y_suf, y_fmt, _fmt_kind, _cmap = " 만원", ",.0f", "amt", "Blues"
+    i_col_left, i_col_right = st.columns([1, 1])
+    with i_col_left:
+        page_html = htmls.get((selected_target_item, selected_metric))
+        if page_html:
+            components.html(page_html, height=460, scrolling=False)
+        else:
+            render_month_expandable_week_table(
+                item_pivot,
+                week_year_pivot,
+                fmt_kind=_fmt_kind,
+                cmap_name=_cmap,
+                height=460,
+            )
+    with i_col_right:
+        render_plotly_chart(
+            create_stacked_bar_chart(
+                item_pivot,
+                title_text="",
+                y_suffix=y_suf,
+                y_format=y_fmt,
+            ),
+            use_container_width=True,
+            key="tab1_item_chart",
+        )
 
 
 @st.cache_data
@@ -7306,6 +7509,265 @@ def cached_tab3_client_gas_usage(df_client, years_tuple, months_tuple):
         "n_days": n_days,
     }
     return summary, monthly, meta
+
+
+_TAB3_WD = ("월", "화", "수", "목", "금", "토", "일")
+
+
+def _tab3_gas_item_day_qty(df_client, years_tuple, months_tuple) -> dict:
+    """가스 품목 → {날짜: 출고량}. 탭3 전용."""
+    if df_client is None or df_client.empty:
+        return {}
+    need = {"품목명", "출고량", "매출일_dt", "연도", "월"}
+    if not need.issubset(set(df_client.columns)):
+        return {}
+    d = df_client
+    yrs = [str(y) for y in (years_tuple or ()) if y]
+    mons = [str(m) for m in (months_tuple or ()) if m]
+    mask = d["품목명"].map(_tab3_is_gas_item)
+    qty = pd.to_numeric(d["출고량"], errors="coerce").fillna(0.0)
+    mask = mask & (qty > 0)
+    if yrs:
+        mask = mask & d["연도"].astype(str).isin(yrs)
+    if mons:
+        mask = mask & d["월"].astype(str).isin(mons)
+    sub = d.loc[mask, ["품목명", "매출일_dt"]].copy()
+    if sub.empty:
+        return {}
+    sub["_qty"] = qty.loc[mask].values
+    sub["_dt"] = pd.to_datetime(sub["매출일_dt"], errors="coerce").dt.normalize()
+    sub = sub[sub["_dt"].notna()]
+    if sub.empty:
+        return {}
+    out = {}
+    for item, g in sub.groupby("품목명", sort=False):
+        out[str(item)] = {
+            pd.Timestamp(k): float(v)
+            for k, v in g.groupby("_dt")["_qty"].sum().items()
+        }
+    return out
+
+
+def _tab3_month_spans(years_tuple, latest_dt=None):
+    """(연, 월, 일자튜플) 최근년도·당월·최근일부터 과거 역순."""
+    yrs = []
+    for y in years_tuple or ():
+        try:
+            yrs.append(int(y))
+        except Exception:
+            continue
+    if not yrs:
+        return []
+    cap = pd.Timestamp.today().normalize()
+    if latest_dt is not None and pd.notna(latest_dt):
+        ld = pd.Timestamp(latest_dt).normalize()
+        if ld < cap:
+            cap = ld
+    spans = []
+    for y in sorted(set(yrs)):
+        for m in range(1, 13):
+            start = pd.Timestamp(year=y, month=m, day=1)
+            if start > cap:
+                continue
+            last = int((start + pd.offsets.MonthEnd(0)).day)
+            if y == cap.year and m == cap.month:
+                last = min(last, int(cap.day))
+            days = tuple(range(last, 0, -1))
+            if days:
+                spans.append((y, m, days))
+    spans.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return spans
+
+
+def _tab3_gas_row_card_html(title, subtitle, month_u, week_u, day_u, accent):
+    """달력 행과 높이 맞출 왼쪽 카드 (탭3 전용)."""
+    return (
+        f'<div style="background:#fff;border:1px solid #E2E8F0;border-left:4px solid {accent};'
+        f'border-radius:10px;padding:10px 12px;height:100%;box-sizing:border-box;">'
+        f'<div style="font-size:13px;font-weight:700;color:#0F172A;">{html.escape(title)}</div>'
+        f'<div style="font-size:10px;color:#64748B;margin:2px 0 8px;line-height:1.35;">'
+        f"{html.escape(subtitle)}</div>"
+        f'<div style="display:flex;gap:10px;flex-wrap:nowrap;">'
+        f'<div><div style="font-size:10px;color:#94A3B8;">월사용량</div>'
+        f'<div style="font-size:16px;font-weight:700;color:{accent};">{month_u:,.1f}</div></div>'
+        f'<div><div style="font-size:10px;color:#94A3B8;">주사용량</div>'
+        f'<div style="font-size:16px;font-weight:700;color:#0F172A;">{week_u:,.1f}</div></div>'
+        f'<div><div style="font-size:10px;color:#94A3B8;">일사용량</div>'
+        f'<div style="font-size:16px;font-weight:700;color:#0F172A;">{day_u:,.1f}</div></div>'
+        f"</div></div>"
+    )
+
+
+def _tab3_gas_excel_calendar_html(
+    item_rows: list,
+    qty_map: dict,
+    years_tuple,
+    latest_dt=None,
+    *,
+    section_title: str = "가스별 일 사용량",
+    section_hint: str = "칸 클릭 후 ←↑↓→",
+) -> str:
+    """가스마다 왼쪽 카드 + 엑셀 달력 행(높이 동일). 칸 클릭 후 방향키 이동."""
+    spans = _tab3_month_spans(years_tuple, latest_dt)
+    if not spans or not item_rows:
+        return (
+            "<div style='font-size:12px;color:#64748B;padding:8px;'>이 기간 가스 납품이 없습니다.</div>"
+        )
+    n_cols = sum(len(days) for _y, _m, days in spans)
+    n_rows = len(item_rows)
+    ym_cells, day_cells, wd_cells = [], [], []
+    for y, m, days in spans:
+        ym_cells.append(
+            f"<th class='h-ym' colspan='{len(days)}' style='text-align:center;font-weight:700;font-size:12px;"
+            f"background:#EFF6FF;color:#1E3A8A;border:1px solid #93C5FD;padding:4px 2px;height:28px;'>"
+            f"{y}년 {m}월</th>"
+        )
+        for d in days:
+            dt = pd.Timestamp(year=y, month=m, day=d)
+            wd_i = int(dt.weekday())
+            wd = _TAB3_WD[wd_i]
+            if wd_i == 5:
+                wc = "#2563EB"
+            elif wd_i == 6:
+                wc = "#DC2626"
+            else:
+                wc = "#475569"
+            day_cells.append(
+                f"<th class='h-day' style='text-align:center;font-size:11px;font-weight:600;min-width:36px;"
+                f"border:1px solid #E2E8F0;padding:3px 2px;background:#fff;height:24px;'>{d}</th>"
+            )
+            wd_cells.append(
+                f"<th class='h-wd' style='text-align:center;font-size:11px;font-weight:600;color:{wc};"
+                f"border:1px solid #E2E8F0;padding:2px;background:#F8FAFC;height:22px;'>{wd}</th>"
+            )
+    _ttl = html.escape(section_title)
+    _hint = html.escape(section_hint)
+    lab = (
+        "min-width:268px;width:268px;border:1px solid #CBD5E1;padding:4px 10px;"
+        "text-align:left;font-size:12px;font-weight:700;color:#1E3A8A;"
+        "position:sticky;left:0;z-index:6;background:#EFF6FF;"
+    )
+    head_ym = (
+        f"<th class='sticky-l' style='{lab}height:28px;'>{_ttl}"
+        f"<span style='font-weight:500;color:#94A3B8;font-size:11px;margin-left:8px;'>{_hint}</span></th>"
+    )
+    head_day = f"<th class='sticky-l' style='{lab}height:24px;background:#fff;'>일자</th>"
+    head_wd = f"<th class='sticky-l' style='{lab}height:22px;background:#F8FAFC;'>요일</th>"
+    thead = (
+        f"<thead><tr>{head_ym}{''.join(ym_cells)}</tr>"
+        f"<tr>{head_day}{''.join(day_cells)}</tr>"
+        f"<tr>{head_wd}{''.join(wd_cells)}</tr></thead>"
+    )
+    colgroup = (
+        "<colgroup><col class='c-left'>"
+        + "".join("<col class='c-day'>" for _ in range(n_cols))
+        + "</colgroup>"
+    )
+    nspan = n_cols + 1
+    has_bulk = any(bool(it.get("bulk")) for it in item_rows)
+    body_rows = []
+    for ri, it in enumerate(item_rows):
+        if has_bulk and (not it.get("bulk")) and (
+            ri == 0 or item_rows[ri - 1].get("bulk")
+        ):
+            body_rows.append(
+                "<tr><td class='sticky-l' colspan='"
+                + str(nspan)
+                + "' style='position:sticky;left:0;z-index:3;background:#F0FDFA;"
+                "border:1px solid #99F6E4;padding:6px 10px;font-size:12px;"
+                "font-weight:700;color:#115E59;'>🧪 부품목 · 그외 가스</td></tr>"
+            )
+        name = str(it["name"])
+        accent = "#1D4ED8" if it.get("bulk") else "#0F766E"
+        card = _tab3_gas_row_card_html(
+            name,
+            str(it.get("sub") or ""),
+            float(it.get("month_u") or 0),
+            float(it.get("week_u") or 0),
+            float(it.get("day_u") or 0),
+            accent,
+        )
+        by_day = qty_map.get(name) or {}
+        tds = [
+            f"<td class='sticky-l' style='position:sticky;left:0;z-index:3;background:#F8FAFC;"
+            f"min-width:268px;width:268px;border:1px solid #E2E8F0;padding:6px;"
+            f"vertical-align:middle;'>{card}</td>"
+        ]
+        ci = 0
+        for y, m, days in spans:
+            for d in days:
+                dt = pd.Timestamp(year=y, month=m, day=d)
+                q = by_day.get(dt)
+                if q and q > 0:
+                    body = f"{q:,.0f}"
+                    bg, fg, fw = "#EFF6FF", accent, "700"
+                else:
+                    body = ""
+                    bg, fg, fw = "#fff", "#94A3B8", "500"
+                tds.append(
+                    f"<td class='gcell' tabindex='0' data-r='{ri}' data-c='{ci}' "
+                    f"style='text-align:center;font-size:11px;font-weight:{fw};color:{fg};"
+                    f"border:1px solid #E2E8F0;background:{bg};padding:4px 2px;"
+                    f"min-width:36px;vertical-align:middle;cursor:cell;'>{body}</td>"
+                )
+                ci += 1
+        body_rows.append(f"<tr>{''.join(tds)}</tr>")
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+  html,body {{ margin:0; padding:0; height:100%; overflow:hidden;
+    font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif; }}
+  .frame {{ display:flex; flex-direction:column; height:100%; width:100%;
+    border:1px solid #E2E8F0; border-radius:8px; background:#fff; }}
+  .head {{ flex:0 0 auto; overflow:hidden; background:#fff; z-index:8;
+    box-shadow:0 2px 6px rgba(15,23,42,.12); }}
+  .body {{ flex:1 1 auto; overflow:auto; }}
+  table {{ border-collapse:separate; border-spacing:0; table-layout:fixed; width:max-content; min-width:100%; }}
+  col.c-left {{ width:268px; min-width:268px; }}
+  col.c-day {{ width:36px; min-width:36px; }}
+  th, td {{ box-sizing:border-box; }}
+  .sticky-l {{ position:sticky; left:0; }}
+  td.gcell:focus {{ outline:2px solid #2563EB; outline-offset:-2px; background:#DBEAFE !important; }}
+</style></head>
+<body>
+<div class="frame">
+  <div class="head" id="hscroll"><table>{colgroup}{thead}</table></div>
+  <div class="body" id="bscroll"><table>{colgroup}<tbody>{''.join(body_rows)}</tbody></table></div>
+</div>
+<script>
+(function() {{
+  var h = document.getElementById('hscroll');
+  var b = document.getElementById('bscroll');
+  if (h && b) {{
+    b.addEventListener('scroll', function() {{ h.scrollLeft = b.scrollLeft; }});
+    h.addEventListener('wheel', function(e) {{
+      var dx = e.deltaX, dy = e.deltaY;
+      if (e.shiftKey && !dx) dx = dy;
+      if (dx) {{ b.scrollLeft += dx; h.scrollLeft = b.scrollLeft; e.preventDefault(); }}
+    }}, {{passive:false}});
+  }}
+  var maxR = {n_rows - 1}, maxC = {n_cols - 1};
+  function cell(r,c) {{
+    return document.querySelector('td.gcell[data-r="'+r+'"][data-c="'+c+'"]');
+  }}
+  document.addEventListener('keydown', function(e) {{
+    var t = e.target && e.target.closest ? e.target.closest('td.gcell') : null;
+    if (!t) return;
+    var r = parseInt(t.getAttribute('data-r'),10);
+    var c = parseInt(t.getAttribute('data-c'),10);
+    var nr = r, nc = c;
+    if (e.key === 'ArrowLeft') nc = Math.max(0, c-1);
+    else if (e.key === 'ArrowRight') nc = Math.min(maxC, c+1);
+    else if (e.key === 'ArrowUp') nr = Math.max(0, r-1);
+    else if (e.key === 'ArrowDown') nr = Math.min(maxR, r+1);
+    else return;
+    e.preventDefault();
+    var n = cell(nr, nc);
+    if (n) {{ n.focus(); n.scrollIntoView({{block:'nearest', inline:'nearest'}}); }}
+  }});
+}})();
+</script>
+</body></html>"""
 
 
 def _tab3_usage_inv_card_html(title, subtitle, month_u, week_u, day_u, accent="#1D4ED8"):
@@ -13380,48 +13842,17 @@ def _dash_filter_and_tabs_fragment() -> None:
             )
     
         st.markdown("---")
-        st.markdown("<div class='sub-header dashboard-tab-panel-head'>📦 주요 4대 품목 상세 분석</div>", unsafe_allow_html=True)
-
-        sel_col1, sel_col2 = st.columns([1, 1])
-        with sel_col1:
-            selected_target_item = st.radio("🔍 분석할 품목 선택", target_items, horizontal=True, key="overall_item_radio")
-        with sel_col2:
-            selected_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="overall_metric_radio")
-    
-        item_pivot = cached_get_item_pivot(df_base, selected_target_item, selected_metric, all_months, years)
-        week_year_pivot = cached_get_item_month_week_year(
-            df_base, selected_target_item, selected_metric, all_months, years
+        _tab1_bulk4_ensure_pack(
+            df_base,
+            target_items,
+            all_months,
+            years,
+            latest_update_str,
+            selected_staff,
+            selected_item,
+            selected_client,
         )
-
-        if "비중" in selected_metric:
-            y_suf, y_fmt, _fmt_kind, _cmap = "%", ",.1f", "pct", "Purples"
-        elif "출고량" in selected_metric:
-            y_suf, y_fmt, _fmt_kind, _cmap = " 천kg", ",.1f", "qty", "Greens"
-        else:
-            y_suf, y_fmt, _fmt_kind, _cmap = " 만원", ",.0f", "amt", "Blues"
-
-        # 상단「연도별 월 매출 추이」와 동일: 좌 표 / 우 그래프 1:1
-        # iPad 표는 render_month_expandable_week_table 내부에서 가로 스크롤로 숫자 표시
-        i_col_left, i_col_right = st.columns([1, 1])
-        with i_col_left:
-            render_month_expandable_week_table(
-                item_pivot,
-                week_year_pivot,
-                fmt_kind=_fmt_kind,
-                cmap_name=_cmap,
-                height=460,
-            )
-        with i_col_right:
-            render_plotly_chart(
-                create_stacked_bar_chart(
-                    item_pivot,
-                    title_text="",
-                    y_suffix=y_suf,
-                    y_format=y_fmt,
-                ),
-                use_container_width=True,
-                key="tab1_item_chart",
-            )
+        render_tab1_bulk4_item_panel()
 
         st.markdown("---")
         st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
@@ -14680,215 +15111,166 @@ def _dash_filter_and_tabs_fragment() -> None:
             if not _u_default_years and _u_years_all:
                 _u_default_years = _u_years_all[-1:]
 
-            st.caption(
-                "납품(출고)량으로 사용량을 산출합니다. 기본 기준기간은 **전년도 + 당해년도**이며, "
-                "연도·월을 바꿔 납품 참고 구간을 조정할 수 있습니다. "
-                "월사용량 = 총납품 ÷ 기준기간 달력 월수(미래월 제외) · 주 = 월×7/30 · 일 = 월/30."
+            _u_sel_years = tuple(_u_default_years)
+            _u_sum, _u_monthly, _ = cached_tab3_client_gas_usage(
+                df_client_filtered,
+                _u_sel_years,
+                tuple(),
             )
-            _uc1, _uc2 = st.columns([1.2, 1.8])
-            with _uc1:
-                _u_sel_years = st.multiselect(
-                    "📅 납품 기준 연도",
-                    options=_u_years_all,
-                    default=[y for y in _u_default_years if y in _u_years_all],
-                    format_func=lambda x: f"{x}년",
-                    key="tab3_usage_years",
-                    help="기본: 전년도 + 당해년도",
+            _yr_lbl = "·".join(_u_sel_years) if _u_sel_years else ""
+            if _u_sum.empty:
+                st.info(
+                    f"[{selected_client}] {_yr_lbl} 구간에 "
+                    "가스 납품(출고) 실적이 없습니다."
                 )
-            with _uc2:
-                _u_sel_months = st.multiselect(
-                    "📆 납품 기준 월 (비우면 선택 연도의 전체 월)",
-                    options=all_months,
-                    default=[],
-                    key="tab3_usage_months",
-                    help="특정 월만 보고 싶을 때 선택. 비우면 선택 연도 전체.",
-                )
-            if not _u_sel_years:
-                st.warning("기준 연도를 하나 이상 선택하세요.")
             else:
-                _u_sum, _u_monthly, _u_meta = cached_tab3_client_gas_usage(
-                    df_client_filtered,
-                    tuple(_u_sel_years),
-                    tuple(_u_sel_months),
+                _bulk_df = (
+                    _u_sum[_u_sum["구분"] == "벌크(주요)"]
+                    .sort_values("월사용량", ascending=False)
                 )
-                _yr_lbl = "·".join(_u_sel_years)
-                _mo_lbl = (
-                    ",".join(_u_sel_months) if _u_sel_months else "전체 월"
+                _other_df = (
+                    _u_sum[_u_sum["구분"] == "그외가스(부품목)"]
+                    .sort_values("월사용량", ascending=False)
                 )
-                if _u_sum.empty:
-                    st.info(
-                        f"[{selected_client}] {_yr_lbl} / {_mo_lbl} 구간에 "
-                        "가스 납품(출고) 실적이 없습니다."
-                    )
-                else:
-                    _k1, _k2, _k3, _k4 = st.columns(4)
-                    _k1.markdown(
-                        f"<div class='metric-box'><div class='metric-label'>"
-                        f"기준기간</div><div class='metric-value' style='font-size:16px;'>"
-                        f"{html.escape(_yr_lbl)} · {_u_meta['n_months']}개월"
-                        f"</div></div>",
-                        unsafe_allow_html=True,
-                    )
-                    _k2.markdown(
-                        f"<div class='metric-box'><div class='metric-label'>"
-                        f"🛢️ 벌크 월사용량 합</div><div class='metric-value' style='color:#1D4ED8;'>"
-                        f"{_u_meta['bulk_month']:,.0f}</div></div>",
-                        unsafe_allow_html=True,
-                    )
-                    _k3.markdown(
-                        f"<div class='metric-box'><div class='metric-label'>"
-                        f"🧪 그외가스 월사용량 합</div><div class='metric-value' style='color:#0F766E;'>"
-                        f"{_u_meta['other_month']:,.0f}</div></div>",
-                        unsafe_allow_html=True,
-                    )
-                    _k4.markdown(
-                        f"<div class='metric-box'><div class='metric-label'>"
-                        f"품목 수</div><div class='metric-value'>"
-                        f"{len(_u_sum):,} 종</div></div>",
-                        unsafe_allow_html=True,
-                    )
+                _qty_map = _tab3_gas_item_day_qty(
+                    df_client_filtered, _u_sel_years, tuple()
+                )
+                _cal_latest = df_client_filtered["매출일_dt"].max()
 
-                    _bulk_df = _u_sum[_u_sum["구분"] == "벌크(주요)"]
-                    _other_df = _u_sum[_u_sum["구분"] == "그외가스(부품목)"]
-                    _left, _right = st.columns(2)
-                    with _left:
-                        st.markdown(
-                            "<div style='font-size:13px;font-weight:700;color:#1E3A8A;"
-                            "margin:4px 0 8px;'>🛢️ 주요품목 · 벌크</div>",
-                            unsafe_allow_html=True,
-                        )
-                        if _bulk_df.empty:
-                            st.caption("이 기간 벌크 납품 없음")
-                        else:
-                            for _, _r in _bulk_df.iterrows():
-                                _sub = (
+                def _rows_from(df_part, *, bulk: bool):
+                    out = []
+                    for _, _r in df_part.iterrows():
+                        out.append(
+                            {
+                                "name": str(_r["품목명"]),
+                                "bulk": bulk,
+                                "sub": (
                                     f"총 {_r['총납품량']:,.0f} · 납품 {_r['납품횟수']}회 · "
                                     f"간격 {_r['평균납품간격(일)']:.0f}일 · "
                                     f"최근 {_r['최근납품일']} · "
                                     f"회당≈{_r['회당평균']:,.0f} (≈{_r['예상소진(일)']:.0f}일분)"
-                                )
-                                st.markdown(
-                                    _tab3_usage_inv_card_html(
-                                        str(_r["품목명"]),
-                                        _sub,
-                                        float(_r["월사용량"]),
-                                        float(_r["주사용량"]),
-                                        float(_r["일사용량"]),
-                                        accent="#1D4ED8",
-                                    ),
-                                    unsafe_allow_html=True,
-                                )
-                    with _right:
-                        st.markdown(
-                            "<div style='font-size:13px;font-weight:700;color:#115E59;"
-                            "margin:4px 0 8px;'>🧪 부품목 · 그외 가스</div>",
-                            unsafe_allow_html=True,
-                        )
-                        if _other_df.empty:
-                            st.caption("이 기간 그외 가스 납품 없음")
-                        else:
-                            for _, _r in _other_df.head(12).iterrows():
-                                _sub = (
-                                    f"총 {_r['총납품량']:,.0f} · 납품 {_r['납품횟수']}회 · "
-                                    f"간격 {_r['평균납품간격(일)']:.0f}일 · "
-                                    f"최근 {_r['최근납품일']}"
-                                )
-                                st.markdown(
-                                    _tab3_usage_inv_card_html(
-                                        str(_r["품목명"]),
-                                        _sub,
-                                        float(_r["월사용량"]),
-                                        float(_r["주사용량"]),
-                                        float(_r["일사용량"]),
-                                        accent="#0F766E",
-                                    ),
-                                    unsafe_allow_html=True,
-                                )
-                            if len(_other_df) > 12:
-                                st.caption(f"외 {len(_other_df) - 12}개 품목 → 아래 표 참고")
-
-                    _disp_cols = [
-                        "구분",
-                        "품목명",
-                        "월사용량",
-                        "주사용량",
-                        "일사용량",
-                        "총납품량",
-                        "납품횟수",
-                        "회당평균",
-                        "평균납품간격(일)",
-                        "예상소진(일)",
-                        "최근납품일",
-                        "활성월수",
-                    ]
-                    _tbl = _u_sum[[c for c in _disp_cols if c in _u_sum.columns]].copy()
-                    st.markdown(
-                        "<div style='font-size:13px;font-weight:600;color:#334155;"
-                        "margin:12px 0 6px;'>📋 사용량 상세표</div>",
-                        unsafe_allow_html=True,
-                    )
-                    st.dataframe(
-                        _tbl.style.format(
-                            {
-                                "월사용량": "{:,.1f}",
-                                "주사용량": "{:,.1f}",
-                                "일사용량": "{:,.1f}",
-                                "총납품량": "{:,.0f}",
-                                "회당평균": "{:,.0f}",
-                                "평균납품간격(일)": "{:,.1f}",
-                                "예상소진(일)": "{:,.0f}",
-                            }
-                        ),
-                        use_container_width=True,
-                        height=min(420, 56 + 28 * max(len(_tbl), 1)),
-                    )
-
-                    # 월별 납품 추이 (벌크 우선, 없으면 상위 그외)
-                    _chart_items = list(_bulk_df["품목명"]) if not _bulk_df.empty else []
-                    if len(_chart_items) < 4 and not _other_df.empty:
-                        _chart_items += list(_other_df["품목명"].head(4 - len(_chart_items)))
-                    if (
-                        _chart_items
-                        and not _u_monthly.empty
-                        and any(i in _u_monthly.index for i in _chart_items)
-                    ):
-                        _plot = _u_monthly.reindex(
-                            [i for i in _chart_items if i in _u_monthly.index]
-                        )
-                        if not _plot.empty and (_plot.fillna(0) != 0).any().any():
-                            _plot_t = _plot.T.copy()
-                            _plot_t.index.name = "연월"
-                            _melt = _plot_t.reset_index().melt(
-                                id_vars="연월", var_name="품목명", value_name="납품량"
-                            )
-                            _fig_u = px.bar(
-                                _melt,
-                                x="연월",
-                                y="납품량",
-                                color="품목명",
-                                barmode="group",
-                                title=f"[{selected_client}] 월별 납품량 추이 ({_yr_lbl})",
-                            )
-                            _fig_u.update_layout(
-                                margin=dict(l=10, r=10, t=40, b=10),
-                                paper_bgcolor="rgba(0,0,0,0)",
-                                plot_bgcolor="rgba(0,0,0,0)",
-                                legend=dict(
-                                    orientation="h",
-                                    yanchor="bottom",
-                                    y=-0.35,
-                                    x=0.5,
-                                    xanchor="center",
                                 ),
-                                height=360,
-                                xaxis_title=None,
-                                yaxis_title=None,
-                            )
-                            render_plotly_chart(
-                                _fig_u,
-                                use_container_width=True,
-                                key="tab3_usage_monthly_chart",
-                            )
+                                "month_u": float(_r["월사용량"]),
+                                "week_u": float(_r["주사용량"]),
+                                "day_u": float(_r["일사용량"]),
+                            }
+                        )
+                    return out
+
+                _bulk_rows = _rows_from(_bulk_df, bulk=True)
+                _other_rows = _rows_from(_other_df, bulk=False)
+                _cal_rows = _bulk_rows + _other_rows
+                if _cal_rows:
+                    _n = len(_cal_rows)
+                    components.html(
+                        _tab3_gas_excel_calendar_html(
+                            _cal_rows,
+                            _qty_map,
+                            _u_sel_years,
+                            _cal_latest,
+                            section_title=(
+                                "🛢️ 주요품목 · 벌크"
+                                if _bulk_rows
+                                else "🧪 부품목 · 그외 가스"
+                            ),
+                            section_hint="날짜 고정 · 칸 클릭 후 ←↑↓→",
+                        ),
+                        height=min(680, max(300, 86 + 132 * _n)),
+                        scrolling=False,
+                    )
+                else:
+                    st.caption("이 기간 가스 납품 없음")
+
+                _disp_cols = [
+                    "구분",
+                    "품목명",
+                    "월사용량",
+                    "주사용량",
+                    "일사용량",
+                    "총납품량",
+                    "납품횟수",
+                    "회당평균",
+                    "평균납품간격(일)",
+                    "예상소진(일)",
+                    "최근납품일",
+                    "활성월수",
+                ]
+                _tbl = _u_sum[[c for c in _disp_cols if c in _u_sum.columns]].copy()
+                _tbl["_ord"] = (
+                    _tbl["구분"].map({"벌크(주요)": 0, "그외가스(부품목)": 1}).fillna(2)
+                    if "구분" in _tbl.columns
+                    else 0
+                )
+                _tbl = _tbl.sort_values(
+                    ["_ord", "월사용량"], ascending=[True, False]
+                ).drop(columns=["_ord"])
+                st.markdown(
+                    "<div style='font-size:13px;font-weight:600;color:#334155;"
+                    "margin:12px 0 6px;'>📋 사용량 상세표</div>",
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(
+                    _tbl.style.format(
+                        {
+                            "월사용량": "{:,.1f}",
+                            "주사용량": "{:,.1f}",
+                            "일사용량": "{:,.1f}",
+                            "총납품량": "{:,.0f}",
+                            "회당평균": "{:,.0f}",
+                            "평균납품간격(일)": "{:,.1f}",
+                            "예상소진(일)": "{:,.0f}",
+                        }
+                    ),
+                    use_container_width=True,
+                    height=min(420, 56 + 28 * max(len(_tbl), 1)),
+                )
+
+                # 월별 납품 추이 (벌크 우선, 없으면 상위 그외)
+                _chart_items = list(_bulk_df["품목명"]) if not _bulk_df.empty else []
+                if len(_chart_items) < 4 and not _other_df.empty:
+                    _chart_items += list(_other_df["품목명"].head(4 - len(_chart_items)))
+                if (
+                    _chart_items
+                    and not _u_monthly.empty
+                    and any(i in _u_monthly.index for i in _chart_items)
+                ):
+                    _plot = _u_monthly.reindex(
+                        [i for i in _chart_items if i in _u_monthly.index]
+                    )
+                    if not _plot.empty and (_plot.fillna(0) != 0).any().any():
+                        _plot_t = _plot.T.copy()
+                        _plot_t.index.name = "연월"
+                        _melt = _plot_t.reset_index().melt(
+                            id_vars="연월", var_name="품목명", value_name="납품량"
+                        )
+                        _fig_u = px.bar(
+                            _melt,
+                            x="연월",
+                            y="납품량",
+                            color="품목명",
+                            barmode="group",
+                            title=f"[{selected_client}] 월별 납품량 추이 ({_yr_lbl})",
+                        )
+                        _fig_u.update_layout(
+                            margin=dict(l=10, r=10, t=40, b=10),
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=-0.35,
+                                x=0.5,
+                                xanchor="center",
+                            ),
+                            height=360,
+                            xaxis_title=None,
+                            yaxis_title=None,
+                        )
+                        render_plotly_chart(
+                            _fig_u,
+                            use_container_width=True,
+                            key="tab3_usage_monthly_chart",
+                        )
 
     # Tab 4: 👤 담당자 & 상세내역
     with tab4:
@@ -16527,12 +16909,12 @@ def _dash_filter_and_tabs_fragment() -> None:
 
                     _pi_path = getattr(_pi_tab, "__file__", None) or ""
                     _pi_mtime = os.path.getmtime(_pi_path) if _pi_path and os.path.exists(_pi_path) else 0
-                    if "_pi_mod_mtime" not in st.session_state:
-                        st.session_state["_pi_mod_mtime"] = _pi_mtime
-                    elif st.session_state.get("_pi_mod_mtime") != _pi_mtime:
+                    # 세션이 아니라 모듈 적재 시각 기준 — 새로고침만 하면 예전 공문 코드가 남는 문제 방지
+                    if getattr(_pi_tab, "_src_mtime", None) != _pi_mtime:
                         _pi_tab = importlib.reload(_pi_tab)
-                        st.session_state["_pi_mod_mtime"] = _pi_mtime
+                        _pi_tab._src_mtime = _pi_mtime
                         sys.modules["price_increase_tab"] = _pi_tab
+                    st.session_state["_pi_mod_mtime"] = _pi_mtime
                     _pi_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
                     _pi_tab.render_price_increase_tab(_pi_df, latest_update_str=latest_update_str)
                     _dash_backup_session_keys("_dash_bak_letter", _DASH_PI_STATE_PREFIXES)

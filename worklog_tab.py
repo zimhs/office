@@ -4126,7 +4126,6 @@ def _render_worklog_left_preview(selected: date) -> None:
     """왼쪽 요약/엑셀 — 입력 위젯 실시간 반영 (요약은 soft blank 제거)."""
     draft = _draft_cells_for_left_preview(selected)
     st.markdown("##### 업무일지 보기")
-    st.caption("칸을 나가면 왼쪽 반영 · 엑셀 양식은 「엑셀 미리보기」")
     p1, p2 = st.columns(2)
     with p1:
         do_print = st.button(
@@ -4182,7 +4181,6 @@ def _render_worklog_left_preview(selected: date) -> None:
             st.session_state["_wl_force_form_sig"] = form_sig
             st.session_state[f"wl_left_excel_rebuild_{selected.isoformat()}"] = True
             st.session_state.pop(f"wl_left_excel_html_v26_{selected.isoformat()}", None)
-            st.success("✅ 엑셀 미리보기 화면이 갱신되었습니다.")
             draft = dict(cells_now)
         except Exception as e:
             st.error(f"미리보기 생성 중 오류가 발생했습니다: {e}")
@@ -4317,10 +4315,6 @@ def _render_worklog_date_toolbar(selected: date) -> None:
     _date_err = st.session_state.pop("wl_date_err", None)
     if _date_err:
         st.error(_date_err)
-    elif os.path.exists(worklog_path(selected)):
-        st.caption("저장됨 · 날짜를 바꿔도 이 날 자료는 유지 · 달력은 보기·삭제")
-    else:
-        st.caption("저장 전: 빈 날짜로만 옮김 · 저장 후: 날짜 변경해도 자료 유지 · 달력: 보기")
 
 
 def _render_worklog_input_panel(selected: date) -> None:
@@ -4481,7 +4475,6 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         st.session_state[f"wl_focus_caret_{iso2}"] = s
 
-                st.caption("입력은 바로 칸에 남고 · 칸을 나가거나 Enter 하면 왼쪽 요약이 갱신됩니다.")
                 _live_entries = _read_editor_entries(d)
                 _usage = _content_row_usage(_live_entries)
                 _rem = _usage["remaining"]
@@ -4897,7 +4890,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         "<div class='sub-header dashboard-tab-panel-head'>📝 일일업무일지</div>",
         unsafe_allow_html=True,
     )
-    st.caption("왼쪽 미리보기 · 오른쪽 입력 · 항목은 필요할 때만 펼치세요.")
     dev_caption(f"업무일지 빌드 {_WL_UI_BUILD}")
     _filt_changed = _dashboard_filters_changed_this_run()
     _arch_root = resolve_worklog_archive_root()

@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import html as html_lib
 import io
 import json
 import os
@@ -40,8 +41,16 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-03k · 메일고르기숨김"
+PI_UI_BUILD = "2026-09-11 · 주소하단계열사맞춤"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
+PI_MAIL_CARD = os.path.join(PI_FONTS_DIR, "mail_card.png")
+PI_MAIL_CARD_CID = "sinilgas-card@sigas"
+PI_MAIL_CARD_SRC_W, PI_MAIL_CARD_SRC_H = 642, 334
+PI_MAIL_CARD_DISP_W = 240
+PI_MAIL_LOGO = os.path.join(PI_FONTS_DIR, "mail_logo.png")
+PI_MAIL_LOGO_CID = "sinilgas-logo@sigas"
+PI_MAIL_LOGO_SRC_W, PI_MAIL_LOGO_SRC_H = 532, 172
+PI_MAIL_LOGO_DISP_W = 260
 _KR_FONT_CANDIDATES = (
     os.path.join(PI_FONTS_DIR, "NotoSansKR-Regular.ttf"),
     os.path.join(PI_FONTS_DIR, "NanumGothic.ttf"),
@@ -1709,6 +1718,53 @@ def _mail_clean_text(value: Any, *, keep_newlines: bool = False) -> str:
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
+_MAIL_SUBTYPE = {
+    "pdf": "pdf",
+    "xlsx": "vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "xls": "vnd.ms-excel",
+    "docx": "vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "doc": "msword",
+    "png": "png",
+    "jpg": "jpeg",
+    "jpeg": "jpeg",
+    "gif": "gif",
+    "csv": "csv",
+    "txt": "plain",
+    "zip": "zip",
+    "hwp": "x-hwp",
+    "hwpx": "x-hwpx",
+}
+
+
+def _mime_attach(msg: MIMEMultipart, name: str, data: bytes) -> None:
+    safe_name = _mail_clean_text(name) or "attachment.bin"
+    ext = os.path.splitext(safe_name)[1].lower().lstrip(".")
+    part = MIMEApplication(data, _subtype=_MAIL_SUBTYPE.get(ext, "octet-stream"))
+    part.add_header(
+        "Content-Disposition",
+        "attachment",
+        filename=("utf-8", "", safe_name),
+    )
+    msg.attach(part)
+
+
+def _uploaded_mail_attachments(files: Any) -> list[tuple[str, bytes]]:
+    if not files:
+        return []
+    if not isinstance(files, (list, tuple)):
+        files = [files]
+    out: list[tuple[str, bytes]] = []
+    for f in files:
+        try:
+            name = str(getattr(f, "name", None) or "attachment.bin")
+            data = f.getvalue() if hasattr(f, "getvalue") else bytes(f.read())
+            if data:
+                out.append((name, data))
+        except Exception:
+            continue
+    return out
+
+
 def send_mail_smtp(
     *,
     to_addr: str,
@@ -1716,6 +1772,7 @@ def send_mail_smtp(
     body: str,
     attachment_bytes: Optional[bytes] = None,
     attachment_name: str = "단가인상공문.pdf",
+    extra_attachments: Optional[list[tuple[str, bytes]]] = None,
     cc: str = "",
 ) -> tuple[bool, str]:
     cfg = smtp_settings()
@@ -1748,25 +1805,24 @@ def send_mail_smtp(
     recipients = [a for a in re.split(r"[;,]", to_addr) if a]
     cc_list = [a for a in re.split(r"[;,]", cc or "") if a]
 
-    msg = MIMEMultipart()
+    msg = MIMEMultipart("mixed")
     # 한글 From/Subject는 Header로 UTF-8 인코딩 (ascii codec 오류 방지)
     msg["From"] = formataddr((str(Header(from_name, "utf-8")), from_addr))
     msg["To"] = ", ".join(recipients)
     if cc_list:
         msg["Cc"] = ", ".join(cc_list)
     msg["Subject"] = str(Header(subject, "utf-8"))
-    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(body, "plain", "utf-8"))
+    alt.attach(MIMEText(_mail_body_html(body), "html", "utf-8"))
+    msg.attach(alt)
+
     if attachment_bytes:
-        safe_name = attachment_name or "letter.pdf"
-        subtype = "pdf" if str(safe_name).lower().endswith(".pdf") else "octet-stream"
-        part = MIMEApplication(attachment_bytes, _subtype=subtype)
-        # RFC2231 파일명 (한글 첨부명)
-        part.add_header(
-            "Content-Disposition",
-            "attachment",
-            filename=("utf-8", "", safe_name),
-        )
-        msg.attach(part)
+        _mime_attach(msg, attachment_name or "letter.pdf", attachment_bytes)
+    for extra_name, extra_bytes in extra_attachments or []:
+        if extra_bytes:
+            _mime_attach(msg, extra_name, extra_bytes)
 
     all_rcpt = recipients + cc_list
 
@@ -1775,7 +1831,7 @@ def send_mail_smtp(
         server.sendmail(from_addr, all_rcpt, msg.as_bytes())
 
     try:
-        ok, note = _smtp_run(cfg, timeout=45, send_fn=_do_send)
+        ok, note = _smtp_run(cfg, timeout=20, send_fn=_do_send)
         return True, f"발송 완료 → {', '.join(all_rcpt)}{note}"
     except smtplib.SMTPAuthenticationError:
         return (
@@ -2106,6 +2162,169 @@ def _default_letter_title() -> str:
 
 def _default_doc_no(client: str = "") -> str:
     return _format_doc_no(client, "")
+
+
+PI_MAIL_SIGNATURE = """------------------------------------------------
+김혁수 과장 | Hyuksoo Kim (Manager)
+영업부 영업1팀 | Sales Department, Sales team 1
+
+M +82-10-6517-0779    E 3023526@gmail.com
+T +82-31-366-0799     F +82-31-366-5633
+
+경기도 화성시 팔탄면 서해로 1327-17 신일가스(주) 화성공장
+Sinilgas Co., LTD. 1327-17, Seohae-ro, Paltan-myeon, Hwaseong-si, Gyeonggi-do, Korea"""
+
+
+PI_AFFILIATES = (
+    ("신일가스(주) 본사·공장", "광주광역시 광산구 하남산단5번로 122 (장덕동)"),
+    ("신일가스(주) 화성공장", "경기도 화성시 팔탄면 서해로 1327-17 (율암리)"),
+    ("신일가스(주) 목포공장", "전라남도 영암군 삼호읍 대아로 24 (대불공단)"),
+    ("신일가스(주) 완도영업소", "전라남도 완도군 완도읍 청해진로 1590 (죽청리)"),
+    ("광양종합가스(주)", "전라남도 광양시 산업로 25 (태인동)"),
+    ("나주신일가스(주)", "전라남도 나주시 동수농공단지길 124 (운곡동)"),
+    ("(주)신비오켐", "전라남도 여수시 여수산단로 734 (중흥동)"),
+    ("가스코아산(주)", "충청남도 아산시 둔포면 윤보선로 521"),
+    ("에스앤디(주)", "울산광역시 남구 장생포고래로 317 (매암동)"),
+    ("신비오케미컬(주)", "충청남도 서산시 대산읍 대죽산업로 56 (대죽리)"),
+)
+
+
+def _with_mail_signature(body: str) -> str:
+    """본문 끝에 텍스트 서명을 붙임. 이미 있으면 중복하지 않음."""
+    text = _strip_mail_signature(str(body or ""))
+    return f"{text.rstrip()}\n\n{PI_MAIL_SIGNATURE}".rstrip()
+
+
+def _strip_mail_signature(body: str) -> str:
+    """본문에서 서명 블록을 빼 본문만 남김."""
+    text = str(body or "")
+    for marker in ("------------------------------------------------", "김혁수 과장", "김혁수"):
+        i = text.find(marker)
+        if i >= 0:
+            return text[:i].rstrip()
+    return text.rstrip()
+
+
+def _signature_html() -> str:
+    """이름·연락처만. 주소는 계열사 하단에 맞춤."""
+    return """
+            <div style="font-size:13px;font-weight:700;color:#0f172a;line-height:1.45;">김혁수 과장 | Hyuksoo Kim (Manager)</div>
+            <div style="font-size:12px;color:#475569;line-height:1.45;">영업부 영업1팀 | Sales Department, Sales team 1</div>
+            <div style="font-size:12px;color:#1e293b;line-height:1.5;padding-top:8px;">M +82-10-6517-0779 &nbsp;&nbsp; E 3023526@gmail.com</div>
+            <div style="font-size:12px;color:#1e293b;line-height:1.5;">T +82-31-366-0799 &nbsp;&nbsp; F +82-31-366-5633</div>"""
+
+
+def _address_html() -> str:
+    return """
+            <div style="font-size:12px;color:#334155;line-height:1.45;">경기도 화성시 팔탄면 서해로 1327-17 신일가스(주) 화성공장</div>
+            <div style="font-size:11px;color:#94a3b8;line-height:1.4;">Sinilgas Co., LTD. 1327-17, Seohae-ro, Paltan-myeon, Hwaseong-si, Gyeonggi-do, Korea</div>"""
+
+
+def _affiliates_html() -> str:
+    """계열사 2열. 오른쪽 칸 가로를 채움."""
+    mid = (len(PI_AFFILIATES) + 1) // 2
+    left, right = PI_AFFILIATES[:mid], PI_AFFILIATES[mid:]
+
+    def _cell(item: Optional[tuple[str, str]]) -> str:
+        if not item:
+            return '<td valign="top" width="50%" style="width:50%;padding:0 8px 8px 0;"></td>'
+        name, addr = item
+        return (
+            f'<td valign="top" width="50%" style="width:50%;padding:0 8px 8px 0;'
+            f"font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;\">"
+            f'<div style="font-size:11px;font-weight:700;color:#0f172a;line-height:1.35;">'
+            f"{html_lib.escape(name)}</div>"
+            f'<div style="font-size:10px;color:#64748b;line-height:1.35;">'
+            f"{html_lib.escape(addr)}</div></td>"
+        )
+
+    rows = []
+    for i in range(mid):
+        l = left[i] if i < len(left) else None
+        r = right[i] if i < len(right) else None
+        rows.append(f"<tr>{_cell(l)}{_cell(r)}</tr>")
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        f'style="width:100%;border-collapse:collapse;">{"".join(rows)}</table>'
+    )
+
+
+def _mail_sig_html() -> str:
+    """왼쪽 위 서명, 왼쪽 아래 주소(계열사 하단과 맞춤), 오른쪽 계열사."""
+    return f"""
+  <tr>
+    <td style="padding:18px 0 0;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+             bgcolor="#f8fafc"
+             style="width:100%;border-collapse:collapse;background:#f8fafc;">
+        <tr>
+          <td colspan="2" style="height:3px;line-height:3px;font-size:0;background:#2563eb;">&nbsp;</td>
+        </tr>
+        <tr>
+          <td valign="top" width="38%" style="width:38%;padding:12px 16px 4px 10px;
+              font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;">
+            {_signature_html()}
+          </td>
+          <td valign="top" width="62%" rowspan="2" style="width:62%;padding:12px 10px 12px 8px;">
+            {_affiliates_html()}
+          </td>
+        </tr>
+        <tr>
+          <td valign="bottom" width="38%" style="width:38%;padding:8px 16px 12px 10px;
+              font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;">
+            {_address_html()}
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>"""
+
+
+def _mail_body_html(body: str) -> str:
+    main = html_lib.escape(_strip_mail_signature(body)).replace("\n", "<br>\n")
+    return f"""<!DOCTYPE html>
+<html><body style="margin:0;padding:0;background:#ffffff;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+       style="width:100%;max-width:100%;border-collapse:collapse;font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;font-size:14px;line-height:1.7;color:#1e293b;">
+  <tr><td style="padding:2px 2px 8px;">{main}</td></tr>
+  {_mail_sig_html()}
+</table>
+</body></html>"""
+
+
+def _render_mail_signature_preview() -> None:
+    """작성 화면: 서명 위, 주소는 계열사 하단에 맞춤."""
+    st.caption("발송 시 왼쪽 위 서명, 왼쪽 아래 주소가 계열사 하단과 맞습니다.")
+    mid = (len(PI_AFFILIATES) + 1) // 2
+
+    def _col(items: tuple) -> str:
+        return "".join(
+            f"<div style='margin:0 0 8px;'><b style='font-size:12px;color:#0f172a;'>{html_lib.escape(n)}</b>"
+            f"<div style='font-size:11px;color:#64748b;'>{html_lib.escape(a)}</div></div>"
+            for n, a in items
+        )
+
+    st.markdown(
+        "<div style='background:#f8fafc;border-top:3px solid #2563eb;padding:12px 8px;'>"
+        "<table style='width:100%;border-collapse:collapse;'>"
+        "<tr>"
+        "<td style='width:38%;vertical-align:top;padding:0 16px 4px 0;'>"
+        "<div style='font-size:13px;font-weight:700;'>김혁수 과장 | Hyuksoo Kim (Manager)</div>"
+        "<div style='font-size:12px;color:#475569;'>영업부 영업1팀 | Sales Department, Sales team 1</div>"
+        "<div style='font-size:12px;padding-top:8px;'>M +82-10-6517-0779 &nbsp; E 3023526@gmail.com</div>"
+        "<div style='font-size:12px;'>T +82-31-366-0799 &nbsp; F +82-31-366-5633</div>"
+        "</td>"
+        "<td rowspan='2' style='width:62%;vertical-align:top;padding:0 0 0 8px;'>"
+        "<div style='display:flex;gap:16px;'>"
+        f"<div style='flex:1;'>{_col(PI_AFFILIATES[:mid])}</div>"
+        f"<div style='flex:1;'>{_col(PI_AFFILIATES[mid:])}</div>"
+        "</div></td></tr>"
+        "<tr><td style='width:38%;vertical-align:bottom;padding:8px 16px 0 0;'>"
+        "<div style='font-size:12px;color:#334155;'>경기도 화성시 팔탄면 서해로 1327-17 신일가스(주) 화성공장</div>"
+        "<div style='font-size:11px;color:#94a3b8;'>Sinilgas Co., LTD. 1327-17, Seohae-ro, Paltan-myeon, Hwaseong-si, Gyeonggi-do, Korea</div>"
+        "</td></tr></table></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _default_mail_body(client: str, effective: str, items: list[dict]) -> str:
@@ -2746,11 +2965,32 @@ def _open_letter_preview_dialog(
     _pi_letter_preview_dialog()
 
 
+def _render_mail_attachments(*, pdf_name: str, pdf_bytes: Any) -> list[tuple[str, bytes]]:
+    """공문 PDF + 사용자가 고른 추가 첨부. 발송용 (이름, bytes) 목록을 반환."""
+    if pdf_bytes:
+        st.caption(f"첨부 PDF: `{pdf_name}` · 준비됨 ({len(pdf_bytes):,} bytes)")
+    else:
+        st.error("첨부 PDF가 없습니다. 「엑셀 미리보기」로 공문을 먼저 생성하세요.")
+    uploaded = st.file_uploader(
+        "추가 첨부파일",
+        accept_multiple_files=True,
+        key="pi_mail_extra_files",
+        help="공문 PDF는 자동 첨부됩니다. 엑셀·이미지·한글 파일 등을 더 넣을 수 있습니다.",
+    )
+    extra = _uploaded_mail_attachments(uploaded)
+    if extra:
+        extra_size = sum(len(b) for _, b in extra)
+        names = ", ".join(f"`{n}`" for n, _ in extra)
+        st.caption(f"추가 첨부 {len(extra)}개 · {extra_size:,} bytes — {names}")
+        if extra_size + (len(pdf_bytes) if pdf_bytes else 0) > 15 * 1024 * 1024:
+            st.warning("첨부 합계가 15MB를 넘습니다. 다음메일에서 발송이 거절될 수 있습니다.")
+    return extra
+
+
 @st.dialog("메일 작성 · 최종 발송", width="large")
 def _pi_mail_compose_dialog() -> None:
     """메일본문 확인·수정 후 최종 발송. 바로 보내지 않음."""
-    draft = st.session_state.get("pi_mail_draft") or {}
-    to_addr = str(draft.get("to") or "")
+    draft, to_addr = _sync_mail_draft_to_addr(st.session_state.get("pi_mail_draft") or {})
     pdf_name = str(draft.get("pdf_name") or "공문.pdf")
     pdf_bytes = st.session_state.get("pi_pdf_bytes")
     client = str(draft.get("client") or "")
@@ -2758,19 +2998,23 @@ def _pi_mail_compose_dialog() -> None:
     items_n = int(draft.get("items") or 0)
 
     st.caption("바로 발송되지 않습니다. 본문을 확인·수정한 뒤 「최종 발송」을 누르세요.")
-    st.text_input("수신", value=to_addr, disabled=True, key="pi_mail_compose_to_view")
+    st.text_input("수신", value=to_addr, disabled=True, key=f"pi_mail_compose_to_view_{to_addr}")
     if "pi_mail_compose_subject" not in st.session_state:
         st.session_state["pi_mail_compose_subject"] = str(draft.get("subject") or "")
-    if "pi_mail_compose_body" not in st.session_state:
-        st.session_state["pi_mail_compose_body"] = str(draft.get("body") or "")
+    cur_body = str(st.session_state.get("pi_mail_compose_body") or draft.get("body") or "")
+    stripped = _strip_mail_signature(cur_body)
+    if stripped != cur_body:
+        st.session_state["pi_mail_compose_body"] = stripped
     st.text_input("메일 제목", key="pi_mail_compose_subject")
-    st.text_area("메일 본문", height=280, key="pi_mail_compose_body")
-    st.caption(f"첨부 PDF: `{pdf_name}`" + (" · 준비됨" if pdf_bytes else " · 없음(발송 불가)"))
+    st.text_area("메일 본문", height=260, key="pi_mail_compose_body")
+    _render_mail_signature_preview()
+    extra_files = _render_mail_attachments(pdf_name=pdf_name, pdf_bytes=pdf_bytes)
 
     c1, c2 = st.columns(2)
     with c1:
         if st.button("닫기", use_container_width=True, key="pi_mail_compose_close"):
             st.session_state.pop("pi_mail_draft", None)
+            st.session_state.pop("pi_mail_extra_files", None)
             _pi_rerun(full=True)
     with c2:
         do_final = st.button(
@@ -2782,18 +3026,20 @@ def _pi_mail_compose_dialog() -> None:
         )
     if do_final:
         subject = str(st.session_state.get("pi_mail_compose_subject") or "").strip()
-        body = str(st.session_state.get("pi_mail_compose_body") or "")
+        body = _with_mail_signature(str(st.session_state.get("pi_mail_compose_body") or ""))
         if not subject:
             st.error("메일 제목을 입력하세요.")
             return
         try:
-            ok, msg = send_mail_smtp(
-                to_addr=to_addr,
-                subject=subject,
-                body=body,
-                attachment_bytes=pdf_bytes,
-                attachment_name=pdf_name,
-            )
+            with st.spinner("메일 발송 중…"):
+                ok, msg = send_mail_smtp(
+                    to_addr=to_addr,
+                    subject=subject,
+                    body=body,
+                    attachment_bytes=pdf_bytes,
+                    attachment_name=pdf_name,
+                    extra_attachments=extra_files,
+                )
             append_sent_log(
                 client=client,
                 email=to_addr,
@@ -2806,6 +3052,7 @@ def _pi_mail_compose_dialog() -> None:
             )
             if ok:
                 st.session_state.pop("pi_mail_draft", None)
+                st.session_state.pop("pi_mail_extra_files", None)
                 st.success(msg)
             else:
                 st.error(msg)
@@ -2858,14 +3105,26 @@ def _open_mail_compose_dialog(
         "items": items_n,
     }
     st.session_state["pi_mail_compose_subject"] = title
-    st.session_state["pi_mail_compose_body"] = body
+    st.session_state["pi_mail_compose_body"] = _strip_mail_signature(body)
+    st.session_state.pop("pi_mail_extra_files", None)
     st.session_state["pi_left_mode"] = "mail"
+
+
+def _sync_mail_draft_to_addr(draft: dict) -> tuple[dict, str]:
+    """위「수신 이메일」을 바꾸면 메일 작성 수신·발송 주소도 같이 맞춤."""
+    live = str(st.session_state.get("pi_single_email") or "").strip()
+    draft_to = str((draft or {}).get("to") or "").strip()
+    to_addr = live or draft_to
+    draft = dict(draft or {})
+    if to_addr and draft.get("to") != to_addr:
+        draft["to"] = to_addr
+        st.session_state["pi_mail_draft"] = draft
+    return draft, to_addr
 
 
 def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
     """왼쪽 패널: 메일 제목·본문 작성 + 최종 발송."""
-    draft = st.session_state.get("pi_mail_draft") or {}
-    to_addr = str(draft.get("to") or "")
+    draft, to_addr = _sync_mail_draft_to_addr(st.session_state.get("pi_mail_draft") or {})
     pdf_name = str(draft.get("pdf_name") or "공문.pdf")
     pdf_bytes = st.session_state.get("pi_pdf_bytes")
     client = str(draft.get("client") or "")
@@ -2874,23 +3133,24 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
 
     st.markdown("##### 메일 작성")
     st.caption("바로 발송되지 않습니다. 본문 확인 후 「최종 발송」을 누르세요.")
-    st.text_input("수신", value=to_addr, disabled=True, key="pi_mail_inline_to")
+    st.markdown(f"**수신**  \n{to_addr or '—'}")
     if "pi_mail_compose_subject" not in st.session_state:
         st.session_state["pi_mail_compose_subject"] = str(draft.get("subject") or "")
-    if "pi_mail_compose_body" not in st.session_state:
-        st.session_state["pi_mail_compose_body"] = str(draft.get("body") or "")
+    cur_body = str(st.session_state.get("pi_mail_compose_body") or draft.get("body") or "")
+    stripped = _strip_mail_signature(cur_body)
+    if stripped != cur_body:
+        st.session_state["pi_mail_compose_body"] = stripped
     st.text_input("메일 제목", key="pi_mail_compose_subject")
     st.text_area("메일 본문", height=260, key="pi_mail_compose_body")
-    if pdf_bytes:
-        st.caption(f"첨부 PDF: `{pdf_name}` · 준비됨 ({len(pdf_bytes):,} bytes)")
-    else:
-        st.error("첨부 PDF가 없습니다. 「엑셀 미리보기」로 공문을 먼저 생성하세요.")
+    _render_mail_signature_preview()
+    extra_files = _render_mail_attachments(pdf_name=pdf_name, pdf_bytes=pdf_bytes)
 
     c1, c2 = st.columns(2)
     with c1:
         if st.button("작성 취소", use_container_width=True, key="pi_mail_inline_cancel"):
             st.session_state["pi_left_mode"] = "summary"
             st.session_state.pop("pi_mail_draft", None)
+            st.session_state.pop("pi_mail_extra_files", None)
             _pi_rerun()
     with c2:
         can_send = bool(to_addr and pdf_bytes and smtp_cfg.get("ready"))
@@ -2905,18 +3165,20 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
         st.warning("SMTP 미연동 — 위에서 다음메일 계정을 저장·연결 테스트하세요.")
     if do_final:
         subject = str(st.session_state.get("pi_mail_compose_subject") or "").strip()
-        body = str(st.session_state.get("pi_mail_compose_body") or "")
+        body = _with_mail_signature(str(st.session_state.get("pi_mail_compose_body") or ""))
         if not subject:
             st.error("메일 제목을 입력하세요.")
             return
         try:
-            ok, msg = send_mail_smtp(
-                to_addr=to_addr,
-                subject=subject,
-                body=body,
-                attachment_bytes=pdf_bytes,
-                attachment_name=pdf_name,
-            )
+            with st.spinner("메일 발송 중…"):
+                ok, msg = send_mail_smtp(
+                    to_addr=to_addr,
+                    subject=subject,
+                    body=body,
+                    attachment_bytes=pdf_bytes,
+                    attachment_name=pdf_name,
+                    extra_attachments=extra_files,
+                )
             append_sent_log(
                 client=client,
                 email=to_addr,
@@ -2931,6 +3193,7 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                 st.success(msg or "발송 완료")
                 st.session_state["pi_left_mode"] = "summary"
                 st.session_state.pop("pi_mail_draft", None)
+                st.session_state.pop("pi_mail_extra_files", None)
             else:
                 st.error(msg or "발송 실패")
         except Exception as e:
@@ -3227,6 +3490,17 @@ def _collect_letter_kwargs(
     return kwargs, letter_body, items, effective_s
 
 
+def _pi_on_email_change() -> None:
+    """수신 이메일 수정 시 메일 작성 수신·발송 주소를 같이 바꿈."""
+    live = str(st.session_state.get("pi_single_email") or "").strip()
+    draft = dict(st.session_state.get("pi_mail_draft") or {})
+    if live:
+        draft["to"] = live
+        st.session_state["pi_mail_draft"] = draft
+        st.session_state["pi_mail_inline_to"] = live
+        st.session_state["pi_mail_compose_to_view"] = live
+
+
 def _pi_on_client_change() -> None:
     """거래처 select 변경 시 수신메일 세션값 즉시 갱신."""
     client = str(st.session_state.get("pi_single_client") or "").strip()
@@ -3239,6 +3513,7 @@ def _pi_on_client_change() -> None:
     else:
         st.session_state["pi_email_matched_as"] = ""
     st.session_state["pi_single_email"] = hit
+    _pi_on_email_change()
 
 
 def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
@@ -3268,7 +3543,12 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
         st.session_state.pop("pi_single_email", None)
         st.session_state["pi_single_email"] = auto_email
         st.session_state["pi_email_matched_as"] = matched_as
-    email = st.text_input("수신 이메일", key="pi_single_email", placeholder="name@example.com")
+    email = st.text_input(
+        "수신 이메일",
+        key="pi_single_email",
+        placeholder="name@example.com",
+        on_change=_pi_on_email_change,
+    )
     # 「연락처에서 메일 고르기」는 숨김.
     # 거래처명이 맞으면 자동반영, 아니면 직접 입력 + 위 📇 메일 연락처 관리로 충분.
     if not auto_email:
@@ -4130,7 +4410,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         ok, msg = send_mail_smtp(
                             to_addr=em,
                             subject=title_bulk,
-                            body=body_b,
+                            body=_with_mail_signature(body_b),
                             attachment_bytes=pdf_b,
                             attachment_name=dl,
                         )
