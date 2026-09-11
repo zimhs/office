@@ -2305,7 +2305,16 @@ def _render_mail_signature_preview() -> None:
         )
 
     st.markdown(
-        "<div style='background:#f8fafc;border-top:3px solid #2563eb;padding:12px 8px;'>"
+        "<style>"
+        ".pi-mail-sig-preview{overflow:auto;-webkit-overflow-scrolling:touch;}"
+        "@media (max-width:850px) and (orientation:portrait){"
+        ".pi-mail-sig-preview table,.pi-mail-sig-preview tr,"
+        ".pi-mail-sig-preview td{display:block!important;width:100%!important;}"
+        ".pi-mail-sig-preview .pi-aff-row{display:block!important;}"
+        ".pi-mail-sig-preview .pi-aff-row>div{margin-bottom:8px;}"
+        "}"
+        "</style>"
+        "<div class='pi-mail-sig-preview' style='background:#f8fafc;border-top:3px solid #2563eb;padding:12px 8px;'>"
         "<table style='width:100%;border-collapse:collapse;'>"
         "<tr>"
         "<td style='width:38%;vertical-align:top;padding:0 16px 4px 0;'>"
@@ -2315,7 +2324,7 @@ def _render_mail_signature_preview() -> None:
         "<div style='font-size:12px;'>T +82-31-366-0799 &nbsp; F +82-31-366-5633</div>"
         "</td>"
         "<td rowspan='2' style='width:62%;vertical-align:top;padding:0 0 0 8px;'>"
-        "<div style='display:flex;gap:16px;'>"
+        "<div class='pi-aff-row' style='display:flex;gap:16px;'>"
         f"<div style='flex:1;'>{_col(PI_AFFILIATES[:mid])}</div>"
         f"<div style='flex:1;'>{_col(PI_AFFILIATES[mid:])}</div>"
         "</div></td></tr>"

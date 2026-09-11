@@ -7582,12 +7582,12 @@ def _tab3_month_spans(years_tuple, latest_dt=None):
 def _tab3_gas_row_card_html(title, subtitle, month_u, week_u, day_u, accent):
     """달력 행과 높이 맞출 왼쪽 카드 (탭3 전용)."""
     return (
-        f'<div style="background:#fff;border:1px solid #E2E8F0;border-left:4px solid {accent};'
+        f'<div class="gcard" style="background:#fff;border:1px solid #E2E8F0;border-left:4px solid {accent};'
         f'border-radius:10px;padding:10px 12px;height:100%;box-sizing:border-box;">'
-        f'<div style="font-size:13px;font-weight:700;color:#0F172A;">{html.escape(title)}</div>'
-        f'<div style="font-size:10px;color:#64748B;margin:2px 0 8px;line-height:1.35;">'
+        f'<div class="gcard-title" style="font-size:13px;font-weight:700;color:#0F172A;">{html.escape(title)}</div>'
+        f'<div class="gcard-sub" style="font-size:10px;color:#64748B;margin:2px 0 8px;line-height:1.35;">'
         f"{html.escape(subtitle)}</div>"
-        f'<div style="display:flex;gap:10px;flex-wrap:nowrap;">'
+        f'<div class="gcard-metrics" style="display:flex;gap:10px;flex-wrap:nowrap;">'
         f'<div><div style="font-size:10px;color:#94A3B8;">월사용량</div>'
         f'<div style="font-size:16px;font-weight:700;color:{accent};">{month_u:,.1f}</div></div>'
         f'<div><div style="font-size:10px;color:#94A3B8;">주사용량</div>'
@@ -7649,7 +7649,7 @@ def _tab3_gas_excel_calendar_html(
     )
     head_ym = (
         f"<th class='sticky-l' style='{lab}height:28px;'>{_ttl}"
-        f"<span style='font-weight:500;color:#94A3B8;font-size:11px;margin-left:8px;'>{_hint}</span></th>"
+        f"<span class='hint-keys' style='font-weight:500;color:#94A3B8;font-size:11px;margin-left:8px;'>{_hint}</span></th>"
     )
     head_day = f"<th class='sticky-l' style='{lab}height:24px;background:#fff;'>일자</th>"
     head_wd = f"<th class='sticky-l' style='{lab}height:22px;background:#F8FAFC;'>요일</th>"
@@ -7714,6 +7714,7 @@ def _tab3_gas_excel_calendar_html(
         body_rows.append(f"<tr>{''.join(tds)}</tr>")
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <style>
   html,body {{ margin:0; padding:0; height:100%; overflow:hidden;
     font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif; }}
@@ -7721,13 +7722,34 @@ def _tab3_gas_excel_calendar_html(
     border:1px solid #E2E8F0; border-radius:8px; background:#fff; }}
   .head {{ flex:0 0 auto; overflow:hidden; background:#fff; z-index:8;
     box-shadow:0 2px 6px rgba(15,23,42,.12); }}
-  .body {{ flex:1 1 auto; overflow:auto; }}
+  .body {{ flex:1 1 auto; overflow:auto; -webkit-overflow-scrolling:touch; }}
   table {{ border-collapse:separate; border-spacing:0; table-layout:fixed; width:max-content; min-width:100%; }}
   col.c-left {{ width:268px; min-width:268px; }}
   col.c-day {{ width:36px; min-width:36px; }}
   th, td {{ box-sizing:border-box; }}
   .sticky-l {{ position:sticky; left:0; }}
   td.gcell:focus {{ outline:2px solid #2563EB; outline-offset:-2px; background:#DBEAFE !important; }}
+  /* iPad 세로: 왼쪽 카드·일자칸을 줄여 본문이 보이게, 가로는 스크롤 */
+  @media (max-width: 850px) and (orientation: portrait) {{
+    col.c-left {{ width:152px; min-width:152px; }}
+    th.sticky-l, td.sticky-l {{ min-width:152px !important; width:152px !important; }}
+    col.c-day {{ width:28px; min-width:28px; }}
+    .h-day, td.gcell {{ min-width:28px !important; font-size:10px !important; }}
+    .h-ym {{ font-size:10px !important; }}
+    .gcard {{ padding:6px 7px !important; }}
+    .gcard-title {{ font-size:11px !important; }}
+    .gcard-sub {{ display:none; }}
+    .gcard-metrics {{ flex-wrap:wrap !important; gap:4px 8px !important; }}
+    .hint-keys {{ display:none; }}
+  }}
+  /* iPad 가로: 카드만 조금 줄이고 일자 가로스크롤 유지 */
+  @media (min-width: 851px) and (max-width: 1180px) and (orientation: landscape) {{
+    col.c-left {{ width:220px; min-width:220px; }}
+    th.sticky-l, td.sticky-l {{ min-width:220px !important; width:220px !important; }}
+    .gcard {{ padding:8px 9px !important; }}
+    .gcard-sub {{ font-size:9px !important; }}
+    .hint-keys {{ display:none; }}
+  }}
 </style></head>
 <body>
 <div class="frame">
@@ -15162,6 +15184,10 @@ def _dash_filter_and_tabs_fragment() -> None:
                 _cal_rows = _bulk_rows + _other_rows
                 if _cal_rows:
                     _n = len(_cal_rows)
+                    _touch = is_touch_ui()
+                    _row_h = 118 if _touch else 132
+                    _max_h = 520 if _touch else 680
+                    _min_h = 240 if _touch else 300
                     components.html(
                         _tab3_gas_excel_calendar_html(
                             _cal_rows,
@@ -15175,7 +15201,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                             ),
                             section_hint="날짜 고정 · 칸 클릭 후 ←↑↓→",
                         ),
-                        height=min(680, max(300, 86 + 132 * _n)),
+                        height=min(_max_h, max(_min_h, 86 + _row_h * _n)),
                         scrolling=False,
                     )
                 else:
