@@ -41,7 +41,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-11 · 주소하단계열사맞춤"
+PI_UI_BUILD = "2026-09-14 · 공문첨부토글속도"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 PI_MAIL_CARD = os.path.join(PI_FONTS_DIR, "mail_card.png")
 PI_MAIL_CARD_CID = "sinilgas-card@sigas"
@@ -403,12 +403,29 @@ def _norm_name(s: Any) -> str:
     return t.lower()
 
 
+# 연락처 직함·호칭 (김도엽이사님 ↔ 김도엽이사)
+_CONTACT_TITLE_RE = re.compile(
+    r"(님|이사님|이사|과장|차장|부장|대리|사원|주임|계장|실장|팀장|"
+    r"매니저|연구원|박사|대표|사장)+$"
+)
+
+
 def _core_name(s: Any) -> str:
     """매칭용 핵심명: (주)/주식회사/공백 제거, 흔한 접미 완화."""
     t = _norm_name(s)
     t = re.sub(r"^\(주\)|^㈜|^주식회사", "", t)
     t = re.sub(r"주식회사$", "", t)
     # 끝이 '상사'면 '상'까지도 허용 비교용으로 원본 core 유지
+    return t
+
+
+def _person_key(s: Any) -> str:
+    """사람 이름 매칭: 직함·님을 떼어 김도엽이사님 / 김도엽이사를 같게 봄."""
+    t = _core_name(s)
+    prev = ""
+    while t and t != prev:
+        prev = t
+        t = _CONTACT_TITLE_RE.sub("", t)
     return t
 
 
@@ -871,11 +888,68 @@ def lookup_email_with_meta(client: str, mail_df: pd.DataFrame) -> tuple[str, str
             score = max(len(c), len(core)) - 1
         elif core and c and (core.startswith(c) or c.startswith(core)) and min(len(c), len(core)) >= 4:
             score = min(len(c), len(core))
+        else:
+            pk = _person_key(client)
+            pc = _person_key(raw)
+            if pk and pc and pk == pc and len(pk) >= 2:
+                score = len(pk)
         if score > best[2]:
             best = (em, raw, score)
     if best[2] > 0:
         return best[0], best[1]
     return "", ""
+
+
+def _norm_client_list(clients: Any) -> list[str]:
+    if clients is None:
+        return []
+    if isinstance(clients, str):
+        raw = [clients]
+    else:
+        raw = list(clients)
+    out: list[str] = []
+    seen: set[str] = set()
+    for x in raw:
+        n = str(x or "").strip()
+        if not n or n.lower() == "nan" or n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+    return out
+
+
+def join_recipient_emails(emails: list[str]) -> str:
+    """수신칸용: 중복 없는 이메일 , 구분."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in emails or []:
+        for part in re.split(r"[;,]", str(raw or "")):
+            em = part.strip()
+            if not em or "@" not in em:
+                continue
+            key = em.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(em)
+    return ", ".join(out)
+
+
+def lookup_emails_for_clients(
+    clients: list[str], mail_df: pd.DataFrame
+) -> tuple[str, list[str], list[str]]:
+    """여러 거래처 → (수신이메일모음, 매칭된이름, 메일없는이름)."""
+    hits: list[str] = []
+    matched: list[str] = []
+    missing: list[str] = []
+    for name in _norm_client_list(clients):
+        em, as_name = lookup_email_with_meta(name, mail_df)
+        if em:
+            hits.append(em)
+            matched.append(str(as_name or name))
+        else:
+            missing.append(name)
+    return join_recipient_emails(hits), matched, missing
 
 
 def suggest_mail_matches(client: str, mail_df: pd.DataFrame, limit: int = 30) -> list[dict]:
@@ -956,6 +1030,74 @@ def list_clients_for_staff(sales_df: pd.DataFrame, staff: str) -> list[str]:
     if "거래처_원본" in df.columns:
         names |= set(df["거래처_원본"].dropna().astype(str).str.strip().unique())
     return sorted(n for n in names if n and n != "nan")
+
+
+def list_mail_contact_names(mail_df: pd.DataFrame) -> list[str]:
+    """연락처 CSV의 모든 이름(회사·김도엽이사님 같은 개인명)."""
+    if mail_df is None or mail_df.empty or "거래처" not in mail_df.columns:
+        return []
+    names = mail_df["거래처"].dropna().astype(str).str.strip()
+    return sorted({n for n in names if n and n.lower() != "nan"})
+
+
+def list_clients_for_letter(
+    sales_df: pd.DataFrame,
+    staff: str,
+    mail_df: pd.DataFrame | None = None,
+    extra: str | list[str] = "",
+) -> list[str]:
+    """개별 공문 거래처 검색: 매출 거래처 + 연락처 이름."""
+    names = set(list_clients_for_staff(sales_df, staff))
+    names |= set(list_mail_contact_names(mail_df if mail_df is not None else pd.DataFrame()))
+    extras = extra if isinstance(extra, (list, tuple, set)) else [extra]
+    for one in extras:
+        one = str(one or "").strip()
+        if one:
+            names.add(one)
+    return sorted(n for n in names if n)
+
+
+def filter_letter_client_names(
+    names: list[str],
+    query: str,
+    *,
+    exclude: list[str] | None = None,
+    limit: int = 12,
+) -> list[str]:
+    """검색어로 거래처 후보만 추림(전체 목록을 위젯에 넣지 않음)."""
+    q = _norm_name(query)
+    if not q:
+        return []
+    skip = set(_norm_client_list(exclude))
+    pk = _person_key(query)
+    exact: list[str] = []
+    prefix: list[str] = []
+    contain: list[str] = []
+    for n in names:
+        if n in skip:
+            continue
+        nn = _norm_name(n)
+        if not nn:
+            continue
+        if nn == q or (pk and len(pk) >= 2 and _person_key(n) == pk):
+            exact.append(n)
+        elif nn.startswith(q):
+            prefix.append(n)
+        elif q in nn:
+            contain.append(n)
+        if len(exact) >= limit:
+            break
+    out: list[str] = []
+    seen: set[str] = set()
+    for bucket in (exact, prefix, contain):
+        for n in bucket:
+            if n in seen:
+                continue
+            seen.add(n)
+            out.append(n)
+            if len(out) >= limit:
+                return out
+    return out
 
 
 def classify_client_kind(name: str, sales_df: pd.DataFrame) -> str:
@@ -1141,6 +1283,17 @@ def _body_text_to_paras(text: str) -> dict[str, str]:
             paras[_BODY_CELL_ORDER[-1]] = (paras[_BODY_CELL_ORDER[-1]] + "\n" + line).strip()
     paras["C35"] = _DEFAULT_LETTER_PARAS.get("C35", "                                      단가 조정 내용")
     return paras
+
+
+def _strip_letter_body_from_kwargs(kwargs: dict) -> dict:
+    """첨부파일용: 공문 본문 셀만 비움(헤더·단가표는 유지)."""
+    out = dict(kwargs or {})
+    paras = dict(out.get("letter_paras") or {})
+    for c in _BODY_CELL_ORDER:
+        paras[c] = ""
+    out["letter_paras"] = paras
+    out["body"] = ""
+    return out
 
 
 def ensure_default_template(path: str = PI_TEMPLATE) -> str:
@@ -2336,6 +2489,21 @@ def _render_mail_signature_preview() -> None:
     )
 
 
+def _pi_attach_letter_pdf(include_body: bool | None = None) -> bool:
+    """공문 PDF를 첨부할지. 공문내용 첨부를 끄면 일반 메일."""
+    if include_body is None:
+        include_body = bool(st.session_state.get("pi_include_letter_body", True))
+    return bool(include_body)
+
+
+def _plain_mail_intro(client: str = "") -> str:
+    """일반 메일 기본 본문(공문 안내문 없음)."""
+    name = str(client or "").strip()
+    if name:
+        return f"{name} 귀중\n\n"
+    return ""
+
+
 def _default_mail_body(client: str, effective: str, items: list[dict]) -> str:
     lines = [
         f"{client} 귀중",
@@ -2979,7 +3147,7 @@ def _render_mail_attachments(*, pdf_name: str, pdf_bytes: Any) -> list[tuple[str
     if pdf_bytes:
         st.caption(f"첨부 PDF: `{pdf_name}` · 준비됨 ({len(pdf_bytes):,} bytes)")
     else:
-        st.error("첨부 PDF가 없습니다. 「엑셀 미리보기」로 공문을 먼저 생성하세요.")
+        st.caption("공문 PDF 없이 일반 메일로 발송합니다. 필요하면 아래 추가 첨부를 넣으세요.")
     uploaded = st.file_uploader(
         "추가 첨부파일",
         accept_multiple_files=True,
@@ -3031,7 +3199,7 @@ def _pi_mail_compose_dialog() -> None:
             type="primary",
             use_container_width=True,
             key="pi_mail_compose_send",
-            disabled=not (to_addr and pdf_bytes),
+            disabled=not bool(to_addr),
         )
     if do_final:
         subject = str(st.session_state.get("pi_mail_compose_subject") or "").strip()
@@ -3086,32 +3254,40 @@ def _open_mail_compose_dialog(
     letter_kwargs: dict,
     staff: str = "",
     items_n: int = 0,
+    attach_letter: bool = True,
 ) -> None:
-    """PDF 준비 후 메일 작성 상태로 전환 (인라인 작성 · 즉시 발송 안 함)."""
-    try:
-        pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
-        st.session_state["pi_pdf_bytes"] = pdf_bytes
-        st.session_state["pi_pdf_name"] = pdf_name
-        st.session_state.pop("pi_pdf_error", None)
-    except Exception as e:
+    """메일 작성 상태로 전환 (인라인 작성 · 즉시 발송 안 함)."""
+    if attach_letter:
+        try:
+            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+            st.session_state["pi_pdf_bytes"] = pdf_bytes
+            st.session_state["pi_pdf_name"] = pdf_name
+            st.session_state.pop("pi_pdf_error", None)
+        except Exception as e:
+            st.session_state.pop("pi_pdf_bytes", None)
+            st.session_state["pi_pdf_error"] = str(e)
+            st.error(f"첨부 PDF 생성 실패: {e}")
+            return
+        try:
+            xlsx = _build_letter_bytes(**letter_kwargs)
+            st.session_state["pi_dl_bytes"] = xlsx
+            st.session_state["pi_dl_name"] = pdf_name.replace(".pdf", ".xlsx")
+        except Exception:
+            pass
+    else:
         st.session_state.pop("pi_pdf_bytes", None)
-        st.session_state["pi_pdf_error"] = str(e)
-        st.error(f"첨부 PDF 생성 실패: {e}")
-        return
-    try:
-        xlsx = _build_letter_bytes(**letter_kwargs)
-        st.session_state["pi_dl_bytes"] = xlsx
-        st.session_state["pi_dl_name"] = pdf_name.replace(".pdf", ".xlsx")
-    except Exception:
-        pass
+        st.session_state.pop("pi_pdf_error", None)
+        st.session_state["pi_pdf_name"] = ""
+    st.session_state["pi_mail_attach_letter"] = bool(attach_letter)
     st.session_state["pi_mail_draft"] = {
         "to": email,
         "subject": title,
         "body": body,
-        "pdf_name": pdf_name,
+        "pdf_name": pdf_name if attach_letter else "",
         "client": client,
         "staff": staff,
         "items": items_n,
+        "plain": not attach_letter,
     }
     st.session_state["pi_mail_compose_subject"] = title
     st.session_state["pi_mail_compose_body"] = _strip_mail_signature(body)
@@ -3131,17 +3307,22 @@ def _sync_mail_draft_to_addr(draft: dict) -> tuple[dict, str]:
     return draft, to_addr
 
 
+@st.fragment
 def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
-    """왼쪽 패널: 메일 제목·본문 작성 + 최종 발송."""
+    """왼쪽 패널: 메일 제목·본문 작성 + 최종 발송. fragment로 입력 시 전체 탭 재로딩 없음."""
     draft, to_addr = _sync_mail_draft_to_addr(st.session_state.get("pi_mail_draft") or {})
+    attach_letter = bool(st.session_state.get("pi_mail_attach_letter", True))
     pdf_name = str(draft.get("pdf_name") or "공문.pdf")
-    pdf_bytes = st.session_state.get("pi_pdf_bytes")
+    pdf_bytes = st.session_state.get("pi_pdf_bytes") if attach_letter else None
     client = str(draft.get("client") or "")
     staff = str(draft.get("staff") or "")
     items_n = int(draft.get("items") or 0)
 
     st.markdown("##### 메일 작성")
-    st.caption("바로 발송되지 않습니다. 본문 확인 후 「최종 발송」을 누르세요.")
+    if attach_letter:
+        st.caption("바로 발송되지 않습니다. 본문 확인 후 「최종 발송」을 누르세요.")
+    else:
+        st.caption("일반 메일 · 공문 PDF 없이 제목·본문만 보냅니다. 「최종 발송」을 누르세요.")
     st.markdown(f"**수신**  \n{to_addr or '—'}")
     if "pi_mail_compose_subject" not in st.session_state:
         st.session_state["pi_mail_compose_subject"] = str(draft.get("subject") or "")
@@ -3160,9 +3341,9 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
             st.session_state["pi_left_mode"] = "summary"
             st.session_state.pop("pi_mail_draft", None)
             st.session_state.pop("pi_mail_extra_files", None)
-            _pi_rerun()
+            _pi_rerun(full=True)
     with c2:
-        can_send = bool(to_addr and pdf_bytes and smtp_cfg.get("ready"))
+        can_send = bool(to_addr and smtp_cfg.get("ready") and (pdf_bytes or not attach_letter))
         do_final = st.button(
             "최종 발송",
             type="primary",
@@ -3203,6 +3384,7 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                 st.session_state["pi_left_mode"] = "summary"
                 st.session_state.pop("pi_mail_draft", None)
                 st.session_state.pop("pi_mail_extra_files", None)
+                _pi_rerun(full=True)
             else:
                 st.error(msg or "발송 실패")
         except Exception as e:
@@ -3510,25 +3692,158 @@ def _pi_on_email_change() -> None:
         st.session_state["pi_mail_compose_to_view"] = live
 
 
-def _pi_on_client_change() -> None:
-    """거래처 select 변경 시 수신메일 세션값 즉시 갱신."""
-    client = str(st.session_state.get("pi_single_client") or "").strip()
-    st.session_state["pi_email_client"] = client
+def _pi_selected_clients() -> list[str]:
+    picked = _norm_client_list(st.session_state.get("pi_single_clients"))
+    if picked:
+        return picked
+    one = str(st.session_state.get("pi_single_client") or "").strip()
+    return [one] if one else []
+
+
+def _pi_on_clients_change() -> None:
+    """거래처 다중 선택 변경 시 수신메일을 모두 반영."""
+    picked = _norm_client_list(st.session_state.get("pi_single_clients"))
+    st.session_state["pi_single_client"] = picked[0] if picked else ""
     mail_df = st.session_state.get("_pi_mail_df_cache")
-    hit = ""
-    if client and isinstance(mail_df, pd.DataFrame) and not mail_df.empty:
-        hit, matched = lookup_email_with_meta(client, mail_df)
-        st.session_state["pi_email_matched_as"] = matched
-    else:
-        st.session_state["pi_email_matched_as"] = ""
-    st.session_state["pi_single_email"] = hit
+    joined, matched, _missing = lookup_emails_for_clients(
+        picked, mail_df if isinstance(mail_df, pd.DataFrame) else pd.DataFrame()
+    )
+    st.session_state["pi_email_client"] = "\n".join(picked)
+    st.session_state["pi_email_matched_as"] = "; ".join(matched)
+    st.session_state.pop("pi_single_email", None)
+    st.session_state["pi_single_email"] = joined
     _pi_on_email_change()
 
 
-def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
-    """거래처 선택 시 연락처에서 메일 자동반영(유사명 포함)."""
+def _pi_letter_name_cache(
+    sales_df: pd.DataFrame, staff: str, mail_df: pd.DataFrame, extra: list[str]
+) -> list[str]:
+    token = str(st.session_state.get("pi_sales_cache_token") or "")
+    try:
+        mtime = float(os.path.getmtime(PI_MAIL_CSV)) if os.path.isfile(PI_MAIL_CSV) else 0.0
+    except OSError:
+        mtime = 0.0
+    nmail = 0 if mail_df is None else int(len(mail_df))
+    key = (str(staff or ""), token, mtime, nmail)
+    box = st.session_state.setdefault("_pi_letter_name_cache", {})
+    if box.get("key") != key:
+        box["key"] = key
+        box["names"] = list_clients_for_letter(sales_df, staff, mail_df)
+    names = list(box.get("names") or [])
+    have = set(names)
+    for one in _norm_client_list(extra):
+        if one not in have:
+            names.append(one)
+            have.add(one)
+    return names
+
+
+def _pi_set_selected_clients(picked: list[str]) -> bool:
+    """선택 목록 갱신. 대표 거래처가 바뀌면 True(공문·단가 재계산 필요)."""
+    picked = _norm_client_list(picked)
+    old_p = str(st.session_state.get("pi_single_client") or "").strip()
+    st.session_state["pi_single_clients"] = picked
+    st.session_state["pi_single_client"] = picked[0] if picked else ""
+    _pi_on_clients_change()
+    new_p = picked[0] if picked else ""
+    return new_p != old_p
+
+
+def _pi_add_selected_client(name: str) -> None:
+    name = str(name or "").strip()
+    if not name:
+        return
+    picked = _pi_selected_clients()
+    if name not in picked:
+        picked = picked + [name]
+    primary_changed = _pi_set_selected_clients(picked)
+    st.session_state.pop("pi_client_q", None)
+    if primary_changed:
+        _pi_rerun(full=True)
+
+
+def _pi_drop_selected_client(name: str) -> None:
+    name = str(name or "").strip()
+    picked = [x for x in _pi_selected_clients() if x != name]
+    primary_changed = _pi_set_selected_clients(picked)
+    if primary_changed:
+        _pi_rerun(full=True)
+
+
+@st.fragment
+def _render_include_letter_body_toggle() -> None:
+    """공문내용 첨부 on/off만  comm김 — 해제 시 탭 전체 재로딩 없음."""
+    if "pi_include_letter_body" not in st.session_state:
+        st.session_state["pi_include_letter_body"] = True
+    include_letter_body = st.checkbox(
+        "1. 공문내용 첨부 포함 (선택)",
+        key="pi_include_letter_body",
+        help="체크 해제 시 첨부 PDF·엑셀에 공문 본문을 넣지 않습니다. 입력 내용은 유지됩니다.",
+    )
+    if include_letter_body:
+        st.caption("공문내용이 첨부파일(PDF·엑셀)에 들어갑니다. 필요 없으면 위 체크를 해제하세요.")
+    else:
+        st.caption("공문내용 생략 · 첨부파일에는 넣지 않습니다. (입력 내용은 유지됨)")
+
+
+@st.fragment
+def _render_single_client_picker(sales_df: pd.DataFrame, mail_df: pd.DataFrame) -> None:
+    """거래처 검색·추가·삭제만  comm게  comm김(전체 공문 폼을 다시 그리지 않음)."""
     st.session_state["_pi_mail_df_cache"] = mail_df
-    auto_email, matched_as = lookup_email_with_meta(client, mail_df)
+    staff_opts = ["전체"] + list_staff_options(sales_df)
+    r1c1, r1c2, r1c3 = st.columns([1.0, 2.8, 1.0])
+    with r1c1:
+        staff = st.selectbox("담당자", staff_opts, key="pi_single_staff")
+    picked = _pi_selected_clients()
+    names = _pi_letter_name_cache(sales_df, staff, mail_df, picked)
+    with r1c2:
+        q = st.text_input(
+            "거래처",
+            key="pi_client_q",
+            placeholder="이름 검색 후 추가 (여러 곳 가능)",
+            help="이름을 검색해 추가합니다. 아래 선택된 이름을 누르면 삭제됩니다.",
+        )
+        hits = filter_letter_client_names(names, q, exclude=picked, limit=12)
+        if hits:
+            ncols = 3 if len(hits) >= 3 else max(1, len(hits))
+            add_cols = st.columns(ncols)
+            for i, h in enumerate(hits):
+                with add_cols[i % ncols]:
+                    if st.button(h, key=f"pi_hit_add_{i}", use_container_width=True):
+                        _pi_add_selected_client(h)
+        elif _norm_name(q):
+            st.caption("검색 결과 없음")
+        if picked:
+            chip_n = 4 if len(picked) >= 4 else max(1, len(picked))
+            chip_cols = st.columns(chip_n)
+            for i, name in enumerate(picked):
+                with chip_cols[i % chip_n]:
+                    if st.button(f"{name}  ×", key=f"pi_chip_del_{i}", use_container_width=True):
+                        _pi_drop_selected_client(name)
+    client = picked[0] if picked else ""
+    with r1c3:
+        if len(picked) > 1:
+            st.caption(f"선택 **{len(picked)}곳** · 공문 **{client}**")
+        else:
+            kind = classify_client_kind(client, sales_df) if client else ""
+            st.caption(f"유형: **{kind}**" if kind else "일반 메일")
+    _render_email_row(picked, mail_df)
+
+
+def _pi_on_client_change() -> None:
+    """이전 단일 선택 콜백 — 다중 선택과 동일하게 맞춤."""
+    one = str(st.session_state.get("pi_single_client") or "").strip()
+    if "pi_single_clients" not in st.session_state:
+        st.session_state["pi_single_clients"] = [one] if one else []
+    _pi_on_clients_change()
+
+
+def _render_email_row(clients: str | list[str], mail_df: pd.DataFrame) -> str:
+    """거래처 선택 시 연락처에서 메일 자동반영(여러 곳이면 모두)."""
+    st.session_state["_pi_mail_df_cache"] = mail_df
+    picked = _norm_client_list(clients)
+    token = "\n".join(picked)
+    auto_email, matched_as, missing = lookup_emails_for_clients(picked, mail_df)
     try:
         mail_mtime = float(os.path.getmtime(PI_MAIL_CSV)) if os.path.isfile(PI_MAIL_CSV) else 0.0
     except OSError:
@@ -3536,31 +3851,34 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
     prev_client = st.session_state.get("pi_email_client")
     prev_mtime = st.session_state.get("pi_email_mail_mtime")
     cur_email = str(st.session_state.get("pi_single_email") or "").strip()
-    client_changed = prev_client != client
+    client_changed = prev_client != token
     contacts_changed = prev_mtime != mail_mtime
     should_fill = False
-    if client_changed:
+    if picked and client_changed:
         should_fill = True
-    elif contacts_changed:
+    elif picked and contacts_changed:
         should_fill = True
-    elif auto_email and not cur_email:
+    elif picked and auto_email and not cur_email:
         should_fill = True
     if should_fill:
-        st.session_state["pi_email_client"] = client
+        st.session_state["pi_email_client"] = token
         st.session_state["pi_email_mail_mtime"] = mail_mtime
         # 위젯 키 갱신 전 기존 값 제거 → Streamlit이 이전 빈칸을 붙잡는 문제 방지
         st.session_state.pop("pi_single_email", None)
         st.session_state["pi_single_email"] = auto_email
-        st.session_state["pi_email_matched_as"] = matched_as
+        st.session_state["pi_email_matched_as"] = "; ".join(matched_as)
     email = st.text_input(
         "수신 이메일",
         key="pi_single_email",
-        placeholder="name@example.com",
+        placeholder="name@example.com, other@example.com",
         on_change=_pi_on_email_change,
+        help="거래처가 없어도 주소를 직접 넣을 수 있습니다. 여러 곳은 쉼표로 구분합니다.",
     )
-    # 「연락처에서 메일 고르기」는 숨김.
-    # 거래처명이 맞으면 자동반영, 아니면 직접 입력 + 위 📇 메일 연락처 관리로 충분.
-    if not auto_email:
+    if missing:
+        st.caption("메일 없음: " + ", ".join(missing[:8]))
+    elif not picked:
+        st.caption("수신 이메일을 직접 입력하세요. 거래처를 고르면 연락처에서 자동 반영됩니다.")
+    elif not auto_email:
         if mail_df is None or mail_df.empty:
             st.warning(
                 "연락처가 없어 자동반영할 수 없습니다. "
@@ -3571,6 +3889,8 @@ def _render_email_row(client: str, mail_df: pd.DataFrame) -> str:
                 "거래처명이 연락처와 다르면 수신 이메일을 직접 입력하거나, "
                 "위 **📇 메일 연락처 관리**에서 등록하세요."
             )
+    elif len(picked) > 1:
+        st.caption(f"수신 {len([x for x in auto_email.split(',') if x.strip()])}곳")
     return str(st.session_state.get("pi_single_email") or email or "")
 
 
@@ -3953,27 +4273,16 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
 
     # ── 개별 발송 (업무일지형: 왼쪽 요약·미리보기·메일 / 오른쪽 공문·단가) ──
     with tab_single:
-        staff_opts = ["전체"] + list_staff_options(sales_df)
-        r1c1, r1c2, r1c3 = st.columns([1.2, 2, 1.2])
-        with r1c1:
-            staff = st.selectbox("담당자", staff_opts, key="pi_single_staff")
-        clients = list_clients_for_staff(sales_df, staff)
-        with r1c2:
-            client = st.selectbox(
-                "거래처",
-                clients or [""],
-                key="pi_single_client",
-                on_change=_pi_on_client_change,
-            )
-        with r1c3:
-            kind = classify_client_kind(client, sales_df) if client else ""
-            st.caption(f"유형: **{kind}**" if kind else "")
+        _render_single_client_picker(sales_df, mail_df)
+        picked = _pi_selected_clients()
+        client = picked[0] if picked else ""
+        staff = str(st.session_state.get("pi_single_staff") or "전체")
+        email = str(st.session_state.get("pi_single_email") or "")
 
-        if not client:
-            st.info("담당자·거래처를 선택하세요.")
-        else:
+        if not picked:
+            st.caption("거래처가 없어도 수신 이메일을 넣고 일반 메일을 보낼 수 있습니다.")
+        if True:
             last = last_sent_for_client(client)
-            email = _render_email_row(client, mail_df)
 
             price_df = latest_unit_prices(sales_df, client)
             pct_key = "pi_global_pct"
@@ -4010,6 +4319,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             # (화면 배치는 columns 생성 순서대로 왼쪽|오른쪽 유지)
             with col_right:
                 st.markdown("##### 공문 입력")
+                _render_include_letter_body_toggle()
                 m1, m2 = st.columns(2)
                 with m1:
                     st.text_input("문서번호", value=_default_doc_no(client), key="pi_letter_doc_no")
@@ -4079,7 +4389,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         type="primary" if mode_hint == "mail" else "secondary",
                         use_container_width=True,
                         key="pi_left_send",
-                        help="왼쪽에서 메일 본문을 작성한 뒤 최종 발송합니다.",
+                        help="왼쪽에서 메일 본문을 작성한 뒤 최종 발송합니다. 공문 첨부를 끄면 일반 메일입니다.",
                     )
                 with p3:
                     if st.button(
@@ -4091,17 +4401,21 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         st.session_state["pi_left_mode"] = "summary"
                         _pi_rerun()
 
+                email = str(st.session_state.get("pi_single_email") or email or "")
                 letter_kwargs, letter_body, items_now, effective_s = _collect_letter_kwargs(
                     client=client,
                     email=email,
                     body_key=body_key,
                     items_key=items_key,
                 )
-                # 선택 해제 시 단가표를 공문/메일에 넣지 않음
+                # 선택 해제 시 단가표·공문본문을 첨부파일에 넣지 않음(입력값은 유지)
                 if not st.session_state.get("pi_include_price", True):
                     letter_kwargs = dict(letter_kwargs)
                     letter_kwargs["items"] = []
                     items_now = []
+                if not st.session_state.get("pi_include_letter_body", True):
+                    letter_kwargs = _strip_letter_body_from_kwargs(letter_kwargs)
+                    letter_body = ""
                 title = str(letter_kwargs.get("title") or "")
                 day_tag = date.today().strftime("%Y%m%d")
                 pdf_name = f"공문_{client}_{day_tag}.pdf"
@@ -4124,16 +4438,27 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     elif not smtp_cfg.get("ready"):
                         st.error("SMTP 미연동 — 위에서 다음메일 계정을 저장하세요.")
                     else:
-                        mail_body = _default_mail_body(client, effective_s, items_now)
+                        attach_letter = _pi_attach_letter_pdf()
+                        if attach_letter:
+                            mail_body = _default_mail_body(client or "", effective_s, items_now)
+                            send_title = title or _default_letter_title()
+                        else:
+                            mail_body = _plain_mail_intro(client)
+                            send_title = title if title and title != _default_letter_title() else ""
                         _open_mail_compose_dialog(
-                            client=client,
+                            client=client or "일반메일",
                             email=email,
-                            title=title,
+                            title=send_title,
                             body=mail_body,
                             pdf_name=pdf_name,
                             letter_kwargs=letter_kwargs,
-                            staff=staff if staff != "전체" else "",
+                            staff=(
+                                str(st.session_state.get("pi_single_staff") or staff)
+                                if str(st.session_state.get("pi_single_staff") or staff) != "전체"
+                                else ""
+                            ),
                             items_n=len(items_now),
+                            attach_letter=attach_letter,
                         )
                         mode = st.session_state.get("pi_left_mode") or "mail"
 
