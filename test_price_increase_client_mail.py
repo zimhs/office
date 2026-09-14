@@ -11,6 +11,8 @@ from price_increase_tab import (
     _pi_attach_letter_pdf,
     _plain_mail_intro,
     _strip_letter_body_from_kwargs,
+    cc_for_plain_mail,
+    keep_existing_mail_compose,
     filter_letter_client_names,
     join_recipient_emails,
     list_clients_for_letter,
@@ -117,3 +119,39 @@ def test_plain_mail_skips_letter_pdf():
     assert _pi_attach_letter_pdf(False) is False
     assert _plain_mail_intro("김도엽이사님") == "김도엽이사님 귀중\n\n"
     assert _plain_mail_intro("") == ""
+
+
+def test_cc_only_for_plain_mail():
+    assert cc_for_plain_mail("a@b.com", attach_letter=True) == ""
+    assert cc_for_plain_mail("a@b.com", attach_letter=False) == "a@b.com"
+    assert cc_for_plain_mail("  ", attach_letter=False) == ""
+
+
+def test_keep_mail_compose_when_letter_reattached():
+    title, body = keep_existing_mail_compose(
+        title="단가인상 안내",
+        body="기본 공문 메일",
+        existing_subject="회의 안내",
+        existing_body="내일 방문합니다.",
+        keep=True,
+    )
+    assert title == "회의 안내"
+    assert body == "내일 방문합니다."
+    title2, body2 = keep_existing_mail_compose(
+        title="단가인상 안내",
+        body="기본 공문 메일",
+        existing_subject="회의 안내",
+        existing_body="내일 방문합니다.",
+        keep=False,
+    )
+    assert title2 == "단가인상 안내"
+    assert body2 == "기본 공문 메일"
+    title3, body3 = keep_existing_mail_compose(
+        title="단가인상 안내",
+        body="기본",
+        existing_subject="",
+        existing_body="",
+        keep=True,
+    )
+    assert title3 == ""
+    assert body3 == ""

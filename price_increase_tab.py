@@ -41,7 +41,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-14 · 공문첨부토글속도"
+PI_UI_BUILD = "2026-09-14 · 메일중공문첨부"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 PI_MAIL_CARD = os.path.join(PI_FONTS_DIR, "mail_card.png")
 PI_MAIL_CARD_CID = "sinilgas-card@sigas"
@@ -2504,6 +2504,103 @@ def _plain_mail_intro(client: str = "") -> str:
     return ""
 
 
+def cc_for_plain_mail(cc: str, *, attach_letter: bool) -> str:
+    """참조(Cc)는 공문내용 첨부를 끈 일반 메일에만 붙인다."""
+    if attach_letter:
+        return ""
+    return str(cc or "").strip()
+
+
+def keep_existing_mail_compose(
+    *,
+    title: str,
+    body: str,
+    existing_subject: str | None,
+    existing_body: str | None,
+    keep: bool,
+) -> tuple[str, str]:
+    """메일 작성 중 공문 첨부를 다시 켜도 제목·본문은 덮지 않는다."""
+    if not keep:
+        return str(title or ""), str(body or "")
+    subj = str(title or "") if existing_subject is None else str(existing_subject)
+    bod = str(body or "") if existing_body is None else str(existing_body)
+    return subj, bod
+
+
+def _mail_compose_in_progress() -> bool:
+    """왼쪽 메일 작성 초안이 있으면 True(미리보기 다녀와도 유지)."""
+    if not st.session_state.get("pi_mail_draft"):
+        return False
+    return "pi_mail_compose_subject" in st.session_state or "pi_mail_compose_body" in st.session_state
+
+
+def _mail_letter_sync_token(letter_kwargs: dict, *, attach_letter: bool) -> tuple:
+    paras = (letter_kwargs or {}).get("letter_paras") or {}
+    body_bits = tuple(str(paras.get(c) or "") for c in _BODY_CELL_ORDER)
+    item_bits = tuple(
+        (
+            str(it.get("품목명") or ""),
+            str(it.get("인상단가") or it.get("단가") or ""),
+        )
+        for it in ((letter_kwargs or {}).get("items") or [])
+    )
+    return (
+        bool(attach_letter),
+        str((letter_kwargs or {}).get("client") or ""),
+        str((letter_kwargs or {}).get("title") or ""),
+        str((letter_kwargs or {}).get("doc_no") or ""),
+        str((letter_kwargs or {}).get("effective") or ""),
+        body_bits,
+        item_bits,
+    )
+
+
+def _sync_mail_letter_attachment(
+    *,
+    letter_kwargs: dict,
+    pdf_name: str,
+    attach_letter: bool,
+    force: bool = False,
+) -> bool:
+    """메일 초안은 두고 공문 PDF·엑셀 첨부만 맞춘다."""
+    token = _mail_letter_sync_token(letter_kwargs, attach_letter=attach_letter)
+    if not force and st.session_state.get("pi_mail_letter_token") == token:
+        st.session_state["pi_mail_attach_letter"] = bool(attach_letter)
+        return True
+    st.session_state["pi_mail_attach_letter"] = bool(attach_letter)
+    draft = dict(st.session_state.get("pi_mail_draft") or {})
+    if attach_letter:
+        try:
+            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+            st.session_state["pi_pdf_bytes"] = pdf_bytes
+            st.session_state["pi_pdf_name"] = pdf_name
+            st.session_state.pop("pi_pdf_error", None)
+        except Exception as e:
+            st.session_state.pop("pi_pdf_bytes", None)
+            st.session_state["pi_pdf_error"] = str(e)
+            return False
+        try:
+            xlsx = _build_letter_bytes(**letter_kwargs)
+            st.session_state["pi_dl_bytes"] = xlsx
+            st.session_state["pi_dl_name"] = str(pdf_name or "공문.pdf").replace(".pdf", ".xlsx")
+        except Exception:
+            pass
+        if draft:
+            draft["pdf_name"] = pdf_name
+            draft["plain"] = False
+            st.session_state["pi_mail_draft"] = draft
+    else:
+        st.session_state.pop("pi_pdf_bytes", None)
+        st.session_state.pop("pi_pdf_error", None)
+        st.session_state["pi_pdf_name"] = ""
+        if draft:
+            draft["pdf_name"] = ""
+            draft["plain"] = True
+            st.session_state["pi_mail_draft"] = draft
+    st.session_state["pi_mail_letter_token"] = token
+    return True
+
+
 def _default_mail_body(client: str, effective: str, items: list[dict]) -> str:
     lines = [
         f"{client} 귀중",
@@ -3176,6 +3273,13 @@ def _pi_mail_compose_dialog() -> None:
 
     st.caption("바로 발송되지 않습니다. 본문을 확인·수정한 뒤 「최종 발송」을 누르세요.")
     st.text_input("수신", value=to_addr, disabled=True, key=f"pi_mail_compose_to_view_{to_addr}")
+    attach_letter = bool(st.session_state.get("pi_mail_attach_letter", True))
+    cc_addr = cc_for_plain_mail(
+        str(st.session_state.get("pi_single_cc") or draft.get("cc") or ""),
+        attach_letter=attach_letter,
+    )
+    if not attach_letter:
+        st.markdown(f"**참조**  \n{cc_addr or '—'}")
     if "pi_mail_compose_subject" not in st.session_state:
         st.session_state["pi_mail_compose_subject"] = str(draft.get("subject") or "")
     cur_body = str(st.session_state.get("pi_mail_compose_body") or draft.get("body") or "")
@@ -3216,6 +3320,10 @@ def _pi_mail_compose_dialog() -> None:
                     attachment_bytes=pdf_bytes,
                     attachment_name=pdf_name,
                     extra_attachments=extra_files,
+                    cc=cc_for_plain_mail(
+                        str(st.session_state.get("pi_single_cc") or draft.get("cc") or ""),
+                        attach_letter=attach_letter,
+                    ),
                 )
             append_sent_log(
                 client=client,
@@ -3230,6 +3338,7 @@ def _pi_mail_compose_dialog() -> None:
             if ok:
                 st.session_state.pop("pi_mail_draft", None)
                 st.session_state.pop("pi_mail_extra_files", None)
+                st.session_state.pop("pi_mail_compose_cc", None)
                 st.success(msg)
             else:
                 st.error(msg)
@@ -3255,32 +3364,33 @@ def _open_mail_compose_dialog(
     staff: str = "",
     items_n: int = 0,
     attach_letter: bool = True,
+    cc: str = "",
+    keep_compose: bool = False,
 ) -> None:
     """메일 작성 상태로 전환 (인라인 작성 · 즉시 발송 안 함)."""
-    if attach_letter:
-        try:
-            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
-            st.session_state["pi_pdf_bytes"] = pdf_bytes
-            st.session_state["pi_pdf_name"] = pdf_name
-            st.session_state.pop("pi_pdf_error", None)
-        except Exception as e:
-            st.session_state.pop("pi_pdf_bytes", None)
-            st.session_state["pi_pdf_error"] = str(e)
-            st.error(f"첨부 PDF 생성 실패: {e}")
-            return
-        try:
-            xlsx = _build_letter_bytes(**letter_kwargs)
-            st.session_state["pi_dl_bytes"] = xlsx
-            st.session_state["pi_dl_name"] = pdf_name.replace(".pdf", ".xlsx")
-        except Exception:
-            pass
-    else:
-        st.session_state.pop("pi_pdf_bytes", None)
-        st.session_state.pop("pi_pdf_error", None)
-        st.session_state["pi_pdf_name"] = ""
-    st.session_state["pi_mail_attach_letter"] = bool(attach_letter)
+    keep = bool(keep_compose)
+    ok = _sync_mail_letter_attachment(
+        letter_kwargs=letter_kwargs,
+        pdf_name=pdf_name,
+        attach_letter=attach_letter,
+        force=True,
+    )
+    if attach_letter and not ok and not keep:
+        st.error(f"첨부 PDF 생성 실패: {st.session_state.get('pi_pdf_error') or ''}")
+        return
+    live_subj = st.session_state.get("pi_mail_compose_subject")
+    live_body = st.session_state.get("pi_mail_compose_body")
+    title, body = keep_existing_mail_compose(
+        title=title,
+        body=body,
+        existing_subject=None if live_subj is None else str(live_subj),
+        existing_body=None if live_body is None else str(live_body),
+        keep=keep,
+    )
+    cc_addr = cc_for_plain_mail(cc, attach_letter=attach_letter)
     st.session_state["pi_mail_draft"] = {
         "to": email,
+        "cc": cc_addr,
         "subject": title,
         "body": body,
         "pdf_name": pdf_name if attach_letter else "",
@@ -3289,20 +3399,31 @@ def _open_mail_compose_dialog(
         "items": items_n,
         "plain": not attach_letter,
     }
-    st.session_state["pi_mail_compose_subject"] = title
-    st.session_state["pi_mail_compose_body"] = _strip_mail_signature(body)
-    st.session_state.pop("pi_mail_extra_files", None)
+    if not keep:
+        st.session_state["pi_mail_compose_subject"] = title
+        st.session_state["pi_mail_compose_body"] = _strip_mail_signature(body)
+        st.session_state.pop("pi_mail_extra_files", None)
+    st.session_state.pop("pi_mail_compose_cc", None)
     st.session_state["pi_left_mode"] = "mail"
 
 
 def _sync_mail_draft_to_addr(draft: dict) -> tuple[dict, str]:
-    """위「수신 이메일」을 바꾸면 메일 작성 수신·발송 주소도 같이 맞춤."""
+    """위「수신 이메일」·참조를 바꾸면 메일 작성 주소도 같이 맞춤."""
     live = str(st.session_state.get("pi_single_email") or "").strip()
     draft_to = str((draft or {}).get("to") or "").strip()
     to_addr = live or draft_to
+    live_cc = str(st.session_state.get("pi_single_cc") or "").strip()
+    draft_cc = str((draft or {}).get("cc") or "").strip()
+    cc_addr = live_cc or draft_cc
     draft = dict(draft or {})
+    changed = False
     if to_addr and draft.get("to") != to_addr:
         draft["to"] = to_addr
+        changed = True
+    if draft.get("cc") != cc_addr:
+        draft["cc"] = cc_addr
+        changed = True
+    if changed:
         st.session_state["pi_mail_draft"] = draft
     return draft, to_addr
 
@@ -3311,8 +3432,9 @@ def _sync_mail_draft_to_addr(draft: dict) -> tuple[dict, str]:
 def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
     """왼쪽 패널: 메일 제목·본문 작성 + 최종 발송. fragment로 입력 시 전체 탭 재로딩 없음."""
     draft, to_addr = _sync_mail_draft_to_addr(st.session_state.get("pi_mail_draft") or {})
-    attach_letter = bool(st.session_state.get("pi_mail_attach_letter", True))
-    pdf_name = str(draft.get("pdf_name") or "공문.pdf")
+    attach_letter = _pi_attach_letter_pdf()
+    st.session_state["pi_mail_attach_letter"] = attach_letter
+    pdf_name = str(st.session_state.get("pi_pdf_name") or draft.get("pdf_name") or "공문.pdf")
     pdf_bytes = st.session_state.get("pi_pdf_bytes") if attach_letter else None
     client = str(draft.get("client") or "")
     staff = str(draft.get("staff") or "")
@@ -3320,10 +3442,16 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
 
     st.markdown("##### 메일 작성")
     if attach_letter:
-        st.caption("바로 발송되지 않습니다. 본문 확인 후 「최종 발송」을 누르세요.")
+        st.caption("공문 PDF를 첨부합니다. 메일 제목·본문은 그대로 둡니다. 「최종 발송」을 누르세요.")
     else:
-        st.caption("일반 메일 · 공문 PDF 없이 제목·본문만 보냅니다. 「최종 발송」을 누르세요.")
+        st.caption("일반 메일 · 공문내용 첨부를 다시 켜면 PDF가 붙습니다. 제목·본문은 유지됩니다.")
     st.markdown(f"**수신**  \n{to_addr or '—'}")
+    cc_addr = cc_for_plain_mail(
+        str(st.session_state.get("pi_single_cc") or draft.get("cc") or ""),
+        attach_letter=attach_letter,
+    )
+    if not attach_letter:
+        st.markdown(f"**참조**  \n{cc_addr or '—'}")
     if "pi_mail_compose_subject" not in st.session_state:
         st.session_state["pi_mail_compose_subject"] = str(draft.get("subject") or "")
     cur_body = str(st.session_state.get("pi_mail_compose_body") or draft.get("body") or "")
@@ -3368,6 +3496,10 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                     attachment_bytes=pdf_bytes,
                     attachment_name=pdf_name,
                     extra_attachments=extra_files,
+                    cc=cc_for_plain_mail(
+                        str(st.session_state.get("pi_single_cc") or draft.get("cc") or ""),
+                        attach_letter=attach_letter,
+                    ),
                 )
             append_sent_log(
                 client=client,
@@ -3384,6 +3516,7 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                 st.session_state["pi_left_mode"] = "summary"
                 st.session_state.pop("pi_mail_draft", None)
                 st.session_state.pop("pi_mail_extra_files", None)
+                st.session_state.pop("pi_mail_compose_cc", None)
                 _pi_rerun(full=True)
             else:
                 st.error(msg or "발송 실패")
@@ -3692,6 +3825,14 @@ def _pi_on_email_change() -> None:
         st.session_state["pi_mail_compose_to_view"] = live
 
 
+def _pi_on_cc_change() -> None:
+    """참조 이메일 수정 시 일반 메일 작성 초안에 같이 반영."""
+    live = str(st.session_state.get("pi_single_cc") or "").strip()
+    draft = dict(st.session_state.get("pi_mail_draft") or {})
+    draft["cc"] = live
+    st.session_state["pi_mail_draft"] = draft
+
+
 def _pi_selected_clients() -> list[str]:
     picked = _norm_client_list(st.session_state.get("pi_single_clients"))
     if picked:
@@ -3770,20 +3911,40 @@ def _pi_drop_selected_client(name: str) -> None:
         _pi_rerun(full=True)
 
 
-@st.fragment
-def _render_include_letter_body_toggle() -> None:
-    """공문내용 첨부 on/off만  comm김 — 해제 시 탭 전체 재로딩 없음."""
+def _pi_on_include_letter_body_change() -> None:
+    """메일 작성 중 공문 첨부를 다시 켜면 탭을 갱신해 PDF에 반영. 메일 초안은 유지."""
+    if st.session_state.get("pi_left_mode") == "mail" or st.session_state.get("pi_mail_draft"):
+        st.session_state.pop("pi_mail_letter_token", None)
+        st.session_state["pi_mail_letter_sync"] = True
+        _pi_rerun(full=True)
+
+
+def _render_include_letter_body_fields() -> None:
+    """공문내용 첨부 체크. 메일 작성 중에는 부모에서 그려 첨부가 바로 반영되게 한다."""
     if "pi_include_letter_body" not in st.session_state:
         st.session_state["pi_include_letter_body"] = True
     include_letter_body = st.checkbox(
         "1. 공문내용 첨부 포함 (선택)",
         key="pi_include_letter_body",
-        help="체크 해제 시 첨부 PDF·엑셀에 공문 본문을 넣지 않습니다. 입력 내용은 유지됩니다.",
+        on_change=_pi_on_include_letter_body_change,
+        help="메일 작성 중에도 다시 켤 수 있습니다. 켠 뒤 공문내용을 쓰면 첨부 PDF에 들어갑니다. 메일 제목·본문은 유지됩니다.",
     )
+    composing = bool(st.session_state.get("pi_mail_draft"))
     if include_letter_body:
-        st.caption("공문내용이 첨부파일(PDF·엑셀)에 들어갑니다. 필요 없으면 위 체크를 해제하세요.")
+        if composing:
+            st.caption("공문내용이 첨부 PDF에 들어갑니다. 왼쪽 메일 제목·본문은 그대로 둡니다.")
+        else:
+            st.caption("공문내용이 첨부파일(PDF·엑셀)에 들어갑니다. 필요 없으면 위 체크를 해제하세요.")
+    elif composing:
+        st.caption("일반 메일입니다. 다시 체크하면 공문을 첨부합니다. 메일 작성 내용은 유지됩니다.")
     else:
         st.caption("공문내용 생략 · 첨부파일에는 넣지 않습니다. (입력 내용은 유지됨)")
+
+
+@st.fragment
+def _render_include_letter_body_toggle() -> None:
+    """공문내용 첨부 on/off만  comm김 — 메일 작성 중이 아니면 탭 전체 재로딩 없음."""
+    _render_include_letter_body_fields()
 
 
 @st.fragment
@@ -3874,6 +4035,14 @@ def _render_email_row(clients: str | list[str], mail_df: pd.DataFrame) -> str:
         on_change=_pi_on_email_change,
         help="거래처가 없어도 주소를 직접 넣을 수 있습니다. 여러 곳은 쉼표로 구분합니다.",
     )
+    st.text_input(
+        "참조 이메일",
+        key="pi_single_cc",
+        placeholder="cc@example.com, other@example.com",
+        on_change=_pi_on_cc_change,
+        help="공문내용 첨부를 끈 일반 메일에만 참조(Cc)로 들어갑니다. 여러 곳은 쉼표로 구분합니다.",
+    )
+    st.caption("참조는 공문내용 첨부를 해제한 일반 메일에만 적용됩니다.")
     if missing:
         st.caption("메일 없음: " + ", ".join(missing[:8]))
     elif not picked:
@@ -4319,7 +4488,10 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             # (화면 배치는 columns 생성 순서대로 왼쪽|오른쪽 유지)
             with col_right:
                 st.markdown("##### 공문 입력")
-                _render_include_letter_body_toggle()
+                if st.session_state.get("pi_mail_draft") or st.session_state.get("pi_left_mode") == "mail":
+                    _render_include_letter_body_fields()
+                else:
+                    _render_include_letter_body_toggle()
                 m1, m2 = st.columns(2)
                 with m1:
                     st.text_input("문서번호", value=_default_doc_no(client), key="pi_letter_doc_no")
@@ -4439,6 +4611,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         st.error("SMTP 미연동 — 위에서 다음메일 계정을 저장하세요.")
                     else:
                         attach_letter = _pi_attach_letter_pdf()
+                        keep_compose = _mail_compose_in_progress()
                         if attach_letter:
                             mail_body = _default_mail_body(client or "", effective_s, items_now)
                             send_title = title or _default_letter_title()
@@ -4451,6 +4624,8 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             title=send_title,
                             body=mail_body,
                             pdf_name=pdf_name,
+                            cc=str(st.session_state.get("pi_single_cc") or ""),
+                            keep_compose=keep_compose,
                             letter_kwargs=letter_kwargs,
                             staff=(
                                 str(st.session_state.get("pi_single_staff") or staff)
@@ -4463,6 +4638,16 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         mode = st.session_state.get("pi_left_mode") or "mail"
 
                 if mode == "mail":
+                    if st.session_state.get("pi_mail_draft"):
+                        attach_now = _pi_attach_letter_pdf()
+                        ok_att = _sync_mail_letter_attachment(
+                            letter_kwargs=letter_kwargs,
+                            pdf_name=pdf_name,
+                            attach_letter=attach_now,
+                            force=bool(st.session_state.pop("pi_mail_letter_sync", None)),
+                        )
+                        if attach_now and not ok_att and st.session_state.get("pi_pdf_error"):
+                            st.error(f"첨부 PDF 생성 실패: {st.session_state.get('pi_pdf_error')}")
                     _render_pi_left_mail_compose(smtp_cfg=smtp_cfg)
                 elif mode in ("pdf", "excel"):
                     pdf_bytes = st.session_state.get("pi_pdf_bytes")
