@@ -41,7 +41,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-14 · 메일중공문첨부"
+PI_UI_BUILD = "2026-09-14 · 탭이름메일"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 PI_MAIL_CARD = os.path.join(PI_FONTS_DIR, "mail_card.png")
 PI_MAIL_CARD_CID = "sinilgas-card@sigas"
@@ -4422,7 +4422,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     st.session_state["pi_sales_cache_token"] = f"{latest_update_str}|{_n}"
 
     st.markdown(
-        "<div class='sub-header dashboard-tab-panel-head'>📨 공문</div>",
+        "<div class='sub-header dashboard-tab-panel-head'>📨 메일</div>",
         unsafe_allow_html=True,
     )
     st.caption("개별·일괄·이력 탭 · 왼쪽 미리보기 · 오른쪽에서 작성·발송")

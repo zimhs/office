@@ -13809,7 +13809,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             "📈 수익성 분석",
             "📝 일일업무일지",
             "🔎 시장조사",
-            "📨 공문",
+            "📨 메일",
         ]
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
@@ -16923,7 +16923,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             try:
                 if _dash_should_defer_heavy_tab(_DASH_TAB_LETTER):
                     _dash_defer_heavy_stub(
-                        "📨 공문",
+                        "📨 메일",
                         _DASH_TAB_LETTER,
                         "_dash_bak_letter",
                         _DASH_PI_STATE_PREFIXES,
@@ -16951,7 +16951,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 )
                 st.info("다른 탭은 정상 이용 가능합니다.")
             except Exception as _pi_err:
-                st.error(f"공문 탭 오류: {_pi_err}")
+                st.error(f"메일 탭 오류: {_pi_err}")
                 st.info("다른 탭은 정상 이용 가능합니다.")
 
     _dash_inject_filter_select_script_for_run()
