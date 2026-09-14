@@ -41,7 +41,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-14 · 탭이름메일"
+PI_UI_BUILD = "2026-09-14 · 안내숨김"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 PI_MAIL_CARD = os.path.join(PI_FONTS_DIR, "mail_card.png")
 PI_MAIL_CARD_CID = "sinilgas-card@sigas"
@@ -2447,7 +2447,6 @@ def _mail_body_html(body: str) -> str:
 
 def _render_mail_signature_preview() -> None:
     """작성 화면: 서명 위, 주소는 계열사 하단에 맞춤."""
-    st.caption("발송 시 왼쪽 위 서명, 왼쪽 아래 주소가 계열사 하단과 맞습니다.")
     mid = (len(PI_AFFILIATES) + 1) // 2
 
     def _col(items: tuple) -> str:
@@ -3137,7 +3136,6 @@ def _pi_letter_preview_dialog() -> None:
     meta = st.session_state.get("pi_preview_meta") or {}
 
     pdf_error = str(st.session_state.get("pi_pdf_error") or "")
-    st.caption("메일 첨부와 동일한 PDF입니다. 인상율·인상금액은 포함되지 않습니다.")
     if pdf_bytes:
         _show_pdf_preview(pdf_bytes, height=720, key="pi_dialog_pdf")
     else:
@@ -3243,13 +3241,10 @@ def _render_mail_attachments(*, pdf_name: str, pdf_bytes: Any) -> list[tuple[str
     """공문 PDF + 사용자가 고른 추가 첨부. 발송용 (이름, bytes) 목록을 반환."""
     if pdf_bytes:
         st.caption(f"첨부 PDF: `{pdf_name}` · 준비됨 ({len(pdf_bytes):,} bytes)")
-    else:
-        st.caption("공문 PDF 없이 일반 메일로 발송합니다. 필요하면 아래 추가 첨부를 넣으세요.")
     uploaded = st.file_uploader(
         "추가 첨부파일",
         accept_multiple_files=True,
         key="pi_mail_extra_files",
-        help="공문 PDF는 자동 첨부됩니다. 엑셀·이미지·한글 파일 등을 더 넣을 수 있습니다.",
     )
     extra = _uploaded_mail_attachments(uploaded)
     if extra:
@@ -3271,7 +3266,6 @@ def _pi_mail_compose_dialog() -> None:
     staff = str(draft.get("staff") or "")
     items_n = int(draft.get("items") or 0)
 
-    st.caption("바로 발송되지 않습니다. 본문을 확인·수정한 뒤 「최종 발송」을 누르세요.")
     st.text_input("수신", value=to_addr, disabled=True, key=f"pi_mail_compose_to_view_{to_addr}")
     attach_letter = bool(st.session_state.get("pi_mail_attach_letter", True))
     cc_addr = cc_for_plain_mail(
@@ -3441,10 +3435,6 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
     items_n = int(draft.get("items") or 0)
 
     st.markdown("##### 메일 작성")
-    if attach_letter:
-        st.caption("공문 PDF를 첨부합니다. 메일 제목·본문은 그대로 둡니다. 「최종 발송」을 누르세요.")
-    else:
-        st.caption("일반 메일 · 공문내용 첨부를 다시 켜면 PDF가 붙습니다. 제목·본문은 유지됩니다.")
     st.markdown(f"**수신**  \n{to_addr or '—'}")
     cc_addr = cc_for_plain_mail(
         str(st.session_state.get("pi_single_cc") or draft.get("cc") or ""),
@@ -3531,18 +3521,12 @@ def _render_items_table(
     pct_default: float,
 ) -> list[dict]:
     st.markdown("##### 단가 조정 내용")
-    st.caption(
-        "「선택」체크한 제품만 요율 적용·공문 단가표에 들어갑니다. "
-        "「직전6개월 월평균사용량」은 화면 참고용이며 **공문(PDF·엑셀)에는 표시되지 않습니다.** "
-        "%/인상금액은 계산용(공문 미표시)."
-    )
 
     mode = st.radio(
         "인상 적용 방식",
         ["퍼센테이지(%)", "인상금액(원)"],
         horizontal=True,
         key=f"{editor_key}_mode",
-        help="선택한(체크) 제품에만 적용해 인상단가를 계산합니다. 공문에는 %/금액이 들어가지 않습니다.",
     )
     c_val, c_apply, c_reload = st.columns([1.4, 1.1, 1.2])
     with c_val:
@@ -3594,7 +3578,6 @@ def _render_items_table(
         column_config={
             "선택": st.column_config.CheckboxColumn(
                 "선택",
-                help="체크한 제품만 요율 적용 · 공문 단가표에 포함",
                 default=True,
                 width="small",
             ),
@@ -3606,7 +3589,6 @@ def _render_items_table(
                 "직전6개월 월평균사용량",
                 format="%.1f",
                 width="medium",
-                help="최근 6개월 출고량 합÷6 · 화면 참고용(공문 미포함)",
                 disabled=True,
             ),
             "인상단가": st.column_config.NumberColumn(
@@ -3701,8 +3683,6 @@ def _render_pi_left_summary(
     if items:
         st.markdown("###### 단가 조정 표")
         st.dataframe(_items_df_for_editor(items), use_container_width=True, hide_index=True)
-    else:
-        st.caption("단가표 없음 · 공문 본문만 발송")
     with st.expander("공문 본문 미리보기", expanded=False):
         st.text(letter_body or "(본문 없음)")
 
@@ -3923,22 +3903,11 @@ def _render_include_letter_body_fields() -> None:
     """공문내용 첨부 체크. 메일 작성 중에는 부모에서 그려 첨부가 바로 반영되게 한다."""
     if "pi_include_letter_body" not in st.session_state:
         st.session_state["pi_include_letter_body"] = True
-    include_letter_body = st.checkbox(
+    st.checkbox(
         "1. 공문내용 첨부 포함 (선택)",
         key="pi_include_letter_body",
         on_change=_pi_on_include_letter_body_change,
-        help="메일 작성 중에도 다시 켤 수 있습니다. 켠 뒤 공문내용을 쓰면 첨부 PDF에 들어갑니다. 메일 제목·본문은 유지됩니다.",
     )
-    composing = bool(st.session_state.get("pi_mail_draft"))
-    if include_letter_body:
-        if composing:
-            st.caption("공문내용이 첨부 PDF에 들어갑니다. 왼쪽 메일 제목·본문은 그대로 둡니다.")
-        else:
-            st.caption("공문내용이 첨부파일(PDF·엑셀)에 들어갑니다. 필요 없으면 위 체크를 해제하세요.")
-    elif composing:
-        st.caption("일반 메일입니다. 다시 체크하면 공문을 첨부합니다. 메일 작성 내용은 유지됩니다.")
-    else:
-        st.caption("공문내용 생략 · 첨부파일에는 넣지 않습니다. (입력 내용은 유지됨)")
 
 
 @st.fragment
@@ -3962,7 +3931,6 @@ def _render_single_client_picker(sales_df: pd.DataFrame, mail_df: pd.DataFrame) 
             "거래처",
             key="pi_client_q",
             placeholder="이름 검색 후 추가 (여러 곳 가능)",
-            help="이름을 검색해 추가합니다. 아래 선택된 이름을 누르면 삭제됩니다.",
         )
         hits = filter_letter_client_names(names, q, exclude=picked, limit=12)
         if hits:
@@ -4033,43 +4001,27 @@ def _render_email_row(clients: str | list[str], mail_df: pd.DataFrame) -> str:
         key="pi_single_email",
         placeholder="name@example.com, other@example.com",
         on_change=_pi_on_email_change,
-        help="거래처가 없어도 주소를 직접 넣을 수 있습니다. 여러 곳은 쉼표로 구분합니다.",
     )
     st.text_input(
         "참조 이메일",
         key="pi_single_cc",
         placeholder="cc@example.com, other@example.com",
         on_change=_pi_on_cc_change,
-        help="공문내용 첨부를 끈 일반 메일에만 참조(Cc)로 들어갑니다. 여러 곳은 쉼표로 구분합니다.",
     )
-    st.caption("참조는 공문내용 첨부를 해제한 일반 메일에만 적용됩니다.")
     if missing:
         st.caption("메일 없음: " + ", ".join(missing[:8]))
-    elif not picked:
-        st.caption("수신 이메일을 직접 입력하세요. 거래처를 고르면 연락처에서 자동 반영됩니다.")
-    elif not auto_email:
-        if mail_df is None or mail_df.empty:
-            st.warning(
-                "연락처가 없어 자동반영할 수 없습니다. "
-                "위 **📇 메일 연락처 관리**에서 저장하거나, 수신 이메일을 직접 입력하세요."
-            )
-        else:
-            st.caption(
-                "거래처명이 연락처와 다르면 수신 이메일을 직접 입력하거나, "
-                "위 **📇 메일 연락처 관리**에서 등록하세요."
-            )
-    elif len(picked) > 1:
+    elif not auto_email and picked and (mail_df is None or mail_df.empty):
+        st.warning(
+            "연락처가 없어 자동반영할 수 없습니다. "
+            "위 **📇 메일 연락처 관리**에서 저장하거나, 수신 이메일을 직접 입력하세요."
+        )
+    elif len(picked) > 1 and auto_email:
         st.caption(f"수신 {len([x for x in auto_email.split(',') if x.strip()])}곳")
     return str(st.session_state.get("pi_single_email") or email or "")
 
 
 def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
     with st.expander("📇 메일 연락처 관리", expanded=False):
-        st.caption(
-            f"CSV: `{PI_MAIL_CSV}` · 거래처명과 이메일을 등록해야 "
-            "**수신 이메일이 자동 반영**됩니다. "
-            "(저장본 자동 사용 · CSV 업로드 · **수동 저장** 가능)"
-        )
 
         # ── 수동 등록 (항상 표시) ──
         st.markdown("##### 수동으로 거래처 메일 저장")
@@ -4180,7 +4132,6 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
         st.caption(
             f"등록 {len(mail_df)}건"
             + (f" · 검색결과 {len(view)}건" if q else "")
-            + " · 아래를 눌러 전체 목록 펼치기/접기"
         )
         if view.empty:
             st.warning("검색 결과가 없습니다.")
@@ -4425,7 +4376,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
         "<div class='sub-header dashboard-tab-panel-head'>📨 메일</div>",
         unsafe_allow_html=True,
     )
-    st.caption("개별·일괄·이력 탭 · 왼쪽 미리보기 · 오른쪽에서 작성·발송")
     cap = f"빌드 {PI_UI_BUILD}"
     if latest_update_str:
         cap += f" · 매출 {latest_update_str}"
@@ -4448,8 +4398,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
         staff = str(st.session_state.get("pi_single_staff") or "전체")
         email = str(st.session_state.get("pi_single_email") or "")
 
-        if not picked:
-            st.caption("거래처가 없어도 수신 이메일을 넣고 일반 메일을 보낼 수 있습니다.")
         if True:
             last = last_sent_for_client(client)
 
@@ -4506,14 +4454,9 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     st.text_input("문의", value="031-366-0799", key="pi_single_contact")
 
                 st.markdown("**1. 공문내용**")
-                st.caption("업무일지 입력처럼 한 칸에 작성 · 기본은 단가인상공문 양식 · 다른 공문도 여기서 수정 가능")
-                bbar1, bbar2 = st.columns([1, 1])
-                with bbar1:
-                    if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
-                        st.session_state[body_key] = _default_letter_body_text()
-                        _pi_rerun()
-                with bbar2:
-                    st.caption("미리보기·메일은 PDF(업체 전송 양식)")
+                if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
+                    st.session_state[body_key] = _default_letter_body_text()
+                    _pi_rerun()
                 st.text_area(
                     "공문 본문",
                     height=300,
@@ -4525,10 +4468,8 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     "2. 단가적용 포함 (선택)",
                     value=bool(st.session_state.get("pi_include_price", True)),
                     key="pi_include_price",
-                    help="체크 해제 시 단가표 없이 1. 공문내용만으로 미리보기·발송합니다.",
                 )
                 if include_price:
-                    st.caption("단가표가 공문에 들어갑니다. 필요 없으면 위 체크를 해제하세요.")
                     items = _render_items_table(
                         editor_key=items_key,
                         items=st.session_state[items_key],
@@ -4541,7 +4482,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         st.info("품목이 비어 있으면 단가표 없이 본문만 발송됩니다.")
                 else:
                     items = list(st.session_state.get(items_key) or [])
-                    st.caption("단가적용 생략 · 1. 공문내용만 사용합니다. (표 데이터는 유지됨)")
 
             with col_left:
                 st.markdown("##### 미리보기")
@@ -4553,7 +4493,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         use_container_width=True,
                         type="primary" if mode_hint == "pdf" else "secondary",
                         key="pi_left_preview",
-                        help="공문 PDF를 왼쪽에 표시합니다. (메일 첨부와 동일 · 엑셀도 함께 생성)",
                     )
                 with p2:
                     do_send = st.button(
@@ -4561,7 +4500,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         type="primary" if mode_hint == "mail" else "secondary",
                         use_container_width=True,
                         key="pi_left_send",
-                        help="왼쪽에서 메일 본문을 작성한 뒤 최종 발송합니다. 공문 첨부를 끄면 일반 메일입니다.",
                     )
                 with p3:
                     if st.button(
@@ -4672,10 +4610,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             st.session_state["pi_dl_name"] = xlsx_name
                         except Exception:
                             xlsx = st.session_state.get("pi_dl_bytes")
-                    if items_now:
-                        st.caption("업체 전송 양식(PDF) · 단가표 포함")
-                    else:
-                        st.caption("업체 전송 양식(PDF) · 본문만(단가표 없음)")
                     # 미리보기 안 버튼: 크게 보기 / PDF / 엑셀
                     b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
                     with b_big:
@@ -4751,11 +4685,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         )
     # ── 일괄 발송 (담당자 단위 · 거래처는 한 곳씩 개별 공문) ──
     with tab_bulk:
-        st.caption(
-            "담당자를 먼저 고른 뒤, 해당 담당자 거래처를 **기본 전체 선택**합니다. "
-            "제외할 곳만 체크 해제하세요. 발송은 **한 거래처씩** 개별 공문으로 진행됩니다. "
-            "(회사 전체 일괄 발송은 없습니다.)"
-        )
         staff_list = list_staff_options(sales_df)
         if not staff_list:
             st.warning("담당자 목록이 없습니다. 매출 데이터를 확인하세요.")
@@ -4765,7 +4694,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 "담당자 (필수)",
                 staff_list,
                 key="pi_bulk_staff",
-                help="일괄은 담당자 단위입니다. 전체 거래처 일괄은 지원하지 않습니다.",
             )
         bulk_clients = list_clients_for_staff(sales_df, b_staff) if b_staff else []
 
@@ -4829,7 +4757,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
         elif bulk_df.empty:
             st.info("해당 담당자 거래처가 없습니다.")
         else:
-            sel1, sel2, sel3 = st.columns(3)
+            sel1, sel2 = st.columns(2)
             with sel1:
                 if st.button("담당자 거래처 전체 선택", key="pi_bulk_all_on", use_container_width=True):
                     st.session_state["pi_bulk_force_all"] = True
@@ -4844,8 +4772,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     st.session_state["pi_bulk_sel_ver"] = int(st.session_state.get("pi_bulk_sel_ver", 0)) + 1
                     st.session_state.pop("pi_bulk_select", None)
                     _pi_rerun()
-            with sel3:
-                st.caption("체크 해제로 개별 제외")
 
             if st.session_state.get("pi_bulk_force_none"):
                 bulk_df["발송"] = False
@@ -4858,7 +4784,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 column_config={
                     "발송": st.column_config.CheckboxColumn(
                         "발송",
-                        help="기본 전체 선택. 제외할 거래처만 체크 해제",
                         default=True,
                     ),
                     "거래처": st.column_config.TextColumn("거래처", disabled=True),
@@ -4953,7 +4878,6 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     # ── 발송 이력 ──
     with tab_hist:
         log_df = load_sent_log()
-        st.caption("거래처별 최근 발송일·제목 및 전체 로그")
         summary = sent_summary_by_client(log_df)
         if summary.empty:
             st.info("발송 이력이 없습니다.")
