@@ -15,6 +15,7 @@ from price_increase_tab import (
     keep_existing_mail_compose,
     filter_letter_client_names,
     join_recipient_emails,
+    merge_keep_manual_emails,
     list_clients_for_letter,
     list_clients_for_staff,
     list_mail_contact_names,
@@ -125,6 +126,15 @@ def test_cc_only_for_plain_mail():
     assert cc_for_plain_mail("a@b.com", attach_letter=True) == ""
     assert cc_for_plain_mail("a@b.com", attach_letter=False) == "a@b.com"
     assert cc_for_plain_mail("  ", attach_letter=False) == ""
+
+
+def test_merge_manual_and_client_emails_both_ways():
+    assert merge_keep_manual_emails("a@x.com", "", "b@y.com") == "a@x.com, b@y.com"
+    assert merge_keep_manual_emails("b@y.com", "b@y.com", "b@y.com, c@z.com") == "b@y.com, c@z.com"
+    assert merge_keep_manual_emails("b@y.com, a@x.com", "b@y.com", "b@y.com") == "b@y.com, a@x.com"
+    assert merge_keep_manual_emails("b@y.com, a@x.com", "b@y.com", "") == "a@x.com"
+    assert merge_keep_manual_emails("b@y.com, a@x.com", "b@y.com", "c@z.com") == "a@x.com, c@z.com"
+    assert merge_keep_manual_emails("a@x.com, a@x.com", "", "a@x.com") == "a@x.com"
 
 
 def test_keep_mail_compose_when_letter_reattached():

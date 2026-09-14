@@ -41,7 +41,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-14 · 안내숨김"
+PI_UI_BUILD = "2026-09-14 · 수신메일병합"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 PI_MAIL_CARD = os.path.join(PI_FONTS_DIR, "mail_card.png")
 PI_MAIL_CARD_CID = "sinilgas-card@sigas"
@@ -933,6 +933,24 @@ def join_recipient_emails(emails: list[str]) -> str:
             seen.add(key)
             out.append(em)
     return ", ".join(out)
+
+
+def merge_keep_manual_emails(current: str, prev_auto: str, new_auto: str) -> str:
+    """거래처 자동메일과 직접 입력 메일을 합친다. 빠진 거래처 자동메일만 제거."""
+    cur = join_recipient_emails([current])
+    prev = {p.strip().lower() for p in re.split(r"[;,]", prev_auto or "") if "@" in p}
+    new_joined = join_recipient_emails([new_auto])
+    new_set = {p.strip().lower() for p in re.split(r"[;,]", new_joined) if "@" in p}
+    kept: list[str] = []
+    for part in re.split(r"[;,]", cur):
+        em = part.strip()
+        if not em or "@" not in em:
+            continue
+        key = em.lower()
+        if key in prev and key not in new_set:
+            continue
+        kept.append(em)
+    return join_recipient_emails(kept + [new_joined])
 
 
 def lookup_emails_for_clients(
@@ -3821,19 +3839,29 @@ def _pi_selected_clients() -> list[str]:
     return [one] if one else []
 
 
+def _apply_merged_to_emails(auto_email: str, matched: list[str], *, client_token: str) -> None:
+    """거래처 자동메일과 수신칸에 이미 있는 직접 입력을 합친다."""
+    cur = str(st.session_state.get("pi_single_email") or "").strip()
+    prev_auto = str(st.session_state.get("pi_email_auto") or "")
+    merged = merge_keep_manual_emails(cur, prev_auto, auto_email)
+    st.session_state["pi_email_client"] = client_token
+    st.session_state["pi_email_auto"] = auto_email
+    st.session_state["pi_email_matched_as"] = "; ".join(matched)
+    if merged != cur:
+        st.session_state.pop("pi_single_email", None)
+        st.session_state["pi_single_email"] = merged
+    _pi_on_email_change()
+
+
 def _pi_on_clients_change() -> None:
-    """거래처 다중 선택 변경 시 수신메일을 모두 반영."""
+    """거래처 다중 선택 변경 시 수신메일을 반영. 직접 입력한 주소는 유지·병합."""
     picked = _norm_client_list(st.session_state.get("pi_single_clients"))
     st.session_state["pi_single_client"] = picked[0] if picked else ""
     mail_df = st.session_state.get("_pi_mail_df_cache")
     joined, matched, _missing = lookup_emails_for_clients(
         picked, mail_df if isinstance(mail_df, pd.DataFrame) else pd.DataFrame()
     )
-    st.session_state["pi_email_client"] = "\n".join(picked)
-    st.session_state["pi_email_matched_as"] = "; ".join(matched)
-    st.session_state.pop("pi_single_email", None)
-    st.session_state["pi_single_email"] = joined
-    _pi_on_email_change()
+    _apply_merged_to_emails(joined, matched, client_token="\n".join(picked))
 
 
 def _pi_letter_name_cache(
@@ -3990,12 +4018,8 @@ def _render_email_row(clients: str | list[str], mail_df: pd.DataFrame) -> str:
     elif picked and auto_email and not cur_email:
         should_fill = True
     if should_fill:
-        st.session_state["pi_email_client"] = token
         st.session_state["pi_email_mail_mtime"] = mail_mtime
-        # 위젯 키 갱신 전 기존 값 제거 → Streamlit이 이전 빈칸을 붙잡는 문제 방지
-        st.session_state.pop("pi_single_email", None)
-        st.session_state["pi_single_email"] = auto_email
-        st.session_state["pi_email_matched_as"] = "; ".join(matched_as)
+        _apply_merged_to_emails(auto_email, matched_as, client_token=token)
     email = st.text_input(
         "수신 이메일",
         key="pi_single_email",
@@ -4049,9 +4073,11 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
                 )
                 cur_client = str(st.session_state.get("pi_single_client") or "").strip()
                 if cur_client and _norm_name(cur_client) == _norm_name(n):
-                    st.session_state.pop("pi_single_email", None)
-                    st.session_state["pi_single_email"] = str(e).strip()
-                    st.session_state["pi_email_client"] = cur_client
+                    cur_em = str(st.session_state.get("pi_single_email") or "")
+                    merged = join_recipient_emails([cur_em, str(e).strip()])
+                    if merged != cur_em:
+                        st.session_state.pop("pi_single_email", None)
+                        st.session_state["pi_single_email"] = merged
                 st.success(f"저장됨: {n} → {e}")
                 _pi_rerun()
             except ValueError as err:
@@ -4089,12 +4115,12 @@ def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
                     st.success(f"`{up.name}` → 총 {len(merged)}건 저장")
                     mail_df = load_mail_contacts()
                     cur_client = str(st.session_state.get("pi_single_client") or "").strip()
-                    if cur_client:
-                        hit, matched = lookup_email_with_meta(cur_client, mail_df)
-                        st.session_state["pi_email_client"] = cur_client
-                        st.session_state.pop("pi_single_email", None)
-                        st.session_state["pi_single_email"] = hit
-                        st.session_state["pi_email_matched_as"] = matched
+                    picked_now = _pi_selected_clients()
+                    if picked_now:
+                        joined, matched, _missing = lookup_emails_for_clients(picked_now, mail_df)
+                        _apply_merged_to_emails(
+                            joined, matched, client_token="\n".join(picked_now)
+                        )
                 else:
                     cols = list(raw.columns) if raw is not None and not raw.empty else []
                     st.error(
