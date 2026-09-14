@@ -41,7 +41,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-14 · 수신메일병합"
+PI_UI_BUILD = "2026-09-14 · 발송후메일고정"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 PI_MAIL_CARD = os.path.join(PI_FONTS_DIR, "mail_card.png")
 PI_MAIL_CARD_CID = "sinilgas-card@sigas"
@@ -865,17 +865,18 @@ def lookup_email_with_meta(client: str, mail_df: pd.DataFrame) -> tuple[str, str
     """(이메일, 매칭된연락처명). 없으면 ('', '')."""
     if not client or mail_df is None or mail_df.empty:
         return "", ""
+    client = _clean_client_label(client)
     key = _norm_name(client)
     core = _core_name(client)
     # 1) 정확 일치
     for _, row in mail_df.iterrows():
-        n = _norm_name(row.get("거래처"))
+        n = _norm_name(_clean_client_label(row.get("거래처")))
         if n == key:
-            return str(row.get("이메일") or "").strip(), str(row.get("거래처") or "")
+            return str(row.get("이메일") or "").strip(), _clean_client_label(row.get("거래처"))
     # 2) 한쪽이 다른 쪽을 포함 (대영가스상 ⊂ 대영가스상사)
     best = ("", "", 0)  # email, name, score
     for _, row in mail_df.iterrows():
-        raw = str(row.get("거래처") or "")
+        raw = _clean_client_label(row.get("거래처"))
         n = _norm_name(raw)
         c = _core_name(raw)
         em = str(row.get("이메일") or "").strip()
@@ -900,6 +901,16 @@ def lookup_email_with_meta(client: str, mail_df: pd.DataFrame) -> tuple[str, str
     return "", ""
 
 
+def _clean_client_label(s: Any) -> str:
+    """CSV 따옴표가 이름에 붙어 있으면 벗긴다."""
+    t = str(s or "").strip()
+    if t.lower() == "nan":
+        return ""
+    while len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'“”‘’":
+        t = t[1:-1].strip()
+    return t
+
+
 def _norm_client_list(clients: Any) -> list[str]:
     if clients is None:
         return []
@@ -910,7 +921,7 @@ def _norm_client_list(clients: Any) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for x in raw:
-        n = str(x or "").strip()
+        n = _clean_client_label(x)
         if not n or n.lower() == "nan" or n in seen:
             continue
         seen.add(n)
@@ -918,13 +929,16 @@ def _norm_client_list(clients: Any) -> list[str]:
     return out
 
 
-def join_recipient_emails(emails: list[str]) -> str:
-    """수신칸용: 중복 없는 이메일 , 구분."""
+_EMAIL_SEP_RE = re.compile(r"[,;，、\n\r]+")
+
+
+def split_email_addrs(raw: str) -> list[str]:
+    """쉼표·세미콜론·공백으로 나눈 중복 없는 메일 주소."""
     out: list[str] = []
     seen: set[str] = set()
-    for raw in emails or []:
-        for part in re.split(r"[;,]", str(raw or "")):
-            em = part.strip()
+    for chunk in _EMAIL_SEP_RE.split(str(raw or "")):
+        for part in str(chunk or "").split():
+            em = part.strip().strip("<>").strip()
             if not em or "@" not in em:
                 continue
             key = em.lower()
@@ -932,25 +946,61 @@ def join_recipient_emails(emails: list[str]) -> str:
                 continue
             seen.add(key)
             out.append(em)
-    return ", ".join(out)
+    return out
+
+
+def join_recipient_emails(emails: list[str]) -> str:
+    """수신·참조칸용: 중복 없는 이메일을 쉼표+띄어쓰기로 이어 붙인다."""
+    return ", ".join(split_email_addrs(", ".join(str(x or "") for x in (emails or []))))
 
 
 def merge_keep_manual_emails(current: str, prev_auto: str, new_auto: str) -> str:
     """거래처 자동메일과 직접 입력 메일을 합친다. 빠진 거래처 자동메일만 제거."""
-    cur = join_recipient_emails([current])
-    prev = {p.strip().lower() for p in re.split(r"[;,]", prev_auto or "") if "@" in p}
+    cur = split_email_addrs(current)
+    prev = {p.lower() for p in split_email_addrs(prev_auto)}
     new_joined = join_recipient_emails([new_auto])
-    new_set = {p.strip().lower() for p in re.split(r"[;,]", new_joined) if "@" in p}
+    new_set = {p.lower() for p in split_email_addrs(new_joined)}
     kept: list[str] = []
-    for part in re.split(r"[;,]", cur):
-        em = part.strip()
-        if not em or "@" not in em:
-            continue
-        key = em.lower()
-        if key in prev and key not in new_set:
+    for em in cur:
+        if em.lower() in prev and em.lower() not in new_set:
             continue
         kept.append(em)
     return join_recipient_emails(kept + [new_joined])
+
+
+def remove_email_addr(current: str, drop: str) -> str:
+    """수신·참조 목록에서 주소 하나만 뺀다."""
+    drop_l = str(drop or "").strip().lower()
+    if not drop_l:
+        return join_recipient_emails([current])
+    return join_recipient_emails(
+        [em for em in split_email_addrs(current) if em.lower() != drop_l]
+    )
+
+
+def exclude_blocked_emails(raw: str, blocked: list[str] | set[str] | None) -> str:
+    """삭제한 거래처 자동메일은 다시 채우지 않는다."""
+    drop = {str(e).strip().lower() for e in (blocked or []) if str(e).strip()}
+    if not drop:
+        return join_recipient_emails([raw])
+    return join_recipient_emails(
+        [em for em in split_email_addrs(raw) if em.lower() not in drop]
+    )
+
+
+def clients_matching_email(
+    clients: list[str], mail_df: pd.DataFrame, email: str
+) -> list[str]:
+    """해당 수신메일을 쓰는 선택 거래처."""
+    want = str(email or "").strip().lower()
+    if not want:
+        return []
+    hit: list[str] = []
+    for name in _norm_client_list(clients):
+        em, _as = lookup_email_with_meta(name, mail_df)
+        if str(em or "").strip().lower() == want:
+            hit.append(name)
+    return hit
 
 
 def lookup_emails_for_clients(
@@ -1055,7 +1105,7 @@ def list_mail_contact_names(mail_df: pd.DataFrame) -> list[str]:
     if mail_df is None or mail_df.empty or "거래처" not in mail_df.columns:
         return []
     names = mail_df["거래처"].dropna().astype(str).str.strip()
-    return sorted({n for n in names if n and n.lower() != "nan"})
+    return sorted({_clean_client_label(n) for n in names if _clean_client_label(n)})
 
 
 def list_clients_for_letter(
@@ -1069,10 +1119,10 @@ def list_clients_for_letter(
     names |= set(list_mail_contact_names(mail_df if mail_df is not None else pd.DataFrame()))
     extras = extra if isinstance(extra, (list, tuple, set)) else [extra]
     for one in extras:
-        one = str(one or "").strip()
+        one = _clean_client_label(one)
         if one:
             names.add(one)
-    return sorted(n for n in names if n)
+    return sorted({_clean_client_label(n) for n in names if _clean_client_label(n)})
 
 
 def filter_letter_client_names(
@@ -1103,6 +1153,13 @@ def filter_letter_client_names(
             prefix.append(n)
         elif q in nn:
             contain.append(n)
+        else:
+            cn = _core_name(n)
+            pn = _person_key(n)
+            if (len(q) >= 2 and q in cn) or (
+                pk and len(pk) >= 2 and (pk in pn or pn in pk)
+            ):
+                contain.append(n)
         if len(exact) >= limit:
             break
     out: list[str] = []
@@ -1973,8 +2030,8 @@ def send_mail_smtp(
     cc = _mail_clean_text(cc)
     attachment_name = _mail_clean_text(attachment_name) or "letter.pdf"
 
-    recipients = [a for a in re.split(r"[;,]", to_addr) if a]
-    cc_list = [a for a in re.split(r"[;,]", cc or "") if a]
+    recipients = split_email_addrs(to_addr)
+    cc_list = split_email_addrs(cc)
 
     msg = MIMEMultipart("mixed")
     # 한글 From/Subject는 Header로 UTF-8 인코딩 (ascii codec 오류 방지)
@@ -2476,12 +2533,19 @@ def _render_mail_signature_preview() -> None:
 
     st.markdown(
         "<style>"
-        ".pi-mail-sig-preview{overflow:auto;-webkit-overflow-scrolling:touch;}"
-        "@media (max-width:850px) and (orientation:portrait){"
+        ".pi-mail-sig-preview{overflow:auto;-webkit-overflow-scrolling:touch;max-width:100%;}"
+        "@media (max-width:1180px) and (orientation:portrait){"
         ".pi-mail-sig-preview table,.pi-mail-sig-preview tr,"
         ".pi-mail-sig-preview td{display:block!important;width:100%!important;}"
         ".pi-mail-sig-preview .pi-aff-row{display:block!important;}"
         ".pi-mail-sig-preview .pi-aff-row>div{margin-bottom:8px;}"
+        "}"
+        "@media (min-width:851px) and (max-width:1180px) and (orientation:landscape){"
+        ".pi-mail-sig-preview table,.pi-mail-sig-preview tr,"
+        ".pi-mail-sig-preview td{display:table!important;}"
+        ".pi-mail-sig-preview tr{display:table-row!important;}"
+        ".pi-mail-sig-preview td{display:table-cell!important;width:auto!important;}"
+        ".pi-mail-sig-preview .pi-aff-row{display:flex!important;}"
         "}"
         "</style>"
         "<div class='pi-mail-sig-preview' style='background:#f8fafc;border-top:3px solid #2563eb;padding:12px 8px;'>"
@@ -2578,10 +2642,16 @@ def _sync_mail_letter_attachment(
     pdf_name: str,
     attach_letter: bool,
     force: bool = False,
+    need_xlsx: bool = True,
 ) -> bool:
     """메일 초안은 두고 공문 PDF·엑셀 첨부만 맞춘다."""
     token = _mail_letter_sync_token(letter_kwargs, attach_letter=attach_letter)
-    if not force and st.session_state.get("pi_mail_letter_token") == token:
+    have_pdf = bool(st.session_state.get("pi_pdf_bytes"))
+    if (
+        not force
+        and st.session_state.get("pi_mail_letter_token") == token
+        and (not attach_letter or have_pdf)
+    ):
         st.session_state["pi_mail_attach_letter"] = bool(attach_letter)
         return True
     st.session_state["pi_mail_attach_letter"] = bool(attach_letter)
@@ -2596,12 +2666,15 @@ def _sync_mail_letter_attachment(
             st.session_state.pop("pi_pdf_bytes", None)
             st.session_state["pi_pdf_error"] = str(e)
             return False
-        try:
-            xlsx = _build_letter_bytes(**letter_kwargs)
-            st.session_state["pi_dl_bytes"] = xlsx
-            st.session_state["pi_dl_name"] = str(pdf_name or "공문.pdf").replace(".pdf", ".xlsx")
-        except Exception:
-            pass
+        if need_xlsx:
+            try:
+                xlsx = _build_letter_bytes(**letter_kwargs)
+                st.session_state["pi_dl_bytes"] = xlsx
+                st.session_state["pi_dl_name"] = str(pdf_name or "공문.pdf").replace(
+                    ".pdf", ".xlsx"
+                )
+            except Exception:
+                pass
         if draft:
             draft["pdf_name"] = pdf_name
             draft["plain"] = False
@@ -2616,6 +2689,21 @@ def _sync_mail_letter_attachment(
             st.session_state["pi_mail_draft"] = draft
     st.session_state["pi_mail_letter_token"] = token
     return True
+
+
+def _ensure_compose_letter_pdf(letter_kwargs: dict, pdf_name: str) -> bool:
+    """메일 작성은 이미 열린 뒤, 발송 직전에만 PDF를 만든다."""
+    if not _pi_attach_letter_pdf():
+        return True
+    if st.session_state.get("pi_pdf_bytes"):
+        return True
+    return _sync_mail_letter_attachment(
+        letter_kwargs=letter_kwargs,
+        pdf_name=pdf_name,
+        attach_letter=True,
+        force=True,
+        need_xlsx=False,
+    )
 
 
 def _default_mail_body(client: str, effective: str, items: list[dict]) -> str:
@@ -3226,6 +3314,9 @@ def _prepare_letter_preview(
         st.session_state.pop("pi_dl_bytes", None)
     st.session_state["pi_show_dl"] = True
     st.session_state["pi_left_mode"] = "pdf"
+    st.session_state["pi_mail_letter_token"] = _mail_letter_sync_token(
+        letter_kwargs, attach_letter=True
+    )
     st.session_state["pi_preview_meta"] = {
         "client": letter_kwargs.get("client") or "",
         "title": letter_kwargs.get("title") or "",
@@ -3284,14 +3375,11 @@ def _pi_mail_compose_dialog() -> None:
     staff = str(draft.get("staff") or "")
     items_n = int(draft.get("items") or 0)
 
-    st.text_input("수신", value=to_addr, disabled=True, key=f"pi_mail_compose_to_view_{to_addr}")
     attach_letter = bool(st.session_state.get("pi_mail_attach_letter", True))
-    cc_addr = cc_for_plain_mail(
-        str(st.session_state.get("pi_single_cc") or draft.get("cc") or ""),
-        attach_letter=attach_letter,
+    cc_addr = join_recipient_emails(
+        [str(st.session_state.get("pi_single_cc") or draft.get("cc") or "")]
     )
-    if not attach_letter:
-        st.markdown(f"**참조**  \n{cc_addr or '—'}")
+    _render_compose_addr_lines(to_addr=to_addr, cc_addr=cc_addr)
     if "pi_mail_compose_subject" not in st.session_state:
         st.session_state["pi_mail_compose_subject"] = str(draft.get("subject") or "")
     cur_body = str(st.session_state.get("pi_mail_compose_body") or draft.get("body") or "")
@@ -3348,21 +3436,20 @@ def _pi_mail_compose_dialog() -> None:
                 msg=msg,
             )
             if ok:
-                st.session_state.pop("pi_mail_draft", None)
-                st.session_state.pop("pi_mail_extra_files", None)
-                st.session_state.pop("pi_mail_compose_cc", None)
-                st.success(msg)
+                _finish_pi_mail_send(ok=True, msg=msg or "발송 완료", to_addr=to_addr)
             else:
-                st.error(msg)
+                _set_pi_send_flash(ok=False, msg=msg or "발송 실패", to_addr=to_addr)
         except Exception as e:
             em = str(e)
             if "fpdf2" in em.lower():
-                st.error(
-                    "발송 실패: PDF 생성 라이브러리(fpdf2)가 없습니다. "
-                    "`python3 -m pip install -r requirements.txt` 후 재시도하세요."
+                _set_pi_send_flash(
+                    ok=False,
+                    msg="발송 실패: PDF 생성 라이브러리(fpdf2)가 없습니다.",
+                    to_addr=to_addr,
                 )
             else:
-                st.error(f"발송 실패: {e}")
+                _set_pi_send_flash(ok=False, msg=f"발송 실패: {e}", to_addr=to_addr)
+    _render_pi_send_flash()
 
 
 def _open_mail_compose_dialog(
@@ -3379,17 +3466,27 @@ def _open_mail_compose_dialog(
     cc: str = "",
     keep_compose: bool = False,
 ) -> None:
-    """메일 작성 상태로 전환 (인라인 작성 · 즉시 발송 안 함)."""
+    """메일 작성 상태로 전환 (인라인 작성 · 즉시 발송 안 함).
+
+    PDF는 여기서 만들지 않는다. 엑셀 미리보기 분이 있으면 재사용하고,
+    없으면 최종 발송 때 만든다(미리보기·요약에서 메일보내기 로딩 방지).
+    """
     keep = bool(keep_compose)
-    ok = _sync_mail_letter_attachment(
-        letter_kwargs=letter_kwargs,
-        pdf_name=pdf_name,
-        attach_letter=attach_letter,
-        force=True,
-    )
-    if attach_letter and not ok and not keep:
-        st.error(f"첨부 PDF 생성 실패: {st.session_state.get('pi_pdf_error') or ''}")
-        return
+    st.session_state["pi_mail_attach_letter"] = bool(attach_letter)
+    if attach_letter:
+        token = _mail_letter_sync_token(letter_kwargs, attach_letter=True)
+        stored = st.session_state.get("pi_mail_letter_token")
+        if stored is not None and stored != token:
+            st.session_state.pop("pi_pdf_bytes", None)
+            st.session_state.pop("pi_pdf_error", None)
+        st.session_state["pi_mail_letter_token"] = token
+        if st.session_state.get("pi_pdf_bytes"):
+            st.session_state["pi_pdf_name"] = pdf_name
+            st.session_state.pop("pi_pdf_error", None)
+    else:
+        st.session_state.pop("pi_pdf_bytes", None)
+        st.session_state.pop("pi_pdf_error", None)
+        st.session_state["pi_pdf_name"] = ""
     live_subj = st.session_state.get("pi_mail_compose_subject")
     live_body = st.session_state.get("pi_mail_compose_body")
     title, body = keep_existing_mail_compose(
@@ -3399,9 +3496,9 @@ def _open_mail_compose_dialog(
         existing_body=None if live_body is None else str(live_body),
         keep=keep,
     )
-    cc_addr = cc_for_plain_mail(cc, attach_letter=attach_letter)
+    to_addr, cc_addr = compose_addrs_from_fields(email, cc)
     st.session_state["pi_mail_draft"] = {
-        "to": email,
+        "to": to_addr,
         "cc": cc_addr,
         "subject": title,
         "body": body,
@@ -3419,30 +3516,114 @@ def _open_mail_compose_dialog(
     st.session_state["pi_left_mode"] = "mail"
 
 
-def _sync_mail_draft_to_addr(draft: dict) -> tuple[dict, str]:
-    """위「수신 이메일」·참조를 바꾸면 메일 작성 주소도 같이 맞춤."""
-    live = str(st.session_state.get("pi_single_email") or "").strip()
-    draft_to = str((draft or {}).get("to") or "").strip()
-    to_addr = live or draft_to
-    live_cc = str(st.session_state.get("pi_single_cc") or "").strip()
-    draft_cc = str((draft or {}).get("cc") or "").strip()
-    cc_addr = live_cc or draft_cc
-    draft = dict(draft or {})
-    changed = False
-    if to_addr and draft.get("to") != to_addr:
+def compose_addrs_from_fields(live_to: str, live_cc: str) -> tuple[str, str]:
+    """수신·참조칸 값이 메일 작성 수신·참조의 정본."""
+    return join_recipient_emails([live_to]), join_recipient_emails([live_cc])
+
+
+def _pi_apply_fields_to_compose() -> tuple[str, str]:
+    """수신·참조칸을 메일 작성에 넣는다. 칸이 비어도 초안에 남은 주소는 지우지 않는다."""
+    to_live, cc_live = compose_addrs_from_fields(
+        str(st.session_state.get("pi_single_email") or ""),
+        str(st.session_state.get("pi_single_cc") or ""),
+    )
+    draft = dict(st.session_state.get("pi_mail_draft") or {})
+    to_addr = to_live or join_recipient_emails([str(draft.get("to") or "")])
+    cc_addr = cc_live or join_recipient_emails([str(draft.get("cc") or "")])
+    if to_live:
+        draft["to"] = to_live
+    elif to_addr and not str(st.session_state.get("pi_single_email") or "").strip():
+        st.session_state["pi_single_email"] = to_addr
         draft["to"] = to_addr
-        changed = True
-    if draft.get("cc") != cc_addr:
+    if cc_live:
+        draft["cc"] = cc_live
+    elif cc_addr and not str(st.session_state.get("pi_single_cc") or "").strip():
+        st.session_state["pi_single_cc"] = cc_addr
         draft["cc"] = cc_addr
-        changed = True
-    if changed:
-        st.session_state["pi_mail_draft"] = draft
-    return draft, to_addr
+    st.session_state["pi_mail_draft"] = draft
+    return to_addr, cc_addr
 
 
-@st.fragment
+def _sync_mail_draft_to_addr(draft: dict) -> tuple[dict, str]:
+    """수신·참조칸을 메일 작성 수신·참조에 바로 맞춘다."""
+    to_addr, _cc = _pi_apply_fields_to_compose()
+    return dict(st.session_state.get("pi_mail_draft") or draft or {}), to_addr
+
+
+def _render_compose_addr_lines(*, to_addr: str, cc_addr: str) -> None:
+    """수신·참조 각 한 줄. 메일은 링크로 바꾸지 않는다."""
+    st.markdown("**수신**")
+    st.text(to_addr or "—")
+    st.markdown("**참조**")
+    st.text(cc_addr or "—")
+
+
+def _set_pi_send_flash(*, ok: bool, msg: str, to_addr: str = "") -> None:
+    """발송 결과를 본화면에 남긴다. 전체 앱 재로딩 없이 보여 준다."""
+    text = str(msg or ("발송 완료" if ok else "발송 실패")).strip()
+    st.session_state["pi_send_flash"] = {
+        "ok": bool(ok),
+        "msg": text,
+        "to": str(to_addr or "").strip(),
+    }
+
+
+def _render_pi_send_flash() -> None:
+    """본화면 발송 결과. 다음 작성/미리보기 전까지 유지."""
+    flash = st.session_state.get("pi_send_flash")
+    if not isinstance(flash, dict):
+        return
+    text = str(flash.get("msg") or "").strip()
+    if not text:
+        return
+    to_addr = str(flash.get("to") or "").strip()
+    if to_addr and to_addr not in text:
+        text = f"{text} · 수신 {to_addr}"
+    if flash.get("ok"):
+        st.success(text)
+    else:
+        st.error(text)
+
+
+def _clear_pi_mail_compose_state() -> None:
+    st.session_state.pop("pi_mail_draft", None)
+    st.session_state.pop("pi_mail_extra_files", None)
+    st.session_state.pop("pi_mail_compose_cc", None)
+
+
+def _finish_pi_mail_send(*, ok: bool, msg: str, to_addr: str) -> None:
+    """발송 결과만 남긴다. 요약으로 바꾸지 않는다."""
+    _set_pi_send_flash(ok=ok, msg=msg, to_addr=to_addr)
+    st.session_state["pi_left_mode"] = "mail"
+    st.session_state["pi_keep_mail_after_send"] = True
+    st.session_state["pi_block_left_nav"] = True
+    st.session_state["pi_send_lock"] = True
+
+
+def _pi_stay_on_mail_after_send() -> bool:
+    return bool(st.session_state.get("pi_keep_mail_after_send"))
+
+
+def _pi_clear_mail_stay_flags() -> None:
+    st.session_state.pop("pi_keep_mail_after_send", None)
+    st.session_state.pop("pi_block_left_nav", None)
+    st.session_state.pop("pi_send_lock", None)
+
+
+def _pi_consume_left_nav_block() -> bool:
+    """발송 직후 한 번은 요약/미리보기·재발송을 무시한다."""
+    locked = bool(st.session_state.pop("pi_send_lock", None))
+    blocked = bool(st.session_state.pop("pi_block_left_nav", None))
+    return locked or blocked
+
+
+def _paint_live_compose_addrs() -> None:
+    """작성 초안의 수신·참조 값만 맞춘다."""
+    _pi_apply_fields_to_compose()
+
+
 def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
-    """왼쪽 패널: 메일 제목·본문 작성 + 최종 발송. fragment로 입력 시 전체 탭 재로딩 없음."""
+    """왼쪽 패널: 메일 제목·본문 작성 + 최종 발송."""
     draft, to_addr = _sync_mail_draft_to_addr(st.session_state.get("pi_mail_draft") or {})
     attach_letter = _pi_attach_letter_pdf()
     st.session_state["pi_mail_attach_letter"] = attach_letter
@@ -3453,13 +3634,9 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
     items_n = int(draft.get("items") or 0)
 
     st.markdown("##### 메일 작성")
-    st.markdown(f"**수신**  \n{to_addr or '—'}")
-    cc_addr = cc_for_plain_mail(
-        str(st.session_state.get("pi_single_cc") or draft.get("cc") or ""),
-        attach_letter=attach_letter,
-    )
-    if not attach_letter:
-        st.markdown(f"**참조**  \n{cc_addr or '—'}")
+    st.session_state.pop("_pi_compose_addr_ph", None)
+    to_addr, cc_addr = _pi_apply_fields_to_compose()
+    _render_compose_addr_lines(to_addr=to_addr, cc_addr=cc_addr)
     if "pi_mail_compose_subject" not in st.session_state:
         st.session_state["pi_mail_compose_subject"] = str(draft.get("subject") or "")
     cur_body = str(st.session_state.get("pi_mail_compose_body") or draft.get("body") or "")
@@ -3473,13 +3650,9 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
 
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("작성 취소", use_container_width=True, key="pi_mail_inline_cancel"):
-            st.session_state["pi_left_mode"] = "summary"
-            st.session_state.pop("pi_mail_draft", None)
-            st.session_state.pop("pi_mail_extra_files", None)
-            _pi_rerun(full=True)
+        do_cancel = st.button("작성 취소", use_container_width=True, key="pi_mail_inline_cancel")
     with c2:
-        can_send = bool(to_addr and smtp_cfg.get("ready") and (pdf_bytes or not attach_letter))
+        can_send = bool(to_addr and smtp_cfg.get("ready"))
         do_final = st.button(
             "최종 발송",
             type="primary",
@@ -3487,49 +3660,75 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
             key="pi_mail_inline_send",
             disabled=not can_send,
         )
+    if st.session_state.get("_pi_nav_blocked_now"):
+        do_final = False
+        do_cancel = False
+        st.session_state["pi_left_mode"] = "mail"
+    if do_final:
+        do_cancel = False
+        st.session_state["pi_left_mode"] = "mail"
     if not smtp_cfg.get("ready"):
         st.warning("SMTP 미연동 — 위에서 다음메일 계정을 저장·연결 테스트하세요.")
     if do_final:
         subject = str(st.session_state.get("pi_mail_compose_subject") or "").strip()
         body = _with_mail_signature(str(st.session_state.get("pi_mail_compose_body") or ""))
         if not subject:
-            st.error("메일 제목을 입력하세요.")
-            return
-        try:
-            with st.spinner("메일 발송 중…"):
-                ok, msg = send_mail_smtp(
-                    to_addr=to_addr,
-                    subject=subject,
-                    body=body,
-                    attachment_bytes=pdf_bytes,
-                    attachment_name=pdf_name,
-                    extra_attachments=extra_files,
-                    cc=cc_for_plain_mail(
-                        str(st.session_state.get("pi_single_cc") or draft.get("cc") or ""),
-                        attach_letter=attach_letter,
-                    ),
-                )
-            append_sent_log(
-                client=client,
-                email=to_addr,
-                subject=subject,
-                ok=ok,
-                mode="single",
-                staff=staff,
-                items=items_n,
-                msg=msg,
-            )
-            if ok:
-                st.success(msg or "발송 완료")
-                st.session_state["pi_left_mode"] = "summary"
-                st.session_state.pop("pi_mail_draft", None)
-                st.session_state.pop("pi_mail_extra_files", None)
-                st.session_state.pop("pi_mail_compose_cc", None)
-                _pi_rerun(full=True)
-            else:
-                st.error(msg or "발송 실패")
-        except Exception as e:
-            st.error(f"발송 오류: {e}")
+            _set_pi_send_flash(ok=False, msg="메일 제목을 입력하세요.", to_addr=to_addr)
+        else:
+            try:
+                pack = st.session_state.get("_pi_left_pack") or {}
+                letter_kwargs = dict(pack.get("letter_kwargs") or {})
+                send_pdf_name = str(pack.get("pdf_name") or pdf_name)
+                can_send_now = True
+                if attach_letter and not pdf_bytes:
+                    with st.spinner("공문 PDF 준비 중…"):
+                        ok_att = _ensure_compose_letter_pdf(letter_kwargs, send_pdf_name)
+                    pdf_bytes = st.session_state.get("pi_pdf_bytes")
+                    pdf_name = str(st.session_state.get("pi_pdf_name") or send_pdf_name)
+                    if not ok_att or not pdf_bytes:
+                        _set_pi_send_flash(
+                            ok=False,
+                            msg=f"첨부 PDF 생성 실패: {st.session_state.get('pi_pdf_error') or ''}",
+                            to_addr=to_addr,
+                        )
+                        can_send_now = False
+                if can_send_now:
+                    with st.spinner("메일 발송 중…"):
+                        ok, msg = send_mail_smtp(
+                            to_addr=to_addr,
+                            subject=subject,
+                            body=body,
+                            attachment_bytes=pdf_bytes,
+                            attachment_name=pdf_name,
+                            extra_attachments=extra_files,
+                            cc=cc_for_plain_mail(
+                                str(draft.get("cc") or ""),
+                                attach_letter=attach_letter,
+                            ),
+                        )
+                    append_sent_log(
+                        client=client,
+                        email=to_addr,
+                        subject=subject,
+                        ok=ok,
+                        mode="single",
+                        staff=staff,
+                        items=items_n,
+                        msg=msg,
+                    )
+                    _finish_pi_mail_send(
+                        ok=ok,
+                        msg=msg or ("발송 완료" if ok else "발송 실패"),
+                        to_addr=to_addr,
+                    )
+            except Exception as e:
+                _set_pi_send_flash(ok=False, msg=f"발송 오류: {e}", to_addr=to_addr)
+    elif do_cancel and not st.session_state.get("_pi_nav_blocked_now"):
+        _pi_clear_mail_stay_flags()
+        st.session_state["pi_left_mode"] = "summary"
+        _clear_pi_mail_compose_state()
+        _pi_rerun()
+    _render_pi_send_flash()
 
 
 def _render_items_table(
@@ -3813,22 +4012,115 @@ def _collect_letter_kwargs(
 
 
 def _pi_on_email_change() -> None:
-    """수신 이메일 수정 시 메일 작성 수신·발송 주소를 같이 바꿈."""
-    live = str(st.session_state.get("pi_single_email") or "").strip()
+    """수신 목록을 정리하고 작성 수신·발송 주소를 같이 바꿈."""
+    live = join_recipient_emails([str(st.session_state.get("pi_single_email") or "")])
+    st.session_state["pi_single_email"] = live
     draft = dict(st.session_state.get("pi_mail_draft") or {})
-    if live:
-        draft["to"] = live
-        st.session_state["pi_mail_draft"] = draft
-        st.session_state["pi_mail_inline_to"] = live
-        st.session_state["pi_mail_compose_to_view"] = live
+    draft["to"] = live
+    st.session_state["pi_mail_draft"] = draft
+    st.session_state["pi_mail_inline_to"] = live
+    st.session_state["pi_mail_compose_to_view"] = live
 
 
 def _pi_on_cc_change() -> None:
-    """참조 이메일 수정 시 일반 메일 작성 초안에 같이 반영."""
-    live = str(st.session_state.get("pi_single_cc") or "").strip()
+    """참조는 직접 입력만. 쉼표 목록으로 정리해 메일 작성 참조에 반영."""
+    live = join_recipient_emails([str(st.session_state.get("pi_single_cc") or "")])
+    st.session_state["pi_single_cc"] = live
     draft = dict(st.session_state.get("pi_mail_draft") or {})
     draft["cc"] = live
     st.session_state["pi_mail_draft"] = draft
+    st.session_state["pi_mail_inline_cc"] = live
+    st.session_state["pi_mail_compose_cc_view"] = live
+
+
+def _block_auto_email(email: str) -> None:
+    """거래처 자동메일을 지운 뒤 단가표를 다시 그리지 않고 재충전만 막는다."""
+    em = str(email or "").strip()
+    if not em or "@" not in em:
+        return
+    blocked = [
+        str(x).strip()
+        for x in (st.session_state.get("pi_blocked_auto_emails") or [])
+        if str(x).strip()
+    ]
+    if em.lower() not in {x.lower() for x in blocked}:
+        blocked.append(em)
+    st.session_state["pi_blocked_auto_emails"] = blocked
+
+
+def _unblock_emails(emails: list[str]) -> None:
+    drop = {str(e).strip().lower() for e in emails if str(e).strip()}
+    if not drop:
+        return
+    left = [
+        str(x).strip()
+        for x in (st.session_state.get("pi_blocked_auto_emails") or [])
+        if str(x).strip() and str(x).strip().lower() not in drop
+    ]
+    st.session_state["pi_blocked_auto_emails"] = left
+
+
+def _take_typed_addrs(raw: str, dest_key: str) -> bool:
+    """직접 입력 주소를 수신·참조 목록에 넣고 True면 작성란도 맞춘다."""
+    extra = str(raw or "").strip()
+    if not extra or "@" not in extra:
+        return False
+    st.session_state[dest_key] = join_recipient_emails(
+        [str(st.session_state.get(dest_key) or ""), extra]
+    )
+    if dest_key == "pi_single_email":
+        _unblock_emails(split_email_addrs(extra))
+        _pi_on_email_change()
+    else:
+        _pi_on_cc_change()
+    _paint_live_compose_addrs()
+    return True
+
+
+def _stash_typed_addr(widget_key: str) -> None:
+    """엔터로 확정된 입력칸 값을 다음 그리기 전에 넣기 위해 보관. rerun 금지."""
+    st.session_state[f"{widget_key}_commit"] = str(st.session_state.get(widget_key) or "")
+
+
+def _on_to_add_change() -> None:
+    _stash_typed_addr("pi_to_add")
+
+
+def _on_cc_add_change() -> None:
+    _stash_typed_addr("pi_cc_add")
+
+
+def _typed_addr_source(widget_key: str, raw: str | None = None) -> str:
+    """폼 반환값·엔터 보관값·입력칸 순으로 주소를 고른다. clear_on_submit 뒤에도 남는다."""
+    for part in (
+        str(raw or "").strip(),
+        str(st.session_state.get(f"{widget_key}_commit") or "").strip(),
+        str(st.session_state.get(widget_key) or "").strip(),
+    ):
+        if part and "@" in part:
+            return part
+    return ""
+
+
+def _flush_typed_addr(widget_key: str, dest_key: str, raw: str | None = None) -> bool:
+    """수신·참조 입력칸의 엔터/추가를 목록과 메일 작성에 넣고 칸을 비운다."""
+    src = _typed_addr_source(widget_key, raw)
+    if not _take_typed_addrs(src, dest_key):
+        return False
+    st.session_state[widget_key] = ""
+    st.session_state.pop(f"{widget_key}_commit", None)
+    return True
+
+
+def _consume_typed_addr_commit(widget_key: str, dest_key: str) -> bool:
+    """엔터로 넣은 주소를 칩·메일 작성보다 먼저 반영하고 입력칸을 비운다."""
+    raw = str(st.session_state.pop(f"{widget_key}_commit", None) or "").strip()
+    if not raw:
+        return False
+    if not _take_typed_addrs(raw, dest_key):
+        return False
+    st.session_state[widget_key] = ""
+    return True
 
 
 def _pi_selected_clients() -> list[str]:
@@ -3844,17 +4136,23 @@ def _apply_merged_to_emails(auto_email: str, matched: list[str], *, client_token
     cur = str(st.session_state.get("pi_single_email") or "").strip()
     prev_auto = str(st.session_state.get("pi_email_auto") or "")
     merged = merge_keep_manual_emails(cur, prev_auto, auto_email)
+    merged = exclude_blocked_emails(
+        merged, st.session_state.get("pi_blocked_auto_emails")
+    )
+    auto_kept = exclude_blocked_emails(
+        auto_email, st.session_state.get("pi_blocked_auto_emails")
+    )
     st.session_state["pi_email_client"] = client_token
-    st.session_state["pi_email_auto"] = auto_email
+    st.session_state["pi_email_auto"] = auto_kept
     st.session_state["pi_email_matched_as"] = "; ".join(matched)
-    if merged != cur:
-        st.session_state.pop("pi_single_email", None)
-        st.session_state["pi_single_email"] = merged
+    st.session_state.pop("pi_single_email", None)
+    st.session_state["pi_single_email"] = merged
     _pi_on_email_change()
 
 
 def _pi_on_clients_change() -> None:
     """거래처 다중 선택 변경 시 수신메일을 반영. 직접 입력한 주소는 유지·병합."""
+    st.session_state.pop("pi_skip_email_fill", None)
     picked = _norm_client_list(st.session_state.get("pi_single_clients"))
     st.session_state["pi_single_client"] = picked[0] if picked else ""
     mail_df = st.session_state.get("_pi_mail_df_cache")
@@ -3899,32 +4197,194 @@ def _pi_set_selected_clients(picked: list[str]) -> bool:
 
 
 def _pi_add_selected_client(name: str) -> None:
-    name = str(name or "").strip()
+    name = _clean_client_label(name)
     if not name:
         return
     picked = _pi_selected_clients()
     if name not in picked:
         picked = picked + [name]
-    primary_changed = _pi_set_selected_clients(picked)
+        mail_df = st.session_state.get("_pi_mail_df_cache")
+        em, _as = lookup_email_with_meta(
+            name, mail_df if isinstance(mail_df, pd.DataFrame) else pd.DataFrame()
+        )
+        if em:
+            _unblock_emails([str(em)])
+    _pi_set_selected_clients(picked)
     st.session_state.pop("pi_client_q", None)
-    if primary_changed:
-        _pi_rerun(full=True)
 
 
 def _pi_drop_selected_client(name: str) -> None:
     name = str(name or "").strip()
     picked = [x for x in _pi_selected_clients() if x != name]
-    primary_changed = _pi_set_selected_clients(picked)
-    if primary_changed:
-        _pi_rerun(full=True)
+    _pi_set_selected_clients(picked)
+
+
+def _pi_chip_btn_css() -> None:
+    st.markdown(
+        "<style>"
+        "div[class*='st-key-pi_chip_del'] button,"
+        "div[class*='st-key-pi_to_del'] button,"
+        "div[class*='st-key-pi_cc_del'] button,"
+        "div[class*='st-key-pi_to_rm'] button,"
+        "div[class*='st-key-pi_cc_rm'] button{"
+        "min-height:1.6rem!important;height:auto!important;"
+        "padding:0.15rem 0.55rem!important;width:auto!important;"
+        "max-width:100%!important;min-width:0!important;font-size:0.85rem!important;"
+        "line-height:1.2!important;white-space:normal!important;word-break:break-all!important;}"
+        "div[class*='st-key-pi_left_preview'] button,"
+        "div[class*='st-key-pi_left_send'] button,"
+        "div[class*='st-key-pi_left_summary'] button,"
+        "div[class*='st-key-pi_mail_inline_cancel'] button,"
+        "div[class*='st-key-pi_mail_inline_send'] button{"
+        "white-space:normal!important;height:auto!important;min-height:2.4rem!important;"
+        "line-height:1.25!important;padding:0.35rem 0.35rem!important;}"
+        "</style>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_addr_chip_buttons(addrs: list[str], *, key_prefix: str) -> str | None:
+    """주소+× 한 버튼. 칸을 나누면 ×가 화면 밖으로 빠진다."""
+    dropped = None
+    for i, em in enumerate(addrs):
+        if st.button(f"{em} ×", key=f"{key_prefix}_{i}"):
+            dropped = em
+    return dropped
+
+
+def _render_email_addr_fields() -> None:
+    """수신·참조 입력. 메일 작성 fragment 안에서만 다시 그린다."""
+    _apply_pending_addr_drops()
+    _consume_typed_addr_commit("pi_to_add", "pi_single_email")
+    _consume_typed_addr_commit("pi_cc_add", "pi_single_cc")
+    _pi_chip_btn_css()
+    to_addrs = split_email_addrs(st.session_state.get("pi_single_email") or "")
+    st.markdown("수신 이메일")
+    drop_to = _render_addr_chip_buttons(to_addrs, key_prefix="pi_to_rm")
+    if drop_to:
+        _drop_to_addr(drop_to)
+        _pi_rerun()
+    with st.form("pi_to_add_form", clear_on_submit=True, border=False):
+        add_c1, add_c2 = st.columns([5, 1])
+        with add_c1:
+            raw_to = st.text_input(
+                "수신 이메일",
+                key="pi_to_add",
+                placeholder="받는곳@메일.com, 다음@메일.com",
+                label_visibility="collapsed",
+            )
+        with add_c2:
+            add_to = st.form_submit_button(
+                "추가",
+                use_container_width=True,
+                on_click=_on_to_add_change,
+            )
+    if add_to:
+        if _flush_typed_addr("pi_to_add", "pi_single_email", raw_to):
+            _pi_rerun()
+    cc_addrs = split_email_addrs(st.session_state.get("pi_single_cc") or "")
+    st.markdown("참조 이메일")
+    drop_cc = _render_addr_chip_buttons(cc_addrs, key_prefix="pi_cc_rm")
+    if drop_cc:
+        _drop_cc_addr(drop_cc)
+        _pi_rerun()
+    with st.form("pi_cc_add_form", clear_on_submit=True, border=False):
+        cc_c1, cc_c2 = st.columns([5, 1])
+        with cc_c1:
+            raw_cc = st.text_input(
+                "참조 이메일",
+                key="pi_cc_add",
+                placeholder="참조@메일.com, 다음@메일.com",
+                label_visibility="collapsed",
+            )
+        with cc_c2:
+            add_cc = st.form_submit_button(
+                "추가",
+                use_container_width=True,
+                on_click=_on_cc_add_change,
+            )
+    if add_cc:
+        if _flush_typed_addr("pi_cc_add", "pi_single_cc", raw_cc):
+            _pi_rerun()
+    missing = list(st.session_state.get("_pi_mail_missing") or [])
+    auto_email = str(st.session_state.get("_pi_mail_auto_cap") or "")
+    picked_n = int(st.session_state.get("_pi_mail_picked_n") or 0)
+    if missing:
+        st.caption("메일 없음: " + ", ".join(missing[:8]))
+    elif not auto_email and picked_n:
+        mail_df = st.session_state.get("_pi_mail_df_cache")
+        if isinstance(mail_df, pd.DataFrame) and mail_df.empty:
+            st.warning(
+                "연락처가 없어 자동반영할 수 없습니다. "
+                "위 **📇 메일 연락처 관리**에서 저장하거나, 수신 이메일을 직접 입력하세요."
+            )
+    elif picked_n > 1 and auto_email:
+        st.caption(f"수신 {len([x for x in auto_email.split(',') if x.strip()])}곳")
+
+
+def _detach_clients_for_email(email: str) -> None:
+    """지운 자동메일의 재충전만 막는다. 거래처·단가표 키는 건드리지 않는다."""
+    _block_auto_email(email)
+    st.session_state["pi_email_auto"] = remove_email_addr(
+        str(st.session_state.get("pi_email_auto") or ""), email
+    )
+
+
+def _drop_to_addr(email: str) -> None:
+    st.session_state["pi_single_email"] = remove_email_addr(
+        str(st.session_state.get("pi_single_email") or ""), email
+    )
+    _detach_clients_for_email(email)
+    st.session_state["pi_skip_email_fill"] = True
+    _pi_on_email_change()
+    _paint_live_compose_addrs()
+
+
+def _drop_cc_addr(email: str) -> None:
+    st.session_state["pi_single_cc"] = remove_email_addr(
+        str(st.session_state.get("pi_single_cc") or ""), email
+    )
+    st.session_state["pi_skip_email_fill"] = True
+    _pi_on_cc_change()
+    _paint_live_compose_addrs()
+
+
+def _apply_pending_addr_drops() -> None:
+    """× 삭제는 자동채움보다 먼저 적용해야 메일 작성에서 사라진다."""
+    drop_to = st.session_state.pop("pi_pending_drop_to", None)
+    drop_cc = st.session_state.pop("pi_pending_drop_cc", None)
+    if drop_to:
+        _drop_to_addr(str(drop_to))
+    if drop_cc:
+        _drop_cc_addr(str(drop_cc))
+
+
+def _prune_clients_missing_from_to() -> None:
+    """수신칸에서 뺀 거래처 자동메일은 재충전 목록에서만 뺀다. 단가표 키는 유지."""
+    live = {e.lower() for e in split_email_addrs(st.session_state.get("pi_single_email") or "")}
+    mail_df = st.session_state.get("_pi_mail_df_cache")
+    if not isinstance(mail_df, pd.DataFrame):
+        mail_df = pd.DataFrame()
+    auto_keep: list[str] = []
+    matched: list[str] = []
+    for name in _pi_selected_clients():
+        em, as_name = lookup_email_with_meta(name, mail_df)
+        em_s = str(em or "").strip()
+        if em_s and em_s.lower() not in live:
+            _block_auto_email(em_s)
+            continue
+        if em_s:
+            auto_keep.append(em_s)
+            matched.append(str(as_name or name))
+    st.session_state["pi_email_auto"] = join_recipient_emails(auto_keep)
+    st.session_state["pi_email_matched_as"] = "; ".join(matched)
 
 
 def _pi_on_include_letter_body_change() -> None:
-    """메일 작성 중 공문 첨부를 다시 켜면 탭을 갱신해 PDF에 반영. 메일 초안은 유지."""
+    """메일 작성 중 공문 첨부 on/off는 위젯 재실행으로 반영. 콜백에서 rerun 금지."""
     if st.session_state.get("pi_left_mode") == "mail" or st.session_state.get("pi_mail_draft"):
         st.session_state.pop("pi_mail_letter_token", None)
         st.session_state["pi_mail_letter_sync"] = True
-        _pi_rerun(full=True)
 
 
 def _render_include_letter_body_fields() -> None:
@@ -3944,9 +4404,8 @@ def _render_include_letter_body_toggle() -> None:
     _render_include_letter_body_fields()
 
 
-@st.fragment
 def _render_single_client_picker(sales_df: pd.DataFrame, mail_df: pd.DataFrame) -> None:
-    """거래처 검색·추가·삭제만  comm게  comm김(전체 공문 폼을 다시 그리지 않음)."""
+    """거래처 검색·추가·삭제. 수신칸과 같은 화면에서 메일을 바로 넣는다."""
     st.session_state["_pi_mail_df_cache"] = mail_df
     staff_opts = ["전체"] + list_staff_options(sales_df)
     r1c1, r1c2, r1c3 = st.columns([1.0, 2.8, 1.0])
@@ -3955,28 +4414,27 @@ def _render_single_client_picker(sales_df: pd.DataFrame, mail_df: pd.DataFrame) 
     picked = _pi_selected_clients()
     names = _pi_letter_name_cache(sales_df, staff, mail_df, picked)
     with r1c2:
-        q = st.text_input(
-            "거래처",
-            key="pi_client_q",
-            placeholder="이름 검색 후 추가 (여러 곳 가능)",
-        )
-        hits = filter_letter_client_names(names, q, exclude=picked, limit=12)
-        if hits:
-            ncols = 3 if len(hits) >= 3 else max(1, len(hits))
-            add_cols = st.columns(ncols)
-            for i, h in enumerate(hits):
-                with add_cols[i % ncols]:
-                    if st.button(h, key=f"pi_hit_add_{i}", use_container_width=True):
-                        _pi_add_selected_client(h)
-        elif _norm_name(q):
-            st.caption("검색 결과 없음")
-        if picked:
-            chip_n = 4 if len(picked) >= 4 else max(1, len(picked))
-            chip_cols = st.columns(chip_n)
-            for i, name in enumerate(picked):
-                with chip_cols[i % chip_n]:
-                    if st.button(f"{name}  ×", key=f"pi_chip_del_{i}", use_container_width=True):
-                        _pi_drop_selected_client(name)
+        picked_set = set(picked)
+        opts = [n for n in names if n not in picked_set]
+        choice = str(st.session_state.get("pi_client_pick") or "").strip()
+        if choice:
+            st.session_state["pi_client_pick"] = None
+            _pi_add_selected_client(choice)
+        if opts:
+            try:
+                st.selectbox(
+                    "거래처",
+                    options=opts,
+                    index=None,
+                    placeholder="선택",
+                    key="pi_client_pick",
+                )
+            except TypeError:
+                st.selectbox(
+                    "거래처",
+                    options=[""] + opts,
+                    key="pi_client_pick",
+                )
     client = picked[0] if picked else ""
     with r1c3:
         if len(picked) > 1:
@@ -3984,7 +4442,6 @@ def _render_single_client_picker(sales_df: pd.DataFrame, mail_df: pd.DataFrame) 
         else:
             kind = classify_client_kind(client, sales_df) if client else ""
             st.caption(f"유형: **{kind}**" if kind else "일반 메일")
-    _render_email_row(picked, mail_df)
 
 
 def _pi_on_client_change() -> None:
@@ -3998,7 +4455,12 @@ def _pi_on_client_change() -> None:
 def _render_email_row(clients: str | list[str], mail_df: pd.DataFrame) -> str:
     """거래처 선택 시 연락처에서 메일 자동반영(여러 곳이면 모두)."""
     st.session_state["_pi_mail_df_cache"] = mail_df
-    picked = _norm_client_list(clients)
+    _apply_pending_addr_drops()
+    _consume_typed_addr_commit("pi_to_add", "pi_single_email")
+    _consume_typed_addr_commit("pi_cc_add", "pi_single_cc")
+    skip_fill = bool(st.session_state.get("pi_skip_email_fill"))
+    _pi_apply_fields_to_compose()
+    picked = _pi_selected_clients() or _norm_client_list(clients)
     token = "\n".join(picked)
     auto_email, matched_as, missing = lookup_emails_for_clients(picked, mail_df)
     try:
@@ -4013,35 +4475,27 @@ def _render_email_row(clients: str | list[str], mail_df: pd.DataFrame) -> str:
     should_fill = False
     if picked and client_changed:
         should_fill = True
+        st.session_state.pop("pi_skip_email_fill", None)
+        skip_fill = False
     elif picked and contacts_changed:
         should_fill = True
     elif picked and auto_email and not cur_email:
         should_fill = True
+    if skip_fill:
+        should_fill = False
     if should_fill:
         st.session_state["pi_email_mail_mtime"] = mail_mtime
         _apply_merged_to_emails(auto_email, matched_as, client_token=token)
-    email = st.text_input(
-        "수신 이메일",
-        key="pi_single_email",
-        placeholder="name@example.com, other@example.com",
-        on_change=_pi_on_email_change,
-    )
-    st.text_input(
-        "참조 이메일",
-        key="pi_single_cc",
-        placeholder="cc@example.com, other@example.com",
-        on_change=_pi_on_cc_change,
-    )
-    if missing:
-        st.caption("메일 없음: " + ", ".join(missing[:8]))
-    elif not auto_email and picked and (mail_df is None or mail_df.empty):
-        st.warning(
-            "연락처가 없어 자동반영할 수 없습니다. "
-            "위 **📇 메일 연락처 관리**에서 저장하거나, 수신 이메일을 직접 입력하세요."
-        )
-    elif len(picked) > 1 and auto_email:
-        st.caption(f"수신 {len([x for x in auto_email.split(',') if x.strip()])}곳")
-    return str(st.session_state.get("pi_single_email") or email or "")
+    else:
+        _prune_clients_missing_from_to()
+        picked = _pi_selected_clients()
+        token = "\n".join(picked)
+        auto_email, matched_as, missing = lookup_emails_for_clients(picked, mail_df)
+
+    st.session_state["_pi_mail_missing"] = list(missing or [])
+    st.session_state["_pi_mail_auto_cap"] = str(auto_email or "")
+    st.session_state["_pi_mail_picked_n"] = len(picked)
+    return str(st.session_state.get("pi_single_email") or "")
 
 
 def _render_mail_settings_expander(mail_df: pd.DataFrame) -> pd.DataFrame:
@@ -4386,6 +4840,290 @@ def _render_smtp_bar() -> dict:
     return smtp_settings()
 
 
+def _store_pi_left_pack(
+    *,
+    client: str,
+    picked: list[str],
+    email: str,
+    staff: str,
+    body_key: str,
+    items_key: str,
+    last: Optional[dict],
+) -> dict:
+    """오른쪽 공문 입력을 왼쪽 미리보기·메일보내기가 읽도록 저장."""
+    letter_kwargs, letter_body, items_now, effective_s = _collect_letter_kwargs(
+        client=client,
+        email=email,
+        body_key=body_key,
+        items_key=items_key,
+    )
+    if not st.session_state.get("pi_include_price", True):
+        letter_kwargs = dict(letter_kwargs)
+        letter_kwargs["items"] = []
+        items_now = []
+    if not st.session_state.get("pi_include_letter_body", True):
+        letter_kwargs = _strip_letter_body_from_kwargs(letter_kwargs)
+        letter_body = ""
+    title = str(letter_kwargs.get("title") or "")
+    day_tag = date.today().strftime("%Y%m%d")
+    pack = {
+        "client": client,
+        "picked": list(picked),
+        "email": email,
+        "staff": staff,
+        "letter_kwargs": letter_kwargs,
+        "letter_body": letter_body,
+        "items_now": items_now,
+        "effective_s": effective_s,
+        "title": title,
+        "pdf_name": f"공문_{client}_{day_tag}.pdf",
+        "xlsx_name": f"공문_{client}_{day_tag}.xlsx",
+        "last": last,
+    }
+    st.session_state["_pi_left_pack"] = pack
+    return pack
+
+
+def _fill_mail_compose_from_pack(pack: dict, *, keep: bool = False) -> None:
+    """현재 공문 입력으로 메일 작성 초안을 연다. PDF는 만들지 않는다."""
+    client = str(pack.get("client") or "")
+    picked = list(pack.get("picked") or [])
+    who = ", ".join(picked) if picked else client
+    letter_kwargs = dict(pack.get("letter_kwargs") or {})
+    items_now = list(pack.get("items_now") or [])
+    effective_s = str(pack.get("effective_s") or "")
+    title = str(pack.get("title") or "")
+    pdf_name = str(pack.get("pdf_name") or "공문.pdf")
+    staff = str(pack.get("staff") or "")
+    attach_letter = _pi_attach_letter_pdf()
+    to_now, cc_now = _pi_apply_fields_to_compose()
+    if attach_letter:
+        mail_body = _default_mail_body(who or "", effective_s, items_now)
+        send_title = title or _default_letter_title()
+    else:
+        mail_body = _plain_mail_intro(who)
+        send_title = (
+            title if title and title != _default_letter_title() else ""
+        )
+    _open_mail_compose_dialog(
+        client=who or "일반메일",
+        email=to_now,
+        title=send_title,
+        body=mail_body,
+        pdf_name=pdf_name,
+        cc=cc_now,
+        keep_compose=keep,
+        letter_kwargs=letter_kwargs,
+        staff=staff if staff != "전체" else "",
+        items_n=len(items_now),
+        attach_letter=attach_letter,
+    )
+
+
+def _ensure_mail_compose_first_screen(pack: dict) -> None:
+    """메일 탭 첫 화면은 작성. 요약/엑셀을 누른 뒤에는 그 화면을 유지."""
+    if _pi_stay_on_mail_after_send():
+        st.session_state["pi_left_mode"] = "mail"
+    if not st.session_state.get("pi_left_opened"):
+        st.session_state["pi_left_opened"] = True
+        if st.session_state.get("pi_left_mode") in (None, "", "summary"):
+            st.session_state["pi_left_mode"] = "mail"
+    if "pi_left_mode" not in st.session_state:
+        st.session_state["pi_left_mode"] = "mail"
+    if st.session_state.get("pi_left_mode") != "mail":
+        return
+    if st.session_state.get("pi_mail_draft"):
+        return
+    _fill_mail_compose_from_pack(pack)
+
+
+@st.fragment
+def _render_pi_left_panel() -> None:
+    """미리보기·메일보내기·요약. 단가표는 부모에 두고 이 칸만 다시 그린다."""
+    pack = dict(st.session_state.get("_pi_left_pack") or {})
+    smtp_cfg = smtp_settings()
+    client = str(pack.get("client") or "")
+    picked = list(pack.get("picked") or [])
+    email = str(pack.get("email") or "")
+    staff = str(pack.get("staff") or "")
+    letter_kwargs = dict(pack.get("letter_kwargs") or {})
+    letter_body = str(pack.get("letter_body") or "")
+    items_now = list(pack.get("items_now") or [])
+    effective_s = str(pack.get("effective_s") or "")
+    title = str(pack.get("title") or "")
+    pdf_name = str(pack.get("pdf_name") or "공문.pdf")
+    xlsx_name = str(pack.get("xlsx_name") or "공문.xlsx")
+    last = pack.get("last")
+    ignore_nav = _pi_consume_left_nav_block()
+    st.session_state["_pi_nav_blocked_now"] = ignore_nav
+    _ensure_mail_compose_first_screen(pack)
+    _pi_chip_btn_css()
+    _render_email_addr_fields()
+
+    st.markdown("##### 미리보기")
+    mode_hint = st.session_state.get("pi_left_mode") or "mail"
+    p1, p2, p3 = st.columns([1, 1, 1])
+    with p1:
+        do_preview = st.button(
+            "엑셀 미리보기",
+            use_container_width=True,
+            type="primary" if mode_hint == "pdf" else "secondary",
+            key="pi_left_preview",
+        )
+    with p2:
+        do_send = st.button(
+            "메일보내기",
+            type="primary" if mode_hint == "mail" else "secondary",
+            use_container_width=True,
+            key="pi_left_send",
+        )
+    with p3:
+        do_summary = st.button(
+            "요약 보기",
+            use_container_width=True,
+            type="primary" if mode_hint == "summary" else "secondary",
+            key="pi_left_summary_btn",
+        )
+    if ignore_nav or st.session_state.get("pi_mail_inline_send"):
+        do_preview = False
+        do_send = False
+        do_summary = False
+        st.session_state["pi_left_mode"] = "mail"
+
+    mode = st.session_state.get("pi_left_mode") or "mail"
+
+    if do_preview:
+        _pi_clear_mail_stay_flags()
+        _prepare_letter_preview(
+            letter_kwargs=letter_kwargs,
+            letter_body=letter_body,
+            pdf_name=pdf_name,
+            xlsx_name=xlsx_name,
+        )
+        mode = "pdf"
+        st.session_state["pi_left_mode"] = "pdf"
+
+    if do_send:
+        _fill_mail_compose_from_pack(pack, keep=_mail_compose_in_progress())
+        mode = "mail"
+        st.session_state["pi_left_mode"] = "mail"
+
+    if do_summary:
+        _pi_clear_mail_stay_flags()
+        mode = "summary"
+        st.session_state["pi_left_mode"] = "summary"
+
+    if mode == "mail":
+        if st.session_state.get("pi_mail_draft"):
+            attach_now = _pi_attach_letter_pdf()
+            if st.session_state.pop("pi_mail_letter_sync", None):
+                ok_att = _sync_mail_letter_attachment(
+                    letter_kwargs=letter_kwargs,
+                    pdf_name=pdf_name,
+                    attach_letter=attach_now,
+                    force=True,
+                    need_xlsx=False,
+                )
+                if attach_now and not ok_att and st.session_state.get("pi_pdf_error"):
+                    st.error(f"첨부 PDF 생성 실패: {st.session_state.get('pi_pdf_error')}")
+        _render_pi_left_mail_compose(smtp_cfg=smtp_cfg)
+    elif mode in ("pdf", "excel"):
+        pdf_bytes = st.session_state.get("pi_pdf_bytes")
+        xlsx = st.session_state.get("pi_dl_bytes")
+        if not pdf_bytes:
+            try:
+                pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+                st.session_state["pi_pdf_bytes"] = pdf_bytes
+                st.session_state["pi_pdf_name"] = pdf_name
+                st.session_state.pop("pi_pdf_error", None)
+            except Exception as e:
+                st.session_state["pi_pdf_error"] = (
+                    "PDF 생성 라이브러리(fpdf2)가 현재 서버에 없어 PDF를 만들지 못했습니다. "
+                    "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
+                    f"(원인: {e})"
+                )
+                pdf_bytes = None
+        if not xlsx:
+            try:
+                xlsx = _build_letter_bytes(**letter_kwargs)
+                st.session_state["pi_dl_bytes"] = xlsx
+                st.session_state["pi_dl_name"] = xlsx_name
+            except Exception:
+                xlsx = st.session_state.get("pi_dl_bytes")
+        b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
+        with b_big:
+            if pdf_bytes:
+                if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
+                    try:
+                        _open_letter_preview_dialog(
+                            letter_kwargs=letter_kwargs,
+                            letter_body=letter_body,
+                            pdf_name=pdf_name,
+                            xlsx_name=xlsx_name,
+                        )
+                    except Exception as e:
+                        st.error(f"크게 보기 실패: {e}")
+            elif st.session_state.get("pi_pdf_error"):
+                if st.button("설치 가이드 보기", use_container_width=True, key="pi_pdf_help"):
+                    st.info("로컬: python3 -m pip install -r requirements.txt / Cloud: 재배포")
+        with b_dl1:
+            if pdf_bytes:
+                st.download_button(
+                    "📥 PDF",
+                    data=pdf_bytes,
+                    file_name=pdf_name,
+                    mime="application/pdf",
+                    key="pi_single_dl_pdf",
+                    use_container_width=True,
+                )
+        with b_dl2:
+            if xlsx:
+                st.download_button(
+                    "📥 엑셀",
+                    data=xlsx,
+                    file_name=xlsx_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="pi_single_dl_xlsx",
+                    use_container_width=True,
+                )
+        if pdf_bytes:
+            _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
+        else:
+            if st.session_state.get("pi_pdf_error"):
+                st.error(str(st.session_state.get("pi_pdf_error")))
+            st.info("PDF 대신 화면 양식으로 미리봅니다.")
+            _render_letter_form_preview(
+                client=client,
+                title=title,
+                doc_no=str(letter_kwargs.get("doc_no") or ""),
+                send_date=letter_kwargs.get("send_date") or date.today(),
+                effective_s=effective_s,
+                letter_body=letter_body,
+                items=items_now,
+            )
+            if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
+                _pi_letter_preview_dialog()
+    else:
+        _render_pi_left_summary(
+            client=client,
+            email=email,
+            title=title,
+            effective_s=effective_s,
+            items=items_now,
+            last=last if isinstance(last, dict) else None,
+            letter_body=letter_body,
+        )
+        if st.session_state.get("pi_pdf_bytes"):
+            st.download_button(
+                "📥 최근 생성 PDF 다운로드",
+                data=st.session_state["pi_pdf_bytes"],
+                file_name=st.session_state.get("pi_pdf_name") or pdf_name,
+                mime="application/pdf",
+                key="pi_single_dl_pdf_keep",
+                use_container_width=True,
+            )
+
+
 @st.fragment
 def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "") -> None:
     """공문 탭 — 업무일지형 좌우 레이아웃 · 개별·일괄·이력.
@@ -4420,9 +5158,9 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     with tab_single:
         _render_single_client_picker(sales_df, mail_df)
         picked = _pi_selected_clients()
+        email = _render_email_row(picked, mail_df)
         client = picked[0] if picked else ""
         staff = str(st.session_state.get("pi_single_staff") or "전체")
-        email = str(st.session_state.get("pi_single_email") or "")
 
         if True:
             last = last_sent_for_client(client)
@@ -4509,206 +5247,18 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 else:
                     items = list(st.session_state.get(items_key) or [])
 
+            email = str(st.session_state.get("pi_single_email") or email or "")
+            _store_pi_left_pack(
+                client=client,
+                picked=picked,
+                email=email,
+                staff=staff,
+                body_key=body_key,
+                items_key=items_key,
+                last=last,
+            )
             with col_left:
-                st.markdown("##### 미리보기")
-                mode_hint = st.session_state.get("pi_left_mode") or "summary"
-                p1, p2, p3 = st.columns([1, 1, 1])
-                with p1:
-                    do_preview = st.button(
-                        "엑셀 미리보기",
-                        use_container_width=True,
-                        type="primary" if mode_hint == "pdf" else "secondary",
-                        key="pi_left_preview",
-                    )
-                with p2:
-                    do_send = st.button(
-                        "메일보내기",
-                        type="primary" if mode_hint == "mail" else "secondary",
-                        use_container_width=True,
-                        key="pi_left_send",
-                    )
-                with p3:
-                    if st.button(
-                        "요약 보기",
-                        use_container_width=True,
-                        type="primary" if mode_hint == "summary" else "secondary",
-                        key="pi_left_summary_btn",
-                    ):
-                        st.session_state["pi_left_mode"] = "summary"
-                        _pi_rerun()
-
-                email = str(st.session_state.get("pi_single_email") or email or "")
-                letter_kwargs, letter_body, items_now, effective_s = _collect_letter_kwargs(
-                    client=client,
-                    email=email,
-                    body_key=body_key,
-                    items_key=items_key,
-                )
-                # 선택 해제 시 단가표·공문본문을 첨부파일에 넣지 않음(입력값은 유지)
-                if not st.session_state.get("pi_include_price", True):
-                    letter_kwargs = dict(letter_kwargs)
-                    letter_kwargs["items"] = []
-                    items_now = []
-                if not st.session_state.get("pi_include_letter_body", True):
-                    letter_kwargs = _strip_letter_body_from_kwargs(letter_kwargs)
-                    letter_body = ""
-                title = str(letter_kwargs.get("title") or "")
-                day_tag = date.today().strftime("%Y%m%d")
-                pdf_name = f"공문_{client}_{day_tag}.pdf"
-                xlsx_name = f"공문_{client}_{day_tag}.xlsx"
-                mode = st.session_state.get("pi_left_mode") or "summary"
-
-                if do_preview:
-                    _prepare_letter_preview(
-                        letter_kwargs=letter_kwargs,
-                        letter_body=letter_body,
-                        pdf_name=pdf_name,
-                        xlsx_name=xlsx_name,
-                    )
-                    mode = "pdf"
-                    st.session_state["pi_left_mode"] = "pdf"
-
-                if do_send:
-                    if not email:
-                        st.error("수신 이메일을 입력하세요.")
-                    elif not smtp_cfg.get("ready"):
-                        st.error("SMTP 미연동 — 위에서 다음메일 계정을 저장하세요.")
-                    else:
-                        attach_letter = _pi_attach_letter_pdf()
-                        keep_compose = _mail_compose_in_progress()
-                        if attach_letter:
-                            mail_body = _default_mail_body(client or "", effective_s, items_now)
-                            send_title = title or _default_letter_title()
-                        else:
-                            mail_body = _plain_mail_intro(client)
-                            send_title = title if title and title != _default_letter_title() else ""
-                        _open_mail_compose_dialog(
-                            client=client or "일반메일",
-                            email=email,
-                            title=send_title,
-                            body=mail_body,
-                            pdf_name=pdf_name,
-                            cc=str(st.session_state.get("pi_single_cc") or ""),
-                            keep_compose=keep_compose,
-                            letter_kwargs=letter_kwargs,
-                            staff=(
-                                str(st.session_state.get("pi_single_staff") or staff)
-                                if str(st.session_state.get("pi_single_staff") or staff) != "전체"
-                                else ""
-                            ),
-                            items_n=len(items_now),
-                            attach_letter=attach_letter,
-                        )
-                        mode = st.session_state.get("pi_left_mode") or "mail"
-
-                if mode == "mail":
-                    if st.session_state.get("pi_mail_draft"):
-                        attach_now = _pi_attach_letter_pdf()
-                        ok_att = _sync_mail_letter_attachment(
-                            letter_kwargs=letter_kwargs,
-                            pdf_name=pdf_name,
-                            attach_letter=attach_now,
-                            force=bool(st.session_state.pop("pi_mail_letter_sync", None)),
-                        )
-                        if attach_now and not ok_att and st.session_state.get("pi_pdf_error"):
-                            st.error(f"첨부 PDF 생성 실패: {st.session_state.get('pi_pdf_error')}")
-                    _render_pi_left_mail_compose(smtp_cfg=smtp_cfg)
-                elif mode in ("pdf", "excel"):
-                    pdf_bytes = st.session_state.get("pi_pdf_bytes")
-                    xlsx = st.session_state.get("pi_dl_bytes")
-                    if not pdf_bytes:
-                        try:
-                            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
-                            st.session_state["pi_pdf_bytes"] = pdf_bytes
-                            st.session_state["pi_pdf_name"] = pdf_name
-                            st.session_state.pop("pi_pdf_error", None)
-                        except Exception as e:
-                            st.session_state["pi_pdf_error"] = (
-                                "PDF 생성 라이브러리(fpdf2)가 현재 서버에 없어 PDF를 만들지 못했습니다. "
-                                "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
-                                f"(원인: {e})"
-                            )
-                            pdf_bytes = None
-                    if not xlsx:
-                        try:
-                            xlsx = _build_letter_bytes(**letter_kwargs)
-                            st.session_state["pi_dl_bytes"] = xlsx
-                            st.session_state["pi_dl_name"] = xlsx_name
-                        except Exception:
-                            xlsx = st.session_state.get("pi_dl_bytes")
-                    # 미리보기 안 버튼: 크게 보기 / PDF / 엑셀
-                    b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
-                    with b_big:
-                        if pdf_bytes:
-                            if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
-                                try:
-                                    _open_letter_preview_dialog(
-                                        letter_kwargs=letter_kwargs,
-                                        letter_body=letter_body,
-                                        pdf_name=pdf_name,
-                                        xlsx_name=xlsx_name,
-                                    )
-                                except Exception as e:
-                                    st.error(f"크게 보기 실패: {e}")
-                        elif st.session_state.get("pi_pdf_error"):
-                            if st.button("설치 가이드 보기", use_container_width=True, key="pi_pdf_help"):
-                                st.info("로컬: python3 -m pip install -r requirements.txt / Cloud: 재배포")
-                    with b_dl1:
-                        if pdf_bytes:
-                            st.download_button(
-                                "📥 PDF",
-                                data=pdf_bytes,
-                                file_name=pdf_name,
-                                mime="application/pdf",
-                                key="pi_single_dl_pdf",
-                                use_container_width=True,
-                            )
-                    with b_dl2:
-                        if xlsx:
-                            st.download_button(
-                                "📥 엑셀",
-                                data=xlsx,
-                                file_name=xlsx_name,
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key="pi_single_dl_xlsx",
-                                use_container_width=True,
-                            )
-                    if pdf_bytes:
-                        _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
-                    else:
-                        if st.session_state.get("pi_pdf_error"):
-                            st.error(str(st.session_state.get("pi_pdf_error")))
-                        st.info("PDF 대신 화면 양식으로 미리봅니다.")
-                        _render_letter_form_preview(
-                            client=client,
-                            title=title,
-                            doc_no=str(letter_kwargs.get("doc_no") or ""),
-                            send_date=letter_kwargs.get("send_date") or date.today(),
-                            effective_s=effective_s,
-                            letter_body=letter_body,
-                            items=items_now,
-                        )
-                        if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
-                            _pi_letter_preview_dialog()
-                else:
-                    _render_pi_left_summary(
-                        client=client,
-                        email=email,
-                        title=title,
-                        effective_s=effective_s,
-                        items=items_now,
-                        last=last,
-                        letter_body=letter_body,
-                    )
-                    if st.session_state.get("pi_pdf_bytes"):
-                        st.download_button(
-                            "📥 최근 생성 PDF 다운로드",
-                            data=st.session_state["pi_pdf_bytes"],
-                            file_name=st.session_state.get("pi_pdf_name") or pdf_name,
-                            mime="application/pdf",
-                            key="pi_single_dl_pdf_keep",
-                            use_container_width=True,
-                        )
+                _render_pi_left_panel()
     # ── 일괄 발송 (담당자 단위 · 거래처는 한 곳씩 개별 공문) ──
     with tab_bulk:
         staff_list = list_staff_options(sales_df)
