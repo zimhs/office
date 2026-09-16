@@ -5497,18 +5497,19 @@ def _dash_base_pivot_cache_key(start_date, end_date, sales_meta, manual_token):
 
 
 # 상단 필터 rerun 시 무거운 탭 생략용 — 탭 인덱스 = st.tabs 순서
-# 로컬·Cloud 공통: 업무일지·시장조사·공문 포함 12탭 (8502 분리 종료)
+# 로컬·Cloud 공통: 업무일지·시장조사·공문·방문할일 포함 13탭 (8502 분리 종료)
 def _dash_cloud_merged_tabs() -> bool:
     """영업 대시보드에 업무일지·공문 포함(로컬 8501·Cloud 동일)."""
     return True
 
 
-_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER = 9, 10, 11
+_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER, _DASH_TAB_VISIT = 9, 10, 11, 12
 _DASH_TAB_MARKET_LOCAL = 9  # 하위 호환(미사용)
 # 예전 필터-rerun 생략 대상(카카오맵·설비·탱크·수익성). 지금은 모든 탭을 시작부터 펼침.
 _DASH_LIGHT_DEFER_TAB_IDX = frozenset({5, 6, 7, 8})
 # 시장조사 — mr_v6_ 필터·캐시만 백업 (mr_dl_* 위젯 키 복원 시 download_button 오류 방지)
 _DASH_MR_STATE_PREFIXES = ("mr_v6_", "_mr_ipad", "_mr_cache", "_mr_mod", "_mr_data")
+_DASH_VC_STATE_PREFIXES = ("_vc_",)
 _DASH_MR_WIDGET_PREFIXES = (
     "mr_dl_",
     "mr_view_",
@@ -6342,7 +6343,7 @@ def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
     """
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     st.session_state.pop(f"_dash_force_tab_{tab_idx}", None)
-    for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
+    for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER, _DASH_TAB_VISIT):
         mounted[i] = True
     st.session_state["_dash_heavy_warmed"] = True
     mounted[tab_idx] = True
@@ -13796,7 +13797,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
     _dash_note_filter_change_for_heavy_tabs()
     _DASH_CLOUD_TABS = _dash_cloud_merged_tabs()
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs(
         [
             "📌 영업 종합 요약",
             "🏢 거래처 분석",
@@ -13810,12 +13811,13 @@ def _dash_filter_and_tabs_fragment() -> None:
             "📝 일일업무일지",
             "🔎 시장조사",
             "📨 메일",
+            "📅 방문·할일",
         ]
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
     _STICKY_INJECT_VER = 86
-    _ACTIVE_TAB_INJECT_VER = 12
+    _ACTIVE_TAB_INJECT_VER = 13
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
@@ -13826,7 +13828,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.session_state["_ipad_sticky_ver"] = 47
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
-            min_tabs=12, heavy_indices=(9, 10, 11)
+            min_tabs=13, heavy_indices=(9, 10, 11, 12)
         )
         st.session_state["_dash_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
         st.session_state["_dash_cloud_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
@@ -16952,6 +16954,38 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.info("다른 탭은 정상 이용 가능합니다.")
             except Exception as _pi_err:
                 st.error(f"메일 탭 오류: {_pi_err}")
+                st.info("다른 탭은 정상 이용 가능합니다.")
+
+        with tab13:
+            try:
+                if _dash_should_defer_heavy_tab(_DASH_TAB_VISIT):
+                    _dash_defer_heavy_stub(
+                        "📅 방문·할일",
+                        _DASH_TAB_VISIT,
+                        "_dash_bak_visit",
+                        _DASH_VC_STATE_PREFIXES,
+                    )
+                else:
+                    _dash_restore_session_keys("_dash_bak_visit")
+                    import visit_calendar_tab as _vc_tab
+
+                    _vc_path = getattr(_vc_tab, "__file__", None) or ""
+                    _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
+                    if st.session_state.get("_vc_mod_mtime") != _vc_mtime:
+                        _vc_tab = importlib.reload(_vc_tab)
+                        st.session_state["_vc_mod_mtime"] = _vc_mtime
+                        sys.modules["visit_calendar_tab"] = _vc_tab
+                    _vc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                    _vc_tab.render_visit_calendar_tab(_vc_df, latest_update_str=latest_update_str)
+                    _dash_backup_session_keys("_dash_bak_visit", _DASH_VC_STATE_PREFIXES)
+            except ModuleNotFoundError:
+                st.error(
+                    "방문·할일 모듈(`visit_calendar_tab.py`)을 찾을 수 없습니다. "
+                    "배포 파일에 포함되었는지 확인해 주세요."
+                )
+                st.info("다른 탭은 정상 이용 가능합니다.")
+            except Exception as _vc_err:
+                st.error(f"방문·할일 탭 오류: {_vc_err}")
                 st.info("다른 탭은 정상 이용 가능합니다.")
 
     _dash_inject_filter_select_script_for_run()
