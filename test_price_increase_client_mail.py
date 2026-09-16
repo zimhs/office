@@ -3,6 +3,10 @@
 import pandas as pd
 
 from price_increase_tab import (
+    _apply_amount_to_items,
+    _apply_pct_to_items,
+    _increase_mode_is_pct,
+    default_increase_price,
     _BODY_CELL_ORDER,
     _DEFAULT_LETTER_PARAS,
     _body_text_to_paras,
@@ -33,6 +37,24 @@ def test_clean_client_label_strips_csv_quotes():
     assert _clean_client_label("'김온전'") == "김온전"
     assert _clean_client_label('"디아이지에어가스(주)"') == "디아이지에어가스(주)"
     assert _norm_client_list(["'김온전'", '"김온전"']) == ["김온전"]
+
+
+def test_pct_increase_matches_base_times_rate():
+    assert _increase_mode_is_pct("퍼센테이지(%)") is True
+    assert _increase_mode_is_pct("인상금액(원)") is False
+    assert default_increase_price(225.0, 10.0) == 247.5
+    assert default_increase_price(22000.0, 10.0) == 24200.0
+    rows = [
+        {"선택": True, "품목명": "N2 (kg, Bulk)", "기존단가": 225.0, "인상적용단가": 225.0},
+        {"선택": True, "품목명": "CO2", "기존단가": 22000.0, "인상적용단가": 22000.0},
+        {"선택": False, "품목명": "skip", "기존단가": 100.0, "인상적용단가": 100.0},
+    ]
+    out = _apply_pct_to_items(rows, 10.0, only_selected=True)
+    assert out[0]["인상적용단가"] == 247.5
+    assert out[1]["인상적용단가"] == 24200.0
+    assert out[2]["인상적용단가"] == 100.0
+    amt = _apply_amount_to_items(rows, 10.0, only_selected=True)
+    assert amt[0]["인상적용단가"] == 235.0
 
 
 def test_person_key_strips_titles():

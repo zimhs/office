@@ -41,7 +41,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
-PI_UI_BUILD = "2026-09-14 · 발송후메일고정"
+PI_UI_BUILD = "2026-09-14 · 단가표안정"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 PI_MAIL_CARD = os.path.join(PI_FONTS_DIR, "mail_card.png")
 PI_MAIL_CARD_CID = "sinilgas-card@sigas"
@@ -1292,6 +1292,7 @@ def _compute_latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataF
 
 
 def default_increase_price(old: float, pct: float) -> float:
+    """기존단가 × (1 + pct/100). 10% → 225 → 247.5."""
     try:
         return round(float(old) * (1.0 + float(pct) / 100.0), 1)
     except Exception:
@@ -2369,6 +2370,12 @@ def _apply_pct_to_items(items: list[dict], pct: float, *, only_selected: bool = 
         row["인상적용단가"] = default_increase_price(old, pct)
         out.append(row)
     return out
+
+
+def _increase_mode_is_pct(mode: str) -> bool:
+    """라디오 값 '퍼센테이지(%)'는 '퍼센트'로 시작하지 않는다."""
+    t = str(mode or "")
+    return "퍼센테이지" in t or "퍼센트(%)" in t
 
 
 def _apply_amount_to_items(items: list[dict], amount: float, *, only_selected: bool = True) -> list[dict]:
@@ -3668,7 +3675,7 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
         do_cancel = False
         st.session_state["pi_left_mode"] = "mail"
     if not smtp_cfg.get("ready"):
-        st.warning("SMTP 미연동 — 위에서 다음메일 계정을 저장·연결 테스트하세요.")
+        st.warning("SMTP 미연동 — 아래에서 다음메일 계정을 저장·연결 테스트하세요.")
     if do_final:
         subject = str(st.session_state.get("pi_mail_compose_subject") or "").strip()
         body = _with_mail_signature(str(st.session_state.get("pi_mail_compose_body") or ""))
@@ -3736,6 +3743,8 @@ def _render_items_table(
     editor_key: str,
     items: list[dict],
     pct_default: float,
+    client: str = "",
+    price_df: pd.DataFrame | None = None,
 ) -> list[dict]:
     st.markdown("##### 단가 조정 내용")
 
@@ -3745,42 +3754,51 @@ def _render_items_table(
         horizontal=True,
         key=f"{editor_key}_mode",
     )
-    c_val, c_apply, c_reload = st.columns([1.4, 1.1, 1.2])
-    with c_val:
-        if mode.startswith("퍼센트"):
-            apply_val = st.number_input(
-                "적용 퍼센테이지(%)",
-                min_value=0.0,
-                max_value=100.0,
-                value=float(pct_default),
-                step=0.5,
-                key=f"{editor_key}_pct",
-            )
-        else:
-            apply_val = st.number_input(
-                "인상금액(원)",
-                min_value=0.0,
-                max_value=1_000_000.0,
-                value=float(st.session_state.get(f"{editor_key}_amt", 0.0)),
-                step=100.0,
-                key=f"{editor_key}_amt",
-            )
+    is_pct = _increase_mode_is_pct(mode)
+    pct_key = f"{editor_key}_pct"
+    amt_key = f"{editor_key}_amt"
+    if pct_key not in st.session_state:
+        st.session_state[pct_key] = float(pct_default)
+    if amt_key not in st.session_state:
+        st.session_state[amt_key] = 0.0
+    pct_val = st.number_input(
+        "적용 퍼센테이지(%)",
+        min_value=0.0,
+        max_value=100.0,
+        step=0.5,
+        key=pct_key,
+        disabled=not is_pct,
+    )
+    amt_val = st.number_input(
+        "인상금액(원)",
+        min_value=0.0,
+        max_value=1_000_000.0,
+        step=100.0,
+        key=amt_key,
+        disabled=is_pct,
+    )
+    c_apply, c_reload = st.columns(2)
     with c_apply:
-        st.write("")
         if st.button("인상단가에 적용", key=f"{editor_key}_apply", use_container_width=True, type="primary"):
             base = _normalize_items_selection(st.session_state.get(editor_key, items))
-            if mode.startswith("퍼센트"):
-                st.session_state[editor_key] = _apply_pct_to_items(base, apply_val, only_selected=True)
+            if is_pct:
+                st.session_state[editor_key] = _apply_pct_to_items(
+                    base, float(pct_val), only_selected=True
+                )
+                st.session_state[f"{editor_key}_apply_note"] = f"{float(pct_val):g}% 적용"
             else:
-                st.session_state[editor_key] = _apply_amount_to_items(base, apply_val, only_selected=True)
+                st.session_state[editor_key] = _apply_amount_to_items(
+                    base, float(amt_val), only_selected=True
+                )
+                st.session_state[f"{editor_key}_apply_note"] = f"{float(amt_val):,.0f}원 가산"
             _bump_editor_widget(editor_key)
-            _pi_rerun()
     with c_reload:
-        st.write("")
         if st.button("매출 최종단가 다시 불러오기", key=f"{editor_key}_reload", use_container_width=True):
-            st.session_state.pop(editor_key, None)
+            if isinstance(price_df, pd.DataFrame):
+                st.session_state[editor_key] = _init_items_from_prices(client, price_df, 0.0)
+            else:
+                st.session_state.pop(editor_key, None)
             _bump_editor_widget(editor_key)
-            _pi_rerun()
 
     if editor_key not in st.session_state:
         st.session_state[editor_key] = _normalize_items_selection(items)
@@ -3826,20 +3844,30 @@ def _render_items_table(
             cleaned = _items_from_editor_df(edited)
             st.session_state[editor_key] = cleaned
             _bump_editor_widget(editor_key)
-            _pi_rerun()
     with b2:
         if st.button("표 초기화(전체 삭제)", key=f"{editor_key}_clear", use_container_width=True):
             st.session_state[editor_key] = []
             _bump_editor_widget(editor_key)
-            _pi_rerun()
     with b3:
         if st.button("표 내용 저장", key=f"{editor_key}_save", type="primary", use_container_width=True):
             st.session_state[editor_key] = _items_from_editor_df(edited)
             st.success("품목표 저장됨 (거래처별 유지)")
-            # session_state에 이미 반영됨 — 전체/fragment rerun 없이 확인 메시지만 표시
 
-    result = _normalize_items_selection(_items_from_editor_df(edited))
-    st.session_state[editor_key] = result
+    touched = any(
+        st.session_state.get(k)
+        for k in (
+            f"{editor_key}_apply",
+            f"{editor_key}_reload",
+            f"{editor_key}_drop_empty",
+            f"{editor_key}_clear",
+        )
+    )
+    if touched:
+        result = _normalize_items_selection(list(st.session_state.get(editor_key) or []))
+    else:
+        result = _normalize_items_selection(_items_from_editor_df(edited))
+        st.session_state[editor_key] = result
+    apply_note = str(st.session_state.get(f"{editor_key}_apply_note") or "").strip()
     chosen = _selected_items(result)
     if result:
         preview = " · ".join(
@@ -3849,7 +3877,8 @@ def _render_items_table(
         if len(chosen) > 5:
             preview += f" 외 {len(chosen) - 5}건"
         st.caption(
-            f"전체 {len(result)}개 · 공문 반영 {len(chosen)}개"
+            (f"{apply_note} · " if apply_note else "")
+            + f"전체 {len(result)}개 · 공문 반영 {len(chosen)}개"
             + (f" — {preview}" if chosen else " — (선택 없음)")
         )
     return result
@@ -4316,7 +4345,7 @@ def _render_email_addr_fields() -> None:
         if isinstance(mail_df, pd.DataFrame) and mail_df.empty:
             st.warning(
                 "연락처가 없어 자동반영할 수 없습니다. "
-                "위 **📇 메일 연락처 관리**에서 저장하거나, 수신 이메일을 직접 입력하세요."
+                "아래 **📇 메일 연락처 관리**에서 저장하거나, 수신 이메일을 직접 입력하세요."
             )
     elif picked_n > 1 and auto_email:
         st.caption(f"수신 {len([x for x in auto_email.split(',') if x.strip()])}곳")
@@ -5125,6 +5154,81 @@ def _render_pi_left_panel() -> None:
 
 
 @st.fragment
+def _render_pi_right_letter_form() -> None:
+    """공문 입력·단가표만 다시 그린다. 왼쪽 메일 칸은 건드리지 않는다."""
+    pack = dict(st.session_state.get("_pi_right_pack") or {})
+    client = str(pack.get("client") or "")
+    body_key = str(pack.get("body_key") or "")
+    items_key = str(pack.get("items_key") or "")
+    pct_key = "pi_global_pct"
+    price_df = pack.get("price_df")
+    if not isinstance(price_df, pd.DataFrame):
+        price_df = pd.DataFrame()
+
+    if st.session_state.pop("pi_body_reset_now", None) and body_key:
+        st.session_state[body_key] = _default_letter_body_text()
+
+    st.markdown("##### 공문 입력")
+    _render_include_letter_body_fields()
+    m1, m2 = st.columns(2)
+    with m1:
+        st.text_input("문서번호", value=_default_doc_no(client), key="pi_letter_doc_no")
+    with m2:
+        st.date_input("발송일자", value=date.today(), key="pi_letter_send_date")
+    m3, m4, m5 = st.columns([2, 1, 1])
+    with m3:
+        st.text_input("제목", value=_default_letter_title(), key="pi_single_title")
+    with m4:
+        st.date_input("시행일", value=date.today().replace(day=1), key="pi_single_eff")
+    with m5:
+        st.text_input("문의", value="031-366-0799", key="pi_single_contact")
+
+    st.markdown("**1. 공문내용**")
+    if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
+        st.session_state["pi_body_reset_now"] = True
+        _pi_rerun()
+    st.text_area(
+        "공문 본문",
+        height=300,
+        key=body_key or "pi_letter_body_none",
+        label_visibility="collapsed",
+    )
+
+    include_price = st.checkbox(
+        "2. 단가적용 포함 (선택)",
+        value=bool(st.session_state.get("pi_include_price", True)),
+        key="pi_include_price",
+    )
+    if include_price:
+        items = _render_items_table(
+            editor_key=items_key or "pi_items_none",
+            items=list(st.session_state.get(items_key) or []),
+            pct_default=float(st.session_state.get(pct_key, 5.0)),
+            client=client,
+            price_df=price_df,
+        )
+        st.session_state[pct_key] = float(
+            st.session_state.get(f"{items_key}_pct", st.session_state.get(pct_key, 5.0))
+        )
+        if not items:
+            st.info("품목이 비어 있으면 단가표 없이 본문만 발송됩니다.")
+    else:
+        items = list(st.session_state.get(items_key) or [])
+
+    prev = dict(st.session_state.get("_pi_left_pack") or {})
+    if prev and items_key and body_key:
+        _store_pi_left_pack(
+            client=str(prev.get("client") or client),
+            picked=list(prev.get("picked") or []),
+            email=str(st.session_state.get("pi_single_email") or prev.get("email") or ""),
+            staff=str(prev.get("staff") or ""),
+            body_key=body_key,
+            items_key=items_key,
+            last=prev.get("last"),
+        )
+
+
+@st.fragment
 def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "") -> None:
     """공문 탭 — 업무일지형 좌우 레이아웃 · 개별·일괄·이력.
 
@@ -5147,10 +5251,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
 
     mail_df, _autoload_note = ensure_mail_contacts_autoload()
     st.session_state["_pi_mail_df_cache"] = mail_df
-    smtp_cfg = _render_smtp_bar()
-    # 연락처 자동사용 건수 안내 문구는 숨김
-    mail_df = _render_mail_settings_expander(mail_df)
-    st.session_state["_pi_mail_df_cache"] = mail_df
+    smtp_cfg = smtp_settings()
 
     tab_single, tab_bulk, tab_hist = st.tabs(["개별 발송", "일괄 발송", "발송 이력"])
 
@@ -5198,54 +5299,14 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
 
             # 오른쪽 입력을 먼저 실행해 session_state를 갱신한 뒤 왼쪽 미리보기에 반영
             # (화면 배치는 columns 생성 순서대로 왼쪽|오른쪽 유지)
+            st.session_state["_pi_right_pack"] = {
+                "client": client,
+                "body_key": body_key,
+                "items_key": items_key,
+                "price_df": price_df,
+            }
             with col_right:
-                st.markdown("##### 공문 입력")
-                if st.session_state.get("pi_mail_draft") or st.session_state.get("pi_left_mode") == "mail":
-                    _render_include_letter_body_fields()
-                else:
-                    _render_include_letter_body_toggle()
-                m1, m2 = st.columns(2)
-                with m1:
-                    st.text_input("문서번호", value=_default_doc_no(client), key="pi_letter_doc_no")
-                with m2:
-                    st.date_input("발송일자", value=date.today(), key="pi_letter_send_date")
-                m3, m4, m5 = st.columns([2, 1, 1])
-                with m3:
-                    st.text_input("제목", value=_default_letter_title(), key="pi_single_title")
-                with m4:
-                    st.date_input("시행일", value=date.today().replace(day=1), key="pi_single_eff")
-                with m5:
-                    st.text_input("문의", value="031-366-0799", key="pi_single_contact")
-
-                st.markdown("**1. 공문내용**")
-                if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
-                    st.session_state[body_key] = _default_letter_body_text()
-                    _pi_rerun()
-                st.text_area(
-                    "공문 본문",
-                    height=300,
-                    key=body_key,
-                    label_visibility="collapsed",
-                )
-
-                include_price = st.checkbox(
-                    "2. 단가적용 포함 (선택)",
-                    value=bool(st.session_state.get("pi_include_price", True)),
-                    key="pi_include_price",
-                )
-                if include_price:
-                    items = _render_items_table(
-                        editor_key=items_key,
-                        items=st.session_state[items_key],
-                        pct_default=st.session_state[pct_key],
-                    )
-                    st.session_state[pct_key] = float(
-                        st.session_state.get(f"{items_key}_pct", st.session_state[pct_key])
-                    )
-                    if not items:
-                        st.info("품목이 비어 있으면 단가표 없이 본문만 발송됩니다.")
-                else:
-                    items = list(st.session_state.get(items_key) or [])
+                _render_pi_right_letter_form()
 
             email = str(st.session_state.get("pi_single_email") or email or "")
             _store_pi_left_pack(
@@ -5279,7 +5340,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             horizontal=True,
             key="pi_bulk_mode",
         )
-        if mode_bulk.startswith("퍼센트"):
+        if _increase_mode_is_pct(mode_bulk):
             pct_bulk = st.number_input(
                 "공통 적용 퍼센테이지(%)",
                 min_value=0.0,
@@ -5411,7 +5472,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                         status.info(f"({i + 1}/{n}) **{cl}** 개별 공문 발송 중…")
                         pdf = latest_unit_prices(sales_df, cl)
                         items_b = _init_items_from_prices(cl, pdf, 0.0)
-                        if mode_bulk.startswith("퍼센트"):
+                        if _increase_mode_is_pct(mode_bulk):
                             items_b = _apply_pct_to_items(items_b, pct_bulk)
                         else:
                             items_b = _apply_amount_to_items(items_b, amt_bulk)
@@ -5483,4 +5544,8 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 use_container_width=True,
                 hide_index=True,
             )
+
+    smtp_cfg = _render_smtp_bar()
+    mail_df = _render_mail_settings_expander(mail_df)
+    st.session_state["_pi_mail_df_cache"] = mail_df
 
