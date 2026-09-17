@@ -98,6 +98,19 @@ class BootPathRegressionTest(unittest.TestCase):
         self.assertNotIn("_dash_after_drive_boot", code)
         self.assertNotIn("_dash_sticky_inject_ver", code)
 
+    def test_cloud_pull_button_does_not_force_refresh_all(self):
+        path = os.path.join(os.path.dirname(__file__), "app.py")
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        marker = '↻ Drive 복사본에서 가져오기'
+        self.assertIn(marker, src)
+        seg = src.split(marker, 1)[1].split("🗑️ 저장된 캐시 데이터 초기화", 1)[0]
+        code = "\n".join(ln for ln in seg.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertIn("force_refresh=False", code)
+        self.assertNotIn("force_refresh=True", code)
+        self.assertIn("include_worklog=False", code)
+        self.assertNotIn("include_worklog=True", code)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

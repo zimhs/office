@@ -19,6 +19,21 @@ try:
 except Exception:
     _sha256_file = None  # type: ignore
 
+try:
+    from data_freshness_lock import (
+        copy_file_if_newer,
+        generation_from_file,
+        prune_annual_if_monthly,
+        restore_locked_latest,
+        write_bytes_if_newer,
+    )
+except Exception:  # pragma: no cover
+    copy_file_if_newer = None  # type: ignore
+    generation_from_file = None  # type: ignore
+    prune_annual_if_monthly = None  # type: ignore
+    restore_locked_latest = None  # type: ignore
+    write_bytes_if_newer = None  # type: ignore
+
 DRIVE_COPY_NAME = "dashboard 복사본"
 
 # Drive 루트 파일명 → (캐시 상대경로, 선택적 name.txt 내용)
@@ -331,6 +346,202 @@ def _list_drive_sales_from_names(names: List[str]) -> List[str]:
     return sorted(keep)
 
 
+_SIDEBAR_SLOTS: Dict[str, Tuple[str, str, Optional[str], Optional[str]]] = {
+    "address": ("주소.csv", "address.csv", None, None),
+    "industry": ("업체대분류.csv", "industry.csv", None, None),
+    "debt": ("채권.csv", "debt.csv", None, "debt"),
+    "tank": ("탱크.csv", "tank_cache.dat", "탱크.csv", None),
+    "vaporizer": ("기화기.csv", "vaporizer_cache.dat", "기화기.csv", None),
+    "integrated": ("통합탱크재고.csv", "integrated_cache.dat", "통합탱크재고.csv", None),
+}
+
+
+def _connected_data_roots() -> List[str]:
+    """로컬 uproad → Drive 복사본/uproad 순."""
+    roots: List[str] = []
+    local = resolve_local_uproad_dir()
+    if local and os.path.isdir(local):
+        roots.append(local)
+    drive = resolve_drive_dashboard_copy()
+    if drive and os.path.isdir(drive) and drive not in roots:
+        roots.append(drive)
+    return roots
+
+
+def _source_freshness_key(path: str, *, kind: str, name: str) -> Tuple[int, int, int]:
+    """같은 이름 파일이 여러 경로에 있으면 내용 세대(기간·종료일·크기)로 고른다.
+
+    mtime 은 Drive 복사가 덮어써서 최신처럼 보이므로 쓰지 않는다.
+    """
+    if not path or not os.path.isfile(path):
+        return (0, 0, 0)
+    if generation_from_file is not None:
+        try:
+            gen = generation_from_file(path, kind=kind, name=name)
+            return (int(gen[0] or 0), int(gen[1] or 0), int(gen[2] or 0))
+        except Exception:
+            pass
+    try:
+        return (0, 0, int(os.path.getsize(path) or 0))
+    except OSError:
+        return (0, 0, 0)
+
+
+def _prefer_newer_source(
+    current: Optional[str],
+    candidate: str,
+    *,
+    kind: str,
+    name: str,
+) -> str:
+    if not current or not os.path.isfile(current):
+        return candidate
+    if not candidate or not os.path.isfile(candidate):
+        return current
+    if _source_freshness_key(candidate, kind=kind, name=name) > _source_freshness_key(
+        current, kind=kind, name=name
+    ):
+        return candidate
+    return current
+
+
+def load_sidebar_slot_from_connected_path(
+    slot: str,
+    cache_dir: str = "./uploaded_cache",
+) -> dict:
+    """사이드바 칸 하나: 연결된 uproad/Drive 경로 파일을 캐시로 가져온다."""
+    os.makedirs(cache_dir, exist_ok=True)
+    roots = _connected_data_roots()
+    if not roots:
+        return {
+            "ok": False,
+            "copied": [],
+            "source": None,
+            "slot": slot,
+            "error": "연결된 경로 없음 (dashboard/uproad 또는 Drive 복사본)",
+        }
+    if restore_locked_latest is not None:
+        restore_locked_latest(cache_dir)
+
+    if slot == "sales":
+        sales_dir = os.path.join(cache_dir, "sales")
+        os.makedirs(sales_dir, exist_ok=True)
+        dest_to_src: Dict[str, str] = {}
+        src_root = ""
+        for root in roots:
+            for dest, src in _list_local_uproad_sales(root):
+                chosen = _prefer_newer_source(
+                    dest_to_src.get(dest), src, kind="sales", name=dest
+                )
+                dest_to_src[dest] = chosen
+                if chosen == src:
+                    src_root = root
+        if not dest_to_src:
+            return {
+                "ok": False,
+                "copied": [],
+                "source": roots[0],
+                "slot": slot,
+                "error": "경로에 매출 CSV(20xx.csv) 없음",
+            }
+        copied: List[str] = []
+        blocked = 0
+        for dest, src in dest_to_src.items():
+            dst = os.path.join(sales_dir, dest)
+            if copy_file_if_newer is not None:
+                wrote, reason = copy_file_if_newer(
+                    src, dst, cache_dir, kind="sales", name=dest
+                )
+                if wrote:
+                    copied.append(dest)
+                elif reason == "blocked_older":
+                    blocked += 1
+                elif reason == "same":
+                    copied.append(dest)
+            elif _atomic_copy(src, dst):
+                copied.append(dest)
+        if prune_annual_if_monthly is not None:
+            prune_annual_if_monthly(sales_dir)
+        return {
+            "ok": True,
+            "copied": copied,
+            "blocked": blocked,
+            "source": src_root or roots[0],
+            "slot": slot,
+        }
+
+    spec = _SIDEBAR_SLOTS.get(slot)
+    if not spec:
+        return {"ok": False, "copied": [], "slot": slot, "error": f"알 수 없는 칸: {slot}"}
+    src_name, rel, name_txt, kind = spec
+    src = None
+    src_root = ""
+    for root in roots:
+        found = _find_named_file(root, src_name)
+        if not found:
+            continue
+        if kind in ("debt", "sales"):
+            chosen = _prefer_newer_source(src, found, kind=kind, name=src_name)
+            if chosen == found:
+                src = found
+                src_root = root
+        else:
+            src = found
+            src_root = root
+            break
+    if not src:
+        return {
+            "ok": False,
+            "copied": [],
+            "source": roots[0],
+            "slot": slot,
+            "error": f"경로에 {src_name} 없음",
+        }
+    dst = os.path.join(cache_dir, rel)
+    wrote = False
+    reason = ""
+    if kind in ("debt", "sales") and copy_file_if_newer is not None:
+        wrote, reason = copy_file_if_newer(src, dst, cache_dir, kind=kind, name=src_name)
+        if not wrote and reason == "same":
+            wrote = True
+    else:
+        wrote = _atomic_copy(src, dst)
+        reason = "wrote" if wrote else "write_failed"
+    if not wrote:
+        if reason == "blocked_older":
+            return {
+                "ok": True,
+                "copied": [],
+                "blocked": 1,
+                "source": src_root,
+                "slot": slot,
+                "note": f"{src_name} 은 잠긴 최신본보다 예전이라 유지했습니다.",
+            }
+        return {
+            "ok": False,
+            "copied": [],
+            "source": src_root,
+            "slot": slot,
+            "error": f"{src_name} 복사 실패",
+        }
+    if name_txt:
+        try:
+            with open(dst + "_name.txt", "w", encoding="utf-8") as f:
+                f.write(name_txt)
+        except Exception:
+            pass
+    if rel == DEBT_CACHE_REL:
+        sha = _file_sha256(dst)
+        if sha:
+            write_debt_upload_stamp(cache_dir, sha)
+    return {
+        "ok": True,
+        "copied": [src_name],
+        "source": src_root,
+        "slot": slot,
+    }
+
+
 def sync_local_uproad_into_cache(
     cache_dir: str = "./uploaded_cache",
     *,
@@ -354,41 +565,49 @@ def sync_local_uproad_into_cache(
         sales_dir = os.path.join(cache_dir, "sales")
         os.makedirs(sales_dir, exist_ok=True)
 
+        if restore_locked_latest is not None:
+            restore_locked_latest(cache_dir)
+
         for src_name, rel, name_txt in _CACHE_MAP:
             src = _find_named_file(src_root, src_name)
             if not src:
                 continue
             dst = os.path.join(cache_dir, rel)
-            if _atomic_copy(src, dst):
-                copied.append(src_name)
-                if name_txt:
-                    try:
-                        with open(dst + "_name.txt", "w", encoding="utf-8") as f:
-                            f.write(name_txt)
-                    except Exception:
-                        pass
-                if rel == DEBT_CACHE_REL:
-                    sha = _file_sha256(dst)
-                    if sha:
-                        write_debt_upload_stamp(cache_dir, sha)
+            if rel == DEBT_CACHE_REL and copy_file_if_newer is not None:
+                wrote, reason = copy_file_if_newer(
+                    src, dst, cache_dir, kind="debt", name=src_name
+                )
+                if not wrote:
+                    continue
+            elif not _atomic_copy(src, dst):
+                continue
+            copied.append(src_name)
+            if name_txt:
+                try:
+                    with open(dst + "_name.txt", "w", encoding="utf-8") as f:
+                        f.write(name_txt)
+                except Exception:
+                    pass
+            if rel == DEBT_CACHE_REL:
+                sha = _file_sha256(dst)
+                if sha:
+                    write_debt_upload_stamp(cache_dir, sha)
 
         wanted_sales = _list_local_uproad_sales(src_root)
         if wanted_sales:
-            wanted_set = {dest for dest, _src in wanted_sales}
-            try:
-                for existing in os.listdir(sales_dir):
-                    if existing.endswith(".csv") and existing not in wanted_set:
-                        try:
-                            os.remove(os.path.join(sales_dir, existing))
-                            copied.append(f"-sales/{existing}")
-                        except Exception:
-                            pass
-            except OSError:
-                pass
             for dest, src in wanted_sales:
                 dst = os.path.join(sales_dir, dest)
-                if _atomic_copy(src, dst):
+                if copy_file_if_newer is not None:
+                    wrote, _reason = copy_file_if_newer(
+                        src, dst, cache_dir, kind="sales", name=dest
+                    )
+                    if wrote:
+                        copied.append(f"sales/{dest}")
+                elif _atomic_copy(src, dst):
                     copied.append(f"sales/{dest}")
+            if prune_annual_if_monthly is not None:
+                for gone in prune_annual_if_monthly(sales_dir):
+                    copied.append(f"-sales/{gone}")
 
         if include_worklog:
             wl_src = os.path.join(src_root, "worklog")
@@ -458,6 +677,8 @@ def sync_drive_copy_into_cache(
         os.makedirs(cache_dir, exist_ok=True)
         sales_dir = os.path.join(cache_dir, "sales")
         os.makedirs(sales_dir, exist_ok=True)
+        if restore_locked_latest is not None:
+            restore_locked_latest(cache_dir)
 
         for src_name, rel, name_txt in _CACHE_MAP:
             src = os.path.join(drive_root, src_name)
@@ -468,39 +689,55 @@ def sync_drive_copy_into_cache(
                 and local_debt_upload_should_keep(cache_dir, drive_src=src)
             ):
                 continue
-            if not force_refresh and not _should_replace(src, dst):
-                continue
             if not os.path.isfile(src):
                 continue
-            if _atomic_copy(src, dst):
-                copied.append(src_name)
-                if name_txt:
-                    try:
-                        with open(dst + "_name.txt", "w", encoding="utf-8") as f:
-                            f.write(name_txt)
-                    except Exception:
-                        pass
+            if rel == DEBT_CACHE_REL and copy_file_if_newer is not None:
+                wrote, _reason = copy_file_if_newer(
+                    src,
+                    dst,
+                    cache_dir,
+                    kind="debt",
+                    name=src_name,
+                    allow_same=False,
+                )
+                if not wrote:
+                    continue
+            else:
+                if not force_refresh and not _should_replace(src, dst):
+                    continue
+                if not _atomic_copy(src, dst):
+                    continue
+            copied.append(src_name)
+            if name_txt:
+                try:
+                    with open(dst + "_name.txt", "w", encoding="utf-8") as f:
+                        f.write(name_txt)
+                except Exception:
+                    pass
 
         wanted_sales = _list_drive_sales(drive_root)
-        # 매출: Drive 목록으로 캐시를 맞춘다 (옛 2026.csv 잔존 방지)
+        # 매출: 더 최신 월별만 반영. 소스에 없는 최신 월별은 지우지 않음.
         if wanted_sales:
-            wanted_set = set(wanted_sales)
-            try:
-                for existing in os.listdir(sales_dir):
-                    if existing.endswith(".csv") and existing not in wanted_set:
-                        try:
-                            os.remove(os.path.join(sales_dir, existing))
-                            copied.append(f"-sales/{existing}")
-                        except Exception:
-                            pass
-            except OSError:
-                pass
             for sn in wanted_sales:
                 src = os.path.join(drive_root, sn)
                 dst = os.path.join(sales_dir, sn)
-                if force_refresh or _should_replace(src, dst):
+                if copy_file_if_newer is not None:
+                    wrote, _reason = copy_file_if_newer(
+                        src,
+                        dst,
+                        cache_dir,
+                        kind="sales",
+                        name=sn,
+                        allow_same=False,
+                    )
+                    if wrote:
+                        copied.append(f"sales/{sn}")
+                elif force_refresh or _should_replace(src, dst):
                     if _atomic_copy(src, dst):
                         copied.append(f"sales/{sn}")
+            if prune_annual_if_monthly is not None:
+                for gone in prune_annual_if_monthly(sales_dir):
+                    copied.append(f"-sales/{gone}")
 
         # worklog 하위 폴더 (부트 시 생략 가능)
         if include_worklog:
@@ -551,12 +788,27 @@ def sync_dashboard_copy_on_boot(
     """
     local_root = resolve_drive_dashboard_copy()
     if local_root:
-        return sync_drive_copy_into_cache(
+        drive_res = sync_drive_copy_into_cache(
             cache_dir,
             force_refresh=force_refresh,
             include_worklog=include_worklog,
             protect_newer_local=protect_newer_local,
         )
+        # Drive 복사본이 늦을 수 있어, 맥 Desktop/uproad 저장소가 있으면 그다음 반영.
+        uproad_res = sync_local_uproad_into_cache(
+            cache_dir, include_worklog=include_worklog
+        )
+        out = dict(drive_res) if isinstance(drive_res, dict) else {
+            "ok": True,
+            "copied": [],
+            "source": local_root,
+        }
+        copied = list(out.get("copied") or [])
+        if isinstance(uproad_res, dict) and uproad_res.get("ok") and not uproad_res.get("skipped"):
+            copied.extend(uproad_res.get("copied") or [])
+            out["local_uproad"] = uproad_res.get("source")
+        out["copied"] = copied
+        return out
     try:
         from drive_remote_fetch import sync_drive_copy_from_remote
 
@@ -632,20 +884,30 @@ def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache", *, force: bool
                     continue
                 if _atomic_copy(src, dst):
                     copied.append(sn)
-            # Drive에만 남은 옛 매출(예: 2026.csv) 제거 — 캐시에 있는 목록만 유지
-            try:
-                for n in os.listdir(drive_root):
-                    if not _SALES_NAME_RE.match(n):
-                        continue
-                    if n in cache_set:
-                        continue
-                    try:
-                        os.remove(os.path.join(drive_root, n))
-                        copied.append(f"-{n}")
-                    except Exception:
-                        pass
-            except OSError:
-                pass
+            # 연간 YYYY.csv 만 정리. 월별 최신(202609 등)은 캐시에 없어도 Drive에서 지우지 않음.
+            if prune_annual_if_monthly is not None:
+                for gone in prune_annual_if_monthly(drive_root):
+                    copied.append(f"-{gone}")
+            else:
+                try:
+                    for n in os.listdir(drive_root):
+                        m = re.match(r"^(20\d{2})\.csv$", n, re.I)
+                        if not m:
+                            continue
+                        year = m.group(1)
+                        has_monthly = any(
+                            re.match(rf"^{year}\d{{2}}\.csv$", x, re.I)
+                            for x in cache_set
+                        )
+                        if not has_monthly:
+                            continue
+                        try:
+                            os.remove(os.path.join(drive_root, n))
+                            copied.append(f"-{n}")
+                        except Exception:
+                            pass
+                except OSError:
+                    pass
 
         return {
             "ok": True,

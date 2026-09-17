@@ -24,6 +24,17 @@ from drive_autoload import (
     local_debt_upload_should_keep,
 )
 
+try:
+    from data_freshness_lock import (
+        prune_annual_if_monthly,
+        restore_locked_latest,
+        write_bytes_if_newer,
+    )
+except Exception:  # pragma: no cover
+    prune_annual_if_monthly = None  # type: ignore
+    restore_locked_latest = None  # type: ignore
+    write_bytes_if_newer = None  # type: ignore
+
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 _DRIVE_API = "https://www.googleapis.com/drive/v3"
 _TIMEOUT = 90
@@ -302,6 +313,8 @@ def sync_drive_copy_from_remote(
     os.makedirs(cache_dir, exist_ok=True)
     sales_dir = os.path.join(cache_dir, "sales")
     os.makedirs(sales_dir, exist_ok=True)
+    if restore_locked_latest is not None:
+        restore_locked_latest(cache_dir)
 
     drive_to_rel = {src_name: rel for src_name, rel, _ in _CACHE_MAP}
     for src_name, meta in by_name.items():
@@ -322,15 +335,24 @@ def sync_drive_copy_from_remote(
         if not _remote_differs_from_cache(meta, dst, force_refresh=force_refresh):
             continue
         raw, derr = _drive_download(str(meta.get("id")))
-        if raw and _write_bytes(dst, raw):
-            copied.append(src_name)
-            name_txt = next((nt for sn, _, nt in _CACHE_MAP if sn == src_name and nt), None)
-            if name_txt:
-                try:
-                    with open(dst + "_name.txt", "w", encoding="utf-8") as f:
-                        f.write(name_txt)
-                except Exception:
-                    pass
+        if not raw:
+            continue
+        if rel == DEBT_CACHE_REL and write_bytes_if_newer is not None:
+            wrote, _reason = write_bytes_if_newer(
+                cache_dir, rel, raw, kind="debt", name=src_name, allow_same=False
+            )
+            if not wrote:
+                continue
+        elif not _write_bytes(dst, raw):
+            continue
+        copied.append(src_name)
+        name_txt = next((nt for sn, _, nt in _CACHE_MAP if sn == src_name and nt), None)
+        if name_txt:
+            try:
+                with open(dst + "_name.txt", "w", encoding="utf-8") as f:
+                    f.write(name_txt)
+            except Exception:
+                pass
 
     sales_names = [
         n
@@ -339,15 +361,6 @@ def sync_drive_copy_from_remote(
     ]
     wanted_sales = _dedupe_sales_names(sales_names)
     if wanted_sales:
-        wanted_set = set(wanted_sales)
-        if force_refresh:
-            try:
-                for existing in os.listdir(sales_dir):
-                    if existing.endswith(".csv") and existing not in wanted_set:
-                        os.remove(os.path.join(sales_dir, existing))
-                        copied.append(f"-sales/{existing}")
-            except OSError:
-                pass
         for sn in wanted_sales:
             meta = by_name.get(sn)
             if not meta:
@@ -356,8 +369,19 @@ def sync_drive_copy_from_remote(
             if not _remote_differs_from_cache(meta, dst, force_refresh=force_refresh):
                 continue
             raw, _ = _drive_download(str(meta.get("id")))
-            if raw and _write_bytes(dst, raw):
+            if not raw:
+                continue
+            if write_bytes_if_newer is not None:
+                wrote, _reason = write_bytes_if_newer(
+                    cache_dir, f"sales/{sn}", raw, kind="sales", name=sn, allow_same=False
+                )
+                if wrote:
+                    copied.append(f"sales/{sn}")
+            elif _write_bytes(dst, raw):
                 copied.append(f"sales/{sn}")
+        if prune_annual_if_monthly is not None:
+            for gone in prune_annual_if_monthly(sales_dir):
+                copied.append(f"-sales/{gone}")
 
     # worklog 하위 폴더 (부트 시 생략 가능 — 탭 열 때 수동 sync)
     wl_meta = by_name.get("worklog")

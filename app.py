@@ -30,25 +30,6 @@ try:
     import OpenDartReader
 except ImportError:
     OpenDartReader = None
-# [UI 패치] 검색창 팝업 입력칸 바로 아래 딱 붙이기 (좌우 위치 이탈 방지)
-st.markdown(
-    """
-    <style>
-    /* 1. 팝업창의 높이만 깔끔하게 제한 (위치 계산은 스트림릿에게 맡겨서 입력칸에 딱 붙게 함) */
-    div[data-baseweb="popover"] > div,
-    ul[role="listbox"] {
-        max-height: 35vh !important;
-        overflow-y: auto !important;
-    }
-    
-    /* 2. 고정바 안에서도 스트림릿이 "밑에 공간 넓다!"고 착각하게 만들어 무조건 아래로 열게 유도 */
-    .main .block-container {
-        padding-bottom: 60vh !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
 # Tab3 히트맵 — 파스텔만 사용 (진한 네이비/브라운 제외)
 _TAB3_CMAP_BLUE = LinearSegmentedColormap.from_list(
     "tab3_blue", ["#F8FAFC", "#DBEAFE", "#93C5FD"]
@@ -128,6 +109,7 @@ try:
         sync_drive_copy_into_cache,
         sync_local_uproad_into_cache,
         write_debt_upload_stamp,
+        load_sidebar_slot_from_connected_path,
     )
 except Exception:  # pragma: no cover
     sync_drive_copy_into_cache = None  # type: ignore
@@ -135,6 +117,20 @@ except Exception:  # pragma: no cover
     sync_dashboard_copy_on_boot = None  # type: ignore
     sync_local_uproad_into_cache = None  # type: ignore
     write_debt_upload_stamp = None  # type: ignore
+    load_sidebar_slot_from_connected_path = None  # type: ignore
+
+try:
+    from data_freshness_lock import (
+        clear_data_lock,
+        lock_status_caption,
+        restore_locked_latest,
+        write_bytes_if_newer,
+    )
+except Exception:  # pragma: no cover
+    clear_data_lock = None  # type: ignore
+    lock_status_caption = None  # type: ignore
+    restore_locked_latest = None  # type: ignore
+    write_bytes_if_newer = None  # type: ignore
 
 
 def _is_local_macos() -> bool:
@@ -628,8 +624,8 @@ def inject_custom_css():
                 overflow-y: hidden !important;
                 margin: 0 !important;
                 padding: 0 6px 2px 6px !important;
-                /* 탭바를 위로 2mm 올려 고정바 하단 구분선과 겹치지 않게 */
-                transform: translateY(-2mm) !important;
+                /* 맥북 Cloud와 동일 — 탭줄을 밀지 않음 */
+                transform: none !important;
                 pointer-events: auto !important;
                 position: relative !important;
                 top: auto !important;
@@ -1157,14 +1153,11 @@ def inject_custom_css():
                 max-width: 400px !important; 
             }
             
-            /* 2. 스크롤 높이 제한 및 하단 공간(쿠션) 확보 */
+            /* 2. 검색 팝업 높이만 제한. 화면 전체를 키우는 padding(50vh/60vh)은 쓰지 않는다. */
             div[data-baseweb="popover"] > div,
             ul[role="listbox"] {
                 max-height: 35vh !important;
                 overflow-y: auto !important;
-            }
-            div[data-testid="stAppViewContainer"] {
-                padding-bottom: 50vh !important;
             }
             
             /* 3. 쓸데없는 경고 툴팁 아예 숨김 처리 */
@@ -4950,7 +4943,10 @@ def debt_frame_fingerprint(df) -> tuple:
 
 
 def persist_debt_bytes(debt_bytes, cache_path: str, folder_csv: str = "채권.csv") -> bool:
-    """업로드 바이트를 캐시(+폴더 채권.csv)에 원자적 기록. Drive보다 이 파일이 진실."""
+    """업로드 바이트를 캐시(+폴더 채권.csv)에 원자적 기록. Drive보다 이 파일이 진실.
+
+    잠긴 최신본보다 예전 채권은 쓰지 않는다. 더 최신이면 잠금을 올리고 적용한다.
+    """
     if not debt_bytes or not cache_path:
         return False
     parent = os.path.dirname(cache_path) or "."
@@ -4958,22 +4954,31 @@ def persist_debt_bytes(debt_bytes, cache_path: str, folder_csv: str = "채권.cs
         os.makedirs(parent, exist_ok=True)
     except OSError:
         pass
-    tmp = cache_path + ".uploading"
-    try:
-        with open(tmp, "wb") as f:
-            f.write(debt_bytes)
-        os.replace(tmp, cache_path)
-    except Exception:
-        try:
-            with open(cache_path, "wb") as f:
-                f.write(debt_bytes)
-        except Exception:
+    if write_bytes_if_newer is not None:
+        wrote, reason = write_bytes_if_newer(
+            parent, "debt.csv", debt_bytes, kind="debt", name="채권.csv"
+        )
+        if reason == "blocked_older":
             return False
+        if reason == "write_failed":
+            return False
+    else:
+        tmp = cache_path + ".uploading"
         try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
+            with open(tmp, "wb") as f:
+                f.write(debt_bytes)
+            os.replace(tmp, cache_path)
         except Exception:
-            pass
+            try:
+                with open(cache_path, "wb") as f:
+                    f.write(debt_bytes)
+            except Exception:
+                return False
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
     try:
         with open(folder_csv, "wb") as f:
             f.write(debt_bytes)
@@ -5439,7 +5444,7 @@ def _apply_manual_staff_mapping(df):
 
 
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=8):
+def load_uploaded_files_from_bytes(file_tuples, manual_map_token=None, parse_version=9):
     return _parse_sales_uploaded_tuples(file_tuples)
 
 
@@ -5454,7 +5459,7 @@ def _manual_staff_map_cache_token():
 
 
 @st.cache_data(show_spinner="데이터 파싱 중입니다...")
-def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=8):
+def load_uploaded_files_from_meta(file_meta, manual_map_token=None, parse_version=9):
     """파일명·경로·mtime·size만 캐시 키로 사용.
     새로고침마다 ~10MB CSV를 읽어 해싱하던 비용을 제거(파싱 결과는 동일).
     manual_map_token / parse_version: 매핑·파서 변경 시 캐시 무효화."""
@@ -5598,10 +5603,13 @@ _DASH_WL_STATE_PREFIXES = (
     "wl_notes_",
     "wl_lines_live_",
     "wl_clients_live_",
+    "wl_remarks_live_",
     "wl_ent_t_",
     "wl_ent_c_",
+    "wl_ent_r_",
     "wl_ent_lc_",
     "wl_ent_clc_",
+    "wl_ent_rmc_",
     "wl_ent_gap_",
     "wl_entry_count_",
     "wl_exp_",
@@ -6343,7 +6351,7 @@ def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
     """
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     st.session_state.pop(f"_dash_force_tab_{tab_idx}", None)
-    for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER, _DASH_TAB_VISIT):
+    for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
         mounted[i] = True
     st.session_state["_dash_heavy_warmed"] = True
     mounted[tab_idx] = True
@@ -10289,8 +10297,49 @@ def inject_sticky_tabs_script():
                 return got;
             }
             function getMainRect() {
-                var block = parentDoc.querySelector('section.main .block-container');
-                return block ? block.getBoundingClientRect() : null;
+                /* 맥북 Cloud와 같이 본문 폭만 쓴다. 자식이 가로로 넘쳐도 고정바가 화면을 넘지 않게 자른다. */
+                var block = parentDoc.querySelector('[data-testid="stMainBlockContainer"]')
+                    || parentDoc.querySelector('section.main .block-container')
+                    || parentDoc.querySelector('.stMainBlockContainer');
+                var main = parentDoc.querySelector('[data-testid="stMain"]')
+                    || parentDoc.querySelector('section.main');
+                var vw = 0;
+                try {
+                    vw = (parentWin.visualViewport && parentWin.visualViewport.width)
+                        || parentWin.innerWidth
+                        || 0;
+                } catch (eVw) {
+                    vw = parentWin.innerWidth || 0;
+                }
+                var left = 16;
+                var width = Math.max(320, (vw || 1200) - 32);
+                var top = 0;
+                var bottom = 0;
+                var height = 0;
+                var src = block || main;
+                if (src) {
+                    var r = src.getBoundingClientRect();
+                    left = r.left;
+                    width = r.width;
+                    top = r.top;
+                    bottom = r.bottom;
+                    height = r.height;
+                }
+                if (main && main !== src) {
+                    var m = main.getBoundingClientRect();
+                    if (m.width > 80) {
+                        left = Math.max(left, m.left);
+                        width = Math.max(280, Math.min(left + width, m.right) - left);
+                    }
+                }
+                if (vw > 0 && left + width > vw - 2) {
+                    width = Math.max(280, vw - left - 2);
+                }
+                if (left < 0) {
+                    width = Math.max(280, width + left);
+                    left = 0;
+                }
+                return { left: left, width: width, top: top, bottom: bottom, height: height };
             }
             function cloudAvoidSidebarOverlap(rect) {
                 /* Cloud만: 오버레이 사이드바 위로 고정바가 덮지 않게 왼쪽을 비움. 로컬 좌표는 그대로. */
@@ -12678,6 +12727,21 @@ if _is_streamlit_cloud():
     inject_cloud_clip_fix_css()
 st.sidebar.header("📁 데이터 업로드 및 유지")
 _render_cloud_sync_banner()
+# git/Drive가 예전 CSV로 바꿔도 잠긴 최신본을 먼저 되돌린 뒤 동기화한다.
+if restore_locked_latest is not None:
+    try:
+        _lock_restored = restore_locked_latest(CACHE_DIR)
+        if _lock_restored:
+            try:
+                load_uploaded_files_from_meta.clear()
+                load_uploaded_files_from_bytes.clear()
+                load_debt_file.clear()
+            except Exception:
+                pass
+            st.session_state["_dash_sales_cache_cleared"] = True
+            clear_debt_runtime_caches()
+    except Exception:
+        pass
 # Drive「dashboard 복사본/uproad」→ uploaded_cache (재시작·재부팅 시 최신 우선)
 _drive_autoload_res = None
 _on_cloud_boot = _is_streamlit_cloud()
@@ -12753,7 +12817,9 @@ if isinstance(_drive_autoload_res, dict):
 if st.session_state.pop("_drive_restore_after_clear", False):
     if sync_dashboard_copy_on_boot is not None:
         try:
-            _restore = sync_dashboard_copy_on_boot(CACHE_DIR, force_refresh=True)
+            _restore = sync_dashboard_copy_on_boot(
+                CACHE_DIR, force_refresh=False, include_worklog=False
+            )
             _n = len((_restore or {}).get("copied") or [])
             if _n:
                 try:
@@ -12771,8 +12837,66 @@ if st.session_state.pop("_drive_restore_after_clear", False):
         except Exception as _re:
             st.sidebar.warning(f"Drive 복구 실패: {_re}")
 
+def _sidebar_run_connected_load(slot: str) -> None:
+    """로컬 사이드바 칸: uproad/Drive 경로 파일을 캐시로 넣고 화면을 다시 연다."""
+    try:
+        from drive_autoload import load_sidebar_slot_from_connected_path as _load_slot
+        res = _load_slot(slot, CACHE_DIR)
+    except Exception as e:
+        st.session_state["_sb_slot_msg"] = ("err", str(e))
+        st.rerun()
+        return
+    if slot in ("sales", "debt"):
+        try:
+            load_uploaded_files_from_meta.clear()
+            load_uploaded_files_from_bytes.clear()
+            load_debt_file.clear()
+        except Exception:
+            pass
+        clear_debt_runtime_caches()
+        st.session_state.pop("_debt_applied_sha", None)
+        st.session_state["_dash_sales_cache_cleared"] = True
+        for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
+            st.session_state.pop(_pk, None)
+    st.session_state["_sb_slot_msg"] = res
+    st.rerun()
+
+
+def _sidebar_slot_load_button(slot: str, src_name: str) -> None:
+    """수동 업로드칸은 그대로 두고, 로컬에서만 작은 경로 불러오기 버튼을 붙인다."""
+    if _is_streamlit_cloud():
+        return
+    cap, btn = st.sidebar.columns([2.3, 1])
+    cap.caption(f"경로 `{src_name}`")
+    if btn.button("불러오기", key=f"sb_slot_{slot}", help=f"uproad/{src_name} 자동 로드"):
+        _sidebar_run_connected_load(slot)
+
+
+_sb_slot_out = st.session_state.pop("_sb_slot_msg", None)
+if isinstance(_sb_slot_out, dict):
+    _copied = [x for x in (_sb_slot_out.get("copied") or []) if x]
+    if _sb_slot_out.get("ok") and _copied:
+        st.sidebar.success(f"경로에서 {len(_copied)}개 불러옴")
+        if _sb_slot_out.get("source"):
+            st.sidebar.caption(f"출처: {_sb_slot_out.get('source')}")
+    elif _sb_slot_out.get("ok") and _sb_slot_out.get("note"):
+        st.sidebar.info(_sb_slot_out.get("note"))
+    elif _sb_slot_out.get("ok") and int(_sb_slot_out.get("blocked") or 0) > 0:
+        st.sidebar.warning(
+            "저장소 파일이 잠긴 최신본보다 예전이라 유지했습니다. "
+            "같은 달 새 파일은 불러와야 합니다."
+        )
+    elif _sb_slot_out.get("ok"):
+        st.sidebar.info("경로와 캐시가 같거나 이미 최신입니다.")
+    else:
+        st.sidebar.warning(_sb_slot_out.get("error") or "경로 불러오기 실패")
+elif isinstance(_sb_slot_out, tuple) and len(_sb_slot_out) == 2:
+    st.sidebar.warning(str(_sb_slot_out[1]))
+
 address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
+_sidebar_slot_load_button("address", "주소.csv")
 industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)", type=["csv"])
+_sidebar_slot_load_button("industry", "업체대분류.csv")
 if "_debt_uploader_nonce" not in st.session_state:
     st.session_state["_debt_uploader_nonce"] = 0
 debt_file_up = st.sidebar.file_uploader(
@@ -12781,11 +12905,15 @@ debt_file_up = st.sidebar.file_uploader(
     key=f"debt_csv_uploader_{st.session_state['_debt_uploader_nonce']}",
     help="같은 이름(채권.csv)을 다시 올려도 새 내용으로 교체합니다. 이전 캐시는 버립니다.",
 )
+_sidebar_slot_load_button("debt", "채권.csv")
 uploaded_files_up = st.sidebar.file_uploader("매출 데이터 (다중 업로드)", type=["csv"], accept_multiple_files=True)
+_sidebar_slot_load_button("sales", "20xx.csv")
 st.sidebar.markdown("---")
 st.sidebar.subheader("🏭 설비 재고 관리 (선택)")
 tank_file_up = st.sidebar.file_uploader("탱크 재고현황 (CSV/Excel)", type=["csv", "xlsx"])
+_sidebar_slot_load_button("tank", "탱크.csv")
 vaporizer_file_up = st.sidebar.file_uploader("기화기 재고현황 (CSV/Excel)", type=["csv", "xlsx"])
+_sidebar_slot_load_button("vaporizer", "기화기.csv")
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛢️ 통합 탱크 재고")
 local_int_path = "통합탱크재고.csv"
@@ -12796,8 +12924,10 @@ if os.path.exists(local_int_path):
     with open(local_int_path, "rb") as f:
         int_bytes = f.read()
     int_name = local_int_path
+    _sidebar_slot_load_button("integrated", "통합탱크재고.csv")
 else:
     integrated_file_up = st.sidebar.file_uploader("통합 탱크 재고현황 (CSV)", type=["csv"])
+    _sidebar_slot_load_button("integrated", "통합탱크재고.csv")
     if integrated_file_up is not None:
         int_bytes = integrated_file_up.getvalue()
         int_name = integrated_file_up.name
@@ -13005,10 +13135,26 @@ elif os.path.exists("업체대분류.csv"):
 else:
     ind_bytes = None
 if debt_file_up is not None:
-    debt_bytes = debt_file_up.getvalue()
-    _debt_sha = debt_bytes_fingerprint(debt_bytes)
+    _debt_up_bytes = debt_file_up.getvalue()
+    _debt_sha = debt_bytes_fingerprint(_debt_up_bytes)
     _debt_prev = st.session_state.get("_debt_applied_sha")
-    _debt_wrote = persist_debt_bytes(debt_bytes, debt_cache_path, "채권.csv")
+    _debt_wrote = persist_debt_bytes(_debt_up_bytes, debt_cache_path, "채권.csv")
+    if not _debt_wrote:
+        st.sidebar.warning(
+            "채권 파일이 잠긴 최신본보다 예전이라 적용하지 않았습니다. "
+            "더 최근 월 자료만 받습니다."
+        )
+        debt_bytes, _debt_label = resolve_cached_debt_bytes(debt_cache_path, "채권.csv")
+        _debt_sha = debt_bytes_fingerprint(debt_bytes)
+        st.session_state["_debt_source"] = (
+            f"{_debt_label} · {(_debt_sha or '')[:8]}"
+        )
+        st.session_state["_debt_uploader_nonce"] = int(
+            st.session_state.get("_debt_uploader_nonce") or 0
+        ) + 1
+        st.rerun()
+    else:
+        debt_bytes = _debt_up_bytes
     if _debt_wrote and _debt_sha != _debt_prev:
         clear_debt_runtime_caches()
         st.session_state["_debt_applied_sha"] = _debt_sha
@@ -13080,21 +13226,49 @@ else:
     int_bytes = None
     int_name = ""
 sales_file_meta = []
+_sales_blocked = []
 if uploaded_files_up and len(uploaded_files_up) > 0:
-    for f_name in os.listdir(sales_cache_dir):
-        os.remove(os.path.join(sales_cache_dir, f_name))
     for f in uploaded_files_up:
+        dest_name = os.path.basename(str(getattr(f, "name", "") or "")).strip()
+        if not dest_name:
+            continue
         f_bytes = f.getvalue()
-        f_path = os.path.join(sales_cache_dir, f.name)
-        with open(f_path, "wb") as sf:
-            sf.write(f_bytes)
-        try:
-            st_info = os.stat(f_path)
-            sales_file_meta.append(
-                (f.name, f_path, int(st_info.st_mtime), int(st_info.st_size))
+        f_path = os.path.join(sales_cache_dir, dest_name)
+        applied = False
+        if write_bytes_if_newer is not None:
+            wrote, reason = write_bytes_if_newer(
+                CACHE_DIR, f"sales/{dest_name}", f_bytes, kind="sales", name=dest_name
             )
-        except Exception:
-            sales_file_meta.append((f.name, f_path, 0, len(f_bytes)))
+            if reason == "blocked_older":
+                _sales_blocked.append(dest_name)
+                continue
+            applied = reason == "wrote"
+        else:
+            with open(f_path, "wb") as sf:
+                sf.write(f_bytes)
+            applied = True
+        if applied:
+            try:
+                load_uploaded_files_from_meta.clear()
+                load_uploaded_files_from_bytes.clear()
+            except Exception:
+                pass
+            st.session_state["_dash_sales_cache_cleared"] = True
+    if _sales_blocked:
+        st.sidebar.warning(
+            "예전 매출 파일은 적용하지 않음: " + ", ".join(_sales_blocked)
+        )
+    if os.path.exists(sales_cache_dir):
+        for f_name in sorted(os.listdir(sales_cache_dir)):
+            if f_name.endswith(".csv"):
+                f_path = os.path.join(sales_cache_dir, f_name)
+                try:
+                    st_info = os.stat(f_path)
+                    sales_file_meta.append(
+                        (f_name, f_path, int(st_info.st_mtime), int(st_info.st_size))
+                    )
+                except Exception:
+                    continue
 else:
     # Drive 자동로드·시드 캐시 우선, 없으면 루트 20xx.csv
     if os.path.exists(sales_cache_dir):
@@ -13125,6 +13299,13 @@ if sales_file_meta:
     st.sidebar.caption(
         "매출 파일: " + ", ".join(x[0] for x in sales_file_meta)
     )
+if lock_status_caption is not None:
+    try:
+        _lock_cap = lock_status_caption(CACHE_DIR)
+        if _lock_cap:
+            st.sidebar.caption(_lock_cap)
+    except Exception:
+        pass
 
 # 맥 사이드바 업로드 → Drive「dashboard 복사본」반영 (아이패드 Drive 폴더용)
 _integrated_up = None
@@ -13204,12 +13385,15 @@ else:
     ):
         if sync_dashboard_copy_on_boot is not None:
             try:
-                _dr = sync_dashboard_copy_on_boot(
-                    CACHE_DIR,
-                    force_refresh=True,
-                    include_worklog=True,
-                    protect_newer_local=False,
-                )
+                # md5로 바뀐 CSV만 받는다. force_refresh=True 는 연간 매출·일지를
+                # 전부 다시 받아 클라우드에서 무한 로딩처럼 보인다.
+                with st.spinner("Drive 복사본에서 변경된 파일만 가져오는 중..."):
+                    _dr = sync_dashboard_copy_on_boot(
+                        CACHE_DIR,
+                        force_refresh=False,
+                        include_worklog=False,
+                        protect_newer_local=False,
+                    )
                 try:
                     load_uploaded_files_from_meta.clear()
                     load_uploaded_files_from_bytes.clear()
@@ -13306,6 +13490,11 @@ if st.sidebar.button(
             os.remove(_stamp)
     except Exception:
         pass
+    if clear_data_lock is not None:
+        try:
+            clear_data_lock(CACHE_DIR)
+        except Exception:
+            pass
     clear_debt_runtime_caches()
     if _is_streamlit_cloud():
         st.session_state["_drive_restore_after_clear"] = True
@@ -13816,7 +14005,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 86
+    _STICKY_INJECT_VER = 87
     _ACTIVE_TAB_INJECT_VER = 13
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
@@ -15624,10 +15813,115 @@ def _dash_filter_and_tabs_fragment() -> None:
                         summary_rows.append(row_data)
 
                 if summary_rows:
-                    summary_df = pd.DataFrame(summary_rows)
-                    disp_debt = pd.concat([filtered_debt_df, summary_df], ignore_index=True)
-                else:
-                    disp_debt = filtered_debt_df.copy()
+                    # 거래처별 상세와 동일 글꼴(14/13px). iframe이라 Streamlit 마크다운이 크기를 덮지 않음.
+                    _gubun_tone = {
+                        "이월": (
+                            "#475569",
+                            "linear-gradient(90deg,#F8FAFC 0%,#F1F5F9 48%,#E2E8F0 100%)",
+                        ),
+                        "익월": (
+                            "#475569",
+                            "linear-gradient(90deg,#F8FAFC 0%,#F1F5F9 48%,#E2E8F0 100%)",
+                        ),
+                        "매출": (
+                            "#1D4ED8",
+                            "linear-gradient(90deg,#EFF6FF 0%,#DBEAFE 48%,#BFDBFE 100%)",
+                        ),
+                        "수금": (
+                            "#047857",
+                            "linear-gradient(90deg,#ECFDF5 0%,#D1FAE5 48%,#A7F3D0 100%)",
+                        ),
+                        "잔액": (
+                            "#BE123C",
+                            "linear-gradient(90deg,#FFF1F2 0%,#FFE4E6 48%,#FECDD3 100%)",
+                        ),
+                        "합계": (
+                            "#0F172A",
+                            "linear-gradient(90deg,#F8FAFC 0%,#F1F5F9 48%,#E2E8F0 100%)",
+                        ),
+                    }
+                    _compact_sum = is_touch_ui()
+                    _pad = "5px 5px" if _compact_sum else "7px 9px"
+                    _ff = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
+                    _head_cells = "".join(
+                        f"<th>{html.escape(str(col))}</th>"
+                        for col in numeric_cols
+                    )
+                    _body_rows = []
+                    for row_data in summary_rows:
+                        gubun = str(row_data.get("구분") or "")
+                        fg, bg = _gubun_tone.get(
+                            gubun,
+                            ("#334155", "linear-gradient(90deg,#FFFFFF,#F8FAFC)"),
+                        )
+                        cells = [
+                            f"<td class='sum-label' style='color:{fg};background:{bg};'>"
+                            f"{html.escape(gubun)}</td>"
+                        ]
+                        for col in numeric_cols:
+                            try:
+                                num = float(row_data.get(col) or 0)
+                            except (TypeError, ValueError):
+                                num = 0.0
+                            cells.append(
+                                f"<td class='sum-num' style='color:{fg};background:{bg};'>"
+                                f"{num:,.0f}</td>"
+                            )
+                        _body_rows.append("<tr>" + "".join(cells) + "</tr>")
+                    _iframe_h = 92 + (len(summary_rows) + 1) * (32 if _compact_sum else 36)
+                    components.html(
+                        f"""
+<div class="debt-sum-card">
+  <div class="debt-sum-head">
+    <div class="debt-sum-title">월별 전체 합계</div>
+    <div class="debt-sum-note">현재 필터 기준 · 단위 원</div>
+  </div>
+  <div class="debt-sum-wrap">
+    <table class="debt-sum-table">
+      <thead><tr><th>구분</th>{_head_cells}</tr></thead>
+      <tbody>{''.join(_body_rows)}</tbody>
+    </table>
+  </div>
+</div>
+<style>
+  html, body {{ margin:0; padding:0; background:transparent; }}
+  .debt-sum-card {{
+    background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px;
+    box-shadow:0 4px 6px -1px rgba(15,23,42,0.05);
+    padding:12px 14px 8px; font-family:{_ff};
+  }}
+  .debt-sum-head {{
+    display:flex; align-items:baseline; justify-content:space-between;
+    gap:8px; margin:0 0 8px 0;
+  }}
+  .debt-sum-title {{ font-size:14px !important; font-weight:700 !important; color:#1E293B; }}
+  .debt-sum-note {{ font-size:13px !important; font-weight:500 !important; color:#64748B; }}
+  .debt-sum-wrap {{ overflow-x:auto; }}
+  .debt-sum-table {{
+    width:100%; border-collapse:collapse; table-layout:fixed;
+    font-family:{_ff};
+  }}
+  .debt-sum-table thead th {{
+    padding:{_pad}; text-align:center; white-space:nowrap;
+    font-size:14px !important; font-weight:500 !important; line-height:1.45;
+    color:#31333F; background:#F0F2F6; border-bottom:1px solid #CBD5E1;
+  }}
+  .debt-sum-table td.sum-label {{
+    padding:{_pad}; text-align:center; white-space:nowrap;
+    font-size:14px !important; font-weight:500 !important; line-height:1.45;
+    border-bottom:1px solid #CBD5E1;
+  }}
+  .debt-sum-table td.sum-num {{
+    padding:{_pad}; text-align:center; white-space:nowrap;
+    font-size:13px !important; font-weight:500 !important; line-height:1.45;
+    font-variant-numeric:tabular-nums; border-bottom:1px solid #CBD5E1;
+  }}
+</style>
+                        """,
+                        height=_iframe_h,
+                        scrolling=False,
+                    )
+                disp_debt = filtered_debt_df.copy()
 
                 gubun_order = {"이월": 1, "매출": 2, "수금": 3, "잔액": 4, "합계": 5}
                 disp_debt["구분순위"] = disp_debt["구분"].map(gubun_order).fillna(99)
@@ -15725,10 +16019,31 @@ def _dash_filter_and_tabs_fragment() -> None:
                 addr_display_html += "</div>"
                 st.markdown(addr_display_html, unsafe_allow_html=True)
             st.markdown("<br>", unsafe_allow_html=True)
+            _map_staff_palette = [
+                "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
+                "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
+                "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#8C564B",
+            ]
+            _legend_staffs = [str(s) for s in (map_selected_staff or all_staff_list) if str(s).strip()]
+            _legend_staffs = sorted(dict.fromkeys(_legend_staffs))
+            _legend_html = "".join(
+                f'<span style="display:inline-flex;align-items:center;margin:0 10px 4px 0;'
+                f'font-size:13px;color:#334155;white-space:nowrap;">'
+                f'<span style="width:12px;height:12px;border-radius:50%;'
+                f'background:{_map_staff_palette[i % len(_map_staff_palette)]};'
+                f'display:inline-block;margin-right:5px;"></span>'
+                f"{html.escape(s)}</span>"
+                for i, s in enumerate(_legend_staffs)
+            )
             ctrl_space, ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4 = st.columns([5, 1.2, 1.2, 1.2, 1.2])
 
             with ctrl_space:
-                st.empty()
+                st.markdown(
+                    "<div style='display:flex;flex-wrap:wrap;align-items:center;min-height:38px;'>"
+                    "<span style='font-size:13px;color:#334155;font-weight:600;margin-right:10px;'>담당자</span>"
+                    f"{_legend_html}</div>",
+                    unsafe_allow_html=True,
+                )
             with ctrl_c1:
                 btn_load_map = st.button("🗺️ 지도 새로고침/조회", type="primary", use_container_width=True)
             with ctrl_c2:
@@ -15830,13 +16145,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                     # iPad 전용: Plotly Mapbox WebGL이 Safari에서 마커/범례를 검정으로 그림
                     # → Leaflet 원형 마커(명시 HEX)로만 우회. 맥 경로(아래 else)는 일절 변경 없음.
                     if is_touch_ui():
-                        _palette = [
-                            "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
-                            "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
-                            "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#8C564B",
-                        ]
                         _staffs = sorted(map_df["담당자"].astype(str).unique())
-                        _cmap = {s: _palette[i % len(_palette)] for i, s in enumerate(_staffs)}
+                        _cmap = {s: _map_staff_palette[i % len(_map_staff_palette)] for i, s in enumerate(_staffs)}
                         _pts = []
                         for _, _r in map_df.iterrows():
                             _staff = str(_r["담당자"])
@@ -15848,14 +16158,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                                 "addr": str(_r.get("주소") or ""),
                                 "color": _cmap.get(_staff, "#636EFA"),
                             })
-                        _legend_html = "".join(
-                            f'<span style="display:inline-flex;align-items:center;margin:0 10px 6px 0;'
-                            f'font-size:13px;color:#334155;">'
-                            f'<span style="width:12px;height:12px;border-radius:50%;background:{_cmap[s]};'
-                            f'display:inline-block;margin-right:5px;border:1px solid #94A3B8;"></span>'
-                            f"{html.escape(s)}</span>"
-                            for s in _staffs
-                        )
                         _use_sat = "일반" not in map_style_choice
                         _tiles_js = (
                             f'L.tileLayer("{vworld_sat}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
@@ -15871,15 +16173,10 @@ def _dash_filter_and_tabs_fragment() -> None:
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <style>
           html, body {{ margin:0; height:100%; }}
-          #map {{ width:100%; height:560px; }}
-          .legend {{
-            padding:8px 10px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-            background:#fff; border-top:1px solid #E2E8F0;
-          }}
+          #map {{ width:100%; height:600px; }}
         </style></head>
         <body>
         <div id="map"></div>
-        <div class="legend"><b>담당자</b><div style="margin-top:6px;">{_legend_html}</div></div>
         <script>
         (function() {{
           var map = L.map("map", {{ zoomControl: true }}).setView(
@@ -15901,13 +16198,14 @@ def _dash_filter_and_tabs_fragment() -> None:
         }})();
         </script>
         </body></html>"""
-                        components.html(_leaflet_html, height=620, scrolling=False)
+                        components.html(_leaflet_html, height=600, scrolling=False)
                     else:
                         # plotly 호환: 신버전은 scatter_map(MapLibre, map_style/map_layers),
                         # 구버전은 scatter_mapbox(mapbox_style/mapbox_layers). 최신 plotly에서
                         # scatter_mapbox 가 제거돼 앱 전체가 막히던 문제 방지.
                         _new_map_api = hasattr(px, "scatter_map")
                         _mk_scatter = px.scatter_map if _new_map_api else px.scatter_mapbox
+                        _plot_staffs = sorted(map_df["담당자"].astype(str).unique())
                         fig_map = _mk_scatter(
                             map_df,
                             lat="lat",
@@ -15917,7 +16215,9 @@ def _dash_filter_and_tabs_fragment() -> None:
                             hover_data={"주소": True, "lat": False, "lon": False, "담당자": False},
                             zoom=st.session_state.map_zoom,
                             center={"lat": center_lat, "lon": center_lon},
-                            height=600
+                            height=600,
+                            color_discrete_sequence=_map_staff_palette,
+                            category_orders={"담당자": _plot_staffs},
                         )
                         fig_map.update_traces(marker=dict(size=14, opacity=0.9))
                         if "일반" in map_style_choice:
@@ -15931,13 +16231,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                             ]
                         _map_layout_common = dict(
                             margin={"r": 0, "t": 10, "l": 0, "b": 0},
-                            legend=dict(
-                                orientation="h",
-                                yanchor="bottom",
-                                y=-0.15,
-                                xanchor="center",
-                                x=0.5
-                            )
+                            showlegend=False,
                         )
                         if _new_map_api:
                             fig_map.update_layout(map_style="white-bg", map_layers=_vw_layers, **_map_layout_common)
@@ -16958,26 +17252,22 @@ def _dash_filter_and_tabs_fragment() -> None:
 
         with tab13:
             try:
-                if _dash_should_defer_heavy_tab(_DASH_TAB_VISIT):
-                    _dash_defer_heavy_stub(
-                        "📅 방문·할일",
-                        _DASH_TAB_VISIT,
-                        "_dash_bak_visit",
-                        _DASH_VC_STATE_PREFIXES,
-                    )
-                else:
-                    _dash_restore_session_keys("_dash_bak_visit")
-                    import visit_calendar_tab as _vc_tab
+                # 시작부터 펼침. 매출·일지 전체 스캔은 거래처를 고른 뒤에만 한다.
+                _vc_mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
+                _vc_mounted[_DASH_TAB_VISIT] = True
+                st.session_state.pop(f"_dash_force_tab_{_DASH_TAB_VISIT}", None)
+                import visit_calendar_tab as _vc_tab
 
-                    _vc_path = getattr(_vc_tab, "__file__", None) or ""
-                    _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
-                    if st.session_state.get("_vc_mod_mtime") != _vc_mtime:
-                        _vc_tab = importlib.reload(_vc_tab)
-                        st.session_state["_vc_mod_mtime"] = _vc_mtime
-                        sys.modules["visit_calendar_tab"] = _vc_tab
-                    _vc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
-                    _vc_tab.render_visit_calendar_tab(_vc_df, latest_update_str=latest_update_str)
-                    _dash_backup_session_keys("_dash_bak_visit", _DASH_VC_STATE_PREFIXES)
+                _vc_path = getattr(_vc_tab, "__file__", None) or ""
+                _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
+                if "_vc_mod_mtime" not in st.session_state:
+                    st.session_state["_vc_mod_mtime"] = _vc_mtime
+                elif st.session_state.get("_vc_mod_mtime") != _vc_mtime:
+                    _vc_tab = importlib.reload(_vc_tab)
+                    st.session_state["_vc_mod_mtime"] = _vc_mtime
+                    sys.modules["visit_calendar_tab"] = _vc_tab
+                _vc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                _vc_tab.render_visit_calendar_tab(_vc_df, latest_update_str=latest_update_str)
             except ModuleNotFoundError:
                 st.error(
                     "방문·할일 모듈(`visit_calendar_tab.py`)을 찾을 수 없습니다. "
