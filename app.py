@@ -7642,7 +7642,24 @@ def _tab3_gas_item_day_qty(df_client, years_tuple, months_tuple) -> dict:
     return out
 
 
-def _tab3_month_spans(years_tuple, latest_dt=None):
+def _tab3_month_range_labels(month_from, month_to, all_months):
+    """시작월~종료월 포함 구간. 순서가 뒤집히면 바꿉니다."""
+    months = [str(m) for m in (all_months or []) if m]
+    if not months:
+        return tuple()
+    a = str(month_from or "")
+    b = str(month_to or "")
+    if a not in months:
+        a = months[0]
+    if b not in months:
+        b = months[-1]
+    i, j = months.index(a), months.index(b)
+    if i > j:
+        i, j = j, i
+    return tuple(months[i : j + 1])
+
+
+def _tab3_month_spans(years_tuple, latest_dt=None, months_tuple=()):
     """(연, 월, 일자튜플) 최근년도·당월·최근일부터 과거 역순."""
     yrs = []
     for y in years_tuple or ():
@@ -7652,6 +7669,12 @@ def _tab3_month_spans(years_tuple, latest_dt=None):
             continue
     if not yrs:
         return []
+    want_m = set()
+    for mlab in months_tuple or ():
+        try:
+            want_m.add(int(str(mlab).replace("월", "").strip()))
+        except Exception:
+            continue
     cap = pd.Timestamp.today().normalize()
     if latest_dt is not None and pd.notna(latest_dt):
         ld = pd.Timestamp(latest_dt).normalize()
@@ -7660,6 +7683,8 @@ def _tab3_month_spans(years_tuple, latest_dt=None):
     spans = []
     for y in sorted(set(yrs)):
         for m in range(1, 13):
+            if want_m and m not in want_m:
+                continue
             start = pd.Timestamp(year=y, month=m, day=1)
             if start > cap:
                 continue
@@ -7698,11 +7723,12 @@ def _tab3_gas_excel_calendar_html(
     years_tuple,
     latest_dt=None,
     *,
+    months_tuple=(),
     section_title: str = "가스별 일 사용량",
     section_hint: str = "칸 클릭 후 ←↑↓→",
 ) -> str:
     """가스마다 왼쪽 카드 + 엑셀 달력 행(높이 동일). 칸 클릭 후 방향키 이동."""
-    spans = _tab3_month_spans(years_tuple, latest_dt)
+    spans = _tab3_month_spans(years_tuple, latest_dt, months_tuple=months_tuple)
     if not spans or not item_rows:
         return (
             "<div style='font-size:12px;color:#64748B;padding:8px;'>이 기간 가스 납품이 없습니다.</div>"
@@ -15517,33 +15543,62 @@ def _dash_filter_and_tabs_fragment() -> None:
         elif df_client_filtered.empty:
             st.warning("선택한 거래처의 매출·출고 데이터가 없습니다.")
         else:
+            _u_sel_years = tuple()
+            _u_sel_months = tuple()
             _u_years_all = sorted(
                 {str(y) for y in df_client_filtered["연도"].dropna().unique()},
                 key=lambda y: int(y) if str(y).isdigit() else 0,
             )
-            _u_cur = _u_years_all[-1] if _u_years_all else (
-                str(years[-1]) if years else None
-            )
-            _u_prev = None
-            if _u_cur:
-                try:
-                    _u_prev_cand = str(int(_u_cur) - 1)
-                except Exception:
-                    _u_prev_cand = None
-                if _u_prev_cand and _u_prev_cand in _u_years_all:
-                    _u_prev = _u_prev_cand
-                elif len(_u_years_all) >= 2:
-                    _u_prev = _u_years_all[-2]
-            _u_default_years = [y for y in (_u_prev, _u_cur) if y]
-            if not _u_default_years and _u_years_all:
-                _u_default_years = _u_years_all[-1:]
-
-            _u_sel_years = tuple(_u_default_years)
+            if not _u_years_all:
+                st.info(
+                    f"[{selected_client}] 가스 납품(출고) 연도를 찾을 수 없습니다."
+                )
+            else:
+                _cal_latest = df_client_filtered["매출일_dt"].max()
+                _def_year = _u_years_all[-1]
+                _def_month = all_months[-1] if all_months else "12월"
+                if pd.notnull(_cal_latest):
+                    _ly = str(int(_cal_latest.year))
+                    if _ly in _u_years_all:
+                        _def_year = _ly
+                    _lm = _cal_latest.strftime("%m월")
+                    if _lm in all_months:
+                        _def_month = _lm
+                _y_key = "tab3_gas_year_sb"
+                _from_key, _to_key = "tab3_gas_month_from_sb", "tab3_gas_month_to_sb"
+                _old_m = st.session_state.get("tab3_gas_month_sb")
+                _seed_from = _seed_to = _def_month
+                if _old_m == "전체" and all_months:
+                    _seed_from, _seed_to = all_months[0], _def_month
+                elif _old_m in all_months:
+                    _seed_from = _seed_to = _old_m
+                if st.session_state.get(_y_key) not in _u_years_all:
+                    st.session_state[_y_key] = _def_year
+                _month_opts = list(all_months)
+                if st.session_state.get(_from_key) not in _month_opts:
+                    st.session_state[_from_key] = _seed_from
+                if st.session_state.get(_to_key) not in _month_opts:
+                    st.session_state[_to_key] = _seed_to
+                _yc, _mfc, _mtc = st.columns([1, 1, 1])
+                with _yc:
+                    _u_year = st.selectbox("📅 연도", _u_years_all, key=_y_key)
+                with _mfc:
+                    _u_month_from = st.selectbox("📅 시작월", _month_opts, key=_from_key)
+                with _mtc:
+                    _u_month_to = st.selectbox("📅 종료월", _month_opts, key=_to_key)
+                st.caption(
+                    "시작월부터 종료월까지 납품량으로 월·주·일 사용량을 계산합니다."
+                )
+                _u_sel_years = (str(_u_year),) if _u_year else tuple()
+                _u_sel_months = _tab3_month_range_labels(
+                    _u_month_from, _u_month_to, all_months
+                )
             _u_sum, _u_monthly, _ = _dash_memo(
                 "_dash_tab3_gas",
                 (
                     selected_client,
                     _u_sel_years,
+                    _u_sel_months,
                     str(start_date),
                     str(end_date),
                     sales_file_meta,
@@ -15552,10 +15607,19 @@ def _dash_filter_and_tabs_fragment() -> None:
                 lambda: cached_tab3_client_gas_usage(
                     df_client_filtered,
                     _u_sel_years,
-                    tuple(),
+                    _u_sel_months,
                 ),
             )
-            _yr_lbl = "·".join(_u_sel_years) if _u_sel_years else ""
+            _yr_lbl = ""
+            if _u_sel_years:
+                if len(_u_sel_months) >= 2:
+                    _yr_lbl = (
+                        f"{_u_sel_years[0]}년 {_u_sel_months[0]}~{_u_sel_months[-1]}"
+                    )
+                elif _u_sel_months:
+                    _yr_lbl = f"{_u_sel_years[0]}년 {_u_sel_months[0]}"
+                else:
+                    _yr_lbl = f"{_u_sel_years[0]}년"
             if _u_sum.empty:
                 st.info(
                     f"[{selected_client}] {_yr_lbl} 구간에 "
@@ -15571,7 +15635,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     .sort_values("월사용량", ascending=False)
                 )
                 _qty_map = _tab3_gas_item_day_qty(
-                    df_client_filtered, _u_sel_years, tuple()
+                    df_client_filtered, _u_sel_years, _u_sel_months
                 )
                 _cal_latest = df_client_filtered["매출일_dt"].max()
 
@@ -15610,6 +15674,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                             _qty_map,
                             _u_sel_years,
                             _cal_latest,
+                            months_tuple=_u_sel_months,
                             section_title=(
                                 "🛢️ 주요품목 · 벌크"
                                 if _bulk_rows

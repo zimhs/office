@@ -253,5 +253,69 @@ class WorklogDraftSurviveFilterTest(unittest.TestCase):
         self.assertTrue(ns["_dash_is_wl_widget_key"]("wl_date_pick"))
 
 
+class Tab3GasYearMonthTest(unittest.TestCase):
+    def test_tab3_usage_has_year_month_pickers(self):
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        tab3 = src.split("# Tab 3:", 1)[1].split("with tab4:", 1)[0]
+        self.assertIn('"tab3_gas_year_sb"', tab3)
+        self.assertIn('"tab3_gas_month_from_sb"', tab3)
+        self.assertIn('"tab3_gas_month_to_sb"', tab3)
+        self.assertIn("시작월", tab3)
+        self.assertIn("종료월", tab3)
+        self.assertIn("_tab3_month_range_labels", tab3)
+        self.assertIn("_u_sel_months", tab3)
+        self.assertIn("months_tuple=_u_sel_months", tab3)
+        call = tab3.split("cached_tab3_client_gas_usage", 1)[1][:280]
+        self.assertIn("_u_sel_months", call)
+
+    def test_month_range_labels_inclusive_and_swaps(self):
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        start = src.find("def _tab3_month_range_labels")
+        end = src.find("\ndef _tab3_month_spans")
+        ns = {}
+        exec(src[start:end], ns)
+        months = [f"{i:02d}월" for i in range(1, 13)]
+        self.assertEqual(
+            ns["_tab3_month_range_labels"]("03월", "05월", months),
+            ("03월", "04월", "05월"),
+        )
+        self.assertEqual(
+            ns["_tab3_month_range_labels"]("09월", "07월", months),
+            ("07월", "08월", "09월"),
+        )
+        self.assertEqual(
+            ns["_tab3_month_range_labels"]("09월", "09월", months),
+            ("09월",),
+        )
+
+    def test_month_spans_keep_only_selected_month(self):
+        import pandas as pd
+
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        start = src.find("def _tab3_month_spans")
+        end = src.find("\ndef _tab3_gas_row_card_html")
+        ns = {"pd": pd}
+        exec(src[start:end], ns)
+        spans = ns["_tab3_month_spans"](
+            ("2026",), pd.Timestamp("2026-09-16"), months_tuple=("09월",)
+        )
+        self.assertEqual([(2026, 9)], [(y, m) for y, m, _ in spans])
+        self.assertEqual(spans[0][2][0], 16)
+        all_spans = ns["_tab3_month_spans"](
+            ("2026",), pd.Timestamp("2026-09-16"), months_tuple=()
+        )
+        self.assertGreater(len(all_spans), 1)
+        self.assertEqual(all_spans[0][:2], (2026, 9))
+        rng = ns["_tab3_month_spans"](
+            ("2026",),
+            pd.Timestamp("2026-09-16"),
+            months_tuple=("07월", "08월", "09월"),
+        )
+        self.assertEqual([(2026, 9), (2026, 8), (2026, 7)], [(y, m) for y, m, _ in rng])
+
+
 if __name__ == "__main__":
     unittest.main()
