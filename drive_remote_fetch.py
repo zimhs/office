@@ -339,7 +339,13 @@ def sync_drive_copy_from_remote(
             continue
         if rel == DEBT_CACHE_REL and write_bytes_if_newer is not None:
             wrote, _reason = write_bytes_if_newer(
-                cache_dir, rel, raw, kind="debt", name=src_name, allow_same=False
+                cache_dir,
+                rel,
+                raw,
+                kind="debt",
+                name=src_name,
+                allow_same=not protect_newer_local,
+                force=not protect_newer_local,
             )
             if not wrote:
                 continue
@@ -373,7 +379,13 @@ def sync_drive_copy_from_remote(
                 continue
             if write_bytes_if_newer is not None:
                 wrote, _reason = write_bytes_if_newer(
-                    cache_dir, f"sales/{sn}", raw, kind="sales", name=sn, allow_same=False
+                    cache_dir,
+                    f"sales/{sn}",
+                    raw,
+                    kind="sales",
+                    name=sn,
+                    allow_same=not protect_newer_local,
+                    force=not protect_newer_local,
                 )
                 if wrote:
                     copied.append(f"sales/{sn}")

@@ -13351,7 +13351,9 @@ if not _is_streamlit_cloud():
         _pull = None
         if sync_local_uproad_into_cache is not None:
             try:
-                _pull = sync_local_uproad_into_cache(CACHE_DIR, include_worklog=True)
+                _pull = sync_local_uproad_into_cache(
+                    CACHE_DIR, include_worklog=True, force_apply=True
+                )
             except Exception as _pe:
                 _pull = {"ok": False, "skipped": False, "copied": [], "error": str(_pe)}
         else:

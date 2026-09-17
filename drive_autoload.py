@@ -547,8 +547,12 @@ def sync_local_uproad_into_cache(
     *,
     uproad_dir: Optional[str] = None,
     include_worklog: bool = True,
+    force_apply: bool = False,
 ) -> dict:
-    """로컬 dashboard/uproad → uploaded_cache. 동기화 버튼의 로컬 기준 경로."""
+    """로컬 dashboard/uproad → uploaded_cache. 동기화 버튼의 로컬 기준 경로.
+
+    force_apply: 사이드바 수동 동기화. 잠금을 건너뛰고 uproad 파일을 최신으로 적용.
+    """
     src_root = uproad_dir or resolve_local_uproad_dir()
     if not src_root or not os.path.isdir(src_root):
         return {
@@ -575,7 +579,7 @@ def sync_local_uproad_into_cache(
             dst = os.path.join(cache_dir, rel)
             if rel == DEBT_CACHE_REL and copy_file_if_newer is not None:
                 wrote, reason = copy_file_if_newer(
-                    src, dst, cache_dir, kind="debt", name=src_name
+                    src, dst, cache_dir, kind="debt", name=src_name, force=force_apply
                 )
                 if not wrote:
                     continue
@@ -599,7 +603,7 @@ def sync_local_uproad_into_cache(
                 dst = os.path.join(sales_dir, dest)
                 if copy_file_if_newer is not None:
                     wrote, _reason = copy_file_if_newer(
-                        src, dst, cache_dir, kind="sales", name=dest
+                        src, dst, cache_dir, kind="sales", name=dest, force=force_apply
                     )
                     if wrote:
                         copied.append(f"sales/{dest}")

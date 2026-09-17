@@ -134,6 +134,27 @@ class WriteIfNewerTest(unittest.TestCase):
             with open(os.path.join(tmp, "sales", "202609.csv"), "rb") as f:
                 self.assertEqual(f.read(), bigger)
 
+    def test_force_applies_smaller_same_day_sales(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bigger = _sales(16, extra="xxxxxxxxxx")
+            smaller = _sales(16)
+            self.assertTrue(
+                write_bytes_if_newer(
+                    tmp, "sales/202609.csv", bigger, kind="sales", name="202609.csv"
+                )[0]
+            )
+            wrote, reason = write_bytes_if_newer(
+                tmp,
+                "sales/202609.csv",
+                smaller,
+                kind="sales",
+                name="202609.csv",
+                force=True,
+            )
+            self.assertTrue(wrote, reason)
+            with open(os.path.join(tmp, "sales", "202609.csv"), "rb") as f:
+                self.assertEqual(f.read(), smaller)
+
 
 class RestoreAfterGitRevertTest(unittest.TestCase):
     def test_restore_snapshot_over_older_cache(self):
@@ -200,6 +221,27 @@ class LocalUproadRespectsLockTest(unittest.TestCase):
                 )
             with open(os.path.join(cache, "debt.csv"), "rb") as f:
                 self.assertEqual(debt_generation_from_bytes(f.read())[0], 9)
+
+    def test_force_apply_replaces_locked_sales(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = os.path.join(tmp, "cache")
+            os.makedirs(os.path.join(cache, "sales"), exist_ok=True)
+            write_bytes_if_newer(
+                cache, "sales/202609.csv", _sales(11), kind="sales", name="202609.csv"
+            )
+            src = os.path.join(tmp, "uproad")
+            os.makedirs(src)
+            with open(os.path.join(src, "202609.csv"), "wb") as f:
+                f.write(_sales(4))
+            res = sync_local_uproad_into_cache(
+                cache, uproad_dir=src, include_worklog=False, force_apply=True
+            )
+            self.assertTrue(res.get("ok"), res)
+            with open(os.path.join(cache, "sales", "202609.csv"), "rb") as f:
+                self.assertEqual(
+                    sales_generation_from_bytes("202609.csv", f.read())[1],
+                    20260904,
+                )
 
     def test_newer_uproad_updates_cache(self):
         with tempfile.TemporaryDirectory() as tmp:

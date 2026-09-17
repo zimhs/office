@@ -344,10 +344,12 @@ def write_bytes_if_newer(
     kind: str,
     name: str = "",
     allow_same: bool = True,
+    force: bool = False,
 ) -> Tuple[bool, str]:
     """최신이면 캐시+스냅샷+잠금 갱신. 예전이면 False.
 
     allow_same: 업로드·불러오기 True. Drive 부트는 False(같은 달은 로컬 유지).
+    force: 수동 동기화. 잠금을 건너뛰고 이 바이트를 최신으로 적용한다.
 
     Returns:
         (wrote, reason) reason: wrote / same / blocked_older / blocked_same / empty
@@ -364,11 +366,12 @@ def write_bytes_if_newer(
     if os.path.isfile(dst) and _file_sha256(dst) == sha:
         _snapshot_and_lock(cache_dir, rel, raw, incoming, sha, kind=kind)
         return False, "same"
-    floor = floor_gen(cache_dir, rel, kind=kind, name=dest_name, current_path=dst)
-    if not generation_at_least(incoming, floor, kind=kind):
-        return False, "blocked_older"
-    if not allow_same and not generation_strictly_newer(incoming, floor, kind=kind):
-        return False, "blocked_same"
+    if not force:
+        floor = floor_gen(cache_dir, rel, kind=kind, name=dest_name, current_path=dst)
+        if not generation_at_least(incoming, floor, kind=kind):
+            return False, "blocked_older"
+        if not allow_same and not generation_strictly_newer(incoming, floor, kind=kind):
+            return False, "blocked_same"
     if not _atomic_write(dst, raw):
         return False, "write_failed"
     _snapshot_and_lock(cache_dir, rel, raw, incoming, sha, kind=kind)
@@ -383,6 +386,7 @@ def copy_file_if_newer(
     kind: str,
     name: str = "",
     allow_same: bool = True,
+    force: bool = False,
 ) -> Tuple[bool, str]:
     if not src or not os.path.isfile(src):
         return False, "empty"
@@ -399,6 +403,7 @@ def copy_file_if_newer(
         kind=kind,
         name=name or os.path.basename(dst),
         allow_same=allow_same,
+        force=force,
     )
 
 
