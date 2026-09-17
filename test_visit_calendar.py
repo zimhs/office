@@ -225,6 +225,80 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertNotIn("벌크외", labels)
         self.assertEqual(chips["2026-09-16"][0]["kind"], "todo")
 
+    def test_delivery_chips_only_bulk_and_cylinder(self):
+        store = {
+            "todos": [{"due": "2026-09-16", "done": False, "title": "견적"}],
+            "visits": [{"date": "2026-09-10", "client": "한신테크"}],
+        }
+        deliveries = [
+            {"date": "2026-09-10", "item": "N2 (kg, Bulk)", "qty": 1200, "bulk": True},
+            {"date": "2026-09-10", "item": "아세틸렌", "qty": 2, "bulk": False},
+        ]
+        visit = self.vc.calendar_chips(store, [], date(2026, 9, 1), deliveries)
+        only = self.vc.delivery_chips(date(2026, 9, 1), deliveries)
+        self.assertIn("todo", {c["kind"] for c in visit["2026-09-16"]})
+        self.assertNotIn("2026-09-16", only)
+        kinds = {c["kind"] for c in only["2026-09-10"]}
+        self.assertEqual(kinds, {"bulk", "other"})
+        self.assertNotIn("visit", kinds)
+
+    def test_t2d_delivery_rows_skip_full_staff_map(self):
+        df = pd.DataFrame(
+            {
+                "담당자": ["김혁수", "김혁수", "김혁수"],
+                "거래처": ["한국메티슨특수가스", "한국메티슨특수가스", "한국메티슨특수가스"],
+                "매출일_dt": [
+                    pd.Timestamp("2026-09-10"),
+                    pd.Timestamp("2026-09-04"),
+                    pd.Timestamp("2026-08-20"),
+                ],
+                "품목명": ["N2 (kg, Bulk)", "아세틸렌", "CO2 (kg, Bulk)"],
+                "출고량": [1200.0, 2.0, 800.0],
+                "매출액": [1000.0, 50.0, 400.0],
+            }
+        )
+        rows = self.vc._t2d_delivery_rows(df, "김혁수", "한국메티슨특수가스")
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(any(r.get("bulk") for r in rows))
+        self.assertFalse(any(r["date"] == "2026-09-16" for r in rows))
+        sep = self.vc._t2d_delivery_rows(
+            df, "김혁수", "한국메티슨특수가스", month=date(2026, 9, 1)
+        )
+        self.assertEqual(len(sep), 2)
+        self.assertTrue(all(str(r["date"]).startswith("2026-09-") for r in sep))
+        aug = self.vc._t2d_delivery_rows(
+            df, "김혁수", "한국메티슨특수가스", month=date(2026, 8, 1)
+        )
+        self.assertEqual(len(aug), 1)
+        self.assertEqual(aug[0]["date"], "2026-08-20")
+
+    def test_tab2_delivery_status_uses_main_filters(self):
+        with open(self.vc.__file__, encoding="utf-8") as f:
+            src = f.read()
+        fn = src[src.index("def render_tab2_delivery_status") :]
+        strip = src[src.index("def _render_t2d_day_strip") : src.index("def render_tab2_delivery_status")]
+        self.assertIn("납품현황", fn)
+        self.assertIn("delivery_chips", fn)
+        self.assertIn('key="t2d_strip_host"', strip)
+        self.assertIn('"hideNames": True', strip)
+        self.assertIn('heading="납품 내역"', fn)
+        self.assertIn("_t2d_delivery_rows", fn)
+        self.assertIn("month=month", fn)
+        self.assertNotIn("_sales_delivery_rows(df, staff, client)", fn)
+        self.assertNotIn('selectbox("담당자"', fn)
+        self.assertNotIn('selectbox("거래처"', fn)
+        self.assertNotIn('key="vc_staff"', fn)
+        self.assertNotIn('key="vc_client"', fn)
+        self.assertNotIn("_render_todo_panel", fn)
+        self.assertNotIn("_render_month_schedule", fn)
+        with open("app.py", encoding="utf-8") as f:
+            app = f.read()
+        tab2 = app.split("# Tab 2:", 1)[1].split("with tab3:", 1)[0]
+        self.assertIn("render_tab2_delivery_status", tab2)
+        self.assertIn("df_client_filtered", tab2[tab2.find("render_tab2_delivery_status") - 180 : tab2.find("render_tab2_delivery_status")])
+        self.assertLess(tab2.find("render_tab2_delivery_status"), tab2.find("tab2_action_btns"))
+        self.assertNotIn("_t2_df = full_df", tab2)
+
     def test_is_bulk_item(self):
         self.assertTrue(self.vc._is_bulk_item("N2 (kg, Bulk)"))
         self.assertFalse(self.vc._is_bulk_item("아세틸렌"))
@@ -237,6 +311,23 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertEqual(self.vc._strip_tag([{"kind": "todo"}]), "할일")
         self.assertEqual(self.vc._strip_tag([{"kind": "worklog"}]), "일지")
         self.assertEqual(self.vc._strip_tag([{"kind": "todo"}, {"kind": "bulk"}]), "벌크")
+
+    def test_strip_days_payload_marks_selected_and_visit_name(self):
+        chips = {
+            "2026-09-18": [
+                {"kind": "visit", "label": "한국메디손톡"},
+                {"kind": "bulk", "label": "N2 10"},
+            ]
+        }
+        days = self.vc._strip_days_payload(
+            date(2026, 9, 1), chips, date(2026, 9, 18), date(2026, 9, 17)
+        )
+        cell = days[17]
+        self.assertEqual(cell["iso"], "2026-09-18")
+        self.assertTrue(cell["sel"])
+        self.assertEqual(cell["kind"], "bulk")
+        self.assertEqual(cell["name"], "한국메디손톡")
+        self.assertTrue(days[16]["today"])
         self.assertEqual(self.vc._strip_tag([]), "")
         self.assertEqual(self.vc._client_short("라콜 주식회사(구.신정우)"), "라콜")
         self.assertEqual(
@@ -316,6 +407,10 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("_VC_SUN_BG", src)
         self.assertIn("def _strip_tag", src)
         self.assertIn("def _render_day_strip", src)
+        self.assertIn("visit_day_strip_v1", src)
+        self.assertIn('setStateValue("iso"', src)
+        self.assertIn("on_iso_change=_on_strip_iso_change", src)
+        self.assertIn("def _visit_day_block", src)
         self.assertIn("def _weekday_name", src)
         self.assertIn("vc-wd", src)
         self.assertNotIn("def _render_calendar", src)
@@ -336,6 +431,47 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("tab13", app)
         self.assertIn("min_tabs=13", app)
         self.assertIn('_DASH_VC_STATE_PREFIXES = ("_vc_",)', app)
+        tab13 = app[app.index("with tab13:") : app.index("방문·할일 탭 오류")]
+        self.assertIn("render_visit_calendar_tab", tab13)
+        self.assertNotIn("_dash_defer_heavy_stub", tab13)
+        self.assertIn("시작부터 펼침", tab13)
+        mount = app[app.index("def _dash_should_defer_heavy_tab") : app.index("def _dash_defer_heavy_stub")]
+        self.assertNotIn("_DASH_TAB_VISIT", mount)
+        body = src[src.index("def _render_visit_body") : src.index("def _render_day_strip")]
+        self.assertNotIn("_ensure_worklog_index()", body)
+        self.assertNotIn("_sales_by_client(df, staff)", body)
+        self.assertIn("_staff_from_store", body)
+        self.assertIn("_staff_clients", body)
+        self.assertIn("달력·방문·할일에 연동", src)
+
+    def test_staff_lists_do_not_scan_all_staff_from_sales(self):
+        df = pd.DataFrame({"담당자": ["홍길동"] * 200, "거래처": ["한신테크"] * 200})
+        self.vc.add_visit(
+            {"date": date(2026, 9, 17), "staff": "김혁수", "client": "이엔에이치", "status": "done"}
+        )
+        names = self.vc._staff_names(df)
+        self.assertIn("김혁수", names)
+        self.assertNotIn("홍길동", names)
+        clients = self.vc._staff_clients(df, "김혁수")
+        self.assertIn("이엔에이치", clients)
+        self.assertNotIn("한신테크", clients)
+
+    def test_staff_clients_include_all_sales_for_staff(self):
+        df = pd.DataFrame(
+            {
+                "담당자": ["김혁수", "김혁수", "홍길동"],
+                "거래처": ["한국메티슨특수가스", "한신테크", "다른곳"],
+                "거래처_원본": ["한국메티슨특수가스", "한신테크", "다른곳"],
+            }
+        )
+        self.vc.add_visit(
+            {"date": date(2026, 9, 17), "staff": "김혁수", "client": "이엔에이치", "status": "done"}
+        )
+        clients = self.vc._staff_clients(df, "김혁수")
+        self.assertIn("한국메티슨특수가스", clients)
+        self.assertIn("한신테크", clients)
+        self.assertIn("이엔에이치", clients)
+        self.assertNotIn("다른곳", clients)
 
 
 if __name__ == "__main__":

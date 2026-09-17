@@ -4516,8 +4516,7 @@ def cached_client_item_qty_pivot_two_years(df_client_filtered, col_keys_tuple):
     return out
 
 
-@st.cache_data
-def cached_client_item_sales_pivot_two_years(df_client_filtered, col_keys_tuple):
+def _client_item_sales_pivot_two_years_compute(df_client_filtered, col_keys_tuple):
     """거래처 품목×년월 매출(만원, VAT포함) — col_keys 순서 (당월→과거 역순). tab2 전용."""
     if df_client_filtered is None or df_client_filtered.empty:
         return pd.DataFrame()
@@ -4532,6 +4531,11 @@ def cached_client_item_sales_pivot_two_years(df_client_filtered, col_keys_tuple)
     out = out.reindex(columns=cols, fill_value=0) * 1.1 / 10000
     out = out.loc[(out.fillna(0) != 0).any(axis=1)]
     return out
+
+
+@st.cache_data
+def cached_client_item_sales_pivot_two_years(df_client_filtered, col_keys_tuple):
+    return _client_item_sales_pivot_two_years_compute(df_client_filtered, col_keys_tuple)
 
 
 @st.cache_data
@@ -4554,6 +4558,25 @@ def cached_get_yearly_monthly_qty_pivot(data_df, all_months, years):
     pvt = pvt.reindex(columns=yrs_ordered, fill_value=0)
     pvt.columns = [str(c) for c in pvt.columns]
     return pvt
+
+
+def _tab2_year_item_share_series(df_client_filtered, cur_y):
+    """당해 년평균(월평균) 매출 기준 품목 비중. DataFrame 해시 없이 호출용."""
+    if df_client_filtered is None or df_client_filtered.empty or not cur_y:
+        return None
+    if "매출액" not in df_client_filtered.columns:
+        return None
+    df_cy = df_client_filtered[df_client_filtered["연도"].astype(str) == str(cur_y)]
+    if df_cy.empty:
+        return None
+    m_pvt = df_cy.pivot_table(
+        index="품목명", columns="월", values="매출액", aggfunc="sum"
+    ).fillna(0)
+    yr_avg = m_pvt.mean(axis=1)
+    yr_avg = yr_avg[yr_avg > 0]
+    if yr_avg.empty:
+        return None
+    return (yr_avg / yr_avg.sum() * 100).sort_values(ascending=False)
 
 
 def create_item_share_hbar(share_series, title_text="당해 년평균 품목별 출고 비중"):
@@ -5241,6 +5264,18 @@ def list_filter_client_options(df):
     return sorted(names)
 
 
+def _dash_series_eq(series, value):
+    """문자열 컬럼 일치. strip 없이 먼저 보고, 없을 때만 strip."""
+    if series is None or len(series) == 0:
+        return pd.Series(False, index=series.index if series is not None else None)
+    if series.dtype == object:
+        hit = series.eq(value)
+        if hit.any():
+            return hit
+    stripped = series.astype(str).str.strip()
+    return stripped.eq(value)
+
+
 def filter_df_by_selected_client(df, selected_client):
     """거래처 필터.
 
@@ -5252,17 +5287,18 @@ def filter_df_by_selected_client(df, selected_client):
     if not selected_client or selected_client == "전체 거래처":
         return df
     sel = str(selected_client).strip()
-    client = df["거래처"].astype(str).str.strip()
-    if "거래처_원본" not in df.columns:
-        return df.loc[client == sel].copy()
-
-    orig = df["거래처_원본"].astype(str).str.strip()
     sel_base = sel.rstrip(".")
-    # 원본 일치 = 부모 합산 (unique 집합 구성 없이 벡터 마스크만 — 필터 변경 가속)
-    parent_mask = (orig == sel) | (orig.str.rstrip(".") == sel_base)
-    if parent_mask.any():
-        return df.loc[parent_mask].copy()
-    return df.loc[client == sel].copy()
+    if "거래처_원본" in df.columns:
+        orig = df["거래처_원본"]
+        parent_mask = _dash_series_eq(orig, sel)
+        if sel_base != sel:
+            parent_mask = parent_mask | _dash_series_eq(orig, sel_base)
+        if not parent_mask.any():
+            orig_s = orig.astype(str).str.strip()
+            parent_mask = orig_s.eq(sel) | orig_s.str.rstrip(".").eq(sel_base)
+        if parent_mask.any():
+            return df.loc[parent_mask].copy()
+    return df.loc[_dash_series_eq(df["거래처"], sel)].copy()
 
 
 def _parse_sales_uploaded_tuples(file_tuples):
@@ -5501,6 +5537,21 @@ def _dash_base_pivot_cache_key(start_date, end_date, sales_meta, manual_token):
     return ("base", str(start_date), str(end_date), sales_meta, manual_token)
 
 
+def _dash_memo(store_name, sig, factory, *, limit=24):
+    """세션 메모. DataFrame을 @st.cache_data로 해시하지 않는다."""
+    store = st.session_state.setdefault(store_name, {})
+    if sig in store:
+        val = store.pop(sig)
+        store[sig] = val
+        return val
+    store[sig] = factory()
+    extra = len(store) - int(limit)
+    if extra > 0:
+        for k in list(store.keys())[:extra]:
+            store.pop(k, None)
+    return store[sig]
+
+
 # 상단 필터 rerun 시 무거운 탭 생략용 — 탭 인덱스 = st.tabs 순서
 # 로컬·Cloud 공통: 업무일지·시장조사·공문·방문할일 포함 13탭 (8502 분리 종료)
 def _dash_cloud_merged_tabs() -> bool:
@@ -5657,21 +5708,36 @@ def _dash_is_wl_widget_key(key: str) -> bool:
 _DASH_FILTER_ALL_STAFF = "전체 담당자"
 _DASH_FILTER_ALL_CLIENT = "전체 거래처"
 _DASH_FILTER_ALL_ITEM = "전체 품목"
-_DASH_FILTER_UI_REV = "2026-08-31j"
-_DASH_FILTER_STAFF_KEY = "dash_filter_staff_sb_v32"
-_DASH_FILTER_CLIENT_KEY = "dash_filter_client_sb_v32"
-_DASH_FILTER_ITEM_KEY = "dash_filter_item_sb_v32"
+_DASH_FILTER_UI_REV = "2026-09-17b"
+_DASH_FILTER_STAFF_KEY = "dash_filter_staff_sb_v33"
+_DASH_FILTER_CLIENT_KEY = "dash_filter_client_sb_v33"
+_DASH_FILTER_ITEM_KEY = "dash_filter_item_sb_v33"
 _DASH_FILTER_LEGACY_POP = (
     "dash_filter_staff_sb_new",
     "dash_filter_staff_in_v2",
     "dash_filter_staff_txt",
+    "dash_filter_staff_sb_v32",
     "dash_filter_client_selectbox",
     "dash_filter_client_in_v2",
     "dash_filter_client_txt",
+    "dash_filter_client_sb_v32",
     "dash_filter_items_sb_new",
     "dash_filter_item_in_v2",
     "dash_filter_item_txt",
+    "dash_filter_item_sb_v32",
 )
+
+
+def _dash_reset_select_if_invalid(key: str, valid, all_label: str) -> None:
+    """잘못된 값만 None. 이미 비어 있으면 위젯 키를 건드리지 않는다."""
+    cur = st.session_state.get(key)
+    if cur is None:
+        return
+    if cur == "" or cur == all_label:
+        st.session_state[key] = None
+        return
+    if valid is not None and cur not in valid:
+        st.session_state[key] = None
 
 
 def _dash_norm_filter_input(raw, all_label: str) -> str:
@@ -5684,16 +5750,14 @@ def _dash_norm_filter_input(raw, all_label: str) -> str:
 def _dash_prepare_filter_widgets() -> None:
     """필터 selectbox 세션 정리 — 맨 위 '전체…' = 전체 필터."""
     slots = (
-        (_DASH_FILTER_STAFF_KEY, _DASH_FILTER_ALL_STAFF, ("dash_filter_staff_sb_v32", "dash_filter_staff_txt", "dash_filter_staff_in_v2", "dash_filter_staff_sb_new")),
-        (_DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ALL_CLIENT, ("dash_filter_client_sb_v32", "dash_filter_client_txt", "dash_filter_client_in_v2", "dash_filter_client_selectbox")),
-        (_DASH_FILTER_ITEM_KEY, _DASH_FILTER_ALL_ITEM, ("dash_filter_item_sb_v32", "dash_filter_item_txt", "dash_filter_item_in_v2", "dash_filter_items_sb_new")),
+        (_DASH_FILTER_STAFF_KEY, _DASH_FILTER_ALL_STAFF, ("dash_filter_staff_sb_v33", "dash_filter_staff_sb_v32", "dash_filter_staff_txt", "dash_filter_staff_in_v2", "dash_filter_staff_sb_new")),
+        (_DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ALL_CLIENT, ("dash_filter_client_sb_v33", "dash_filter_client_sb_v32", "dash_filter_client_txt", "dash_filter_client_in_v2", "dash_filter_client_selectbox")),
+        (_DASH_FILTER_ITEM_KEY, _DASH_FILTER_ALL_ITEM, ("dash_filter_item_sb_v33", "dash_filter_item_sb_v32", "dash_filter_item_txt", "dash_filter_item_in_v2", "dash_filter_items_sb_new")),
     )
     if st.session_state.get("_dash_filter_ui_rev") != _DASH_FILTER_UI_REV:
         keep: dict[str, str] = {}
         for cur_k, all_label, keys in slots:
             for k in keys:
-                if k == cur_k:
-                    continue
                 v = _dash_norm_filter_input(st.session_state.get(k), all_label)
                 if v and cur_k not in keep:
                     keep[cur_k] = v
@@ -5701,7 +5765,7 @@ def _dash_prepare_filter_widgets() -> None:
             if isinstance(k, str) and k.startswith("dash_filter_"):
                 st.session_state.pop(k, None)
         for cur_k, all_label, _ in slots:
-            st.session_state[cur_k] = keep.get(cur_k) or all_label
+            st.session_state[cur_k] = keep.get(cur_k) or None
         st.session_state["_dash_filter_ui_rev"] = _DASH_FILTER_UI_REV
 
     for k in _DASH_FILTER_LEGACY_POP:
@@ -5711,22 +5775,31 @@ def _dash_prepare_filter_widgets() -> None:
 def _dash_clear_one_filter(changed_key: str) -> None:
     """지운 칸만 '전체…' — 세 칸 동시 초기화로 인한 대량 로딩 방지."""
     if changed_key == _DASH_FILTER_STAFF_KEY:
-        st.session_state[_DASH_FILTER_STAFF_KEY] = _DASH_FILTER_ALL_STAFF
+        st.session_state[_DASH_FILTER_STAFF_KEY] = None
         st.session_state["dash_filter_staff"] = []
         for k in (
             "_dash_client_opts_sig",
             "_dash_item_opts_sig",
             "_dash_client_opts_tuple",
             "_dash_item_opts_tuple",
+            "_dash_staff_slice_sig",
+            "_dash_staff_slice_df",
+            "_dash_client_slice_sig",
+            "_dash_client_slice_df",
         ):
             st.session_state.pop(k, None)
     elif changed_key == _DASH_FILTER_CLIENT_KEY:
-        st.session_state[_DASH_FILTER_CLIENT_KEY] = _DASH_FILTER_ALL_CLIENT
+        st.session_state[_DASH_FILTER_CLIENT_KEY] = None
         st.session_state["dash_filter_client"] = _DASH_FILTER_ALL_CLIENT
-        for k in ("_dash_item_opts_sig", "_dash_item_opts_tuple"):
+        for k in (
+            "_dash_item_opts_sig",
+            "_dash_item_opts_tuple",
+            "_dash_client_slice_sig",
+            "_dash_client_slice_df",
+        ):
             st.session_state.pop(k, None)
     elif changed_key == _DASH_FILTER_ITEM_KEY:
-        st.session_state[_DASH_FILTER_ITEM_KEY] = _DASH_FILTER_ALL_ITEM
+        st.session_state[_DASH_FILTER_ITEM_KEY] = None
         st.session_state["dash_filter_items"] = []
 
 
@@ -5812,17 +5885,13 @@ def _dash_on_filter_clear_item() -> None:
     _dash_clear_one_filter(_DASH_FILTER_ITEM_KEY)
 
 
-_DASH_FILTER_BIND_VER = 12
+_DASH_FILTER_BIND_VER = 14
 
 
 def _dash_inject_filter_select_script() -> None:
     """필터 selectbox: fragment rerun마다 주입 — sticky 1회 주입만으로는 DOM 교체 후 무력화됨."""
-    keys_js = json.dumps(
-        [_DASH_FILTER_STAFF_KEY, _DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ITEM_KEY]
-    )
-    all_js = json.dumps(
-        [_DASH_FILTER_ALL_STAFF, _DASH_FILTER_ALL_CLIENT, _DASH_FILTER_ALL_ITEM]
-    )
+    keys_js = json.dumps([])
+    all_js = json.dumps([])
     components.html(
         f"""
         <script>
@@ -6488,7 +6557,7 @@ def _dash_compute_base_pivot_bundle(df_base, full_df, all_months):
     raw_years = sorted(full_df["연도"].unique()) if "연도" in full_df.columns else ["2026"]
     years = sorted(raw_years, reverse=True)
     desired_order = [f"{y[2:]}년 {m}" for y in years for m in all_months]
-    pivot_m_total = cached_get_yearly_monthly_pivot(df_base, all_months, years)
+    pivot_m_total = _yearly_monthly_pivot(df_base, all_months, years)
     staff_pivot = cached_staff_pivot(df_base, desired_order)
     df_total_monthly = df_base.groupby(df_base["매출일_dt"].dt.to_period("M"))[
         "매출액"
@@ -6537,10 +6606,11 @@ def _dash_compute_base_pivot_bundle(df_base, full_df, all_months):
 
 def _dash_compute_client_pivot_bundle(df_client_filtered, df_f, years, all_months):
     """거래처·품목 필터 결과 피벗·거래처 지표."""
-    client_item_qty_pivot = cached_client_item_qty_pivot(
+    client_item_qty_pivot = _client_item_qty_pivot_compute(
         df_client_filtered, years, all_months
     )
-    sales_p, qty_p, unit_price_p = cached_tab3_pivots(df_f, years, all_months)
+    sales_p, qty_p, unit_price_p = _tab3_pivots_compute(df_f, years, all_months)
+    pivot_m_client = _yearly_monthly_pivot(df_client_filtered, all_months, years)
     detail_cols = [
         "매출일_dt",
         "담당자",
@@ -6592,6 +6662,7 @@ def _dash_compute_client_pivot_bundle(df_client_filtered, df_f, years, all_month
         "sales_p": sales_p,
         "qty_p": qty_p,
         "unit_price_p": unit_price_p,
+        "pivot_m_client": pivot_m_client,
         "df_detail": df_detail,
         "cur_month_sales_client": cur_month_sales_client,
         "prev_month_sales_client": prev_month_sales_client,
@@ -6616,22 +6687,28 @@ def _dash_compute_pivot_bundle(df_base, df_client_filtered, df_f, full_df, all_m
 # ==========================================
 # 4. 피벗 및 지표 계산 연산 캐싱 (최적화)
 # ==========================================
-@st.cache_data
-def cached_get_yearly_monthly_pivot(data_df, all_months, years):
-    if data_df.empty:
+def _yearly_monthly_pivot(data_df, all_months, years):
+    if data_df is None or data_df.empty:
         return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
-    
     pvt = data_df.pivot_table(
         index="월", columns="연도", values="매출액", aggfunc="sum"
     ).fillna(0) * 1.1 / 10000
-    
     pvt = pvt.reindex(index=all_months, fill_value=0)
     all_yrs = [str(y) for y in years]
     pvt = pvt.reindex(columns=all_yrs, fill_value=0)
     return pvt
+
+
+@st.cache_data
+def cached_get_yearly_monthly_pivot(data_df, all_months, years):
+    return _yearly_monthly_pivot(data_df, all_months, years)
 @st.cache_data
 def cached_get_item_pivot(data_df, item_name, metric, all_months, years):
-    if data_df.empty:
+    return _item_pivot_compute(data_df, item_name, metric, all_months, years)
+
+
+def _item_pivot_compute(data_df, item_name, metric, all_months, years):
+    if data_df is None or data_df.empty:
         return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
         
     df_item = data_df[data_df["품목명"] == item_name]
@@ -6649,6 +6726,8 @@ def cached_get_item_pivot(data_df, item_name, metric, all_months, years):
         pvt_item = df_item.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
         pvt_total = data_df.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
         pvt = (pvt_item / pvt_total.replace(0, np.nan) * 100).fillna(0)
+    else:
+        pvt = pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
         
     pvt = pvt.reindex(index=all_months, fill_value=0)
     all_yrs = [str(y) for y in years]
@@ -7154,11 +7233,8 @@ def _tab1_bulk4_ensure_pack(
     all_months,
     years,
     latest_update_str="",
-    selected_staff=None,
-    selected_item=None,
-    selected_client="",
 ):
-    """필터가 바뀔 때만 4대 품목 12뷰를 미리 계산. 라디오 전환은 조회만."""
+    """날짜·원본만 바뀔 때 4대 품목 12뷰를 계산. 거래처/담당자/품목 필터와 무관."""
     items = list(target_items or [])
     months = list(all_months or [])
     yrs = [str(y) for y in (years or ())]
@@ -7169,9 +7245,6 @@ def _tab1_bulk4_ensure_pack(
         tuple(yrs),
         str(st.session_state.get("dash_filter_start", "")),
         str(st.session_state.get("dash_filter_end", "")),
-        tuple(selected_staff or ()),
-        tuple(selected_item or ()),
-        str(selected_client or ""),
         int(len(df_base)) if df_base is not None else 0,
     )
     prev = st.session_state.get("_tab1_bulk4_pack")
@@ -7282,9 +7355,8 @@ def render_tab1_bulk4_item_panel():
         )
 
 
-@st.cache_data
-def cached_get_industry_pivot(data_df, industry_name, metric, all_months, years):
-    if data_df.empty:
+def _industry_pivot_compute(data_df, industry_name, metric, all_months, years):
+    if data_df is None or data_df.empty:
         return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
         
     df_ind = data_df[data_df["업종"] == industry_name]
@@ -7299,18 +7371,26 @@ def cached_get_industry_pivot(data_df, industry_name, metric, all_months, years)
         pvt_ind = df_ind.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
         pvt_total = data_df.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
         pvt = (pvt_ind / pvt_total.replace(0, np.nan) * 100).fillna(0)
+    else:
+        pvt = pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
         
     pvt = pvt.reindex(index=all_months, fill_value=0)
     all_yrs = [str(y) for y in years]
     pvt = pvt.reindex(columns=all_yrs, fill_value=0)
     return pvt
+
+
 @st.cache_data
-def cached_tab3_pivots(target_tab3_df, years, all_months):
+def cached_get_industry_pivot(data_df, industry_name, metric, all_months, years):
+    return _industry_pivot_compute(data_df, industry_name, metric, all_months, years)
+
+
+def _tab3_pivots_compute(target_tab3_df, years, all_months):
     sales_p = pd.DataFrame()
     qty_p = pd.DataFrame()
     unit_price_p = pd.DataFrame()
     
-    if target_tab3_df.empty:
+    if target_tab3_df is None or target_tab3_df.empty:
         return sales_p, qty_p, unit_price_p
     sales_raw_p = target_tab3_df.pivot_table(index="품목명", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0)
     qty_raw_p = target_tab3_df.pivot_table(index="품목명", columns="연도월_정렬", values="출고량", aggfunc="sum").fillna(0)
@@ -7360,6 +7440,11 @@ def cached_tab3_pivots(target_tab3_df, years, all_months):
         unit_price_p = apply_forward_unit_price(unit_price_p, qty_p, years, all_months)
         
     return sales_p, qty_p, unit_price_p
+
+
+@st.cache_data
+def cached_tab3_pivots(target_tab3_df, years, all_months):
+    return _tab3_pivots_compute(target_tab3_df, years, all_months)
 
 
 # —— Tab3 4️⃣ 거래처 가스 사용량·재고관리 (신규 전용, 타 탭 미사용) ——
@@ -8130,9 +8215,8 @@ def render_tab4_item_client_section(
 # ==========================================
 # ★ 누락되었던 필수 캐시 함수 복구 완료 ★
 # ==========================================
-@st.cache_data
-def cached_client_item_qty_pivot(df_client_filtered, years, all_months):
-    if df_client_filtered.empty:
+def _client_item_qty_pivot_compute(df_client_filtered, years, all_months):
+    if df_client_filtered is None or df_client_filtered.empty:
         return pd.DataFrame()
     raw_ci_qty = df_client_filtered.pivot_table(
         index="품목명", columns="연도월_정렬", values="출고량", aggfunc="sum"
@@ -8145,6 +8229,11 @@ def cached_client_item_qty_pivot(df_client_filtered, years, all_months):
             q_val = raw_ci_qty[col_key] if col_key in raw_ci_qty.columns else 0
             ci_expanded_data[col_key] = q_val
     return pd.DataFrame(ci_expanded_data, index=raw_ci_qty.index)
+
+
+@st.cache_data
+def cached_client_item_qty_pivot(df_client_filtered, years, all_months):
+    return _client_item_qty_pivot_compute(df_client_filtered, years, all_months)
 # ==========================================
 # ★ 초고속 빈 껍데기 필터링 로직 ★
 # ==========================================
@@ -9649,8 +9738,7 @@ def cached_staff_pivot(df_base, desired_order):
     
     df_p = df_p.sort_values(by="총 매출 합계 (만원)", ascending=False)
     return df_p
-@st.cache_data
-def cached_ranking_pivot(df_base, current_year, sel_staff, all_months):
+def _ranking_pivot_compute(df_base, current_year, sel_staff, all_months):
     df_ranking = df_base[(df_base["담당자"] == sel_staff) & (df_base["연도"] == current_year)]
     if df_ranking.empty:
         return pd.DataFrame()
@@ -9660,6 +9748,11 @@ def cached_ranking_pivot(df_base, current_year, sel_staff, all_months):
     ranking_pivot["당해 누적 (만원)"] = ranking_pivot.sum(axis=1)
     ranking_pivot = ranking_pivot.sort_values(by="당해 누적 (만원)", ascending=False)
     return ranking_pivot
+
+
+@st.cache_data
+def cached_ranking_pivot(df_base, current_year, sel_staff, all_months):
+    return _ranking_pivot_compute(df_base, current_year, sel_staff, all_months)
 # ----------------------------------------------------
 # 탭 전체 적용 업데이트 뱃지 렌더링 유틸
 # ----------------------------------------------------
@@ -12728,9 +12821,11 @@ if _is_streamlit_cloud():
 st.sidebar.header("📁 데이터 업로드 및 유지")
 _render_cloud_sync_banner()
 # git/Drive가 예전 CSV로 바꿔도 잠긴 최신본을 먼저 되돌린 뒤 동기화한다.
-if restore_locked_latest is not None:
+# 매 rerun(거래처 버튼 등)마다 전 매출 CSV를 읽지 않는다.
+if restore_locked_latest is not None and not st.session_state.get("_data_lock_restored_once"):
     try:
         _lock_restored = restore_locked_latest(CACHE_DIR)
+        st.session_state["_data_lock_restored_once"] = True
         if _lock_restored:
             try:
                 load_uploaded_files_from_meta.clear()
@@ -13694,57 +13789,72 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.session_state["_dash_staff_opts_list"] = _dash_staff_opts_from(df_base_opts)
             _staff_opts = list(st.session_state.get("_dash_staff_opts_list") or [])
             _dash_prepare_filter_widgets()
-            _staff_opts_with_all = [_DASH_FILTER_ALL_STAFF] + _staff_opts
-            _staff_cur = st.session_state.get(_DASH_FILTER_STAFF_KEY)
-            if _staff_cur not in _staff_opts_with_all:
-                st.session_state[_DASH_FILTER_STAFF_KEY] = _DASH_FILTER_ALL_STAFF
+            _dash_reset_select_if_invalid(
+                _DASH_FILTER_STAFF_KEY, set(_staff_opts), _DASH_FILTER_ALL_STAFF
+            )
             _staff_picked = fc3.selectbox(
                 "👤 담당자",
-                options=_staff_opts_with_all,
+                options=_staff_opts or [""],
+                index=None,
+                placeholder="담당자명 입력",
                 key=_DASH_FILTER_STAFF_KEY,
+                help="목록에서 고르세요. X로 지웁니다.",
             )
-            selected_staff = [] if _staff_picked == _DASH_FILTER_ALL_STAFF else [_staff_picked]
+            selected_staff = (
+                []
+                if not _staff_picked or _staff_picked == _DASH_FILTER_ALL_STAFF
+                else [_staff_picked]
+            )
             # 구 리스트 키와 동기화(다른 로직 호환, 위젯 키는 건드리지 않음)
             st.session_state["dash_filter_staff"] = list(selected_staff)
-            df_staff_for_opts = (
-                df_base_opts[df_base_opts["담당자"].isin(selected_staff)]
-                if selected_staff
-                else df_base_opts
-            )
+            _staff_slice_sig = (_date_slice_sig, tuple(selected_staff or ()))
+            if st.session_state.get("_dash_staff_slice_sig") != _staff_slice_sig:
+                st.session_state["_dash_staff_slice_sig"] = _staff_slice_sig
+                st.session_state["_dash_staff_slice_df"] = (
+                    df_base_opts[df_base_opts["담당자"].isin(selected_staff)]
+                    if selected_staff
+                    else df_base_opts
+                )
+            df_staff_for_opts = st.session_state.get("_dash_staff_slice_df", df_base_opts)
             _client_opts_sig = (start_date, end_date, tuple(selected_staff or ()), int(len(df_staff_for_opts)))
             if st.session_state.get("_dash_client_opts_sig") != _client_opts_sig:
                 st.session_state["_dash_client_opts_sig"] = _client_opts_sig
                 if df_staff_for_opts.empty:
-                    st.session_state["_dash_client_opts_tuple"] = ()
+                    _client_opts = []
                 else:
-                    st.session_state["_dash_client_opts_tuple"] = tuple(
-                        list_filter_client_options(df_staff_for_opts)
-                    )
-            all_clients = list(st.session_state.get("_dash_client_opts_tuple", ()))
-            # 업체대분류 담당거래처도 목록에 포함(조회기간에 매출이 없어도 검색 가능)
-            if selected_staff and industry_staff_map:
-                _ind_clients = {
-                    c
-                    for c, s in industry_staff_map.items()
-                    if s in selected_staff and c and not str(c).startswith(("z", "Z"))
-                }
-                if _ind_clients:
-                    all_clients = sorted(set(all_clients) | _ind_clients)
-            client_options_with_all = [_DASH_FILTER_ALL_CLIENT] + all_clients
-            _client_cur = st.session_state.get(_DASH_FILTER_CLIENT_KEY)
-            if _client_cur not in client_options_with_all:
-                st.session_state[_DASH_FILTER_CLIENT_KEY] = _DASH_FILTER_ALL_CLIENT
-            selected_client = fc4.selectbox(
+                    _client_opts = list_filter_client_options(df_staff_for_opts)
+                if selected_staff and industry_staff_map:
+                    _ind_clients = {
+                        c
+                        for c, s in industry_staff_map.items()
+                        if s in selected_staff and c and not str(c).startswith(("z", "Z"))
+                    }
+                    if _ind_clients:
+                        _client_opts = sorted(set(_client_opts) | _ind_clients)
+                st.session_state["_dash_client_opts_tuple"] = tuple(_client_opts)
+            all_clients = st.session_state.get("_dash_client_opts_tuple") or ()
+            _dash_reset_select_if_invalid(
+                _DASH_FILTER_CLIENT_KEY, all_clients, _DASH_FILTER_ALL_CLIENT
+            )
+            selected_client_raw = fc4.selectbox(
                 "🏢 거래처",
-                options=client_options_with_all,
+                options=list(all_clients) or [""],
+                index=None,
+                placeholder="거래처명 입력",
                 key=_DASH_FILTER_CLIENT_KEY,
+                help="목록에서 고르세요. X로 지웁니다.",
             )
+            selected_client = selected_client_raw or _DASH_FILTER_ALL_CLIENT
             st.session_state["dash_filter_client"] = selected_client
-            df_client_for_opts = (
-                filter_df_by_selected_client(df_staff_for_opts, selected_client)
-                if selected_client != "전체 거래처"
-                else df_staff_for_opts
-            )
+            _client_slice_sig = (_staff_slice_sig, selected_client)
+            if st.session_state.get("_dash_client_slice_sig") != _client_slice_sig:
+                st.session_state["_dash_client_slice_sig"] = _client_slice_sig
+                st.session_state["_dash_client_slice_df"] = (
+                    filter_df_by_selected_client(df_staff_for_opts, selected_client)
+                    if selected_client != "전체 거래처"
+                    else df_staff_for_opts
+                )
+            df_client_for_opts = st.session_state.get("_dash_client_slice_df", df_staff_for_opts)
             # 품목 옵션 캐시 (담당자+거래처+행수)
             _item_opts_sig = (_client_opts_sig, selected_client, int(len(df_client_for_opts)))
             if st.session_state.get("_dash_item_opts_sig") != _item_opts_sig:
@@ -13756,16 +13866,22 @@ def _dash_filter_and_tabs_fragment() -> None:
                         sorted(df_client_for_opts["품목명"].astype(str).unique())
                     )
             available_items = list(st.session_state.get("_dash_item_opts_tuple", ()))
-            _item_opts = [_DASH_FILTER_ALL_ITEM] + available_items
-            _item_cur = st.session_state.get(_DASH_FILTER_ITEM_KEY)
-            if _item_cur not in _item_opts:
-                st.session_state[_DASH_FILTER_ITEM_KEY] = _DASH_FILTER_ALL_ITEM
+            _dash_reset_select_if_invalid(
+                _DASH_FILTER_ITEM_KEY, available_items, _DASH_FILTER_ALL_ITEM
+            )
             _item_picked = fc5.selectbox(
                 "📦 품목명",
-                options=_item_opts,
+                options=available_items or [""],
+                index=None,
+                placeholder="품목명 입력",
                 key=_DASH_FILTER_ITEM_KEY,
+                help="목록에서 고르세요. X로 지웁니다.",
             )
-            selected_item = [] if _item_picked == _DASH_FILTER_ALL_ITEM else [_item_picked]
+            selected_item = (
+                []
+                if not _item_picked or _item_picked == _DASH_FILTER_ALL_ITEM
+                else [_item_picked]
+            )
             st.session_state["dash_filter_items"] = list(selected_item)
             if _is_streamlit_cloud():
                 dev_caption(
@@ -13777,9 +13893,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                 )
 
             df_base = df_base_opts
-            df_staff_filtered = (
-                df_base[df_base["담당자"].isin(selected_staff)] if selected_staff else df_base
-            )
             # df_staff_for_opts 와 동일 조건 → 거래처 필터 1회만 (중복 연산 제거, 결과 동일)
             df_client_filtered = df_client_for_opts
             df_f = (
@@ -13827,6 +13940,12 @@ def _dash_filter_and_tabs_fragment() -> None:
             sales_p = _pb["sales_p"]
             qty_p = _pb["qty_p"]
             unit_price_p = _pb["unit_price_p"]
+            pivot_m_client = _pb.get("pivot_m_client")
+            if pivot_m_client is None:
+                pivot_m_client = _yearly_monthly_pivot(
+                    df_client_filtered, all_months, years
+                )
+                _cb["pivot_m_client"] = pivot_m_client
             staff_pivot = _pb["staff_pivot"]
             df_detail = _pb["df_detail"]
             cur_month_sales_total = _pb["cur_month_sales_total"]
@@ -13846,31 +13965,34 @@ def _dash_filter_and_tabs_fragment() -> None:
         latest_month_str_total = "-"
         cur_month_sales_client = prev_month_sales_client = mom_rate_client = avg_monthly_sales_client = avg_rate_client = 0.0
         latest_month_str_client = "-"
-    # 담당자만 반영한 채권(거래처 선택 무관) — 연체개월수 요약표용
-    # 행 수가 같아도 금액이 바뀌면 지문이 달라져 옛 세션표를 버린다.
-    _debt_filter_sig = (
-        tuple(selected_staff or ()),
-        selected_client,
+    # 담당자 채권은 거래처와 무관. 거래처만 바꿀 때 full_df 재스캔하지 않는다.
+    _debt_data_sig = (
         st.session_state.get("_debt_applied_sha") or debt_bytes_fingerprint(debt_bytes),
         debt_frame_fingerprint(debt_df),
     )
-    if st.session_state.get("_dash_debt_filter_sig") != _debt_filter_sig:
-        st.session_state["_dash_debt_filter_sig"] = _debt_filter_sig
-        _staff_debt = pd.DataFrame()
-        _filt_debt = pd.DataFrame()
+    _debt_staff_sig = (tuple(selected_staff or ()), _debt_data_sig)
+    if st.session_state.get("_dash_debt_staff_sig") != _debt_staff_sig:
+        st.session_state["_dash_debt_staff_sig"] = _debt_staff_sig
         if not debt_df.empty:
             if selected_staff:
                 valid_staff_clients = full_df[full_df["담당자"].isin(selected_staff)]["거래처"].unique()
-                _staff_debt = debt_df[debt_df["거래처"].isin(valid_staff_clients)]
+                st.session_state["_dash_staff_debt_df"] = debt_df[
+                    debt_df["거래처"].isin(valid_staff_clients)
+                ]
             else:
-                _staff_debt = debt_df
-            if selected_client != "전체 거래처":
-                _filt_debt = _staff_debt[_staff_debt["거래처"] == selected_client]
-            else:
-                _filt_debt = _staff_debt
-        st.session_state["_dash_staff_debt_df"] = _staff_debt
-        st.session_state["_dash_filtered_debt_df"] = _filt_debt
+                st.session_state["_dash_staff_debt_df"] = debt_df
+        else:
+            st.session_state["_dash_staff_debt_df"] = pd.DataFrame()
     staff_debt_df = st.session_state.get("_dash_staff_debt_df", pd.DataFrame())
+    _debt_filter_sig = (_debt_staff_sig, selected_client)
+    if st.session_state.get("_dash_debt_filter_sig") != _debt_filter_sig:
+        st.session_state["_dash_debt_filter_sig"] = _debt_filter_sig
+        if selected_client != "전체 거래처" and not staff_debt_df.empty:
+            st.session_state["_dash_filtered_debt_df"] = staff_debt_df[
+                staff_debt_df["거래처"] == selected_client
+            ]
+        else:
+            st.session_state["_dash_filtered_debt_df"] = staff_debt_df
     filtered_debt_df = st.session_state.get("_dash_filtered_debt_df", pd.DataFrame())
     client_addr_raw = resolve_client_address(selected_client, addr_dict)
     if not client_addr_raw:
@@ -13943,7 +14065,11 @@ def _dash_filter_and_tabs_fragment() -> None:
             with st.spinner("PPT 파일 생성 중..."):
                 tot_sales_val_export = df_base["매출액"].sum() * 1.1 / 10000 if not df_base.empty else 0.0
                 cur_sales_val_export = cur_month_sales_total / 10000
-                pivot_m_client_export = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
+                pivot_m_client_export = (
+                    pivot_m_client
+                    if pivot_m_client is not None
+                    else _yearly_monthly_pivot(df_client_filtered, all_months, years)
+                )
                 st.session_state["ppt_ready_bytes"] = convert_dashboard_to_ppt(
                     latest_update_str,
                     selected_client,
@@ -14063,9 +14189,6 @@ def _dash_filter_and_tabs_fragment() -> None:
             all_months,
             years,
             latest_update_str,
-            selected_staff,
-            selected_item,
-            selected_client,
         )
         render_tab1_bulk4_item_panel()
 
@@ -14085,7 +14208,26 @@ def _dash_filter_and_tabs_fragment() -> None:
                 with ind_col2:
                     selected_ind_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="industry_metric_radio")
         
-                ind_pivot = cached_get_industry_pivot(df_base, selected_industry, selected_ind_metric, all_months, years)
+                ind_pivot = _dash_memo(
+                    "_dash_ind_pivot",
+                    (
+                        selected_industry,
+                        selected_ind_metric,
+                        tuple(all_months),
+                        tuple(str(y) for y in years),
+                        str(start_date),
+                        str(end_date),
+                        sales_file_meta,
+                        int(len(df_base)),
+                    ),
+                    lambda: _industry_pivot_compute(
+                        df_base,
+                        selected_industry,
+                        selected_ind_metric,
+                        all_months,
+                        years,
+                    ),
+                )
             
                 i_col_left2, i_col_right2 = st.columns([1, 1])
                 with i_col_left2:
@@ -14431,6 +14573,39 @@ def _dash_filter_and_tabs_fragment() -> None:
         if st.session_state.show_corp_info and st.session_state.last_opened_client != selected_client:
             st.session_state.show_corp_info = False
         st.session_state.last_opened_client = selected_client
+
+        t2_c1, t2_c2 = st.columns([4, 1])
+        t2_c1.markdown(
+            f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{selected_client}] 영업 실적 및 요약</div>",
+            unsafe_allow_html=True,
+        )
+        t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+        m1, m2, m3, m4 = st.columns(4)
+        # 지정 거래처 총 거래매출 · 부가세 별도(VAT 제외)
+        tot_sales_c = df_client_filtered["매출액"].sum() / 10000 if not df_client_filtered.empty else 0.0
+        cur_sales_c = cur_month_sales_client / 10000
+        m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (부가세 별도)</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
+        m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_client})</div><div class='metric-value'>{cur_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
+        m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_client < 0 else '#2563EB'};'>{mom_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
+        m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
+
+        try:
+            import visit_calendar_tab as _t2_vc
+
+            _t2_staff = selected_staff[0] if selected_staff else ""
+            _t2_cli = (
+                ""
+                if (not selected_client or selected_client == "전체 거래처")
+                else str(selected_client)
+            )
+            _t2_df = (
+                df_client_filtered
+                if _t2_cli and isinstance(df_client_filtered, pd.DataFrame)
+                else None
+            )
+            _t2_vc.render_tab2_delivery_status(_t2_df, _t2_staff, _t2_cli)
+        except Exception as _t2_deliv_err:
+            st.caption(f"납품현황: {_t2_deliv_err}")
 
         # 가로 넓은 직사각형 버튼 — 글씨 한 줄로 박스 안에
         with st.container(key="tab2_action_btns"):
@@ -14995,23 +15170,11 @@ def _dash_filter_and_tabs_fragment() -> None:
                         else ""
                     )
                 )
-        t2_c1, t2_c2 = st.columns([4, 1])
-        t2_c1.markdown(
-            f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{selected_client}] 영업 실적 및 요약</div>",
-            unsafe_allow_html=True,
-        )
-        t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-        m1, m2, m3, m4 = st.columns(4)
-        # 지정 거래처 총 거래매출 · 부가세 별도(VAT 제외)
-        tot_sales_c = df_client_filtered["매출액"].sum() / 10000 if not df_client_filtered.empty else 0.0
-
-        cur_sales_c = cur_month_sales_client / 10000
-        m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (부가세 별도)</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
-        m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_client})</div><div class='metric-value'>{cur_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
-        m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_client < 0 else '#2563EB'};'>{mom_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
-        m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
         if not df_client_filtered.empty:
-            pivot_m_client = cached_get_yearly_monthly_pivot(df_client_filtered, all_months, years)
+            if pivot_m_client is None:
+                pivot_m_client = _yearly_monthly_pivot(
+                    df_client_filtered, all_months, years
+                )
             st.markdown(
                 f"<div class='sub-header dashboard-tab-panel-head'>📊 [{selected_client}] 연도별 월 매출 추이</div>",
                 unsafe_allow_html=True,
@@ -15056,7 +15219,27 @@ def _dash_filter_and_tabs_fragment() -> None:
                 with sel_col2_c:
                     selected_metric_c = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="client_metric_radio")
 
-                client_item_pivot = cached_get_item_pivot(df_client_filtered, selected_target_item_c, selected_metric_c, all_months, years)
+                client_item_pivot = _dash_memo(
+                    "_dash_tab2_item_pivot",
+                    (
+                        selected_client,
+                        selected_target_item_c,
+                        selected_metric_c,
+                        tuple(all_months),
+                        tuple(str(y) for y in years),
+                        str(start_date),
+                        str(end_date),
+                        sales_file_meta,
+                        int(len(df_client_filtered)),
+                    ),
+                    lambda: _item_pivot_compute(
+                        df_client_filtered,
+                        selected_target_item_c,
+                        selected_metric_c,
+                        all_months,
+                        years,
+                    ),
+                )
 
                 i_col_left_c, i_col_right_c = st.columns([1, 1])
                 with i_col_left_c:
@@ -15104,7 +15287,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 elif len(_client_years) >= 2:
                     _prev_y = _client_years[-2]
             _yr_label = f"{_prev_y}·{_cur_y}" if _prev_y else str(_cur_y)
-            # 당월 기준: 미래 월 제외, 당월→과거 역순 (26년 08·07·…·01 → 25년 12·…·01)
+            # 같은 달 당해년도·전년도 묶음, 당월→01월 역순 (09월 당해/전년 · 08월 당해/전년 · …)
             _latest_dt_sales = df_client_filtered["매출일_dt"].max()
             _cur_month = (
                 _latest_dt_sales.strftime("%m월")
@@ -15113,33 +15296,53 @@ def _dash_filter_and_tabs_fragment() -> None:
             )
             _mi = all_months.index(_cur_month) if _cur_month in all_months else 0
             _sales_col_keys = []
+            _sales_col_labels = {}
             if _cur_y:
                 _ys = str(_cur_y)[2:]
+                _ps = str(_prev_y)[2:] if _prev_y else ""
                 for i in range(_mi, -1, -1):
-                    _sales_col_keys.append(f"{_ys}년 {all_months[i]}")
-            if _prev_y:
-                _ps = str(_prev_y)[2:]
-                for i in range(len(all_months) - 1, -1, -1):
-                    _sales_col_keys.append(f"{_ps}년 {all_months[i]}")
+                    _m = all_months[i]
+                    _ck = f"{_ys}년 {_m}"
+                    _sales_col_keys.append(_ck)
+                    _sales_col_labels[_ck] = f"{_m} 당해년도"
+                    if _prev_y:
+                        _pk = f"{_ps}년 {_m}"
+                        _sales_col_keys.append(_pk)
+                        _sales_col_labels[_pk] = f"{_m} 전년도"
             # 오른쪽 월 그래프: 당월→01월 역순만 (미도래 월 제외)
             _months_back = list(reversed(all_months[: _mi + 1]))
             st.markdown(
                 f"<div class='sub-header dashboard-tab-panel-head'>"
-                f"📊 [{selected_client}] 매출 비교 ({_yr_label}, {_cur_month}→과거)</div>",
+                f"📊 [{selected_client}] 매출 비교 (당해년도·전년도, {_cur_month}→과거)</div>",
                 unsafe_allow_html=True,
             )
             st.caption(
-                f"왼쪽: 품목별 매출(만원·VAT포함) · {_cur_y}년 {_cur_month}→과거 → {_prev_y or '전년'}년 "
+                f"왼쪽: 품목별 매출(만원·VAT포함) · 같은 달 당해년도·전년도 "
                 f"(매출 많은 순) · 오른쪽: 월별 매출 비교 그래프 · 하단: 당해 년평균 매출 비중"
             )
-            sales_two_y = cached_client_item_sales_pivot_two_years(
-                df_client_filtered, tuple(_sales_col_keys)
+            _tab2_sig = (
+                selected_client,
+                str(start_date),
+                str(end_date),
+                sales_file_meta,
+                int(len(df_client_filtered)),
             )
-            sales_month_two_y = cached_get_yearly_monthly_pivot(
-                df_client_filtered,
-                _months_back,
-                [y for y in (_cur_y, _prev_y) if y],
+            sales_two_y = _dash_memo(
+                "_dash_tab2_sales_two_y",
+                _tab2_sig + (tuple(_sales_col_keys),),
+                lambda: _client_item_sales_pivot_two_years_compute(
+                    df_client_filtered, tuple(_sales_col_keys)
+                ),
             )
+            _yoy_cols = [y for y in (_cur_y, _prev_y) if y]
+            if pivot_m_client is not None and not getattr(pivot_m_client, "empty", True):
+                sales_month_two_y = pivot_m_client.reindex(
+                    index=_months_back, columns=_yoy_cols, fill_value=0
+                )
+            else:
+                sales_month_two_y = _yearly_monthly_pivot(
+                    df_client_filtered, _months_back, _yoy_cols
+                )
             q_left, q_right = st.columns([1, 1])
             with q_left:
                 if sales_two_y.empty:
@@ -15149,6 +15352,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     sales_two_y = sales_two_y.loc[
                         sales_two_y.sum(axis=1).sort_values(ascending=False).index
                     ]
+                    sales_two_y = sales_two_y.rename(columns=_sales_col_labels)
                     sales_disp = get_display_df_with_sum(sales_two_y, "합계")
                     st.dataframe(
                         style_with_sum(sales_disp, "{:,.0f}", "Blues", axis=None),
@@ -15173,27 +15377,22 @@ def _dash_filter_and_tabs_fragment() -> None:
                     )
             # 당해 년평균(월평균) 매출 기준 품목별 비중 — 가로 막대(블루 톤)
             if _cur_y:
-                _df_cy = df_client_filtered[
-                    df_client_filtered["연도"].astype(str) == str(_cur_y)
-                ]
-                if not _df_cy.empty and "매출액" in _df_cy.columns:
-                    _m_pvt = _df_cy.pivot_table(
-                        index="품목명", columns="월", values="매출액", aggfunc="sum"
-                    ).fillna(0)
-                    _yr_avg = _m_pvt.mean(axis=1)
-                    _yr_avg = _yr_avg[_yr_avg > 0]
-                    if not _yr_avg.empty:
-                        _share = (_yr_avg / _yr_avg.sum() * 100).sort_values(ascending=False)
-                        _fig_share = create_item_share_hbar(
-                            _share,
-                            title_text=f"당해({_cur_y}) 년평균 매출 기준 품목별 비중",
+                _share = _dash_memo(
+                    "_dash_tab2_share",
+                    _tab2_sig + (str(_cur_y),),
+                    lambda: _tab2_year_item_share_series(df_client_filtered, _cur_y),
+                )
+                if _share is not None:
+                    _fig_share = create_item_share_hbar(
+                        _share,
+                        title_text=f"당해({_cur_y}) 년평균 매출 기준 품목별 비중",
+                    )
+                    if _fig_share is not None:
+                        render_plotly_chart(
+                            _fig_share,
+                            use_container_width=True,
+                            key="tab2_cur_year_item_share",
                         )
-                        if _fig_share is not None:
-                            render_plotly_chart(
-                                _fig_share,
-                                use_container_width=True,
-                                key="tab2_cur_year_item_share",
-                            )
     # Tab 3: 📦 품목 및 단가 분석
     with tab3:
         t3_c1, t3_c2 = st.columns([4, 1])
@@ -15213,12 +15412,25 @@ def _dash_filter_and_tabs_fragment() -> None:
             key="tab3_detail_years",
         )
     
-        sales_p_filtered, qty_p_filtered = cached_filter_tab3_year_columns(
-            sales_p,
-            qty_p,
-            tuple(sorted(selected_detail_years)),
-            tuple(avail_years_short),
-            tuple(all_months),
+        sales_p_filtered, qty_p_filtered = _dash_memo(
+            "_dash_tab3_year_cols",
+            (
+                selected_client,
+                tuple(sorted(selected_detail_years)),
+                tuple(avail_years_short),
+                tuple(all_months),
+                str(start_date),
+                str(end_date),
+                sales_file_meta,
+                int(len(df_f)) if df_f is not None else 0,
+            ),
+            lambda: cached_filter_tab3_year_columns(
+                sales_p,
+                qty_p,
+                tuple(sorted(selected_detail_years)),
+                tuple(avail_years_short),
+                tuple(all_months),
+            ),
         )
         st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
         render_tab3_dataframe_table(
@@ -15327,10 +15539,21 @@ def _dash_filter_and_tabs_fragment() -> None:
                 _u_default_years = _u_years_all[-1:]
 
             _u_sel_years = tuple(_u_default_years)
-            _u_sum, _u_monthly, _ = cached_tab3_client_gas_usage(
-                df_client_filtered,
-                _u_sel_years,
-                tuple(),
+            _u_sum, _u_monthly, _ = _dash_memo(
+                "_dash_tab3_gas",
+                (
+                    selected_client,
+                    _u_sel_years,
+                    str(start_date),
+                    str(end_date),
+                    sales_file_meta,
+                    int(len(df_client_filtered)),
+                ),
+                lambda: cached_tab3_client_gas_usage(
+                    df_client_filtered,
+                    _u_sel_years,
+                    tuple(),
+                ),
             )
             _yr_lbl = "·".join(_u_sel_years) if _u_sel_years else ""
             if _u_sum.empty:
@@ -15516,7 +15739,21 @@ def _dash_filter_and_tabs_fragment() -> None:
             all_staffs = sorted(df_base["담당자"].unique())
     
             sel_staff = st.selectbox("👤 순위를 조회할 담당자 선택", all_staffs, key="ranking_staff_select")
-            ranking_pivot = cached_ranking_pivot(df_base, current_year, sel_staff, all_months)
+            ranking_pivot = _dash_memo(
+                "_dash_ranking_pivot",
+                (
+                    sel_staff,
+                    current_year,
+                    tuple(all_months),
+                    str(start_date),
+                    str(end_date),
+                    sales_file_meta,
+                    int(len(df_base)),
+                ),
+                lambda: _ranking_pivot_compute(
+                    df_base, current_year, sel_staff, all_months
+                ),
+            )
     
             if not ranking_pivot.empty:
                 r_col1, r_col2 = st.columns([1.2, 1])

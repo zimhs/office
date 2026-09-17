@@ -103,9 +103,35 @@ class CloudClipFixIsolationTest(unittest.TestCase):
             tab2.find("품목별 상세 분석"),
             tab2.find("매출 비교 ("),
         )
+        self.assertIn("같은 달 당해년도·전년도", tab2)
+        self.assertIn("{_m} 당해년도", tab2)
+        self.assertIn("{_m} 전년도", tab2)
         _summary_idx = tab2.find("영업 실적 및 요약")
         _btn_idx = tab2.find("tab2_action_btns")
-        self.assertGreater(_summary_idx, _btn_idx)
+        _deliv_idx = tab2.find("render_tab2_delivery_status")
+        self.assertLess(_summary_idx, _deliv_idx)
+        self.assertLess(_summary_idx, _btn_idx)
+        self.assertIn("납품현황", tab2)
+        self.assertIn("render_tab2_delivery_status", tab2)
+        self.assertLess(tab2.find("납품현황"), tab2.find("tab2_action_btns"))
+        self.assertLess(tab2.find("tab2_delivery_status"), tab2.find("tab2_action_btns"))
+        self.assertIn("_dash_debt_staff_sig", src)
+        self.assertIn("def _dash_series_eq", src)
+        self.assertIn("def _dash_memo", src)
+        self.assertIn("def _yearly_monthly_pivot", src)
+        self.assertIn("def _client_item_qty_pivot_compute", src)
+        self.assertIn("def _tab3_pivots_compute", src)
+        self.assertIn("def _industry_pivot_compute", src)
+        self.assertIn('"pivot_m_client": pivot_m_client', src)
+        bulk4 = src.split("def _tab1_bulk4_ensure_pack", 1)[1].split(
+            "def render_tab1_bulk4_item_panel", 1
+        )[0]
+        self.assertNotIn("selected_client", bulk4)
+        self.assertNotIn("selected_staff", bulk4)
+        self.assertNotIn("cached_get_yearly_monthly_pivot(df_client_filtered", tab2)
+        self.assertIn("_dash_tab2_item_pivot", tab2)
+        self.assertIn("pivot_m_client.reindex", tab2)
+        self.assertIn("_dash_ind_pivot", src.split("# Tab 1:", 1)[1].split("# Tab 2:", 1)[0])
 
     def test_cloud_command_opens_one_tab(self):
         with open("dashboard_Cloud.command", encoding="utf-8") as f:
@@ -121,12 +147,24 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("def _dash_on_filter_clear_client", src)
         self.assertIn('key="_dash_filter_clear_client_btn"', src)
         self.assertIn("_dash_filter_clear_client_btn", src)
-        self.assertIn("_DASH_FILTER_BIND_VER = 12", src)
+        self.assertIn("_DASH_FILTER_BIND_VER = 14", src)
         self.assertIn("function bindDirectInputs", src)
         self.assertIn("function clearForNewInput", src)
         self.assertIn("function holdCleared", src)
         self.assertIn("DATE_KEYS = ['dash_filter_start', 'dash_filter_end']", src)
         self.assertIn("clickClearRerunBtn(fieldKey)", src)
+        self.assertIn('placeholder="거래처명 입력"', src)
+        self.assertIn('placeholder="담당자명 입력"', src)
+        self.assertIn('placeholder="품목명 입력"', src)
+        self.assertIn("dash_filter_staff_sb_v33", src)
+        self.assertIn("dash_filter_client_sb_v33", src)
+        self.assertIn("dash_filter_item_sb_v33", src)
+        filt = src.split("with filter_container:", 1)[1].split("df_base = df_base_opts", 1)[0]
+        self.assertIn('placeholder="담당자명 입력"', filt)
+        self.assertIn('placeholder="거래처명 입력"', filt)
+        self.assertIn('placeholder="품목명 입력"', filt)
+        self.assertGreaterEqual(filt.count("index=None"), 3)
+        self.assertNotIn("accept_new_options=True", filt)
 
 
 class WorklogDraftSurviveFilterTest(unittest.TestCase):
@@ -151,6 +189,8 @@ class WorklogDraftSurviveFilterTest(unittest.TestCase):
             "wl_notes_",
             "wl_lines_live_",
             "wl_clients_live_",
+            "wl_remarks_live_",
+            "wl_ent_r_",
             "worklog_booted_",
         ):
             self.assertIn(f'"{p}"', prefixes)

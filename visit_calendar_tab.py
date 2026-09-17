@@ -280,40 +280,104 @@ def clear_day_visit(day: date | str, client: str) -> bool:
     return delete_visit(str(hit.get("id") or ""))
 
 
-def _staff_clients(df: pd.DataFrame | None, staff: str) -> list[str]:
-    if df is None or df.empty or not staff or "담당자" not in df.columns or "거래처" not in df.columns:
-        return []
-    cache = _vc_state_dict("_vc_staff_clients")
-    sig = (staff, int(len(df)))
-    hit = cache.get(sig)
-    if isinstance(hit, list):
-        return hit
-    sub = df[df["담당자"].astype(str).str.strip() == staff]
-    names = sorted({_s(x) for x in sub["거래처"].tolist() if _s(x) and _s(x) != "미지정"})
-    cache[sig] = names
+_SKIP_STAFF = {"", "미지정", "전체", "전체 담당자"}
+_SKIP_CLIENT = {"", "미지정", "전체", "전체 거래처"}
+
+
+def _staff_from_store(store: dict | None = None) -> list[str]:
+    """기본 담당자 + 방문·할일 저장분. 상단에서 이미 만든 담당자 목록이 있으면 합친다."""
+    names = ["김혁수"]
+    src = store if isinstance(store, dict) else load_store()
+    for row in list(src.get("visits") or []) + list(src.get("todos") or []):
+        if not isinstance(row, dict):
+            continue
+        s = _s(row.get("staff"))
+        if s and s not in names and s not in _SKIP_STAFF:
+            names.append(s)
+    try:
+        for s in st.session_state.get("_dash_staff_opts_list") or []:
+            s = _s(s)
+            if s and s not in names and s not in _SKIP_STAFF:
+                names.append(s)
+        filt = st.session_state.get("dash_filter_staff_sb_v33") or st.session_state.get(
+            "dash_filter_staff_sb_v32"
+        )
+        if isinstance(filt, str):
+            s = _s(filt)
+            if s and s not in names and s not in _SKIP_STAFF:
+                names.append(s)
+    except Exception:
+        pass
     return names
 
 
-def _staff_names(df: pd.DataFrame | None) -> list[str]:
-    n = 0 if df is None or df.empty else int(len(df))
-    box = _vc_state_dict("_vc_staff_names")
-    if box.get("n") == n and isinstance(box.get("names"), list) and box["names"]:
-        return box["names"]
-    names = ["김혁수"]
-    if df is not None and not df.empty and "담당자" in df.columns:
-        extra = sorted(
-            {
-                _s(x)
-                for x in df["담당자"].tolist()
-                if _s(x) and _s(x) not in {"미지정", "전체", "전체 담당자"}
-            }
-        )
-        for nme in extra:
-            if nme not in names:
-                names.append(nme)
+def _clients_from_store(staff: str, store: dict | None = None) -> list[str]:
+    names: list[str] = []
+    src = store if isinstance(store, dict) else load_store()
+    want = _s(staff)
+    for row in list(src.get("visits") or []) + list(src.get("todos") or []):
+        if not isinstance(row, dict):
+            continue
+        if want and _s(row.get("staff")) not in {"", want}:
+            continue
+        c = _s(row.get("client") or row.get("title"))
+        if c and c not in names and c not in _SKIP_CLIENT:
+            names.append(c)
+    names.sort()
+    return names
+
+
+def _sales_client_names(df: pd.DataFrame | None, staff: str) -> list[str]:
+    """선택 담당자의 매출 거래처. 담당자·행수가 같으면 다시 훑지 않는다."""
+    if df is None or df.empty or not staff:
+        return []
+    if "담당자" not in df.columns or "거래처" not in df.columns:
+        return []
+    n = int(len(df))
+    box = _vc_state_dict("_vc_staff_clients")
+    sig = (staff, n, "c2")
+    hit = box.get("names")
+    if box.get("sig") == sig and isinstance(hit, list):
+        return hit
+    work = df[df["담당자"].astype(str).str.strip() == staff]
+    names = {
+        _s(x)
+        for x in pd.unique(work["거래처"].astype(str))
+        if _s(x) and _s(x) not in _SKIP_CLIENT
+    }
+    if "거래처_원본" in work.columns:
+        names |= {
+            _s(x)
+            for x in pd.unique(work["거래처_원본"].astype(str))
+            if _s(x) and _s(x) not in _SKIP_CLIENT
+        }
+    out = sorted(names)
     box.clear()
-    box["n"] = n
-    box["names"] = names
+    box["sig"] = sig
+    box["names"] = out
+    return out
+
+
+def _staff_clients(df: pd.DataFrame | None, staff: str, store: dict | None = None) -> list[str]:
+    """담당자 매출 거래처 전부 + 방문·할일에 적힌 이름."""
+    names = set(_clients_from_store(staff, store))
+    names.update(_sales_client_names(df, staff))
+    try:
+        cur = _s(st.session_state.get("vc_client"))
+        if cur and cur not in _SKIP_CLIENT:
+            names.add(cur)
+    except Exception:
+        pass
+    return sorted(names)
+
+
+def _staff_names(df: pd.DataFrame | None) -> list[str]:
+    """담당자 목록. 매출 담당자 열 전체 스캔은 하지 않는다."""
+    box = _vc_state_dict("_vc_staff_names")
+    names = _staff_from_store()
+    if box.get("names") != names:
+        box.clear()
+        box["names"] = names
     return names
 
 
@@ -405,6 +469,80 @@ def _sales_delivery_rows(df: pd.DataFrame | None, staff: str, client: str) -> li
     if not key:
         return []
     return list(_sales_by_client(df, staff).get(key) or [])
+
+
+def _t2d_delivery_rows(
+    df: pd.DataFrame | None, staff: str, client: str, month: date | None = None
+) -> list[dict]:
+    """이미 좁힌 거래처 매출만 납품 행으로. 방문탭 전체 맵·full_df 스캔을 하지 않는다."""
+    if df is None or df.empty or len(_s(client)) < 2:
+        return []
+    if "매출일_dt" not in df.columns:
+        return []
+    work = df
+    if staff and "담당자" in work.columns:
+        col = work["담당자"]
+        if col.dtype == object:
+            if not bool(col.eq(staff).all()):
+                work = work.loc[col.astype(str).str.strip() == staff]
+        else:
+            work = work.loc[col.astype(str).str.strip() == staff]
+        if work.empty:
+            return []
+    if month is not None:
+        dts = pd.to_datetime(work["매출일_dt"], errors="coerce")
+        work = work.loc[(dts.dt.year == month.year) & (dts.dt.month == month.month)]
+        if work.empty:
+            return []
+    names = work["거래처"].astype(str) if "거래처" in work.columns else pd.Series("", index=work.index, dtype=str)
+    isos = pd.to_datetime(work["매출일_dt"], errors="coerce").dt.strftime("%Y-%m-%d")
+    if "품목명" in work.columns:
+        items = work["품목명"].astype(str)
+        skip = items.str.contains(r"이월\s*미수|\[이월", na=False, regex=True)
+    else:
+        items = pd.Series("", index=work.index, dtype=str)
+        skip = pd.Series(False, index=work.index)
+    qtys = (
+        pd.to_numeric(work["출고량"], errors="coerce")
+        if "출고량" in work.columns
+        else pd.Series(0.0, index=work.index)
+    )
+    amts = (
+        pd.to_numeric(work["매출액"], errors="coerce")
+        if "매출액" in work.columns
+        else pd.Series(0.0, index=work.index)
+    )
+    bulk = items.str.upper().str.contains("BULK", na=False) | items.str.contains("벌크", na=False)
+    out: list[dict] = []
+    for iso, item, qty, amt, is_bulk, cname, dropped in zip(
+        isos.tolist(),
+        items.tolist(),
+        qtys.tolist(),
+        amts.tolist(),
+        bulk.tolist(),
+        names.tolist(),
+        skip.tolist(),
+    ):
+        if dropped or not iso or iso == "NaT":
+            continue
+        name = _s(item) or "납품"
+        if name.lower() in {"nan", "none"}:
+            name = "납품"
+        out.append(
+            {
+                "date": iso,
+                "item": name,
+                "qty": 0.0 if pd.isna(qty) else float(qty),
+                "amount": 0.0 if pd.isna(amt) else float(amt),
+                "staff": staff,
+                "client": _s(cname),
+                "source": "납품",
+                "bulk": bool(is_bulk),
+            }
+        )
+    out.sort(key=lambda x: (str(x.get("date") or ""), str(x.get("item") or "")), reverse=True)
+    return out
+
 
 
 def delivery_rows_on(rows: list[dict], d: date | str | None) -> list[dict]:
@@ -620,6 +758,11 @@ def calendar_chips(
         if has_other:
             _add(iso, _CYLINDER, "other", "#8d6e63")
     return out
+
+
+def delivery_chips(month: date, deliveries: list[dict] | None = None) -> dict[str, list[dict]]:
+    """납품(벌크·실린더)만 달력 칩으로 남긴다."""
+    return calendar_chips({}, [], month, deliveries)
 
 
 def _vc_css() -> str:
@@ -963,7 +1106,8 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
     if "_vc_selected" not in st.session_state:
         st.session_state["_vc_selected"] = today
 
-    staffs = _staff_names(df)
+    store0 = load_store()
+    staffs = _staff_from_store(store0)
     default_staff = "김혁수" if "김혁수" in staffs else (staffs[0] if staffs else "")
     if "vc_staff" not in st.session_state:
         st.session_state["vc_staff"] = st.session_state.get("_vc_staff") or default_staff
@@ -974,7 +1118,6 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         st.session_state["vc_client"] = None
 
     month = st.session_state.get("_vc_month") or date(today.year, today.month, 1)
-    selected: date = st.session_state.get("_vc_selected") or today
     st.markdown(_vc_css(), unsafe_allow_html=True)
 
     head_l, head_r = st.columns([2.35, 1.05])
@@ -994,19 +1137,17 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
     f1, f2 = st.columns([1, 1])
     with f1:
         staff = st.selectbox("담당자", options=staffs or [""], key="vc_staff")
-    clients = _staff_clients(df, staff)
-    _sales_by_client(df, staff)
-    _ensure_worklog_index()
+    clients = _staff_clients(df, staff, store0)
     with f2:
         client = (
             st.selectbox(
                 "거래처",
-                options=clients,
+                options=clients or [""],
                 index=None,
                 placeholder="거래처명 입력",
                 key="vc_client",
                 accept_new_options=True,
-                help="칸을 누르면 비어 있습니다. 이름을 바로 입력해 고르세요.",
+                help="이 담당자의 매출 거래처가 모두 나옵니다. 고르면 달력·방문·할일에 연동됩니다.",
             )
             or ""
         )
@@ -1014,38 +1155,46 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
     st.session_state["_vc_staff"] = staff
     st.session_state["_vc_client"] = client
 
-    store = load_store()
-    deliveries = _sales_delivery_rows(df, staff, client) if client else []
-    prefix = f"{month.year:04d}-{month.month:02d}-"
-    month_deliveries = [r for r in deliveries if str(r.get("date") or "").startswith(prefix)]
-    history = _worklog_visit_dates(client) if client else []
-    chips = calendar_chips(store, history, month, month_deliveries)
-    day_deliveries = delivery_rows_on(deliveries, selected)
-    _render_day_strip(month, selected, chips, today)
-    st.caption("달력 아래 짧은 이름은 표시용입니다. 이번 달 일정은 아래 기방문·방문예정 목록에서 보세요.")
-    _render_month_schedule(month, store, staff, selected, client)
+    @st.fragment
+    def _visit_day_block() -> None:
+        sel: date = st.session_state.get("_vc_selected") or today
+        mon = st.session_state.get("_vc_month") or month
+        stf = str(st.session_state.get("vc_staff") or staff or "")
+        cli = str(st.session_state.get("vc_client") or client or "")
+        store = load_store()
+        deliveries = _sales_delivery_rows(df, stf, cli) if cli else []
+        prefix = f"{mon.year:04d}-{mon.month:02d}-"
+        month_deliveries = [r for r in deliveries if str(r.get("date") or "").startswith(prefix)]
+        history = _worklog_visit_dates(cli) if cli else []
+        chips = calendar_chips(store, history, mon, month_deliveries)
+        day_deliveries = delivery_rows_on(deliveries, sel)
+        _render_day_strip(mon, sel, chips, today)
+        st.caption("달력 아래 짧은 이름은 표시용입니다. 이번 달 일정은 아래 기방문·방문예정 목록에서 보세요.")
+        _render_month_schedule(mon, store, stf, sel, cli)
 
-    left, right = st.columns([1, 1], gap="medium")
-    with left:
-        if client and day_deliveries:
-            _render_delivery_list(client, selected, day_deliveries, deliveries)
-        elif client:
-            st.markdown(
-                f"<div style='font-size:16px;font-weight:500;color:#3c4043;padding:8px 0 4px'>"
-                f"지정 납품 목록 · {client}</div>",
-                unsafe_allow_html=True,
-            )
-            st.caption("이 날 지정 납품이 없습니다. 위 줄에서 벌크·실린더가 있는 날을 누르세요.")
-        else:
-            st.caption("담당자와 거래처를 고르면 지정 납품 목록이 여기에 표시됩니다.")
-        _render_day_agenda(selected, store, staff, client)
-        _render_visit_log(store, staff, client)
+        left, right = st.columns([1, 1], gap="medium")
+        with left:
+            if cli and day_deliveries:
+                _render_delivery_list(cli, sel, day_deliveries, deliveries)
+            elif cli:
+                st.markdown(
+                    f"<div style='font-size:16px;font-weight:500;color:#3c4043;padding:8px 0 4px'>"
+                    f"지정 납품 목록 · {cli}</div>",
+                    unsafe_allow_html=True,
+                )
+                st.caption("이 날 지정 납품이 없습니다. 위 줄에서 벌크·실린더가 있는 날을 누르세요.")
+            else:
+                st.caption("담당자와 거래처를 고르면 지정 납품 목록이 여기에 표시됩니다.")
+            _render_day_agenda(sel, store, stf, cli)
+            _render_visit_log(store, stf, cli)
 
-    with right:
-        _render_todo_panel(selected, staff, client, store)
+        with right:
+            _render_todo_panel(sel, stf, cli, store)
 
-    if latest_update_str:
-        st.caption(f"대시보드 기준 시각: {latest_update_str}")
+        if latest_update_str:
+            st.caption(f"대시보드 기준 시각: {latest_update_str}")
+
+    _visit_day_block()
 
 
 def _client_short(name: str) -> str:
@@ -1106,91 +1255,198 @@ def _weekday_color(d: date) -> str:
     return "#6b7280"
 
 
-def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]], today: date) -> None:
-    """이번 달 1일~말일을 가로로 한 줄에 요일·벌크·실린더와 함께 보여 고른다."""
+def _strip_cell_kind(items: list[dict], wd: int) -> str:
+    kinds = {c.get("kind") for c in (items or [])}
+    if "bulk" in kinds and "other" in kinds:
+        return "mix"
+    if "bulk" in kinds:
+        return "bulk"
+    if "other" in kinds:
+        return "other"
+    if "visit" in kinds:
+        return "visit"
+    if "planned" in kinds:
+        return "planned"
+    if "todo" in kinds:
+        return "todo"
+    if "worklog" in kinds:
+        return "worklog"
+    if wd == 5:
+        return "sat"
+    if wd == 6:
+        return "sun"
+    return ""
+
+
+def _strip_days_payload(
+    month: date, chips: dict[str, list[dict]], selected: date, today: date
+) -> list[dict]:
     last = calendar.monthrange(month.year, month.month)[1]
-    wcols = st.columns(last, gap="small")
-    for day in range(1, last + 1):
-        d = date(month.year, month.month, day)
-        color = _weekday_color(d)
-        wcols[day - 1].markdown(
-            f"<div class='vc-wd' style='color:{color}'>{_weekday_name(d)}</div>",
-            unsafe_allow_html=True,
-        )
-    cols = st.columns(last, gap="small")
-    strip_rules = []
+    out: list[dict] = []
     for day in range(1, last + 1):
         d = date(month.year, month.month, day)
         iso = d.isoformat()
-        wd = d.weekday()
         items = chips.get(iso) or []
-        tag = _strip_tag(items)
-        label = f"{day}\n{tag}" if tag else str(day)
-        help_bits = [c["label"] for c in items] or [f"{iso} ({_weekday_name(d)})"]
-        with cols[day - 1]:
+        nm, mark = _strip_visit_mark(items)
+        out.append(
+            {
+                "iso": iso,
+                "day": day,
+                "wd": _weekday_name(d),
+                "wdc": _weekday_color(d),
+                "tag": _strip_tag(items),
+                "name": nm,
+                "mark": mark,
+                "kind": _strip_cell_kind(items, d.weekday()),
+                "sel": iso == selected.isoformat(),
+                "today": iso == today.isoformat(),
+            }
+        )
+    return out
+
+
+_VC_STRIP_HTML = """<div class="vc-strip-root"></div>"""
+_VC_STRIP_CSS = f"""
+.vc-strip-root {{ width:100%; }}
+.vc-strip-wd, .vc-strip-days, .vc-strip-nm {{
+  display:flex; gap:3px; width:100%;
+}}
+.vc-strip-wd {{ margin-bottom:2px; }}
+.vc-strip-nm {{ margin-top:2px; }}
+.vc-strip-wd span {{
+  flex:1; min-width:0; text-align:center; font-size:10px; font-weight:700;
+  line-height:1.1; letter-spacing:-0.2px;
+}}
+.vc-strip-days button {{
+  flex:1; min-width:0; min-height:2.7rem; height:2.7rem; padding:2px 0;
+  border-radius:10px; font-size:10px; font-weight:600; background:#fff;
+  color:#3c4043; border:1px solid #eceff3; box-shadow:none; cursor:pointer;
+  white-space:pre-line; line-height:1.15;
+}}
+.vc-strip-days button.mix {{ background:#ece6f8; color:#5b4b8a; }}
+.vc-strip-days button.bulk {{ background:#e8f0fe; color:#1a73e8; }}
+.vc-strip-days button.other {{ background:#f6eee4; color:#8d6e63; }}
+.vc-strip-days button.visit {{ background:#e6f4ea; color:#137333; }}
+.vc-strip-days button.planned {{ background:#fff4e5; color:#c47d00; }}
+.vc-strip-days button.todo {{ background:#fef7e0; color:#b06000; }}
+.vc-strip-days button.worklog {{ background:#e6f4ea; color:#0b8043; }}
+.vc-strip-days button.sat {{ background:{_VC_SAT_BG}; color:{_VC_SAT_FG}; }}
+.vc-strip-days button.sun {{ background:{_VC_SUN_BG}; color:{_VC_SUN_FG}; }}
+.vc-strip-days button.today {{ box-shadow:inset 0 0 0 1.5px #1a73e8; }}
+.vc-strip-days button.sel {{
+  background:#1a73e8 !important; color:#fff !important; border-color:#1a73e8 !important;
+  box-shadow:none;
+}}
+.vc-strip-nm span {{
+  flex:1; min-width:0; text-align:center; font-size:9px; font-weight:700;
+  color:#137333; line-height:1.15; padding-top:1px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}}
+.vc-strip-nm span.planned {{
+  color:#c47d00; font-style:italic; border-bottom:1px dashed #e37400;
+}}
+"""
+_VC_STRIP_JS = r"""
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => (
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+  ));
+}
+
+export default function (component) {
+  const { data, parentElement, setStateValue } = component;
+  const root = parentElement.querySelector(".vc-strip-root");
+  if (!root) return;
+  const days = Array.isArray(data && data.days) ? data.days : [];
+  const selected = String((data && data.selected) || "");
+  let html = '<div class="vc-strip-wd">';
+  for (const d of days) {
+    html += '<span style="color:' + esc(d.wdc || "#6b7280") + '">' + esc(d.wd) + "</span>";
+  }
+  html += '</div><div class="vc-strip-days">';
+  for (const d of days) {
+    const iso = String(d.iso || "");
+    const cls = [d.kind || "", iso === selected ? "sel" : "", d.today ? "today" : ""]
+      .filter(Boolean)
+      .join(" ");
+    const lab = d.tag ? String(d.day) + "\n" + String(d.tag) : String(d.day);
+    html += '<button type="button" data-iso="' + esc(iso) + '" class="' + cls + '">' + esc(lab) + "</button>";
+  }
+  html += "</div>";
+  if (!(data && data.hideNames)) {
+    html += '<div class="vc-strip-nm">';
+    for (const d of days) {
+      const nm = String(d.name || "");
+      const mcls = d.mark === "planned" ? "planned" : "";
+      html += "<span class=\"" + mcls + "\">" + (nm ? esc(nm) : "&nbsp;") + "</span>";
+    }
+    html += "</div>";
+  }
+  if (root.innerHTML !== html) root.innerHTML = html;
+  if (!root.dataset.vcBound) {
+    root.dataset.vcBound = "1";
+    root.addEventListener("click", (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest("[data-iso]") : null;
+      if (!btn || !root.contains(btn)) return;
+      const iso = btn.getAttribute("data-iso") || "";
+      if (!iso) return;
+      root.querySelectorAll("[data-iso]").forEach((el) => el.classList.toggle("sel", el === btn));
+      setStateValue("iso", iso);
+    });
+  }
+}
+"""
+try:
+    _VC_STRIP = st.components.v2.component(
+        "visit_day_strip_v1",
+        html=_VC_STRIP_HTML,
+        css=_VC_STRIP_CSS,
+        js=_VC_STRIP_JS,
+    )
+except Exception:  # pragma: no cover
+    _VC_STRIP = None
+
+
+def _on_strip_iso_change() -> None:
+    raw = st.session_state.get("vc_strip_host")
+    iso = ""
+    if raw is not None:
+        iso = str(getattr(raw, "iso", "") or "")
+        if not iso and isinstance(raw, dict):
+            iso = str(raw.get("iso") or "")
+    try:
+        d = date.fromisoformat(iso[:10])
+    except ValueError:
+        return
+    if st.session_state.get("_vc_selected") == d:
+        return
+    _on_pick_day(d)
+
+
+def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]], today: date) -> None:
+    """이번 달 1일~말일을 가로로 한 줄에 요일·벌크·실린더와 함께 보여 고른다."""
+    days = _strip_days_payload(month, chips, selected, today)
+    if _VC_STRIP is not None:
+        _VC_STRIP(
+            key="vc_strip_host",
+            data={"days": days, "selected": selected.isoformat(), "today": today.isoformat()},
+            default={"iso": selected.isoformat()},
+            on_iso_change=_on_strip_iso_change,
+        )
+        return
+    last = calendar.monthrange(month.year, month.month)[1]
+    cols = st.columns(last, gap="small")
+    for i, cell in enumerate(days):
+        d = date.fromisoformat(cell["iso"])
+        with cols[i]:
             st.button(
-                label,
-                key=f"vc_strip_{iso}",
+                f"{cell['day']}\n{cell['tag']}" if cell["tag"] else str(cell["day"]),
+                key=f"vc_strip_{cell['iso']}",
                 type="secondary",
                 width="stretch",
-                help=" · ".join(help_bits),
                 on_click=_on_pick_day,
                 args=(d,),
             )
-        kinds = {c.get("kind") for c in items}
-        if "bulk" in kinds and "other" in kinds:
-            strip_rules.append(
-                f'div[class*="st-key-vc_strip_{iso}"] button{{background:#ece6f8!important;color:#5b4b8a!important;}}'
-            )
-        elif "bulk" in kinds:
-            strip_rules.append(
-                f'div[class*="st-key-vc_strip_{iso}"] button{{background:#e8f0fe!important;color:#1a73e8!important;}}'
-            )
-        elif "other" in kinds:
-            strip_rules.append(
-                f'div[class*="st-key-vc_strip_{iso}"] button{{background:#f6eee4!important;color:#8d6e63!important;}}'
-            )
-        elif "visit" in kinds:
-            strip_rules.append(
-                f'div[class*="st-key-vc_strip_{iso}"] button{{background:#e6f4ea!important;color:#137333!important;}}'
-            )
-        elif "planned" in kinds:
-            strip_rules.append(
-                f'div[class*="st-key-vc_strip_{iso}"] button{{background:#fff4e5!important;color:#c47d00!important;}}'
-            )
-        elif "todo" in kinds:
-            strip_rules.append(
-                f'div[class*="st-key-vc_strip_{iso}"] button{{background:#fef7e0!important;color:#b06000!important;}}'
-            )
-        elif "worklog" in kinds:
-            strip_rules.append(
-                f'div[class*="st-key-vc_strip_{iso}"] button{{background:#e6f4ea!important;color:#0b8043!important;}}'
-            )
-        elif wd == 5:
-            strip_rules.append(
-                f'div[class*="st-key-vc_strip_{iso}"] button{{background:{_VC_SAT_BG}!important;color:{_VC_SAT_FG}!important;}}'
-            )
-        elif wd == 6:
-            strip_rules.append(
-                f'div[class*="st-key-vc_strip_{iso}"] button{{background:{_VC_SUN_BG}!important;color:{_VC_SUN_FG}!important;}}'
-            )
-    sel, tod = selected.isoformat(), today.isoformat()
-    strip_rules.append(
-        f'div[class*="st-key-vc_strip_{tod}"] button{{box-shadow:inset 0 0 0 1.5px #1a73e8!important;}}'
-    )
-    strip_rules.append(
-        f'div[class*="st-key-vc_strip_{sel}"] button{{background:#1a73e8!important;color:#fff!important;border-color:#1a73e8!important;}}'
-    )
-    st.markdown(f"<style>{''.join(strip_rules)}</style>", unsafe_allow_html=True)
-    vcols = st.columns(last, gap="small")
-    for day in range(1, last + 1):
-        iso = date(month.year, month.month, day).isoformat()
-        nm, mark = _strip_visit_mark(chips.get(iso) or [])
-        cls = "vc-visit-nm vc-planned" if mark == "planned" else "vc-visit-nm"
-        vcols[day - 1].markdown(
-            f"<div class='{cls}'>{html.escape(nm) if nm else '&nbsp;'}</div>",
-            unsafe_allow_html=True,
-        )
 
 
 def _month_row_html(row: dict, selected: date, client: str) -> str:
@@ -1385,12 +1641,18 @@ def _render_visit_log(store: dict, staff: str, client: str) -> None:
 
 
 def _render_delivery_list(
-    client: str, selected: date, day_rows: list[dict], all_rows: list[dict]
+    client: str,
+    selected: date,
+    day_rows: list[dict],
+    all_rows: list[dict],
+    *,
+    heading: str | None = None,
 ) -> None:
     wd = _WEEKDAYS[selected.weekday()]
+    title = heading or "지정 납품 목록"
     st.markdown(
         f"<div style='font-size:16px;font-weight:500;color:#3c4043;padding:4px 0 6px'>"
-        f"지정 납품 목록 · {client} · {selected.month}월 {selected.day}일 ({wd})</div>",
+        f"{title} · {client} · {selected.month}월 {selected.day}일 ({wd})</div>",
         unsafe_allow_html=True,
     )
     ordered = sorted(
@@ -1568,3 +1830,259 @@ def _render_todo_panel(selected: date, staff: str, client: str, store: dict) -> 
             st.caption(f"완료 {hidden_n}건 숨김")
         elif not hide_done:
             st.caption("완료 할일을 함께 표시 중")
+
+
+_T2D_BUTTON_PREFIXES = (
+    "t2d_jump_today",
+    "t2d_prev_month",
+    "t2d_next_month",
+    "t2d_strip_",
+)
+
+
+def _t2d_css() -> str:
+    return """
+    <style>
+    div[class*="st-key-tab2_delivery_status"] {
+      background: #fff;
+      border: 1px solid #e7edf4;
+      border-radius: 16px;
+      padding: 12px 16px 14px;
+      margin: 0 0 14px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    .t2d-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      color: #64748b;
+      line-height: 1;
+      margin: 2px 0 10px;
+    }
+    .t2d-meta {
+      font-size: 13px;
+      font-weight: 500;
+      color: #475569;
+      margin: -2px 0 8px;
+    }
+    .t2d-empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 76px;
+      background: #f8fafc;
+      border-radius: 12px;
+      color: #94a3b8;
+      font-size: 14px;
+      font-weight: 500;
+      letter-spacing: -0.2px;
+      text-align: center;
+      padding: 18px 16px;
+    }
+    .t2d-toolbar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 0 2px; color: #3c4043; min-height: 32px;
+    }
+    .t2d-toolbar .t2d-title {
+      font-size: 20px; font-weight: 500; letter-spacing: -0.3px; line-height: 32px;
+    }
+    div[class*="st-key-t2d_jump_today"],
+    div[class*="st-key-t2d_prev_month"],
+    div[class*="st-key-t2d_next_month"] {
+      display: flex !important; justify-content: flex-end !important;
+    }
+    div[class*="st-key-t2d_jump_today"] button {
+      min-height: 28px !important; height: 28px !important;
+      padding: 0 12px !important; border-radius: 8px !important;
+      background: #f1f3f4 !important; color: #3c4043 !important;
+      border: none !important; box-shadow: none !important;
+      font-size: 12px !important; font-weight: 600 !important;
+      letter-spacing: -0.2px !important;
+    }
+    div[class*="st-key-t2d_prev_month"] button,
+    div[class*="st-key-t2d_next_month"] button {
+      min-height: 28px !important; height: 28px !important;
+      min-width: 28px !important; padding: 0 !important;
+      border-radius: 8px !important; background: #f1f3f4 !important;
+      color: #3c4043 !important; border: none !important;
+      box-shadow: none !important; font-size: 15px !important;
+      font-weight: 600 !important; line-height: 28px !important;
+    }
+    div[class*="st-key-t2d_jump_today"] button:hover,
+    div[class*="st-key-t2d_prev_month"] button:hover,
+    div[class*="st-key-t2d_next_month"] button:hover {
+      background: #e8eaed !important;
+    }
+    div[class*="st-key-t2d_strip_"] { margin: 0 !important; }
+    div[class*="st-key-t2d_strip_"] button {
+      min-height: 2.7rem !important; height: 2.7rem !important;
+      padding: 2px 0 !important; border-radius: 10px !important;
+      font-size: 10px !important; font-weight: 600 !important;
+      background: #fff !important; color: #3c4043 !important;
+      border: 1px solid #eceff3 !important; box-shadow: none !important;
+      white-space: pre-line !important; line-height: 1.15 !important;
+    }
+    </style>
+    """
+
+
+def _purge_t2d_button_keys() -> None:
+    for k in list(st.session_state.keys()):
+        if isinstance(k, str) and k.startswith(_T2D_BUTTON_PREFIXES):
+            st.session_state.pop(k, None)
+
+
+def _on_t2d_pick_day(d: date) -> None:
+    st.session_state["_t2d_selected"] = d
+    st.session_state["_t2d_month"] = date(d.year, d.month, 1)
+
+
+def _on_t2d_shift_month(delta: int) -> None:
+    cur = st.session_state.get("_t2d_month")
+    if not isinstance(cur, date):
+        cur = date.today().replace(day=1)
+    new = _shift_month(cur, delta)
+    st.session_state["_t2d_month"] = new
+    sel = st.session_state.get("_t2d_selected")
+    if isinstance(sel, date) and (sel.year, sel.month) != (new.year, new.month):
+        last = calendar.monthrange(new.year, new.month)[1]
+        st.session_state["_t2d_selected"] = date(new.year, new.month, min(sel.day, last))
+
+
+def _on_t2d_jump_today() -> None:
+    today = date.today()
+    st.session_state["_t2d_month"] = date(today.year, today.month, 1)
+    st.session_state["_t2d_selected"] = today
+
+
+def _on_t2d_strip_iso_change() -> None:
+    raw = st.session_state.get("t2d_strip_host")
+    iso = ""
+    if raw is not None:
+        iso = str(getattr(raw, "iso", "") or "")
+        if not iso and isinstance(raw, dict):
+            iso = str(raw.get("iso") or "")
+    try:
+        d = date.fromisoformat(iso[:10])
+    except ValueError:
+        return
+    if st.session_state.get("_t2d_selected") == d:
+        return
+    _on_t2d_pick_day(d)
+
+
+def _render_t2d_day_strip(
+    month: date, selected: date, chips: dict[str, list[dict]], today: date
+) -> None:
+    days = _strip_days_payload(month, chips, selected, today)
+    if _VC_STRIP is not None:
+        _VC_STRIP(
+            key="t2d_strip_host",
+            data={
+                "days": days,
+                "selected": selected.isoformat(),
+                "today": today.isoformat(),
+                "hideNames": True,
+            },
+            default={"iso": selected.isoformat()},
+            on_iso_change=_on_t2d_strip_iso_change,
+        )
+        return
+    last = calendar.monthrange(month.year, month.month)[1]
+    cols = st.columns(last, gap="small")
+    for i, cell in enumerate(days):
+        d = date.fromisoformat(cell["iso"])
+        with cols[i]:
+            st.button(
+                f"{cell['day']}\n{cell['tag']}" if cell["tag"] else str(cell["day"]),
+                key=f"t2d_strip_{cell['iso']}",
+                type="secondary",
+                width="stretch",
+                on_click=_on_t2d_pick_day,
+                args=(d,),
+            )
+
+
+def render_tab2_delivery_status(
+    df: pd.DataFrame | None, staff: str, client: str
+) -> None:
+    """거래처 분석 상단 납품현황. 담당자·거래처는 메인 고정바 값을 쓴다."""
+    _purge_t2d_button_keys()
+    st.markdown(_t2d_css(), unsafe_allow_html=True)
+    with st.container(key="tab2_delivery_status"):
+        st.markdown("<div class='t2d-label'>납품현황</div>", unsafe_allow_html=True)
+        staff = _s(staff)
+        client = _s(client)
+
+        @st.fragment
+        def _t2d_body() -> None:
+            today = date.today()
+            if "_t2d_month" not in st.session_state:
+                st.session_state["_t2d_month"] = date(today.year, today.month, 1)
+            if "_t2d_selected" not in st.session_state:
+                st.session_state["_t2d_selected"] = today
+            if len(client) < 2:
+                st.markdown(
+                    "<div class='t2d-empty'>담당자와 거래처를 고르면 지정 납품 목록이 여기에 표시됩니다.</div>",
+                    unsafe_allow_html=True,
+                )
+                return
+            month = st.session_state.get("_t2d_month") or date(today.year, today.month, 1)
+            selected = st.session_state.get("_t2d_selected") or today
+            if not isinstance(month, date):
+                month = date(today.year, today.month, 1)
+            if not isinstance(selected, date):
+                selected = today
+            meta_bits = [html.escape(x) for x in (staff, client) if x]
+            if meta_bits:
+                st.markdown(
+                    f"<div class='t2d-meta'>{' · '.join(meta_bits)}</div>",
+                    unsafe_allow_html=True,
+                )
+            head_l, head_r = st.columns([2.35, 1.05])
+            with head_l:
+                st.markdown(
+                    f"<div class='t2d-toolbar'><span class='t2d-title'>{month.year}년 {month.month}월</span></div>",
+                    unsafe_allow_html=True,
+                )
+            with head_r:
+                n1, n2, n3 = st.columns([1.15, 0.42, 0.42], gap="small")
+                with n1:
+                    st.button(
+                        "오늘",
+                        key="t2d_jump_today",
+                        width="content",
+                        on_click=_on_t2d_jump_today,
+                    )
+                with n2:
+                    st.button(
+                        "‹",
+                        key="t2d_prev_month",
+                        width="content",
+                        on_click=_on_t2d_shift_month,
+                        args=(-1,),
+                    )
+                with n3:
+                    st.button(
+                        "›",
+                        key="t2d_next_month",
+                        width="content",
+                        on_click=_on_t2d_shift_month,
+                        args=(1,),
+                    )
+            deliveries = _t2d_delivery_rows(df, staff, client, month=month)
+            month_deliveries = deliveries
+            chips = delivery_chips(month, month_deliveries)
+            _render_t2d_day_strip(month, selected, chips, today)
+            day_rows = delivery_rows_on(deliveries, selected)
+            if day_rows:
+                _render_delivery_list(client, selected, day_rows, deliveries, heading="납품 내역")
+            else:
+                st.markdown(
+                    "<div class='t2d-empty' style='min-height:56px;margin-top:10px'>"
+                    "이 날 납품 내역이 없습니다. 벌크·실린더 표시가 있는 날을 선택하세요.</div>",
+                    unsafe_allow_html=True,
+                )
+
+        _t2d_body()
+
