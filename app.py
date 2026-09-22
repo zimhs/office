@@ -4995,6 +4995,264 @@ def resolve_client_address(client_name, addr_dict):
         if _norm(k) == n:
             return v
     return None
+
+
+_TAB2_EXTRA_SITES_FILE = os.path.join(CACHE_DIR, "client_extra_sites.json")
+
+
+def _tab2_load_extra_sites() -> dict:
+    """거래처별 추가 사업장. {부모거래처: [{name, addr}, ...]} — tab2·tab6 전용."""
+    path = _TAB2_EXTRA_SITES_FILE
+    try:
+        if not os.path.isfile(path):
+            return {}
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for parent, rows in raw.items():
+        p = str(parent or "").strip()
+        if not p or not isinstance(rows, list):
+            continue
+        cleaned = []
+        seen = set()
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            name = str(r.get("name") or "").strip()
+            addr = str(r.get("addr") or r.get("주소") or "").strip()
+            if not name or not addr or name in seen:
+                continue
+            seen.add(name)
+            cleaned.append({"name": name, "addr": addr})
+        if cleaned:
+            out[p] = cleaned
+    return out
+
+
+def _tab2_save_extra_sites(data: dict) -> None:
+    os.makedirs(os.path.dirname(_TAB2_EXTRA_SITES_FILE) or ".", exist_ok=True)
+    with open(_TAB2_EXTRA_SITES_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _tab2_extra_sites_for(parent: str) -> list:
+    p = str(parent or "").strip()
+    if not p or p == "전체 거래처":
+        return []
+    return list(_tab2_load_extra_sites().get(p) or [])
+
+
+def _tab2_add_extra_site(parent: str, name: str, addr: str) -> str:
+    p = str(parent or "").strip()
+    n = str(name or "").strip()
+    a = str(addr or "").strip()
+    if not p or p == "전체 거래처":
+        return "거래처를 먼저 선택하세요."
+    if not n:
+        return "사업장 이름을 입력하세요. 예: 라쿨1사업장"
+    if not a:
+        return "주소를 입력하세요."
+    data = _tab2_load_extra_sites()
+    rows = list(data.get(p) or [])
+    for i, r in enumerate(rows):
+        if r.get("name") == n:
+            rows[i] = {"name": n, "addr": a}
+            break
+    else:
+        rows.append({"name": n, "addr": a})
+    data[p] = rows
+    _tab2_save_extra_sites(data)
+    return ""
+
+
+def _tab2_delete_extra_site(parent: str, name: str) -> None:
+    p = str(parent or "").strip()
+    n = str(name or "").strip()
+    data = _tab2_load_extra_sites()
+    rows = [r for r in (data.get(p) or []) if r.get("name") != n]
+    if rows:
+        data[p] = rows
+    else:
+        data.pop(p, None)
+    _tab2_save_extra_sites(data)
+
+
+def _tab2_apply_extra_site(parent: str) -> None:
+    name = str(st.session_state.get(f"tab2_xname_{parent}") or "").strip()
+    addr = str(st.session_state.get(f"tab2_xaddr_{parent}") or "").strip()
+    err = _tab2_add_extra_site(parent, name, addr)
+    st.session_state["tab2_xmsg"] = err or "추가 주소를 적용했습니다. 카카오맵에서 조회하면 핀이 생깁니다."
+    st.session_state["tab2_xerr"] = bool(err)
+    if not err:
+        st.session_state[f"tab2_xname_{parent}"] = ""
+        st.session_state[f"tab2_xaddr_{parent}"] = ""
+
+
+def _tab2_on_delete_extra_site(parent: str, name: str) -> None:
+    _tab2_delete_extra_site(parent, name)
+    st.session_state["tab2_xmsg"] = "추가 주소를 지웠습니다."
+    st.session_state["tab2_xerr"] = False
+
+
+def _tab2_extra_widget_key(prefix: str, parent: str, name: str) -> str:
+    h = hashlib.md5(f"{parent}::{name}".encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}_{h}"
+
+
+def _tab2_extra_del_btn_css() -> None:
+    """추가 주소 옆 × — 항상 보이게·눌러지게 (거래처분석·카카오맵만)."""
+    st.markdown(
+        """
+        <style>
+        div[class*="st-key-tab2_xdel_"] button,
+        div[class*="st-key-tab6_xdel_"] button {
+            min-width: 2rem !important;
+            width: 2rem !important;
+            height: 2rem !important;
+            padding: 0 !important;
+            background: #FFFFFF !important;
+            color: #B91C1C !important;
+            border: 1px solid #FECACA !important;
+            border-radius: 8px !important;
+            font-size: 1.05rem !important;
+            font-weight: 800 !important;
+            opacity: 1 !important;
+            pointer-events: auto !important;
+            cursor: pointer !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _tab2_extra_site_row(parent: str, name: str, addr: str, *, key_prefix: str) -> None:
+    """추가 사업장 한 줄 — 카카오맵 버튼 폭 안에서 주소 옆 ×."""
+    lab, btn = st.columns([4.0, 0.7], gap="small")
+    with lab:
+        st.markdown(
+            f"<div class='tab2-kakao-addr' style='color:#1E3A8A;margin-top:6px;'>"
+            f"📍 {html.escape(name)} · {html.escape(addr)}</div>",
+            unsafe_allow_html=True,
+        )
+    with btn:
+        st.button(
+            "×",
+            key=_tab2_extra_widget_key(key_prefix, parent, name),
+            help="이 추가 주소를 삭제합니다.",
+            disabled=False,
+            on_click=_tab2_on_delete_extra_site,
+            args=(parent, name),
+        )
+
+
+def _tab6_extra_site_options() -> list[str]:
+    names = []
+    for sites in _tab2_load_extra_sites().values():
+        for s in sites:
+            if s.get("name"):
+                names.append(str(s["name"]))
+    return names
+
+
+@st.fragment
+def _render_tab6_addr_book(addr_dict) -> None:
+    """카카오맵 선택 주소록. × 삭제는 이 칸만 rerun하고 지도 지오코딩은 안 돌린다."""
+    selected = [str(x) for x in (st.session_state.get("map_client_multiselect") or []) if str(x).strip()]
+    if not selected:
+        return
+    _tab2_extra_del_btn_css()
+    shown = set()
+    for sc in selected:
+        raw_a = resolve_client_address(sc, addr_dict)
+        clean_a = raw_a if raw_a else "등록된 주소 정보가 없습니다."
+        st.markdown(
+            f"<div style='background-color:#F1F5F9;padding:8px 12px;border-radius:6px;"
+            f"border:1px solid #CBD5E1;margin-top:5px;font-size:13px;color:#334155;'>"
+            f"📍 <b>{html.escape(str(sc))}:</b> {html.escape(str(clean_a))}</div>",
+            unsafe_allow_html=True,
+        )
+        for xs in _tab2_extra_sites_for(sc):
+            _tab2_extra_site_row(sc, xs["name"], xs["addr"], key_prefix="tab6_xdel")
+            shown.add(xs["name"])
+    for parent, rows in _tab2_load_extra_sites().items():
+        for xs in rows:
+            if xs["name"] in selected and xs["name"] not in shown:
+                _tab2_extra_site_row(parent, xs["name"], xs["addr"], key_prefix="tab6_xdel")
+
+
+@st.fragment
+def _render_tab2_extra_addr_box(selected_client: str) -> None:
+    """거래처분석 — 기본 주소 아래 추가 사업장. 적용·삭제는 이 칸만 rerun."""
+    parent = str(selected_client or "").strip()
+    if not parent or parent == "전체 거래처":
+        return
+    st.markdown(
+        "<style>.st-key-tab2_extra_box{max-width:100%!important;overflow:hidden;}</style>",
+        unsafe_allow_html=True,
+    )
+    with st.container(key="tab2_extra_box"):
+        sites = _tab2_extra_sites_for(parent)
+        if sites:
+            _tab2_extra_del_btn_css()
+            for s in sites:
+                _tab2_extra_site_row(parent, s["name"], s["addr"], key_prefix="tab2_xdel")
+        _tab2_extra_addr_inputs(parent)
+
+
+def _tab2_extra_addr_inputs(parent: str) -> None:
+    st.text_input(
+        "추가 사업장 이름",
+        key=f"tab2_xname_{parent}",
+        placeholder=f"예: {parent}1사업장",
+        label_visibility="collapsed",
+    )
+    st.text_input(
+        "추가 주소",
+        key=f"tab2_xaddr_{parent}",
+        placeholder="추가할 주소를 입력하세요",
+        label_visibility="collapsed",
+    )
+    st.button(
+        "주소 적용",
+        key=f"tab2_xapply_{parent}",
+        width="stretch",
+        type="primary",
+        on_click=_tab2_apply_extra_site,
+        args=(parent,),
+        help="이름과 주소를 저장합니다. 카카오맵 조회 시 핀이 추가됩니다.",
+    )
+    msg = st.session_state.pop("tab2_xmsg", None)
+    if msg:
+        (st.warning if st.session_state.pop("tab2_xerr", False) else st.caption)(msg)
+
+
+def _tab6_extra_map_rows(parent_staff: dict, selected_clients, visible_parents=None) -> list[dict]:
+    """선택(또는 부모)에 해당하는 추가 사업장. 담당자는 부모 거래처를 따른다."""
+    want = {str(x).strip() for x in (selected_clients or []) if str(x).strip()}
+    vis = None if visible_parents is None else {str(x) for x in visible_parents}
+    rows = []
+    for parent, sites in _tab2_load_extra_sites().items():
+        staff = str(parent_staff.get(parent) or "미지정")
+        for s in sites:
+            name, addr = str(s.get("name") or ""), str(s.get("addr") or "")
+            if not name or not addr:
+                continue
+            if want:
+                if parent not in want and name not in want:
+                    continue
+            elif vis is not None and parent not in vis:
+                continue
+            elif vis is None and parent not in parent_staff:
+                continue
+            rows.append({"거래처": name, "담당자": staff, "주소": addr, "parent": parent})
+    return rows
+
+
 def _drop_debt_noise_rows(df):
     """ERP 내보내기 푸터·합계 행을 제거 (거래처/채권 데이터 오염 방지)."""
     if df.empty or "거래처" not in df.columns:
@@ -15212,6 +15470,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     f"📍 {html.escape(client_addr)}</div>",
                     unsafe_allow_html=True,
                 )
+                _render_tab2_extra_addr_box(selected_client)
 
         # 목록에 없는 거래처도 기업정보만 조회 가능 (상단 필터·매출 집계는 변경 없음)
         _ov_c1, _ov_c2 = st.columns([1.4, 1], gap="small")
@@ -16762,6 +17021,10 @@ def _dash_filter_and_tabs_fragment() -> None:
                 )
             with map_col3:
                 all_map_clients = sorted(df_base["거래처"].unique()) if not df_base.empty else []
+                for _xn in _tab6_extra_site_options():
+                    if _xn not in all_map_clients:
+                        all_map_clients.append(_xn)
+                all_map_clients = sorted(all_map_clients)
                 map_selected_client = st.multiselect(
                     "🏢 특정 거래처 위치 검색", 
                     options=all_map_clients,
@@ -16770,13 +17033,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 )
 
             if map_selected_client:
-                addr_display_html = "<div style='background-color: #F1F5F9; padding: 8px 12px; border-radius: 6px; border: 1px solid #CBD5E1; margin-top: 5px; margin-bottom: 15px; font-size: 13px; color: #334155;'>"
-                for sc in map_selected_client:
-                    raw_a = resolve_client_address(sc, addr_dict)
-                    clean_a = raw_a if raw_a else "등록된 주소 정보가 없습니다."
-                    addr_display_html += f"<div>📍 <b>{sc}:</b> {clean_a}</div>"
-                addr_display_html += "</div>"
-                st.markdown(addr_display_html, unsafe_allow_html=True)
+                _render_tab6_addr_book(addr_dict)
             st.markdown("<br>", unsafe_allow_html=True)
             _map_staff_palette = [
                 "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
@@ -16834,6 +17091,13 @@ def _dash_filter_and_tabs_fragment() -> None:
             map_filter_fp = (
                 tuple(sorted(map_selected_staff or [])),
                 tuple(sorted(map_selected_client or [])),
+                tuple(
+                    sorted(
+                        (p, s["name"], s["addr"])
+                        for p, sites in _tab2_load_extra_sites().items()
+                        for s in sites
+                    )
+                ),
             )
 
             if not st.session_state.show_map:
@@ -16854,13 +17118,36 @@ def _dash_filter_and_tabs_fragment() -> None:
 
                     map_data = []
                     invalid_clients = []
-                    if not target_map_df.empty:
-                        unique_clients_df = target_map_df[["거래처", "담당자"]].drop_duplicates(subset=["거래처"])
-                        total_cnt = len(unique_clients_df)
+                    _staff_from_base = {}
+                    if not df_base.empty and "거래처" in df_base.columns and "담당자" in df_base.columns:
+                        _staff_from_base = {
+                            str(r["거래처"]): str(r["담당자"])
+                            for _, r in df_base[["거래처", "담당자"]].drop_duplicates(subset=["거래처"]).iterrows()
+                        }
+                    unique_clients_df = (
+                        target_map_df[["거래처", "담당자"]].drop_duplicates(subset=["거래처"])
+                        if not target_map_df.empty
+                        else target_map_df
+                    )
+                    _vis_parents = (
+                        None
+                        if map_selected_client
+                        else (
+                            set(unique_clients_df["거래처"].astype(str))
+                            if not unique_clients_df.empty and "거래처" in unique_clients_df.columns
+                            else set()
+                        )
+                    )
+                    _xrows = _tab6_extra_map_rows(
+                        _staff_from_base, map_selected_client, visible_parents=_vis_parents
+                    )
+                    if not unique_clients_df.empty or _xrows:
+                        total_cnt = max(1, len(unique_clients_df) + len(_xrows))
                         disk_cache = _load_kakao_geocode_disk()
                         dirty = [False]
                         progress_text = "주소 좌표 변환 중 (디스크 캐시 우선) 🚀"
                         my_bar = st.progress(0, text=progress_text)
+                        _done = 0
 
                         for i, (_, row) in enumerate(unique_clients_df.iterrows()):
                             c_name = row["거래처"]
@@ -16880,7 +17167,29 @@ def _dash_filter_and_tabs_fragment() -> None:
                                 )
                             else:
                                 invalid_clients.append(c_name)
-                            my_bar.progress((i + 1) / total_cnt, text=f"{progress_text} ({i + 1}/{total_cnt})")
+                            _done += 1
+                            my_bar.progress(_done / total_cnt, text=f"{progress_text} ({_done}/{total_cnt})")
+                        for _xr in _xrows:
+                            lat, lon = get_lat_lon_kakao_disk(
+                                _xr["거래처"], _xr["주소"], rest_api_key, disk_cache, dirty
+                            )
+                            if lat is not None and lon is not None:
+                                map_data.append(
+                                    {
+                                        "거래처": _xr["거래처"],
+                                        "담당자": _xr["담당자"],
+                                        "주소": _xr["주소"],
+                                        "lat": lat,
+                                        "lon": lon,
+                                    }
+                                )
+                            else:
+                                invalid_clients.append(_xr["거래처"])
+                            _done += 1
+                            my_bar.progress(
+                                min(1.0, _done / total_cnt),
+                                text=f"{progress_text} ({_done}/{total_cnt})",
+                            )
                         my_bar.empty()
                         if dirty[0]:
                             _save_kakao_geocode_disk(disk_cache)
