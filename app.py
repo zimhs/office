@@ -3514,6 +3514,9 @@ def _tab6_box_select_html(center_lat, center_lon, zoom, tiles_js, pts):
   }}
   .t6-zoom .t6-btn + .t6-btn {{ border-top:1px solid #ccc; }}
   .t6-btn:hover, .t6-btn:active {{ background:#f4f4f4; }}
+  @media (hover: none) and (pointer: coarse) {{
+    .t6-btn {{ width:40px; height:40px; line-height:40px; font-size:18px; }}
+  }}
 </style></head>
 <body>
 <div id="map"></div>
@@ -3558,16 +3561,21 @@ def _tab6_box_select_html(center_lat, center_lon, zoom, tiles_js, pts):
         else if (act === "w") map.panBy([-stepX, 0]);
         else if (act === "e") map.panBy([stepX, 0]);
       }}
-      box.addEventListener("click", function(ev) {{
+      var lastAct = 0;
+      function go(ev) {{
         var btn = ev.target && ev.target.closest ? ev.target.closest("[data-act]") : null;
         if (!btn) return;
         ev.preventDefault();
         ev.stopPropagation();
+        var now = Date.now();
+        if (now - lastAct < 220) return;
+        lastAct = now;
         run(btn.getAttribute("data-act"));
-      }});
-      box.addEventListener("pointerdown", function(ev) {{
-        ev.stopPropagation();
-      }});
+      }}
+      box.addEventListener("pointerdown", function(ev) {{ ev.preventDefault(); ev.stopPropagation(); }});
+      box.addEventListener("pointerup", go);
+      box.addEventListener("touchend", go);
+      box.addEventListener("click", go);
       return box;
     }}
   }});
