@@ -134,6 +134,99 @@ def _wl_is_ipad_ui() -> bool:
     return bool(st.session_state.get("force_touch_ui"))
 
 
+def _wl_ipad_preview_h(default: int) -> int:
+    """아이패드 한 화면용 미리보기 높이. 맥은 default 그대로."""
+    return 280 if _wl_is_ipad_ui() else int(default)
+
+
+def _wl_ipad_gauge_h() -> int:
+    return 320 if _wl_is_ipad_ui() else 980
+
+
+_WL_IPAD_FIT_CSS = """
+/* 아이패드·터치만. 맥 hover 레이아웃은 그대로 */
+@media (hover: none) and (pointer: coarse) {
+  div[class*="st-key-wl_fit_root"] [data-testid="column"] {
+    position: static !important;
+    top: auto !important;
+  }
+  div[class*="st-key-wl_fit_root"] h5 {
+    font-size: 0.95rem !important;
+    margin: 0 0 0.15rem !important;
+    padding: 0 !important;
+    line-height: 1.2 !important;
+  }
+  div[class*="st-key-wl_sum_host_"],
+  div[class*="st-key-wl_excel_host_"] {
+    min-height: 0 !important;
+    max-height: 100% !important;
+  }
+  div[class*="st-key-wl_entry_sheet"] [data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+  }
+  div[class*="st-key-wl_entry_sheet"] [data-testid="stHorizontalBlock"] > div:nth-child(1),
+  div[class*="st-key-wl_entry_sheet"] [data-testid="column"]:nth-child(1),
+  div[class*="st-key-wl_entry_sheet"] [data-testid="stHorizontalBlock"] > div:nth-child(3),
+  div[class*="st-key-wl_entry_sheet"] [data-testid="column"]:nth-child(3) {
+    width: 22% !important; min-width: 0 !important; max-width: 26% !important;
+    flex: 0 0 22% !important;
+  }
+  div[class*="st-key-wl_entry_sheet"] [data-testid="stHorizontalBlock"] > div:nth-child(2),
+  div[class*="st-key-wl_entry_sheet"] [data-testid="column"]:nth-child(2) {
+    min-width: 0 !important; flex: 1 1 auto !important; max-width: none !important;
+  }
+  div[class*="st-key-wl_next_area_"] textarea,
+  div[class*="st-key-wl_notes_area_"] textarea {
+    min-height: 3.4rem !important;
+  }
+  div[class*="st-key-wl_page_bar_"] { margin: 0.05rem 0 0.2rem 0 !important; }
+  div[class*="st-key-wl_page_btn_"] button,
+  div[class*="st-key-wl_page_plus_"] button {
+    min-height: 2.15rem !important; height: 2.15rem !important;
+  }
+}
+@media (hover: none) and (pointer: coarse) and (orientation: portrait) {
+  div[class*="st-key-wl_fit_root"] > div > div[data-testid="stHorizontalBlock"]:first-of-type {
+    flex-direction: column !important;
+    flex-wrap: nowrap !important;
+    max-height: calc(100dvh - 8.4rem) !important;
+    overflow: hidden !important;
+    gap: 0.35rem !important;
+  }
+  div[class*="st-key-wl_fit_root"] > div > div[data-testid="stHorizontalBlock"]:first-of-type > div {
+    width: 100% !important; min-width: 0 !important; max-width: 100% !important;
+    flex: 0 1 auto !important;
+  }
+  div[class*="st-key-wl_fit_root"] > div > div[data-testid="stHorizontalBlock"]:first-of-type > div:nth-child(1) {
+    max-height: 30dvh !important;
+    overflow: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  div[class*="st-key-wl_fit_root"] > div > div[data-testid="stHorizontalBlock"]:first-of-type > div:nth-child(2) {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    max-height: calc(70dvh - 8.4rem) !important;
+    overflow: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+@media (hover: none) and (pointer: coarse) and (orientation: landscape) {
+  div[class*="st-key-wl_fit_root"] > div > div[data-testid="stHorizontalBlock"]:first-of-type {
+    flex-direction: row !important;
+    align-items: stretch !important;
+    height: calc(100dvh - 6.2rem) !important;
+    max-height: calc(100dvh - 6.2rem) !important;
+    overflow: hidden !important;
+  }
+  div[class*="st-key-wl_fit_root"] > div > div[data-testid="stHorizontalBlock"]:first-of-type > div {
+    max-height: 100% !important;
+    overflow: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+"""
+
+
 def _invalidate_saved_dates_cache() -> None:
     st.session_state.pop("wl_saved_dates_cache", None)
     st.session_state.pop("wl_stored_cells_memo", None)
@@ -6112,7 +6205,7 @@ def _render_worklog_summary_block(selected: date, cells: dict) -> None:
         mode="summary",
         html=host_html,
         rev=draft_sig,
-        height=820,
+        height=_wl_ipad_preview_h(820),
     )
 
 
@@ -6308,7 +6401,7 @@ def _render_worklog_left_preview(selected: date) -> None:
                     mode="excel",
                     html=inline,
                     rev=str(st.session_state.get(skel_k) or "1"),
-                    height=min(1100, max(560, int(fh or 600))),
+                    height=_wl_ipad_preview_h(min(1100, max(560, int(fh or 600)))),
                     patches=_wl_preview_patches(cells_view),
                     page=page_n,
                 )
@@ -6420,7 +6513,7 @@ def _render_worklog_input_panel(selected: date) -> None:
     col_gauge, col_input = st.columns([0.14, 1], gap="small")
     with col_gauge:
             st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-            _render_row_remain_gauge(_gauge_usage, height_px=980)
+            _render_row_remain_gauge(_gauge_usage, height_px=_wl_ipad_gauge_h())
 
     with col_input:
             _render_worklog_date_toolbar(selected)
@@ -6681,9 +6774,10 @@ def _render_worklog_input_panel(selected: date) -> None:
                         </style>""",
                         unsafe_allow_html=True,
                     )
-                    st.text_area("익일업무", key=f"wl_next_area_{iso2}", label_visibility="collapsed", height=110)
+                    _ta_h = 72 if _wl_is_ipad_ui() else 110
+                    st.text_area("익일업무", key=f"wl_next_area_{iso2}", label_visibility="collapsed", height=_ta_h)
                     st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
-                    st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
+                    st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=64 if _wl_is_ipad_ui() else 100)
 
                 st.button(
                     "저장",
@@ -7128,6 +7222,9 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             z-index: 5 !important;
             pointer-events: auto !important;
         }
+        """
+        + _WL_IPAD_FIT_CSS
+        + """
         </style>
         """,
         unsafe_allow_html=True,
@@ -7144,12 +7241,13 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         sel: date = st.session_state.get("worklog_selected") or selected
         _prepare_worklog_day_state(sel, skip_remote_pull=True)
         _render_worklog_scroll_lock(sel.isoformat())
-        col_preview, col_edit = st.columns([1, 1.14], gap="small")
-        with col_preview:
-            _render_worklog_left_preview(sel)
-        with col_edit:
-            st.markdown("##### 업무 입력")
-            _render_worklog_input_panel(sel)
-            _wl_finish_edit_fragment()
+        with st.container(key="wl_fit_root"):
+            col_preview, col_edit = st.columns([1, 1.14], gap="small")
+            with col_preview:
+                _render_worklog_left_preview(sel)
+            with col_edit:
+                st.markdown("##### 업무 입력")
+                _render_worklog_input_panel(sel)
+                _wl_finish_edit_fragment()
 
     _worklog_body()
