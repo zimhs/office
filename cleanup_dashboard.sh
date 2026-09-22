@@ -20,17 +20,19 @@ rm_path() {
   done
 }
 
-# 구 백업·테스트·브라우저 저장본
+# 구 백업·로그·스크린샷·캐시 (실행 데이터 uproad·uploaded_cache 는 유지)
 rm_path \
   "app_test.py" \
   "dashboard_최종본_20260816_1954" \
   "통합 영업 분석 대시보드.html" \
   "통합 영업 분석 대시보드_files" \
-  "uproad" \
   "엑셀원본.xlsx" \
   "탄산단가인상공문.xlsx" \
   "__pycache__" \
-  ".devcontainer" \
+  ".dash_8501.log" \
+  ".dash_8502.log" \
+  "백업/dashboard_old_backup" \
+  "스크린샷 2026-09-07 오후 10.59.31.png" \
   "*.pyc"
 
 # __pycache__ 하위

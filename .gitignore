@@ -95,3 +95,7 @@ uploaded_cache/price_increase/smtp_local.toml
 .dash_force_restart
 .dash_8501.log
 .dash_8502.log
+
+# 로컬 백업·옛 복사본 (실행에 불필요, 커밋 안 함)
+백업/dashboard_old_backup/
+백업/snapshots/

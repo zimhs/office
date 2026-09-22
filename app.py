@@ -643,6 +643,50 @@ def inject_custom_css():
                 white-space: nowrap !important;
                 pointer-events: auto !important;
             }
+            /* 메인 탭줄 좌·우 화살표 — 잘린 탭을 가로 스크롤 */
+            .dashboard-tab-scroll {
+                display: flex !important;
+                align-items: stretch !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
+                box-sizing: border-box !important;
+                background: #FFFFFF !important;
+                gap: 0 !important;
+                overflow: hidden !important;
+            }
+            .dashboard-tab-scroll-btn {
+                flex: 0 0 28px !important;
+                width: 28px !important;
+                min-width: 28px !important;
+                border: none !important;
+                background: #FFFFFF !important;
+                color: #334155 !important;
+                font-size: 22px !important;
+                line-height: 1 !important;
+                cursor: pointer !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                z-index: 3 !important;
+                pointer-events: auto !important;
+            }
+            .dashboard-tab-scroll-btn:hover:not(:disabled) {
+                background: #F1F5F9 !important;
+                color: #0F172A !important;
+            }
+            .dashboard-tab-scroll-btn:disabled {
+                opacity: 0.28 !important;
+                cursor: default !important;
+            }
+            .dashboard-tab-scroll > [role="tablist"],
+            .dashboard-tab-scroll > [role="tablist"].dashboard-tabs-in-filter {
+                flex: 1 1 0 !important;
+                width: 0 !important;
+                min-width: 0 !important;
+                max-width: none !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+            }
             /* 공문 등 탭패널 안 중첩 tabs */
             html:has(.dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter)
                 [role="tabpanel"] [data-testid="stTabs"] [role="tablist"] {
@@ -946,8 +990,12 @@ def inject_custom_css():
             }
 
             .dashboard-filter-sticky [role="tablist"]::-webkit-scrollbar,
-            .dashboard-tabs-in-filter::-webkit-scrollbar {
+            .dashboard-tabs-in-filter::-webkit-scrollbar,
+            .dashboard-tab-scroll [role="tablist"]::-webkit-scrollbar {
                 display: none;
+            }
+            .dashboard-tab-scroll [role="tablist"] {
+                scrollbar-width: none;
             }
 
             .dashboard-tabs-host-compact [role="tabpanel"] {
@@ -3378,6 +3426,211 @@ def get_lat_lon_kakao_disk(company_name, address, rest_api_key, disk_cache, dirt
     return lat, lon
 
 
+def _tab6_clients_in_box(rows, south, west, north, east):
+    """지도 네모(남·서·북·동) 안의 업체. 담당자·거래처·주소."""
+    try:
+        s, w, n, e = float(south), float(west), float(north), float(east)
+    except (TypeError, ValueError):
+        return []
+    if s > n:
+        s, n = n, s
+    if w > e:
+        w, e = e, w
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            lat = float(r.get("lat"))
+            lon = float(r.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        if s <= lat <= n and w <= lon <= e:
+            out.append(
+                {
+                    "담당자": str(r.get("staff") or r.get("담당자") or ""),
+                    "거래처": str(r.get("name") or r.get("거래처") or ""),
+                    "주소": str(r.get("addr") or r.get("주소") or ""),
+                }
+            )
+    out.sort(key=lambda x: (x["담당자"], x["거래처"]))
+    return out
+
+
+def _tab6_toggle_box_mode() -> None:
+    st.session_state["tab6_box_mode"] = not bool(st.session_state.get("tab6_box_mode"))
+    st.session_state["show_map"] = True
+
+
+def _tab6_box_select_html(center_lat, center_lon, zoom, tiles_js, pts):
+    """드래그 선택 지도. iframe Leaflet + 마우스/펜슬/손가락 네모."""
+    pts_json = json.dumps(pts, ensure_ascii=False)
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  html, body {{
+    margin:0; padding:0; background:#fff;
+    font-family:system-ui,-apple-system,sans-serif;
+    touch-action: none; overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+  }}
+  img, .leaflet-container img, .leaflet-tile, .leaflet-tile-container img, .leaflet-layer img {{
+    max-width: none !important; max-height: none !important;
+  }}
+  #map {{
+    width:100%; height:600px; cursor:crosshair;
+    touch-action: none; -ms-touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }}
+  #t6-list {{ padding:12px 14px 16px; -webkit-overflow-scrolling: touch; }}
+  #t6-list h3 {{ margin:0 0 8px; font-size:16px; font-weight:600; color:#1E3A8A; }}
+  #t6-list table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+  #t6-list th, #t6-list td {{
+    border-bottom:1px solid #e8eaed; padding:6px 8px; text-align:left; vertical-align:top;
+  }}
+  #t6-list th {{ color:#5f6368; font-weight:600; }}
+  .t6-empty {{ color:#80868b; font-size:13px; }}
+</style></head>
+<body>
+<div id="map"></div>
+<div id="t6-list"><div class="t6-empty">마우스·애플펜슬·손가락으로 네모를 그리면 담당자·거래처·주소가 여기에 나옵니다.</div></div>
+<script>
+(function() {{
+  var map = L.map("map", {{
+    zoomControl: true, boxZoom: false, dragging: false,
+    tap: false, touchZoom: false, doubleClickZoom: false,
+    scrollWheelZoom: true, keyboard: false
+  }}).setView(
+    [{float(center_lat)}, {float(center_lon)}], {int(zoom)}
+  );
+  {tiles_js}
+  var pts = {pts_json};
+  var markers = [];
+  pts.forEach(function(p) {{
+    var m = L.circleMarker([p.lat, p.lon], {{
+      radius: 8, color: "#ffffff", weight: 1.5, fillColor: p.color, fillOpacity: 0.95
+    }});
+    m.bindPopup("<b>" + (p.name||"") + "</b><br/>담당자: " + (p.staff||"") + "<br/>" + (p.addr||""));
+    m.addTo(map);
+    markers.push(m);
+  }});
+  var start = null, rect = null, drawing = false, activeId = null, usedPointer = false;
+  function esc(s) {{
+    return String(s||"").replace(/[&<>"']/g, function(c) {{
+      return {{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}}[c];
+    }});
+  }}
+  function renderRows(rows) {{
+    var el = document.getElementById("t6-list");
+    if (!rows.length) {{
+      el.innerHTML = "<div class='t6-empty'>선택한 네모 안에 업체가 없습니다.</div>";
+      return;
+    }}
+    var html = "<h3>영역 안 업체 " + rows.length + "곳</h3><table><thead><tr>"
+      + "<th>담당자</th><th>거래처</th><th>주소</th></tr></thead><tbody>";
+    rows.forEach(function(r) {{
+      html += "<tr><td>" + esc(r.staff) + "</td><td>" + esc(r.name) + "</td><td>" + esc(r.addr) + "</td></tr>";
+    }});
+    html += "</tbody></table>";
+    el.innerHTML = html;
+  }}
+  function finish(ll) {{
+    if (!start || !ll) {{ start = null; return; }}
+    var b = L.latLngBounds(start, ll);
+    start = null;
+    if (Math.abs(b.getNorth()-b.getSouth()) < 1e-7 && Math.abs(b.getEast()-b.getWest()) < 1e-7) return;
+    var south=b.getSouth(), west=b.getWest(), north=b.getNorth(), east=b.getEast();
+    var rows = [];
+    pts.forEach(function(p, i) {{
+      var on = p.lat>=south && p.lat<=north && p.lon>=west && p.lon<=east;
+      markers[i].setStyle({{ weight: on ? 3 : 1.5, color: on ? "#1a73e8" : "#ffffff", radius: on ? 10 : 8 }});
+      if (on) rows.push({{staff:p.staff||"", name:p.name||"", addr:p.addr||""}});
+    }});
+    rows.sort(function(a,b) {{
+      return (String(a.staff)+String(a.name)).localeCompare(String(b.staff)+String(b.name), "ko");
+    }});
+    renderRows(rows);
+  }}
+  var el = map.getContainer();
+  function posToLL(x, y) {{
+    var r = el.getBoundingClientRect();
+    return map.containerPointToLatLng(L.point(x - r.left, y - r.top));
+  }}
+  function fromPtr(ev) {{ return posToLL(ev.clientX, ev.clientY); }}
+  function fromTouch(ev) {{
+    var t = (ev.touches && ev.touches[0]) || (ev.changedTouches && ev.changedTouches[0]);
+    return t ? posToLL(t.clientX, t.clientY) : null;
+  }}
+  function begin(ll) {{
+    if (!ll) return;
+    drawing = true;
+    start = ll;
+    if (rect) {{ try {{ map.removeLayer(rect); }} catch (e0) {{}} }}
+    rect = L.rectangle([start, start], {{
+      color:"#1a73e8", weight:1.5, fillColor:"#1a73e8", fillOpacity:0.12
+    }}).addTo(map);
+  }}
+  function move(ll) {{
+    if (!drawing || !start || !rect || !ll) return;
+    rect.setBounds(L.latLngBounds(start, ll));
+  }}
+  function end(ll) {{
+    if (!drawing) return;
+    drawing = false;
+    activeId = null;
+    finish(ll || (rect ? rect.getBounds().getNorthEast() : null));
+  }}
+  el.addEventListener("pointerdown", function(ev) {{
+    if (ev.isPrimary === false) return;
+    if (ev.pointerType === "mouse" && ev.button !== 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    usedPointer = true;
+    activeId = ev.pointerId;
+    try {{ el.setPointerCapture(ev.pointerId); }} catch (e1) {{}}
+    begin(fromPtr(ev));
+  }}, {{passive:false}});
+  el.addEventListener("pointermove", function(ev) {{
+    if (!drawing) return;
+    if (activeId != null && ev.pointerId !== activeId) return;
+    ev.preventDefault();
+    move(fromPtr(ev));
+  }}, {{passive:false}});
+  function ptrEnd(ev) {{
+    if (!drawing) return;
+    if (activeId != null && ev.pointerId !== activeId) return;
+    ev.preventDefault();
+    try {{ el.releasePointerCapture(ev.pointerId); }} catch (e2) {{}}
+    end(fromPtr(ev));
+  }}
+  el.addEventListener("pointerup", ptrEnd, {{passive:false}});
+  el.addEventListener("pointercancel", ptrEnd, {{passive:false}});
+  el.addEventListener("touchstart", function(ev) {{
+    if (usedPointer || drawing) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    begin(fromTouch(ev));
+  }}, {{passive:false}});
+  el.addEventListener("touchmove", function(ev) {{
+    if (usedPointer || !drawing) return;
+    ev.preventDefault();
+    move(fromTouch(ev));
+  }}, {{passive:false}});
+  el.addEventListener("touchend", function(ev) {{
+    if (usedPointer || !drawing) return;
+    ev.preventDefault();
+    end(fromTouch(ev));
+  }}, {{passive:false}});
+  setTimeout(function() {{ try {{ map.invalidateSize(); }} catch (e3) {{}} }}, 200);
+}})();
+</script>
+</body></html>"""
+
+
 KAKAO_REST_API_KEY = "21a8c4d7312051598c2e05dba0b9c0c7"
 @st.cache_data(show_spinner=False, max_entries=2000)
 def kakao_place_search(query, rest_api_key=None, size=15):
@@ -5693,11 +5946,20 @@ _DASH_WL_WIDGET_PREFIXES = (
     "wl_mail_",
     "wl_saved_",
 )
+# 달력 버튼. `wl_next_` 상태 접두어가 `wl_next_month`까지 삼키면
+# 필터 복원 때 버튼 값을 넣어서 StreamlitValueAssignmentNotAllowedError 가 난다.
+_DASH_WL_BUTTON_KEYS = frozenset({
+    "wl_next_month",
+    "wl_prev_month",
+    "wl_today",
+})
 
 
 def _dash_is_wl_widget_key(key: str) -> bool:
     if not isinstance(key, str):
         return False
+    if key in _DASH_WL_BUTTON_KEYS or key.startswith("wl_day_"):
+        return True
     if any(key.startswith(p) for p in _DASH_WL_STATE_PREFIXES):
         return False
     if key.startswith("wl_"):
@@ -9791,7 +10053,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 86
+    _sticky_py_ver = 91
     components.html(
         """
         <script>
@@ -10272,6 +10534,10 @@ def inject_sticky_tabs_script():
                     + 'display:flex!important;flex-wrap:nowrap!important;overflow-x:auto!important;'
                     + 'overflow-y:visible!important;-webkit-overflow-scrolling:touch!important;'
                     + 'width:100%!important;max-width:100%!important;}'
+                    + '.dashboard-tab-scroll{display:flex!important;align-items:stretch!important;width:100%!important;max-width:100%!important;min-width:0!important;overflow:hidden!important;}'
+                    + '.dashboard-tab-scroll-btn{flex:0 0 28px!important;width:28px!important;border:none!important;'
+                    + 'background:#fff!important;color:#334155!important;font-size:22px!important;cursor:pointer!important;}'
+                    + '.dashboard-tab-scroll>[role="tablist"]{flex:1 1 0!important;width:0!important;min-width:0!important;overflow-x:auto!important;}'
                     + '#dashboard-ipad-h-tabs{display:none!important;height:0!important;overflow:hidden!important;'
                     + 'visibility:hidden!important;pointer-events:none!important;}'
                     + '.dashboard-ipad-hide-tabs{display:flex!important;visibility:visible!important;'
@@ -10487,6 +10753,113 @@ def inject_sticky_tabs_script():
                 if (!el || !el.textContent) return false;
                 return el.textContent.indexOf('📌 영업 종합 요약') !== -1;
             }
+            function syncMainTabScrollArrows(list) {
+                if (!list) return;
+                var wrap = list.parentElement;
+                if (!wrap || !wrap.classList || !wrap.classList.contains('dashboard-tab-scroll')) return;
+                try { sizeMainTabScrollWrap(wrap); } catch (eSz2) {}
+                var prev = wrap.querySelector('.dashboard-tab-scroll-prev');
+                var next = wrap.querySelector('.dashboard-tab-scroll-next');
+                var max = Math.max(0, (list.scrollWidth || 0) - (list.clientWidth || 0));
+                var overflow = max > 4;
+                wrap.classList.toggle('dashboard-tab-scroll-overflow', overflow);
+                if (prev) prev.disabled = list.scrollLeft <= 2;
+                if (next) next.disabled = list.scrollLeft >= max - 2;
+            }
+            function sizeMainTabScrollWrap(wrap) {
+                if (!wrap) return;
+                var vw = 0;
+                try {
+                    var vv = parentWin.visualViewport;
+                    vw = (vv && vv.width) ? vv.width : (parentWin.innerWidth || 0);
+                } catch (eV) {}
+                if (!vw) {
+                    try { vw = parentDoc.documentElement.clientWidth || 0; } catch (eW) {}
+                }
+                var left = 0;
+                try { left = wrap.getBoundingClientRect().left; } catch (eL) {}
+                var maxPx = Math.max(160, Math.round(vw - left - 8));
+                try {
+                    var main = parentDoc.querySelector('section.main') ||
+                        parentDoc.querySelector('[data-testid="stAppViewContainer"]');
+                    if (main) {
+                        var mr = main.getBoundingClientRect();
+                        if (mr.width > 80) {
+                            maxPx = Math.min(maxPx, Math.max(160, Math.round(mr.right - left - 8)));
+                        }
+                    }
+                } catch (eM) {}
+                wrap.style.setProperty('width', maxPx + 'px', 'important');
+                wrap.style.setProperty('max-width', maxPx + 'px', 'important');
+                wrap.style.setProperty('min-width', '0', 'important');
+                wrap.style.setProperty('overflow', 'hidden', 'important');
+            }
+            function ensureMainTabScrollArrows(list) {
+                if (!list || !isMainTabList(list)) return;
+                var wrap = list.parentElement;
+                if (!wrap || !wrap.classList || !wrap.classList.contains('dashboard-tab-scroll')) {
+                    var parent = list.parentNode;
+                    if (!parent) return;
+                    wrap = parentDoc.createElement('div');
+                    wrap.className = 'dashboard-tab-scroll';
+                    wrap.setAttribute('data-dashboard-tab-scroll', '1');
+                    var prev = parentDoc.createElement('button');
+                    prev.type = 'button';
+                    prev.className = 'dashboard-tab-scroll-btn dashboard-tab-scroll-prev';
+                    prev.setAttribute('aria-label', '이전 탭');
+                    prev.textContent = '‹';
+                    var next = parentDoc.createElement('button');
+                    next.type = 'button';
+                    next.className = 'dashboard-tab-scroll-btn dashboard-tab-scroll-next';
+                    next.setAttribute('aria-label', '다음 탭');
+                    next.textContent = '›';
+                    parent.insertBefore(wrap, list);
+                    wrap.appendChild(prev);
+                    wrap.appendChild(list);
+                    wrap.appendChild(next);
+                    function step(dir) {
+                        var lst = wrap.querySelector('[role="tablist"]') || list;
+                        if (!lst) return;
+                        var dx = Math.max(180, Math.round((lst.clientWidth || 240) * 0.72));
+                        try {
+                            lst.scrollBy({ left: dir * dx, behavior: 'smooth' });
+                        } catch (eScr) {
+                            lst.scrollLeft = Math.max(0, (lst.scrollLeft || 0) + dir * dx);
+                        }
+                        parentWin.setTimeout(function () { syncMainTabScrollArrows(lst); }, 220);
+                    }
+                    prev.onclick = function (ev) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        step(-1);
+                    };
+                    next.onclick = function (ev) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        step(1);
+                    };
+                    list.addEventListener('scroll', function () { syncMainTabScrollArrows(list); }, { passive: true });
+                }
+                try {
+                    sizeMainTabScrollWrap(wrap);
+                    list.style.setProperty('flex', '1 1 0', 'important');
+                    list.style.setProperty('width', '0', 'important');
+                    list.style.setProperty('min-width', '0', 'important');
+                    list.style.setProperty('overflow-x', 'auto', 'important');
+                } catch (eSz) {}
+                parentWin.setTimeout(function () { syncMainTabScrollArrows(list); }, 0);
+                parentWin.requestAnimationFrame(function () { syncMainTabScrollArrows(list); });
+            }
+            function pruneMainTabScrollWraps(box, keep) {
+                if (!box) return;
+                var wraps = box.querySelectorAll('.dashboard-tab-scroll');
+                var i, w;
+                for (i = 0; i < wraps.length; i++) {
+                    w = wraps[i];
+                    if (keep && w.contains(keep)) continue;
+                    try { w.remove(); } catch (ePw) {}
+                }
+            }
             function findMainTabsHost() {
                 var hosts = parentDoc.querySelectorAll('div[data-testid="stTabs"]');
                 for (var i = 0; i < hosts.length; i++) {
@@ -10589,6 +10962,7 @@ def inject_sticky_tabs_script():
                     for (tj = 0; tj < tabs.length; tj++) {
                         tabs[tj].style.setProperty('pointer-events', 'auto', 'important');
                     }
+                    try { ensureMainTabScrollArrows(lists[li]); } catch (eArr) {}
                 }
             }
             parentWin.__dashboardEnsureCloudStickyTabs = ensureCloudStickyTabsNative;
@@ -10807,7 +11181,8 @@ def inject_sticky_tabs_script():
                     if (!filterBox.contains(keep)) {
                         try {
                             resetTabListFixedStyles(keep);
-                            filterBox.appendChild(keep);
+                            var keepWrap = keep.closest ? keep.closest('.dashboard-tab-scroll') : null;
+                            filterBox.appendChild(keepWrap && keepWrap.contains(keep) ? keepWrap : keep);
                         } catch (eAp) {}
                     }
                     moved = filterBox.contains(keep);
@@ -10824,6 +11199,8 @@ def inject_sticky_tabs_script():
                         keep.style.setProperty('visibility', 'visible', 'important');
                         keep.style.setProperty('pointer-events', 'auto', 'important');
                         filterBox.classList.add('dashboard-filter-sticky-with-tabs');
+                        try { pruneMainTabScrollWraps(filterBox, keep); } catch (ePr) {}
+                        try { ensureMainTabScrollArrows(keep); } catch (eScrA) {}
                         try { ensureCloudStickyTabsNative(filterBox); } catch (eCloud) {}
                         if (host) {
                             host.classList.add('dashboard-tabs-host-compact');
@@ -11155,6 +11532,7 @@ def inject_sticky_tabs_script():
                     try { fixDuplicateMainTabs(true); } catch (eIpadMv) {}
                     tabList = findMainTabList();
                 }
+                try { if (tabList) ensureMainTabScrollArrows(tabList); } catch (eTabArr) {}
                 var filterH = Math.max(48, Math.round(targetBox.getBoundingClientRect().height) || 0);
                 publishBarGeometry(topPx, side, maxW || Math.max(120, (vw || 0) - side * 2), filterH);
                 /* iPad만: 맥 syncFixedBar와 같이 필터 슬롯을 접어 본문 위 빈 키를 없앰 */
@@ -14159,7 +14537,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 87
+    _STICKY_INJECT_VER = 92
     _ACTIVE_TAB_INJECT_VER = 13
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
@@ -16339,7 +16717,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 f"{html.escape(s)}</span>"
                 for i, s in enumerate(_legend_staffs)
             )
-            ctrl_space, ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4 = st.columns([5, 1.2, 1.2, 1.2, 1.2])
+            ctrl_space, ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4, ctrl_c5 = st.columns([3.8, 1.25, 1.0, 0.95, 0.95, 1.2])
 
             with ctrl_space:
                 st.markdown(
@@ -16356,6 +16734,16 @@ def _dash_filter_and_tabs_fragment() -> None:
                 btn_zoom_out = st.button("➖ 축소 (-)", use_container_width=True)
             with ctrl_c4:
                 btn_reset_map = st.button("🏠 기본 위치", use_container_width=True)
+            with ctrl_c5:
+                _box_on = bool(st.session_state.get("tab6_box_mode"))
+                st.button(
+                    "⬚ 드래그 선택",
+                    key="tab6_box_btn",
+                    type="primary" if _box_on else "secondary",
+                    use_container_width=True,
+                    on_click=_tab6_toggle_box_mode,
+                    help="켜면 마우스·애플펜슬·손가락으로 네모를 그려 안의 업체를 고릅니다. 끄면 지도를 이동합니다.",
+                )
 
             # 재시작·다른 탭 조작 시 전체 지오코딩이 돌지 않도록: 조회 버튼 후에만 로드
             if "show_map" not in st.session_state:
@@ -16423,6 +16811,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     st.session_state.tab6_map_df = pd.DataFrame(map_data) if map_data else pd.DataFrame()
                     st.session_state.tab6_invalid_clients = invalid_clients
                     st.session_state.tab6_map_fp = map_filter_fp
+                    st.session_state.pop("tab6_box_sel", None)
 
                 map_df = st.session_state.get("tab6_map_df", pd.DataFrame())
                 invalid_clients = st.session_state.get("tab6_invalid_clients", [])
@@ -16445,10 +16834,43 @@ def _dash_filter_and_tabs_fragment() -> None:
                     vworld_sat = "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{y}.jpeg"
                     vworld_hybrid = "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png"
                     dynamic_key = f"map_chart_{hash(str(map_selected_staff))}_{hash(str(map_selected_client))}"
-
-                    # iPad 전용: Plotly Mapbox WebGL이 Safari에서 마커/범례를 검정으로 그림
-                    # → Leaflet 원형 마커(명시 HEX)로만 우회. 맥 경로(아래 else)는 일절 변경 없음.
-                    if is_touch_ui():
+                    _staffs = sorted(map_df["담당자"].astype(str).unique())
+                    _cmap = {s: _map_staff_palette[i % len(_map_staff_palette)] for i, s in enumerate(_staffs)}
+                    _pts = []
+                    for _, _r in map_df.iterrows():
+                        _staff = str(_r["담당자"])
+                        _pts.append({
+                            "lat": float(_r["lat"]),
+                            "lon": float(_r["lon"]),
+                            "name": str(_r["거래처"]),
+                            "staff": _staff,
+                            "addr": str(_r.get("주소") or ""),
+                            "color": _cmap.get(_staff, "#636EFA"),
+                        })
+                    _box_on = bool(st.session_state.get("tab6_box_mode"))
+                    if _box_on:
+                        st.caption("드래그 선택 켜짐 · 마우스·애플펜슬·손가락으로 네모를 그리면 안의 업체가 아래에 나옵니다.")
+                    # 드래그 선택은 iframe Leaflet(이미 되는 지도) + 네모. CCv2는 타일이 깨져 쓰지 않는다.
+                    if _box_on:
+                        _use_sat = "일반" not in map_style_choice
+                        _tiles_js = (
+                            f'L.tileLayer("{vworld_sat}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                            f'L.tileLayer("{vworld_hybrid}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                            if _use_sat
+                            else f'L.tileLayer("{vworld_base}", {{maxZoom:19, attribution:"VWorld"}}).addTo(map);'
+                        )
+                        components.html(
+                            _tab6_box_select_html(
+                                center_lat,
+                                center_lon,
+                                st.session_state.map_zoom,
+                                _tiles_js,
+                                _pts,
+                            ),
+                            height=900,
+                            scrolling=True,
+                        )
+                    elif is_touch_ui():
                         _staffs = sorted(map_df["담당자"].astype(str).unique())
                         _cmap = {s: _map_staff_palette[i % len(_map_staff_palette)] for i, s in enumerate(_staffs)}
                         _pts = []

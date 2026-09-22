@@ -92,6 +92,39 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertTrue(nm.startswith("예·"))
         self.assertIn("라콜", nm)
 
+    def test_month_schedule_cells_mark_visit_plan_and_prior(self):
+        self.vc.add_visit(
+            {"date": date(2026, 9, 7), "staff": "김혁수", "client": "한신테크", "status": "done"}
+        )
+        self.vc.add_visit(
+            {
+                "date": date(2026, 9, 23),
+                "staff": "김혁수",
+                "client": "라콜 주식회사(구.신정우)",
+                "status": "planned",
+            }
+        )
+        weeks = self.vc.month_cal_weeks(date(2026, 9, 1))
+        self.assertEqual(len(weeks[0]), 7)
+        days = [d for w in weeks for d in w]
+        cells = self.vc.schedule_cells(
+            self.vc.load_store(),
+            days,
+            "김혁수",
+            [{"date": "2026-09-10", "source": "업무일지", "client": "한신테크"}],
+            "한신테크",
+        )
+        kinds7 = {x["kind"] for x in cells["2026-09-07"]}
+        kinds23 = {x["kind"] for x in cells["2026-09-23"]}
+        kinds10 = {x["kind"] for x in cells["2026-09-10"]}
+        self.assertIn("visit", kinds7)
+        self.assertTrue(any(x.get("mine") for x in cells["2026-09-07"]))
+        self.assertIn("planned", kinds23)
+        self.assertIn("prior", kinds10)
+        html = self.vc._mcal_chips_html(cells["2026-09-23"])
+        self.assertIn("planned", html)
+        self.assertIn("라콜", html)
+
     def test_month_visit_rows_splits_done_and_planned(self):
         self.vc.add_visit(
             {
@@ -411,6 +444,12 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn('setStateValue("iso"', src)
         self.assertIn("on_iso_change=_on_strip_iso_change", src)
         self.assertIn("def _visit_day_block", src)
+        self.assertIn("def month_cal_weeks", src)
+        self.assertIn("def schedule_cells", src)
+        self.assertIn("def _render_month_cal", src)
+        self.assertIn("vc_mcal_", src)
+        self.assertNotIn("def week_days", src)
+        self.assertNotIn("def week_schedule_cells", src)
         self.assertIn("def _weekday_name", src)
         self.assertIn("vc-wd", src)
         self.assertNotIn("def _render_calendar", src)
@@ -443,6 +482,18 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("_staff_from_store", body)
         self.assertIn("_staff_clients", body)
         self.assertIn("달력·방문·할일에 연동", src)
+        block = src[src.index("def _visit_day_block") : src.index("def _client_short")]
+        self.assertIn("_render_day_strip", block)
+        self.assertIn("_render_delivery_list", block)
+        self.assertLess(block.index("left, right = st.columns"), block.index("_render_month_cal"))
+        self.assertLess(block.index("_render_month_cal"), block.index("_render_day_agenda"))
+        self.assertLess(block.index("_render_day_agenda"), block.index("_render_month_schedule"))
+        self.assertLess(block.index("_render_month_schedule"), block.index("_render_todo_panel"))
+        self.assertGreater(block.index("_render_day_agenda"), block.index("with right:"))
+        self.assertIn("def _vc_is_touch_ui", src)
+        self.assertIn("_vc_is_touch_ui()", block)
+        self.assertIn("pointer: coarse", src)
+        self.assertIn("월간 달력을 전폭으로", block)
 
     def test_staff_lists_do_not_scan_all_staff_from_sales(self):
         df = pd.DataFrame({"담당자": ["홍길동"] * 200, "거래처": ["한신테크"] * 200})

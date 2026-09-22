@@ -84,20 +84,124 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertEqual(self.ss.get("wl_date_pick"), date(2026, 9, 7))
         self.assertEqual(self.ss.get("wl_date_sync"), "2026-09-03")
 
-    def test_draft_date_change_still_retargets(self):
-        """저장 전 초안은 빈 날짜로 화면만 옮긴다."""
+    def test_commit_save_adds_calendar_dot(self):
+        """저장하면 달력 • 캐시에 그 날이 바로 들어간다."""
+        d = date(2026, 9, 17)
+        self.ss["wl_saved_dates_cache"] = {"2026-09-15"}
+        self.wt.commit_worklog_date_save(d, d, self._cells(d, "거래처", "내용"))
+        self.assertIn(d.isoformat(), self.wt._saved_dates_for_calendar())
+        self.assertTrue(os.path.isfile(self.wt.worklog_path(d)))
+
+    def test_collapse_empty_leading_page(self):
+        first = self.wt._empty_cells(date(2026, 9, 17))
+        second = self._cells(date(2026, 9, 17), "이엔에이치", "HE(10.2t)")
+        packed = self.wt._attach_extra_pages(first, [second])
+        collapsed = self.wt._collapse_empty_worklog_pages(packed)
+        body, extras = self.wt._detach_extra_pages(collapsed)
+        self.assertEqual(body.get("G8"), "HE(10.2t)")
+        self.assertEqual(body.get("C8"), "이엔에이치")
+        self.assertFalse(extras)
+
+    def test_ui_iso_keeps_shared_editor_keys(self):
+        """달력 이동 때도 입력칸 키는 같다. 위젯을 다시 붙이지 않아 로딩이 짧다."""
+        self.assertEqual(self.wt._ui_iso("2026-09-07"), "ui")
+        self.assertEqual(self.wt._ui_iso("2026-09-17"), "ui")
+        self.assertEqual(
+            self.wt._entry_lines_live_key("2026-09-07", 0),
+            self.wt._entry_lines_live_key("2026-09-17", 0),
+        )
+        self.assertEqual(
+            self.wt._entry_clients_live_key("2026-09-07", 0),
+            self.wt._entry_clients_live_key("2026-09-17", 0),
+        )
+
+    def test_calendar_day_keeps_old_editor_and_loads_dest_editor(self):
+        """달력으로 다른 날을 열면 전날 초안은 보관하고, 칸에는 이동일 저장본만 넣는다."""
+        old, new = date(2026, 9, 17), date(2026, 9, 7)
+        self.wt.save_worklog_cells(old, self._cells(old, "이엔에이치", "17일 HE"), force=True, allow_overwrite=True)
+        self.wt.save_worklog_cells(new, self._cells(new, "가스코아", "7일 내근"), force=True, allow_overwrite=True)
+        self.ss["worklog_selected"] = old
+        self.wt._apply_entry_lines(old.isoformat(), 0, ["17일 HE"], remount_comp=True)
+        self.wt._seed_entry_clients(old.isoformat(), 0, ["이엔에이치"])
+        inst_before = int(self.ss.get(self.wt._entry_lines_inst_key(old.isoformat(), 0), 0) or 0)
+        self.ss[self.wt._boot_key(old)] = True
+        self.ss[self.wt._entries_key(old)] = [{"client": "이엔에이치", "content": "17일 HE", "lines": ["17일 HE"]}]
+        self.wt._on_wl_cal_day(new.isoformat())
+        self.assertEqual(self.ss["worklog_selected"], new)
+        parked = self.ss.get(self.wt._parked_cells_key(old)) or {}
+        self.assertIn("17일 HE", str(parked.get("G8") or ""))
+        dest_live = self.ss.get(self.wt._entry_lines_live_key(new.isoformat(), 0)) or []
+        self.assertIn("7일 내근", "\n".join(str(x) for x in dest_live))
+        dest_cl = self.ss.get(self.wt._entry_clients_live_key(new.isoformat(), 0)) or []
+        self.assertIn("가스코아", "\n".join(str(x) for x in dest_cl))
+        self.assertEqual((self.ss.get(self.wt._view_cells_key(new)) or {}).get("G8"), "7일 내근")
+        inst_after = int(self.ss.get(self.wt._entry_lines_inst_key(new.isoformat(), 0), 0) or 0)
+        self.assertEqual(inst_after, inst_before)
+        prog, replace = self.wt._program_editor_lines(new.isoformat(), 0, "ln", dest_live)
+        self.assertTrue(replace)
+        self.assertIn("7일 내근", "\n".join(prog or []))
+        old_cs = ["채권관리", "경민산업"] + [""] * 30
+        self.ss[self.wt._entry_lines_comp_key(new.isoformat(), 0)] = {"lines": old_cs}
+        prog2, replace2 = self.wt._program_editor_lines(new.isoformat(), 0, "ln", dest_live)
+        self.assertTrue(replace2)
+        self.assertIn("7일 내근", "\n".join(prog2 or []))
+        self.assertNotIn("채권관리", "\n".join(prog2 or []))
+        self.ss.pop(self.wt._forced_editor_key(new.isoformat(), 0, "ln"), None)
+        self.ss[self.wt._bound_editor_key(new.isoformat(), 0, "ln")] = True
+        prog3, replace3 = self.wt._program_editor_lines(new.isoformat(), 0, "ln", dest_live)
+        self.assertFalse(replace3)
+        self.assertIsNone(prog3)
+
+    def test_draft_date_change_opens_dest_without_copying(self):
+        """저장 전 초안은 원래 날짜에 남고, 이동일은 그 날 값만 연다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.ss["worklog_selected"] = old
+        self.ss[self.wt._boot_key(old)] = True
+        self.ss[self.wt._entries_key(old)] = [{"client": "거래처A", "content": "초안", "lines": ["초안"]}]
         self.ss["wl_date_pick"] = new
-        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self._cells(d, "거래처A", "초안")):
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self._cells(d, "거래처A", "초안") if d == old else self.wt._empty_cells(d)):
             self.wt._on_wl_date_pick_change()
         self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertFalse(self.ss.get("wl_date_retarget_from"))
+        self.assertNotIn(old.isoformat(), self.ss.get("wl_purge_dates") or [])
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertEqual((self.ss.get(self.wt._entries_key(old)) or [{}])[0].get("content"), "초안")
+        dest = (self.ss.get(self.wt._entries_key(new)) or [{}])[0]
+        self.assertFalse(str(dest.get("content") or "").strip())
+
+    def test_date_move_mode_retargets_draft_and_keeps_until_save(self):
+        """날짜변경을 켠 뒤 날짜를 고르면 편집중 내용이 그 날로 옮겨진다. 저장 전 예전 파일은 남는다."""
+        old, new = date(2026, 9, 21), date(2026, 9, 18)
+        self.wt.save_worklog_cells(old, self._cells(old, "원에이엔지", "21일 초안"), force=True, allow_overwrite=True)
+        self.ss["worklog_selected"] = old
+        self.ss["wl_date_move_mode"] = True
+        self.ss["wl_date_pick"] = new
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self._cells(d, "원에이엔지", "21일 초안")):
+            self.wt._on_wl_date_pick_change()
+        self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertFalse(self.ss.get("wl_date_move_mode"))
         self.assertEqual(self.ss.get("wl_date_retarget_from"), old.isoformat())
         self.assertIn(old.isoformat(), self.ss.get("wl_purge_dates") or [])
-        self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
+        dest = (self.ss.get(self.wt._entries_key(new)) or [{}])[0]
+        self.assertEqual(dest.get("content"), "21일 초안")
+        self.assertEqual((self.ss.get(self.wt._view_cells_key(new)) or {}).get("G8"), "21일 초안")
 
-    def test_save_after_saved_date_change_keeps_old(self):
-        """저장 → 날짜 변경 → 새 날 저장해도 예전 날 자료는 남는다."""
+    def test_date_move_mode_blocks_saved_dest(self):
+        old, new = date(2026, 9, 21), date(2026, 9, 18)
+        self.wt.save_worklog_cells(old, self._cells(old, "A", "21일"), force=True, allow_overwrite=True)
+        self.wt.save_worklog_cells(new, self._cells(new, "B", "18일 저장본"), force=True, allow_overwrite=True)
+        self.ss["worklog_selected"] = old
+        self.ss["wl_date_move_mode"] = True
+        self.ss["wl_date_pick"] = new
+        self.wt._on_wl_date_pick_change()
+        self.assertEqual(self.ss["worklog_selected"], old)
+        self.assertEqual(self.ss.get("wl_date_err"), self.wt._WL_MOVE_BLOCK_MSG)
+        self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "18일 저장본")
+
+    def test_save_after_saved_date_change_keeps_old_until_commit(self):
+        """날짜칸만 바꾸면 예전 파일은 그대로다. 저장 커밋을 해야 이동된다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
         self.ss["worklog_selected"] = old
@@ -105,14 +209,16 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.ss["wl_date_pick"] = new
         with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
             self.wt._on_wl_date_pick_change()
-        self.wt.commit_worklog_date_save(new, new, self._cells(new, "거래처3", "3일 신규"))
+        self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertFalse(str(((self.ss.get(self.wt._entries_key(new)) or [{}])[0]).get("content") or "").strip())
         self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
-        self.assertEqual(self.wt.read_worklog_cells(old).get("G8"), "7일 내용")
+        self.wt.commit_worklog_date_save(old, new, self._cells(new, "거래처7", "7일 내용"))
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
         self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
-        self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "3일 신규")
+        self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "7일 내용")
 
-    def test_on_change_after_save_keeps_old_file(self):
-        """저장한 뒤 날짜만 바꾸면 예전 날 자료는 그대로 둔다."""
+    def test_on_change_after_save_loads_dest_not_current(self):
+        """저장한 뒤 빈 날짜로 옮기면 그 날(빈 값)을 연다. 예전 날은 파일에 남는다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
         self.ss["worklog_selected"] = old
@@ -124,6 +230,7 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertFalse(self.ss.get("wl_date_retarget_from"))
         self.assertNotIn(old.isoformat(), self.ss.get("wl_purge_dates") or [])
         self.assertFalse(self.ss.get("wl_date_err"))
+        self.assertFalse(str(((self.ss.get(self.wt._entries_key(new)) or [{}])[0]).get("content") or "").strip())
         self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
         self.assertEqual(self.wt.read_worklog_cells(old).get("G8"), "7일 내용")
         self.assertTrue(self.wt.worklog_date_exists_in_archive(old))
@@ -133,8 +240,31 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertNotIn(new.isoformat(), cal)
         self.assertTrue(self.ss.get("wl_skip_sync_once"))
 
-    def test_cannot_move_onto_saved_3rd(self):
-        """저장한 7일에서 저장된 3일로 바꾸면 7일은 남고 3일을 연다."""
+    def test_stored_cells_uses_archive_when_local_file_empty(self):
+        dest = date(2026, 9, 3)
+        self.wt.save_worklog_cells(dest, self._cells(dest, "B", "3일 옛내용"), force=True, allow_overwrite=True)
+        path = self.wt.worklog_path(dest)
+        self.wt.write_cells_to_path(path, dest, self.wt._empty_cells(dest), force_template=True)
+        packed = self.wt._stored_cells_for_date(dest)
+        self.assertEqual(packed.get("G8"), "3일 옛내용")
+
+    def test_open_reloads_file_even_if_dest_session_has_other_day(self):
+        """대상 날짜 세션에 다른 날 내용이 남아 있어도 저장본을 다시 심는다."""
+        old, new = date(2026, 9, 7), date(2026, 9, 3)
+        self.wt.save_worklog_cells(old, self._cells(old, "A", "7일 내용"), force=True, allow_overwrite=True)
+        self.wt.save_worklog_cells(new, self._cells(new, "B", "3일 옛내용"), force=True, allow_overwrite=True)
+        self.ss["worklog_selected"] = old
+        self.ss[self.wt._boot_key(new)] = True
+        self.ss[self.wt._entries_key(new)] = [{"client": "A", "content": "7일 내용", "lines": ["7일 내용"]}]
+        self.ss[self.wt._view_cells_key(new)] = self._cells(new, "A", "7일 내용")
+        self.ss["wl_date_pick"] = new
+        self.wt._on_wl_date_pick_change()
+        self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertEqual((self.ss.get(self.wt._entries_key(new)) or [{}])[0].get("content"), "3일 옛내용")
+        self.assertEqual((self.ss.get(self.wt._view_cells_key(new)) or {}).get("G8"), "3일 옛내용")
+
+    def test_date_change_onto_saved_3rd_loads_that_day(self):
+        """저장된 3일로 날짜를 바꾸면 3일 저장본을 업무내용·요약에 불러온다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.wt.save_worklog_cells(old, self._cells(old, "A", "7일 내용"), force=True, allow_overwrite=True)
         self.wt.save_worklog_cells(new, self._cells(new, "B", "3일 옛내용"), force=True, allow_overwrite=True)
@@ -145,15 +275,18 @@ class WorklogDateChangeTest(unittest.TestCase):
             self.wt._on_wl_date_pick_change()
         self.assertEqual(self.ss["worklog_selected"], new)
         self.assertFalse(self.ss.get("wl_date_err"))
+        self.assertEqual((self.ss.get(self.wt._entries_key(new)) or [{}])[0].get("content"), "3일 옛내용")
+        self.assertEqual((self.ss.get(self.wt._view_cells_key(new)) or {}).get("G8"), "3일 옛내용")
         self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
         self.assertEqual(self.wt.read_worklog_cells(old).get("G8"), "7일 내용")
         self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "3일 옛내용")
         self.assertTrue(self.ss.get("wl_skip_sync_once"))
         self.assertFalse(self.ss.get("wl_need_app_rerun"))
 
-    def test_left_date_pick_consumes_retarget_before_widget(self):
+    def test_left_date_pick_opens_dest_before_widget(self):
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
+        self.wt.save_worklog_cells(new, self._cells(new, "거래처3", "3일 내용"), force=True, allow_overwrite=True)
         self.ss["worklog_selected"] = old
         self.ss["wl_date_pick"] = new
         with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
@@ -162,6 +295,8 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertEqual(got, new)
         self.assertEqual(self.ss["worklog_selected"], new)
         self.assertFalse(self.ss.get("wl_date_err"))
+        self.assertEqual((self.ss.get(self.wt._entries_key(new)) or [{}])[0].get("content"), "3일 내용")
+        self.assertEqual((self.ss.get(self.wt._view_cells_key(new)) or {}).get("G8"), "3일 내용")
         self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
         self.assertEqual(self.wt.read_worklog_cells(old).get("G8"), "7일 내용")
         self.assertNotIn(old.isoformat(), self.ss.get("wl_purge_dates") or [])
@@ -268,27 +403,29 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertEqual(self.ss["worklog_selected"], new)
         self.assertEqual(self.ss["wl_date_pick"], new)
 
-    def test_pending_runner_retargets_without_error(self):
+    def test_pending_runner_opens_dest_without_error(self):
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.wt.save_worklog_cells(old, self._cells(old, "A", "7일 내용"), force=True, allow_overwrite=True)
+        self.wt.save_worklog_cells(new, self._cells(new, "B", "3일 내용"), force=True, allow_overwrite=True)
         self.ss["worklog_selected"] = old
         self.ss["wl_pending_date_change"] = (old.isoformat(), new.isoformat())
         with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
             self.assertTrue(self.wt._run_pending_worklog_date_change())
         self.assertEqual(self.ss["worklog_selected"], new)
         self.assertFalse(self.ss.get("wl_date_err"))
+        self.assertEqual((self.ss.get(self.wt._entries_key(new)) or [{}])[0].get("content"), "3일 내용")
         self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
 
-    def test_queue_save_uses_picked_date(self):
+    def test_queue_save_flags_open_editor_date(self):
         old, new = date(2026, 9, 7), date(2026, 9, 8)
         self.ss["worklog_selected"] = old
         self.ss["wl_date_pick"] = new
         self.wt._queue_worklog_save(old.isoformat())
-        self.assertEqual(self.ss["wl_date_retarget_from"], old.isoformat())
-        self.assertTrue(self.ss[f"wl_do_save_{new.isoformat()}"])
         self.assertTrue(self.ss[f"wl_do_save_{old.isoformat()}"])
+        self.assertFalse(self.ss.get(f"wl_do_save_{new.isoformat()}"))
 
-    def test_pending_move_keeps_save_flag_on_new_date(self):
+    def test_pending_move_does_not_auto_save_new_date(self):
+        """날짜만 바꾼 뒤에는 저장 버튼을 다시 눌러야 한다."""
         old, new = date(2026, 9, 7), date(2026, 9, 8)
         cells = self._cells(old, "거래처A", "저장한 내용")
         self.wt.save_worklog_cells(old, cells, force=True, allow_overwrite=True)
@@ -298,41 +435,38 @@ class WorklogDateChangeTest(unittest.TestCase):
         with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
             self.assertTrue(self.wt._run_pending_worklog_date_change())
         self.assertFalse(self.ss.get(f"wl_do_save_{old.isoformat()}"))
-        self.assertTrue(self.ss.get(f"wl_do_save_{new.isoformat()}"))
+        self.assertFalse(self.ss.get(f"wl_do_save_{new.isoformat()}"))
         self.assertEqual(self.ss["worklog_selected"], new)
         self.assertFalse(self.ss.get(f"wl_saved_ok_{new.isoformat()}"))
         self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(new)))
 
     def test_commit_save_overwrites_existing_3rd(self):
-        """이미 저장된 3일로 옮기는 저장은 막힌다."""
+        """날짜만 바꿔 저장하면 대상 날짜를 덮어쓰고 예전 날짜는 지운다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
         self.wt.save_worklog_cells(new, self._cells(new, "옛3", "3일 옛내용"), force=True, allow_overwrite=True)
         cells = self._cells(new, "거래처7", "7일 내용")
-        with self.assertRaises(self.wt.WorklogSaveBlockedError) as ctx:
-            self.wt.commit_worklog_date_save(old, new, cells)
-        self.assertIn("이미 저장된 데이터가 있으면", str(ctx.exception))
-        self.assertEqual(self.ss.get("wl_date_err"), self.wt._WL_MOVE_BLOCK_MSG)
-        self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
-        self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "3일 옛내용")
+        path = self.wt.commit_worklog_date_save(old, new, cells)
+        self.assertTrue(path)
+        self.assertFalse(self.ss.get("wl_date_err"))
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "7일 내용")
 
-    def test_date_change_before_save_then_save_deletes_old(self):
-        """저장 전(초안) 날짜 변경은 예전 데이터를 남기고, 저장하면 예전 날짜를 삭제한다."""
+    def test_date_change_before_save_does_not_copy_or_purge(self):
+        """저장 전 날짜 변경은 초안을 복사하지 않고, 예전 날짜도 지우지 않는다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.ss["worklog_selected"] = old
+        self.ss[self.wt._boot_key(old)] = True
+        self.ss[self.wt._entries_key(old)] = [{"client": "거래처7", "content": "7일 내용", "lines": ["7일 내용"]}]
         self.ss["wl_date_pick"] = new
-        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self._cells(d, "거래처7", "7일 내용")):
+        with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self._cells(d, "거래처7", "7일 내용") if d == old else self.wt._empty_cells(d)):
             self.wt._on_wl_date_pick_change()
         self.assertEqual(self.ss["worklog_selected"], new)
-        self.assertEqual(self.ss.get("wl_date_retarget_from"), old.isoformat())
-        cells = self._cells(new, "거래처7", "7일 내용")
-        self.wt.commit_worklog_date_save(
-            date.fromisoformat(self.ss["wl_date_retarget_from"]), new, cells,
-        )
+        self.assertFalse(self.ss.get("wl_date_retarget_from"))
         self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
-        self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
-        self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "7일 내용")
-        self.assertIsNone(self.ss.get("wl_date_retarget_from"))
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(new)))
+        self.assertEqual((self.ss.get(self.wt._entries_key(old)) or [{}])[0].get("content"), "7일 내용")
 
     def test_save_after_move_overwrites_new_date(self):
         old, new = date(2026, 9, 7), date(2026, 9, 8)
@@ -470,36 +604,45 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
         self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "7일 내용")
 
-    def test_calendar_opens_saved_day_without_copying_moved(self):
-        """달력에서 • 있는 예전 날을 눌러도 옮긴 3일 파일은 그대로다."""
+    def test_calendar_opens_saved_day_without_copying(self):
+        """달력에서 다른 날을 누르면 그 날 저장본을 불러오고, 지금 입력은 복사·저장하지 않는다."""
         old, new = date(2026, 9, 7), date(2026, 9, 3)
         self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
         self.wt.save_worklog_cells(new, self._cells(new, "거래처3", "3일 내용"), force=True, allow_overwrite=True)
         self.ss["worklog_selected"] = new
         self.ss[self.wt._boot_key(new)] = True
         self.ss[self.wt._entries_key(new)] = [{"client": "거래처3", "content": "3일 내용", "lines": ["3일 내용"]}]
+        self.ss[f"wl_do_save_{new.isoformat()}"] = True
         with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
             self.wt._on_wl_cal_day(old.isoformat())
         self.assertEqual(self.ss["worklog_selected"], old)
         self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
         self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "3일 내용")
         self.assertEqual((self.ss.get(self.wt._entries_key(new)) or [{}])[0].get("content"), "3일 내용")
+        self.assertEqual((self.ss.get(self.wt._entries_key(old)) or [{}])[0].get("content"), "7일 내용")
+        self.assertEqual((self.ss.get(self.wt._view_cells_key(old)) or {}).get("G8"), "7일 내용")
+        self.assertFalse(self.ss.get("wl_date_retarget_from"))
+        self.assertFalse(self.ss.get(f"wl_do_save_{old.isoformat()}"))
+        self.assertFalse(self.ss.get(f"wl_do_save_{new.isoformat()}"))
 
-    def test_calendar_empty_day_opens_without_moving(self):
-        """오른쪽 달력의 빈 날짜는 보기만. 왼쪽 날짜칸처럼 내용을 옮기지 않는다."""
-        old, new = date(2026, 9, 7), date(2026, 9, 3)
+    def test_calendar_empty_day_opens_without_saving(self):
+        """달력의 빈 날짜는 열기만 한다. 저장 파일이 생기지 않는다."""
+        old, new = date(2026, 9, 7), date(2026, 9, 16)
         self.wt.save_worklog_cells(old, self._cells(old, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
         self.ss["worklog_selected"] = old
         self.ss[self.wt._boot_key(old)] = True
         self.ss[self.wt._entries_key(old)] = [{"client": "거래처7", "content": "7일 내용", "lines": ["7일 내용"]}]
+        self.ss[f"wl_do_save_{old.isoformat()}"] = True
         with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
             self.wt._on_wl_cal_day(new.isoformat())
         self.assertEqual(self.ss["worklog_selected"], new)
         self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
         self.assertEqual(self.wt.read_worklog_cells(old).get("G8"), "7일 내용")
+        self.assertEqual((self.ss.get(self.wt._entries_key(old)) or [{}])[0].get("content"), "7일 내용")
         self.assertFalse(self.ss.get("wl_date_retarget_from"))
         self.assertNotIn(old.isoformat(), self.ss.get("wl_purge_dates") or [])
         self.assertFalse(os.path.isfile(self.wt.worklog_path(new)))
+        self.assertFalse(self.ss.get(f"wl_do_save_{new.isoformat()}"))
 
     def test_confirm_delete_closes_popover_on_flush(self):
         """확정 클릭 후 위젯을 그리기 전에 팝업 인스턴스를 올려 닫는다."""
@@ -509,6 +652,7 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.ss["wl_del_day_open_0"] = True
         self.wt._on_confirm_delete_day()
         self.assertEqual(self.ss.get("wl_do_delete_day"), d.isoformat())
+        self.assertGreaterEqual(int(self.ss.get("wl_scroll_pin") or 0), 1)
         self.assertTrue(self.ss.get("wl_del_day_force_close"))
         self.assertEqual(self.wt._worklog_delete_popover_key(), "wl_del_day_open_0")
         self.wt._flush_worklog_delete_popover()
@@ -535,7 +679,24 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
         self.assertTrue(self.wt.worklog_date_exists_in_archive(new))
         self.assertEqual(self.wt.read_worklog_cells(new).get("G8"), "옮긴 내용")
-        self.assertEqual((self.ss.get(self.wt._entries_key(new)) or [{}])[0].get("content"), "옮긴 내용")
+
+    def test_drop_saved_date_from_cache_keeps_others(self):
+        """확정 삭제 후 달력 캐시는 그 날짜만 빼고 월별 파일을 다시 읽지 않는다."""
+        self.ss["wl_saved_dates_cache"] = {"2026-09-03", "2026-09-07"}
+        self.wt._drop_saved_date_from_cache("2026-09-07")
+        self.assertEqual(self.ss["wl_saved_dates_cache"], {"2026-09-03"})
+
+    def test_local_purge_does_not_push_month_archive_to_drive(self):
+        """로컬 확정 삭제는 Drive 월별 복사를 UI 스레드에서 하지 않는다."""
+        d = date(2026, 9, 3)
+        self.wt.save_worklog_cells(d, self._cells(d, "거래처3", "지울 내용"), force=True, allow_overwrite=True)
+        self.ss["wl_saved_dates_cache"] = {d.isoformat(), "2026-09-07"}
+        with patch("drive_autoload.push_worklog_month_archive_to_drive") as push:
+            removed = self.wt.purge_worklog_day_files(d, remote=False)
+        push.assert_not_called()
+        self.assertTrue(removed)
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(d)))
+        self.assertEqual(self.ss.get("wl_saved_dates_cache"), {"2026-09-07"})
 
 
 if __name__ == "__main__":

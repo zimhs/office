@@ -10,7 +10,7 @@ import shutil
 import unicodedata
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -227,6 +227,50 @@ def _best_complex(values) -> str:
     return max(ranked, key=len)
 
 
+def _normalize_survey_date(v) -> str:
+    """시장조사일 → YYYY-MM-DD. 없거나 잘못된 값은 빈 문자열."""
+    if v is None or v == "":
+        return ""
+    if isinstance(v, datetime):
+        return v.date().isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+    if hasattr(v, "to_pydatetime"):
+        try:
+            return v.to_pydatetime().date().isoformat()
+        except Exception:
+            pass
+    s = _s(v)
+    if not s:
+        return ""
+    m = re.match(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", s)
+    if not m:
+        return ""
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+    except ValueError:
+        return ""
+
+
+def _entry_survey_date(entry: dict) -> str:
+    """직접입력 조사일. 없으면 저장시각의 날짜."""
+    if not isinstance(entry, dict):
+        return ""
+    return _normalize_survey_date(entry.get("조사일")) or _normalize_survey_date(
+        entry.get("saved_at")
+    )
+
+
+def _best_survey_date(values) -> str:
+    """병합 시 가장 최근 조사일."""
+    best = ""
+    for v in values:
+        s = _normalize_survey_date(v)
+        if s and s > best:
+            best = s
+    return best
+
+
 def merge_duplicate_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     """같은 업체키 행을 1건으로 병합. (병합 DF, 제거된 중복 건수).
 
@@ -266,6 +310,7 @@ def merge_duplicate_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
                 "출처": _merge_unique_text(g["출처"], max_parts=8),
                 "파일": _merge_unique_text(g["파일"], max_parts=6),
                 "시트": _merge_unique_text(g["시트"], max_parts=8),
+                "조사일": _best_survey_date(g["조사일"]) if "조사일" in g.columns else "",
                 "병합건수": int(len(g)),
             }
         )
@@ -578,6 +623,7 @@ def _manual_to_record(entry: dict) -> dict:
             "연락처": _s(entry.get("연락처")),
             "비고": note,
             "산업단지": park,
+            "조사일": _entry_survey_date(entry),
         },
         explicit=park,
     )
@@ -602,6 +648,7 @@ def add_manual_entry(fields: dict) -> dict:
         "담당자": _s(fields.get("담당자")),
         "연락처": _s(fields.get("연락처")),
         "비고": _s(fields.get("비고")),
+        "조사일": _normalize_survey_date(fields.get("조사일")) or date.today().isoformat(),
     }
     if not entry["지역"]:
         entry["지역"] = infer_region(entry["주소"], entry["업체명"])
@@ -1289,6 +1336,7 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         "비고",
         "업체키",
         "병합건수",
+        "조사일",
     ]
     if not records:
         return pd.DataFrame(columns=empty_cols), 0, 0
@@ -1311,11 +1359,13 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         "시트",
         "지역",
         "산업단지",
+        "조사일",
     ):
         if c not in merged.columns:
             merged[c] = ""
         else:
             merged[c] = merged[c].fillna("").astype(str)
+    merged["조사일"] = merged["조사일"].map(_normalize_survey_date)
     merged.loc[merged["산업단지"].isin(["", "nan"]), "산업단지"] = "미분류"
     # 미분류 → 공장등록 기반 읍면동/리 맵 + 주소 키워드로 재분류 (엑셀 재파싱 없음)
     lookup = _build_area_complex_lookup_from_records(fac_for_lookup)
@@ -1338,6 +1388,8 @@ def load_market_research_frame(_cache_sig: str) -> tuple[pd.DataFrame, int, int]
         + merged["출처"]
         + " "
         + merged["산업단지"]
+        + " "
+        + merged["조사일"]
     ).str.casefold()
     merged["_factory_only"] = merged["출처"].eq("화성공장등록")
     merged["_has_factory"] = merged["출처"].str.contains(
@@ -1383,6 +1435,7 @@ def _cache_signature() -> str:
 
 
 _MR_SHOW_COLS = [
+    "조사일",
     "지역",
     "산업단지",
     "업체명",
@@ -1424,7 +1477,9 @@ def _filter_frame(
     query: str,
     include_factory: bool,
     hide_unclassified: bool = False,
-    _logic_ver: int = 11,
+    date_from: str = "",
+    date_to: str = "",
+    _logic_ver: int = 12,
 ) -> pd.DataFrame:
     """가벼운 필터 — Pandas str.contains 대신 초고속 List Comprehension 적용"""
     view = df
@@ -1432,6 +1487,16 @@ def _filter_frame(
         view = view[~view["_factory_only"]]
     if hide_unclassified and "산업단지" in view.columns:
         view = view[view["산업단지"] != "미분류"]
+    d0 = _normalize_survey_date(date_from)
+    d1 = _normalize_survey_date(date_to)
+    if (d0 or d1) and "조사일" in view.columns:
+        days = view["조사일"].map(_normalize_survey_date)
+        mask = days.str.len() > 0
+        if d0:
+            mask = mask & (days >= d0)
+        if d1:
+            mask = mask & (days <= d1)
+        view = view[mask]
     if regions:
         reg_set = {str(r).strip() for r in regions}
         view = view[view["지역"].astype(str).str.strip().isin(reg_set)]
@@ -1590,6 +1655,128 @@ def _mr_market_tab_keep_visible() -> None:
     st.session_state["_dash_filter_changed_flag"] = False
 
 
+def _mr_is_touch_ui() -> bool:
+    """iPad/touch만 True. 맥 로컬·맥 Cloud 브라우저는 False."""
+    try:
+        if st.session_state.get("force_touch_ui") is True:
+            return True
+        v = st.query_params.get("touch_ui", "")
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else ""
+        if str(v).strip() in ("1", "true", "True"):
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    try:
+        cookies = getattr(st.context, "cookies", None)
+        if cookies is not None and str(cookies.get("dashboard_touch", "") or "") == "1":
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    try:
+        headers = getattr(st.context, "headers", None)
+        ua = ""
+        if headers is not None:
+            ua = str(headers.get("User-Agent") or headers.get("user-agent") or "")
+        if ua and (
+            re.search(r"iPad|iPhone|iPod", ua)
+            or ("Macintosh" in ua and "Mobile" in ua)
+        ):
+            st.session_state["force_touch_ui"] = True
+            return True
+    except Exception:
+        pass
+    return bool(st.session_state.get("force_touch_ui"))
+
+
+def _mr_touch_sync_apply() -> None:
+    """아이패드: 선택 즉시 적용. 맥 위젯에는 연결하지 않음."""
+    if not _mr_is_touch_ui():
+        return
+    bundle = st.session_state.get("_mr_session_bundle") or {}
+    cascade = bundle.get("cascade") if isinstance(bundle, dict) else None
+    if not isinstance(cascade, dict) or not cascade:
+        return
+    if mr_cascade is None:
+        return
+    _mr_apply_draft_filters(cascade)
+
+
+def _mr_touch_kwargs() -> dict:
+    return {"on_change": _mr_touch_sync_apply} if _mr_is_touch_ui() else {}
+
+
+def _mr_inject_ipad_select_fix() -> None:
+    """아이패드 드롭다운 탭이 무시되는 문제 — 맥에는 스타일·스크립트 없음."""
+    if not _mr_is_touch_ui():
+        return
+    st.markdown(
+        """
+<style id="mr-ipad-select-fix">
+html.dashboard-touch-mode [data-baseweb="popover"],
+html.dashboard-touch-mode [data-baseweb="menu"],
+html.dashboard-touch-mode [data-baseweb="layer"],
+html.dashboard-touch-mode [data-testid="stSelectboxVirtualDropdown"] {
+    z-index: 1000010 !important;
+    pointer-events: auto !important;
+}
+html.dashboard-touch-mode [role="listbox"],
+html.dashboard-touch-mode [role="option"] {
+    pointer-events: auto !important;
+}
+html.dashboard-touch-mode [role="option"] {
+    min-height: 44px !important;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+    try:
+        import streamlit.components.v1 as _mr_components
+
+        _mr_components.html(
+            """
+<script>
+(function () {
+  var doc = window.parent && window.parent.document ? window.parent.document : document;
+  var html = doc.documentElement;
+  if (!html || !html.classList.contains("dashboard-touch-mode")) return;
+  if (doc.documentElement.getAttribute("data-mr-ipad-select") === "1") return;
+  doc.documentElement.setAttribute("data-mr-ipad-select", "1");
+  function synth(el) {
+    try {
+      var view = window.parent || window;
+      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: view }));
+      el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: view }));
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: view }));
+    } catch (e1) {}
+  }
+  doc.addEventListener("touchend", function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var opt = t.closest("[role=option]");
+    if (opt) {
+      e.preventDefault();
+      synth(opt);
+      return;
+    }
+    var btn = t.closest("button");
+    if (btn && /적용/.test(btn.textContent || "")) {
+      var ae = doc.activeElement;
+      if (ae && ae.blur) ae.blur();
+    }
+  }, { capture: true, passive: false });
+})();
+</script>
+            """,
+            height=0,
+        )
+    except Exception:
+        pass
+
+
 def _mr_ensure_draft_widgets() -> None:
     """적용 전 초안(mr_w_*) — 최초 1회 applied(mr_v6_*)에서 복사."""
     if "mr_w_region" not in st.session_state:
@@ -1604,6 +1791,12 @@ def _mr_ensure_draft_widgets() -> None:
         st.session_state["mr_w_fac"] = bool(st.session_state.get("mr_v6_fac", False))
     if "mr_w_hide" not in st.session_state:
         st.session_state["mr_w_hide"] = bool(st.session_state.get("mr_v6_hide", False))
+    if "mr_w_date_from" not in st.session_state:
+        _d0 = _normalize_survey_date(st.session_state.get("mr_v6_date_from"))
+        st.session_state["mr_w_date_from"] = date.fromisoformat(_d0) if _d0 else None
+    if "mr_w_date_to" not in st.session_state:
+        _d1 = _normalize_survey_date(st.session_state.get("mr_v6_date_to"))
+        st.session_state["mr_w_date_to"] = date.fromisoformat(_d1) if _d1 else None
 
 
 def _mr_apply_draft_filters(cascade: dict) -> dict:
@@ -1614,11 +1807,15 @@ def _mr_apply_draft_filters(cascade: dict) -> dict:
     fac_in = bool(st.session_state.get("mr_w_fac", False))
     hide_in = bool(st.session_state.get("mr_w_hide", False))
     q_in = str(st.session_state.get("mr_w_q") or "").strip()
+    d_from = _normalize_survey_date(st.session_state.get("mr_w_date_from"))
+    d_to = _normalize_survey_date(st.session_state.get("mr_w_date_to"))
 
     st.session_state["mr_v6_region"] = r_in
     st.session_state["mr_v6_q"] = q_in
     st.session_state["mr_v6_fac"] = fac_in
     st.session_state["mr_v6_hide"] = hide_in
+    st.session_state["mr_v6_date_from"] = d_from
+    st.session_state["mr_v6_date_to"] = d_to
     new_cx = mr_cascade.complex_opts(cascade, r_in, include_factory=fac_in)
     kept_c = [x for x in c_in if x in new_cx]
     st.session_state["mr_v6_complex"] = kept_c
@@ -1627,21 +1824,25 @@ def _mr_apply_draft_filters(cascade: dict) -> dict:
     return {"regions": r_in, "complexes": len(kept_c), "query": q_in}
 
 
-@st.fragment
-def _mr_filter_and_results(
+def _mr_filter_and_results_body(
     df: pd.DataFrame,
     regions: list[str],
     cascade: dict,
     latest_update_str: str,
 ) -> None:
-    """필터+결과 전체 fragment — 적용·보기 전환 시 Tab1~8 재실행 없음."""
+    """필터+결과 본문. 맥은 fragment, 아이패드는 중첩 fragment 없이 호출."""
     if mr_cascade is None:
         st.error("market_research_cascade 모듈이 없습니다.")
         return
 
+    _mr_inject_ipad_select_fix()
     _mr_ensure_draft_widgets()
+    touch_kw = _mr_touch_kwargs()
 
-    st.caption("지역 → 산업단지 → 공급사 순으로 고른 뒤 **적용**을 누르세요.")
+    if _mr_is_touch_ui():
+        st.caption("지역 → 산업단지 → 공급사 · 검색을 고르면 바로 적용됩니다.")
+    else:
+        st.caption("지역 → 산업단지 → 공급사 순으로 고른 뒤 **적용**을 누르세요.")
 
     draft_r = list(st.session_state.get("mr_w_region") or [])
     draft_c = list(st.session_state.get("mr_w_complex") or [])
@@ -1668,9 +1869,9 @@ def _mr_filter_and_results(
     with st.container(border=True):
         c_fac, c_hide = st.columns(2)
         with c_fac:
-            st.checkbox("화성공장 DB(단독) 포함", key="mr_w_fac")
+            st.checkbox("화성공장 DB(단독) 포함", key="mr_w_fac", **touch_kw)
         with c_hide:
-            st.checkbox("산업단지 미분류 제외", key="mr_w_hide")
+            st.checkbox("산업단지 미분류 제외", key="mr_w_hide", **touch_kw)
 
         f1, f2, f3, f4 = st.columns([1.2, 1.4, 1.2, 1.6])
         with f1:
@@ -1679,6 +1880,7 @@ def _mr_filter_and_results(
                 options=regions,
                 key="mr_w_region",
                 placeholder="전체 지역",
+                **touch_kw,
             )
         with f2:
             st.multiselect(
@@ -1690,6 +1892,7 @@ def _mr_filter_and_results(
                     if (draft_r and not form_cx_opts)
                     else "전체 산업단지"
                 ),
+                **touch_kw,
             )
             if draft_r and not form_cx_opts:
                 st.caption("선택 지역에 산업단지 데이터 없음")
@@ -1703,9 +1906,28 @@ def _mr_filter_and_results(
                     if (draft_c and not form_sup_opts)
                     else "전체 공급사"
                 ),
+                **touch_kw,
             )
         with f4:
-            st.text_input("검색 (업체·주소·단지·가스·비고)", key="mr_w_q")
+            st.text_input("검색 (업체·주소·단지·가스·비고·조사일)", key="mr_w_q", **touch_kw)
+
+        df1, df2, _dfsp = st.columns([1.2, 1.2, 2.8])
+        with df1:
+            st.date_input(
+                "조사일 시작",
+                format="YYYY/MM/DD",
+                key="mr_w_date_from",
+                help="비우면 시작일 제한 없음. 새 시장조사 입력의 조사일로 조회합니다.",
+                **touch_kw,
+            )
+        with df2:
+            st.date_input(
+                "조사일 끝",
+                format="YYYY/MM/DD",
+                key="mr_w_date_to",
+                help="비우면 종료일 제한 없음.",
+                **touch_kw,
+            )
 
         applied = st.button(
             "🔍 적용",
@@ -1714,7 +1936,7 @@ def _mr_filter_and_results(
             key="mr_apply_btn",
         )
 
-    if applied:
+    if applied or _mr_is_touch_ui():
         _mr_apply_draft_filters(cascade)
 
     app_r = list(st.session_state.get("mr_v6_region") or [])
@@ -1723,6 +1945,8 @@ def _mr_filter_and_results(
     app_q = str(st.session_state.get("mr_v6_q") or "")
     app_fac = bool(st.session_state.get("mr_v6_fac", False))
     app_hide = bool(st.session_state.get("mr_v6_hide", False))
+    app_d0 = _normalize_survey_date(st.session_state.get("mr_v6_date_from"))
+    app_d1 = _normalize_survey_date(st.session_state.get("mr_v6_date_to"))
 
     _applied_parts = []
     if app_r:
@@ -1737,6 +1961,8 @@ def _mr_filter_and_results(
         _applied_parts.append("화성공장DB포함")
     if app_hide:
         _applied_parts.append("미분류제외")
+    if app_d0 or app_d1:
+        _applied_parts.append(f"조사일={app_d0 or '…'}~{app_d1 or '…'}")
     if _applied_parts:
         st.caption("✅ 적용됨 · " + " · ".join(_applied_parts))
     else:
@@ -1750,6 +1976,8 @@ def _mr_filter_and_results(
         query=app_q,
         include_factory=app_fac,
         hide_unclassified=app_hide,
+        date_from=app_d0,
+        date_to=app_d1,
     )
 
     show_cols = [c for c in _MR_SHOW_COLS if c in view.columns]
@@ -1885,6 +2113,17 @@ def _mr_filter_and_results(
         st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
 
+@st.fragment
+def _mr_filter_and_results(
+    df: pd.DataFrame,
+    regions: list[str],
+    cascade: dict,
+    latest_update_str: str,
+) -> None:
+    """맥·데스크톱: fragment로 적용·보기 전환 시 Tab1~8 재실행 없음."""
+    _mr_filter_and_results_body(df, regions, cascade, latest_update_str)
+
+
 def _mr_filter_results(
     df: pd.DataFrame,
     regions: list[str],
@@ -1892,7 +2131,10 @@ def _mr_filter_results(
     latest_update_str: str,
 ) -> None:
     try:
-        _mr_filter_and_results(df, regions, cascade, latest_update_str)
+        if _mr_is_touch_ui():
+            _mr_filter_and_results_body(df, regions, cascade, latest_update_str)
+        else:
+            _mr_filter_and_results(df, regions, cascade, latest_update_str)
     except Exception as e:
         st.error(f"시장조사 필터 오류: {e}")
         st.exception(e)
@@ -2043,16 +2285,23 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
 
     with st.expander("✍️ 새 시장조사 입력", expanded=False):
         with st.form("mr_new_entry_form", clear_on_submit=True):
-            r1c1, r1c2, r1c3 = st.columns([1.3, 0.9, 1.2])
+            r1c1, r1c2, r1c3, r1c4 = st.columns([1.3, 0.85, 0.9, 1.1])
             with r1c1:
                 name_in = st.text_input("업체명 *", placeholder="예: ○○엔지니어링")
             with r1c2:
+                survey_date_in = st.date_input(
+                    "조사일",
+                    value=date.today(),
+                    format="YYYY/MM/DD",
+                    help="시장조사한 날짜. 아래 전체 조회·검색에서 이 날짜로 찾을 수 있습니다.",
+                )
+            with r1c3:
                 region_in = st.selectbox(
                     "지역",
                     options=[""] + _region_choices(),
                     format_func=lambda x: "(주소로 자동)" if x == "" else x,
                 )
-            with r1c3:
+            with r1c4:
                 complex_in = st.selectbox(
                     "산업단지",
                     options=[""] + _complex_choices(),
@@ -2090,12 +2339,14 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                         "담당자": person_in,
                         "연락처": phone_in,
                         "비고": note_in,
+                        "조사일": survey_date_in,
                     }
                 )
                 _invalidate_mr_loaded()
                 st.success(
                     f"저장됨: **{ent['업체명']}** ({ent.get('지역') or '미분류'})  "
-                    f"· {ent.get('산업단지') or '단지미분류'} · 출처「{MR_MANUAL_SOURCE}」"
+                    f"· 조사일 {ent.get('조사일') or '-'} · "
+                    f"{ent.get('산업단지') or '단지미분류'} · 출처「{MR_MANUAL_SOURCE}」"
                 )
                 st.rerun()
             except ValueError as e:
@@ -2111,7 +2362,7 @@ def render_market_research_tab(latest_update_str: str = "") -> None:
                 c_a, c_b = st.columns([5, 1])
                 with c_a:
                     st.caption(
-                        f"`{ent.get('saved_at', '')}` · "
+                        f"`{ent.get('조사일') or ent.get('saved_at', '')}` · "
                         f"**{ent.get('업체명', '')}** · "
                         f"{ent.get('지역', '')} · "
                         f"{ent.get('공급사', '') or '-'}"

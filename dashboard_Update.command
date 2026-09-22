@@ -18,6 +18,7 @@ if [ "$HERE" != "$CANON" ] && [ -x "${CANON}/dashboard_Update.command" ]; then
 fi
 
 cd "$ROOT" || exit 1
+export DASH_ROOT="$ROOT"
 
 if [ ! -d .git ]; then
   osascript -e 'display alert "git 저장소 아님" message "터미널에서: cd ~/Desktop/dashboard && git clone https://github.com/zimhs/office.git ."' 2>/dev/null || true
@@ -103,6 +104,18 @@ if ! _pull_ff_only; then
     fi
   fi
 fi
+
+# git pull/reset 이 시드 CSV를 예전으로 되돌려도, 잠긴 최신 매출·채권은 유지
+python3 - <<'PY' >/dev/null 2>&1 || true
+import os, sys
+root = os.environ.get("DASH_ROOT") or os.getcwd()
+sys.path.insert(0, root)
+try:
+    from data_freshness_lock import restore_locked_latest
+    restore_locked_latest(os.path.join(root, "uploaded_cache"))
+except Exception:
+    pass
+PY
 
 AFTER="$(git rev-parse HEAD 2>/dev/null || echo none)"
 AFTER_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo "?")"

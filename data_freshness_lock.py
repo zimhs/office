@@ -21,6 +21,8 @@ DEBT_REL = "debt.csv"
 
 _SALES_NAME_RE = re.compile(r"^(20\d{2})(\d{2})?(?:\.csv)?$", re.I)
 _SALES_YMD_RE = re.compile(r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+_SALES_SCAN_HEAD = 24576
+_SALES_SCAN_TAIL = 49152
 _SALES_MD_RE = re.compile(r"(?<!\d)(\d{1,2})/(\d{1,2})(?!\d)")
 _MONTH_COLS = tuple(f"{i}월" for i in range(1, 13))
 
@@ -105,9 +107,17 @@ def _max_sales_end_ymd(text: str, period: int) -> int:
 
 def sales_generation_from_bytes(name: str, raw: bytes) -> Gen:
     period = parse_sales_name_period(name)
-    text = _decode_text(raw or b"")
+    blob = raw or b""
+    if len(blob) <= _SALES_SCAN_HEAD + _SALES_SCAN_TAIL:
+        text = _decode_text(blob)
+    else:
+        text = (
+            _decode_text(blob[:_SALES_SCAN_HEAD])
+            + "\n"
+            + _decode_text(blob[-_SALES_SCAN_TAIL:])
+        )
     end_ymd = _max_sales_end_ymd(text, period)
-    return (int(period or 0), int(end_ymd or 0), int(len(raw or b"")))
+    return (int(period or 0), int(end_ymd or 0), int(len(blob)))
 
 
 def debt_generation_from_bytes(raw: bytes) -> Gen:
@@ -475,11 +485,11 @@ def restore_locked_latest(cache_dir: str) -> List[str]:
         name = os.path.basename(rel)
         if not os.path.isfile(snap):
             continue
+        if os.path.isfile(dst) and _file_sha256(dst) == _file_sha256(snap):
+            continue
         snap_gen = generation_from_file(snap, kind=kind, name=name)
         if os.path.isfile(dst):
             cur_gen = generation_from_file(dst, kind=kind, name=name)
-            if _file_sha256(dst) == _file_sha256(snap):
-                continue
             if generation_at_least(cur_gen, snap_gen, kind=kind):
                 try:
                     with open(dst, "rb") as f:

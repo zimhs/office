@@ -39,6 +39,12 @@ class GenerationParseTest(unittest.TestCase):
         self.assertEqual(g[0], 202609)
         self.assertEqual(g[1], 20260916)
 
+    def test_sales_mmdd_reads_file_tail(self):
+        pad = ("x" * 80000 + "\n").encode("utf-8")
+        tail = "거래처,매출일,매출액\nA,09/16,200\n".encode("utf-8")
+        g = sales_generation_from_bytes("202609.csv", pad + tail)
+        self.assertEqual(g[1], 20260916)
+
     def test_later_day_is_newer(self):
         old = sales_generation_from_bytes("202609.csv", _sales(5))
         new = sales_generation_from_bytes("202609.csv", _sales(11))

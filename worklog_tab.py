@@ -55,6 +55,23 @@ def _wl_rerun(*, full: bool = False) -> None:
         st.rerun()
 
 
+def _pin_worklog_scroll() -> None:
+    """날짜 변경·저장 후 Streamlit이 본문을 위로 끌어올리지 않게 한다."""
+    st.session_state["wl_scroll_pin"] = int(st.session_state.get("wl_scroll_pin") or 0) + 1
+    for k in list(st.session_state.keys()):
+        if isinstance(k, str) and (k.startswith("wl_focus_ln_") or k.startswith("wl_focus_caret_")):
+            st.session_state.pop(k, None)
+    st.session_state.pop("wl_active_cell_key", None)
+
+
+def _render_worklog_scroll_lock(iso: str) -> None:
+    _WL_SCROLL_LOCK(
+        key="wl_scroll_lock",
+        data={"iso": iso, "pin": int(st.session_state.get("wl_scroll_pin") or 0)},
+        height=1,
+    )
+
+
 def _wl_quiet_ui() -> bool:
     try:
         if st.session_state.get("force_touch_ui") is True: return True
@@ -119,6 +136,40 @@ def _wl_is_ipad_ui() -> bool:
 
 def _invalidate_saved_dates_cache() -> None:
     st.session_state.pop("wl_saved_dates_cache", None)
+    st.session_state.pop("wl_stored_cells_memo", None)
+
+
+def _remember_calendar_saved_date(d: date) -> None:
+    """저장한 날짜를 달력 • 캐시에 바로 넣는다. 빈 캐시 때문에 점이 빠지지 않게 한다."""
+    iso = d.isoformat()
+    cached = st.session_state.get("wl_saved_dates_cache")
+    if not isinstance(cached, set):
+        cached = set(list_saved_worklog_dates())
+    cached.add(iso)
+    st.session_state["wl_saved_dates_cache"] = cached
+
+
+def _drop_saved_date_from_cache(iso: str) -> None:
+    """달력 • 캐시에서 그 날짜만 뺀다. 월별 xlsx 전체 재스캔을 피한다."""
+    cached = st.session_state.get("wl_saved_dates_cache")
+    if isinstance(cached, set):
+        cached.discard(str(iso))
+    else:
+        st.session_state.pop("wl_saved_dates_cache", None)
+    _invalidate_stored_cells_memo(str(iso))
+
+
+def _invalidate_stored_cells_memo(iso: str | None = None) -> None:
+    if iso is None:
+        st.session_state.pop("wl_stored_cells_memo", None)
+        return
+    memo = st.session_state.get("wl_stored_cells_memo")
+    if not isinstance(memo, dict):
+        return
+    pfx = f"{iso}|"
+    for k in list(memo):
+        if str(k).startswith(pfx):
+            memo.pop(k, None)
 
 WORKLOG_DIR = os.path.join("uploaded_cache", "worklog")
 WORKLOG_TEMPLATE = os.path.join(WORKLOG_DIR, "template.xlsx")
@@ -127,7 +178,7 @@ WORKLOG_ARCHIVE_REL = os.path.join("Desktop", "업무", "일지")
 
 # =====================================================================
 # 💡 원본.xlsx 양식 기준 행/열 매핑 (인쇄·미리보기 일치)
-# 제목 E2 / 날짜 C5 / 내용헤더 G7 / 본문 8~39 / 익일 40~43 / 특이 44~47
+# 제목 E2 / 날짜 C5 / 내용헤더 G7 / 비고 Y7:AB / 본문 8~39 / 익일 40~43 / 특이 44~47
 # =====================================================================
 WL_MIN_ROW, WL_MAX_ROW = 1, 47  # 본문·익일·특이까지(원본 로고는 47행 아래 여백)
 WL_MIN_COL, WL_MAX_COL = 3, 28  # C ~ AB
@@ -135,6 +186,8 @@ WL_MIN_COL, WL_MAX_COL = 3, 28  # C ~ AB
 WL_DATE_CELL = "C5"
 WL_CLIENT_ROWS = list(range(8, 40))   # 8행 ~ 39행 (총 32줄)
 WL_CONTENT_ROWS = list(range(8, 40))  # 8행 ~ 39행 (총 32줄)
+WL_SHEET_N = len(WL_CONTENT_ROWS)     # 본문 32칸 (익일·특이 제외)
+WL_MAX_PAGES = 12                     # 업무입력 1페이지 + 추가 페이지
 WL_NEXT_ROWS = list(range(40, 44))    # 40행 ~ 43행 (총 4줄)
 WL_NOTE_ROWS = list(range(44, 48))    # 44행 ~ 47행 (총 4줄)
 
@@ -142,15 +195,19 @@ WL_CONTENT_COL_START = 7  # G
 WL_CONTENT_COL_END = 24   # X
 WL_CLIENT_COL_START = 3   # C
 WL_CLIENT_COL_END = 6     # F
+WL_REMARK_COL_START = 25  # Y — 내용 우측 입력칸(비고)
+WL_REMARK_COL_END = 28    # AB
 
 # 화면 엑셀 미리보기 배율 (인쇄 print_mode=True 와 무관 — 인쇄는 Excel pageSetup 그대로)
 _WL_PREVIEW_SCALE = 0.65
+# 업무입력 표시만 한 단계 크게. 줄바꿈·미리보기·인쇄는 원본 14pt.
+_WL_INPUT_LOOK_SCALE = 0.75
 # 웹/Mac: Batang(윈도우) 미설치 → 한글 글리프가 고딕으로 떨어짐.
 # Nanum Myeongjo(CDN)를 최우선으로 두어 바탕체와 같은 명조 계열을 강제.
 _WL_FONT_STACK = "'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕','바탕글',serif"
 _WL_FONT_FACE_CSS = "@import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');"
 # 로컬 반영 확인용 (탭 상단에 표시)
-_WL_UI_BUILD = "2026-09-08a · 저장 후 날짜변경은 보기 · 내용칸 줄바꿈"
+_WL_UI_BUILD = "2026-09-22 · 입력칸 여백활용 · 내용줄=미리보기"
 _WL_MOVE_BLOCK_MSG = "이미 저장된 데이터가 있으면 자료를 옮길 수 없습니다."
 
 
@@ -166,7 +223,7 @@ _WL_LINES_HTML = """
 <div class="wl-lines"></div>
 """
 
-# 거래처·내용 입력칸만 글씨를 줄여 한 줄이 잘리지 않게 (인쇄 글씨와 무관)
+# 줄바꿈은 원본 14pt 칸(8·37·8자). 입력 표시만 미리보기 배율로 줄여 작성하기 쉽게 한다.
 _WL_LINES_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap');
 .wl-lines { display: flex; flex-direction: column; width: 100%; border: 1px solid #94A3B8; border-radius: 4px; overflow: hidden; background: #fff; box-sizing: border-box; }
@@ -176,32 +233,31 @@ _WL_LINES_CSS = """
   flex: 1 1 auto;
   min-width: 0;
   width: 100%;
-  height: 28px;
-  padding: 0 6px;
+  height: var(--wl-row-h, 30px);
+  padding: 0 1px;
   border: none;
   background: transparent;
   color: #0F172A;
   font-family: 'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체','바탕',serif !important;
-  font-size: 10pt;  /* 입력칸만 1pt 축소 — 인쇄/미리보기(_WL_BODY_FONT_PT)와 무관 */
-  line-height: 28px;
+  font-size: var(--wl-look-pt, var(--wl-show-pt, 14pt));
+  line-height: var(--wl-row-h, 30px);
   outline: none;
   box-sizing: border-box;
 }
-/* 내용칸: 좌우 여백 최소화로 한 줄에 더 많이 보이게 (글자크기·인쇄배율 불변) */
-.wl-lines:not(.client) .wl-row input { padding: 0 1px; }
 .wl-lines.client .wl-row input { background: #F8FAFC; text-align: center; }
+.wl-lines.remark .wl-row input { background: #FFFBEB; text-align: left; }
 .wl-row input:focus { background: #E0F2FE; }
-.wl-row button {
-  flex: 0 0 2rem;
-  height: 28px;
-  border: none; border-left: 1px solid #E2E8F0;
-  background: #F1F5F9; color: #64748B; font-size: 0.65rem;
-  padding: 0;
-  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+.wl-row.wl-sel input {
+  background: #93C5FD !important;
+  color: #0F172A;
 }
-.wl-lines:not(.client) .wl-row button { flex: 0 0 1.1rem; width: 1.1rem; min-width: 1.1rem; }
-.wl-row button:hover { background: #E2E8F0; color: #DC2626; }
-.wl-row button.hidden { display: none; }
+.wl-row.wl-sel-part input {
+  background: linear-gradient(to right,
+    transparent var(--wl-sel-l, 0%),
+    #93C5FD var(--wl-sel-l, 0%),
+    #93C5FD var(--wl-sel-r, 100%),
+    transparent var(--wl-sel-r, 100%)) !important;
+}
 """
 
 _WL_LINES_JS = r"""
@@ -214,25 +270,45 @@ export default function (component) {
 
   const maxU = Number((data && data.max_u) || 64);
   const cellW = Number((data && data.cell_w) || 666);
+  const fontPt = Number((data && data.font_pt) || 14);
+  const lookScale = Number((data && data.look_scale) || 0.65);
+  const origW = cellW > 8 ? Math.max(8, cellW - 2) : 0;
+  const _wlOrigCanvas = document.createElement("canvas");
   const variant = String((data && data.variant) || "content");
+  const side8 = variant === "client" || variant === "remark";
+  const iso = String((data && data.iso) || "");
+  const slot = String((data && data.slot) != null ? data.slot : "0");
   const rev = Number((data && data.rev) || 0);
   const focusReq = Number((data && data.focus));
+  const fixedRows = Math.max(0, Number((data && data.fixed_rows) || 0));
   const incoming = Array.isArray(data && data.lines)
     ? data.lines.map((x) => String(x ?? ""))
     : [""];
+  const replace = Number((data && data.replace) || 0) === 1;
+  const memKey = variant + "|" + slot + "|" + String(fixedRows) + "|" + iso;
+  const mem = (window.__wlLinesMem = window.__wlLinesMem || {});
 
   try {
-    root.className = "wl-lines" + (variant === "client" ? " client" : "");
+    root.className = "wl-lines" + (variant === "client" ? " client" : variant === "remark" ? " remark" : "");
     root.style.width = "100%";
+    root.style.maxWidth = "100%";
+    root.style.minWidth = "";
+    root.style.setProperty("--wl-show-pt", fontPt + "pt");
+    root.style.setProperty("--wl-row-h", "30px");
   } catch (e0) {}
 
   let inst = __wlLinesInst.get(root);
-  if (!inst) {
-    inst = { lines: null, rev: null, rebuilding: false, lastEmitted: null };
+  const isoChanged = !inst || String(inst.iso || "") !== iso;
+  if (isoChanged) {
+    try { if (inst && inst.ro) inst.ro.disconnect(); } catch (eD) {}
+    try { if (inst && inst.dragOff) inst.dragOff(); } catch (eDrag) {}
+    inst = { lines: null, rev: null, rebuilding: false, lastEmitted: null, iso: iso, ro: null, dragOff: null, drag: null, dragSel: null };
     __wlLinesInst.set(root, inst);
   }
+  mem[memKey] = inst;
 
   function charUnits(ch) {
+    if (ch === " " || ch === "\t" || ch === "\u00a0") return 0.58;
     const o = ch.charCodeAt(0);
     if (
       (o >= 0xac00 && o <= 0xd7a3) ||
@@ -242,13 +318,83 @@ export default function (component) {
       (o >= 0xff00 && o <= 0xffef)
     )
       return 2;
-    return 1;
+    return 1.1;
+  }
+  function lstripWs(s) {
+    return String(s || "").replace(/^[\s\u00a0\u3000]+/, "");
   }
   function displayUnits(s) {
     let w = 0;
     s = s || "";
     for (let i = 0; i < s.length; i++) w += charUnits(s.charAt(i));
     return w;
+  }
+  function measureOrigPx(s) {
+    try {
+      const ctx = _wlOrigCanvas.getContext("2d");
+      ctx.font = "400 " + fontPt + "pt 'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체',serif";
+      return ctx.measureText(s || "").width;
+    } catch (eM) {
+      return 0;
+    }
+  }
+  function inputInnerW() {
+    const el = root.querySelector("input");
+    if (!el) return Math.max(0, root.clientWidth || 0);
+    try {
+      const cs = window.getComputedStyle(el);
+      const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      return Math.max(0, (el.clientWidth || 0) - pad);
+    } catch (eW) {
+      return Math.max(0, el.clientWidth || 0);
+    }
+  }
+  function applyFillScale() {
+    const scale = lookScale > 0.2 && lookScale < 1 ? lookScale : 0.65;
+    const look = Math.max(7, fontPt * scale);
+    root.style.setProperty("--wl-show-pt", look + "pt");
+    root.style.setProperty("--wl-look-pt", look + "pt");
+    root.style.width = "100%";
+    root.style.maxWidth = "100%";
+  }
+  function measureShowPx(s) {
+    try {
+      const ctx = _wlOrigCanvas.getContext("2d");
+      const show = root.style.getPropertyValue("--wl-show-pt") || (fontPt + "pt");
+      ctx.font = "400 " + show + " 'Nanum Myeongjo','Apple Myungjo','Batang','BatangChe','바탕체',serif";
+      return ctx.measureText(s || "").width;
+    } catch (eS) {
+      return 0;
+    }
+  }
+  function lineOver(s) {
+    // 거래처·비고는 원본 한글 8자(maxU)가 한 줄에 들어가야 한다.
+    if (side8 && displayUnits(s) <= maxU) return false;
+    if (origW > 8) {
+      const px = measureOrigPx(s);
+      if (px > 0 && px > origW) return true;
+    }
+    // 내용칸: 입력칸이 넓어도 인쇄미리보기(원본 14pt)와 같은 글자수
+    if (!side8) return displayUnits(s) > maxU;
+    const w = inputInnerW();
+    if (w > 8) {
+      const px = measureShowPx(s);
+      if (px > 0 && px > w) return true;
+    }
+    return displayUnits(s) > maxU;
+  }
+  function fitByOrigPx(s, maxPx) {
+    if (!s) return { head: "", tail: "" };
+    if (measureOrigPx(s) <= maxPx) return { head: s, tail: "" };
+    let lo = 0;
+    let hi = s.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (measureOrigPx(s.slice(0, mid)) <= maxPx) lo = mid;
+      else hi = mid - 1;
+    }
+    if (lo <= 0) return { head: s.slice(0, 1), tail: lstripWs(s.slice(1)) };
+    return { head: s.slice(0, lo), tail: lstripWs(s.slice(lo)) };
   }
   function fitByUnits(s, max) {
     if (!s) return { head: "", tail: "" };
@@ -257,17 +403,62 @@ export default function (component) {
     for (let i = 0; i < s.length; i++) {
       const cu = charUnits(s.charAt(i));
       if (acc + cu > max) {
-        if (i === 0) return { head: s.slice(0, 1), tail: s.slice(1) };
-        return { head: s.slice(0, i), tail: s.slice(i) };
+        if (i === 0) return { head: s.slice(0, 1), tail: lstripWs(s.slice(1)) };
+        return { head: s.slice(0, i), tail: lstripWs(s.slice(i)) };
       }
       acc += cu;
     }
     return { head: s, tail: "" };
   }
+  function fitByShowPx(s, maxPx) {
+    if (!s) return { head: "", tail: "" };
+    if (measureShowPx(s) <= maxPx) return { head: s, tail: "" };
+    let lo = 0;
+    let hi = s.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (measureShowPx(s.slice(0, mid)) <= maxPx) lo = mid;
+      else hi = mid - 1;
+    }
+    if (lo <= 0) return { head: s.slice(0, 1), tail: lstripWs(s.slice(1)) };
+    return { head: s.slice(0, lo), tail: lstripWs(s.slice(lo)) };
+  }
+  function fitLine(s) {
+    if (side8 && displayUnits(s) <= maxU) return { head: s, tail: "" };
+    if (origW > 8 && measureOrigPx(s) > origW) return fitByOrigPx(s, origW);
+    if (!side8) return fitByUnits(s, maxU);
+    const w = inputInnerW();
+    if (w > 8 && measureShowPx(s) > w) return fitByShowPx(s, w);
+    return fitByUnits(s, maxU);
+  }
   function normalize(arr) {
-    const out = (arr || []).map((x) => String(x ?? ""));
+    let out = (arr || []).map((x) => String(x ?? ""));
+    if (fixedRows > 0) {
+      while (out.length < fixedRows) out.push("");
+      if (out.length > fixedRows) out = out.slice(0, fixedRows);
+      return out;
+    }
     if (!out.length) out.push("");
     if (out[out.length - 1] !== "") out.push("");
+    return out;
+  }
+  function fillEmptyFrom(src, dest) {
+    if (!src || !src.length) return dest;
+    const out = dest.slice();
+    for (let i = 0; i < out.length && i < src.length; i++) {
+      if (!(out[i] || "") && (src[i] || "")) out[i] = src[i];
+    }
+    return out;
+  }
+  function mergeIncoming(next) {
+    let out = normalize(next);
+    const inputs = root.querySelectorAll("input[data-idx]");
+    if (inputs.length) {
+      const dom = [];
+      inputs.forEach((inp) => dom.push(inp.value || ""));
+      out = fillEmptyFrom(normalize(dom), out);
+    }
+    out = fillEmptyFrom(inst.lines, out);
     return out;
   }
   function readDomLines() {
@@ -300,7 +491,7 @@ export default function (component) {
       const el = root.querySelector('input[data-idx="' + idx + '"]');
       if (!el) return;
       try {
-        el.focus({ preventScroll: false });
+        el.focus({ preventScroll: true });
         const n = (el.value || "").length;
         el.setSelectionRange(n, n);
       } catch (e) {
@@ -308,7 +499,237 @@ export default function (component) {
           el.focus();
         } catch (e2) {}
       }
+      if (typeof window.wlScrollCellIntoTabView === "function") {
+        window.wlScrollCellIntoTabView(el);
+      } else {
+        try {
+          const tabs = document.querySelector('[data-testid="stTabs"] [role="tablist"]');
+          const topLimit = Math.max(tabs ? tabs.getBoundingClientRect().bottom : 0, 56) + 10;
+          const rect = el.getBoundingClientRect();
+          if (rect.top < topLimit) window.scrollBy(0, rect.top - topLimit);
+          else if (rect.bottom > window.innerHeight - 16) window.scrollBy(0, rect.bottom - (window.innerHeight - 16));
+        } catch (e3) {}
+      }
     });
+  }
+  function shouldApplyDataFocus() {
+    if (!Number.isFinite(focusReq) || focusReq < 0) return false;
+    const ae = document.activeElement;
+    if (ae && root.contains(ae) && String(ae.tagName || "").toUpperCase() === "INPUT") {
+      const curIdx = Number(ae.dataset && ae.dataset.idx);
+      if (Number.isFinite(curIdx) && curIdx !== Number(focusReq)) return false;
+    }
+    return true;
+  }
+
+  function offsetFromX(inp, clientX) {
+    if (!inp) return 0;
+    const s = inp.value || "";
+    try {
+      const rect = inp.getBoundingClientRect();
+      const cs = window.getComputedStyle(inp);
+      const padL = parseFloat(cs.paddingLeft) || 0;
+      const padR = parseFloat(cs.paddingRight) || 0;
+      let x = clientX - rect.left - padL;
+      const inner = Math.max(1, (inp.clientWidth || 0) - padL - padR);
+      if ((cs.textAlign || "") === "center") {
+        const tw = measureShowPx(s);
+        x = x - Math.max(0, (inner - tw) / 2);
+      }
+      if (x <= 0) return 0;
+      let lo = 0;
+      let hi = s.length;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (measureShowPx(s.slice(0, mid)) <= x) lo = mid;
+        else hi = mid - 1;
+      }
+      return lo;
+    } catch (eOff) {
+      try { return Number(inp.selectionStart || 0); } catch (e2) { return s.length; }
+    }
+  }
+  function inputAtPoint(x, y) {
+    let el = null;
+    try { el = document.elementFromPoint(x, y); } catch (eP) { return null; }
+    while (el) {
+      if (el.tagName === "INPUT" && root.contains(el)) return el;
+      el = el.parentElement;
+    }
+    const rows = root.querySelectorAll(".wl-row input");
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i].getBoundingClientRect();
+      if (y >= r.top && y <= r.bottom) return rows[i];
+    }
+    return null;
+  }
+  function normSel(sel) {
+    if (!sel) return null;
+    let aIdx = Number(sel.aIdx), aOff = Number(sel.aOff), bIdx = Number(sel.bIdx), bOff = Number(sel.bOff);
+    if (aIdx > bIdx || (aIdx === bIdx && aOff > bOff)) {
+      const t = aIdx; aIdx = bIdx; bIdx = t;
+      const o = aOff; aOff = bOff; bOff = o;
+    }
+    return { aIdx, aOff, bIdx, bOff };
+  }
+  function clearPaintSel() {
+    root.querySelectorAll(".wl-row").forEach((row) => {
+      row.classList.remove("wl-sel", "wl-sel-part");
+      row.style.removeProperty("--wl-sel-l");
+      row.style.removeProperty("--wl-sel-r");
+    });
+  }
+  function paintSel() {
+    clearPaintSel();
+    const sel = normSel(inst.dragSel);
+    if (!sel) return;
+    const rows = root.querySelectorAll(".wl-row");
+    for (let i = sel.aIdx; i <= sel.bIdx; i++) {
+      const row = rows[i];
+      if (!row) continue;
+      const inp = row.querySelector("input");
+      const text = (inp && inp.value) || "";
+      const from = i === sel.aIdx ? sel.aOff : 0;
+      const to = i === sel.bIdx ? sel.bOff : text.length;
+      if (from <= 0 && to >= text.length) {
+        row.classList.add("wl-sel");
+      } else {
+        row.classList.add("wl-sel-part");
+        const inner = inputInnerW() || 1;
+        const tw = measureShowPx(text);
+        let base = 0;
+        try {
+          if (inp && window.getComputedStyle(inp).textAlign === "center") {
+            base = Math.max(0, (inner - tw) / 2);
+          }
+        } catch (eC) {}
+        const l = Math.max(0, ((base + measureShowPx(text.slice(0, from))) / inner) * 100);
+        const r = Math.min(100, ((base + measureShowPx(text.slice(0, to))) / inner) * 100);
+        row.style.setProperty("--wl-sel-l", l + "%");
+        row.style.setProperty("--wl-sel-r", r + "%");
+      }
+    }
+  }
+  function selectedText() {
+    const sel = normSel(inst.dragSel);
+    if (!sel) return "";
+    const lines = readDomLines();
+    if (sel.aIdx === sel.bIdx) return (lines[sel.aIdx] || "").slice(sel.aOff, sel.bOff);
+    const out = [(lines[sel.aIdx] || "").slice(sel.aOff)];
+    for (let i = sel.aIdx + 1; i < sel.bIdx; i++) out.push(lines[i] || "");
+    out.push((lines[sel.bIdx] || "").slice(0, sel.bOff));
+    return out.join("\n");
+  }
+  function hasDragSel() {
+    const sel = normSel(inst.dragSel);
+    return !!(sel && (sel.aIdx !== sel.bIdx || sel.aOff !== sel.bOff));
+  }
+  function applyLinesToDom(lines, focusIdx) {
+    const out = normalize(lines);
+    inst.lines = out;
+    const inputs = root.querySelectorAll("input[data-idx]");
+    if (inputs.length === out.length && inputs.length > 0) {
+      for (let k = 0; k < inputs.length; k++) {
+        if (inputs[k].value !== out[k]) inputs[k].value = out[k];
+      }
+    } else {
+      rebuild(typeof focusIdx === "number" ? focusIdx : -1);
+    }
+    emit(out, typeof focusIdx === "number" ? focusIdx : null);
+    if (typeof focusIdx === "number") focusAt(focusIdx);
+  }
+  function deleteSelected() {
+    const sel = normSel(inst.dragSel);
+    if (!sel) return false;
+    const lines = readDomLines();
+    if (sel.aIdx === sel.bIdx) {
+      const s = lines[sel.aIdx] || "";
+      lines[sel.aIdx] = s.slice(0, sel.aOff) + s.slice(sel.bOff);
+    } else {
+      lines[sel.aIdx] = (lines[sel.aIdx] || "").slice(0, sel.aOff) + (lines[sel.bIdx] || "").slice(sel.bOff);
+      for (let i = sel.aIdx + 1; i <= sel.bIdx; i++) lines[i] = "";
+    }
+    inst.dragSel = null;
+    clearPaintSel();
+    applyLinesToDom(lines, sel.aIdx);
+    return true;
+  }
+  function bindDragSelect() {
+    if (inst.dragOff) return;
+    const onDown = (e) => {
+      if (e.button !== 0) return;
+      const inp = e.target && e.target.tagName === "INPUT" ? e.target : null;
+      if (!inp || !root.contains(inp)) return;
+      inst.drag = { aIdx: Number(inp.dataset.idx || 0), aOff: offsetFromX(inp, e.clientX), moved: false };
+    };
+    const onMove = (e) => {
+      if (!inst.drag || (e.buttons & 1) === 0) return;
+      const inp = inputAtPoint(e.clientX, e.clientY);
+      if (!inp) return;
+      const bIdx = Number(inp.dataset.idx || 0);
+      const bOff = offsetFromX(inp, e.clientX);
+      if (bIdx !== inst.drag.aIdx || Math.abs(bOff - inst.drag.aOff) > 1) inst.drag.moved = true;
+      if (!inst.drag.moved) return;
+      try { e.preventDefault(); } catch (ePrev) {}
+      inst.dragSel = { aIdx: inst.drag.aIdx, aOff: inst.drag.aOff, bIdx, bOff };
+      paintSel();
+    };
+    const onUp = () => {
+      if (inst.drag && !inst.drag.moved) {
+        inst.dragSel = null;
+        clearPaintSel();
+      }
+      inst.drag = null;
+    };
+    const onCopy = (e) => {
+      if (!hasDragSel()) return;
+      const t = selectedText();
+      if (!t) return;
+      try {
+        e.preventDefault();
+        e.clipboardData.setData("text/plain", t);
+      } catch (eCpy) {}
+    };
+    const onCut = (e) => {
+      if (!hasDragSel()) return;
+      const t = selectedText();
+      try {
+        e.preventDefault();
+        if (t) e.clipboardData.setData("text/plain", t);
+      } catch (eCut) {}
+      deleteSelected();
+    };
+    const onKey = (e) => {
+      const inEditor = root.contains(document.activeElement) || !!inst.dragSel;
+      if (!inEditor) return;
+      if ((e.metaKey || e.ctrlKey) && String(e.key || "").toLowerCase() === "a") {
+        const lines = readDomLines();
+        let last = lines.length - 1;
+        while (last > 0 && !(lines[last] || "")) last -= 1;
+        inst.dragSel = { aIdx: 0, aOff: 0, bIdx: last, bOff: (lines[last] || "").length };
+        paintSel();
+        try { e.preventDefault(); } catch (eA) {}
+        return;
+      }
+      if (hasDragSel() && (e.key === "Backspace" || e.key === "Delete")) {
+        try { e.preventDefault(); } catch (eDel) {}
+        deleteSelected();
+      }
+    };
+    root.addEventListener("mousedown", onDown);
+    document.addEventListener("mousemove", onMove, true);
+    document.addEventListener("mouseup", onUp, true);
+    document.addEventListener("copy", onCopy, true);
+    document.addEventListener("cut", onCut, true);
+    document.addEventListener("keydown", onKey, true);
+    inst.dragOff = function () {
+      try { root.removeEventListener("mousedown", onDown); } catch (e1) {}
+      try { document.removeEventListener("mousemove", onMove, true); } catch (e2) {}
+      try { document.removeEventListener("mouseup", onUp, true); } catch (e3) {}
+      try { document.removeEventListener("copy", onCopy, true); } catch (e4) {}
+      try { document.removeEventListener("cut", onCut, true); } catch (e5) {}
+      try { document.removeEventListener("keydown", onKey, true); } catch (e6) {}
+    };
   }
 
   function insertLineAfter(j, inputEl) {
@@ -319,6 +740,12 @@ export default function (component) {
     if (!raw.length) raw.push("");
     while (raw.length <= j) raw.push("");
     raw[j] = (inputEl && inputEl.value) || raw[j] || "";
+    if (fixedRows > 0) {
+      const next = Math.min(j + 1, Math.max(fixedRows - 1, 0));
+      emit(raw, next);
+      focusAt(next);
+      return;
+    }
     raw.splice(j + 1, 0, "");
     if (raw[raw.length - 1] !== "") raw.push("");
     emit(raw, j + 1);
@@ -343,18 +770,21 @@ export default function (component) {
         const cur = readDomLines();
         let j0 = j;
         let v = cur[j0] || "";
-        if (displayUnits(v) <= maxU) {
+        if (!lineOver(v)) {
           // 입력 중에는 로컬만. 한글 음절마다 setStateValue 하면
           // Cached ForwardMsg MISS → ERROR → 버튼 전부 먹통.
           if (mode === "blur" || mode === "force") emit(cur, null);
           else localOnly(cur);
           return;
         }
-        while (j0 < cur.length && displayUnits(cur[j0] || "") > maxU) {
-          const ft = fitByUnits(cur[j0] || "", maxU);
+        while (j0 < cur.length && lineOver(cur[j0] || "")) {
+          const ft = fitLine(cur[j0] || "");
+          if (!ft.tail || ft.head === (cur[j0] || "")) break;
           cur[j0] = ft.head;
-          if (j0 + 1 < cur.length) cur[j0 + 1] = ft.tail + (cur[j0 + 1] || "");
-          else cur.splice(j0 + 1, 0, ft.tail);
+          const nextTail = lstripWs(ft.tail);
+          if (j0 + 1 < cur.length) cur[j0 + 1] = nextTail + (cur[j0 + 1] || "");
+          else if (fixedRows > 0) break;
+          else cur.splice(j0 + 1, 0, nextTail);
           j0 += 1;
         }
         const focusIdx = Math.min(j0, Math.max(cur.length - 1, 0));
@@ -363,6 +793,8 @@ export default function (component) {
       };
       input.addEventListener("input", (e) => {
         if (e.isComposing) return;
+        inst.dragSel = null;
+        clearPaintSel();
         commitValue("type");
       });
       input.addEventListener("compositionend", () => {
@@ -372,6 +804,23 @@ export default function (component) {
         commitValue("blur");
       });
       input.addEventListener("keydown", (e) => {
+        const nav = (typeof window !== "undefined" && window.wlNavWorklogArrow)
+          || (typeof window !== "undefined" && window.parent && window.parent !== window && window.parent.wlNavWorklogArrow);
+        if (nav && (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+          try {
+            if (nav(input, e)) return;
+          } catch (eNav) {}
+        }
+        if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+          const dest = e.key === "ArrowUp" ? j - 1 : j + 1;
+          const n = (inst.lines || lines || []).length;
+          if (dest >= 0 && dest < n) {
+            e.preventDefault();
+            e.stopPropagation();
+            focusAt(dest);
+          }
+          return;
+        }
         if (e.key !== "Enter") return;
         const typing = (input.value || "") !== "";
         if (e.isComposing && typing) return;
@@ -379,30 +828,19 @@ export default function (component) {
         e.stopPropagation();
         insertLineAfter(j, input);
       });
-      const del = document.createElement("button");
-      del.type = "button";
-      del.textContent = "×";
-      const isLastEmpty = j === lines.length - 1 && (line || "") === "";
-      if (isLastEmpty) del.classList.add("hidden");
-      del.addEventListener("click", () => {
-        const cur = readDomLines();
-        cur.splice(j, 1);
-        if (!cur.length) cur.push("");
-        const fj = Math.min(j, Math.max(cur.length - 1, 0));
-        emit(cur, fj);
-        rebuild(fj);
-      });
       row.appendChild(input);
-      row.appendChild(del);
       root.appendChild(row);
     });
     inst.rebuilding = false;
+    applyFillScale();
     if (typeof focusIdx === "number" && focusIdx >= 0) focusAt(focusIdx);
   }
 
-  if (inst.rev !== rev) {
+  inst.iso = iso;
+  if (inst.rev !== rev || replace || isoChanged) {
     inst.rev = rev;
-    const next = normalize(incoming);
+    // 날짜 전환·프로그램 시드는 전날 DOM/메모를 빈칸에 되살리지 않는다.
+    const next = (replace || isoChanged) ? normalize(incoming) : mergeIncoming(incoming);
     const inputs = root.querySelectorAll("input[data-idx]");
     // 행 수가 같으면 innerHTML 전체 재생성 없이 값만 제자리로 갱신한다.
     // (특수기호 삽입 등으로 rev만 오를 때 전체 rebuild 하면 입력칸이 잠깐 높이 0으로
@@ -413,24 +851,32 @@ export default function (component) {
       for (let k = 0; k < inputs.length; k++) {
         if (inputs[k].value !== next[k]) inputs[k].value = next[k];
       }
-      if (Number.isFinite(focusReq) && focusReq >= 0) focusAt(focusReq);
+      if (shouldApplyDataFocus()) focusAt(focusReq);
+      applyFillScale();
     } else {
       inst.lines = next;
       inst.lastEmitted = next.join("\n");
-      rebuild(Number.isFinite(focusReq) ? focusReq : -1);
+      rebuild(shouldApplyDataFocus() ? focusReq : -1);
     }
   } else if (!root.childElementCount) {
-    if (!inst.lines) inst.lines = normalize(incoming);
-    rebuild(Number.isFinite(focusReq) ? focusReq : -1);
+    inst.lines = inst.lines ? mergeIncoming(incoming) : normalize(incoming);
+    rebuild(shouldApplyDataFocus() ? focusReq : -1);
   } else {
-    const dom = readDomLines();
-    inst.lines = normalize(dom);
+    inst.lines = mergeIncoming(incoming);
+    applyFillScale();
   }
+  if (!inst.ro) {
+    try {
+      inst.ro = new ResizeObserver(function () { applyFillScale(); });
+      inst.ro.observe(root);
+    } catch (eRo) {}
+  }
+  bindDragSelect();
 }
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v20",
+    "worklog_entry_lines_v53",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -448,6 +894,60 @@ export default function (component) {
   if (typeof window !== "undefined" && window.__wlEnterHookOff) {
     try { window.__wlEnterHookOff(); } catch (eOff) {}
     window.__wlEnterHookOff = null;
+  }
+  if (typeof window !== "undefined" && typeof window.__wlApplyScrollPin === "function") {
+    try { window.__wlApplyScrollPin(); } catch (ePin) {}
+  }
+
+  function walkHosts(el) {
+    const out = [];
+    let n = el;
+    while (n && n !== document && n !== window) {
+      out.push(n);
+      const root = n.getRootNode && n.getRootNode();
+      if (root && root !== document && root.host) {
+        n = root.host;
+        continue;
+      }
+      n = n.parentElement || null;
+    }
+    return out;
+  }
+
+  function eventTargetInput(e) {
+    const path = (e.composedPath && e.composedPath()) || [e.target];
+    for (let i = 0; i < path.length; i++) {
+      const n = path[i];
+      if (!n || !n.tagName) continue;
+      const tag = String(n.tagName).toUpperCase();
+      if (tag === "INPUT" || tag === "TEXTAREA") return n;
+    }
+    return e.target;
+  }
+
+  function queryDeep(root, selector) {
+    const out = [];
+    const seen = new Set();
+    function walk(node) {
+      if (!node || seen.has(node)) return;
+      seen.add(node);
+      if (node.querySelectorAll) {
+        try {
+          node.querySelectorAll(selector).forEach((el) => out.push(el));
+        } catch (e1) {}
+      }
+      const kids = node.querySelectorAll ? node.querySelectorAll("*") : [];
+      for (let i = 0; i < kids.length; i++) {
+        if (kids[i].shadowRoot) walk(kids[i].shadowRoot);
+      }
+    }
+    walk(root);
+    return out;
+  }
+
+  function slotOk(part) {
+    const s = String(part || "");
+    return s === String(iso || "") || s === "ui";
   }
 
   function resolveKey(t) {
@@ -467,63 +967,98 @@ export default function (component) {
       return { key: key, kind: m[1], ei: -1, lj: -1 };
     }
     if (tag !== "INPUT") return null;
-    let wrap = t.closest ? t.closest('[class*="st-key-wl_ent_ln_"],[class*="st-key-wl_ent_cl_"]') : null;
-    if (wrap) {
+    const chain = walkHosts(t);
+    for (let i = 0; i < chain.length; i++) {
+      const wrap = chain[i];
+      if (!wrap.classList) continue;
       const cls = Array.prototype.find.call(wrap.classList || [], (c) => {
         const s = String(c);
-        return s.indexOf("st-key-wl_ent_ln_") !== -1 || s.indexOf("st-key-wl_ent_cl_") !== -1;
+        return s.indexOf("st-key-wl_ent_ln_") !== -1 || s.indexOf("st-key-wl_ent_cl_") !== -1 || s.indexOf("st-key-wl_ent_rm_") !== -1;
       });
       if (cls) {
         const key = String(cls).replace(/^st-key-/, "");
-        const m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(key);
-        if (m && m[2] === iso) return { key: key, kind: m[1], ei: Number(m[3]), lj: Number(m[4]) };
+        const m = /^(wl_ent_ln|wl_ent_cl|wl_ent_rm)_(\d{4}-\d{2}-\d{2}|ui)_(\d+)_(\d+)(?:_g\d+)?$/.exec(key);
+        if (m && slotOk(m[2])) return { key: key, kind: m[1], ei: Number(m[3]), lj: Number(m[4]) };
       }
     }
-    wrap = t.closest ? t.closest('[class*="st-key-wl_lines_comp_"],[class*="st-key-wl_clients_comp_"]') : null;
-    if (!wrap) return null;
-    const cls2 = Array.prototype.find.call(wrap.classList || [], (c) => {
-      const s = String(c);
-      return s.indexOf("st-key-wl_lines_comp_") !== -1 || s.indexOf("st-key-wl_clients_comp_") !== -1;
-    });
-    if (!cls2) return null;
+    let wrap = null;
+    let cls2 = null;
+    for (let i = 0; i < chain.length; i++) {
+      const n = chain[i];
+      if (!n.classList) continue;
+      cls2 = Array.prototype.find.call(n.classList || [], (c) => {
+        const s = String(c);
+        return s.indexOf("st-key-wl_lines_comp_") !== -1 || s.indexOf("st-key-wl_clients_comp_") !== -1 || s.indexOf("st-key-wl_remarks_comp_") !== -1;
+      });
+      if (cls2) { wrap = n; break; }
+    }
+    if (!wrap || !cls2) return null;
     const compKey = String(cls2).replace(/^st-key-/, "");
-    const m2 = /^(wl_(?:lines|clients)_comp)_(\d{4}-\d{2}-\d{2})_(\d+)$/.exec(compKey);
-    if (!m2 || m2[2] !== iso) return null;
-    const kind = m2[1] === "wl_clients_comp" ? "wl_ent_cl" : "wl_ent_ln";
+    const m2 = /^(wl_(?:lines|clients|remarks)_comp)_(\d{4}-\d{2}-\d{2}|ui)_(\d+)/.exec(compKey);
+    if (!m2 || !slotOk(m2[2])) return null;
+    const kind = m2[1] === "wl_clients_comp" ? "wl_ent_cl" : m2[1] === "wl_remarks_comp" ? "wl_ent_rm" : "wl_ent_ln";
     const ei = Number(m2[3]);
     const lj = Number(t.dataset && t.dataset.idx != null ? t.dataset.idx : 0);
     const logicalKey = kind + "_" + iso + "_" + ei + "_" + lj;
     return { key: logicalKey, kind: kind, ei: ei, lj: lj };
   }
 
+  const COLS = ["wl_ent_cl", "wl_ent_ln", "wl_ent_rm"];
+
   function listKindInputs(kind) {
-    const needle = kind === "wl_ent_cl" ? "st-key-wl_ent_cl_" : "st-key-wl_ent_ln_";
-    const compNeedle = kind === "wl_ent_cl" ? "st-key-wl_clients_comp_" : "st-key-wl_lines_comp_";
-    const nodes = document.querySelectorAll(
-      'div[class*="' + needle + '"] input, div[class*="' + compNeedle + '"] .wl-lines input[data-idx]'
-    );
+    const needle = kind === "wl_ent_cl" ? "st-key-wl_ent_cl_" : kind === "wl_ent_rm" ? "st-key-wl_ent_rm_" : "st-key-wl_ent_ln_";
+    const compNeedle = kind === "wl_ent_cl" ? "st-key-wl_clients_comp_" : kind === "wl_ent_rm" ? "st-key-wl_remarks_comp_" : "st-key-wl_lines_comp_";
+    const wraps = queryDeep(document, 'div[class*="' + needle + '"],div[class*="' + compNeedle + '"]');
     const out = [];
-    for (let i = 0; i < nodes.length; i++) {
-      const info = resolveKey(nodes[i]);
-      if (info) out.push(nodes[i]);
+    const seen = new Set();
+    for (let w = 0; w < wraps.length; w++) {
+      const nodes = queryDeep(wraps[w], "input[data-idx], input");
+      for (let i = 0; i < nodes.length; i++) {
+        const el = nodes[i];
+        if (seen.has(el)) continue;
+        const info = resolveKey(el);
+        if (!info || info.kind !== kind) continue;
+        seen.add(el);
+        out.push(el);
+      }
     }
+    out.sort((a, b) => {
+      const ia = resolveKey(a);
+      const ib = resolveKey(b);
+      return (ia ? ia.lj : 0) - (ib ? ib.lj : 0);
+    });
     return out;
+  }
+
+  function findCell(kind, lj, ei) {
+    const list = listKindInputs(kind);
+    let fallback = null;
+    for (let i = 0; i < list.length; i++) {
+      const p = resolveKey(list[i]);
+      if (!p || Number(p.lj) !== Number(lj)) continue;
+      if (ei == null || !Number.isFinite(Number(ei)) || Number(p.ei) === Number(ei)) return list[i];
+      if (!fallback) fallback = list[i];
+    }
+    return fallback;
   }
 
   function findInputForFocusKey(focusKey) {
     if (!focusKey) return null;
-    let m = /^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$/.exec(focusKey);
+    let m = /^(wl_ent_ln|wl_ent_cl|wl_ent_rm)_(\d{4}-\d{2}-\d{2}|ui)_(\d+)_(\d+)(?:_g\d+)?$/.exec(focusKey);
     if (m) {
       const kind = m[1];
-      const isoVal = m[2];
       const ei = m[3];
       const lj = m[4];
-      const compNeedle =
-        (kind === "wl_ent_cl" ? "st-key-wl_clients_comp_" : "st-key-wl_lines_comp_") + isoVal + "_" + ei;
-      const wraps = document.querySelectorAll('div[class*="' + compNeedle + '"]');
-      for (let i = 0; i < wraps.length; i++) {
-        const el = wraps[i].querySelector('.wl-lines input[data-idx="' + lj + '"]');
-        if (el) return el;
+      const base = kind === "wl_ent_cl" ? "st-key-wl_clients_comp_" : kind === "wl_ent_rm" ? "st-key-wl_remarks_comp_" : "st-key-wl_lines_comp_";
+      const slots = [m[2], "ui", iso];
+      for (let s = 0; s < slots.length; s++) {
+        const slot = String(slots[s] || "");
+        if (!slot) continue;
+        const wraps = queryDeep(document, 'div[class*="' + base + slot + "_" + ei + '"]');
+        for (let i = 0; i < wraps.length; i++) {
+          const found = queryDeep(wraps[i], '.wl-lines input[data-idx="' + lj + '"]');
+          if (found.length) return found[0];
+        }
       }
       const legacy = document.querySelector('div[class*="st-key-' + focusKey + '"] input');
       if (legacy) return legacy;
@@ -533,10 +1068,56 @@ export default function (component) {
     );
   }
 
+  function findScroller(start) {
+    let n = start;
+    const chain = [];
+    while (n && n !== document) {
+      chain.push(n);
+      const root = n.getRootNode && n.getRootNode();
+      if (root && root !== document && root.host) {
+        n = root.host;
+        continue;
+      }
+      n = n.parentElement;
+    }
+    for (let i = 0; i < chain.length; i++) {
+      const node = chain[i];
+      if (!node || node.nodeType !== 1) continue;
+      try {
+        const st = window.getComputedStyle(node);
+        const oy = st.overflowY || "";
+        if ((oy === "auto" || oy === "scroll" || oy === "overlay") && node.scrollHeight > node.clientHeight + 8) {
+          return node;
+        }
+      } catch (e0) {}
+    }
+    return document.querySelector("section.main") || document.scrollingElement || document.documentElement;
+  }
+
+  function scrollCellIntoTabView(el) {
+    if (!el || !el.getBoundingClientRect) return;
+    const tabs = document.querySelector('[data-testid="stTabs"] [role="tablist"]');
+    const tabBottom = tabs ? tabs.getBoundingClientRect().bottom : 0;
+    const topLimit = Math.max(tabBottom, 56) + 10;
+    const bottomLimit = (window.innerHeight || 800) - 16;
+    const rect = el.getBoundingClientRect();
+    let delta = 0;
+    if (rect.top < topLimit) delta = rect.top - topLimit;
+    else if (rect.bottom > bottomLimit) delta = rect.bottom - bottomLimit;
+    if (!delta) return;
+    const scroller = findScroller(el);
+    if (scroller && scroller !== document.documentElement && scroller !== document.body && scroller !== document.scrollingElement) {
+      scroller.scrollTop += delta;
+    } else {
+      window.scrollBy(0, delta);
+    }
+  }
+  if (typeof window !== "undefined") window.wlScrollCellIntoTabView = scrollCellIntoTabView;
+
   function focusInput(el, caret) {
     if (!el) return false;
     try {
-      el.focus({ preventScroll: false });
+      el.focus({ preventScroll: true });
       const n = (el.value || "").length;
       let pos = n;
       if (caret === "start") pos = 0;
@@ -548,6 +1129,9 @@ export default function (component) {
     } catch (e1) {
       try { el.focus(); } catch (e2) {}
     }
+    try {
+      scrollCellIntoTabView(el);
+    } catch (e3) {}
     return true;
   }
 
@@ -580,16 +1164,16 @@ export default function (component) {
 
   const onKey = (e) => {
     if (e.isComposing || e.keyCode === 229) return;
-    const info = resolveKey(e.target);
+    const t = eventTargetInput(e);
+    const info = resolveKey(t);
     if (!info) return;
-    const t = e.target;
     const start = typeof t.selectionStart === "number" ? t.selectionStart : 0;
     const end = typeof t.selectionEnd === "number" ? t.selectionEnd : start;
     const len = String(t.value || "").length;
     const caretAll = start === end;
+    const tag = String(t.tagName || "").toUpperCase();
 
     if (e.key === "Enter") {
-      const tag = String(t.tagName || "").toUpperCase();
       // 익일업무·특이사항 textarea: Enter = 다음 줄, ⌘/Ctrl+Enter = 반영
       if (tag === "TEXTAREA") {
         if (e.metaKey || e.ctrlKey) {
@@ -599,91 +1183,120 @@ export default function (component) {
         }
         return;
       }
+      // 거래처·내용·비고는 CCv2가 다음 줄로 옮긴다. 여기서 가로채 다시 심으면 이전 칸 값이 빠진다.
+      if (info.kind === "wl_ent_cl" || info.kind === "wl_ent_ln" || info.kind === "wl_ent_rm") return;
       e.preventDefault();
       e.stopPropagation();
       emit(info.key, t.value || "");
       return;
     }
 
+    if (tag === "TEXTAREA") return;
+    if (tryArrowNav(t, info, e)) return;
+  };
+
+  function tryArrowNav(t, info, e) {
+    if (!t || !info || !e) return false;
+    const start = typeof t.selectionStart === "number" ? t.selectionStart : 0;
+    const end = typeof t.selectionEnd === "number" ? t.selectionEnd : start;
+    const len = String(t.value || "").length;
+    const caretAll = start === end;
     if (e.key === "ArrowUp") {
-      const list = listKindInputs(info.kind);
-      const idx = list.indexOf(t);
-      if (idx > 0) {
-        e.preventDefault();
-        e.stopPropagation();
-        focusInput(list[idx - 1], "end");
-      } else {
-        const peerKind = info.kind === "wl_ent_cl" ? "wl_ent_ln" : "wl_ent_cl";
-        const peer = findPeer(info, peerKind);
-        if (peer && peer !== t) {
-          e.preventDefault();
-          e.stopPropagation();
-          focusInput(peer, "end");
-        }
-      }
-      return;
+      const el = findCell(info.kind, info.lj - 1, info.ei);
+      if (!el) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      focusInput(el, "end");
+      return true;
     }
     if (e.key === "ArrowDown") {
-      const list = listKindInputs(info.kind);
-      const idx = list.indexOf(t);
-      if (idx >= 0 && idx < list.length - 1) {
-        e.preventDefault();
-        e.stopPropagation();
-        focusInput(list[idx + 1], "end");
-      } else {
-        const peerKind = info.kind === "wl_ent_cl" ? "wl_ent_ln" : "wl_ent_cl";
-        const peer = findPeer({ ...info, lj: info.lj + 1 }, peerKind);
-        if (peer && peer !== t) {
-          e.preventDefault();
-          e.stopPropagation();
-          focusInput(peer, "start");
-        }
-      }
-      return;
+      const el = findCell(info.kind, info.lj + 1, info.ei);
+      if (!el) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      focusInput(el, "end");
+      return true;
     }
     if (e.key === "ArrowLeft" && caretAll && start === 0) {
-      const peer = info.kind === "wl_ent_ln" ? findPeer(info, "wl_ent_cl") : (() => {
-        const list = listKindInputs("wl_ent_cl");
-        const idx = list.indexOf(t);
-        return idx > 0 ? list[idx - 1] : null;
-      })();
-      if (peer) {
-        e.preventDefault();
-        e.stopPropagation();
-        focusInput(peer, "end");
-      }
-      return;
+      const ci = COLS.indexOf(info.kind);
+      let kind = info.kind;
+      let lj = info.lj;
+      if (ci > 0) kind = COLS[ci - 1];
+      else if (info.lj > 0) { kind = COLS[2]; lj = info.lj - 1; }
+      else return false;
+      const el = findCell(kind, lj, info.ei);
+      if (!el) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      focusInput(el, "end");
+      return true;
     }
     if (e.key === "ArrowRight" && caretAll && start === len) {
-      const peer = info.kind === "wl_ent_cl" ? findPeer(info, "wl_ent_ln") : (() => {
-        const list = listKindInputs("wl_ent_ln");
-        const idx = list.indexOf(t);
-        return idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null;
-      })();
-      if (peer) {
-        e.preventDefault();
-        e.stopPropagation();
-        focusInput(peer, "start");
-      }
-      return;
+      const ci = COLS.indexOf(info.kind);
+      let kind = info.kind;
+      let lj = info.lj;
+      if (ci >= 0 && ci < COLS.length - 1) kind = COLS[ci + 1];
+      else { kind = COLS[0]; lj = info.lj + 1; }
+      const el = findCell(kind, lj, info.ei);
+      if (!el) return false;
+      e.preventDefault();
+      e.stopPropagation();
+      focusInput(el, "start");
+      return true;
     }
-  };
+    return false;
+  }
+
+  if (typeof window !== "undefined") {
+    window.wlNavWorklogArrow = function (el, ev) {
+      const info = resolveKey(el);
+      if (!info) return false;
+      return tryArrowNav(el, info, ev);
+    };
+  }
 
   document.addEventListener("keydown", onKey, true);
 
+  let focusTimers = [];
+  const clearFocusTimers = () => {
+    for (let i = 0; i < focusTimers.length; i++) {
+      try { clearTimeout(focusTimers[i]); } catch (eT) {}
+    }
+    focusTimers = [];
+  };
+  const onUserTakeover = (e) => {
+    const t = eventTargetInput(e);
+    if (resolveKey(t) || (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"))) {
+      clearFocusTimers();
+    }
+  };
+  document.addEventListener("pointerdown", onUserTakeover, true);
+  document.addEventListener("keydown", onUserTakeover, true);
+
   if (focusKey) {
     const go = () => {
+      const active = document.activeElement;
+      const tag = String((active && active.tagName) || "").toUpperCase();
+      if (tag === "INPUT" || tag === "TEXTAREA") {
+        const cur = resolveKey(active);
+        if (cur && String(cur.key) === String(focusKey)) return true;
+        return false;
+      }
       const el = findInputForFocusKey(focusKey);
       if (!el) return false;
       const caret = focusCaret != null && Number.isFinite(focusCaret) ? focusCaret : "end";
       focusInput(el, caret);
       return true;
     };
-    go(); setTimeout(go, 50); setTimeout(go, 150); setTimeout(go, 350); setTimeout(go, 600);
+    go();
+    focusTimers.push(setTimeout(go, 50));
   }
 
   const off = () => {
+    clearFocusTimers();
     document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("pointerdown", onUserTakeover, true);
+    document.removeEventListener("keydown", onUserTakeover, true);
   };
   if (typeof window !== "undefined") window.__wlEnterHookOff = off;
   return off;
@@ -691,8 +1304,123 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v24",
+    "worklog_cell_nav_hook_v32",
     js=_WL_ENTER_HOOK_JS,
+)
+
+_WL_SCROLL_LOCK_JS = r"""
+export default function (component) {
+  const { data } = component;
+  const iso = String((data && data.iso) || "");
+  const pin = Number((data && data.pin) || 0);
+
+  function scrollerList() {
+    const out = [];
+    const seen = new Set();
+    const add = (el) => {
+      if (!el || seen.has(el)) return;
+      seen.add(el);
+      out.push(el);
+    };
+    add(document.querySelector("section.main"));
+    add(document.querySelector('[data-testid="stMain"]'));
+    add(document.querySelector('[data-testid="stAppViewContainer"]'));
+    add(document.querySelector(".stApp"));
+    add(document.scrollingElement);
+    add(document.documentElement);
+    add(document.body);
+    return out;
+  }
+  function readSnap() {
+    const main = document.querySelector("section.main") || document.querySelector('[data-testid="stMain"]');
+    return {
+      win: window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0,
+      main: main ? (main.scrollTop || 0) : 0,
+    };
+  }
+  function writeSnap(snap) {
+    if (!snap) return;
+    const y = Number(snap.win || 0);
+    const m = Number(snap.main || 0);
+    try { window.scrollTo(0, y); } catch (e0) {}
+    try { document.documentElement.scrollTop = y; } catch (e1) {}
+    try { document.body.scrollTop = y; } catch (e2) {}
+    scrollerList().forEach((el) => {
+      try { el.scrollTop = (el === document.documentElement || el === document.body) ? y : m; } catch (e3) {}
+    });
+    const main = document.querySelector("section.main") || document.querySelector('[data-testid="stMain"]');
+    if (main) {
+      try { main.scrollTop = m || y; } catch (e4) {}
+    }
+  }
+  function freeze(ms) {
+    window.__wlScrollSnap = readSnap();
+    window.__wlMainScrollPinUntil = Date.now() + (ms || 1200);
+  }
+  function applyPin() {
+    const until = window.__wlMainScrollPinUntil || 0;
+    if (Date.now() > until) return;
+    writeSnap(window.__wlScrollSnap);
+  }
+  function isDateChrome(el) {
+    let n = el;
+    for (let i = 0; i < 12 && n && n !== document; i++) {
+      const cls = String((n.className && n.className.baseVal) || n.className || "");
+      if (
+        cls.indexOf("st-key-wl_date") >= 0 ||
+        cls.indexOf("st-key-wl_cal") >= 0 ||
+        cls.indexOf("st-key-wl_day_") >= 0 ||
+        cls.indexOf("st-key-wl_today") >= 0 ||
+        cls.indexOf("st-key-wl_prev_month") >= 0 ||
+        cls.indexOf("st-key-wl_next_month") >= 0 ||
+        cls.indexOf("st-key-wl_save_btn_") >= 0 ||
+        cls.indexOf("st-key-wl_del_") >= 0
+      ) return true;
+      const root = n.getRootNode && n.getRootNode();
+      n = (root && root !== document && root.host) ? root.host : n.parentElement;
+    }
+    return false;
+  }
+
+  if (typeof window !== "undefined") {
+    window.__wlApplyScrollPin = applyPin;
+    if (!window.__wlScrollIntoViewPatched) {
+      window.__wlScrollIntoViewPatched = true;
+      const orig = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function () {
+        if (Date.now() <= (window.__wlMainScrollPinUntil || 0)) return;
+        return orig.apply(this, arguments);
+      };
+    }
+    if (!window.__wlScrollLockListen) {
+      window.__wlScrollLockListen = true;
+      document.addEventListener("pointerdown", (e) => {
+        if (isDateChrome(e.target)) freeze(500);
+      }, true);
+      document.addEventListener("scroll", () => {
+        if (Date.now() <= (window.__wlMainScrollPinUntil || 0)) return;
+        window.__wlScrollSnap = readSnap();
+      }, true);
+    }
+    const prevIso = window.__wlScrollLockIso;
+    const prevPin = Number(window.__wlScrollLockPin || 0);
+    window.__wlScrollLockIso = iso;
+    window.__wlScrollLockPin = pin;
+    if ((prevIso && prevIso !== iso) || (pin && pin !== prevPin)) {
+      window.__wlMainScrollPinUntil = Date.now() + 500;
+    }
+    if (window.__wlScrollSnap && Date.now() <= (window.__wlMainScrollPinUntil || 0)) {
+      applyPin();
+      requestAnimationFrame(applyPin);
+      setTimeout(applyPin, 80);
+    }
+  }
+}
+"""
+
+_WL_SCROLL_LOCK = st.components.v2.component(
+    "worklog_scroll_lock_v3",
+    js=_WL_SCROLL_LOCK_JS,
 )
 
 # 자주 쓰는 순 (앞쪽 = 우선 표시)
@@ -711,6 +1439,7 @@ _WL_PREVIEW_HOST_CSS = """
   max-height: 1100px;
   border: 1px solid #94A3B8;
 }
+.wl-preview-page { display: block; }
 """
 _WL_PREVIEW_HOST_JS = r"""
 const __wlPrev = new WeakMap();
@@ -720,6 +1449,20 @@ function applyPatches(root, patches) {
   for (const key of Object.keys(patches)) {
     const el = root.querySelector('[data-wl="' + key + '"]');
     if (el) el.innerHTML = String(patches[key] ?? "");
+  }
+}
+
+function scrollToPreviewPage(host, page) {
+  if (!host || page < 1) return;
+  const marked = host.querySelector('.wl-preview-page[data-wl-page="' + page + '"]');
+  const tables = host.querySelectorAll(".wl-sheet");
+  const el = marked || tables[page - 1] || (page > 1 ? host.querySelector('[data-wl^="p' + page + '-"]') : null);
+  if (!el) return;
+  const top = el.getBoundingClientRect().top - host.getBoundingClientRect().top + host.scrollTop;
+  try {
+    host.scrollTo({ top: Math.max(0, top - 6), behavior: "smooth" });
+  } catch (e0) {
+    host.scrollTop = Math.max(0, top - 6);
   }
 }
 
@@ -733,13 +1476,14 @@ export default function (component) {
   const rev = String((data && data.rev) || "");
   const height = Number((data && data.height) || 0);
   const patches = (data && data.patches) || null;
+  const page = Math.max(1, Number((data && data.page) || 1));
 
   host.className = "wl-live-preview" + (mode === "excel" ? " excel" : "");
   if (height > 0) host.style.maxHeight = height + "px";
 
   let inst = __wlPrev.get(host);
   if (!inst) {
-    inst = { rev: "", mode: "", html: "" };
+    inst = { rev: "", mode: "", html: "", page: 0 };
     __wlPrev.set(host, inst);
   }
   if (html) inst.html = html;
@@ -749,14 +1493,19 @@ export default function (component) {
       inst.rev = rev;
       inst.mode = mode;
       host.innerHTML = inst.html;
+      inst.page = 0;
     }
   }
   if (patches) applyPatches(host, patches);
+  if (mode === "excel" && inst.page !== page) {
+    inst.page = page;
+    requestAnimationFrame(() => scrollToPreviewPage(host, page));
+  }
 }
 """
 
 _WL_PREVIEW_HOST = st.components.v2.component(
-    "worklog_live_preview_v1",
+    "worklog_live_preview_v2",
     html=_WL_PREVIEW_HOST_HTML,
     css=_WL_PREVIEW_HOST_CSS,
     js=_WL_PREVIEW_HOST_JS,
@@ -764,7 +1513,7 @@ _WL_PREVIEW_HOST = st.components.v2.component(
 
 _WL_PRINT_LAUNCH_JS = r"""
 export default function (component) {
-  const { data } = component;
+  const { data, parentElement } = component;
   const html = (data && data.html) || "";
   const n = String((data && data.n) || "");
   if (!html || !n) return;
@@ -772,41 +1521,70 @@ export default function (component) {
     if (window.__wlPrintN === n) return;
     window.__wlPrintN = n;
   } catch (e0) {}
-  let w = null;
-  try { w = window.open("", "_blank"); } catch (e1) { w = null; }
-  if (!w) return;
+  const hostDoc = (parentElement && parentElement.ownerDocument)
+    || document;
+  let frame = hostDoc.getElementById("wl-print-frame");
+  if (!frame) {
+    frame = hostDoc.createElement("iframe");
+    frame.id = "wl-print-frame";
+    frame.setAttribute("aria-hidden", "true");
+    frame.setAttribute("title", "일일업무일지 인쇄");
+    frame.style.cssText = "position:fixed;left:-10000px;top:0;width:794px;height:1123px;border:0;visibility:hidden;pointer-events:none;";
+    hostDoc.body.appendChild(frame);
+  }
   try {
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
+    frame.srcdoc = html;
   } catch (e2) {
-    try { w.close(); } catch (e3) {}
+    try {
+      const doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
+      if (!doc) return;
+      doc.open();
+      doc.write(html);
+      doc.close();
+    } catch (e3) {}
   }
 }
 """
 
 _WL_PRINT_LAUNCH = st.components.v2.component(
-    "worklog_print_launch_v1",
+    "worklog_print_launch_v2",
     js=_WL_PRINT_LAUNCH_JS,
 )
 
-def _entry_lines_inst_key(iso: str, entry_i: int) -> str: return f"wl_lines_inst_{iso}_{entry_i}"
-def _entry_clients_inst_key(iso: str, entry_i: int) -> str: return f"wl_clients_inst_{iso}_{entry_i}"
+
+_WL_UI_SLOT = "ui"
+
+
+def _ui_iso(iso: str | None = None) -> str:
+    """입력칸 CCv2 키 — 날짜가 바뀌어도 같은 위젯을 유지한다. 칸 값은 날짜 전환 때 그날 저장본으로 교체한다."""
+    return _WL_UI_SLOT
+
+
+def _entry_lines_inst_key(iso: str, entry_i: int) -> str: return f"wl_lines_inst_{_ui_iso(iso)}_{entry_i}"
+def _entry_clients_inst_key(iso: str, entry_i: int) -> str: return f"wl_clients_inst_{_ui_iso(iso)}_{entry_i}"
+def _entry_remarks_inst_key(iso: str, entry_i: int) -> str: return f"wl_remarks_inst_{_ui_iso(iso)}_{entry_i}"
 
 def _entry_lines_comp_key(iso: str, entry_i: int) -> str:
     # 인스턴스 번호로 CCv2 위젯을 재마운트 — 동일 키에 남은 구 result.lines 부활 차단
     g = int(st.session_state.get(_entry_lines_inst_key(iso, entry_i), 0) or 0)
-    return f"wl_lines_comp_{iso}_{entry_i}_i{g}"
+    return f"wl_lines_comp_{_ui_iso(iso)}_{entry_i}_i{g}"
 
-def _entry_lines_rev_key(iso: str, entry_i: int) -> str: return f"wl_ent_rev_{iso}_{entry_i}"
-def _entry_lines_live_key(iso: str, entry_i: int) -> str: return f"wl_lines_live_{iso}_{entry_i}"
+def _entry_lines_rev_key(iso: str, entry_i: int) -> str: return f"wl_ent_rev_{_ui_iso(iso)}_{entry_i}"
+def _entry_lines_live_key(iso: str, entry_i: int) -> str: return f"wl_lines_live_{_ui_iso(iso)}_{entry_i}"
 
 def _entry_clients_comp_key(iso: str, entry_i: int) -> str:
     g = int(st.session_state.get(_entry_clients_inst_key(iso, entry_i), 0) or 0)
-    return f"wl_clients_comp_{iso}_{entry_i}_i{g}"
+    return f"wl_clients_comp_{_ui_iso(iso)}_{entry_i}_i{g}"
 
-def _entry_clients_rev_key(iso: str, entry_i: int) -> str: return f"wl_clients_rev_{iso}_{entry_i}"
-def _entry_clients_live_key(iso: str, entry_i: int) -> str: return f"wl_clients_live_{iso}_{entry_i}"
+def _entry_clients_rev_key(iso: str, entry_i: int) -> str: return f"wl_clients_rev_{_ui_iso(iso)}_{entry_i}"
+def _entry_clients_live_key(iso: str, entry_i: int) -> str: return f"wl_clients_live_{_ui_iso(iso)}_{entry_i}"
+
+def _entry_remarks_comp_key(iso: str, entry_i: int) -> str:
+    g = int(st.session_state.get(_entry_remarks_inst_key(iso, entry_i), 0) or 0)
+    return f"wl_remarks_comp_{_ui_iso(iso)}_{entry_i}_i{g}"
+
+def _entry_remarks_rev_key(iso: str, entry_i: int) -> str: return f"wl_remarks_rev_{_ui_iso(iso)}_{entry_i}"
+def _entry_remarks_live_key(iso: str, entry_i: int) -> str: return f"wl_remarks_live_{_ui_iso(iso)}_{entry_i}"
 
 def _bump_entry_lines_comp_inst(iso: str, entry_i: int) -> None:
     st.session_state.pop(_entry_lines_comp_key(iso, entry_i), None)
@@ -822,21 +1600,63 @@ def _bump_entry_clients_comp_inst(iso: str, entry_i: int) -> None:
     k = _entry_clients_inst_key(iso, entry_i)
     st.session_state[k] = int(st.session_state.get(k, 0) or 0) + 1
 
+def _bump_entry_remarks_comp_inst(iso: str, entry_i: int) -> None:
+    st.session_state.pop(_entry_remarks_comp_key(iso, entry_i), None)
+    st.session_state.pop(f"wl_remarks_comp_{iso}_{entry_i}", None)
+    st.session_state.pop(f"wl_remarks_user_edit_{iso}_{entry_i}", None)
+    k = _entry_remarks_inst_key(iso, entry_i)
+    st.session_state[k] = int(st.session_state.get(k, 0) or 0) + 1
+
 def _scrub_dummy_label(val: str) -> str:
     s = (val or "").strip()
-    if re.fullmatch(r"거래처\d+", s) or re.fullmatch(r"내용\d+", s): return ""
+    if re.fullmatch(r"거래처\d+", s) or re.fullmatch(r"내용\d+", s) or re.fullmatch(r"비고\d+", s): return ""
     return val or ""
 
-def _char_units(ch: str) -> int:
-    if not ch: return 0
-    o = ord(ch)
-    if (0xAC00 <= o <= 0xD7A3 or 0x1100 <= o <= 0x11FF or 0x3130 <= o <= 0x318F or 0x2E80 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF or 0xFF00 <= o <= 0xFFEF): return 2
-    return 1
+# 원본 14pt 명조 칸 폭. 한글=1em, 띄어쓰기≈0.42em, ASCII≈0.55em.
+# 단위는 한글 1자=2. 칸 폭은 원본.xlsx G~X·C~F·Y~AB 그대로.
+_WL_SPACE_UNITS = 0.58
+_WL_ASCII_UNITS = 1.1
+_WL_CONTENT_HANGUL = 37
+_WL_CLIENT_HANGUL = 8
+_WL_REMARK_HANGUL = 8
+_WL_ORIG_CONTENT_PX = 666
+_WL_ORIG_SIDE_PX = 148
+# 입력칸 테두리·패딩 보정 + 거래처·비고를 입력에서 더 넓게.
+_WL_INPUT_SIDE_CHROME_PX = 16
+_WL_INPUT_SIDE_WIDEN_PX = 44
 
-def _display_units(s: str) -> int: return sum(_char_units(ch) for ch in (s or ""))
+def _char_units(ch: str) -> float:
+    if not ch: return 0.0
+    if ch in " \t\u00a0": return _WL_SPACE_UNITS
+    o = ord(ch)
+    if (0xAC00 <= o <= 0xD7A3 or 0x1100 <= o <= 0x11FF or 0x3130 <= o <= 0x318F or 0x2E80 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF or 0xFF00 <= o <= 0xFFEF): return 2.0
+    return _WL_ASCII_UNITS
+
+def _lstrip_line_ws(s: str) -> str:
+    return (s or "").lstrip(" \t\u00a0\u3000")
+
+
+def _display_units(s: str) -> float:
+    """미리보기·원본 칸과 같이 앞 공백도 폭에 넣는다. 칸이 차면 바로 다음 줄."""
+    return float(sum(_char_units(ch) for ch in (s or "")))
 
 _WL_BODY_FONT_NAME = "바탕체"
 _WL_BODY_FONT_PT = 14.0  # 원본.xlsx 본문 글자 크기와 동일
+_WL_LOOK_PT_DELTA = 0.0  # 입력 표시는 _WL_INPUT_LOOK_SCALE. 원본·인쇄는 14pt.
+
+def _input_look_scale() -> float:
+    return float(_WL_INPUT_LOOK_SCALE)
+
+def _look_font_pt() -> float:
+    return max(7.0, float(_WL_BODY_FONT_PT) * float(_input_look_scale()) + float(_WL_LOOK_PT_DELTA))
+
+def _input_cell_px(kind: str) -> int:
+    """입력칸 표시 폭. 글자 배율에 맞추고 거래처·비고는 더 넓힌다."""
+    orig = int(_orig_cell_px(kind))
+    scaled = max(40, int(round(orig * (_look_font_pt() / float(_WL_BODY_FONT_PT)))))
+    if kind in ("client", "remark"):
+        return scaled + int(_WL_INPUT_SIDE_CHROME_PX) + int(_WL_INPUT_SIDE_WIDEN_PX)
+    return scaled
 
 def _set_body_font(cell) -> None:
     try: cell.font = cell.font.copy(name=_WL_BODY_FONT_NAME, size=float(_WL_BODY_FONT_PT))
@@ -847,19 +1667,321 @@ def _set_body_font(cell) -> None:
 # =====================================================================
 # 14pt 바탕체 기준 내용칸 한 줄 한도 (한글 1자=2단위). 자동 다음칸 이동 임계값.
 @lru_cache(maxsize=1)
-def _content_line_units() -> int: return 76  # 한글 39자 (기존 36자 + 3자)
+def _content_line_units() -> int: return int(_WL_CONTENT_HANGUL) * 2
 
 @lru_cache(maxsize=1)
-def _client_line_units() -> int: return 16  # 👈 한글 8자(16 단위)로 증가
+def _client_line_units() -> int: return int(_WL_CLIENT_HANGUL) * 2
+
+# 비고 Y~AB — 거래처와 같이 한글 8자.
+@lru_cache(maxsize=1)
+def _remark_line_units() -> int: return int(_WL_REMARK_HANGUL) * 2
+
+def _hangul_line_limit(max_u: int) -> int:
+    return max(1, int(max_u) // 2)
+
+
+@lru_cache(maxsize=8)
+def _orig_cell_px(kind: str) -> int:
+    """엑셀 미리보기 원본 병합칸 폭(px). 입력 줄바꿈과 미리보기를 같게 맞춘다."""
+    if kind == "content":
+        c0, c1, fallback = WL_CONTENT_COL_START, WL_CONTENT_COL_END, _WL_ORIG_CONTENT_PX
+    elif kind == "remark":
+        c0, c1, fallback = WL_REMARK_COL_START, WL_REMARK_COL_END, _WL_ORIG_SIDE_PX
+    else:
+        c0, c1, fallback = WL_CLIENT_COL_START, WL_CLIENT_COL_END, _WL_ORIG_SIDE_PX
+    try:
+        path = WORKLOG_TEMPLATE
+        if load_workbook is not None and path and os.path.exists(path):
+            wb = load_workbook(path, data_only=False)
+            ws = wb.active
+            px = sum(_excel_width_to_px(_excel_col_width(ws, c)) for c in range(c0, c1 + 1))
+            wb.close()
+            if px >= 40:
+                return int(px)
+    except Exception:
+        pass
+    return int(fallback)
+
+
+def _fit_preview_col_widths(col_widths: list[int], layout_scale: float = 1.0) -> list[int]:
+    """원본.xlsx 열 폭을 그대로 둔다."""
+    return list(col_widths)
+
+
+def _pad_sheet_lines(lines: list[str] | None, n: int = WL_SHEET_N) -> list[str]:
+    """본문 32칸. 익일업무·특이사항은 여기 넣지 않는다."""
+    out = [str(x or "") for x in (lines or [])][:n]
+    while len(out) < n:
+        out.append("")
+    return out
+
+
+def _sheet_lines_from_cells(cells: dict) -> tuple[list[str], list[str], list[str]]:
+    clients, contents, remarks = [], [], []
+    for r in WL_CONTENT_ROWS:
+        g = str(cells.get(f"G{r}", "") or "")
+        if g in (_WL_SOFT_BLANK, "\u00a0"):
+            g = ""
+        clients.append(str(cells.get(f"C{r}", "") or ""))
+        contents.append(g)
+        remarks.append(str(cells.get(f"Y{r}", "") or ""))
+    return _pad_sheet_lines(clients), _pad_sheet_lines(contents), _pad_sheet_lines(remarks)
+
+
+def _pack_sheet_to_cells(
+    d: date,
+    clients: list[str],
+    contents: list[str],
+    remarks: list[str],
+    next_day: list[str] | None = None,
+    notes: list[str] | None = None,
+) -> dict:
+    """본문 32칸만 행 대 행으로 넣고, 익일·특이는 기존 D열 칸에 둔다."""
+    cells = _empty_cells(d)
+    clients, contents, remarks = (
+        _pad_sheet_lines(clients),
+        _pad_sheet_lines(contents),
+        _pad_sheet_lines(remarks),
+    )
+    for i, r in enumerate(WL_CONTENT_ROWS):
+        cells[f"C{r}"] = clients[i]
+        cells[f"G{r}"] = contents[i]
+        cells[f"Y{r}"] = remarks[i]
+    max_u = _content_line_units()
+    for t_list, t_rows in ((next_day, WL_NEXT_ROWS), (notes, WL_NOTE_ROWS)):
+        chunks = _panel_lines_to_cells(t_list, max_u)
+        for i, r in enumerate(t_rows):
+            cells[f"D{r}"] = chunks[i] if i < len(chunks) else ""
+    return cells
+
+
+def _sheet_entry_from_lines(
+    clients: list[str] | None,
+    contents: list[str] | None,
+    remarks: list[str] | None,
+) -> dict:
+    clients = _pad_sheet_lines(clients)
+    contents = _pad_sheet_lines(contents)
+    remarks = _pad_sheet_lines(remarks)
+    return {
+        "client": "\n".join(x for x in clients if str(x).strip()),
+        "client_lines": clients,
+        "content": "\n".join(x for x in contents if str(x).strip()),
+        "lines": contents,
+        "remarks": "\n".join(x for x in remarks if str(x).strip()),
+        "remark_lines": remarks,
+        "blank_after": 0,
+    }
+
+
+def _sheet_entry_from_cells(cells: dict) -> dict:
+    return _sheet_entry_from_lines(*_sheet_lines_from_cells(cells or {}))
+
+
+def _empty_sheet_entry() -> dict:
+    return _sheet_entry_from_lines([], [], [])
+
+
+def _extra_page_sheet_name(page_n: int) -> str:
+    """일자 파일 추가 시트. 2페이지 → p2. 숫자만이면 달력이 일로 착각한다."""
+    return f"p{max(2, int(page_n))}"
+
+
+def _archive_extra_sheet_name(d: date, page_n: int) -> str:
+    """월별 파일 추가 시트. 16일 2페이지 → 16p2."""
+    return f"{d.day}p{max(2, int(page_n))}"
+
+
+def _extra_page_n_from_sheet_name(name: str) -> int | None:
+    s = str(name or "").strip()
+    m = re.fullmatch(r"p(\d+)", s)
+    if m:
+        n = int(m.group(1))
+        return n if n >= 2 else None
+    m = re.fullmatch(r"(\d{1,2})p(\d+)", s)
+    if m:
+        n = int(m.group(2))
+        return n if n >= 2 else None
+    return None
+
+
+def _is_day_extra_sheet_name(name: str) -> bool:
+    return bool(re.fullmatch(r"p\d+", str(name or "").strip()))
+
+
+def _is_archive_extra_sheet_name(name: str, d: date | None = None) -> bool:
+    s = str(name or "").strip()
+    if d is not None:
+        return bool(re.fullmatch(rf"{d.day}p\d+", s))
+    return bool(re.fullmatch(r"\d{1,2}p\d+", s))
+
+
+def _page_count_key(iso: str) -> str:
+    return f"wl_page_count_{iso}"
+
+
+def _page_idx_key(iso: str) -> str:
+    return f"wl_page_idx_{iso}"
+
+
+def _page_count_for(iso: str) -> int:
+    n = int(st.session_state.get(_page_count_key(iso), 1) or 1)
+    return max(1, min(WL_MAX_PAGES, n))
+
+
+def _page_idx_for(iso: str) -> int:
+    n = _page_count_for(iso)
+    i = int(st.session_state.get(_page_idx_key(iso), 0) or 0)
+    return max(0, min(n - 1, i))
+
+
+def _page_snap_key(iso: str, entry_i: int) -> str:
+    return f"wl_page_snap_{iso}_{int(entry_i)}"
+
+
+def _page_lines_have_text(parts: tuple[list[str], list[str], list[str]] | None) -> bool:
+    if not parts:
+        return False
+    return any(str(x).strip() for col in parts for x in (col or []))
+
+
+def _live_sheet_lines_at(iso: str, entry_i: int) -> tuple[list[str], list[str], list[str]]:
+    return (
+        _pad_sheet_lines(_clients_from_widgets(iso, entry_i, keep_trailing_empty=True)),
+        _pad_sheet_lines(_lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)),
+        _pad_sheet_lines(_remarks_from_widgets(iso, entry_i, keep_trailing_empty=True)),
+    )
+
+
+def _snapshot_worklog_page(iso: str, entry_i: int | None = None) -> None:
+    """보이는 페이지를 스냅샷. 페이지 전환 때 CCv2 언마운트가 빈 값으로 덮는 것을 막는다."""
+    i = _page_idx_for(iso) if entry_i is None else int(entry_i)
+    live = _live_sheet_lines_at(iso, i)
+    prev = st.session_state.get(_page_snap_key(iso, i))
+    if (not _page_lines_have_text(live)) and isinstance(prev, (list, tuple)) and len(prev) == 3 and _page_lines_have_text(tuple(prev)):
+        return
+    st.session_state[_page_snap_key(iso, i)] = live
+
+
+def _sheet_lines_from_widgets_at(iso: str, entry_i: int) -> tuple[list[str], list[str], list[str]]:
+    live = _live_sheet_lines_at(iso, entry_i)
+    snap = st.session_state.get(_page_snap_key(iso, entry_i))
+    snap_p = None
+    if isinstance(snap, (list, tuple)) and len(snap) == 3:
+        snap_p = (
+            _pad_sheet_lines(snap[0]),
+            _pad_sheet_lines(snap[1]),
+            _pad_sheet_lines(snap[2]),
+        )
+    if entry_i != _page_idx_for(iso) and snap_p is not None:
+        return snap_p
+    if (not _page_lines_have_text(live)) and snap_p is not None and _page_lines_have_text(snap_p):
+        return snap_p
+    return live
+
+
+def _detach_extra_pages(cells: dict | None) -> tuple[dict, list[dict]]:
+    src = dict(cells or {})
+    extras = src.pop("_extra_pages", None)
+    if not isinstance(extras, list):
+        extras = []
+    clean: list[dict] = []
+    for extra in extras:
+        if isinstance(extra, dict):
+            item = {k: v for k, v in extra.items() if k != "_extra_pages"}
+            clean.append(item)
+    return src, clean
+
+
+def _attach_extra_pages(cells: dict, extras: list[dict] | None) -> dict:
+    out = dict(cells or {})
+    if extras:
+        out["_extra_pages"] = [dict(x) for x in extras if isinstance(x, dict)]
+    else:
+        out.pop("_extra_pages", None)
+    return out
+
+
+def _sheet_page_has_body_text(cells: dict | None) -> bool:
+    src, _extras = _detach_extra_pages(cells)
+    return any(
+        str(src.get(f"G{r}", "") or "").strip()
+        or str(src.get(f"C{r}", "") or "").strip()
+        or str(src.get(f"Y{r}", "") or "").strip()
+        for r in WL_CONTENT_ROWS
+    )
+
+
+def _collapse_empty_worklog_pages(cells: dict) -> dict:
+    """앞쪽 빈 페이지를 접고, 내용 없는 추가 페이지는 저장하지 않는다."""
+    body, extras = _detach_extra_pages(cells)
+    extras = [dict(e) for e in extras if isinstance(e, dict)]
+    for extra in extras:
+        extra.pop("_extra_pages", None)
+    while extras and not _sheet_page_has_body_text(body):
+        nxt = extras.pop(0)
+        for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
+            k = f"D{r}"
+            if not str(nxt.get(k, "") or "").strip() and str(body.get(k, "") or "").strip():
+                nxt[k] = body[k]
+        if body.get("date"):
+            nxt["date"] = body.get("date")
+        body = nxt
+    extras = [e for e in extras if _sheet_page_has_body_text(e)]
+    return _attach_extra_pages(body, extras)
+
+
+def _html_page_break() -> str:
+    return (
+        '<div class="wl-page-break" style="page-break-before:always;break-before:page;'
+        'height:18px;min-height:18px;"></div>'
+    )
+
+
+def _sheet_row_usage(
+    clients: list[str] | None,
+    contents: list[str] | None,
+    remarks: list[str] | None,
+) -> dict:
+    """본문 32칸만 센다. 맨 끝 빈 칸은 사용으로 치지 않는다. 익일·특이는 제외."""
+    clients, contents, remarks = (
+        _pad_sheet_lines(clients),
+        _pad_sheet_lines(contents),
+        _pad_sheet_lines(remarks),
+    )
+    used = 0
+    for i in range(WL_SHEET_N):
+        if any(str(x).strip() for x in (clients[i], contents[i], remarks[i])):
+            used = i + 1
+    total = WL_SHEET_N
+    return {
+        "total": total,
+        "used": used,
+        "remaining": max(0, total - used),
+        "per_entry": [used],
+        "last_row": WL_CONTENT_ROWS[-1] if WL_CONTENT_ROWS else 39,
+        "next_row": WL_CONTENT_ROWS[used] if used < total else None,
+        "overflow": False,
+    }
+
+def _wl_col_limit_label(title: str, max_u: int) -> str:
+    n = _hangul_line_limit(max_u)
+    return (
+        f"<div style='font-size:11px;font-weight:700;color:#334155;margin:0 0 4px;line-height:1.35;white-space:nowrap;overflow:hidden;min-height:1.4em;'>"
+        f"{title} <span style='font-weight:500;color:#94A3B8;'>원본 한글 {n}자</span></div>"
+    )
 
 def _fit_by_units(s: str, max_units: int | None = None) -> tuple[str, str]:
     if max_units is None: max_units = _content_line_units()
     if not s: return "", ""
     if _display_units(s) <= max_units: return s, ""
-    acc = 0
+    acc = 0.0
     for i, ch in enumerate(s):
         cu = _char_units(ch)
-        if acc + cu > max_units: return s[:i] if i else s[:1], s[i:] if i else s[1:]
+        if acc + cu > max_units:
+            head = s[:i] if i else s[:1]
+            tail = s[i:] if i else s[1:]
+            return head, _lstrip_line_ws(tail)
         acc += cu
     return s, ""
 
@@ -879,14 +2001,14 @@ def _chunk_text(text: str, max_units: int | None = None) -> list[str]:
             if not rest: break
     return out
 
-def _spill_column(cells: dict, rows: list[int], col: str) -> dict:
-    max_u = _content_line_units()
+def _spill_column(cells: dict, rows: list[int], col: str, max_u: int | None = None) -> dict:
+    if max_u is None: max_u = _content_line_units()
     vals = [str(cells.get(f"{col}{r}", "") or "") for r in rows]
     for i in range(len(vals)):
         while _display_units(vals[i]) > max_u and i + 1 < len(vals):
             head, tail = _fit_by_units(vals[i], max_u)
             vals[i] = head
-            vals[i + 1] = tail + vals[i + 1]
+            vals[i + 1] = _lstrip_line_ws(tail) + vals[i + 1]
         if _display_units(vals[i]) > max_u:
             head, _tail = _fit_by_units(vals[i], max_u)
             vals[i] = head
@@ -895,10 +2017,13 @@ def _spill_column(cells: dict, rows: list[int], col: str) -> dict:
     return out
 
 def _spill_all_content(cells: dict) -> dict:
-    cells = _spill_column(cells, WL_CONTENT_ROWS, "G")
-    cells = _spill_column(cells, WL_NEXT_ROWS, "D")
-    cells = _spill_column(cells, WL_NOTE_ROWS, "D")
-    return cells
+    body, extras = _detach_extra_pages(cells)
+    body = _spill_column(body, WL_CONTENT_ROWS, "G")
+    body = _spill_column(body, WL_CONTENT_ROWS, "Y", _remark_line_units())
+    body = _spill_column(body, WL_NEXT_ROWS, "D")
+    body = _spill_column(body, WL_NOTE_ROWS, "D")
+    spilled_extras = [_spill_all_content(extra) for extra in extras]
+    return _attach_extra_pages(body, spilled_extras)
 
 # 💡 템플릿 준비: git의 uploaded_cache/worklog/template.xlsx 를 우선 사용
 # (예전엔 ~/Desktop/업무일지.xlsx mtime이 더 新し면 덮어써서 로고·양식 반영이 깨짐)
@@ -1311,6 +2436,7 @@ def _copy_worksheet_cross_workbook(src_ws, dst_ws) -> None:
             dst_ws.merge_cells(str(mr))
     except Exception:
         pass
+    _ensure_worklog_body_merges(dst_ws)
 
     try:
         from openpyxl.drawing.image import Image as XLImage
@@ -1365,6 +2491,38 @@ def _migrate_legacy_month_workbook(d: date, month_path: str) -> None:
             pass
 
 
+def _rename_day_extra_sheets_to_archive(wb, d: date) -> None:
+    """일자 파일 p2 → 월별 16p2."""
+    for name in list(wb.sheetnames):
+        n = _extra_page_n_from_sheet_name(name)
+        if not n or not _is_day_extra_sheet_name(name):
+            continue
+        new_title = _archive_extra_sheet_name(d, n)
+        if name == new_title:
+            continue
+        if new_title in wb.sheetnames:
+            del wb[new_title]
+        wb[name].title = new_title
+
+
+def _sync_archive_extra_sheets(day_wb, month_wb, d: date) -> None:
+    """월별 파일에 해당 날짜 추가 페이지 시트를 맞춘다."""
+    wanted: set[str] = set()
+    active_title = day_wb.active.title if day_wb.worksheets else ""
+    for name in day_wb.sheetnames:
+        if name == active_title:
+            continue
+        n = _extra_page_n_from_sheet_name(name)
+        if not n:
+            continue
+        arch_name = _archive_extra_sheet_name(d, n)
+        wanted.add(arch_name)
+        _clone_worksheet_to_workbook(day_wb[name], month_wb, arch_name)
+    for name in list(month_wb.sheetnames):
+        if _is_archive_extra_sheet_name(name, d) and name not in wanted:
+            del month_wb[name]
+
+
 def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite: bool = True) -> str | None:
     """일자 파일을 월별 xlsx의 날짜 시트로 반영. 달이 바뀌면 N월.xlsx 신규 생성."""
     if load_workbook is None:
@@ -1386,6 +2544,7 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
             ws = month_wb.active
             if ws.title != sheet_title:
                 ws.title = sheet_title
+            _rename_day_extra_sheets_to_archive(month_wb, d)
             month_wb.save(month_path)
         finally:
             month_wb.close()
@@ -1411,6 +2570,7 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
             names.sort(key=_archive_sheet_sort_key)
             for i, name in enumerate(names):
                 month_wb.move_sheet(name, offset=i - month_wb.sheetnames.index(name))
+            _sync_archive_extra_sheets(day_wb, month_wb, d)
             month_wb.save(month_path)
         finally:
             month_wb.close()
@@ -1430,8 +2590,8 @@ def delete_worklog_archive_sheet_at(month_path: str, d: date) -> str | None:
     try:
         wb = load_workbook(month_path)
         try:
-            for sheet_title in _worklog_archive_sheet_titles_for_lookup(d):
-                if sheet_title in wb.sheetnames:
+            for sheet_title in list(wb.sheetnames):
+                if sheet_title in _worklog_archive_sheet_titles_for_lookup(d) or _is_archive_extra_sheet_name(sheet_title, d):
                     del wb[sheet_title]
                     removed = month_path
             remaining = [n for n in wb.sheetnames if n and not n.startswith("_")]
@@ -1505,6 +2665,8 @@ def _list_archive_saved_dates() -> set[str]:
                                 out.add(date(year, month, int(name)).isoformat())
                             except ValueError:
                                 pass
+                        elif _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
+                            continue
                         else:
                             try:
                                 out.add(date.fromisoformat(name).isoformat())
@@ -1548,6 +2710,8 @@ def _clear_content_cells(ws) -> None:
     for r in WL_CONTENT_ROWS:
         try: ws.cell(r, 7).value = None
         except AttributeError: pass
+        try: ws.cell(r, WL_REMARK_COL_START).value = None
+        except AttributeError: pass
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
         try: ws.cell(r, 4).value = None
         except AttributeError: pass
@@ -1555,7 +2719,9 @@ def _clear_content_cells(ws) -> None:
 def _empty_cells(d: date) -> dict:
     cells = {"date": format_worklog_date(d)}
     for r in WL_CLIENT_ROWS: cells[f"C{r}"] = ""
-    for r in WL_CONTENT_ROWS: cells[f"G{r}"] = ""
+    for r in WL_CONTENT_ROWS:
+        cells[f"G{r}"] = ""
+        cells[f"Y{r}"] = ""
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS: cells[f"D{r}"] = ""
     return cells
 
@@ -1567,6 +2733,8 @@ def _cells_from_worksheet(ws, d: date) -> dict:
     for r in WL_CONTENT_ROWS:
         v = ws.cell(r, 7).value
         cells[f"G{r}"] = "" if v is None else str(v)
+        y = ws.cell(r, WL_REMARK_COL_START).value
+        cells[f"Y{r}"] = "" if y is None else str(y)
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
         v = ws.cell(r, 4).value
         cells[f"D{r}"] = "" if v is None else str(v)
@@ -1610,18 +2778,12 @@ def read_worklog_cells_from_archive(d: date) -> dict | None:
         return None
 
 # 💡 강제 템플릿 덮어쓰기 로직 적용
-def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool = False) -> None:
-    if load_workbook is None: raise RuntimeError("openpyxl 이 필요합니다.")
-    _ensure_dirs()
-    if force_template or not os.path.exists(path):
-        if not os.path.exists(WORKLOG_TEMPLATE): raise FileNotFoundError("업무일지 템플릿이 없습니다.")
-        shutil.copy2(WORKLOG_TEMPLATE, path)
-    wb = load_workbook(path)
-    ws = wb.active
-    if force_template: _clear_content_cells(ws)
+def _apply_cells_to_worksheet(ws, d: date, cells: dict, *, include_panels: bool = True) -> None:
+    """활성/추가 시트에 본문 칸을 쓴다. 추가 페이지는 익일·특이를 비운다."""
+    body, _extras = _detach_extra_pages(cells)
     try:
         date_cell = ws[WL_DATE_CELL]
-        date_cell.value = cells.get("date") or format_worklog_date(d)
+        date_cell.value = body.get("date") or format_worklog_date(d)
         _set_body_font(date_cell)
     except AttributeError:
         pass
@@ -1629,7 +2791,7 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
     for r in WL_CLIENT_ROWS:
         try:
             cell = ws.cell(r, 3)
-            cell.value = (cells.get(f"C{r}", "") or None)
+            cell.value = (body.get(f"C{r}", "") or None)
             _set_body_font(cell)
             try: cell.alignment = cell.alignment.copy(horizontal="center", vertical="center", wrapText=False)
             except Exception: pass
@@ -1637,7 +2799,15 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
     for r in WL_CONTENT_ROWS:
         try:
             cell = ws.cell(r, 7)
-            cell.value = (cells.get(f"G{r}", "") or None)
+            cell.value = (body.get(f"G{r}", "") or None)
+            _set_body_font(cell)
+            try: cell.alignment = cell.alignment.copy(wrapText=True, shrinkToFit=False, vertical="top")
+            except Exception: pass
+        except AttributeError: pass
+    for r in WL_CONTENT_ROWS:
+        try:
+            cell = ws.cell(r, WL_REMARK_COL_START)
+            cell.value = (body.get(f"Y{r}", "") or None)
             _set_body_font(cell)
             try: cell.alignment = cell.alignment.copy(wrapText=True, shrinkToFit=False, vertical="top")
             except Exception: pass
@@ -1645,13 +2815,119 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
         try:
             cell = ws.cell(r, 4)
-            cell.value = (cells.get(f"D{r}", "") or None)
+            if include_panels:
+                cell.value = (body.get(f"D{r}", "") or None)
+            else:
+                cell.value = None
             _set_body_font(cell)
             try: cell.alignment = cell.alignment.copy(wrapText=True, shrinkToFit=False, vertical="top")
             except Exception: pass
         except AttributeError: pass
+
+
+def _sync_day_extra_sheets(path: str, d: date, extra_pages: list[dict]) -> None:
+    if load_workbook is None or not path or not os.path.exists(path):
+        return
+    wb = load_workbook(path)
+    try:
+        src = wb.active
+        wanted: list[str] = []
+        for i, extra in enumerate(extra_pages or []):
+            page_n = i + 2
+            title = _extra_page_sheet_name(page_n)
+            wanted.append(title)
+            extra_body, _ = _detach_extra_pages(extra if isinstance(extra, dict) else {})
+            extra_body["date"] = extra_body.get("date") or format_worklog_date(d)
+            if title in wb.sheetnames:
+                ws = wb[title]
+            else:
+                try:
+                    ws = wb.copy_worksheet(src)
+                    ws.title = title
+                except Exception:
+                    ws = wb.create_sheet(title)
+                    _copy_worksheet_cross_workbook(src, ws)
+                _clear_content_cells(ws)
+            _apply_cells_to_worksheet(ws, d, extra_body, include_panels=False)
+            _ensure_worklog_body_merges(ws)
+        for name in list(wb.sheetnames):
+            if name != src.title and _is_day_extra_sheet_name(name) and name not in wanted:
+                del wb[name]
+        wb.save(path)
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
+def _extra_page_cells_from_workbook(wb, d: date) -> list[dict]:
+    found: dict[int, dict] = {}
+    active_title = wb.active.title if wb.worksheets else ""
+    for name in wb.sheetnames:
+        if name == active_title:
+            continue
+        n = _extra_page_n_from_sheet_name(name)
+        if not n:
+            continue
+        if _is_archive_extra_sheet_name(name) and not _is_archive_extra_sheet_name(name, d):
+            continue
+        found[n] = _cells_from_worksheet(wb[name], d)
+    return [found[n] for n in sorted(found)]
+
+
+def read_worklog_extra_page_cells(d: date) -> list[dict]:
+    """2페이지부터의 본문 칸. 없으면 빈 목록."""
+    path = worklog_path(d)
+    if os.path.exists(path) and load_workbook is not None:
+        try:
+            wb = load_workbook(path, data_only=False)
+            try:
+                extras = _extra_page_cells_from_workbook(wb, d)
+                if extras:
+                    return extras
+            finally:
+                wb.close()
+        except Exception:
+            pass
+    return _read_extra_pages_from_archive(d)
+
+
+def _read_extra_pages_from_archive(d: date) -> list[dict]:
+    if load_workbook is None:
+        return []
+    month_path = worklog_archive_month_path(d, create_year=False)
+    if not month_path or not os.path.exists(month_path):
+        return []
+    try:
+        wb = load_workbook(month_path, data_only=False)
+        try:
+            return _extra_page_cells_from_workbook(wb, d)
+        finally:
+            wb.close()
+    except Exception:
+        return []
+
+
+def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool = False) -> None:
+    if load_workbook is None: raise RuntimeError("openpyxl 이 필요합니다.")
+    _ensure_dirs()
+    body, extras = _detach_extra_pages(cells)
+    if force_template or not os.path.exists(path):
+        if not os.path.exists(WORKLOG_TEMPLATE): raise FileNotFoundError("업무일지 템플릿이 없습니다.")
+        shutil.copy2(WORKLOG_TEMPLATE, path)
+    wb = load_workbook(path)
+    ws = wb.active
+    if force_template: _clear_content_cells(ws)
+    _apply_cells_to_worksheet(ws, d, body, include_panels=True)
+    _ensure_worklog_body_merges(ws)
     wb.save(path)
     wb.close()
+    if extras:
+        try:
+            _sync_day_extra_sheets(path, d, extras)
+        except Exception:
+            pass
 
 def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overwrite: bool = False) -> str:
     """저장: 로컬 캐시 + 월별 일지 + Drive + (가능하면) Cloud Gist.
@@ -1666,6 +2942,7 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
     cells = _spill_all_content(cells)
     write_cells_to_path(path, d, cells, force_template=True)
     _invalidate_saved_dates_cache()
+    _remember_calendar_saved_date(d)
     _invalidate_worklog_presence_cache(d)
     try:
         from worklog_remote_sync import clear_worklog_day_deleted, invalidate_gist_days_cache
@@ -1773,9 +3050,9 @@ def _purge_worklog_day_preview_cache(d: date) -> None:
         f"wl_left_excel_sig_v24_{iso}",
         f"wl_left_excel_html_v24_{iso}",
         f"wl_left_excel_h_v24_{iso}",
-        f"wl_left_excel_html_v26_{iso}",
-        f"wl_left_excel_h_v26_{iso}",
-        f"wl_left_excel_skel_v26_{iso}",
+        f"wl_left_excel_html_v27_{iso}",
+        f"wl_left_excel_h_v27_{iso}",
+        f"wl_left_excel_skel_v27_{iso}",
         f"wl_form_sig_v14_{iso}",
         f"wl_remote_pull_tried_{iso}",
     ):
@@ -1807,6 +3084,13 @@ def _delete_worklog_day_remote_sync(d: date) -> tuple[list[str], str]:
 def _worklog_remote_delete_job(d: date) -> None:
     try:
         _delete_worklog_day_remote_sync(d)
+        try:
+            month_path = worklog_archive_month_path(d, create_year=False)
+            if month_path and os.path.isfile(month_path):
+                from drive_autoload import push_worklog_month_archive_to_drive
+                push_worklog_month_archive_to_drive(month_path, year=d.year, force=True)
+        except Exception:
+            pass
         try:
             from worklog_remote_sync import invalidate_gist_days_cache
             invalidate_gist_days_cache()
@@ -1857,22 +3141,53 @@ def _merge_day_action_flags(*groups: dict | None) -> dict:
 
 
 def _queue_worklog_save(iso: str) -> None:
-    """저장 버튼 on_click — 날짜칸이 가리키는 날에 덮어 저장한다."""
-    picked = st.session_state.get("wl_date_pick")
-    selected = st.session_state.get("worklog_selected")
-    target_iso = iso
-    if isinstance(picked, date):
-        target_iso = picked.isoformat()
-        if isinstance(selected, date) and selected != picked:
-            _remember_purge_date(selected)
-    st.session_state[f"wl_do_save_{target_iso}"] = True
-    if target_iso != iso:
-        st.session_state[f"wl_do_save_{iso}"] = True
+    """저장 버튼 on_click — 지금 열린 편집 날짜에 저장한다."""
+    try:
+        _snapshot_worklog_page(iso)
+    except Exception:
+        pass
+    st.session_state[f"wl_do_save_{iso}"] = True
 
 
 def _queue_worklog_add(iso: str) -> None:
-    """항목 추가 on_click — fragment를 한 번 더 rerun 하지 않는다."""
+    """항목/페이지 추가 on_click — fragment를 한 번 더 rerun 하지 않는다."""
+    try:
+        _snapshot_worklog_page(iso)
+    except Exception:
+        pass
     st.session_state[f"wl_do_add_{iso}"] = True
+
+
+def _queue_worklog_page(iso: str, idx: int) -> None:
+    try:
+        _snapshot_worklog_page(iso)
+    except Exception:
+        pass
+    st.session_state[_page_idx_key(iso)] = max(0, int(idx))
+    st.session_state.pop(f"wl_focus_ln_{iso}", None)
+    st.session_state.pop(f"wl_focus_caret_{iso}", None)
+    st.session_state.pop("wl_active_cell_key", None)
+    st.session_state.pop("wl_active_cell_sel", None)
+    if int(idx) > 0:
+        html_k = f"wl_left_excel_html_v27_{iso}"
+        cached = str(st.session_state.get(html_k) or "")
+        page_n = int(idx) + 1
+        if cached and f'data-wl-page="{page_n}"' not in cached and f'data-wl="p{page_n}-' not in cached:
+            st.session_state[f"wl_left_excel_rebuild_{iso}"] = True
+
+
+def _add_worklog_input_page(iso: str) -> None:
+    n = _page_count_for(iso)
+    if n >= WL_MAX_PAGES:
+        return
+    st.session_state[_page_count_key(iso)] = n + 1
+    st.session_state[_page_idx_key(iso)] = n
+    _seed_entry_clients(iso, n, [""])
+    _apply_entry_lines(iso, n, [""], remount_comp=True)
+    _seed_entry_remarks(iso, n, [""])
+    _snapshot_worklog_page(iso, n)
+    st.session_state.pop(f"wl_left_excel_html_v27_{iso}", None)
+    st.session_state[f"wl_left_excel_rebuild_{iso}"] = True
 
 
 def _queue_worklog_del_entry(iso: str, idx: int) -> None:
@@ -1908,11 +3223,13 @@ def _flush_worklog_delete_popover() -> None:
 
 def _on_cancel_delete_day() -> None:
     """삭제 인라인 확인 취소 — 확인 UI만 닫는다."""
+    _pin_worklog_scroll()
     st.session_state["wl_del_confirm_open"] = False
 
 
 def _on_confirm_delete_day() -> None:
     """확정 on_click — 삭제를 예약하고 인라인 확인 UI를 닫는다."""
+    _pin_worklog_scroll()
     d = st.session_state.get("worklog_selected")
     if isinstance(d, date):
         st.session_state["wl_do_delete_day"] = d.isoformat()
@@ -1936,6 +3253,11 @@ def _run_pending_worklog_day_delete() -> bool:
         if st.session_state.get("wl_date_retarget_from") == str(del_iso):
             st.session_state.pop("wl_date_retarget_from", None)
         _queue_close_delete_popover()
+        _pin_worklog_scroll()
+        try:
+            _prepare_worklog_day_state(d_del, skip_remote_pull=True)
+        except Exception:
+            pass
         return True
     except Exception:
         _queue_close_delete_popover()
@@ -1952,13 +3274,6 @@ def purge_worklog_day_files(d: date, *, remote: bool = False) -> list[str]:
         os.path.join(WORKLOG_DIR, f"_preview_{iso}.xlsx"),
         os.path.join(WORKLOG_DIR, f"일일업무일지_{iso}_인쇄.xlsx"),
     ]
-    try:
-        from drive_autoload import resolve_drive_worklog_dir
-        _ddr = resolve_drive_worklog_dir()
-        if _ddr:
-            targets.append(os.path.join(_ddr, f"{iso}.xlsx"))
-    except Exception:
-        pass
     try:
         for name in os.listdir(WORKLOG_DIR):
             if name == "template.xlsx" or not name.endswith(".xlsx"):
@@ -1982,12 +3297,6 @@ def purge_worklog_day_files(d: date, *, remote: bool = False) -> list[str]:
         arch = delete_worklog_archive_sheet(d)
         if arch:
             removed.append(f"{os.path.basename(arch)}#{worklog_archive_sheet_title(d)}")
-            try:
-                from drive_autoload import push_worklog_month_archive_to_drive
-                if os.path.isfile(arch):
-                    push_worklog_month_archive_to_drive(arch, year=d.year, force=True)
-            except Exception:
-                pass
     except Exception:
         pass
     try:
@@ -2003,7 +3312,7 @@ def purge_worklog_day_files(d: date, *, remote: bool = False) -> list[str]:
             invalidate_gist_days_cache()
         except Exception:
             pass
-    _invalidate_saved_dates_cache()
+    _drop_saved_date_from_cache(iso)
     _invalidate_worklog_presence_cache(d)
     _purge_worklog_day_preview_cache(d)
     return removed
@@ -2014,18 +3323,31 @@ def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
     iso = d.isoformat()
     removed = purge_worklog_day_files(d, remote=remote)
     _clear_date_widget_state(d)
-    st.session_state.pop(f"wl_open_ctx_{iso}", None)
+    _gone = {
+        "local": False,
+        "archive": False,
+        "drive": False,
+        "cloud": False,
+        "any": False,
+        "locations": [],
+    }
+    st.session_state[f"wl_open_ctx_{iso}"] = {"had_local": False, "presence": _gone}
+    st.session_state[f"wl_presence_{iso}_fast"] = _gone
+    st.session_state[f"wl_presence_{iso}_all"] = _gone
+    st.session_state[f"wl_arch_exists_{iso}"] = False
     st.session_state.pop(f"wl_saved_ok_{iso}", None)
-    empty = [{"client": "", "content": "", "lines": [], "blank_after": 1}]
+    empty = [_empty_sheet_entry()]
     st.session_state[_boot_key(d)] = True
     st.session_state[_entries_key(d)] = empty
     st.session_state[_next_key(d)] = ""
     st.session_state[_notes_key(d)] = ""
     st.session_state[f"wl_entry_count_{iso}"] = 1
+    st.session_state[_page_count_key(iso)] = 1
+    st.session_state[_page_idx_key(iso)] = 0
     msg = f"삭제 완료" + (f": {', '.join(removed)}" if removed else " (저장본 없음, 입력만 초기화)")
     if not remote:
         msg += " · Cloud/Drive 정리 중"
-    st.session_state[f"wl_pending_sync_{iso}"] = {"entries": empty, "next": "", "notes": "", "msg": msg}
+    st.session_state[f"wl_pending_sync_{iso}"] = {"entries": empty, "next": "", "notes": "", "extra_pages": [], "msg": msg}
     try:
         _publish_view_cells(d, _empty_cells(d))
     except Exception:
@@ -2034,10 +3356,17 @@ def delete_worklog_day(d: date, *, remote: bool = True) -> list[str]:
     return removed
 
 def _worklog_cells_have_draft(cells: dict | None) -> bool:
-    src = cells or {}
-    if any(str(src.get(f"G{r}", "") or "").strip() or str(src.get(f"C{r}", "") or "").strip() for r in WL_CONTENT_ROWS):
+    src, extras = _detach_extra_pages(cells)
+    if any(
+        str(src.get(f"G{r}", "") or "").strip()
+        or str(src.get(f"C{r}", "") or "").strip()
+        or str(src.get(f"Y{r}", "") or "").strip()
+        for r in WL_CONTENT_ROWS
+    ):
         return True
-    return any(str(src.get(f"D{r}", "") or "").strip() for r in WL_NEXT_ROWS + WL_NOTE_ROWS)
+    if any(str(src.get(f"D{r}", "") or "").strip() for r in WL_NEXT_ROWS + WL_NOTE_ROWS):
+        return True
+    return any(_worklog_cells_have_draft(extra) for extra in extras)
 
 
 def _read_leftover_archive_day_cells(d: date) -> dict | None:
@@ -2115,10 +3444,13 @@ def _load_cells_for_reassign(old: date) -> dict:
     except Exception:
         pass
     cells = read_worklog_cells(old)
+    cells = _attach_extra_pages(cells, read_worklog_extra_page_cells(old))
     if _worklog_cells_have_draft(cells):
         return cells
     arch = read_worklog_cells_from_archive(old)
-    return arch if arch is not None else cells
+    if arch is not None:
+        return _attach_extra_pages(arch, _read_extra_pages_from_archive(old))
+    return cells
 
 
 def _patch_saved_dates_after_move(old: date, new: date) -> None:
@@ -2230,6 +3562,11 @@ def _worklog_editor_occupied(d: date) -> bool:
             return True
         if str(st.session_state.get(_next_key(d), "") or "").strip() or str(st.session_state.get(_notes_key(d), "") or "").strip():
             return True
+        iso = d.isoformat()
+        for i in range(1, _page_count_for(iso)):
+            cl, co, rm = _sheet_lines_from_widgets_at(iso, i)
+            if any(str(x).strip() for x in cl + co + rm):
+                return True
     if os.path.isfile(worklog_path(d)):
         try:
             return _worklog_cells_have_draft(read_worklog_cells(d))
@@ -2275,30 +3612,125 @@ def _worklog_day_already_saved(d: date) -> bool:
 
 
 def try_retarget_worklog_editor_date(old: date, new: date) -> bool:
-    """빈 날짜면 화면 내용만 옮긴다. 저장본이 있으면 False + 안내.
-
-    이미 저장한 날은 옮기지 않고 그 날짜를 연다(저장 데이터가 지워지지 않음).
-    """
+    """업무일지 날짜만 바꾼다. 입력 중인 내용은 그대로 새 날짜로 옮긴다."""
     if old == new:
         return True
-    if _worklog_day_already_saved(old):
-        _open_worklog_saved_date(new)
-        return True
-    if _worklog_dest_has_saved_data(new):
-        _block_move_to_saved_date(old)
-        return False
+    try:
+        _snapshot_worklog_page(old.isoformat())
+    except Exception:
+        pass
     retarget_worklog_editor_date(old, new)
+    _pin_worklog_scroll()
     st.session_state["wl_skip_sync_once"] = True
     return True
 
 
+def _date_move_mode_on() -> bool:
+    return bool(st.session_state.get("wl_date_move_mode"))
+
+
+def _on_toggle_date_move_mode() -> None:
+    st.session_state["wl_date_move_mode"] = not _date_move_mode_on()
+    st.session_state.pop("wl_date_err", None)
+
+
+def _move_worklog_editor_to_date(new: date) -> bool:
+    """편집중인 글의 날짜만 바꾼다. 대상에 이미 저장본이 있으면 옮기지 않는다."""
+    old = st.session_state.get("worklog_selected")
+    if not isinstance(old, date):
+        st.session_state["wl_date_move_mode"] = False
+        _open_worklog_saved_date(new)
+        return True
+    if old == new:
+        st.session_state["wl_date_move_mode"] = False
+        return True
+    if _worklog_dest_has_saved_data(new):
+        _block_move_to_saved_date(old)
+        return False
+    st.session_state.pop(_parked_cells_key(old), None)
+    st.session_state.pop(_parked_cells_key(new), None)
+    try_retarget_worklog_editor_date(old, new)
+    st.session_state["wl_date_move_mode"] = False
+    return True
+
+
+def _parked_cells_key(d: date) -> str:
+    return f"wl_parked_cells_{d.isoformat()}"
+
+
+def _park_shared_editor_to_date(d: date) -> None:
+    """지금 입력칸을 그 날짜 초안으로 남겨 둔다. 달력으로 다시 오면 그대로 연다."""
+    iso = d.isoformat()
+    try:
+        cells = _cells_from_widgets(d)
+    except Exception:
+        return
+    if not isinstance(cells, dict):
+        return
+    st.session_state[_parked_cells_key(d)] = cells
+    st.session_state[_entries_key(d)] = [_sheet_entry_from_cells(cells)]
+    st.session_state[_view_cells_key(d)] = cells
+    st.session_state[_boot_key(d)] = True
+    try:
+        _snapshot_worklog_page(iso)
+    except Exception:
+        pass
+
+
+def _bind_editor_from_cells(d: date, cells: dict, *, remount_comp: bool = False) -> dict:
+    """공유 입력칸에 그날 값을 넣는다. remount 없이 rev만 올려 달력 이동 로딩을 줄인다."""
+    packed = dict(cells or _empty_cells(d))
+    body, extras_cells = _detach_extra_pages(packed)
+    extras = [_sheet_entry_from_cells(x) for x in (extras_cells or [])]
+    _, nd, nt = _entries_from_cells(body)
+    _seed_day_entry_widgets(
+        d,
+        [_sheet_entry_from_cells(body)],
+        "\n".join(nd),
+        "\n".join(nt),
+        extra_pages=extras,
+        remount_comp=remount_comp,
+    )
+    st.session_state[_boot_key(d)] = True
+    return packed
+
+
+def _reload_worklog_date_from_storage(d: date) -> dict:
+    """그 날짜 저장본으로 입력칸·요약을 다시 심는다. 다른 날 초안은 복사하지 않는다."""
+    iso = d.isoformat()
+    parked = st.session_state.get(_parked_cells_key(d))
+    if isinstance(parked, dict):
+        return _bind_editor_from_cells(d, parked, remount_comp=False)
+    st.session_state.pop(_boot_key(d), None)
+    st.session_state.pop(_entries_key(d), None)
+    st.session_state.pop(_view_cells_key(d), None)
+    st.session_state.pop(f"wl_pending_sync_{iso}", None)
+    try:
+        cells = _stored_cells_for_date(d)
+    except Exception:
+        cells = _empty_cells(d)
+    return _bind_editor_from_cells(d, cells or _empty_cells(d), remount_comp=False)
+
+
 def _open_worklog_saved_date(new: date) -> None:
-    """저장된 날을 연다. 지금 편집 중인 다른 날 내용은 복사·삭제하지 않는다."""
+    """그 날짜를 연다. 저장본을 업무내용·요약에 불러온다."""
+    old = st.session_state.get("worklog_selected")
+    if isinstance(old, date) and old != new:
+        try:
+            _park_shared_editor_to_date(old)
+        except Exception:
+            pass
     st.session_state["worklog_month"] = date(new.year, new.month, 1)
     _switch_worklog_selected_date(new)
     st.session_state.pop("wl_date_err", None)
     st.session_state.pop("wl_pending_date_change", None)
     st.session_state["wl_skip_sync_once"] = True
+    try:
+        cells = _reload_worklog_date_from_storage(new)
+        _publish_view_cells(new, cells)
+    except Exception:
+        _prepare_worklog_day_state(new, skip_remote_pull=True)
+    _pin_worklog_scroll()
 
 
 def retarget_worklog_editor_date(old: date, new: date) -> None:
@@ -2314,38 +3746,35 @@ def retarget_worklog_editor_date(old: date, new: date) -> None:
         cells = read_worklog_cells(old)
     cells = dict(cells or _empty_cells(new))
     cells["date"] = format_worklog_date(new)
-    entries = _grouped_entries_from_cells(cells) or [{"client": "", "content": "", "lines": [""], "blank_after": 1}]
+    entries = [_sheet_entry_from_cells(cells)]
+    extra_entries = [_sheet_entry_from_cells(x) for x in (_detach_extra_pages(cells)[1] or _extra_page_cells_from_widgets(old))]
     _, nd, nt = _entries_from_cells(cells)
     next_txt = "\n".join(nd)
     notes_txt = "\n".join(nt)
     _remember_purge_date(old)
-    _clear_date_widget_state(old)
     _switch_worklog_selected_date(new)
     st.session_state[_boot_key(new)] = True
     st.session_state[_entries_key(new)] = entries
     st.session_state[_next_key(new)] = next_txt
     st.session_state[_notes_key(new)] = notes_txt
-    st.session_state[f"wl_entry_count_{new.isoformat()}"] = len(entries)
+    st.session_state[f"wl_entry_count_{new.isoformat()}"] = 1
     st.session_state[f"wl_pending_sync_{new.isoformat()}"] = {
-        "entries": entries, "next": next_txt, "notes": notes_txt, "msg": "",
+        "entries": entries, "next": next_txt, "notes": notes_txt, "extra_pages": extra_entries, "msg": "",
+        "keep_editor": True,
     }
-    _seed_day_entry_widgets(new, entries, next_txt, notes_txt)
+    try:
+        _publish_view_cells(new, cells)
+    except Exception:
+        pass
     st.session_state.pop(f"wl_saved_ok_{new.isoformat()}", None)
     st.session_state.pop("wl_date_err", None)
     st.session_state.pop("wl_pending_date_change", None)
 
 
 def commit_worklog_date_save(source: date, target: date, cells: dict) -> str:
-    """고른 날짜에 저장하고, 예전 날짜 데이터만 삭제한다.
-
-    대상에 이미 저장된 데이터가 있고 다른 날에서 옮기는 중이면 막는다.
-    """
+    """고른 날짜에 저장한다. 날짜만 바꾼 경우 예전 날짜 파일은 저장 때 지운다."""
     cells = dict(cells or {})
     cells["date"] = format_worklog_date(target)
-    moving = source != target or bool(_take_purge_dates(target))
-    if moving and _worklog_dest_has_saved_data(target):
-        st.session_state["wl_date_err"] = _WL_MOVE_BLOCK_MSG
-        raise WorklogSaveBlockedError(_WL_MOVE_BLOCK_MSG)
     path = save_worklog_cells(target, cells, force=True, allow_overwrite=True)
     purge = _take_purge_dates(target)
     if source != target and source not in purge:
@@ -2368,32 +3797,40 @@ def commit_worklog_date_save(source: date, target: date, cells: dict) -> str:
     st.session_state.pop("wl_purge_dates", None)
     st.session_state.pop("wl_pending_date_change", None)
     _invalidate_saved_dates_cache()
+    _remember_calendar_saved_date(target)
     _invalidate_worklog_presence_cache(target)
     return path
 
 
 def consume_left_date_pick_move(selected: date) -> tuple[date, bool]:
-    """왼쪽 날짜칸이 selected와 다르면 화면 내용만 그 날짜로 옮긴다. 파일 저장은 하지 않는다."""
+    """왼쪽 날짜칸이 selected와 다르면 연다. 날짜변경 모드면 편집중 내용을 옮긴다."""
     picked = st.session_state.get("wl_date_pick")
     if not isinstance(picked, date) or picked == selected:
         return selected, False
-    if not try_retarget_worklog_editor_date(selected, picked):
-        return selected, False
+    if _date_move_mode_on():
+        ok = _move_worklog_editor_to_date(picked)
+        return (picked if ok else selected), ok
+    _open_worklog_saved_date(picked)
     return picked, True
 
 
 def _on_wl_date_pick_change() -> None:
-    """저장 전(초안)만 빈 날짜로 옮긴다. 이미 저장한 날은 보기만 하고 자료를 지우지 않는다."""
+    """날짜칸: 기본은 그날 저장본을 연다. 날짜변경이 켜져 있으면 편집중 내용을 옮긴다."""
     st.session_state["_wl_date_pick_live"] = False
     picked = st.session_state.get("wl_date_pick")
     selected = st.session_state.get("worklog_selected")
-    if not isinstance(picked, date) or not isinstance(selected, date) or picked == selected:
+    if not isinstance(picked, date):
         return
-    try_retarget_worklog_editor_date(selected, picked)
+    if isinstance(selected, date) and picked == selected:
+        return
+    if _date_move_mode_on():
+        _move_worklog_editor_to_date(picked)
+        return
+    _open_worklog_saved_date(picked)
 
 
 def _on_wl_cal_day(iso: str) -> None:
-    """오른쪽 달력: 보기만. 지금 편집 내용을 그 날짜로 옮기지 않는다."""
+    """달력: 기본은 그날을 연다. 날짜변경이 켜져 있으면 편집중 내용을 옮긴다."""
     try:
         new = date.fromisoformat(iso)
     except ValueError:
@@ -2403,11 +3840,17 @@ def _on_wl_cal_day(iso: str) -> None:
     if isinstance(old, date) and old == new:
         return
     st.session_state["_wl_date_pick_live"] = False
+    st.session_state.pop(f"wl_do_save_{iso}", None)
+    if isinstance(old, date):
+        st.session_state.pop(f"wl_do_save_{old.isoformat()}", None)
+    if _date_move_mode_on():
+        _move_worklog_editor_to_date(new)
+        return
     _open_worklog_saved_date(new)
 
 
 def _run_pending_worklog_date_change() -> bool:
-    """대기 중인 날짜 변경은 화면만 옮긴다. 파일은 저장 버튼에서 기록한다."""
+    """대기 중인 날짜 변경은 대상 날짜를 연다. 파일은 저장 버튼에서 기록한다."""
     pending = st.session_state.pop("wl_pending_date_change", None)
     if not pending:
         return False
@@ -2418,10 +3861,10 @@ def _run_pending_worklog_date_change() -> bool:
         return False
     old_flags = _take_day_action_flags(old.isoformat())
     new_flags = _take_day_action_flags(new.isoformat())
-    if try_retarget_worklog_editor_date(old, new):
-        _put_day_action_flags(new.isoformat(), _merge_day_action_flags(old_flags, new_flags))
-    else:
-        _put_day_action_flags(old.isoformat(), _merge_day_action_flags(old_flags, new_flags))
+    _open_worklog_saved_date(new)
+    merged = _merge_day_action_flags(old_flags, new_flags)
+    merged["save"] = False
+    _put_day_action_flags(new.isoformat(), merged)
     return True
 
 
@@ -2456,7 +3899,8 @@ def reassign_worklog_date(old: date, new: date, *, overwrite_dest: bool = True) 
             _schedule_worklog_remote_delete(old)
         except Exception:
             pass
-    entries = _grouped_entries_from_cells(cells) or [{"client": "", "content": "", "lines": [], "blank_after": 1}]
+    entries = [_sheet_entry_from_cells(cells)]
+    extra_entries = [_sheet_entry_from_cells(x) for x in _detach_extra_pages(cells)[1]]
     _, nd, nt = _entries_from_cells(cells)
     _clear_date_widget_state(old)
     _switch_worklog_selected_date(new)
@@ -2464,8 +3908,14 @@ def reassign_worklog_date(old: date, new: date, *, overwrite_dest: bool = True) 
     st.session_state[_entries_key(new)] = entries
     st.session_state[_next_key(new)] = "\n".join(nd)
     st.session_state[_notes_key(new)] = "\n".join(nt)
-    st.session_state[f"wl_entry_count_{new.isoformat()}"] = len(entries)
-    st.session_state[f"wl_pending_sync_{new.isoformat()}"] = {"entries": entries, "next": "\n".join(nd), "notes": "\n".join(nt), "msg": ""}
+    st.session_state[f"wl_entry_count_{new.isoformat()}"] = 1
+    st.session_state[f"wl_pending_sync_{new.isoformat()}"] = {
+        "entries": entries,
+        "extra_pages": extra_entries,
+        "next": "\n".join(nd),
+        "notes": "\n".join(nt),
+        "msg": "",
+    }
     _mark_worklog_day_writable(new, had_local=True)
     _invalidate_saved_dates_cache()
     _patch_saved_dates_after_move(old, new)
@@ -2558,6 +4008,15 @@ def _worklog_sheet_pixel_size(path: str) -> tuple[int, int]:
             total_h += _excel_row_height_px(ws, r) + 1
         # 원본 로고(특이사항 하단, Excel 표시 높이 61 + 간격)
         total_h += 61 + 10
+        n_pages = 1
+        active_title = ws.title
+        for name in wb.sheetnames:
+            if name == active_title:
+                continue
+            if _extra_page_n_from_sheet_name(name):
+                n_pages += 1
+        if n_pages > 1:
+            total_h = total_h * n_pages + 18 * (n_pages - 1)
         wb.close()
         return max(1, total_w), max(1, total_h)
     except Exception: return 900, 1312
@@ -2645,10 +4104,72 @@ def _worklog_logo_bytes(xlsx_path: str | None = None) -> tuple[bytes, str, int, 
     return None
 
 
-def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: float = 1.0) -> str:
-    if load_workbook is None: return "<p>openpyxl 필요</p>"
-    wb = load_workbook(path, data_only=False)
-    ws = wb.active
+def _worklog_body_merge_bands() -> tuple[tuple[int, int, list[int]], ...]:
+    """본문 한 행 = 거래처 C~F / 내용 G~X / 비고 Y~AB."""
+    return (
+        (WL_CLIENT_COL_START, WL_CLIENT_COL_END, WL_CLIENT_ROWS),
+        (WL_CONTENT_COL_START, WL_CONTENT_COL_END, WL_CONTENT_ROWS),
+        (WL_REMARK_COL_START, WL_REMARK_COL_END, WL_CONTENT_ROWS),
+    )
+
+
+def _ensure_worklog_body_merges(ws) -> None:
+    """템플릿에 빠진 본문 병합(특히 비고 Y~AB)을 행마다 다시 붙인다."""
+    if ws is None:
+        return
+    for c0, c1, rows in _worklog_body_merge_bands():
+        for r in rows:
+            ok = False
+            overlap: list[str] = []
+            for mr in list(ws.merged_cells.ranges):
+                if mr.max_row < r or mr.min_row > r:
+                    continue
+                if mr.max_col < c0 or mr.min_col > c1:
+                    continue
+                if mr.min_row == r and mr.max_row == r and mr.min_col == c0 and mr.max_col == c1:
+                    ok = True
+                    break
+                overlap.append(str(mr))
+            if ok:
+                continue
+            for ref in overlap:
+                try:
+                    ws.unmerge_cells(ref)
+                except Exception:
+                    pass
+            try:
+                ws.merge_cells(start_row=r, start_column=c0, end_row=r, end_column=c1)
+            except Exception:
+                pass
+
+
+def _inject_body_col_merges(
+    merge_map: dict[tuple[int, int], tuple[int, int]],
+    skip: set[tuple[int, int]],
+) -> None:
+    """미리보기 HTML — 템플릿 병합이 없어도 본문 칸 폭을 원본과 같게 둔다."""
+    for c0, c1, rows in _worklog_body_merge_bands():
+        cs_need = c1 - c0 + 1
+        for r in rows:
+            if (r, c0) in skip:
+                continue
+            rs, cs = merge_map.get((r, c0), (1, 1))
+            if cs < cs_need:
+                merge_map[(r, c0)] = (max(1, int(rs)), cs_need)
+            for c in range(c0 + 1, c1 + 1):
+                skip.add((r, c))
+                merge_map.pop((r, c), None)
+
+
+def _worksheet_to_table_html(
+    ws,
+    path: str,
+    *,
+    include_logo: bool = True,
+    layout_scale: float = 1.0,
+    data_prefix: str = "",
+) -> str:
+    pfx = str(data_prefix or "")
 
     merge_map: dict[tuple[int, int], tuple[int, int]] = {}
     skip: set[tuple[int, int]] = set()
@@ -2665,6 +4186,7 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
         for r in range(min_r, max_r + 1):
             for c in range(min_c, max_c + 1):
                 if (r, c) != (tl_r, tl_c): skip.add((r, c))
+    _inject_body_col_merges(merge_map, skip)
 
     col_widths = []
     total_w = 0.0
@@ -2691,9 +4213,10 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
 
             is_content = c == WL_CONTENT_COL_START and WL_CONTENT_ROWS[0] <= r <= WL_CONTENT_ROWS[-1]
             is_client = c == WL_CLIENT_COL_START and WL_CLIENT_ROWS[0] <= r <= WL_CLIENT_ROWS[-1]
+            is_remark = c == WL_REMARK_COL_START and WL_CONTENT_ROWS[0] <= r <= WL_CONTENT_ROWS[-1]
             is_body_d = c == 4 and (r in WL_NEXT_ROWS or r in WL_NOTE_ROWS)
             is_date = (c == 3 and r == 5) or (str(cell.coordinate) == WL_DATE_CELL)
-            font_stack, fsize_pt = _wl_cell_font(cell, is_content=is_content, is_client=is_client, is_body_d=is_body_d, is_date=is_date)
+            font_stack, fsize_pt = _wl_cell_font(cell, is_content=is_content or is_remark, is_client=is_client, is_body_d=is_body_d, is_date=is_date)
             # 인쇄 시 Excel pageSetup.scale을 글자 pt·셀 크기에 미리 반영(브라우저 추가 축소 방지)
             if ls != 1.0:
                 fsize_pt = round(float(fsize_pt) * ls, 2)
@@ -2712,7 +4235,7 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
             if is_vertical: ha, va = "center", "middle"
             elif is_client: ha, va = "center", "middle"  # 거래처 칸 항상 가운데
             elif is_body_d: ha, va = "left", "top"  # 익일/특이 — 빈 줄·다음 줄 위치 유지
-            elif is_content: ha = "left"
+            elif is_content or is_remark: ha = "left"
                 
             fill = _cell_fill_color(cell) or "#FFFFFF"
             border = _border_css(cell)
@@ -2732,14 +4255,19 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
                 esc = html.escape(text).replace(" ", "&nbsp;").replace("\n", "<br>")
                 
             if is_content:
-                # 인쇄창과 같이 칸 안에서만 줄바꿈 (한글 연속문자 포함)
+                # 원본.xlsx wrapText — 바탕체 14pt 원본 칸 폭에서 줄바꿈
                 white, overflow, text_overflow, break_css = "pre-wrap", "hidden", "clip", "break-all"
-            elif is_client:
+                wrap_css = "overflow-wrap:anywhere;"
+            elif is_client or is_remark:
+                # 입력 1줄 = 미리보기 1줄. 비고는 칸 안에서 다시 쪼개지 않는다.
                 white, overflow, text_overflow, break_css = "nowrap", "hidden", "clip", "keep-all"
+                wrap_css = "overflow-wrap:normal;"
             elif is_vertical:
                 white, overflow, text_overflow, break_css = "normal", "hidden", "clip", "keep-all"
+                wrap_css = "overflow-wrap:normal;"
             else:
                 white, overflow, text_overflow, break_css = "pre-wrap", "hidden", "clip", "break-word"
+                wrap_css = "overflow-wrap:anywhere;"
                 
             c0 = c - WL_MIN_COL
             span_w = sum(col_widths[c0 : c0 + max(cs, 1)]) if c0 >= 0 else 0
@@ -2767,7 +4295,7 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
                     f"background:{fill};{border}"
                     f"{pad_css}white-space:{white};overflow:{overflow};"
                     f"text-overflow:{text_overflow};word-break:{break_css};"
-                    f"overflow-wrap:anywhere;"
+                    f"{wrap_css}"
                     f"{line_css}"
                 )
             wl_key = ""
@@ -2777,15 +4305,16 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
                 wl_key = f"G{r}"
             elif is_client:
                 wl_key = f"C{r}"
+            elif is_remark:
+                wl_key = f"Y{r}"
             elif is_body_d:
                 wl_key = f"D{r}"
-            data_attr = f' data-wl="{wl_key}"' if wl_key else ""
+            data_attr = f' data-wl="{pfx}{wl_key}"' if wl_key else ""
             tds.append(f'<td{span}{data_attr} style="{style}">{esc}</td>')
         rows_html.append(f'<tr style="height:{height_px}px;box-sizing:border-box;">{"".join(tds)}</tr>')
 
     colgroup = "".join(f'<col style="width:{w}px">' for w in col_widths)
-    wb.close()
-    
+
     import base64
     logo_tr = ""
     # 원본: 특이사항(47행) 바로 아래 중앙, Excel 표시 크기 320×61
@@ -2810,15 +4339,52 @@ def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: floa
             except Exception:
                 pass
 
-    return f"""
-    <table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;box-sizing:border-box;">
-      <colgroup>{colgroup}</colgroup>
-      <tbody>
-        {"".join(rows_html)}
-        {logo_tr}
-      </tbody>
-    </table>
-    """
+    page_n = 1
+    m_p = re.match(r"p(\d+)-$", pfx)
+    if m_p:
+        page_n = max(2, int(m_p.group(1)))
+    return (
+        f'<div class="wl-preview-page" data-wl-page="{page_n}">'
+        f'<table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;box-sizing:border-box;">'
+        f"<colgroup>{colgroup}</colgroup>"
+        f"<tbody>{''.join(rows_html)}{logo_tr}</tbody>"
+        f"</table></div>"
+    )
+
+
+def _worklog_html_sheet_pages(wb) -> list[tuple[object, str]]:
+    pages: list[tuple[object, str]] = [(wb.active, "")]
+    active_title = wb.active.title if wb.worksheets else ""
+    extras: list[tuple[int, str]] = []
+    for name in wb.sheetnames:
+        if name == active_title:
+            continue
+        n = _extra_page_n_from_sheet_name(name)
+        if n:
+            extras.append((n, name))
+    extras.sort()
+    for n, name in extras:
+        pages.append((wb[name], f"p{n}-"))
+    return pages
+
+
+def workbook_to_html(path: str, *, include_logo: bool = True, layout_scale: float = 1.0) -> str:
+    if load_workbook is None:
+        return "<p>openpyxl 필요</p>"
+    wb = load_workbook(path, data_only=False)
+    try:
+        parts: list[str] = []
+        for i, (ws, prefix) in enumerate(_worklog_html_sheet_pages(wb)):
+            if i:
+                parts.append(_html_page_break())
+            parts.append(
+                _worksheet_to_table_html(
+                    ws, path, include_logo=include_logo, layout_scale=layout_scale, data_prefix=prefix,
+                )
+            )
+        return "".join(parts)
+    finally:
+        wb.close()
 
 def _a4_print_fit(raw_w: int, raw_h: int, *, path: str | None = None) -> float:
     """인쇄 배율 = 원본 Excel pageSetup.scale 그대로(추가 맞춤 축소 없음)."""
@@ -2903,11 +4469,11 @@ def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: floa
     auto_script = f"""<script>(function() {{ {fit_print_js} {go_print_js} var btn = document.getElementById('wl-print-btn'); if (btn) btn.addEventListener('click', function(ev) {{ ev.preventDefault(); goPrint(); }}); window.addEventListener('beforeprint', function() {{ try {{ wlFitToA4(); }} catch (e2) {{}} }}); function boot() {{ try {{ wlFitToA4(); }} catch (e3) {{}} {"setTimeout(goPrint, 500);" if auto_print else ""} }} if (document.readyState === 'complete') setTimeout(boot, 250); else window.addEventListener('load', function() {{ setTimeout(boot, 250); }}); }})();</script>""" if print_mode else ""
     fallback_block = f"@supports not (zoom: 1) {{ .sheet-scale {{ {scale_css_fallback} }} }}" if scale_css_fallback else ""
     if print_mode:
-        print_media = f"""@media print {{ html, body {{ overflow:visible !important; height:auto !important; width:auto !important; margin:0 !important; padding:0 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }} .no-print, .toolbar {{ display:none !important; }} .wrap {{ overflow:visible !important; max-width:none !important; width:{scaled_w}px !important; height:auto !important; border:none !important; margin:0 auto !important; padding:0 !important; }} .sheet-scale {{ zoom:1 !important; transform:none !important; width:{scaled_w}px !important; margin:0 !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ font-family:{_WL_FONT_STACK} !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }} }}"""
+        print_media = f"""@media print {{ html, body {{ overflow:visible !important; height:auto !important; width:auto !important; margin:0 !important; padding:0 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }} .no-print, .toolbar {{ display:none !important; }} .wrap {{ overflow:visible !important; max-width:none !important; width:{scaled_w}px !important; height:auto !important; border:none !important; margin:0 auto !important; padding:0 !important; }} .sheet-scale {{ zoom:1 !important; transform:none !important; width:{scaled_w}px !important; margin:0 !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ font-family:{_WL_FONT_STACK} !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }} .wl-page-break {{ page-break-before:always !important; break-before:page !important; height:0 !important; min-height:0 !important; }} }}"""
     else:
         print_media = "@media print { html, body { overflow:visible !important; } }"
     
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap" rel="stylesheet"><style>{_WL_FONT_FACE_CSS} @page {{ size: A4 portrait; margin: {page_margins}; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"6px" if not print_mode else "0"}; box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:0; }} .sheet-scale {{ {scale_css} }} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet td[data-wl^="G"] {{ white-space:pre-wrap !important; overflow:hidden !important; word-break:break-all !important; overflow-wrap:anywhere !important; }} {fallback_block} {print_media}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap" rel="stylesheet"><style>{_WL_FONT_FACE_CSS} @page {{ size: A4 portrait; margin: {page_margins}; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"6px" if not print_mode else "0"}; box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:0; }} .sheet-scale {{ {scale_css} }} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet td[data-wl^="G"] {{ white-space:pre-wrap !important; overflow:hidden !important; word-break:break-all !important; overflow-wrap:anywhere !important; }} .wl-sheet td[data-wl^="Y"], .wl-sheet td[data-wl^="C"] {{ white-space:nowrap !important; overflow:hidden !important; word-break:keep-all !important; overflow-wrap:normal !important; }} .wl-page-break {{ page-break-before:always; break-before:page; }} {fallback_block} {print_media}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     try: n = int((ent or {}).get("blank_after", default))
@@ -2921,54 +4487,69 @@ def _grouped_entries_from_cells(cells: dict) -> list[dict]:
     blank_run = 0
     for r in WL_CLIENT_ROWS:
         raw_c, raw_g = str(cells.get(f"C{r}", "") or ""), str(cells.get(f"G{r}", "") or "")
+        raw_y = str(cells.get(f"Y{r}", "") or "")
         client_raw = _scrub_dummy_label(raw_c)
         client_stripped = client_raw.strip()
+        remark_raw = _scrub_dummy_label(raw_y)
+        remark_stripped = remark_raw.strip()
         soft_blank = raw_g == _WL_SOFT_BLANK or raw_g == "\u00a0"
-        g_whitespace_only = (not client_stripped and not soft_blank and raw_g != "" and raw_g.strip() == "")
-        fully_empty = (not client_stripped and not soft_blank and not g_whitespace_only and raw_c.strip() == "" and raw_g.strip() == "")
+        g_whitespace_only = (not client_stripped and not remark_stripped and not soft_blank and raw_g != "" and raw_g.strip() == "")
+        fully_empty = (not client_stripped and not remark_stripped and not soft_blank and not g_whitespace_only and raw_c.strip() == "" and raw_g.strip() == "" and raw_y.strip() == "")
         content = "" if (soft_blank or g_whitespace_only) else _scrub_dummy_label(raw_g)
+
+        def _finish_row(ent: dict, c_val: str, g_val: str, y_val: str) -> None:
+            ent.setdefault("client_lines", []).append(c_val)
+            ent.setdefault("lines", []).append(g_val)
+            ent.setdefault("remark_lines", []).append(y_val)
+            ent["client"] = "\n".join(ent.get("client_lines") or [])
+            ent["content"] = "\n".join(ent.get("lines") or [])
+            ent["remarks"] = "\n".join(ent.get("remark_lines") or [])
+
+        def _new_entry(c_val: str, g_val: str, y_val: str) -> dict:
+            return {
+                "client": c_val,
+                "client_lines": [c_val],
+                "content": g_val,
+                "lines": [g_val],
+                "remarks": y_val,
+                "remark_lines": [y_val],
+                "blank_after": 1,
+            }
         
         if fully_empty: 
             blank_run += 1
             continue
-            
-        if g_whitespace_only or (soft_blank and not client_stripped):
+
+        start_new = (not entries) or blank_run > 0
+        if client_stripped and entries and blank_run == 0:
+            prev_c = str((entries[-1].get("client_lines") or [""])[-1] or "")
+            if _display_units(prev_c) < _client_line_units():
+                start_new = True
+        if start_new and not (
+            g_whitespace_only or (soft_blank and not client_stripped and not remark_stripped)
+        ):
+            if entries:
+                entries[-1]["blank_after"] = max(0, min(10, blank_run))
+            blank_run = 0
+            entries.append(_new_entry(client_raw, content or "", remark_raw))
+            continue
+
+        if g_whitespace_only or (soft_blank and not client_stripped and not remark_stripped):
             if not entries or blank_run > 0:
                 if entries: entries[-1]["blank_after"] = max(0, min(10, blank_run))
                 blank_run = 0
-                entries.append({
-                    "client": client_raw, 
-                    "client_lines": [client_raw], 
-                    "content": "", 
-                    "lines": [""], 
-                    "blank_after": 1
-                })
+                entries.append(_new_entry(client_raw, "", remark_raw))
             else:
                 blank_run = 0
-                entries[-1].setdefault("lines", []).append("")
-                entries[-1].setdefault("client_lines", []).append(client_raw)
-                entries[-1]["content"] = "\n".join(entries[-1].get("lines") or [])
-                entries[-1]["client"] = "\n".join(entries[-1].get("client_lines") or [])
+                _finish_row(entries[-1], client_raw, "", remark_raw)
             continue
             
         if not entries or blank_run > 0:
             if entries: entries[-1]["blank_after"] = max(0, min(10, blank_run))
             blank_run = 0
-            client_lines, lines = [client_raw], [content or ""]
-            entries.append({
-                "client": "\n".join(client_lines), 
-                "client_lines": client_lines, 
-                "content": "\n".join(lines), 
-                "lines": lines, 
-                "blank_after": 1
-            })
+            entries.append(_new_entry(client_raw, content or "", remark_raw))
         else:
-            ent = entries[-1]
-            cl = ent.setdefault("client_lines", [])
-            cl.append(client_raw)
-            ent["client"] = "\n".join(cl)
-            ent.setdefault("lines", []).append(content or "")
-            ent["content"] = "\n".join(ent.get("lines") or [])
+            _finish_row(entries[-1], client_raw, content or "", remark_raw)
     return entries
 
 def _entry_client_lines(ent: dict | None) -> list[str]:
@@ -2996,16 +4577,39 @@ def _entry_pack_lines(ent: dict) -> list[str]:
             out.append(str(line or ""))
             continue
         out.extend(_chunk_text(line, max_u) or [line])
-    if not out and _entry_client_lines(ent): out = [""]
+    if not out and (_entry_client_lines(ent) or _entry_remark_lines(ent)): out = [""]
+    return out
+
+def _entry_remark_lines(ent: dict | None) -> list[str]:
+    if not ent: return []
+    raw = ent.get("remark_lines")
+    if isinstance(raw, list) and raw: src = [str(x or "") for x in raw]
+    else:
+        raw_r = str(ent.get("remarks") or "")
+        src = raw_r.split("\n") if raw_r else []
+    max_u, out = _remark_line_units(), []
+    for line in src:
+        if not str(line or "").strip():
+            out.append(str(line or ""))
+            continue
+        out.extend(_chunk_text(str(line or ""), max_u) or [str(line or "")])
     return out
 
 def _content_row_usage(entries: list[dict] | None) -> dict:
+    ents = list(entries or [])
+    if len(ents) == 1:
+        e = ents[0]
+        cl = e.get("client_lines") if isinstance(e.get("client_lines"), list) else []
+        ln = e.get("lines") if isinstance(e.get("lines"), list) else []
+        rm = e.get("remark_lines") if isinstance(e.get("remark_lines"), list) else []
+        if len(cl) >= WL_SHEET_N or len(ln) >= WL_SHEET_N or len(rm) >= WL_SHEET_N:
+            return _sheet_row_usage(cl, ln, rm)
     total, used, wrote_any, prev_gap, per_entry = len(WL_CONTENT_ROWS), 0, False, 0, []
-    for ent in entries or []:
-        clients, pack_lines = _entry_client_lines(ent), _entry_pack_lines(ent)
-        if not any(str(x).strip() for x in clients) and not any((x or "").strip() for x in pack_lines): per_entry.append(0); continue
+    for ent in ents:
+        clients, pack_lines, remarks = _entry_client_lines(ent), _entry_pack_lines(ent), _entry_remark_lines(ent)
+        if not any(str(x).strip() for x in clients) and not any((x or "").strip() for x in pack_lines) and not any(str(x).strip() for x in remarks): per_entry.append(0); continue
         gap = prev_gap if wrote_any else 0
-        lines = max(len(clients), len(pack_lines), 1)
+        lines = max(len(clients), len(pack_lines), len(remarks), 1)
         need = gap + lines
         per_entry.append(need)
         used += need; wrote_any = True; prev_gap = _entry_blank_after(ent, 1)
@@ -3057,26 +4661,41 @@ def _panel_lines_to_cells(lines: list[str] | None, max_u: int) -> list[str]:
 def _pack_entries_to_cells(d: date, entries: list[dict], next_day: list[str] | None = None, notes: list[str] | None = None) -> dict:
     cells, max_u, row_i, rows, wrote_any, prev_gap = _empty_cells(d), _content_line_units(), 0, WL_CONTENT_ROWS, False, 0
     for ent in entries or []:
-        clients, chunks = _entry_client_lines(ent), _entry_pack_lines(ent)
-        if not any(str(x).strip() for x in clients) and not any((x or "").strip() for x in chunks): continue
+        clients, chunks, remarks = _entry_client_lines(ent), _entry_pack_lines(ent), _entry_remark_lines(ent)
+        if not any(str(x).strip() for x in clients) and not any((x or "").strip() for x in chunks) and not any(str(x).strip() for x in remarks): continue
         if wrote_any: row_i += max(0, int(prev_gap))
-        for j in range(max(len(clients), len(chunks), 1)):
+        for j in range(max(len(clients), len(chunks), len(remarks), 1)):
             if row_i >= len(rows): break
             r = rows[row_i]
             c_val = clients[j] if j < len(clients) else ""
             g_val = chunks[j] if j < len(chunks) else ""
+            y_val = remarks[j] if j < len(remarks) else ""
             
             cells[f"C{r}"] = c_val
-            if (j < len(chunks) and not str(chunks[j]).strip()) or (j < len(clients) and not str(clients[j]).strip() and j >= len(chunks)):
+            if (j < len(chunks) and not str(chunks[j]).strip()) or (j < len(clients) and not str(clients[j]).strip() and j >= len(chunks) and not str(y_val).strip()):
                 cells[f"G{r}"] = _WL_SOFT_BLANK
             else:
                 cells[f"G{r}"] = g_val
+            cells[f"Y{r}"] = y_val
             row_i += 1
         wrote_any, prev_gap = True, _entry_blank_after(ent, 1)
     for t_list, t_rows in ((next_day, WL_NEXT_ROWS), (notes, WL_NOTE_ROWS)):
         chunks = _panel_lines_to_cells(t_list, max_u)
         for i, r in enumerate(t_rows): cells[f"D{r}"] = chunks[i] if i < len(chunks) else ""
     return cells
+
+
+def _flatten_to_sheet_entry(d: date, entries_list: list[dict] | None) -> dict:
+    """여러 항목을 본문 32칸 한 장으로 편다. 익일·특이는 넣지 않는다."""
+    ents = list(entries_list or [])
+    if len(ents) == 1:
+        e = ents[0]
+        cl = e.get("client_lines") if isinstance(e.get("client_lines"), list) else []
+        ln = e.get("lines") if isinstance(e.get("lines"), list) else []
+        rm = e.get("remark_lines") if isinstance(e.get("remark_lines"), list) else []
+        if len(cl) >= WL_SHEET_N or len(ln) >= WL_SHEET_N or len(rm) >= WL_SHEET_N:
+            return _sheet_entry_from_lines(cl, ln, rm)
+    return _sheet_entry_from_cells(_pack_entries_to_cells(d, ents))
 
 def _entries_from_cells(cells: dict) -> tuple[list[tuple[str, str]], list[str], list[str]]:
     rows = [_summary_row_from_entry(e) for e in _grouped_entries_from_cells(cells)]
@@ -3086,8 +4705,8 @@ def _entries_from_cells(cells: dict) -> tuple[list[tuple[str, str]], list[str], 
 
 
 def _summary_row_from_entry(ent: dict) -> tuple[str, str]:
-    """요약/미리보기용 — 거래처·내용에서 soft blank 빈줄 제거."""
-    client = next((ln for ln in _entry_client_lines(ent) if str(ln).strip()), "")
+    """요약/미리보기용 — 거래처 줄은 이어 붙이고, 내용은 빈줄만 뺀다."""
+    client = " ".join(ln.strip() for ln in _entry_client_lines(ent) if str(ln).strip())
     content_lines = [ln for ln in _entry_pack_lines(ent) if str(ln).strip()]
     return client, "\n".join(content_lines)
 
@@ -3127,8 +4746,12 @@ _WL_SUMMARY_PREVIEW_CSS = (
 )
 
 def render_readable_preview_html(d: date, cells: dict) -> str:
-    rows, next_day, notes = _entries_from_cells(cells)
-    date_label = html.escape(cells.get("date") or format_worklog_date(d))
+    body, extras = _detach_extra_pages(cells)
+    rows, next_day, notes = _entries_from_cells(body)
+    for extra in extras:
+        extra_rows, _, _ = _entries_from_cells(extra)
+        rows.extend(extra_rows)
+    date_label = html.escape(body.get("date") or format_worklog_date(d))
     if rows:
         work_items = []
         for i, (client, content) in enumerate(rows, 1):
@@ -3164,18 +4787,81 @@ def _next_key(d: date) -> str: return f"wl_next_{d.isoformat()}"
 def _notes_key(d: date) -> str: return f"wl_notes_{d.isoformat()}"
 def _boot_key(d: date) -> str: return f"worklog_booted_{d.isoformat()}"
 
+def _stored_cells_memo_key(d: date) -> str:
+    path = worklog_path(d)
+    try:
+        arch = worklog_archive_month_path(d, create_year=False) or ""
+    except Exception:
+        arch = ""
+    try:
+        pm = os.path.getmtime(path) if os.path.isfile(path) else 0.0
+    except OSError:
+        pm = 0.0
+    try:
+        am = os.path.getmtime(arch) if arch and os.path.isfile(arch) else 0.0
+    except OSError:
+        am = 0.0
+    return f"{d.isoformat()}|{pm}|{am}"
+
+
+def _stored_cells_for_date(d: date) -> dict:
+    """로컬 파일이 비어 있으면 월별 저장본을 쓴다. 빈 잔여 파일이 내용을 가리지 않게."""
+    memo = st.session_state.setdefault("wl_stored_cells_memo", {})
+    mk = _stored_cells_memo_key(d)
+    hit = memo.get(mk) if isinstance(memo, dict) else None
+    if isinstance(hit, dict):
+        return dict(hit)
+    try:
+        packed = _attach_extra_pages(read_worklog_cells(d), read_worklog_extra_page_cells(d))
+        if _worklog_cells_have_draft(packed):
+            if isinstance(memo, dict):
+                memo[mk] = packed
+            return packed
+    except Exception:
+        packed = None
+    try:
+        arch = read_worklog_cells_from_archive(d)
+        if arch is not None:
+            arch_p = _attach_extra_pages(arch, _read_extra_pages_from_archive(d))
+            if _worklog_cells_have_draft(arch_p):
+                if isinstance(memo, dict):
+                    memo[mk] = arch_p
+                return arch_p
+    except Exception:
+        pass
+    out = packed or _empty_cells(d)
+    if isinstance(memo, dict):
+        memo[mk] = out
+    return out
+
+
 def _init_widget_state(d: date) -> dict:
     bk, ek = _boot_key(d), _entries_key(d)
     if st.session_state.get(bk) and ek in st.session_state: return {}
-    cells = read_worklog_cells(d)
-    entries = _grouped_entries_from_cells(cells)
-    if not entries: entries = [{"client": "", "content": ""}]
+    packed = _stored_cells_for_date(d)
+    cells, extras = _detach_extra_pages(packed)
+    entries = [_sheet_entry_from_cells(cells)]
     st.session_state[ek] = entries
+    iso = d.isoformat()
+    st.session_state[f"wl_entry_count_{iso}"] = 1
+    st.session_state[_page_count_key(iso)] = max(1, min(WL_MAX_PAGES, 1 + len(extras)))
+    st.session_state[_page_idx_key(iso)] = 0
     _, next_day, notes = _entries_from_cells(cells)
     st.session_state[_next_key(d)] = "\n".join(next_day)
     st.session_state[_notes_key(d)] = "\n".join(notes)
+    sheet = entries[0] if entries else _empty_sheet_entry()
+    _seed_entry_clients(iso, 0, sheet.get("client_lines") or [""])
+    _apply_entry_lines(iso, 0, [str(x or "") for x in (sheet.get("lines") or [])], remount_comp=True)
+    _seed_entry_remarks(iso, 0, sheet.get("remark_lines") or [""])
+    _snapshot_worklog_page(iso, 0)
+    for i, extra in enumerate(extras, start=1):
+        ent = _sheet_entry_from_cells(extra)
+        _seed_entry_clients(iso, i, ent.get("client_lines") or [""])
+        _apply_entry_lines(iso, i, [str(x or "") for x in (ent.get("lines") or [])], remount_comp=True)
+        _seed_entry_remarks(iso, i, ent.get("remark_lines") or [""])
+        _snapshot_worklog_page(iso, i)
     st.session_state[bk] = True
-    return cells
+    return _attach_extra_pages(cells, extras)
 
 def _entry_line_count_key(iso: str, entry_i: int) -> str: return f"wl_ent_lc_{iso}_{entry_i}"
 def _entry_line_gen_key(iso: str, entry_i: int) -> str: return f"wl_ent_gen_{iso}_{entry_i}"
@@ -3188,14 +4874,21 @@ def _bump_entry_line_gen(iso: str, entry_i: int) -> None:
         st.session_state.pop(f"wl_ent_ln_{iso}_{entry_i}_{j}_g{old_g}", None); st.session_state.pop(f"wl_ent_ln_{iso}_{entry_i}_{j}", None)
     st.session_state[k] = old_g + 1
 
+def _widget_line_parts(iso: str, entry_i: int) -> list[str] | None:
+    lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
+    if lc > 0:
+        return [str(st.session_state.get(_entry_line_key(iso, entry_i, j), "") or "") for j in range(lc)]
+    raw = str(st.session_state.get(f"wl_ent_t_{iso}_{entry_i}", "") or "")
+    return raw.splitlines() if raw else None
+
+
 def _lines_from_entry_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bool = True) -> list[str]:
     live, cs = st.session_state.get(_entry_lines_live_key(iso, entry_i)), st.session_state.get(_entry_lines_comp_key(iso, entry_i))
-    if isinstance(live, list): parts = [str(x or "") for x in live]
-    elif isinstance(cs, dict) and isinstance(cs.get("lines"), list): parts = [str(x or "") for x in cs.get("lines") or []]
-    else:
-        lc = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
-        if lc <= 0: parts = [str(st.session_state.get(f"wl_ent_t_{iso}_{entry_i}", "") or "")] if str(st.session_state.get(f"wl_ent_t_{iso}_{entry_i}", "") or "") else ([""] if keep_trailing_empty else [])
-        else: parts = [str(st.session_state.get(_entry_line_key(iso, entry_i, j), "") or "") for j in range(lc)]
+    parts = _coalesce_editor_lines(
+        [str(x or "") for x in live] if isinstance(live, list) else None,
+        _comp_state_lines(cs),
+        _widget_line_parts(iso, entry_i),
+    )
     if not keep_trailing_empty:
         while parts and parts[-1] == "": parts.pop()
     elif parts and parts[-1] != "": parts = list(parts) + [""]
@@ -3203,6 +4896,83 @@ def _lines_from_entry_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bo
     return parts
 
 def _content_from_entry_lines(iso: str, entry_i: int) -> str: return "\n".join(_lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=False))
+
+def _comp_focus_seen_key(iso: str, entry_i: int, kind: str) -> str:
+    return f"wl_comp_focus_seen_{kind}_{iso}_{entry_i}"
+
+
+def _comp_send_focus(iso: str, entry_i: int, kind: str) -> int:
+    """CCv2 data.focus is one-shot. Sticky widget focus must not steal the clicked cell."""
+    fk = st.session_state.get(f"wl_focus_ln_{iso}")
+    if not isinstance(fk, str) or not fk:
+        return -1
+    prefix = {"ln": "wl_ent_ln", "cl": "wl_ent_cl", "rm": "wl_ent_rm"}.get(kind) or ""
+    m = re.match(rf"^{re.escape(prefix)}_{re.escape(iso)}_{int(entry_i)}_(\d+)(?:_g\d+)?$", fk)
+    if not m:
+        return -1
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return -1
+
+
+def _mark_comp_focus_seen(iso: str, entry_i: int, kind: str, fj: int) -> None:
+    st.session_state[_comp_focus_seen_key(iso, entry_i, kind)] = int(fj)
+
+
+def _maybe_remember_comp_focus(iso: str, entry_i: int, kind: str, cur: dict, key_fn) -> None:
+    """Remember wrap/enter moves only. Blur keeps the previous widget focus and must not restore it."""
+    if not isinstance(cur, dict):
+        return
+    try:
+        fj = int(cur.get("focus", -1))
+    except (TypeError, ValueError):
+        fj = -1
+    seen_k = _comp_focus_seen_key(iso, entry_i, kind)
+    if seen_k not in st.session_state:
+        st.session_state[seen_k] = fj if fj >= 0 else -1
+        return
+    seen = st.session_state.get(seen_k)
+    if fj < 0 or fj == seen:
+        return
+    st.session_state[seen_k] = fj
+    synced = cur.get("lines") if isinstance(cur.get("lines"), list) else []
+    caret = cur.get("caret") if isinstance(cur.get("caret"), dict) else {}
+    try:
+        pos = int(caret.get("s", len(str((synced[fj] if 0 <= fj < len(synced) else "") or ""))))
+    except (TypeError, ValueError, IndexError):
+        pos = 0
+    _remember_active_cell(iso, key_fn(iso, entry_i, fj), pos)
+
+
+def _seed_comp_focus_seen(iso: str, entry_i: int, kind: str, focus_n: int) -> None:
+    seen_k = _comp_focus_seen_key(iso, entry_i, kind)
+    if seen_k not in st.session_state:
+        st.session_state[seen_k] = focus_n if isinstance(focus_n, int) and focus_n >= 0 else -1
+
+
+def _comp_state_lines(cs) -> list[str] | None:
+    if isinstance(cs, dict) and isinstance(cs.get("lines"), list):
+        return [str(x or "") for x in cs.get("lines") or []]
+    lines = getattr(cs, "lines", None)
+    if isinstance(lines, list):
+        return [str(x or "") for x in lines]
+    return None
+
+
+def _coalesce_editor_lines(*groups: list | None) -> list[str]:
+    """Keep the longest known editor text. Empty CCv2 props must not wipe a typed cell."""
+    best: list[str] | None = None
+    best_score = -1
+    for g in groups:
+        if not isinstance(g, list):
+            continue
+        score = sum(len(str(x or "")) for x in g)
+        if score > best_score:
+            best_score = score
+            best = [str(x or "") for x in g]
+    return best if best is not None else [""]
+
 
 def _set_comp_lines_state(iso: str, entry_i: int, chunks: list[str], *, focus_j: int | None = None) -> None:
     ck = _entry_lines_comp_key(iso, entry_i)
@@ -3222,14 +4992,12 @@ def _set_comp_lines_state(iso: str, entry_i: int, chunks: list[str], *, focus_j:
         st.session_state[ck] = new_state
     if focus_j is not None:
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, int(fj))
+        _mark_comp_focus_seen(iso, entry_i, "ln", int(fj))
     st.session_state[_entry_lines_live_key(iso, entry_i)] = list(chunks)
 
 
 def _norm_editor_lines(lines: list | None) -> list[str]:
-    out = [str(x or "") for x in (lines or [])]
-    if not out or out[-1] != "":
-        out = list(out) + [""]
-    return out
+    return _pad_sheet_lines(lines)
 
 
 def _result_lines_list(result: Any) -> list[str] | None:
@@ -3240,6 +5008,34 @@ def _result_lines_list(result: Any) -> list[str] | None:
     if isinstance(result, dict) and isinstance(result.get("lines"), list):
         return _norm_editor_lines(result.get("lines"))
     return None
+
+
+def _bound_editor_key(iso: str, entry_i: int, kind: str) -> str:
+    return f"wl_bound_editor_{kind}_{iso}_{entry_i}"
+
+
+def _forced_editor_key(iso: str, entry_i: int, kind: str) -> str:
+    return {
+        "ln": f"wl_force_comp_lines_{iso}_{entry_i}",
+        "cl": f"wl_force_comp_clients_{iso}_{entry_i}",
+        "rm": f"wl_force_comp_remarks_{iso}_{entry_i}",
+    }[kind]
+
+
+def _mark_editor_bound(iso: str, entry_i: int, kind: str) -> None:
+    st.session_state[_bound_editor_key(iso, entry_i, kind)] = True
+
+
+def _clear_editor_bound(iso: str, entry_i: int, kind: str) -> None:
+    st.session_state.pop(_bound_editor_key(iso, entry_i, kind), None)
+
+
+def _program_editor_lines(iso: str, entry_i: int, kind: str, live: Any) -> tuple[list[str] | None, bool]:
+    """날짜 시드(강제)일 때만 칸을 통째로 교체한다. 칸 이동·입력 중에는 화면 값을 유지한다."""
+    forced = st.session_state.get(_forced_editor_key(iso, entry_i, kind))
+    if isinstance(forced, list):
+        return _pad_sheet_lines(forced), True
+    return None, False
 
 
 def _pick_editor_out_lines(
@@ -3262,15 +5058,14 @@ def _pick_editor_out_lines(
     user_changed = bool(st.session_state.pop(changed_key, None))
     result_n = _result_lines_list(result)
     if user_changed and result_n is not None:
-        return result_n
+        return _coalesce_editor_lines(result_n, session_n)
     return session_n
 
 
 def _apply_entry_lines(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None, bump_gen: bool = False, remount_comp: bool = False) -> None:
     if bump_gen: _bump_entry_line_gen(iso, entry_i)
     if remount_comp: _bump_entry_lines_comp_inst(iso, entry_i)
-    chunks = [str(x or "") for x in (lines or [])]
-    if not chunks or chunks[-1] != "": chunks.append("")
+    chunks = _pad_sheet_lines(lines)
     old = int(st.session_state.get(_entry_line_count_key(iso, entry_i), 0) or 0)
     for j in range(max(old, len(chunks)) + 3): st.session_state.pop(_entry_line_key(iso, entry_i, j), None)
     st.session_state[_entry_line_count_key(iso, entry_i)] = len(chunks)
@@ -3280,33 +5075,34 @@ def _apply_entry_lines(iso: str, entry_i: int, lines: list[str], *, focus_j: int
     st.session_state[_entry_lines_rev_key(iso, entry_i)] = int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0) + 1
     # 컴포넌트가 이전 result.lines로 덮어쓰지 않도록 가드
     st.session_state[f"wl_force_comp_lines_{iso}_{entry_i}"] = list(chunks)
+    _mark_editor_bound(iso, entry_i, "ln")
     if focus_j is not None:
         fj = max(0, min(int(focus_j), len(chunks) - 1))
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_line_key(iso, entry_i, fj)
         st.session_state[f"wl_focus_caret_{iso}"] = len(str(chunks[fj] or ""))
 
 def _insert_line_after(iso: str, entry_i: int, line_j: int) -> None:
-    cur = _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)
-    if not cur: cur = [""]
-    while len(cur) <= line_j: cur.append("")
+    cur = _pad_sheet_lines(_lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True))
     key = _entry_line_key(iso, entry_i, line_j)
     if key in st.session_state: cur[line_j] = str(st.session_state.get(key) or "")
-    cur.insert(line_j + 1, "")
-    _apply_entry_lines(iso, entry_i, cur, focus_j=line_j + 1)
+    _apply_entry_lines(iso, entry_i, cur, focus_j=min(line_j + 1, WL_SHEET_N - 1))
 
 def _entry_client_count_key(iso: str, entry_i: int) -> str: return f"wl_ent_clc_{iso}_{entry_i}"
 def _entry_client_key(iso: str, entry_i: int, line_j: int) -> str: return f"wl_ent_cl_{iso}_{entry_i}_{line_j}"
 
 def _clients_from_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bool = False) -> list[str]:
     live, cs = st.session_state.get(_entry_clients_live_key(iso, entry_i)), st.session_state.get(_entry_clients_comp_key(iso, entry_i))
-    if isinstance(live, list): parts = [str(x or "") for x in live]
-    elif isinstance(cs, dict) and isinstance(cs.get("lines"), list): parts = [str(x or "") for x in cs.get("lines") or []]
+    lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
+    if lc > 0:
+        widget_parts = [str(st.session_state.get(_entry_client_key(iso, entry_i, j), "") or "") for j in range(lc)]
     else:
-        lc = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
-        if lc > 0: parts = [str(st.session_state.get(_entry_client_key(iso, entry_i, j), "") or "") for j in range(lc)]
-        else:
-            raw = str(st.session_state.get(f"wl_ent_c_{iso}_{entry_i}", "") or "")
-            parts = raw.splitlines() if raw else ([""] if keep_trailing_empty else [])
+        raw = str(st.session_state.get(f"wl_ent_c_{iso}_{entry_i}", "") or "")
+        widget_parts = raw.splitlines() if raw else None
+    parts = _coalesce_editor_lines(
+        [str(x or "") for x in live] if isinstance(live, list) else None,
+        _comp_state_lines(cs),
+        widget_parts,
+    )
     if not keep_trailing_empty:
         while parts and not str(parts[-1]).strip(): parts.pop()
     elif parts and str(parts[-1]).strip() != "": parts = list(parts) + [""]
@@ -3329,12 +5125,12 @@ def _set_comp_clients_state(iso: str, entry_i: int, chunks: list[str], *, focus_
         st.session_state[ck] = new_state
     if focus_j is not None:
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, int(fj))
+        _mark_comp_focus_seen(iso, entry_i, "cl", int(fj))
     st.session_state[_entry_clients_live_key(iso, entry_i)] = list(chunks)
 
 def _apply_entry_clients(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None, remount_comp: bool = False) -> None:
     if remount_comp: _bump_entry_clients_comp_inst(iso, entry_i)
-    chunks = [str(x or "") for x in (lines or [])]
-    if not chunks or chunks[-1] != "": chunks.append("")
+    chunks = _pad_sheet_lines(lines)
     old = int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0)
     for j in range(max(old, len(chunks)) + 3): st.session_state.pop(_entry_client_key(iso, entry_i, j), None)
     st.session_state[_entry_client_count_key(iso, entry_i)] = len(chunks)
@@ -3345,12 +5141,13 @@ def _apply_entry_clients(iso: str, entry_i: int, lines: list[str], *, focus_j: i
     _set_comp_clients_state(iso, entry_i, chunks, focus_j=focus_j)
     st.session_state[_entry_clients_rev_key(iso, entry_i)] = int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0) + 1
     st.session_state[f"wl_force_comp_clients_{iso}_{entry_i}"] = list(chunks)
+    _mark_editor_bound(iso, entry_i, "cl")
     if focus_j is not None:
         fj = max(0, min(int(focus_j), len(chunks) - 1))
         st.session_state[f"wl_focus_ln_{iso}"] = _entry_client_key(iso, entry_i, fj)
         st.session_state[f"wl_focus_caret_{iso}"] = len(str(chunks[fj] or ""))
 
-def _seed_entry_clients(iso: str, entry_i: int, client: str | list[str]) -> None:
+def _seed_entry_clients(iso: str, entry_i: int, client: str | list[str], *, remount_comp: bool = True) -> None:
     max_u = _client_line_units()
     src = [str(x or "") for x in client] if isinstance(client, list) else (str(client or "").split('\n') if str(client or "") else [""])
     chunks: list[str] = []
@@ -3364,16 +5161,89 @@ def _seed_entry_clients(iso: str, entry_i: int, client: str | list[str]) -> None
     fj = max(0, len(chunks) - 1)
     for j, line in enumerate(chunks):
         if _display_units(line) >= max_u: fj = min(j + 1, len(chunks))
-    _apply_entry_clients(iso, entry_i, chunks, focus_j=fj, remount_comp=True)
+    _apply_entry_clients(iso, entry_i, chunks, focus_j=fj, remount_comp=remount_comp)
 
 def _insert_client_after(iso: str, entry_i: int, line_j: int) -> None:
-    cur = _clients_from_widgets(iso, entry_i, keep_trailing_empty=True)
-    if not cur: cur = [""]
-    while len(cur) <= line_j: cur.append("")
+    cur = _pad_sheet_lines(_clients_from_widgets(iso, entry_i, keep_trailing_empty=True))
     key = _entry_client_key(iso, entry_i, line_j)
     if key in st.session_state: cur[line_j] = str(st.session_state.get(key) or "")
-    cur.insert(line_j + 1, "")
-    _apply_entry_clients(iso, entry_i, cur, focus_j=line_j + 1)
+    _apply_entry_clients(iso, entry_i, cur, focus_j=min(line_j + 1, WL_SHEET_N - 1))
+
+def _entry_remark_count_key(iso: str, entry_i: int) -> str: return f"wl_ent_rmc_{iso}_{entry_i}"
+def _entry_remark_key(iso: str, entry_i: int, line_j: int) -> str: return f"wl_ent_rm_{iso}_{entry_i}_{line_j}"
+
+def _remarks_from_widgets(iso: str, entry_i: int, *, keep_trailing_empty: bool = False) -> list[str]:
+    live, cs = st.session_state.get(_entry_remarks_live_key(iso, entry_i)), st.session_state.get(_entry_remarks_comp_key(iso, entry_i))
+    lc = int(st.session_state.get(_entry_remark_count_key(iso, entry_i), 0) or 0)
+    if lc > 0:
+        widget_parts = [str(st.session_state.get(_entry_remark_key(iso, entry_i, j), "") or "") for j in range(lc)]
+    else:
+        raw = str(st.session_state.get(f"wl_ent_r_{iso}_{entry_i}", "") or "")
+        widget_parts = raw.splitlines() if raw else None
+    parts = _coalesce_editor_lines(
+        [str(x or "") for x in live] if isinstance(live, list) else None,
+        _comp_state_lines(cs),
+        widget_parts,
+    )
+    if not keep_trailing_empty:
+        while parts and not str(parts[-1]).strip(): parts.pop()
+    elif parts and str(parts[-1]).strip() != "": parts = list(parts) + [""]
+    elif not parts and keep_trailing_empty: parts = [""]
+    return parts
+
+def _set_comp_remarks_state(iso: str, entry_i: int, chunks: list[str], *, focus_j: int | None = None) -> None:
+    ck = _entry_remarks_comp_key(iso, entry_i)
+    prev = st.session_state.get(ck) if isinstance(st.session_state.get(ck), dict) else {}
+    fj = prev.get("focus", -1) if focus_j is None else max(0, min(int(focus_j), max(len(chunks) - 1, 0)))
+    new_state = {"lines": list(chunks), "focus": fj}
+    if isinstance(prev.get("caret"), dict):
+        new_state["caret"] = dict(prev.get("caret") or {})
+    try:
+        st.session_state.pop(ck, None)
+        st.session_state[ck] = new_state
+    except StreamlitAPIException:
+        _bump_entry_remarks_comp_inst(iso, entry_i)
+        ck = _entry_remarks_comp_key(iso, entry_i)
+        st.session_state[ck] = new_state
+    if focus_j is not None:
+        st.session_state[f"wl_focus_ln_{iso}"] = _entry_remark_key(iso, entry_i, int(fj))
+        _mark_comp_focus_seen(iso, entry_i, "rm", int(fj))
+    st.session_state[_entry_remarks_live_key(iso, entry_i)] = list(chunks)
+
+def _apply_entry_remarks(iso: str, entry_i: int, lines: list[str], *, focus_j: int | None = None, remount_comp: bool = False) -> None:
+    if remount_comp: _bump_entry_remarks_comp_inst(iso, entry_i)
+    chunks = _pad_sheet_lines(lines)
+    old = int(st.session_state.get(_entry_remark_count_key(iso, entry_i), 0) or 0)
+    for j in range(max(old, len(chunks)) + 3): st.session_state.pop(_entry_remark_key(iso, entry_i, j), None)
+    st.session_state[_entry_remark_count_key(iso, entry_i)] = len(chunks)
+    for j, line in enumerate(chunks): st.session_state[_entry_remark_key(iso, entry_i, j)] = line
+    filled = list(chunks)
+    while filled and filled[-1] == "": filled.pop()
+    st.session_state[f"wl_ent_r_{iso}_{entry_i}"] = "\n".join(filled)
+    _set_comp_remarks_state(iso, entry_i, chunks, focus_j=focus_j)
+    st.session_state[_entry_remarks_rev_key(iso, entry_i)] = int(st.session_state.get(_entry_remarks_rev_key(iso, entry_i), 0) or 0) + 1
+    st.session_state[f"wl_force_comp_remarks_{iso}_{entry_i}"] = list(chunks)
+    _mark_editor_bound(iso, entry_i, "rm")
+    if focus_j is not None:
+        fj = max(0, min(int(focus_j), len(chunks) - 1))
+        st.session_state[f"wl_focus_ln_{iso}"] = _entry_remark_key(iso, entry_i, fj)
+        st.session_state[f"wl_focus_caret_{iso}"] = len(str(chunks[fj] or ""))
+
+def _seed_entry_remarks(iso: str, entry_i: int, remarks: str | list[str], *, remount_comp: bool = True) -> None:
+    max_u = _remark_line_units()
+    src = [str(x or "") for x in remarks] if isinstance(remarks, list) else (str(remarks or "").split("\n") if str(remarks or "") else [""])
+    chunks: list[str] = []
+    for line in src:
+        s = str(line or "")
+        if not s.strip():
+            chunks.append(s)
+            continue
+        chunks.extend(_chunk_text(s, max_u) or [s])
+    if not chunks: chunks = [""]
+    fj = max(0, len(chunks) - 1)
+    for j, line in enumerate(chunks):
+        if _display_units(line) >= max_u: fj = min(j + 1, len(chunks))
+    _apply_entry_remarks(iso, entry_i, chunks, focus_j=fj, remount_comp=remount_comp)
 
 def _split_overflow_parts(parts: list[str], max_u: int) -> list[str]:
     out, i, n = len(parts), 0, len(parts)
@@ -3402,25 +5272,39 @@ def _dedupe_overflow_tail(pieces: list[str], tail: list[str]) -> list[str]:
 def _commit_enter_on_cell(kind: str, iso: str, entry_i: int, line_j: int, value: str) -> None:
     value = str(value or "")
     is_client = kind == "wl_ent_cl"
-    max_u = _client_line_units() if is_client else _content_line_units()
-    cur = _clients_from_widgets(iso, entry_i, keep_trailing_empty=True) if is_client else _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)
-    while len(cur) <= line_j: cur.append("")
-    if cur and cur[-1] == "": cur = cur[:-1]
-    head, tail = cur[:line_j], cur[line_j + 1 :]
-    pieces = _chunk_text(value, max_u) or [value] if _display_units(value) > max_u else [value]
-    if len(pieces) == 1:
-        new, focus = head + pieces + [""] + list(tail), line_j + 1
+    is_remark = kind == "wl_ent_rm"
+    max_u = _client_line_units() if is_client else (_remark_line_units() if is_remark else _content_line_units())
+    if is_client:
+        cur = _clients_from_widgets(iso, entry_i, keep_trailing_empty=True)
+    elif is_remark:
+        cur = _remarks_from_widgets(iso, entry_i, keep_trailing_empty=True)
     else:
-        new, focus = head + pieces + _dedupe_overflow_tail(pieces, list(tail)), line_j + 1
-        if focus >= len(new): new.append("")
-    if is_client: _apply_entry_clients(iso, entry_i, new, focus_j=min(focus, len(new) - 1))
-    else: _apply_entry_lines(iso, entry_i, new, focus_j=min(focus, len(new) - 1), bump_gen=True)
+        cur = _lines_from_entry_widgets(iso, entry_i, keep_trailing_empty=True)
+    new = _pad_sheet_lines(cur)
+    line_j = max(0, min(int(line_j), WL_SHEET_N - 1))
+    pieces = _chunk_text(value, max_u) or [value] if _display_units(value) > max_u else [value]
+    for k, p in enumerate(pieces):
+        dest = line_j + k
+        if dest >= WL_SHEET_N:
+            break
+        if k == 0:
+            new[dest] = p
+        else:
+            new[dest] = p + str(new[dest] or "")
+    focus = min(line_j + 1, WL_SHEET_N - 1)
+    if is_client: _apply_entry_clients(iso, entry_i, new, focus_j=focus)
+    elif is_remark: _apply_entry_remarks(iso, entry_i, new, focus_j=focus)
+    else: _apply_entry_lines(iso, entry_i, new, focus_j=focus, bump_gen=True)
     st.session_state.pop(f"wl_enter_done_{iso}", None)
 
 def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     ck, live_key, cs = _entry_clients_comp_key(iso, entry_i), _entry_clients_live_key(iso, entry_i), st.session_state.get(_entry_clients_comp_key(iso, entry_i))
-    if isinstance(cs, dict) and isinstance(cs.get("lines"), list): lines, focus = [str(x or "") for x in cs.get("lines") or []], cs.get("focus", -1)
-    elif isinstance(st.session_state.get(live_key), list): lines, focus = [str(x or "") for x in st.session_state.get(live_key) or []], -1
+    live = st.session_state.get(live_key)
+    prog, replace = _program_editor_lines(iso, entry_i, "cl", live)
+    if prog is not None:
+        lines, focus = prog, -1
+    elif isinstance(cs, dict) and isinstance(cs.get("lines"), list): lines, focus = [str(x or "") for x in cs.get("lines") or []], cs.get("focus", -1)
+    elif isinstance(live, list): lines, focus = [str(x or "") for x in live or []], -1
     elif int(st.session_state.get(_entry_client_count_key(iso, entry_i), 0) or 0) > 0: lines, focus = [str(st.session_state.get(_entry_client_key(iso, entry_i, j), "") or "") for j in range(int(st.session_state.get(_entry_client_count_key(iso, entry_i), 1) or 1))], -1
     else:
         raw = str(st.session_state.get(f"wl_ent_c_{iso}_{entry_i}", "") or "")
@@ -3430,6 +5314,10 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             if isinstance(cs, dict) and isinstance(cs.get("lines"), list): lines, focus = [str(x or "") for x in cs.get("lines") or []], cs.get("focus", -1)
             else: lines, focus = [""], -1
         else: lines, focus = [""], -1
+        replace = False
+        live = st.session_state.get(live_key)
+    if prog is None:
+        lines = _coalesce_editor_lines(lines, live if isinstance(live, list) else None, _comp_state_lines(cs))
     if any(_display_units(p) > max_u for p in lines):
         fixed, focus = _split_overflow_parts(lines, max_u), 0
         for j, line in enumerate(fixed):
@@ -3439,27 +5327,29 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             cs = st.session_state.get(ck)
             if isinstance(cs, dict) and isinstance(cs.get("lines"), list): lines, focus = [str(x or "") for x in cs.get("lines") or []], cs.get("focus", focus)
             else: lines = fixed
-    if not lines or lines[-1] != "": lines = list(lines) + [""]
+    lines = _pad_sheet_lines(lines)
     try: focus_n = int(focus)
     except (TypeError, ValueError): focus_n = -1
 
     def _on_clients_change() -> None:
         cur = st.session_state.get(ck)
-        if isinstance(cur, dict) and isinstance(cur.get("lines"), list):
-            synced = [str(x or "") for x in cur.get("lines") or []]
+        synced = _comp_state_lines(cur)
+        if synced is not None:
             st.session_state[f"wl_clients_user_edit_{iso}_{entry_i}"] = True
+            _clear_editor_bound(iso, entry_i, "cl")
             st.session_state[live_key] = synced
             st.session_state[_entry_client_count_key(iso, entry_i)] = len(synced)
             for j, line in enumerate(synced): st.session_state[_entry_client_key(iso, entry_i, j)] = line
             filled = list(synced)
             while filled and filled[-1] == "": filled.pop()
             st.session_state[f"wl_ent_c_{iso}_{entry_i}"] = "\n".join(filled)
-            lj = _last_used_line_index(synced)
-            _remember_active_cell(iso, _entry_client_key(iso, entry_i, lj), len(str(synced[lj] or "")))
+            focus_cur = cur if isinstance(cur, dict) else {"lines": synced, "focus": getattr(cur, "focus", -1)}
+            _maybe_remember_comp_focus(iso, entry_i, "cl", focus_cur, _entry_client_key)
 
+    _seed_comp_focus_seen(iso, entry_i, "cl", focus_n)
     result = _WL_LINES_EDITOR(
         key=ck,
-        data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "variant": "client", "rev": int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0)},
+        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "cl"), "max_u": int(max_u), "cell_w": int(_orig_cell_px("client")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "client", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0},
         default={"lines": lines},
         on_lines_change=_on_clients_change,
     )
@@ -3483,9 +5373,15 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
 
 def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     ck, live_key, cs = _entry_lines_comp_key(iso, entry_i), _entry_lines_live_key(iso, entry_i), st.session_state.get(_entry_lines_comp_key(iso, entry_i))
-    if isinstance(cs, dict) and isinstance(cs.get("lines"), list): lines, focus = [str(x or "") for x in cs.get("lines") or []], cs.get("focus", -1)
-    elif isinstance(st.session_state.get(live_key), list): lines, focus = [str(x or "") for x in st.session_state.get(live_key) or []], -1
+    live = st.session_state.get(live_key)
+    prog, replace = _program_editor_lines(iso, entry_i, "ln", live)
+    if prog is not None:
+        lines, focus = prog, -1
+    elif isinstance(cs, dict) and isinstance(cs.get("lines"), list): lines, focus = [str(x or "") for x in cs.get("lines") or []], cs.get("focus", -1)
+    elif isinstance(live, list): lines, focus = [str(x or "") for x in live or []], -1
     else: lines, focus = [""], -1
+    if prog is None:
+        lines = _coalesce_editor_lines(lines, live if isinstance(live, list) else None, _comp_state_lines(cs))
     if any(_display_units(p) > max_u for p in lines):
         fixed, focus = _split_overflow_parts(lines, max_u), 0
         for j, line in enumerate(fixed):
@@ -3495,37 +5391,29 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             cs = st.session_state.get(ck)
             if isinstance(cs, dict) and isinstance(cs.get("lines"), list): lines, focus = [str(x or "") for x in cs.get("lines") or []], cs.get("focus", focus)
             else: lines = fixed
-    if not lines or lines[-1] != "": lines = list(lines) + [""]
+    lines = _pad_sheet_lines(lines)
     try: focus_n = int(focus)
     except (TypeError, ValueError): focus_n = -1
 
     def _on_lines_change() -> None:
         cur = st.session_state.get(ck)
-        if isinstance(cur, dict) and isinstance(cur.get("lines"), list):
-            synced = [str(x or "") for x in cur.get("lines") or []]
+        synced = _comp_state_lines(cur)
+        if synced is not None:
             st.session_state[f"wl_lines_user_edit_{iso}_{entry_i}"] = True
+            _clear_editor_bound(iso, entry_i, "ln")
             st.session_state[live_key] = synced
             st.session_state[_entry_line_count_key(iso, entry_i)] = len(synced)
             for j, line in enumerate(synced): st.session_state[_entry_line_key(iso, entry_i, j)] = line
             filled = list(synced)
             while filled and filled[-1] == "": filled.pop()
             st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(filled)
-            try:
-                fj = int(cur.get("focus", -1))
-                if fj >= 0:
-                    caret = cur.get("caret") if isinstance(cur.get("caret"), dict) else {}
-                    pos = int(caret.get("s", len(str(synced[fj] or ""))))
-                    _remember_active_cell(iso, _entry_line_key(iso, entry_i, fj), pos)
-                else:
-                    lj = _last_used_line_index(synced)
-                    _remember_active_cell(iso, _entry_line_key(iso, entry_i, lj), len(str(synced[lj] or "")))
-            except (TypeError, ValueError, IndexError):
-                lj = _last_used_line_index(synced)
-                _remember_active_cell(iso, _entry_line_key(iso, entry_i, lj), len(str(synced[lj] or "")))
+            focus_cur = cur if isinstance(cur, dict) else {"lines": synced, "focus": getattr(cur, "focus", -1)}
+            _maybe_remember_comp_focus(iso, entry_i, "ln", focus_cur, _entry_line_key)
 
+    _seed_comp_focus_seen(iso, entry_i, "ln", focus_n)
     result = _WL_LINES_EDITOR(
         key=ck,
-        data={"lines": lines, "focus": focus_n, "max_u": int(max_u), "variant": "content", "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0)},
+        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "ln"), "max_u": int(max_u), "cell_w": int(_orig_cell_px("content")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "content", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0},
         default={"lines": lines},
         on_lines_change=_on_lines_change,
     )
@@ -3545,6 +5433,79 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     filled = list(out)
     while filled and filled[-1] == "": filled.pop()
     st.session_state[f"wl_ent_t_{iso}_{entry_i}"] = "\n".join(filled)
+    return out
+
+def _mount_entry_remark_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
+    ck, live_key, cs = _entry_remarks_comp_key(iso, entry_i), _entry_remarks_live_key(iso, entry_i), st.session_state.get(_entry_remarks_comp_key(iso, entry_i))
+    live = st.session_state.get(live_key)
+    prog, replace = _program_editor_lines(iso, entry_i, "rm", live)
+    if prog is not None:
+        lines, focus = prog, -1
+    elif isinstance(cs, dict) and isinstance(cs.get("lines"), list): lines, focus = [str(x or "") for x in cs.get("lines") or []], cs.get("focus", -1)
+    elif isinstance(live, list): lines, focus = [str(x or "") for x in live or []], -1
+    elif int(st.session_state.get(_entry_remark_count_key(iso, entry_i), 0) or 0) > 0: lines, focus = [str(st.session_state.get(_entry_remark_key(iso, entry_i, j), "") or "") for j in range(int(st.session_state.get(_entry_remark_count_key(iso, entry_i), 1) or 1))], -1
+    else:
+        raw = str(st.session_state.get(f"wl_ent_r_{iso}_{entry_i}", "") or "")
+        if raw:
+            _seed_entry_remarks(iso, entry_i, raw)
+            cs = st.session_state.get(ck)
+            if isinstance(cs, dict) and isinstance(cs.get("lines"), list): lines, focus = [str(x or "") for x in cs.get("lines") or []], cs.get("focus", -1)
+            else: lines, focus = [""], -1
+        else: lines, focus = [""], -1
+        live = st.session_state.get(live_key)
+    if prog is None:
+        lines = _coalesce_editor_lines(lines, live if isinstance(live, list) else None, _comp_state_lines(cs))
+    if any(_display_units(p) > max_u for p in lines):
+        fixed, focus = _split_overflow_parts(lines, max_u), 0
+        for j, line in enumerate(fixed):
+            if _display_units(line) >= max_u: focus = min(j + 1, len(fixed))
+        if fixed != lines:
+            _apply_entry_remarks(iso, entry_i, fixed, focus_j=focus)
+            cs = st.session_state.get(ck)
+            if isinstance(cs, dict) and isinstance(cs.get("lines"), list): lines, focus = [str(x or "") for x in cs.get("lines") or []], cs.get("focus", focus)
+            else: lines = fixed
+    lines = _pad_sheet_lines(lines)
+    try: focus_n = int(focus)
+    except (TypeError, ValueError): focus_n = -1
+
+    def _on_remarks_change() -> None:
+        cur = st.session_state.get(ck)
+        synced = _comp_state_lines(cur)
+        if synced is not None:
+            st.session_state[f"wl_remarks_user_edit_{iso}_{entry_i}"] = True
+            _clear_editor_bound(iso, entry_i, "rm")
+            st.session_state[live_key] = synced
+            st.session_state[_entry_remark_count_key(iso, entry_i)] = len(synced)
+            for j, line in enumerate(synced): st.session_state[_entry_remark_key(iso, entry_i, j)] = line
+            filled = list(synced)
+            while filled and filled[-1] == "": filled.pop()
+            st.session_state[f"wl_ent_r_{iso}_{entry_i}"] = "\n".join(filled)
+            focus_cur = cur if isinstance(cur, dict) else {"lines": synced, "focus": getattr(cur, "focus", -1)}
+            _maybe_remember_comp_focus(iso, entry_i, "rm", focus_cur, _entry_remark_key)
+
+    _seed_comp_focus_seen(iso, entry_i, "rm", focus_n)
+    result = _WL_LINES_EDITOR(
+        key=ck,
+        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "rm"), "max_u": int(max_u), "cell_w": int(_orig_cell_px("remark")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "remark", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_remarks_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0},
+        default={"lines": lines},
+        on_lines_change=_on_remarks_change,
+    )
+
+    forced = st.session_state.pop(f"wl_force_comp_remarks_{iso}_{entry_i}", None)
+    out = _pick_editor_out_lines(
+        session_lines=lines,
+        result=result,
+        forced=forced,
+        changed_key=f"wl_remarks_user_edit_{iso}_{entry_i}",
+    )
+    st.session_state[live_key] = out
+    old = int(st.session_state.get(_entry_remark_count_key(iso, entry_i), 0) or 0)
+    for j in range(max(old, len(out)) + 3): st.session_state.pop(_entry_remark_key(iso, entry_i, j), None)
+    st.session_state[_entry_remark_count_key(iso, entry_i)] = len(out)
+    for j, line in enumerate(out): st.session_state[_entry_remark_key(iso, entry_i, j)] = line
+    filled = list(out)
+    while filled and filled[-1] == "": filled.pop()
+    st.session_state[f"wl_ent_r_{iso}_{entry_i}"] = "\n".join(filled)
     return out
 
 
@@ -3606,7 +5567,7 @@ def _read_editor_entries(d: date) -> list[dict]:
     out: list[dict] = []
     for i in range(n):
         ck, gk, lc = f"wl_ent_c_{iso}_{i}", f"wl_ent_gap_{iso}_{i}", int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0)
-        if ck in st.session_state or lc > 0 or f"wl_ent_t_{iso}_{i}" in st.session_state or int(st.session_state.get(_entry_client_count_key(iso, i), 0) or 0) > 0:
+        if ck in st.session_state or lc > 0 or f"wl_ent_t_{iso}_{i}" in st.session_state or f"wl_ent_r_{iso}_{i}" in st.session_state or int(st.session_state.get(_entry_client_count_key(iso, i), 0) or 0) > 0 or int(st.session_state.get(_entry_remark_count_key(iso, i), 0) or 0) > 0:
             if int(st.session_state.get(_entry_client_count_key(iso, i), 0) or 0) > 0:
                 client_lines = _clients_from_widgets(iso, i, keep_trailing_empty=False)
                 client = "\n".join(client_lines)
@@ -3615,6 +5576,11 @@ def _read_editor_entries(d: date) -> list[dict]:
                 client_lines = _entry_client_lines({"client": client})
             lines = _lines_from_entry_widgets(iso, i, keep_trailing_empty=False)
             content = "\n".join(lines)
+            if int(st.session_state.get(_entry_remark_count_key(iso, i), 0) or 0) > 0 or f"wl_ent_r_{iso}_{i}" in st.session_state or isinstance(st.session_state.get(_entry_remarks_live_key(iso, i)), list):
+                remark_lines = _remarks_from_widgets(iso, i, keep_trailing_empty=False)
+                remarks = "\n".join(remark_lines)
+            else:
+                remarks, remark_lines = "", []
             blank_after = _entry_blank_after({"blank_after": st.session_state.get(gk)}, 1) if gk in st.session_state else (_entry_blank_after(stored[i], 1) if i < len(stored) else 1)
         elif i < len(stored):
             client = str(stored[i].get("client") or "")
@@ -3623,27 +5589,63 @@ def _read_editor_entries(d: date) -> list[dict]:
             lines = stored[i].get("lines")
             if not isinstance(lines, list): lines = _chunk_text(str(stored[i].get("content") or ""), _content_line_units()) or []
             content = ("\n".join(str(x or "") for x in lines) if lines else str(stored[i].get("content") or ""))
+            remark_lines = stored[i].get("remark_lines")
+            if not isinstance(remark_lines, list): remark_lines = _entry_remark_lines(stored[i])
+            remarks = ("\n".join(str(x or "") for x in remark_lines) if remark_lines else str(stored[i].get("remarks") or ""))
             blank_after = _entry_blank_after(stored[i], 1)
         else:
-            client, content, blank_after, lines, client_lines = "", "", 1, [], []
+            client, content, remarks, blank_after, lines, client_lines, remark_lines = "", "", "", 1, [], [], []
         # 주의: 위젯이 비어 있다고 해서 stored(이전 저장값)로 되살리지 않음.
         # 사용자가 지운 뒤 저장하면 구값이 되살아나던 원인이었음.
-        out.append({"client": client, "client_lines": client_lines, "content": content, "lines": lines, "blank_after": blank_after})
-    return out or [{"client": "", "client_lines": [], "content": "", "lines": [], "blank_after": 1}]
+        out.append({"client": client, "client_lines": client_lines, "content": content, "lines": lines, "remarks": remarks, "remark_lines": remark_lines, "blank_after": blank_after})
+    return out or [{"client": "", "client_lines": [], "content": "", "lines": [], "remarks": "", "remark_lines": [], "blank_after": 1}]
+
+def _sheet_lines_from_widgets(iso: str) -> tuple[list[str], list[str], list[str]]:
+    return _sheet_lines_from_widgets_at(iso, 0)
+
+
+def _extra_page_cells_from_widgets(d: date) -> list[dict]:
+    iso = d.isoformat()
+    n = _page_count_for(iso)
+    out: list[dict] = []
+    for i in range(1, n):
+        clients, contents, remarks = _sheet_lines_from_widgets_at(iso, i)
+        out.append(_pack_sheet_to_cells(d, clients, contents, remarks, [], []))
+    return out
+
 
 def _cells_from_widgets(d: date) -> dict:
-    entries = _read_editor_entries(d)
-    nk, ok = f"wl_next_area_{d.isoformat()}", f"wl_notes_area_{d.isoformat()}"
+    iso = d.isoformat()
+    clients, contents, remarks = _sheet_lines_from_widgets(iso)
+    nk, ok = f"wl_next_area_{iso}", f"wl_notes_area_{iso}"
     next_raw = str(st.session_state.get(nk) or st.session_state.get(_next_key(d), "") or "")
     notes_raw = str(st.session_state.get(ok) or st.session_state.get(_notes_key(d), "") or "")
-    return _pack_entries_to_cells(d, entries, _textarea_lines(next_raw), _textarea_lines(notes_raw))
+    cells = _pack_sheet_to_cells(d, clients, contents, remarks, _textarea_lines(next_raw), _textarea_lines(notes_raw))
+    return _attach_extra_pages(cells, _extra_page_cells_from_widgets(d))
 
-def _seed_day_entry_widgets(d: date, entries_list: list[dict], next_txt: str, notes_txt: str) -> None:
+def _seed_day_entry_widgets(
+    d: date,
+    entries_list: list[dict],
+    next_txt: str,
+    notes_txt: str,
+    extra_pages: list[dict] | None = None,
+    remount_comp: bool = True,
+) -> None:
     """저장/추가/삭제 후 입력 위젯을 entries 기준으로 다시 심는다. CCv2 인스턴스 키도 갱신."""
     iso = d.isoformat()
     ek = _entries_key(d)
-    old_n = int(st.session_state.get(f"wl_entry_count_{iso}", 0) or 0)
-    for i in range(max(old_n, len(entries_list)) + 2):
+    if extra_pages is None:
+        extra_pages = []
+        for i in range(1, _page_count_for(iso)):
+            extra_pages.append(_sheet_entry_from_lines(*_sheet_lines_from_widgets_at(iso, i)))
+    extra_pages = [e for e in extra_pages if isinstance(e, dict)]
+    old_n = max(
+        int(st.session_state.get(f"wl_entry_count_{iso}", 0) or 0),
+        _page_count_for(iso),
+        1 + len(extra_pages),
+        len(entries_list),
+    )
+    for i in range(old_n + 2):
         st.session_state.pop(f"wl_ent_c_{iso}_{i}", None)
         st.session_state.pop(f"wl_ent_t_{iso}_{i}", None)
         st.session_state.pop(f"wl_ent_gap_{iso}_{i}", None)
@@ -3660,24 +5662,47 @@ def _seed_day_entry_widgets(d: date, entries_list: list[dict], next_txt: str, no
         st.session_state.pop(_entry_clients_live_key(iso, i), None)
         st.session_state.pop(f"wl_force_comp_clients_{iso}_{i}", None)
         st.session_state.pop(f"wl_clients_user_edit_{iso}_{i}", None)
+        st.session_state.pop(_entry_remarks_comp_key(iso, i), None)
+        st.session_state.pop(f"wl_remarks_comp_{iso}_{i}", None)
+        st.session_state.pop(_entry_remarks_rev_key(iso, i), None)
+        st.session_state.pop(_entry_remarks_live_key(iso, i), None)
+        st.session_state.pop(f"wl_force_comp_remarks_{iso}_{i}", None)
+        st.session_state.pop(f"wl_remarks_user_edit_{iso}_{i}", None)
+        st.session_state.pop(f"wl_ent_r_{iso}_{i}", None)
         old_lc = int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0)
         for j in range(old_lc + 3): st.session_state.pop(_entry_line_key(iso, i, j), None)
         st.session_state.pop(_entry_line_count_key(iso, i), None)
         old_cc = int(st.session_state.get(_entry_client_count_key(iso, i), 0) or 0)
         for j in range(old_cc + 3): st.session_state.pop(_entry_client_key(iso, i, j), None)
         st.session_state.pop(_entry_client_count_key(iso, i), None)
+        old_rc = int(st.session_state.get(_entry_remark_count_key(iso, i), 0) or 0)
+        for j in range(old_rc + 3): st.session_state.pop(_entry_remark_key(iso, i, j), None)
+        st.session_state.pop(_entry_remark_count_key(iso, i), None)
     st.session_state.pop(f"wl_next_area_{iso}", None)
     st.session_state.pop(f"wl_notes_area_{iso}", None)
+    sheet = _flatten_to_sheet_entry(d, entries_list)
+    entries_list = [sheet]
     st.session_state[ek] = entries_list
-    st.session_state[f"wl_entry_count_{iso}"] = len(entries_list)
-    for i, ent in enumerate(entries_list):
-        clines = ent.get("client_lines")
-        if isinstance(clines, list) and clines: _seed_entry_clients(iso, i, clines)
-        else: _seed_entry_clients(iso, i, ent.get("client") or "")
-        st.session_state[f"wl_ent_gap_{iso}_{i}"] = _entry_blank_after(ent, 1)
-        lines = ent.get("lines")
-        if isinstance(lines, list): _apply_entry_lines(iso, i, [str(x or "") for x in lines], remount_comp=True)
-        else: _seed_entry_lines(iso, i, ent.get("content") or "")
+    st.session_state[f"wl_entry_count_{iso}"] = 1
+    _seed_entry_clients(iso, 0, sheet.get("client_lines") or [""], remount_comp=remount_comp)
+    _apply_entry_lines(iso, 0, [str(x or "") for x in (sheet.get("lines") or [])], remount_comp=remount_comp)
+    _seed_entry_remarks(iso, 0, sheet.get("remark_lines") or [""], remount_comp=remount_comp)
+    _snapshot_worklog_page(iso, 0)
+    for i, extra in enumerate(extra_pages, start=1):
+        if i >= WL_MAX_PAGES:
+            break
+        cl = extra.get("client_lines") if isinstance(extra.get("client_lines"), list) else []
+        ln = extra.get("lines") if isinstance(extra.get("lines"), list) else []
+        rm = extra.get("remark_lines") if isinstance(extra.get("remark_lines"), list) else []
+        if not cl and not ln and not rm:
+            extra_ent = _sheet_entry_from_cells(extra) if any(str(extra.get(k, "") or "") for k in extra) else _empty_sheet_entry()
+            cl, ln, rm = extra_ent.get("client_lines") or [""], extra_ent.get("lines") or [""], extra_ent.get("remark_lines") or [""]
+        _seed_entry_clients(iso, i, cl or [""], remount_comp=remount_comp)
+        _apply_entry_lines(iso, i, [str(x or "") for x in (ln or [])], remount_comp=remount_comp)
+        _seed_entry_remarks(iso, i, rm or [""], remount_comp=remount_comp)
+        _snapshot_worklog_page(iso, i)
+    st.session_state[_page_count_key(iso)] = max(1, min(WL_MAX_PAGES, 1 + len(extra_pages)))
+    st.session_state[_page_idx_key(iso)] = min(_page_idx_for(iso), st.session_state[_page_count_key(iso)] - 1)
     st.session_state[f"wl_next_area_{iso}"] = next_txt
     st.session_state[f"wl_notes_area_{iso}"] = notes_txt
     st.session_state[_next_key(d)] = next_txt
@@ -3708,30 +5733,46 @@ def _publish_view_cells(d: date, cells: dict) -> None:
 
 def _view_cells_for_preview(d: date) -> dict:
     key = _view_cells_key(d)
-    if isinstance(st.session_state.get(key), dict) and st.session_state.get(key): return st.session_state.get(key)
+    cached = st.session_state.get(key)
+    if isinstance(cached, dict) and cached:
+        return cached
     try:
-        if os.path.exists(worklog_path(d)): cells = read_worklog_cells(d); st.session_state[key] = cells; return cells
-    except Exception: pass
+        if os.path.exists(worklog_path(d)):
+            cells = _attach_extra_pages(read_worklog_cells(d), read_worklog_extra_page_cells(d))
+            st.session_state[key] = cells
+            return cells
+    except Exception:
+        pass
     cells = _empty_cells(d)
     st.session_state[key] = cells
     return cells
 
 
 def _draft_cells_for_left_preview(d: date) -> dict:
-    """왼쪽 요약/엑셀 — 현재 입력 위젯 값 (실시간). 요약 HTML은 soft blank 줄 제거."""
+    """왼쪽 요약/엑셀 — 현재 입력 위젯 값 (실시간). 위젯이 비면 그날 저장본."""
     try:
-        return _cells_from_widgets(d)
+        live = _cells_from_widgets(d)
+        if _worklog_cells_have_draft(live):
+            return live
     except Exception:
+        live = None
+    published = st.session_state.get(_view_cells_key(d))
+    if isinstance(published, dict) and published and _worklog_cells_have_draft(published):
+        return published
+    try:
         return _view_cells_for_preview(d)
+    except Exception:
+        return live or _empty_cells(d)
 
 
 def _clear_date_widget_state(d: date) -> None:
     iso = d.isoformat()
-    prefixes = (f"wl_ent_c_{iso}_", f"wl_ent_t_{iso}_", f"wl_ent_gap_{iso}_", f"wl_ent_ln_{iso}_", f"wl_ent_lc_{iso}_", f"wl_ent_gen_{iso}_", f"wl_ent_cl_{iso}_", f"wl_ent_clc_{iso}_", f"wl_ent_rev_{iso}_", f"wl_lines_comp_{iso}_", f"wl_lines_live_{iso}_", f"wl_lines_inst_{iso}_", f"wl_clients_comp_{iso}_", f"wl_clients_live_{iso}_", f"wl_clients_inst_{iso}_", f"wl_clients_rev_{iso}_", f"wl_force_comp_lines_{iso}_", f"wl_force_comp_clients_{iso}_", f"wl_lines_user_edit_{iso}_", f"wl_clients_user_edit_{iso}_", f"wl_exp_{iso}_", f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_save_btn_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}")
+    prefixes = (f"wl_ent_c_{iso}_", f"wl_ent_t_{iso}_", f"wl_ent_r_{iso}_", f"wl_ent_gap_{iso}_", f"wl_ent_ln_{iso}_", f"wl_ent_lc_{iso}_", f"wl_ent_gen_{iso}_", f"wl_ent_cl_{iso}_", f"wl_ent_clc_{iso}_", f"wl_ent_rm_{iso}_", f"wl_ent_rmc_{iso}_", f"wl_ent_rev_{iso}_", f"wl_lines_comp_{iso}_", f"wl_lines_live_{iso}_", f"wl_lines_inst_{iso}_", f"wl_clients_comp_{iso}_", f"wl_clients_live_{iso}_", f"wl_clients_inst_{iso}_", f"wl_clients_rev_{iso}_", f"wl_remarks_comp_{iso}_", f"wl_remarks_live_{iso}_", f"wl_remarks_inst_{iso}_", f"wl_remarks_rev_{iso}_", f"wl_force_comp_lines_{iso}_", f"wl_force_comp_clients_{iso}_", f"wl_force_comp_remarks_{iso}_", f"wl_lines_user_edit_{iso}_", f"wl_clients_user_edit_{iso}_", f"wl_remarks_user_edit_{iso}_", f"wl_exp_{iso}_", f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_save_btn_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}", f"wl_parked_cells_{iso}")
     for k in list(st.session_state.keys()):
         if not isinstance(k, str): continue
         if k in prefixes or any(k.startswith(p) for p in prefixes if p.endswith("_")): del st.session_state[k]
-        elif k in {f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_pending_sync_{iso}", f"wl_do_add_{iso}", f"wl_do_del_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}", f"wl_open_ctx_{iso}", f"wl_saved_ok_{iso}"}: del st.session_state[k]
+        elif k.startswith(f"wl_page_snap_{iso}_"): del st.session_state[k]
+        elif k in {f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_pending_sync_{iso}", f"wl_do_add_{iso}", f"wl_do_del_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}", f"wl_open_ctx_{iso}", f"wl_saved_ok_{iso}", f"wl_page_count_{iso}", f"wl_page_idx_{iso}"}: del st.session_state[k]
 
 def _preview_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"_preview_{d.isoformat()}.xlsx")
 
@@ -3781,7 +5822,7 @@ def open_excel_print_preview(xlsx_path: str, *, prefer_print_dialog: bool = True
         except Exception as e2: return False, f"실행 실패: {e2}"
 
 def _launch_browser_print_dialog(xlsx_path: str) -> None:
-    """인쇄 HTML을 새 창으로 연다. 큰 iframe을 본문에 붙이지 않아 로딩처럼 보이지 않게."""
+    """숨은 iframe에 인쇄 HTML을 넣고 인쇄 대화상자만 연다. 새 탭은 열지 않는다."""
     st.session_state["wl_print_panel"] = False
     abs_path = os.path.abspath(xlsx_path)
     if not os.path.exists(abs_path): st.error("인쇄용 파일이 없습니다."); return
@@ -3789,7 +5830,7 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
     try: mtime = os.path.getmtime(abs_path)
     except OSError: mtime = 0.0
     cached, meta = st.session_state.get(cache_k), st.session_state.get(meta_k) or {}
-    cache_ver = "v26"
+    cache_ver = "v27"
     if isinstance(cached, str) and cached and meta.get("mtime") == mtime and meta.get("path") == abs_path and meta.get("ver") == cache_ver:
         stamped = cached
         nonce = int(st.session_state.get("wl_print_n", 0)) + 1
@@ -3808,7 +5849,7 @@ def _launch_browser_print_dialog(xlsx_path: str) -> None:
         data={"html": stamped, "n": str(nonce)},
         height=1,
     )
-    st.caption("인쇄 창이 안 열리면 브라우저에서 팝업을 허용해 주세요.")
+    st.caption("인쇄 창이 안 뜨면 브라우저 인쇄 권한을 허용해 주세요.")
 
 def _open_worklog_print_panel(xlsx_path: str, *, auto: bool = False) -> None:
     st.session_state["wl_print_panel"] = True
@@ -3883,7 +5924,14 @@ def _prepare_excel_preview(d: date, cells: dict) -> str:
     try: return prepare_print_xlsx(d, cells)
     except Exception: return _build_preview_file(d, cells)
 
+def _clear_wl_cal_nav_keys() -> None:
+    """달력 ◀▶오늘 버튼 키는 session_state에 넣으면 안 된다."""
+    for k in ("wl_prev_month", "wl_next_month", "wl_today"):
+        st.session_state.pop(k, None)
+
+
 def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
+    _clear_wl_cal_nav_keys()
     if "worklog_month" not in st.session_state: st.session_state["worklog_month"] = date(selected.year, selected.month, 1)
     month_anchor: date = st.session_state["worklog_month"]
 
@@ -3935,7 +5983,7 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
                 label = f"{day}•" if has else f"{day}"
                 st.button(
                     label,
-                    key=f"wl_day_{d.isoformat()}",
+                    key=f"wl_day_{d.isoformat()}_{'s' if has else 'n'}",
                     width="stretch",
                     type="primary" if is_sel else "secondary",
                     on_click=_on_wl_cal_day,
@@ -3964,14 +6012,25 @@ def _wl_preview_cell_html(key: str, raw: Any) -> str:
 
 
 def _wl_preview_patches(cells: dict | None) -> dict[str, str]:
-    src = cells or {}
+    src, extras = _detach_extra_pages(cells)
     out = {"date": html.escape(str(src.get("date") or ""))}
     for r in WL_CLIENT_ROWS:
         out[f"C{r}"] = _wl_preview_cell_html(f"C{r}", src.get(f"C{r}", ""))
     for r in WL_CONTENT_ROWS:
         out[f"G{r}"] = _wl_preview_cell_html(f"G{r}", src.get(f"G{r}", ""))
+        out[f"Y{r}"] = _wl_preview_cell_html(f"Y{r}", src.get(f"Y{r}", ""))
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
         out[f"D{r}"] = _wl_preview_cell_html(f"D{r}", src.get(f"D{r}", ""))
+    for i, extra in enumerate(extras, start=2):
+        pfx = f"p{i}-"
+        out[f"{pfx}date"] = html.escape(str(extra.get("date") or src.get("date") or ""))
+        for r in WL_CLIENT_ROWS:
+            out[f"{pfx}C{r}"] = _wl_preview_cell_html(f"C{r}", extra.get(f"C{r}", ""))
+        for r in WL_CONTENT_ROWS:
+            out[f"{pfx}G{r}"] = _wl_preview_cell_html(f"G{r}", extra.get(f"G{r}", ""))
+            out[f"{pfx}Y{r}"] = _wl_preview_cell_html(f"Y{r}", extra.get(f"Y{r}", ""))
+        for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
+            out[f"{pfx}D{r}"] = "&nbsp;"
     return out
 
 
@@ -3992,8 +6051,14 @@ def _excel_preview_host_html(path: str, *, scale: float | None = None) -> str:
         f" .sheet-scale {{ {scale_css} width:fit-content; }}"
         f" .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK} !important; }}"
         f" .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }}"
-        f" .wl-sheet td[data-wl^='G'] {{ white-space:pre-wrap !important; overflow:hidden !important;"
-        f" word-break:break-all !important; overflow-wrap:anywhere !important; max-width:100% !important; }}"
+        f" .wl-sheet td[data-wl^='G'], .wl-sheet td[data-wl*='-G'] {{"
+        f" white-space:pre-wrap !important; overflow:hidden !important;"
+        f" word-break:break-all !important; overflow-wrap:anywhere !important; }}"
+        f" .wl-sheet td[data-wl^='Y'], .wl-sheet td[data-wl*='-Y'],"
+        f" .wl-sheet td[data-wl^='C'], .wl-sheet td[data-wl*='-C'] {{"
+        f" white-space:nowrap !important; overflow:hidden !important;"
+        f" word-break:keep-all !important; overflow-wrap:normal !important; }}"
+        f" .wl-page-break {{ page-break-before:always; break-before:page; }}"
         f" {fallback}</style>"
         f'<div class="wrap"><div class="sheet-scale">{sheet}</div></div>'
     )
@@ -4007,6 +6072,7 @@ def _mount_worklog_live_preview(
     rev: str,
     height: int,
     patches: dict[str, str] | None = None,
+    page: int = 1,
 ) -> None:
     _WL_PREVIEW_HOST(
         key=key,
@@ -4016,6 +6082,7 @@ def _mount_worklog_live_preview(
             "rev": str(rev or ""),
             "height": int(height or 0),
             "patches": patches or None,
+            "page": max(1, int(page or 1)),
         },
         default={},
     )
@@ -4041,7 +6108,7 @@ def _render_worklog_summary_block(selected: date, cells: dict) -> None:
         f'<div class="wl-sum-preview">{body}</div>'
     )
     _mount_worklog_live_preview(
-        key=f"wl_sum_host_{selected.isoformat()}",
+        key="wl_sum_host",
         mode="summary",
         html=host_html,
         rev=draft_sig,
@@ -4109,12 +6176,14 @@ def _prepare_worklog_day_state(selected: date, *, skip_remote_pull: bool = False
     _init_widget_state(selected)
     pending = st.session_state.pop(f"wl_pending_sync_{iso}", None)
     if isinstance(pending, dict):
-        _seed_day_entry_widgets(
-            selected,
-            pending.get("entries") or [{"client": "", "content": ""}],
-            pending.get("next") or "",
-            pending.get("notes") or "",
-        )
+        if not pending.get("keep_editor"):
+            _seed_day_entry_widgets(
+                selected,
+                pending.get("entries") or [{"client": "", "content": ""}],
+                pending.get("next") or "",
+                pending.get("notes") or "",
+                extra_pages=pending.get("extra_pages"),
+            )
         if pending.get("msg"):
             st.session_state[f"wl_flash_save_{iso}"] = {
                 "msg": pending["msg"],
@@ -4180,7 +6249,7 @@ def _render_worklog_left_preview(selected: date) -> None:
             st.session_state[f"wl_form_sig_v14_{selected.isoformat()}"] = form_sig
             st.session_state["_wl_force_form_sig"] = form_sig
             st.session_state[f"wl_left_excel_rebuild_{selected.isoformat()}"] = True
-            st.session_state.pop(f"wl_left_excel_html_v26_{selected.isoformat()}", None)
+            st.session_state.pop(f"wl_left_excel_html_v27_{selected.isoformat()}", None)
             draft = dict(cells_now)
         except Exception as e:
             st.error(f"미리보기 생성 중 오류가 발생했습니다: {e}")
@@ -4202,12 +6271,22 @@ def _render_worklog_left_preview(selected: date) -> None:
         if xlsx_left and os.path.exists(str(xlsx_left)):
             try:
                 cells_view = _draft_cells_for_left_preview(selected)
-                html_k = f"wl_left_excel_html_v26_{selected.isoformat()}"
-                h_k = f"wl_left_excel_h_v26_{selected.isoformat()}"
-                skel_k = f"wl_left_excel_skel_v26_{selected.isoformat()}"
+                html_k = f"wl_left_excel_html_v27_{selected.isoformat()}"
+                h_k = f"wl_left_excel_h_v27_{selected.isoformat()}"
+                skel_k = f"wl_left_excel_skel_v27_{selected.isoformat()}"
                 rebuild_k = f"wl_left_excel_rebuild_{selected.isoformat()}"
                 scale_l = _WL_PREVIEW_SCALE
+                page_n = _page_idx_for(selected.isoformat()) + 1
                 need_skel = bool(st.session_state.pop(rebuild_k, None)) or not st.session_state.get(html_k)
+                cached_html = str(st.session_state.get(html_k) or "")
+                if (
+                    not need_skel
+                    and page_n > 1
+                    and cached_html
+                    and f'data-wl-page="{page_n}"' not in cached_html
+                    and f'data-wl="p{page_n}-' not in cached_html
+                ):
+                    need_skel = True
                 if need_skel:
                     xlsx_left = _prepare_excel_preview(selected, cells_view)
                     st.session_state[_left_path_key] = xlsx_left
@@ -4225,12 +6304,13 @@ def _render_worklog_left_preview(selected: date) -> None:
                         st.session_state[html_k] = inline
                         st.session_state[h_k] = fh
                 _mount_worklog_live_preview(
-                    key=f"wl_excel_host_{selected.isoformat()}",
+                    key="wl_excel_host",
                     mode="excel",
                     html=inline,
                     rev=str(st.session_state.get(skel_k) or "1"),
                     height=min(1100, max(560, int(fh or 600))),
                     patches=_wl_preview_patches(cells_view),
+                    page=page_n,
                 )
                 if st.button("크게 보기", width="stretch", key=f"wl_left_excel_big_{selected.isoformat()}"):
                     st.session_state["wl_dialog_preview_path"] = str(xlsx_left)
@@ -4282,10 +6362,9 @@ def _wl_finish_edit_fragment() -> None:
 
 
 def _render_worklog_date_toolbar(selected: date) -> None:
-    """날짜칸·달력·삭제. fragment 밖에 두어 날짜를 바꾸면 전체 rerun으로 내용이 이동한다."""
+    """날짜칸·달력·삭제. 본문(거래처/내용/비고)과 같은 폭·왼쪽선에 맞춘다."""
     saved = _saved_dates_for_calendar()
-    bar_date, bar_cal, bar_del = st.columns([2.4, 1.1, 0.7], gap="small")
-    with bar_date:
+    with st.container(key="wl_date_bar", horizontal=True, gap="small", vertical_alignment="bottom"):
         if "wl_date_pick" not in st.session_state:
             _set_wl_date_pick(selected)
         st.date_input(
@@ -4293,17 +6372,26 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             format="YYYY/MM/DD",
             key="wl_date_pick",
             on_change=_on_wl_date_pick_change,
-            help="저장 전에는 빈 날짜로 옮길 수 있습니다. 저장한 뒤에는 날짜만 바꿔도 그 날 자료는 그대로 둡니다.",
+            help="기본은 그 날 저장본을 엽니다. 「날짜변경」을 켠 뒤 날짜를 고르면 지금 입력 중인 내용이 그 날로 옮겨집니다.",
+            width="stretch",
         )
         st.session_state["_wl_date_pick_live"] = True
-    with bar_cal:
-        st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
-        with st.popover("📅 달력", width="content"):
+        with st.popover("📅 달력", width="content", key="wl_cal_pop"):
             _render_month_calendar(selected, saved)
-    with bar_del:
-        st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
+        _move_on = _date_move_mode_on()
+        st.button(
+            "날짜변경",
+            width="content",
+            key="wl_date_move_btn",
+            type="primary" if _move_on else "secondary",
+            on_click=_on_toggle_date_move_mode,
+            help="켜 둔 뒤 날짜를 고르면 지금 편집중인 글의 날짜만 바뀝니다. 저장해야 확정됩니다.",
+        )
         if st.button("삭제", width="content", key="wl_del_open_btn"):
+            _pin_worklog_scroll()
             st.session_state["wl_del_confirm_open"] = True
+    if _date_move_mode_on():
+        st.caption("날짜변경 켜짐 · 날짜를 고르면 지금 입력 중인 내용이 그 날로 옮겨집니다. 저장해야 확정됩니다.")
     # 삭제 확인 — 팝오버 대신 세션 상태 기반 인라인 UI. 확정/취소 후 확실히 사라진다.
     # (st.popover 를 코드로 닫으면 프론트가 다시 열어버려 '깜박→부활'하는 문제를 회피)
     if st.session_state.get("wl_del_confirm_open"):
@@ -4319,27 +6407,26 @@ def _render_worklog_date_toolbar(selected: date) -> None:
 
 def _render_worklog_input_panel(selected: date) -> None:
     """오른쪽 게이지+입력. 칸 이동 시 published 스냅샷 갱신(동일 fragment rerun)."""
-    if _run_pending_worklog_day_delete():
-        selected = st.session_state.get("worklog_selected") or selected
-        _wl_rerun(full=True)
-        return
     _run_pending_worklog_date_change()
     st.session_state.pop("wl_need_app_rerun", None)
     selected = st.session_state.get("worklog_selected") or selected
 
     try:
-        _gauge_usage = _content_row_usage(_read_editor_entries(selected))
+        iso_g = selected.isoformat()
+        _c, _g, _y = _sheet_lines_from_widgets_at(iso_g, _page_idx_for(iso_g))
+        _gauge_usage = _sheet_row_usage(_c, _g, _y)
     except Exception:
-        _gauge_usage = _content_row_usage([])
+        _gauge_usage = _sheet_row_usage([], [], [])
     col_gauge, col_input = st.columns([0.14, 1], gap="small")
     with col_gauge:
             st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-            _render_row_remain_gauge(_gauge_usage, height_px=700)
+            _render_row_remain_gauge(_gauge_usage, height_px=980)
 
     with col_input:
+            _render_worklog_date_toolbar(selected)
             iso = selected.isoformat()
             ek = _entries_key(selected)
-            if ek not in st.session_state or not st.session_state[ek]: st.session_state[ek] = [{"client": "", "content": ""}]
+            if ek not in st.session_state or not st.session_state[ek]: st.session_state[ek] = [_empty_sheet_entry()]
 
             def _seed_entry_widgets(entries_list: list[dict], next_txt: str, notes_txt: str) -> None:
                 _seed_day_entry_widgets(selected, entries_list, next_txt, notes_txt)
@@ -4351,47 +6438,40 @@ def _render_worklog_input_panel(selected: date) -> None:
                 else:
                     st.success(flash["msg"])
 
-            add_clicked = st.session_state.pop(f"wl_do_add_{iso}", False)
-            del_idx = st.session_state.pop(f"wl_do_del_{iso}", None)
-            if add_clicked or isinstance(del_idx, int):
-                entries = _read_editor_entries(selected)
-                if isinstance(del_idx, int) and 0 <= del_idx < len(entries): entries.pop(del_idx)
-                if add_clicked: entries.append({"client": "", "content": "", "lines": [""], "blank_after": 1})
-                if not entries: entries = [{"client": "", "content": "", "blank_after": 1}]
-                next_txt = str(st.session_state.get(f"wl_next_area_{iso}") or st.session_state.get(_next_key(selected), "") or "")
-                notes_txt = str(st.session_state.get(f"wl_notes_area_{iso}") or st.session_state.get(_notes_key(selected), "") or "")
-                _seed_entry_widgets(entries, next_txt, notes_txt)
-                if add_clicked:
-                    for _i in range(len(entries)): st.session_state[f"wl_exp_{iso}_{_i}"] = _i == len(entries) - 1
-                    st.session_state[f"wl_force_expand_{iso}"] = len(entries) - 1
-            else:
-                entries = list(st.session_state[ek])
-                for i, ent in enumerate(entries):
-                    ck = f"wl_ent_c_{iso}_{i}"
-                    gk = f"wl_ent_gap_{iso}_{i}"
-                    if ck not in st.session_state: st.session_state[ck] = ent.get("client") or ""
-                    if gk not in st.session_state: st.session_state[gk] = _entry_blank_after(ent, 1)
-                    if int(st.session_state.get(_entry_client_count_key(iso, i), 0) or 0) <= 0:
-                        cl0 = ent.get("client_lines")
-                        if isinstance(cl0, list) and cl0: _seed_entry_clients(iso, i, cl0)
-                        else: _seed_entry_clients(iso, i, ent.get("client") or "")
-                    if int(st.session_state.get(_entry_line_count_key(iso, i), 0) or 0) <= 0:
-                        lines0 = ent.get("lines")
-                        if isinstance(lines0, list): _apply_entry_lines(iso, i, [str(x or "") for x in lines0], remount_comp=True)
-                        else: _seed_entry_lines(iso, i, ent.get("content") or "")
-                st.session_state[f"wl_entry_count_{iso}"] = len(entries)
-                nk = f"wl_next_area_{iso}"
-                ok = f"wl_notes_area_{iso}"
-                if nk not in st.session_state: st.session_state[nk] = st.session_state.get(_next_key(selected), "")
-                if ok not in st.session_state: st.session_state[ok] = st.session_state.get(_notes_key(selected), "")
+            st.session_state.pop(f"wl_do_del_{iso}", None)
+            if st.session_state.pop(f"wl_do_add_{iso}", None):
+                _add_worklog_input_page(iso)
+            entries = list(st.session_state[ek] or [_empty_sheet_entry()])
+            sheet = entries[0] if entries else _empty_sheet_entry()
+            ck = f"wl_ent_c_{iso}_0"
+            if ck not in st.session_state: st.session_state[ck] = sheet.get("client") or ""
+            if int(st.session_state.get(_entry_client_count_key(iso, 0), 0) or 0) <= 0:
+                cl0 = sheet.get("client_lines")
+                if isinstance(cl0, list) and cl0: _seed_entry_clients(iso, 0, cl0)
+                else: _seed_entry_clients(iso, 0, sheet.get("client") or "")
+            if int(st.session_state.get(_entry_line_count_key(iso, 0), 0) or 0) <= 0:
+                lines0 = sheet.get("lines")
+                if isinstance(lines0, list): _apply_entry_lines(iso, 0, [str(x or "") for x in lines0], remount_comp=True)
+                else: _seed_entry_lines(iso, 0, sheet.get("content") or "")
+            if int(st.session_state.get(_entry_remark_count_key(iso, 0), 0) or 0) <= 0:
+                rl0 = sheet.get("remark_lines")
+                if isinstance(rl0, list) and rl0: _seed_entry_remarks(iso, 0, rl0)
+                else: _seed_entry_remarks(iso, 0, sheet.get("remarks") or "")
+            st.session_state[f"wl_entry_count_{iso}"] = 1
+            nk = f"wl_next_area_{iso}"
+            ok = f"wl_notes_area_{iso}"
+            if nk not in st.session_state: st.session_state[nk] = st.session_state.get(_next_key(selected), "")
+            if ok not in st.session_state: st.session_state[ok] = st.session_state.get(_notes_key(selected), "")
 
             def _wl_entry_editor():
                 d = st.session_state.get("worklog_selected") or selected
                 iso2 = d.isoformat()
-                n = int(st.session_state.get(f"wl_entry_count_{iso2}", 1) or 1)
                 max_u = _content_line_units()
                 # 저장은 2단계: 버튼 → flush 후 다음 런에서 실제 저장 (직전 입력 누락/구값 복원 방지)
                 do_save = bool(st.session_state.pop(f"wl_do_save_{iso2}", None))
+                if st.session_state.pop(f"wl_do_add_{iso2}", None):
+                    _add_worklog_input_page(iso2)
+                pi = _page_idx_for(iso2)
 
                 _force_open = st.session_state.pop(f"wl_force_expand_{iso2}", None)
                 if isinstance(_force_open, int): st.session_state[f"wl_exp_{iso2}_{_force_open}"] = True
@@ -4425,7 +6505,7 @@ def _render_worklog_input_panel(selected: date) -> None:
                     _commit_enter_on_cell(str(ent_req.get("kind") or ""), iso2, int(ent_req.get("ei") or 0), int(ent_req.get("lj") or 0), str(ent_req.get("v") or ""))
 
                 def _on_enter_trigger():
-                    hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
+                    hook = st.session_state.get("wl_enter_hook_nav") or st.session_state.get(f"wl_enter_hook_{iso2}") or {}
                     payload = str(hook.get("enter") or "") if isinstance(hook, dict) else ""
                     if not payload: return
                     done_k = f"wl_enter_done_{iso2}"
@@ -4437,24 +6517,26 @@ def _render_worklog_input_panel(selected: date) -> None:
                     sig = f"{key}\0{val}"
                     if st.session_state.get(done_k) == sig: return
                     st.session_state[done_k] = sig
-                    m = re.match(r"^(wl_ent_ln|wl_ent_cl)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$", key)
+                    m = re.match(r"^(wl_ent_ln|wl_ent_cl|wl_ent_rm)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)(?:_g\d+)?$", key)
                     if not m or m.group(2) != iso2: return
+                    if m.group(1) in ("wl_ent_ln", "wl_ent_cl", "wl_ent_rm"):
+                        return
                     st.session_state[f"wl_do_enter_cell_{iso2}"] = {"kind": m.group(1), "ei": int(m.group(3)), "lj": int(m.group(4)), "v": val}
 
                 def _on_focus_trigger():
-                    hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
+                    hook = st.session_state.get("wl_enter_hook_nav") or st.session_state.get(f"wl_enter_hook_{iso2}") or {}
                     if not isinstance(hook, dict):
                         return
                     fk = str(hook.get("focus") or "")
                     if fk.startswith("wl_next_area_") or fk.startswith("wl_notes_area_"):
                         st.session_state["wl_active_cell_key"] = fk
                         return
-                    if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
+                    if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_") or fk.startswith("wl_ent_rm_"):
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state[f"wl_focus_ln_{iso2}"] = fk
 
                 def _on_caret_trigger():
-                    hook = st.session_state.get(f"wl_enter_hook_{iso2}") or {}
+                    hook = st.session_state.get("wl_enter_hook_nav") or st.session_state.get(f"wl_enter_hook_{iso2}") or {}
                     if not isinstance(hook, dict):
                         return
                     raw = hook.get("caret")
@@ -4469,126 +6551,139 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         return
-                    if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_"):
+                    if fk.startswith("wl_ent_ln_") or fk.startswith("wl_ent_cl_") or fk.startswith("wl_ent_rm_"):
                         st.session_state["wl_active_cell_key"] = fk
                         st.session_state[f"wl_focus_ln_{iso2}"] = fk
                         st.session_state["wl_active_cell_sel"] = (s, e)
                         st.session_state[f"wl_focus_caret_{iso2}"] = s
 
-                _live_entries = _read_editor_entries(d)
-                _usage = _content_row_usage(_live_entries)
-                _rem = _usage["remaining"]
-
-                for i in range(n):
-                    if int(st.session_state.get(_entry_client_count_key(iso2, i), 0) or 0) > 0:
-                        _cl0 = _clients_from_widgets(iso2, i, keep_trailing_empty=False)
-                        client_now = (_cl0[0] if _cl0 else "").strip()
-                    else:
-                        client_now = str(st.session_state.get(f"wl_ent_c_{iso2}_{i}", "") or "").strip()
-                        if client_now: client_now = client_now.splitlines()[0].strip()
-                    body_now = _content_from_entry_lines(iso2, i).strip().replace("\n", " ")
-                    # 라벨은 현재 위젯/live만 사용 — stored 폴백은 지운 뒤에도 구제목 잔존/비어있음 오표시 원인
-                    if len(body_now) > 24: body_now = body_now[:24] + "…"
-                    label = f"항목 {i + 1}"
-                    if client_now: label += f" · {client_now}"
-                    elif body_now: label += f" · {body_now}"
-                    else: label += " · (비어 있음)"
-
-                    exp_key = f"wl_exp_{iso2}_{i}"
-                    # 가독성: 기본은 첫 항목만 펼침 (새 항목 추가는 해당 항목만 펼침)
-                    force_i = st.session_state.get(f"wl_force_expand_{iso2}")
-                    if exp_key not in st.session_state:
-                        if isinstance(force_i, int):
-                            st.session_state[exp_key] = i == force_i
+                _cu = _client_line_units()
+                _ru = _remark_line_units()
+                if int(st.session_state.get(_entry_client_count_key(iso2, pi), 0) or 0) <= 0:
+                    if pi <= 0:
+                        stored_e = st.session_state.get(_entries_key(d)) or []
+                        if stored_e and isinstance(stored_e[0].get("client_lines"), list):
+                            _seed_entry_clients(iso2, 0, stored_e[0].get("client_lines") or [""])
                         else:
-                            st.session_state[exp_key] = i == 0
+                            _seed_entry_clients(iso2, 0, str(st.session_state.get(f"wl_ent_c_{iso2}_0", "") or ""))
+                    else:
+                        _seed_entry_clients(iso2, pi, str(st.session_state.get(f"wl_ent_c_{iso2}_{pi}", "") or ""))
+                if int(st.session_state.get(_entry_line_count_key(iso2, pi), 0) or 0) <= 0:
+                    if pi <= 0:
+                        lines0 = None
+                        stored_e = st.session_state.get(_entries_key(d)) or []
+                        if stored_e and isinstance(stored_e[0].get("lines"), list): lines0 = stored_e[0].get("lines")
+                        if isinstance(lines0, list): _apply_entry_lines(iso2, 0, [str(x or "") for x in lines0], remount_comp=True)
+                        else: _seed_entry_lines(iso2, 0, str(st.session_state.get(f"wl_ent_t_{iso2}_0", "") or ""))
+                    else:
+                        _seed_entry_lines(iso2, pi, str(st.session_state.get(f"wl_ent_t_{iso2}_{pi}", "") or ""))
+                if int(st.session_state.get(_entry_remark_count_key(iso2, pi), 0) or 0) <= 0:
+                    if pi <= 0:
+                        stored_e = st.session_state.get(_entries_key(d)) or []
+                        if stored_e and isinstance(stored_e[0].get("remark_lines"), list):
+                            _seed_entry_remarks(iso2, 0, stored_e[0].get("remark_lines") or [""])
+                        else:
+                            _seed_entry_remarks(iso2, 0, str(st.session_state.get(f"wl_ent_r_{iso2}_0", "") or (stored_e[0].get("remarks") if stored_e else "") or ""))
+                    else:
+                        _seed_entry_remarks(iso2, pi, str(st.session_state.get(f"wl_ent_r_{iso2}_{pi}", "") or ""))
 
-                    # 항목 익스팬더: 같은 키가 한 run 에 두 번 등록되면 StreamlitDuplicateElementKey
-                    # 로 탭 전체가 흰 화면 크래시가 났다(일부 Streamlit 버전, 저장 데이터 로드 시).
-                    # 중복이면 유니크 키로 재생성해 크래시를 원천 차단(정상 경우는 안정 키 그대로).
-                    try:
-                        _exp_ctx = st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=exp_key)
-                    except _WLDupKeyError:
-                        _dupc = int(st.session_state.get("_wl_exp_dedup_ctr", 0)) + 1
-                        st.session_state["_wl_exp_dedup_ctr"] = _dupc
-                        _exp_ctx = st.expander(label, expanded=bool(st.session_state.get(exp_key)), key=f"{exp_key}__dup{_dupc}")
-                    with _exp_ctx:
-                        st.button(
-                            "이 항목 삭제",
-                            key=f"wl_del_btn_{iso2}_{i}",
-                            use_container_width=True,
-                            on_click=_queue_worklog_del_entry,
-                            args=(iso2, i),
-                        )
-
-                        _cu = _client_line_units()
-                        if int(st.session_state.get(_entry_client_count_key(iso2, i), 0) or 0) <= 0:
-                            stored_e = st.session_state.get(_entries_key(d)) or []
-                            if i < len(stored_e) and isinstance(stored_e[i].get("client_lines"), list):
-                                _seed_entry_clients(iso2, i, stored_e[i].get("client_lines") or [""])
-                            else:
-                                _seed_entry_clients(iso2, i, str(st.session_state.get(f"wl_ent_c_{iso2}_{i}", "") or ""))
-                        if int(st.session_state.get(_entry_line_count_key(iso2, i), 0) or 0) <= 0:
-                            lines0 = None
-                            stored_e = st.session_state.get(_entries_key(d)) or []
-                            if i < len(stored_e) and isinstance(stored_e[i].get("lines"), list): lines0 = stored_e[i].get("lines")
-                            if isinstance(lines0, list): _apply_entry_lines(iso2, i, [str(x or "") for x in lines0], remount_comp=True)
-                            else: _seed_entry_lines(iso2, i, str(st.session_state.get(f"wl_ent_t_{iso2}_{i}", "") or ""))
-
-                        if i == 0:
-                            st.markdown(
-                                """<style>
-                                div[class*="st-key-wl_clients_comp_"], div[class*="st-key-wl_lines_comp_"] { width: 100% !important; max-width: 100% !important; }
-                                div[class*="st-key-wl_clients_comp_"] .wl-lines, div[class*="st-key-wl_lines_comp_"] .wl-lines { margin: 0; }
-                                div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-wl_clients_comp_"]) { align-items: flex-start !important; gap: 0.25rem !important; }
-                                /* 내용칸 열: Streamlit 칼럼 좌우 패딩 축소 → 입력 폭 확보 */
-                                div[data-testid="column"]:has(div[class*="st-key-wl_lines_comp_"]) {
-                                  padding-left: 0.15rem !important;
-                                  padding-right: 0 !important;
-                                }
-                                div[class*="st-key-wl_lines_comp_"] > div { width: 100% !important; }
-                                </style>""",
-                                unsafe_allow_html=True,
-                            )
-
-                        # 화면 비율 조절 (거래처 칸 넓힘)
-                        col_client, col_content = st.columns([2.0, 6.0], gap="small")
-
-                        with col_client: _mount_entry_client_editor(iso2, i, _cu)
-                        with col_content: _mount_entry_lines_editor(iso2, i, max_u)
-
-                        _filled = len(_lines_from_entry_widgets(iso2, i, keep_trailing_empty=False))
-                        gap_key = f"wl_ent_gap_{iso2}_{i}"
-                        if gap_key not in st.session_state: st.session_state[gap_key] = _entry_blank_after((_live_entries[i] if i < len(_live_entries) else None), 1)
-
-                        st.markdown("<hr style='margin:16px 0 12px;border:none;border-top:1px dashed #E2E8F0;'>", unsafe_allow_html=True)
-                        st.number_input("다음 항목 전 빈 칸 수", min_value=0, max_value=10, step=1, key=gap_key, help="이 항목 다음에 원본 엑셀에서 비워 둘 행 수.")
-                        _ent_rows = (_usage["per_entry"][i] if i < len(_usage["per_entry"]) else max(_filled, 1))
-                        st.caption(f"이 항목 약 {_ent_rows}행 사용 · 전체 남은 {_rem}행 (마지막 칸 G{_usage['last_row']})")
-
-                st.button(
-                    "＋ 항목 추가",
-                    key=f"wl_add_btn_{iso2}",
-                    width="stretch",
-                    on_click=_queue_worklog_add,
-                    args=(iso2,),
-                )
-
-                st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
+                _cw, _gw, _rw = _input_cell_px("client"), _input_cell_px("content"), _input_cell_px("remark")
+                _side = max(int(_cw), int(_rw))
                 st.markdown(
                     f"""<style>
-                    div[class*="st-key-wl_next_area_"] textarea,
-                    div[class*="st-key-wl_notes_area_"] textarea {{
-                      font-family: {_WL_FONT_STACK} !important;
-                      font-size: 11pt !important;
-                      line-height: 1.45 !important;
+                    div[class*="st-key-wl_entry_sheet"],
+                    div[class*="st-key-wl_entry_sheet"] > div {{
+                      width: 100% !important; max-width: 100% !important;
                     }}
+                    div[class*="st-key-wl_entry_sheet"] [data-testid="stHorizontalBlock"] {{
+                      display: flex !important;
+                      flex-wrap: nowrap !important;
+                      justify-content: flex-start !important;
+                      align-items: stretch !important;
+                      gap: 0 !important;
+                      width: 100% !important;
+                      max-width: 100% !important;
+                    }}
+                    div[class*="st-key-wl_entry_sheet"] [data-testid="stHorizontalBlock"] > div:nth-child(1),
+                    div[class*="st-key-wl_entry_sheet"] [data-testid="stColumn"]:nth-child(1),
+                    div[class*="st-key-wl_entry_sheet"] [data-testid="column"]:nth-child(1),
+                    div[class*="st-key-wl_entry_sheet"] [data-testid="stHorizontalBlock"] > div:nth-child(3),
+                    div[class*="st-key-wl_entry_sheet"] [data-testid="stColumn"]:nth-child(3),
+                    div[class*="st-key-wl_entry_sheet"] [data-testid="column"]:nth-child(3) {{
+                      width: {_side}px !important; min-width: {_side}px !important; max-width: {_side}px !important;
+                      flex: 0 0 {_side}px !important; padding: 0 !important;
+                    }}
+                    div[class*="st-key-wl_entry_sheet"] [data-testid="stHorizontalBlock"] > div:nth-child(2),
+                    div[class*="st-key-wl_entry_sheet"] [data-testid="stColumn"]:nth-child(2),
+                    div[class*="st-key-wl_entry_sheet"] [data-testid="column"]:nth-child(2) {{
+                      flex: 1 1 auto !important; width: auto !important;
+                      min-width: {_gw}px !important; max-width: none !important; padding: 0 !important;
+                    }}
+                    div[class*="st-key-wl_clients_comp_"], div[class*="st-key-wl_lines_comp_"], div[class*="st-key-wl_remarks_comp_"] {{ width: 100% !important; max-width: 100% !important; }}
+                    div[class*="st-key-wl_clients_comp_"] .wl-lines, div[class*="st-key-wl_lines_comp_"] .wl-lines, div[class*="st-key-wl_remarks_comp_"] .wl-lines {{ margin: 0; width: 100% !important; max-width: 100% !important; border-radius: 0; }}
+                    div[class*="st-key-wl_lines_comp_"] > div, div[class*="st-key-wl_remarks_comp_"] > div, div[class*="st-key-wl_clients_comp_"] > div {{ width: 100% !important; }}
+                    div[class*="st-key-wl_page_bar_"] {{ margin: 0.15rem 0 0.45rem 0 !important; }}
+                    div[class*="st-key-wl_page_btn_"] button, div[class*="st-key-wl_page_plus_"] button {{
+                      min-height: 2.4rem !important; height: 2.4rem !important;
+                      padding: 0 0.85rem !important; font-size: 0.875rem !important; font-weight: 600 !important;
+                      border-radius: 0.5rem !important; line-height: 1 !important;
+                    }}
+                    div[class*="st-key-wl_page_plus_"] button {{ min-width: 2.4rem !important; padding: 0 0.7rem !important; }}
                     </style>""",
                     unsafe_allow_html=True,
                 )
-                st.text_area("익일업무", key=f"wl_next_area_{iso2}", label_visibility="collapsed", height=110)
-                st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
-                st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
+
+                n_pages = _page_count_for(iso2)
+                with st.container(key=f"wl_page_bar_{iso2}", horizontal=True, gap="small"):
+                    for _pi in range(n_pages):
+                        st.button(
+                            f"{_pi + 1}페이지",
+                            key=f"wl_page_btn_{iso2}_{_pi}",
+                            type="primary" if _pi == pi else "secondary",
+                            width="content",
+                            on_click=_queue_worklog_page,
+                            args=(iso2, _pi),
+                        )
+                    st.button(
+                        "＋",
+                        key=f"wl_page_plus_{iso2}",
+                        width="content",
+                        disabled=n_pages >= WL_MAX_PAGES,
+                        on_click=_queue_worklog_add,
+                        args=(iso2,),
+                        help="같은 형식의 입력 페이지를 추가합니다.",
+                    )
+
+                # 입력만 가로 여백을 채운다. 줄바꿈·인쇄미리보기는 원본 14pt 칸 폭.
+                with st.container(key="wl_entry_sheet"):
+                    col_client, col_content, col_remark = st.columns([_side, _gw, _side], gap="small")
+
+                    with col_client:
+                        st.markdown(_wl_col_limit_label("거래처", _cu), unsafe_allow_html=True)
+                        _mount_entry_client_editor(iso2, pi, _cu)
+                    with col_content:
+                        st.markdown(_wl_col_limit_label("내용", max_u), unsafe_allow_html=True)
+                        _mount_entry_lines_editor(iso2, pi, max_u)
+                    with col_remark:
+                        st.markdown(_wl_col_limit_label("비고", _ru), unsafe_allow_html=True)
+                        _mount_entry_remark_editor(iso2, pi, _ru)
+
+                if pi == 0:
+                    st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
+                    st.markdown(
+                        f"""<style>
+                        div[class*="st-key-wl_next_area_"] textarea,
+                        div[class*="st-key-wl_notes_area_"] textarea {{
+                          font-family: {_WL_FONT_STACK} !important;
+                          font-size: 11pt !important;
+                          line-height: 1.45 !important;
+                        }}
+                        </style>""",
+                        unsafe_allow_html=True,
+                    )
+                    st.text_area("익일업무", key=f"wl_next_area_{iso2}", label_visibility="collapsed", height=110)
+                    st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>특 이 사 항 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
+                    st.text_area("특이사항", key=f"wl_notes_area_{iso2}", label_visibility="collapsed", height=100)
 
                 st.button(
                     "저장",
@@ -4608,89 +6703,78 @@ def _render_worklog_input_panel(selected: date) -> None:
                                 source_d = date.fromisoformat(retarget_from)
                             except ValueError:
                                 source_d = d
-                        target_d = picked if isinstance(picked, date) else d
+                        if isinstance(picked, date) and picked != d:
+                            try_retarget_worklog_editor_date(d, picked)
+                            d = st.session_state.get("worklog_selected") or picked
+                        target_d = d
                         pack_d = d
                         pack_iso = pack_d.isoformat()
-                        entries_now = _read_editor_entries(pack_d)
-                        usage_now = _content_row_usage(entries_now)
-                        if usage_now.get("overflow"):
-                            st.error(f"내용칸 용량 초과: {usage_now['used']}/{usage_now['total']}행. 칸을 줄이거나 항목 사이 빈 칸 수를 낮춘 뒤 다시 저장하세요.")
-                        else:
-                            next_txt = str(st.session_state.get(f"wl_next_area_{pack_iso}", "") or "")
-                            notes_txt = str(st.session_state.get(f"wl_notes_area_{pack_iso}", "") or "")
-                            cells = _pack_entries_to_cells(
-                                target_d, entries_now,
-                                _textarea_lines(next_txt),
-                                _textarea_lines(notes_txt),
-                            )
-                            path = commit_worklog_date_save(source_d, target_d, cells)
-                            d = target_d
-                            iso2 = d.isoformat()
-                            st.session_state[f"wl_saved_ok_{iso2}"] = True
-                            ctx = dict(st.session_state.get(f"wl_open_ctx_{iso2}") or {})
-                            ctx["had_local"] = True
-                            st.session_state[f"wl_open_ctx_{iso2}"] = ctx
-                            _publish_view_cells(d, cells)
-                            # 시드는 방금 읽은 입력값 그대로 — cells 왕복으로 구형/변형 값이 되살아나지 않게
-                            seed_entries = []
-                            for ent in entries_now:
-                                lines = ent.get("lines")
-                                if not isinstance(lines, list):
-                                    lines = _chunk_text(str(ent.get("content") or ""), _content_line_units()) or []
-                                clines = ent.get("client_lines")
-                                if not isinstance(clines, list):
-                                    clines = _entry_client_lines(ent)
-                                seed_entries.append(
-                                    {
-                                        "client": str(ent.get("client") or ""),
-                                        "client_lines": list(clines),
-                                        "content": str(ent.get("content") or ""),
-                                        "lines": [str(x or "") for x in lines],
-                                        "blank_after": _entry_blank_after(ent, 1),
-                                    }
-                                )
-                            if not seed_entries:
-                                seed_entries = [{"client": "", "content": "", "lines": [], "client_lines": [], "blank_after": 1}]
-                            st.session_state[_entries_key(d)] = seed_entries
-                            st.session_state[_next_key(d)] = next_txt
-                            st.session_state[_notes_key(d)] = notes_txt
-                            arch = (st.session_state.get("wl_last_archive_path") or "")
-                            arch_target = st.session_state.get("wl_last_archive_target") or describe_worklog_archive_target(d)
-                            drv = st.session_state.get("wl_last_drive_path") or ""
-                            mdrv = st.session_state.get("wl_last_drive_month_path") or ""
-                            gist = st.session_state.get("wl_last_cloud_gist") or ""
-                            cerr = st.session_state.get("wl_last_cloud_err") or ""
-                            drv_cf = st.session_state.get("wl_last_drive_conflict") or ""
-                            msg = f"저장 완료: {os.path.basename(path)}"
-                            if arch_target and not _wl_quiet_ui():
-                                msg += f" · {arch_target}"
-                            elif arch and not _wl_quiet_ui():
-                                _sh = st.session_state.get("wl_last_archive_sheet") or worklog_archive_sheet_title(d)
-                                msg += f" · 일지/{d.year}/{os.path.basename(arch)}#{_sh}"
-                            if drv:
-                                msg += " · Drive"
-                            if mdrv and not _wl_quiet_ui():
-                                msg += f" · Drive일지/{d.year}"
-                            if gist:
-                                msg += f" · Cloud OK (gist `{gist}`)"
-                            elif cerr == "duplicate_date":
-                                msg += " · Cloud: 선입력본 유지(덮어쓰기 안 함)"
-                            elif cerr:
-                                msg += f" · Cloud 실패: {cerr}"
-                            elif not _wl_quiet_ui():
-                                msg += " · Cloud미연동: secrets에 github_token"
-                            if drv_cf and not drv:
-                                msg += f" · Drive: 선입력본 유지({drv_cf})"
-                            st.session_state[f"wl_pending_sync_{iso2}"] = {
-                                "entries": seed_entries,
-                                "next": next_txt,
-                                "notes": notes_txt,
-                                "msg": msg,
-                                "cloud_err": cerr,
-                            }
-                            # 저장 직후 강제 pull은 구 원격본이 로컬을 덮을 수 있음 — push는 save_worklog_cells에서 이미 함
-                            st.session_state["_wl_drive_sync_ts"] = time.time()
-                            st.rerun()
+                        clients_now, contents_now, remarks_now = _sheet_lines_from_widgets(pack_iso)
+                        next_txt = str(st.session_state.get(f"wl_next_area_{pack_iso}", "") or st.session_state.get(_next_key(pack_d), "") or "")
+                        notes_txt = str(st.session_state.get(f"wl_notes_area_{pack_iso}", "") or st.session_state.get(_notes_key(pack_d), "") or "")
+                        cells = _pack_sheet_to_cells(
+                            target_d, clients_now, contents_now, remarks_now,
+                            _textarea_lines(next_txt),
+                            _textarea_lines(notes_txt),
+                        )
+                        extra_cells = _extra_page_cells_from_widgets(pack_d)
+                        extra_date = format_worklog_date(target_d)
+                        for extra in extra_cells:
+                            extra["date"] = extra_date
+                        cells = _collapse_empty_worklog_pages(_attach_extra_pages(cells, extra_cells))
+                        extra_cells = _detach_extra_pages(cells)[1]
+                        path = commit_worklog_date_save(source_d, target_d, cells)
+                        d = target_d
+                        iso2 = d.isoformat()
+                        st.session_state[f"wl_saved_ok_{iso2}"] = True
+                        ctx = dict(st.session_state.get(f"wl_open_ctx_{iso2}") or {})
+                        ctx["had_local"] = True
+                        st.session_state[f"wl_open_ctx_{iso2}"] = ctx
+                        _publish_view_cells(d, cells)
+                        seed_entries = [_sheet_entry_from_lines(clients_now, contents_now, remarks_now)]
+                        seed_extras = [_sheet_entry_from_cells(x) for x in extra_cells]
+                        st.session_state[_entries_key(d)] = seed_entries
+                        st.session_state[_next_key(d)] = next_txt
+                        st.session_state[_notes_key(d)] = notes_txt
+                        arch = (st.session_state.get("wl_last_archive_path") or "")
+                        arch_target = st.session_state.get("wl_last_archive_target") or describe_worklog_archive_target(d)
+                        drv = st.session_state.get("wl_last_drive_path") or ""
+                        mdrv = st.session_state.get("wl_last_drive_month_path") or ""
+                        gist = st.session_state.get("wl_last_cloud_gist") or ""
+                        cerr = st.session_state.get("wl_last_cloud_err") or ""
+                        drv_cf = st.session_state.get("wl_last_drive_conflict") or ""
+                        msg = f"저장 완료: {os.path.basename(path)}"
+                        if arch_target and not _wl_quiet_ui():
+                            msg += f" · {arch_target}"
+                        elif arch and not _wl_quiet_ui():
+                            _sh = st.session_state.get("wl_last_archive_sheet") or worklog_archive_sheet_title(d)
+                            msg += f" · 일지/{d.year}/{os.path.basename(arch)}#{_sh}"
+                        if drv:
+                            msg += " · Drive"
+                        if mdrv and not _wl_quiet_ui():
+                            msg += f" · Drive일지/{d.year}"
+                        if gist:
+                            msg += f" · Cloud OK (gist `{gist}`)"
+                        elif cerr == "duplicate_date":
+                            msg += " · Cloud: 선입력본 유지(덮어쓰기 안 함)"
+                        elif cerr:
+                            msg += f" · Cloud 실패: {cerr}"
+                        elif not _wl_quiet_ui():
+                            msg += " · Cloud미연동: secrets에 github_token"
+                        if drv_cf and not drv:
+                            msg += f" · Drive: 선입력본 유지({drv_cf})"
+                        st.session_state[f"wl_pending_sync_{iso2}"] = {
+                            "entries": seed_entries,
+                            "extra_pages": seed_extras,
+                            "next": next_txt,
+                            "notes": notes_txt,
+                            "msg": msg,
+                            "cloud_err": cerr,
+                        }
+                        # 저장 직후 강제 pull은 구 원격본이 로컬을 덮을 수 있음 — push는 save_worklog_cells에서 이미 함
+                        st.session_state["_wl_drive_sync_ts"] = time.time()
+                        _pin_worklog_scroll()
+                        _wl_rerun()
                     except WorklogSaveBlockedError as e:
                         st.error(str(e))
                     except Exception as e:
@@ -4701,9 +6785,9 @@ def _render_worklog_input_panel(selected: date) -> None:
 
                 focus_key = st.session_state.pop(f"wl_focus_ln_{iso2}", None)
                 focus_caret = st.session_state.pop(f"wl_focus_caret_{iso2}", None)
-                if isinstance(focus_key, str) and (focus_key.startswith("wl_ent_ln_") or focus_key.startswith("wl_ent_cl_")):
+                if isinstance(focus_key, str) and (focus_key.startswith("wl_ent_ln_") or focus_key.startswith("wl_ent_cl_") or focus_key.startswith("wl_ent_rm_")):
                     try:
-                        _m = re.match(r"^wl_ent_(?:ln|cl)_\d{4}-\d{2}-\d{2}_(\d+)_", focus_key)
+                        _m = re.match(r"^wl_ent_(?:ln|cl|rm)_\d{4}-\d{2}-\d{2}_(\d+)_", focus_key)
                         if _m: st.session_state[f"wl_exp_{iso2}_{int(_m.group(1))}"] = True
                     except Exception: pass
                 else:
@@ -4713,8 +6797,8 @@ def _render_worklog_input_panel(selected: date) -> None:
 
                 # Enter 줄바꿈만 서버로. focus/caret trigger는 클릭마다 rerun·ERROR를 만들어 버튼을 죽인다.
                 _WL_ENTER_HOOK(
-                    key=f"wl_enter_hook_{iso2}",
-                    data={"iso": iso2, "focus_key": focus_key if isinstance(focus_key, str) else "", "focus_caret": (int(focus_caret) if isinstance(focus_caret, (int, float)) else ""), "client_max_u": _client_line_units(), "content_max_u": _content_line_units()},
+                    key="wl_enter_hook_nav",
+                    data={"iso": iso2, "focus_key": focus_key if isinstance(focus_key, str) else "", "focus_caret": (int(focus_caret) if isinstance(focus_caret, (int, float)) else ""), "client_max_u": _client_line_units(), "content_max_u": _content_line_units(), "remark_max_u": _remark_line_units()},
                     on_enter_change=_on_enter_trigger,
                     height=1,
                 )
@@ -4724,9 +6808,12 @@ def _render_worklog_input_panel(selected: date) -> None:
 def _dashboard_top_filter_sig() -> tuple:
     """상단 고정바 담당자·거래처·품목·기간 시그니처 (app.py 키와 동일)."""
     return (
-        st.session_state.get("dash_filter_staff_sb_v32"),
-        st.session_state.get("dash_filter_client_sb_v32"),
-        st.session_state.get("dash_filter_item_sb_v32"),
+        st.session_state.get("dash_filter_staff_sb_v33")
+        or st.session_state.get("dash_filter_staff_sb_v32"),
+        st.session_state.get("dash_filter_client_sb_v33")
+        or st.session_state.get("dash_filter_client_sb_v32"),
+        st.session_state.get("dash_filter_item_sb_v33")
+        or st.session_state.get("dash_filter_item_sb_v32"),
         st.session_state.get("dash_filter_start"),
         st.session_state.get("dash_filter_end"),
     )
@@ -4969,6 +7056,25 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
                 top: auto !important;
             }
         }
+        @media (hover: none) and (pointer: coarse) {
+            div[class*="st-key-wl_date_pick"] [data-baseweb="input"],
+            div[class*="st-key-wl_cal_pop"] button,
+            div[class*="st-key-wl_date_move_btn"] button,
+            div[class*="st-key-wl_save_btn_"] button,
+            div[class*="st-key-wl_add_btn_"] button,
+            div[class*="st-key-wl_del_btn_"] button,
+            div[class*="st-key-wl_print_btn"] button,
+            div[class*="st-key-wl_open_print_btn"] button {
+                min-height: 2.7rem !important;
+                touch-action: manipulation;
+            }
+            div[class*="st-key-wl_lines_comp_"] textarea,
+            div[class*="st-key-wl_clients_comp_"] input,
+            div[class*="st-key-wl_remarks_comp_"] input {
+                touch-action: manipulation;
+                font-size: 16px !important;
+            }
+        }
         @media (min-width: 851px) and (max-width: 1180px) and (orientation: landscape) {
             div[data-testid="column"]:nth-of-type(2) {
                 top: 3.2rem;
@@ -4979,7 +7085,8 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             min-height: 240px;
         }
         /* JS-only Enter hook이 빈 박스로 저장 버튼을 덮지 않게 */
-        div[class*="st-key-wl_enter_hook_"] {
+        div[class*="st-key-wl_enter_hook_"],
+        div[class*="st-key-wl_scroll_lock"] {
             height: 0 !important;
             min-height: 0 !important;
             max-height: 0 !important;
@@ -4995,6 +7102,22 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
             color: #111827 !important;
             cursor: pointer !important;
             opacity: 1 !important;
+        }
+        div[class*="st-key-wl_date_bar"] { margin: 0 0 0.15rem 0 !important; }
+        div[class*="st-key-wl_date_pick"] { margin-bottom: 0 !important; }
+        div[class*="st-key-wl_date_pick"] [data-baseweb="input"] {
+            min-height: 2.4rem !important;
+            border-radius: 0.5rem !important;
+        }
+        div[class*="st-key-wl_cal_pop"] button,
+        div[class*="st-key-wl_date_move_btn"] button,
+        div[class*="st-key-wl_del_open_btn"] button {
+            min-height: 2.4rem !important;
+            height: 2.4rem !important;
+            border-radius: 0.5rem !important;
+            padding: 0 0.85rem !important;
+            font-size: 0.875rem !important;
+            font-weight: 600 !important;
         }
         div[class*="st-key-wl_save_btn_"] button,
         div[class*="st-key-wl_add_btn_"] button,
@@ -5017,13 +7140,15 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     # 업무일지 영역만 fragment 스코프로 갱신 → 달력 클릭/날짜 이동 로딩이 크게 짧아진다.
     @st.fragment
     def _worklog_body() -> None:
+        _run_pending_worklog_day_delete()
         sel: date = st.session_state.get("worklog_selected") or selected
+        _prepare_worklog_day_state(sel, skip_remote_pull=True)
+        _render_worklog_scroll_lock(sel.isoformat())
         col_preview, col_edit = st.columns([1, 1.14], gap="small")
         with col_preview:
             _render_worklog_left_preview(sel)
         with col_edit:
             st.markdown("##### 업무 입력")
-            _render_worklog_date_toolbar(sel)
             _render_worklog_input_panel(sel)
             _wl_finish_edit_fragment()
 

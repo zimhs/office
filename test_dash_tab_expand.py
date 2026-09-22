@@ -81,6 +81,14 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("html.dashboard-touch-mode #dashboard-top-shield", src)
         self.assertIn("dashboard-ipad-chrome-css", src)
         self.assertIn("function ensureIpadChromeVisible", src)
+        self.assertIn("function ensureMainTabScrollArrows", src)
+        self.assertIn("dashboard-tab-scroll-btn", src)
+        self.assertIn("dashboard-tab-scroll-prev", src)
+        self.assertIn("dashboard-tab-scroll-next", src)
+        self.assertIn("aria-label', '이전 탭'", src)
+        self.assertIn("function sizeMainTabScrollWrap", src)
+        self.assertIn("_sticky_py_ver = 91", src)
+        self.assertIn("_STICKY_INJECT_VER = 92", src)
         self.assertIn("z-index: 999980 !important", src)
         self.assertNotIn("z-index: 999999 !important", src)
         self.assertIn("Safari 주소창 접힘", src)
@@ -230,7 +238,10 @@ class WorklogDraftSurviveFilterTest(unittest.TestCase):
         iso = "2026-09-09"
         st.session_state.update(
             {
-                "_dash_bak_worklog": {"worklog_selected": iso},
+                "_dash_bak_worklog": {
+                    "worklog_selected": iso,
+                    "wl_next_month": True,
+                },
                 f"wl_entries_{iso}": [{"client": "테스트거래처", "content": "초안내용"}],
                 f"wl_next_area_{iso}": "익일 초안",
                 f"wl_notes_area_{iso}": "특이 초안",
@@ -251,6 +262,10 @@ class WorklogDraftSurviveFilterTest(unittest.TestCase):
         self.assertFalse(ns["_dash_is_wl_widget_key"](f"wl_entries_{iso}"))
         self.assertFalse(ns["_dash_is_wl_widget_key"](f"wl_next_area_{iso}"))
         self.assertTrue(ns["_dash_is_wl_widget_key"]("wl_date_pick"))
+        self.assertTrue(ns["_dash_is_wl_widget_key"]("wl_next_month"))
+        self.assertTrue(ns["_dash_is_wl_widget_key"]("wl_prev_month"))
+        self.assertTrue(ns["_dash_is_wl_widget_key"]("wl_today"))
+        self.assertNotIn("wl_next_month", st.session_state)
 
 
 class Tab3GasYearMonthTest(unittest.TestCase):
