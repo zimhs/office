@@ -3494,6 +3494,26 @@ def _tab6_box_select_html(center_lat, center_lon, zoom, tiles_js, pts):
   }}
   #t6-list th {{ color:#5f6368; font-weight:600; }}
   .t6-empty {{ color:#80868b; font-size:13px; }}
+  .t6-nav {{
+    display:flex; align-items:flex-start; gap:6px;
+    margin-left:10px; margin-top:10px;
+    pointer-events:auto;
+  }}
+  .t6-zoom, .t6-pad {{
+    background:#fff; border:1px solid #c6c6c6; border-radius:6px;
+    box-shadow:0 1px 5px rgba(0,0,0,.25); overflow:hidden;
+  }}
+  .t6-zoom {{ display:flex; flex-direction:column; }}
+  .t6-pad {{ display:flex; flex-direction:column; align-items:center; padding:2px; }}
+  .t6-pad-mid {{ display:flex; }}
+  .t6-btn {{
+    width:32px; height:32px; line-height:32px; padding:0; margin:0;
+    border:0; background:#fff; color:#333; font-size:16px; font-weight:700;
+    text-align:center; cursor:pointer; touch-action:manipulation;
+    -webkit-user-select:none; user-select:none;
+  }}
+  .t6-zoom .t6-btn + .t6-btn {{ border-top:1px solid #ccc; }}
+  .t6-btn:hover, .t6-btn:active {{ background:#f4f4f4; }}
 </style></head>
 <body>
 <div id="map"></div>
@@ -3501,13 +3521,57 @@ def _tab6_box_select_html(center_lat, center_lon, zoom, tiles_js, pts):
 <script>
 (function() {{
   var map = L.map("map", {{
-    zoomControl: true, boxZoom: false, dragging: false,
+    zoomControl: false, boxZoom: false, dragging: false,
     tap: false, touchZoom: false, doubleClickZoom: false,
     scrollWheelZoom: true, keyboard: false
   }}).setView(
     [{float(center_lat)}, {float(center_lon)}], {int(zoom)}
   );
   {tiles_js}
+  var Nav = L.Control.extend({{
+    options: {{ position: "topleft" }},
+    onAdd: function() {{
+      var box = L.DomUtil.create("div", "t6-nav");
+      box.innerHTML =
+        '<div class="t6-zoom">'
+        + '<button type="button" class="t6-btn" data-act="zi" title="확대">+</button>'
+        + '<button type="button" class="t6-btn" data-act="zo" title="축소">−</button>'
+        + '</div>'
+        + '<div class="t6-pad">'
+        + '<button type="button" class="t6-btn" data-act="n" title="위">↑</button>'
+        + '<div class="t6-pad-mid">'
+        + '<button type="button" class="t6-btn" data-act="w" title="왼쪽">←</button>'
+        + '<button type="button" class="t6-btn" data-act="e" title="오른쪽">→</button>'
+        + '</div>'
+        + '<button type="button" class="t6-btn" data-act="s" title="아래">↓</button>'
+        + '</div>';
+      L.DomEvent.disableClickPropagation(box);
+      L.DomEvent.disableScrollPropagation(box);
+      function run(act) {{
+        if (act === "zi") {{ map.zoomIn(); return; }}
+        if (act === "zo") {{ map.zoomOut(); return; }}
+        var size = map.getSize();
+        var stepX = Math.max(80, size.x * 0.35);
+        var stepY = Math.max(80, size.y * 0.35);
+        if (act === "n") map.panBy([0, -stepY]);
+        else if (act === "s") map.panBy([0, stepY]);
+        else if (act === "w") map.panBy([-stepX, 0]);
+        else if (act === "e") map.panBy([stepX, 0]);
+      }}
+      box.addEventListener("click", function(ev) {{
+        var btn = ev.target && ev.target.closest ? ev.target.closest("[data-act]") : null;
+        if (!btn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        run(btn.getAttribute("data-act"));
+      }});
+      box.addEventListener("pointerdown", function(ev) {{
+        ev.stopPropagation();
+      }});
+      return box;
+    }}
+  }});
+  map.addControl(new Nav());
   var pts = {pts_json};
   var markers = [];
   pts.forEach(function(p) {{
@@ -3584,7 +3648,12 @@ def _tab6_box_select_html(center_lat, center_lon, zoom, tiles_js, pts):
     activeId = null;
     finish(ll || (rect ? rect.getBounds().getNorthEast() : null));
   }}
+  function onNav(ev) {{
+    var t = ev.target;
+    return !!(t && t.closest && t.closest(".t6-nav"));
+  }}
   el.addEventListener("pointerdown", function(ev) {{
+    if (onNav(ev)) return;
     if (ev.isPrimary === false) return;
     if (ev.pointerType === "mouse" && ev.button !== 0) return;
     ev.preventDefault();
@@ -3610,7 +3679,7 @@ def _tab6_box_select_html(center_lat, center_lon, zoom, tiles_js, pts):
   el.addEventListener("pointerup", ptrEnd, {{passive:false}});
   el.addEventListener("pointercancel", ptrEnd, {{passive:false}});
   el.addEventListener("touchstart", function(ev) {{
-    if (usedPointer || drawing) return;
+    if (onNav(ev) || usedPointer || drawing) return;
     ev.preventDefault();
     ev.stopPropagation();
     begin(fromTouch(ev));
@@ -16849,7 +16918,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                         })
                     _box_on = bool(st.session_state.get("tab6_box_mode"))
                     if _box_on:
-                        st.caption("드래그 선택 켜짐 · 마우스·애플펜슬·손가락으로 네모를 그리면 안의 업체가 아래에 나옵니다.")
+                        st.caption("드래그 선택 켜짐 · 네모로 고르고, 왼쪽 + − · 화살표로 확대·이동합니다.")
                     # 드래그 선택은 iframe Leaflet(이미 되는 지도) + 네모. CCv2는 타일이 깨져 쓰지 않는다.
                     if _box_on:
                         _use_sat = "일반" not in map_style_choice
