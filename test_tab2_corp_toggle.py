@@ -28,11 +28,15 @@ class Tab2CorpToggleTest(unittest.TestCase):
             self.src,
         )
 
-    def test_click_reruns_so_label_matches_panel(self):
-        self.assertIn("st.session_state.show_corp_info = not _corp_open", self.src)
-        idx = self.src.find("st.session_state.show_corp_info = not _corp_open")
-        window = self.src[idx : idx + 80]
-        self.assertIn("st.rerun()", window)
+    def test_click_toggles_without_full_rerun(self):
+        self.assertIn("def _tab2_toggle_corp_info", self.src)
+        self.assertIn("on_click=_tab2_toggle_corp_info", self.src)
+        self.assertIn("@st.fragment\n        def _tab2_corp_actions", self.src)
+        tab2 = self.src[self.src.index("with tab2:") : self.src.index("with tab3:")]
+        dart_idx = tab2.find("key=\"btn_dart_info\"")
+        window = tab2[max(0, dart_idx - 80) : dart_idx + 220]
+        self.assertNotIn("st.rerun()", window)
+        self.assertNotIn("st.rerun()", tab2[tab2.find("def _tab2_corp_actions") : tab2.find("_tab2_corp_actions()")])
 
     def test_corp_card_css_exists(self):
         self.assertIn(".tab2-corp-card", self.src)

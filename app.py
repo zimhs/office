@@ -5098,6 +5098,33 @@ def _tab2_on_delete_extra_site(parent: str, name: str) -> None:
     st.session_state["tab2_xerr"] = False
 
 
+def _tab2_toggle_corp_info() -> None:
+    st.session_state.show_corp_info = not bool(st.session_state.get("show_corp_info"))
+
+
+def _tab2_refresh_corp() -> None:
+    get_company_info_hybrid.clear()
+    list_dart_audit_reports.clear()
+    parse_dart_audit_report_summary.clear()
+    try:
+        fetch_factory_registry.clear()
+    except Exception:
+        pass
+    try:
+        _make_opendart_reader.clear()
+    except Exception:
+        pass
+    st.session_state.pop("_opendart_last_error", None)
+    st.session_state.pop("_tab2_corp_memo", None)
+    st.session_state.pop("_tab2_factory_memo", None)
+    st.session_state.pop("_tab2_force_audit_parse", None)
+    _api_clear_soft_block("dart_is_blocked", "factory_is_blocked")
+
+
+def _tab2_force_audit_parse() -> None:
+    st.session_state["_tab2_force_audit_parse"] = True
+
+
 def _tab2_extra_widget_key(prefix: str, parent: str, name: str) -> str:
     h = hashlib.md5(f"{parent}::{name}".encode("utf-8")).hexdigest()[:12]
     return f"{prefix}_{h}"
@@ -15346,209 +15373,198 @@ def _dash_filter_and_tabs_fragment() -> None:
         except Exception as _t2_deliv_err:
             st.caption(f"납품현황: {_t2_deliv_err}")
 
-        # 가로 넓은 직사각형 버튼 — 글씨 한 줄로 박스 안에
-        with st.container(key="tab2_action_btns"):
-            btn_c1, btn_c2, btn_c3 = st.columns([2.4, 2.0, 1.8], gap="medium")
-            with btn_c1:
-                _notes_addr = (
-                    client_addr
-                    if client_addr and client_addr != "등록된 주소 정보가 없습니다."
-                    else None
-                )
-                _notes_disabled = selected_client == "전체 거래처"
-                if _is_local_macos():
-                    if st.button(
-                        "📝 macOS 메모에서 노트 열기/생성",
-                        key="btn_notes",
-                        width="stretch",
-                        disabled=_notes_disabled,
-                        help="특정 거래처를 선택하세요." if _notes_disabled else "메모「거래처」폴더에서 같은 거래처명 노트를 엽니다.",
-                    ):
-                        with st.spinner("메모「거래처」폴더에서 같은 거래처명을 찾는 중..."):
-                            _notes_res = open_macos_notes_folder(
-                                selected_client,
-                                dart_api_key,
-                                df_integrated,
-                                address=_notes_addr,
-                            )
-                        st.session_state["_tab2_loaded_note"] = {
-                            **_notes_res,
-                            "client": selected_client,
-                        }
-                    _loaded = st.session_state.get("_tab2_loaded_note") or {}
-                    if _loaded.get("client") == selected_client:
-                        if _loaded.get("ok"):
-                            st.success(_loaded.get("msg") or "메모를 열었습니다.")
-                            _body = str(_loaded.get("body") or "").strip()
-                            _title = _loaded.get("matched_name") or selected_client
-                            with st.expander(f"불러온 메모 · {_title}", expanded=True):
-                                if _body:
-                                    st.text_area(
-                                        "메모 본문",
-                                        value=_body,
-                                        height=220,
-                                        key=f"tab2_loaded_note_body_{selected_client}",
-                                        label_visibility="collapsed",
-                                    )
-                                else:
-                                    st.caption("노트는 열렸지만 본문을 읽지 못했습니다.")
-                        elif _loaded.get("msg"):
-                            st.error(_loaded.get("msg"))
-                else:
-                    _notes_label = "📝 거래처 메모 · 내보내기"
-                    with st.popover(
-                        _notes_label,
-                        width="stretch",
-                        disabled=_notes_disabled,
-                        help="특정 거래처를 선택하세요." if _notes_disabled else None,
-                    ):
-                        if not _notes_disabled:
-                            # [핵심 패치] 팝오버를 열자마자 API를 긁어와 무한 로딩에 빠지는 현상 방지
-                            if st.button("🚀 메모 데이터 수집/생성 (클릭)", key="btn_gen_memo_export", use_container_width=True):
-                                with st.spinner("DART/팩토리온/네이버 조회 중..."):
-                                    _, _n_plain, _n_html, _n_fname = prepare_client_note_export(
-                                        selected_client,
-                                        dart_api_key,
-                                        df_integrated,
-                                        address=_notes_addr,
-                                    )
-                                    st.session_state["_ready_note_export"] = {
-                                        "client": selected_client,
-                                        "plain": _n_plain,
-                                        "html": _n_html,
-                                        "fname": _n_fname
-                                    }
-                        
-                            _note_cache = st.session_state.get("_ready_note_export", {})
-                            if _note_cache.get("client") == selected_client:
-                                st.success("✅ 메모가 준비되었습니다!")
-                                st.caption(
-                                    "Cloud·iPad에서는 아래 **다운로드·복사·공유**로 메모 앱에 넣을 수 있습니다."
-                                )
-                                st.download_button(
-                                    "HTML 파일 다운로드",
-                                    data=_note_cache["html"].encode("utf-8"),
-                                    file_name=_note_cache["fname"],
-                                    mime="text/html",
-                                    key="tab2_notes_download",
-                                    use_container_width=True,
-                                )
-                                st.caption("Mac: 다운로드 후 Safari로 열어 전체 선택 → 메모에 붙여넣기.")
-                                _render_tab2_note_share_html(_note_cache["plain"], selected_client)
-                            else:
-                                st.info("👆 위 버튼을 눌러 기업 정보를 먼저 수집하세요.")
-            with btn_c2:
-                _corp_open = bool(st.session_state.show_corp_info)
-                btn_label = "🏢 기업정보 닫기" if _corp_open else "🏢 기업정보 보기"
-                if st.button(
-                    btn_label,
-                    key="btn_dart_info",
-                    width="stretch",
-                    type="primary" if _corp_open else "secondary",
-                    help="기업 기본/재무·공장등록 패널을 펼치거나 닫습니다.",
-                ):
-                    st.session_state.show_corp_info = not _corp_open
-                    st.rerun()
-            with btn_c3:
-                # 주소록 주소 우선, 없으면 거래처명으로 카카오맵 검색
-                if selected_client and selected_client != "전체 거래처":
-                    kakao_q = client_addr if client_addr != "등록된 주소 정보가 없습니다." else selected_client
-                    kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(kakao_q)}"
-                    st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url, width="stretch")
-                else:
-                    st.button(
-                        "🗺️ 카카오맵에서 주소 보기",
-                        disabled=True,
-                        key="btn_kakao_disabled",
-                        width="stretch",
-                        help="사이드바에서 특정 거래처를 선택하세요.",
-                    )
-                # 버튼 바로 아래 주소 표시 (tab2 전용, 버튼과 동일 폭·글자크기)
-                _addr_color = "#64748B" if client_addr == "등록된 주소 정보가 없습니다." else "#334155"
-                st.markdown(
-                    f"<div class='tab2-kakao-addr' style='color:{_addr_color};'>"
-                    f"📍 {html.escape(client_addr)}</div>",
-                    unsafe_allow_html=True,
-                )
-                _render_tab2_extra_addr_box(selected_client)
-
-        # 목록에 없는 거래처도 기업정보만 조회 가능 (상단 필터·매출 집계는 변경 없음)
-        _ov_c1, _ov_c2 = st.columns([1.4, 1], gap="small")
-        with _ov_c1:
-            _corp_name_override = st.text_input(
-                "목록 외 상호 (기업정보 조회용)",
-                key="tab2_corp_name_override",
-                placeholder="예: OO산업 — 비우면 상단 선택 거래처 사용",
-                help="매출 목록에 없어도 상호를 입력하면 기업 기본/재무·공장등록을 조회합니다.",
-            )
-        with _ov_c2:
-            _corp_addr_override = st.text_input(
-                "주소 힌트 (선택)",
-                key="tab2_corp_addr_override",
-                placeholder="동명 구분 · 예: 평택시 서탄면",
-            )
-        _corp_query_name = str(_corp_name_override or "").strip()
-        if not _corp_query_name and selected_client and selected_client != "전체 거래처":
-            _corp_query_name = str(selected_client).strip()
-        _corp_query_is_override = bool(str(_corp_name_override or "").strip())
-
-        if st.session_state.show_corp_info:
-            if not _corp_query_name:
-                st.info(
-                    "상단에서 거래처를 선택하거나, 위에 **목록 외 상호**를 입력한 뒤 "
-                    "기업정보를 다시 열어 주세요."
-                )
-            else:
-                if _corp_query_is_override:
-                    st.caption(
-                        f"목록 외 조회: **{_corp_query_name}** "
-                        "(상단 매출 필터와 별개 · 기업정보만)"
-                    )
-                _addr_for_lookup = None
-                if str(_corp_addr_override or "").strip():
-                    _addr_for_lookup = str(_corp_addr_override).strip()
-                elif not _corp_query_is_override:
-                    _addr_for_lookup = (
+        @st.fragment
+        def _tab2_corp_actions() -> None:
+            """기업정보 보기/닫기는 이 칸만 rerun. 매출 차트·다른 탭은 그대로."""
+            # 가로 넓은 직사각형 버튼 — 글씨 한 줄로 박스 안에
+            with st.container(key="tab2_action_btns"):
+                btn_c1, btn_c2, btn_c3 = st.columns([2.4, 2.0, 1.8], gap="medium")
+                with btn_c1:
+                    _notes_addr = (
                         client_addr
                         if client_addr and client_addr != "등록된 주소 정보가 없습니다."
                         else None
                     )
-                else:
-                    # 목록 외 상호: 주소록에 같은 이름이 있으면 활용
-                    _ov_addr = resolve_client_address(_corp_query_name, addr_dict)
-                    if _ov_addr and _ov_addr != "등록된 주소 정보가 없습니다.":
-                        _addr_for_lookup = _ov_addr
-
-                _memo_key = (
-                    str(_corp_query_name),
-                    str(dart_api_key or ""),
-                    str(_addr_for_lookup or ""),
-                    "ov" if _corp_query_is_override else "sel",
-                )
-                _memo = st.session_state.get("_tab2_corp_memo")
-                _use_memo = (
-                    isinstance(_memo, dict)
-                    and _memo.get("key") == _memo_key
-                    and isinstance(_memo.get("c_info"), dict)
-                )
-                _touch_corp = is_touch_ui()
-                if _use_memo:
-                    c_info = dict(_memo["c_info"])
-                    _latest_audit = _memo.get("latest_audit")
-                    _audit_sum = dict(_memo.get("audit_sum") or {})
-                    _matched = (
-                        c_info.get("matched_name")
-                        or c_info.get("clean_name")
-                        or _corp_query_name
+                    _notes_disabled = selected_client == "전체 거래처"
+                    if _is_local_macos():
+                        if st.button(
+                            "📝 macOS 메모에서 노트 열기/생성",
+                            key="btn_notes",
+                            width="stretch",
+                            disabled=_notes_disabled,
+                            help="특정 거래처를 선택하세요." if _notes_disabled else "메모「거래처」폴더에서 같은 거래처명 노트를 엽니다.",
+                        ):
+                            with st.spinner("메모「거래처」폴더에서 같은 거래처명을 찾는 중..."):
+                                _notes_res = open_macos_notes_folder(
+                                    selected_client,
+                                    dart_api_key,
+                                    df_integrated,
+                                    address=_notes_addr,
+                                )
+                            st.session_state["_tab2_loaded_note"] = {
+                                **_notes_res,
+                                "client": selected_client,
+                            }
+                        _loaded = st.session_state.get("_tab2_loaded_note") or {}
+                        if _loaded.get("client") == selected_client:
+                            if _loaded.get("ok"):
+                                st.success(_loaded.get("msg") or "메모를 열었습니다.")
+                                _body = str(_loaded.get("body") or "").strip()
+                                _title = _loaded.get("matched_name") or selected_client
+                                with st.expander(f"불러온 메모 · {_title}", expanded=True):
+                                    if _body:
+                                        st.text_area(
+                                            "메모 본문",
+                                            value=_body,
+                                            height=220,
+                                            key=f"tab2_loaded_note_body_{selected_client}",
+                                            label_visibility="collapsed",
+                                        )
+                                    else:
+                                        st.caption("노트는 열렸지만 본문을 읽지 못했습니다.")
+                            elif _loaded.get("msg"):
+                                st.error(_loaded.get("msg"))
+                    else:
+                        _notes_label = "📝 거래처 메모 · 내보내기"
+                        with st.popover(
+                            _notes_label,
+                            width="stretch",
+                            disabled=_notes_disabled,
+                            help="특정 거래처를 선택하세요." if _notes_disabled else None,
+                        ):
+                            if not _notes_disabled:
+                                # [핵심 패치] 팝오버를 열자마자 API를 긁어와 무한 로딩에 빠지는 현상 방지
+                                if st.button("🚀 메모 데이터 수집/생성 (클릭)", key="btn_gen_memo_export", use_container_width=True):
+                                    with st.spinner("DART/팩토리온/네이버 조회 중..."):
+                                        _, _n_plain, _n_html, _n_fname = prepare_client_note_export(
+                                            selected_client,
+                                            dart_api_key,
+                                            df_integrated,
+                                            address=_notes_addr,
+                                        )
+                                        st.session_state["_ready_note_export"] = {
+                                            "client": selected_client,
+                                            "plain": _n_plain,
+                                            "html": _n_html,
+                                            "fname": _n_fname
+                                        }
+                        
+                                _note_cache = st.session_state.get("_ready_note_export", {})
+                                if _note_cache.get("client") == selected_client:
+                                    st.success("✅ 메모가 준비되었습니다!")
+                                    st.caption(
+                                        "Cloud·iPad에서는 아래 **다운로드·복사·공유**로 메모 앱에 넣을 수 있습니다."
+                                    )
+                                    st.download_button(
+                                        "HTML 파일 다운로드",
+                                        data=_note_cache["html"].encode("utf-8"),
+                                        file_name=_note_cache["fname"],
+                                        mime="text/html",
+                                        key="tab2_notes_download",
+                                        use_container_width=True,
+                                    )
+                                    st.caption("Mac: 다운로드 후 Safari로 열어 전체 선택 → 메모에 붙여넣기.")
+                                    _render_tab2_note_share_html(_note_cache["plain"], selected_client)
+                                else:
+                                    st.info("👆 위 버튼을 눌러 기업 정보를 먼저 수집하세요.")
+                with btn_c2:
+                    _corp_open = bool(st.session_state.show_corp_info)
+                    btn_label = "🏢 기업정보 닫기" if _corp_open else "🏢 기업정보 보기"
+                    st.button(
+                        btn_label,
+                        key="btn_dart_info",
+                        width="stretch",
+                        type="primary" if _corp_open else "secondary",
+                        help="기업 기본/재무·공장등록 패널을 펼치거나 닫습니다.",
+                        on_click=_tab2_toggle_corp_info,
                     )
-                    _ccode = c_info.get("corp_code") or ""
-                    _lookup = _ccode or _matched
-                else:
-                    # 1차: 기업개요·재무만 (거래처명+주소로 동명 오매칭 완화)
-                    with st.spinner("기업 정보 불러오는 중…"):
-                        c_info = get_company_info_hybrid(
-                            _corp_query_name, dart_api_key, address=_addr_for_lookup
+                with btn_c3:
+                    # 주소록 주소 우선, 없으면 거래처명으로 카카오맵 검색
+                    if selected_client and selected_client != "전체 거래처":
+                        kakao_q = client_addr if client_addr != "등록된 주소 정보가 없습니다." else selected_client
+                        kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(kakao_q)}"
+                        st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url, width="stretch")
+                    else:
+                        st.button(
+                            "🗺️ 카카오맵에서 주소 보기",
+                            disabled=True,
+                            key="btn_kakao_disabled",
+                            width="stretch",
+                            help="사이드바에서 특정 거래처를 선택하세요.",
                         )
+                    # 버튼 바로 아래 주소 표시 (tab2 전용, 버튼과 동일 폭·글자크기)
+                    _addr_color = "#64748B" if client_addr == "등록된 주소 정보가 없습니다." else "#334155"
+                    st.markdown(
+                        f"<div class='tab2-kakao-addr' style='color:{_addr_color};'>"
+                        f"📍 {html.escape(client_addr)}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    _render_tab2_extra_addr_box(selected_client)
+
+            # 목록에 없는 거래처도 기업정보만 조회 가능 (상단 필터·매출 집계는 변경 없음)
+            _ov_c1, _ov_c2 = st.columns([1.4, 1], gap="small")
+            with _ov_c1:
+                _corp_name_override = st.text_input(
+                    "목록 외 상호 (기업정보 조회용)",
+                    key="tab2_corp_name_override",
+                    placeholder="예: OO산업 — 비우면 상단 선택 거래처 사용",
+                    help="매출 목록에 없어도 상호를 입력하면 기업 기본/재무·공장등록을 조회합니다.",
+                )
+            with _ov_c2:
+                _corp_addr_override = st.text_input(
+                    "주소 힌트 (선택)",
+                    key="tab2_corp_addr_override",
+                    placeholder="동명 구분 · 예: 평택시 서탄면",
+                )
+            _corp_query_name = str(_corp_name_override or "").strip()
+            if not _corp_query_name and selected_client and selected_client != "전체 거래처":
+                _corp_query_name = str(selected_client).strip()
+            _corp_query_is_override = bool(str(_corp_name_override or "").strip())
+
+            if st.session_state.show_corp_info:
+                if not _corp_query_name:
+                    st.info(
+                        "상단에서 거래처를 선택하거나, 위에 **목록 외 상호**를 입력한 뒤 "
+                        "기업정보를 다시 열어 주세요."
+                    )
+                else:
+                    if _corp_query_is_override:
+                        st.caption(
+                            f"목록 외 조회: **{_corp_query_name}** "
+                            "(상단 매출 필터와 별개 · 기업정보만)"
+                        )
+                    _addr_for_lookup = None
+                    if str(_corp_addr_override or "").strip():
+                        _addr_for_lookup = str(_corp_addr_override).strip()
+                    elif not _corp_query_is_override:
+                        _addr_for_lookup = (
+                            client_addr
+                            if client_addr and client_addr != "등록된 주소 정보가 없습니다."
+                            else None
+                        )
+                    else:
+                        # 목록 외 상호: 주소록에 같은 이름이 있으면 활용
+                        _ov_addr = resolve_client_address(_corp_query_name, addr_dict)
+                        if _ov_addr and _ov_addr != "등록된 주소 정보가 없습니다.":
+                            _addr_for_lookup = _ov_addr
+
+                    _memo_key = (
+                        str(_corp_query_name),
+                        str(dart_api_key or ""),
+                        str(_addr_for_lookup or ""),
+                        "ov" if _corp_query_is_override else "sel",
+                    )
+                    _memo = st.session_state.get("_tab2_corp_memo")
+                    _use_memo = (
+                        isinstance(_memo, dict)
+                        and _memo.get("key") == _memo_key
+                        and isinstance(_memo.get("c_info"), dict)
+                    )
+                    _touch_corp = is_touch_ui()
+                    if _use_memo:
+                        c_info = dict(_memo["c_info"])
+                        _latest_audit = _memo.get("latest_audit")
+                        _audit_sum = dict(_memo.get("audit_sum") or {})
                         _matched = (
                             c_info.get("matched_name")
                             or c_info.get("clean_name")
@@ -15556,360 +15572,366 @@ def _dash_filter_and_tabs_fragment() -> None:
                         )
                         _ccode = c_info.get("corp_code") or ""
                         _lookup = _ccode or _matched
-                        _latest_audit = None
-                        _audit_sum = {}
-                        if dart_api_key and _lookup and OpenDartReader is not None:
-                            _years_back = 2 if _touch_corp else 4
-                            _audits = list_dart_audit_reports(
-                                _lookup, dart_api_key, years_back=_years_back
+                    else:
+                        # 1차: 기업개요·재무만 (거래처명+주소로 동명 오매칭 완화)
+                        with st.spinner("기업 정보 불러오는 중…"):
+                            c_info = get_company_info_hybrid(
+                                _corp_query_name, dart_api_key, address=_addr_for_lookup
                             )
-                            if _audits:
-                                _latest_audit = _audits[0]
-                        st.session_state["_tab2_corp_memo"] = {
-                            "key": _memo_key,
-                            "c_info": dict(c_info),
-                            "latest_audit": _latest_audit,
-                            "audit_sum": {},
-                        }
-                # 감사 본문 추출: 맥은 자동, iPad는 버튼(동일 데이터·무손실)
-                _want_audit_parse = bool(st.session_state.get("_tab2_force_audit_parse"))
-                if (
-                    _latest_audit
-                    and not _audit_sum
-                    and dart_api_key
-                    and OpenDartReader is not None
-                    and (not _touch_corp or _want_audit_parse)
-                ):
-                    with st.spinner("감사 주석 개요·계속기업 이슈 추출 중…"):
-                        _audit_sum = parse_dart_audit_report_summary(
-                            _latest_audit["rcept_no"], dart_api_key
-                        )
-                        if _audit_sum.get("revenue") and c_info.get("revenue") == "정보 없음":
-                            c_info["revenue"] = _audit_sum["revenue"] + " (감사보고서 추정)"
-                        if _audit_sum.get("profit") and c_info.get("profit") == "정보 없음":
-                            c_info["profit"] = _audit_sum["profit"] + " (감사보고서 추정)"
-                        # 주석 개요로 대표/업종 보강 (기존 값 있을 때는 덮지 않음)
-                        if _audit_sum.get("ceo_note") and c_info.get("ceo") in (
-                            "",
-                            "정보 없음",
-                            None,
-                        ):
-                            c_info["ceo"] = _audit_sum["ceo_note"]
-                        if _audit_sum.get("business") and c_info.get("industry") in (
-                            "",
-                            "정보 없음",
-                            None,
-                        ):
-                            c_info["industry"] = _audit_sum["business"]
-                        if (
-                            _audit_sum.get("revenue")
-                            or _audit_sum.get("profit")
-                            or _audit_sum.get("overview_ok")
-                        ):
-                            if "DART" not in str(c_info.get("source")):
-                                c_info["source"] = "DART 감사보고서 주석·본문"
-                        st.session_state["_tab2_corp_memo"] = {
-                            "key": _memo_key,
-                            "c_info": dict(c_info),
-                            "latest_audit": _latest_audit,
-                            "audit_sum": dict(_audit_sum) if _audit_sum else {},
-                        }
-                        st.session_state.pop("_tab2_force_audit_parse", None)
-                def _autosave_factory_api_key():
-                    v = str(st.session_state.get("tab2_factory_api_key_input") or "").strip()
-                    if not v:
-                        return
-                    old = _load_factory_api_key()
-                    if v == old:
-                        return
-                    _persist_factory_api_key(v)
-                    try:
-                        fetch_factory_registry.clear()
-                    except Exception:
-                        pass
-                    st.session_state.pop("_tab2_factory_memo", None)
-
-                _factory_key = _load_factory_api_key()
-                if "tab2_factory_api_key_input" not in st.session_state:
-                    st.session_state["tab2_factory_api_key_input"] = _factory_key
-
-                # 공장등록 조회 (표시 전에 취합)
-                _f_memo_key = (
-                    str(_corp_query_name),
-                    str(_matched or ""),
-                    str(_addr_for_lookup or ""),
-                    str(_load_factory_api_key() or ""),
-                )
-                _f_memo = st.session_state.get("_tab2_factory_memo")
-                _f_use = (
-                    isinstance(_f_memo, dict)
-                    and _f_memo.get("key") == _f_memo_key
-                    and isinstance(_f_memo.get("info"), dict)
-                )
-                if _f_use:
-                    _f_info = dict(_f_memo["info"])
-                elif not _load_factory_api_key():
-                    _f_info = {"ok": False, "error": "공장등록 API 키 없음"}
-                else:
-                    with st.spinner("공장등록 정보 조회 중…"):
-                        try:
-                            _f_info = fetch_factory_registry(
-                                _matched or _corp_query_name,
-                                address=_addr_for_lookup,
-                                api_key=_load_factory_api_key(),
+                            _matched = (
+                                c_info.get("matched_name")
+                                or c_info.get("clean_name")
+                                or _corp_query_name
                             )
-                        except _LookupTransientError as _fe:
-                            _f_info = {
-                                "ok": False,
-                                "error": str(_fe) or "공장등록 서버 응답이 지연됩니다. 「다시 조회」를 눌러 주세요.",
+                            _ccode = c_info.get("corp_code") or ""
+                            _lookup = _ccode or _matched
+                            _latest_audit = None
+                            _audit_sum = {}
+                            if dart_api_key and _lookup and OpenDartReader is not None:
+                                _years_back = 2 if _touch_corp else 4
+                                _audits = list_dart_audit_reports(
+                                    _lookup, dart_api_key, years_back=_years_back
+                                )
+                                if _audits:
+                                    _latest_audit = _audits[0]
+                            st.session_state["_tab2_corp_memo"] = {
+                                "key": _memo_key,
+                                "c_info": dict(c_info),
+                                "latest_audit": _latest_audit,
+                                "audit_sum": {},
                             }
-                    st.session_state["_tab2_factory_memo"] = {
-                        "key": _f_memo_key,
-                        "info": dict(_f_info) if isinstance(_f_info, dict) else {},
-                    }
-                if not isinstance(_f_info, dict):
-                    _f_info = {"ok": False, "error": "공장등록 조회 실패"}
-
-                def _corp_val(*vals):
-                    for v in vals:
-                        s = str(v or "").strip()
-                        if s and s not in ("정보 없음", "-", "None", "nan"):
-                            return s
-                    return ""
-
-                _ceo = _corp_val(
-                    c_info.get("ceo"),
-                    _f_info.get("ceo"),
-                    (_audit_sum or {}).get("ceo_note"),
-                )
-                _industry = _corp_val(
-                    c_info.get("industry"),
-                    _f_info.get("industry"),
-                    (_audit_sum or {}).get("business"),
-                )
-                _addr_show = _corp_val(
-                    _f_info.get("address"),
-                    _addr_for_lookup,
-                    (_audit_sum or {}).get("hq"),
-                )
-                _product = _corp_val(_f_info.get("product"))
-                _tel = _corp_val(_f_info.get("tel"))
-                _hp = _corp_val(_f_info.get("homepage"))
-                if _hp and not _hp.startswith("http"):
-                    _hp_href = "https://" + _hp
-                else:
-                    _hp_href = _hp
-                _rev = _corp_val(c_info.get("revenue")) or "정보 없음"
-                _prf = _corp_val(c_info.get("profit")) or "정보 없음"
-                _op = _corp_val((_audit_sum or {}).get("opinion"))
-                _op_color = {
-                    "적정의견": "#166534",
-                    "한정의견": "#A16207",
-                    "부적정의견": "#B91C1C",
-                    "의견거절": "#9F1239",
-                }.get(_op, "#334155")
-                _gc_issue = ((_audit_sum or {}).get("going_concern_issue") or "").strip()
-                _gc_flag = bool((_audit_sum or {}).get("going_concern_flag"))
-
-                _toolbar = st.columns([1.2, 1, 3], gap="small")
-                with _toolbar[0]:
-                    if st.button("🔄 다시 조회", key="btn_refresh_corp", width="stretch"):
-                        get_company_info_hybrid.clear()
-                        list_dart_audit_reports.clear()
-                        parse_dart_audit_report_summary.clear()
+                    # 감사 본문 추출: 맥은 자동, iPad는 버튼(동일 데이터·무손실)
+                    _want_audit_parse = bool(st.session_state.get("_tab2_force_audit_parse"))
+                    if (
+                        _latest_audit
+                        and not _audit_sum
+                        and dart_api_key
+                        and OpenDartReader is not None
+                        and (not _touch_corp or _want_audit_parse)
+                    ):
+                        with st.spinner("감사 주석 개요·계속기업 이슈 추출 중…"):
+                            _audit_sum = parse_dart_audit_report_summary(
+                                _latest_audit["rcept_no"], dart_api_key
+                            )
+                            if _audit_sum.get("revenue") and c_info.get("revenue") == "정보 없음":
+                                c_info["revenue"] = _audit_sum["revenue"] + " (감사보고서 추정)"
+                            if _audit_sum.get("profit") and c_info.get("profit") == "정보 없음":
+                                c_info["profit"] = _audit_sum["profit"] + " (감사보고서 추정)"
+                            # 주석 개요로 대표/업종 보강 (기존 값 있을 때는 덮지 않음)
+                            if _audit_sum.get("ceo_note") and c_info.get("ceo") in (
+                                "",
+                                "정보 없음",
+                                None,
+                            ):
+                                c_info["ceo"] = _audit_sum["ceo_note"]
+                            if _audit_sum.get("business") and c_info.get("industry") in (
+                                "",
+                                "정보 없음",
+                                None,
+                            ):
+                                c_info["industry"] = _audit_sum["business"]
+                            if (
+                                _audit_sum.get("revenue")
+                                or _audit_sum.get("profit")
+                                or _audit_sum.get("overview_ok")
+                            ):
+                                if "DART" not in str(c_info.get("source")):
+                                    c_info["source"] = "DART 감사보고서 주석·본문"
+                            st.session_state["_tab2_corp_memo"] = {
+                                "key": _memo_key,
+                                "c_info": dict(c_info),
+                                "latest_audit": _latest_audit,
+                                "audit_sum": dict(_audit_sum) if _audit_sum else {},
+                            }
+                            st.session_state.pop("_tab2_force_audit_parse", None)
+                    def _autosave_factory_api_key():
+                        v = str(st.session_state.get("tab2_factory_api_key_input") or "").strip()
+                        if not v:
+                            return
+                        old = _load_factory_api_key()
+                        if v == old:
+                            return
+                        _persist_factory_api_key(v)
                         try:
                             fetch_factory_registry.clear()
                         except Exception:
                             pass
-                        try:
-                            _make_opendart_reader.clear()
-                        except Exception:
-                            pass
-                        st.session_state.pop("_opendart_last_error", None)
-                        st.session_state.pop("_tab2_corp_memo", None)
                         st.session_state.pop("_tab2_factory_memo", None)
-                        st.session_state.pop("_tab2_force_audit_parse", None)
-                        _api_clear_soft_block("dart_is_blocked", "factory_is_blocked")
-                        st.rerun()
-                with _toolbar[1]:
-                    if _touch_corp and _latest_audit and not _audit_sum:
-                        if st.button("📄 감사추출", key="btn_parse_audit_sum", width="stretch"):
-                            st.session_state["_tab2_force_audit_parse"] = True
-                            st.rerun()
 
-                # 통합 카드 (중복 제거: 대표/업종/주소 1회)
-                _rows_basic = [
-                    ("상호", html.escape(_matched or _corp_query_name)),
-                    ("대표", html.escape(_ceo or "-")),
-                    ("업종", html.escape(_industry or "-")),
-                    ("주소", html.escape(_addr_show or "-")),
-                    ("전화", html.escape(_tel or "-")),
-                    (
-                        "홈페이지",
-                        (
-                            f"<a href='{html.escape(_hp_href)}' target='_blank' rel='noopener'>"
-                            f"{html.escape(_hp)}</a>"
-                            if _hp_href
-                            else "-"
-                        ),
-                    ),
-                ]
-                _rows_fin = [
-                    ("매출액", html.escape(_rev)),
-                    ("영업이익", html.escape(_prf)),
-                ]
-                _rows_fac = []
-                if _f_info.get("ok"):
-                    for lab, key in (
-                        ("주생산품", "product"),
-                        ("용지면적", "land_area"),
-                        ("건축면적", "bldg_area"),
-                        ("용도지역", "zone"),
-                        ("행정기관", "admin"),
-                        ("등록일자", "reg_date"),
-                        ("고용인원", "employees"),
-                        ("산업단지", "complex"),
-                    ):
-                        vv = _corp_val(_f_info.get(key))
-                        if vv:
-                            _rows_fac.append((lab, html.escape(vv)))
+                    _factory_key = _load_factory_api_key()
+                    if "tab2_factory_api_key_input" not in st.session_state:
+                        st.session_state["tab2_factory_api_key_input"] = _factory_key
 
-                def _grid_html(rows):
-                    parts = ['<div class="tab2-corp-grid">']
-                    for k, v in rows:
-                        parts.append(
-                            f'<div class="row"><span class="k">{html.escape(k)}</span>'
-                            f'<span class="v">{v}</span></div>'
-                        )
-                    parts.append("</div>")
-                    return "".join(parts)
-
-                _audit_html = ""
-                if _latest_audit:
-                    _audit_html += (
-                        f'<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
-                        f'<div style="font-size:15px;margin-bottom:6px;line-height:1.45;">'
-                        f'<a href="{html.escape(_latest_audit["url"])}" target="_blank" rel="noopener">'
-                        f'{html.escape(_latest_audit["date"])} · {html.escape(_latest_audit["name"])}'
-                        f"</a></div>"
+                    # 공장등록 조회 (표시 전에 취합)
+                    _f_memo_key = (
+                        str(_corp_query_name),
+                        str(_matched or ""),
+                        str(_addr_for_lookup or ""),
+                        str(_load_factory_api_key() or ""),
                     )
-                    if _op:
-                        _audit_html += (
-                            f'<span class="tab2-corp-op" style="color:{_op_color};">'
-                            f"감사의견: {html.escape(_op)}</span>"
-                        )
-                    if _gc_flag and _gc_issue:
-                        _audit_html += (
-                            f'<div style="margin-top:8px;padding:10px 12px;border:1px solid #FECACA;'
-                            f'border-radius:8px;background:#FEF2F2;color:#7F1D1D;font-size:15px;'
-                            f'line-height:1.5;">{html.escape(_gc_issue)}</div>'
-                        )
-                    elif _audit_sum:
-                        _gc_cap = _corp_val((_audit_sum or {}).get("going_concern")) or "관련 문구 없음"
-                        _audit_html += (
-                            f'<div style="margin-top:6px;font-size:14px;color:#475569;line-height:1.45;">'
-                            f"계속기업: {html.escape(_gc_cap)}</div>"
-                        )
-                    _audit_html += "</div>"
-                elif dart_api_key and OpenDartReader is not None:
-                    _audit_html = (
-                        '<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
-                        '<div style="font-size:14px;color:#475569;line-height:1.45;">최근 감사보고서 공시 없음</div></div>'
+                    _f_memo = st.session_state.get("_tab2_factory_memo")
+                    _f_use = (
+                        isinstance(_f_memo, dict)
+                        and _f_memo.get("key") == _f_memo_key
+                        and isinstance(_f_memo.get("info"), dict)
                     )
+                    if _f_use:
+                        _f_info = dict(_f_memo["info"])
+                    elif not _load_factory_api_key():
+                        _f_info = {"ok": False, "error": "공장등록 API 키 없음"}
+                    else:
+                        with st.spinner("공장등록 정보 조회 중…"):
+                            try:
+                                _f_info = fetch_factory_registry(
+                                    _matched or _corp_query_name,
+                                    address=_addr_for_lookup,
+                                    api_key=_load_factory_api_key(),
+                                )
+                            except _LookupTransientError as _fe:
+                                _f_info = {
+                                    "ok": False,
+                                    "error": str(_fe) or "공장등록 서버 응답이 지연됩니다. 「다시 조회」를 눌러 주세요.",
+                                }
+                        st.session_state["_tab2_factory_memo"] = {
+                            "key": _f_memo_key,
+                            "info": dict(_f_info) if isinstance(_f_info, dict) else {},
+                        }
+                    if not isinstance(_f_info, dict):
+                        _f_info = {"ok": False, "error": "공장등록 조회 실패"}
 
-                _fac_html = ""
-                if _rows_fac:
-                    _fac_html = (
-                        '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
-                        + _grid_html(_rows_fac)
-                        + "</div>"
+                    def _corp_val(*vals):
+                        for v in vals:
+                            s = str(v or "").strip()
+                            if s and s not in ("정보 없음", "-", "None", "nan"):
+                                return s
+                        return ""
+
+                    _ceo = _corp_val(
+                        c_info.get("ceo"),
+                        _f_info.get("ceo"),
+                        (_audit_sum or {}).get("ceo_note"),
                     )
-                elif _f_info.get("error") and "키 없음" not in str(_f_info.get("error")):
-                    _fac_html = (
-                        '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
-                        f'<div style="font-size:14px;color:#475569;line-height:1.45;">{html.escape(str(_f_info.get("error")))}'
-                        "</div></div>"
+                    _industry = _corp_val(
+                        c_info.get("industry"),
+                        _f_info.get("industry"),
+                        (_audit_sum or {}).get("business"),
                     )
+                    _addr_show = _corp_val(
+                        _f_info.get("address"),
+                        _addr_for_lookup,
+                        (_audit_sum or {}).get("hq"),
+                    )
+                    _product = _corp_val(_f_info.get("product"))
+                    _tel = _corp_val(_f_info.get("tel"))
+                    _hp = _corp_val(_f_info.get("homepage"))
+                    if _hp and not _hp.startswith("http"):
+                        _hp_href = "https://" + _hp
+                    else:
+                        _hp_href = _hp
+                    _rev = _corp_val(c_info.get("revenue")) or "정보 없음"
+                    _prf = _corp_val(c_info.get("profit")) or "정보 없음"
+                    _op = _corp_val((_audit_sum or {}).get("opinion"))
+                    _op_color = {
+                        "적정의견": "#166534",
+                        "한정의견": "#A16207",
+                        "부적정의견": "#B91C1C",
+                        "의견거절": "#9F1239",
+                    }.get(_op, "#334155")
+                    _gc_issue = ((_audit_sum or {}).get("going_concern_issue") or "").strip()
+                    _gc_flag = bool((_audit_sum or {}).get("going_concern_flag"))
 
-                _src_bits = []
-                if c_info.get("source"):
-                    _src_bits.append(str(c_info.get("source")))
-                if _f_info.get("ok"):
-                    _src_bits.append("팩토리온")
-                if _ccode:
-                    _src_bits.append(f"기업코드 {_ccode}")
-                if _matched and str(_matched) != str(_corp_query_name):
-                    _src_bits.append(f"매칭 {_matched}")
-                _src_line = " · ".join(dict.fromkeys(_src_bits)) if _src_bits else "조회 결과"
-
-                st.markdown(
-                    "<div class='sub-header dashboard-tab-panel-head'>🏢 기업 기본 · 재무정보</div>",
-                    unsafe_allow_html=True,
-                )
-                _card_html = (
-                    '<div class="tab2-corp-card">'
-                    f'<div class="tab2-corp-title">🏢 {html.escape(str(_matched or _corp_query_name))}</div>'
-                    f'<div class="tab2-corp-meta">{html.escape(_src_line)}</div>'
-                    '<div class="sec-title">기본 · 재무</div>'
-                    f"{_grid_html(_rows_basic + _rows_fin)}"
-                    f"{_fac_html}"
-                    f"{_audit_html}"
-                    "</div>"
-                )
-                st.markdown(_card_html, unsafe_allow_html=True)
-
-                if (_rev == "정보 없음" or _prf == "정보 없음") and c_info.get("dart_error"):
-                    st.caption(f"DART: {c_info.get('dart_error')}")
-
-                _sh = (_audit_sum or {}).get("shareholders") or []
-                if _sh:
-                    with st.expander("주요 주주 · 지분율", expanded=False):
-                        st.dataframe(
-                            pd.DataFrame(_sh),
+                    _toolbar = st.columns([1.2, 1, 3], gap="small")
+                    with _toolbar[0]:
+                        st.button(
+                            "🔄 다시 조회",
+                            key="btn_refresh_corp",
                             width="stretch",
-                            hide_index=True,
-                            height=min(160, 38 + 28 * len(_sh)),
+                            on_click=_tab2_refresh_corp,
+                        )
+                    with _toolbar[1]:
+                        if _touch_corp and _latest_audit and not _audit_sum:
+                            st.button(
+                                "📄 감사추출",
+                                key="btn_parse_audit_sum",
+                                width="stretch",
+                                on_click=_tab2_force_audit_parse,
+                            )
+
+                    # 통합 카드 (중복 제거: 대표/업종/주소 1회)
+                    _rows_basic = [
+                        ("상호", html.escape(_matched or _corp_query_name)),
+                        ("대표", html.escape(_ceo or "-")),
+                        ("업종", html.escape(_industry or "-")),
+                        ("주소", html.escape(_addr_show or "-")),
+                        ("전화", html.escape(_tel or "-")),
+                        (
+                            "홈페이지",
+                            (
+                                f"<a href='{html.escape(_hp_href)}' target='_blank' rel='noopener'>"
+                                f"{html.escape(_hp)}</a>"
+                                if _hp_href
+                                else "-"
+                            ),
+                        ),
+                    ]
+                    _rows_fin = [
+                        ("매출액", html.escape(_rev)),
+                        ("영업이익", html.escape(_prf)),
+                    ]
+                    _rows_fac = []
+                    if _f_info.get("ok"):
+                        for lab, key in (
+                            ("주생산품", "product"),
+                            ("용지면적", "land_area"),
+                            ("건축면적", "bldg_area"),
+                            ("용도지역", "zone"),
+                            ("행정기관", "admin"),
+                            ("등록일자", "reg_date"),
+                            ("고용인원", "employees"),
+                            ("산업단지", "complex"),
+                        ):
+                            vv = _corp_val(_f_info.get(key))
+                            if vv:
+                                _rows_fac.append((lab, html.escape(vv)))
+
+                    def _grid_html(rows):
+                        parts = ['<div class="tab2-corp-grid">']
+                        for k, v in rows:
+                            parts.append(
+                                f'<div class="row"><span class="k">{html.escape(k)}</span>'
+                                f'<span class="v">{v}</span></div>'
+                            )
+                        parts.append("</div>")
+                        return "".join(parts)
+
+                    _audit_html = ""
+                    if _latest_audit:
+                        _audit_html += (
+                            f'<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
+                            f'<div style="font-size:15px;margin-bottom:6px;line-height:1.45;">'
+                            f'<a href="{html.escape(_latest_audit["url"])}" target="_blank" rel="noopener">'
+                            f'{html.escape(_latest_audit["date"])} · {html.escape(_latest_audit["name"])}'
+                            f"</a></div>"
+                        )
+                        if _op:
+                            _audit_html += (
+                                f'<span class="tab2-corp-op" style="color:{_op_color};">'
+                                f"감사의견: {html.escape(_op)}</span>"
+                            )
+                        if _gc_flag and _gc_issue:
+                            _audit_html += (
+                                f'<div style="margin-top:8px;padding:10px 12px;border:1px solid #FECACA;'
+                                f'border-radius:8px;background:#FEF2F2;color:#7F1D1D;font-size:15px;'
+                                f'line-height:1.5;">{html.escape(_gc_issue)}</div>'
+                            )
+                        elif _audit_sum:
+                            _gc_cap = _corp_val((_audit_sum or {}).get("going_concern")) or "관련 문구 없음"
+                            _audit_html += (
+                                f'<div style="margin-top:6px;font-size:14px;color:#475569;line-height:1.45;">'
+                                f"계속기업: {html.escape(_gc_cap)}</div>"
+                            )
+                        _audit_html += "</div>"
+                    elif dart_api_key and OpenDartReader is not None:
+                        _audit_html = (
+                            '<div class="tab2-corp-sec"><div class="sec-title">감사 · 리스크</div>'
+                            '<div style="font-size:14px;color:#475569;line-height:1.45;">최근 감사보고서 공시 없음</div></div>'
                         )
 
-                with st.expander(
-                    "공장등록 API 키 (자동저장)",
-                    expanded=not bool(_load_factory_api_key()),
-                ):
-                    st.caption(
-                        "입력 후 Enter(또는 포커스 이동) 시 자동 저장됩니다. "
-                        "Decoding 키(끝 `==`) 권장. "
-                        "([생산정보](https://www.data.go.kr/data/15087611/openapi.do) · "
-                        "[필지](https://www.data.go.kr/data/15087615/openapi.do))"
-                    )
-                    st.text_input(
-                        "공공데이터 일반 인증키",
-                        type="password",
-                        key="tab2_factory_api_key_input",
-                        placeholder="data.go.kr 일반 인증키",
-                        on_change=_autosave_factory_api_key,
-                        label_visibility="collapsed",
-                    )
-                    if _load_factory_api_key():
-                        st.caption("✓ 키가 저장되어 있습니다.")
+                    _fac_html = ""
+                    if _rows_fac:
+                        _fac_html = (
+                            '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
+                            + _grid_html(_rows_fac)
+                            + "</div>"
+                        )
+                    elif _f_info.get("error") and "키 없음" not in str(_f_info.get("error")):
+                        _fac_html = (
+                            '<div class="tab2-corp-sec"><div class="sec-title">공장등록 (팩토리온)</div>'
+                            f'<div style="font-size:14px;color:#475569;line-height:1.45;">{html.escape(str(_f_info.get("error")))}'
+                            "</div></div>"
+                        )
 
-                _loc_bits = _loc_tokens_from_address(_addr_for_lookup)
-                _q_base = str(_matched)
-                _q_merged = f"{_q_base} {' '.join(_loc_bits[:2])}".strip() if _loc_bits else _q_base
-                _q = urllib.parse.quote(_q_merged)
-                _links = (c_info.get("job_links") or {}) if isinstance(c_info, dict) else {}
-                _saramin = _links.get("saramin_company") or (
-                    "https://www.saramin.co.kr/zf_user/search/company?searchword=" + _q
-                )
-                st.markdown(
-                    f"[DART](https://dart.fss.or.kr/) · "
-                    f"[네이버 기업정보](https://search.naver.com/search.naver?query={_q}%20기업정보) · "
-                    f"[사람인]({_saramin})"
-                    + (
-                        f" · [팩토리온 원문]({_f_info.get('source_url')})"
-                        if _f_info.get("ok")
-                        else ""
+                    _src_bits = []
+                    if c_info.get("source"):
+                        _src_bits.append(str(c_info.get("source")))
+                    if _f_info.get("ok"):
+                        _src_bits.append("팩토리온")
+                    if _ccode:
+                        _src_bits.append(f"기업코드 {_ccode}")
+                    if _matched and str(_matched) != str(_corp_query_name):
+                        _src_bits.append(f"매칭 {_matched}")
+                    _src_line = " · ".join(dict.fromkeys(_src_bits)) if _src_bits else "조회 결과"
+
+                    st.markdown(
+                        "<div class='sub-header dashboard-tab-panel-head'>🏢 기업 기본 · 재무정보</div>",
+                        unsafe_allow_html=True,
                     )
-                )
+                    _card_html = (
+                        '<div class="tab2-corp-card">'
+                        f'<div class="tab2-corp-title">🏢 {html.escape(str(_matched or _corp_query_name))}</div>'
+                        f'<div class="tab2-corp-meta">{html.escape(_src_line)}</div>'
+                        '<div class="sec-title">기본 · 재무</div>'
+                        f"{_grid_html(_rows_basic + _rows_fin)}"
+                        f"{_fac_html}"
+                        f"{_audit_html}"
+                        "</div>"
+                    )
+                    st.markdown(_card_html, unsafe_allow_html=True)
+
+                    if (_rev == "정보 없음" or _prf == "정보 없음") and c_info.get("dart_error"):
+                        st.caption(f"DART: {c_info.get('dart_error')}")
+
+                    _sh = (_audit_sum or {}).get("shareholders") or []
+                    if _sh:
+                        with st.expander("주요 주주 · 지분율", expanded=False):
+                            st.dataframe(
+                                pd.DataFrame(_sh),
+                                width="stretch",
+                                hide_index=True,
+                                height=min(160, 38 + 28 * len(_sh)),
+                            )
+
+                    with st.expander(
+                        "공장등록 API 키 (자동저장)",
+                        expanded=not bool(_load_factory_api_key()),
+                    ):
+                        st.caption(
+                            "입력 후 Enter(또는 포커스 이동) 시 자동 저장됩니다. "
+                            "Decoding 키(끝 `==`) 권장. "
+                            "([생산정보](https://www.data.go.kr/data/15087611/openapi.do) · "
+                            "[필지](https://www.data.go.kr/data/15087615/openapi.do))"
+                        )
+                        st.text_input(
+                            "공공데이터 일반 인증키",
+                            type="password",
+                            key="tab2_factory_api_key_input",
+                            placeholder="data.go.kr 일반 인증키",
+                            on_change=_autosave_factory_api_key,
+                            label_visibility="collapsed",
+                        )
+                        if _load_factory_api_key():
+                            st.caption("✓ 키가 저장되어 있습니다.")
+
+                    _loc_bits = _loc_tokens_from_address(_addr_for_lookup)
+                    _q_base = str(_matched)
+                    _q_merged = f"{_q_base} {' '.join(_loc_bits[:2])}".strip() if _loc_bits else _q_base
+                    _q = urllib.parse.quote(_q_merged)
+                    _links = (c_info.get("job_links") or {}) if isinstance(c_info, dict) else {}
+                    _saramin = _links.get("saramin_company") or (
+                        "https://www.saramin.co.kr/zf_user/search/company?searchword=" + _q
+                    )
+                    st.markdown(
+                        f"[DART](https://dart.fss.or.kr/) · "
+                        f"[네이버 기업정보](https://search.naver.com/search.naver?query={_q}%20기업정보) · "
+                        f"[사람인]({_saramin})"
+                        + (
+                            f" · [팩토리온 원문]({_f_info.get('source_url')})"
+                            if _f_info.get("ok")
+                            else ""
+                        )
+                    )
+        _tab2_corp_actions()
+
         if not df_client_filtered.empty:
             if pivot_m_client is None:
                 pivot_m_client = _yearly_monthly_pivot(
