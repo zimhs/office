@@ -311,14 +311,10 @@ def inject_custom_css():
                 padding-top: 0 !important;
             }
 
-            /* 사이드바 — Streamlit 기본 동작 유지, 색상만 보조 */
+            /* 사이드바 — 접힘/펼침은 Streamlit 기본. position/height 덮어쓰면 >> 가 죽거나 창이 안 보임 */
             [data-testid="stSidebar"] {
                 background-color: #F1F5F9 !important;
                 border-right: 1px solid #E2E8F0;
-                height: 100vh !important;
-                position: -webkit-sticky !important;
-                position: sticky !important;
-                top: 0 !important;
             }
             [data-testid="stSidebar"] > div:first-child {
                 overflow-y: auto !important;
@@ -551,7 +547,7 @@ def inject_custom_css():
                 gap: 0 !important;
             }
             html:has(.dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter)
-                [data-testid="stTabs"]:not([role="tabpanel"] *) > div:not(:has([role="tabpanel"])) {
+                [data-testid="stTabs"]:not([role="tabpanel"] *) > div:not(:has([role="tabpanel"])):not(:has([data-testid="stTabsScrollLeft"])):not(:has([data-testid="stTabsScrollRight"])) {
                 display: none !important;
                 height: 0 !important;
                 min-height: 0 !important;
@@ -599,9 +595,7 @@ def inject_custom_css():
                 display: none !important;
             }
             html:has(.dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter)
-                [data-testid="stTabs"]:not([role="tabpanel"] *) [role="tablist"],
-            html:has(.dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter)
-                [data-testid="stTabs"]:not([role="tabpanel"] *) > div:has(> [role="tablist"]):not(:has([role="tabpanel"])) {
+                [data-testid="stTabs"]:not([role="tabpanel"] *) [role="tablist"] {
                 display: none !important;
                 visibility: hidden !important;
                 height: 0 !important;
@@ -612,6 +606,13 @@ def inject_custom_css():
                 padding: 0 !important;
                 border: none !important;
                 pointer-events: none !important;
+            }
+            [data-testid="stTabsScrollLeft"],
+            [data-testid="stTabsScrollRight"] {
+                display: flex !important;
+                visibility: visible !important;
+                pointer-events: auto !important;
+                opacity: 1 !important;
             }
             .dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter {
                 display: flex !important;
@@ -667,14 +668,18 @@ def inject_custom_css():
                 cursor: pointer !important;
                 padding: 0 !important;
                 margin: 0 !important;
-                z-index: 3 !important;
+                z-index: 1000004 !important;
                 pointer-events: auto !important;
             }
-            .dashboard-tab-scroll-btn:hover:not(:disabled) {
+            /* 위쪽 고정바 화살표만 제거. 아래 Streamlit 화살표는 그대로 */
+            .dashboard-filter-sticky .dashboard-tab-scroll-btn {
+                display: none !important;
+            }
+            .dashboard-tab-scroll-btn:hover:not(.dashboard-tab-scroll-end) {
                 background: #F1F5F9 !important;
                 color: #0F172A !important;
             }
-            .dashboard-tab-scroll-btn:disabled {
+            .dashboard-tab-scroll-btn.dashboard-tab-scroll-end {
                 opacity: 0.28 !important;
                 cursor: default !important;
             }
@@ -806,11 +811,7 @@ def inject_custom_css():
             }
             html.dashboard-touch-mode [data-testid="stToolbar"] button,
             html.dashboard-touch-mode [data-testid="stToolbar"] a,
-            html.dashboard-touch-mode [data-testid="stExpandSidebarButton"],
-            html.dashboard-touch-mode [data-testid="stMainMenu"],
-            html.dashboard-touch-mode [data-testid="collapsedControl"],
-            html.dashboard-touch-mode [data-testid="stSidebarCollapsedControl"] {
-                display: flex !important;
+            html.dashboard-touch-mode [data-testid="stMainMenu"] {
                 visibility: visible !important;
                 opacity: 1 !important;
                 pointer-events: auto !important;
@@ -824,6 +825,7 @@ def inject_custom_css():
                 height: 2.75rem !important;
                 overflow: visible !important;
                 background: #FFFFFF !important;
+                z-index: 1000002 !important;
             }
             html:not(.dashboard-touch-mode) [data-testid="stToolbar"],
             html:not(.dashboard-touch-mode) [data-testid="stDecoration"] {
@@ -834,12 +836,12 @@ def inject_custom_css():
                 height: 2.75rem !important;
                 align-items: center !important;
             }
-            html:not(.dashboard-touch-mode) [data-testid="collapsedControl"],
-            html:not(.dashboard-touch-mode) [data-testid="stSidebarCollapsedControl"] {
-                display: flex !important;
-                visibility: visible !important;
-                opacity: 1 !important;
-                z-index: 1000003 !important;
+            /* >> 버튼: display는 Streamlit이 접힘일 때만 킴. 강제 flex는 비활성/유령 버튼을 만듦 */
+            [data-testid="stExpandSidebarButton"],
+            [data-testid="stSidebarCollapsedControl"],
+            [data-testid="collapsedControl"] {
+                pointer-events: auto !important;
+                z-index: 1000006 !important;
             }
 
             html.dashboard-touch-mode [data-testid="stSidebar"],
@@ -10415,7 +10417,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 91
+    _sticky_py_ver = 100
     components.html(
         """
         <script>
@@ -10831,32 +10833,89 @@ def inject_sticky_tabs_script():
                     + 'pointer-events:auto!important;z-index:1000003!important;}'
                     + 'html.dashboard-touch-mode [data-testid="stToolbar"] button,'
                     + 'html.dashboard-touch-mode [data-testid="stToolbar"] a,'
-                    + 'html.dashboard-touch-mode [data-testid="stExpandSidebarButton"],'
-                    + 'html.dashboard-touch-mode [data-testid="stMainMenu"],'
-                    + 'html.dashboard-touch-mode [data-testid="collapsedControl"],'
-                    + 'html.dashboard-touch-mode [data-testid="stSidebarCollapsedControl"]{'
-                    + 'display:flex!important;visibility:visible!important;opacity:1!important;'
+                    + 'html.dashboard-touch-mode [data-testid="stMainMenu"]{'
+                    + 'visibility:visible!important;opacity:1!important;'
                     + 'pointer-events:auto!important;z-index:1000003!important;}'
+                    + '[data-testid="stExpandSidebarButton"],'
+                    + '[data-testid="stSidebarCollapsedControl"],'
+                    + '[data-testid="collapsedControl"]{'
+                    + 'pointer-events:auto!important;z-index:1000006!important;}'
                     + 'html.dashboard-touch-mode .dashboard-filter-sticky-touch{'
                     + 'z-index:999980!important;}'
                 );
             }
+            function sidebarLooksOpen() {
+                var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
+                if (!sidebar) return false;
+                if (sidebar.getAttribute('aria-expanded') === 'false') return false;
+                if (sidebar.getAttribute('aria-expanded') === 'true') return true;
+                try {
+                    var r = sidebar.getBoundingClientRect();
+                    return r.width > 80 && r.height > 80;
+                } catch (eR) {
+                    return false;
+                }
+            }
+            function collectSidebarToggles() {
+                var seen = [];
+                var sels = [
+                    '[data-testid="stExpandSidebarButton"]',
+                    '[data-testid="stSidebarCollapsedControl"]',
+                    '[data-testid="collapsedControl"]'
+                ];
+                var i, el, btns, j, lab;
+                for (i = 0; i < sels.length; i++) {
+                    el = parentDoc.querySelector(sels[i]);
+                    if (el && seen.indexOf(el) < 0) seen.push(el);
+                }
+                btns = parentDoc.querySelectorAll('button');
+                for (j = 0; j < btns.length; j++) {
+                    lab = ((btns[j].getAttribute('aria-label') || '') + ' ' + (btns[j].textContent || '')).toLowerCase();
+                    if (lab.indexOf('keyboard_double_arrow') >= 0 || lab.indexOf('show sidebar') >= 0) {
+                        if (seen.indexOf(btns[j]) < 0) seen.push(btns[j]);
+                    }
+                }
+                return seen;
+            }
+            function ensureSidebarToggleLive() {
+                var open = sidebarLooksOpen();
+                var list = collectSidebarToggles();
+                var i, el, btn;
+                for (i = 0; i < list.length; i++) {
+                    el = list[i];
+                    btn = (el.matches && el.matches('button')) ? el : (el.querySelector ? el.querySelector('button') : null);
+                    if (open) {
+                        try { el.style.removeProperty('display'); } catch (eD) {}
+                        if (btn && btn !== el) {
+                            try { btn.style.removeProperty('display'); } catch (eB) {}
+                        }
+                        continue;
+                    }
+                    el.style.setProperty('visibility', 'visible', 'important');
+                    el.style.setProperty('opacity', '1', 'important');
+                    el.style.setProperty('pointer-events', 'auto', 'important');
+                    el.style.setProperty('z-index', '1000006', 'important');
+                    if (btn) {
+                        try { btn.disabled = false; } catch (eDis) {}
+                        btn.style.setProperty('pointer-events', 'auto', 'important');
+                        btn.style.setProperty('opacity', '1', 'important');
+                        btn.style.setProperty('visibility', 'visible', 'important');
+                    }
+                }
+            }
             function ensureIpadChromeVisible() {
                 try { injectIpadChromeCss(); } catch (eC) {}
+                try { ensureSidebarToggleLive(); } catch (eSb) {}
                 var sels = [
                     '[data-testid="stHeader"]',
                     '[data-testid="stToolbar"]',
                     '[data-testid="stDecoration"]',
-                    '[data-testid="stExpandSidebarButton"]',
-                    '[data-testid="stMainMenu"]',
-                    '[data-testid="collapsedControl"]',
-                    '[data-testid="stSidebarCollapsedControl"]'
+                    '[data-testid="stMainMenu"]'
                 ];
                 var i, el;
                 for (i = 0; i < sels.length; i++) {
                     el = parentDoc.querySelector(sels[i]);
                     if (!el) continue;
-                    el.style.setProperty('display', 'flex', 'important');
                     el.style.setProperty('visibility', 'visible', 'important');
                     el.style.setProperty('opacity', '1', 'important');
                     el.style.setProperty('pointer-events', 'auto', 'important');
@@ -10898,7 +10957,9 @@ def inject_sticky_tabs_script():
                     + 'width:100%!important;max-width:100%!important;}'
                     + '.dashboard-tab-scroll{display:flex!important;align-items:stretch!important;width:100%!important;max-width:100%!important;min-width:0!important;overflow:hidden!important;}'
                     + '.dashboard-tab-scroll-btn{flex:0 0 28px!important;width:28px!important;border:none!important;'
-                    + 'background:#fff!important;color:#334155!important;font-size:22px!important;cursor:pointer!important;}'
+                    + 'background:#fff!important;color:#334155!important;font-size:22px!important;cursor:pointer!important;'
+                    + 'pointer-events:auto!important;z-index:1000004!important;}'
+                    + '.dashboard-filter-sticky .dashboard-tab-scroll-btn{display:none!important;}'
                     + '.dashboard-tab-scroll>[role="tablist"]{flex:1 1 0!important;width:0!important;min-width:0!important;overflow-x:auto!important;}'
                     + '#dashboard-ipad-h-tabs{display:none!important;height:0!important;overflow:hidden!important;'
                     + 'visibility:hidden!important;pointer-events:none!important;}'
@@ -11125,8 +11186,14 @@ def inject_sticky_tabs_script():
                 var max = Math.max(0, (list.scrollWidth || 0) - (list.clientWidth || 0));
                 var overflow = max > 4;
                 wrap.classList.toggle('dashboard-tab-scroll-overflow', overflow);
-                if (prev) prev.disabled = list.scrollLeft <= 2;
-                if (next) next.disabled = list.scrollLeft >= max - 2;
+                if (prev) {
+                    prev.disabled = false;
+                    prev.classList.toggle('dashboard-tab-scroll-end', list.scrollLeft <= 2);
+                }
+                if (next) {
+                    next.disabled = false;
+                    next.classList.toggle('dashboard-tab-scroll-end', overflow && list.scrollLeft >= max - 2);
+                }
             }
             function sizeMainTabScrollWrap(wrap) {
                 if (!wrap) return;
@@ -11156,8 +11223,68 @@ def inject_sticky_tabs_script():
                 wrap.style.setProperty('min-width', '0', 'important');
                 wrap.style.setProperty('overflow', 'hidden', 'important');
             }
+            function bindMainTabScrollButtons(wrap, list) {
+                if (!wrap) return;
+                var prev = wrap.querySelector('.dashboard-tab-scroll-prev');
+                var next = wrap.querySelector('.dashboard-tab-scroll-next');
+                function step(dir) {
+                    var lst = wrap.querySelector('[role="tablist"]') || list;
+                    if (!lst) return;
+                    var dx = Math.max(180, Math.round((lst.clientWidth || 240) * 0.72));
+                    try {
+                        lst.scrollBy({ left: dir * dx, behavior: 'smooth' });
+                    } catch (eScr) {
+                        lst.scrollLeft = Math.max(0, (lst.scrollLeft || 0) + dir * dx);
+                    }
+                    parentWin.setTimeout(function () { syncMainTabScrollArrows(lst); }, 220);
+                }
+                var lastAt = 0;
+                function handle(dir, ev) {
+                    if (ev) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+                    }
+                    var now = Date.now();
+                    if (now - lastAt < 180) return;
+                    lastAt = now;
+                    step(dir);
+                }
+                function wire(btn, dir) {
+                    if (!btn) return;
+                    btn.disabled = false;
+                    btn.onclick = function (ev) { handle(dir, ev); };
+                    btn.onmousedown = function (ev) { handle(dir, ev); };
+                    if (btn.getAttribute('data-dash-tab-scroll-wired') === '1') return;
+                    btn.setAttribute('data-dash-tab-scroll-wired', '1');
+                    btn.addEventListener('pointerdown', function (ev) { handle(dir, ev); }, true);
+                    btn.addEventListener('click', function (ev) { handle(dir, ev); }, true);
+                }
+                wire(prev, -1);
+                wire(next, 1);
+            }
+            function unwrapTabScroll(wrap) {
+                if (!wrap || !wrap.parentNode) return;
+                var lst = wrap.querySelector('[role="tablist"]');
+                if (lst && wrap.parentNode) {
+                    try { wrap.parentNode.insertBefore(lst, wrap); } catch (eUw) {}
+                }
+                try { wrap.remove(); } catch (eRm) {}
+            }
+            function removeStickyTabScrollWraps() {
+                var wraps = parentDoc.querySelectorAll('.dashboard-filter-sticky .dashboard-tab-scroll');
+                var i;
+                for (i = 0; i < wraps.length; i++) unwrapTabScroll(wraps[i]);
+            }
             function ensureMainTabScrollArrows(list) {
                 if (!list || !isMainTabList(list)) return;
+                if (list.closest && list.closest('.dashboard-filter-sticky')) {
+                    var stickyWrap = list.parentElement;
+                    if (stickyWrap && stickyWrap.classList && stickyWrap.classList.contains('dashboard-tab-scroll')) {
+                        unwrapTabScroll(stickyWrap);
+                    }
+                }
+                return;
                 var wrap = list.parentElement;
                 if (!wrap || !wrap.classList || !wrap.classList.contains('dashboard-tab-scroll')) {
                     var parent = list.parentNode;
@@ -11179,29 +11306,9 @@ def inject_sticky_tabs_script():
                     wrap.appendChild(prev);
                     wrap.appendChild(list);
                     wrap.appendChild(next);
-                    function step(dir) {
-                        var lst = wrap.querySelector('[role="tablist"]') || list;
-                        if (!lst) return;
-                        var dx = Math.max(180, Math.round((lst.clientWidth || 240) * 0.72));
-                        try {
-                            lst.scrollBy({ left: dir * dx, behavior: 'smooth' });
-                        } catch (eScr) {
-                            lst.scrollLeft = Math.max(0, (lst.scrollLeft || 0) + dir * dx);
-                        }
-                        parentWin.setTimeout(function () { syncMainTabScrollArrows(lst); }, 220);
-                    }
-                    prev.onclick = function (ev) {
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        step(-1);
-                    };
-                    next.onclick = function (ev) {
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        step(1);
-                    };
                     list.addEventListener('scroll', function () { syncMainTabScrollArrows(list); }, { passive: true });
                 }
+                bindMainTabScrollButtons(wrap, list);
                 try {
                     sizeMainTabScrollWrap(wrap);
                     list.style.setProperty('flex', '1 1 0', 'important');
@@ -11213,14 +11320,61 @@ def inject_sticky_tabs_script():
                 parentWin.requestAnimationFrame(function () { syncMainTabScrollArrows(list); });
             }
             function pruneMainTabScrollWraps(box, keep) {
-                if (!box) return;
-                var wraps = box.querySelectorAll('.dashboard-tab-scroll');
-                var i, w;
-                for (i = 0; i < wraps.length; i++) {
-                    w = wraps[i];
-                    if (keep && w.contains(keep)) continue;
-                    try { w.remove(); } catch (ePw) {}
+                try { removeStickyTabScrollWraps(); } catch (eRs) {}
+            }
+            function wireHostTabScrollArrows() {
+                var ids = ['stTabsScrollLeft', 'stTabsScrollRight'];
+                var si, el;
+                for (si = 0; si < ids.length; si++) {
+                    el = parentDoc.querySelector('[data-testid="' + ids[si] + '"]');
+                    if (!el) continue;
+                    try { el.classList.remove('dashboard-tabs-list-shell'); } catch (eCl) {}
+                    el.removeAttribute('data-dashboard-orphan-tabs');
+                    el.style.removeProperty('display');
+                    el.style.removeProperty('height');
+                    el.style.removeProperty('overflow');
+                    el.style.removeProperty('visibility');
+                    el.style.removeProperty('pointer-events');
+                    el.style.setProperty('display', 'flex', 'important');
+                    el.style.setProperty('visibility', 'visible', 'important');
+                    el.style.setProperty('pointer-events', 'auto', 'important');
+                    el.style.setProperty('height', 'auto', 'important');
+                    el.style.setProperty('opacity', '1', 'important');
                 }
+                var left = parentDoc.querySelector('[data-testid="stTabsScrollLeft"]');
+                var right = parentDoc.querySelector('[data-testid="stTabsScrollRight"]');
+                function step(dir) {
+                    var lst = null;
+                    try { lst = findMainTabList(); } catch (eF) {}
+                    if (!lst) return;
+                    var dx = Math.max(180, Math.round((lst.clientWidth || 240) * 0.72));
+                    try {
+                        lst.scrollBy({ left: dir * dx, behavior: 'smooth' });
+                    } catch (eScr) {
+                        lst.scrollLeft = Math.max(0, (lst.scrollLeft || 0) + dir * dx);
+                    }
+                }
+                var lastAt = 0;
+                function handle(dir, ev) {
+                    if (ev) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+                    }
+                    var now = Date.now();
+                    if (now - lastAt < 180) return;
+                    lastAt = now;
+                    step(dir);
+                }
+                function wire(btn, dir) {
+                    if (!btn || btn.getAttribute('data-dash-host-tab-scroll') === '1') return;
+                    btn.setAttribute('data-dash-host-tab-scroll', '1');
+                    btn.disabled = false;
+                    btn.addEventListener('pointerdown', function (ev) { handle(dir, ev); }, true);
+                    btn.addEventListener('click', function (ev) { handle(dir, ev); }, true);
+                }
+                wire(left, -1);
+                wire(right, 1);
             }
             function findMainTabsHost() {
                 var hosts = parentDoc.querySelectorAll('div[data-testid="stTabs"]');
@@ -11324,7 +11478,10 @@ def inject_sticky_tabs_script():
                     for (tj = 0; tj < tabs.length; tj++) {
                         tabs[tj].style.setProperty('pointer-events', 'auto', 'important');
                     }
-                    try { ensureMainTabScrollArrows(lists[li]); } catch (eArr) {}
+                    try {
+                        if (lists[li] === findMainTabList()) ensureMainTabScrollArrows(lists[li]);
+                    } catch (eArr) {}
+                    try { wireHostTabScrollArrows(); } catch (eHostA2) {}
                 }
             }
             parentWin.__dashboardEnsureCloudStickyTabs = ensureCloudStickyTabsNative;
@@ -11339,6 +11496,17 @@ def inject_sticky_tabs_script():
             function hideOrphanTabList(el) {
                 if (!el) return;
                 try {
+                    var live = null;
+                    try { live = findMainTabList(); } catch (eLive) {}
+                    if (el === live) return;
+                    var wrap = el.closest ? el.closest('.dashboard-tab-scroll') : null;
+                    if (wrap && live && wrap.contains(live)) return;
+                    if (wrap && wrap.parentNode) {
+                        if (el.parentNode === wrap) {
+                            try { wrap.parentNode.insertBefore(el, wrap); } catch (eUw) {}
+                        }
+                        try { wrap.remove(); } catch (eWr) {}
+                    }
                     el.setAttribute('data-dashboard-orphan-tabs', '1');
                     el.classList.remove('dashboard-tabs-in-filter');
                     el.style.setProperty('display', 'none', 'important');
@@ -11356,6 +11524,13 @@ def inject_sticky_tabs_script():
                 Array.from(tabsHost.children).forEach(function(child) {
                     if (containsTabPanel(child)) return;
                     if (keepList && (child === keepList || child.contains(keepList))) return;
+                    var tid = child.getAttribute ? child.getAttribute('data-testid') : '';
+                    if (tid === 'stTabsScrollLeft' || tid === 'stTabsScrollRight') return;
+                    if (child.querySelector && (child.querySelector('[data-testid="stTabsScrollLeft"]') || child.querySelector('[data-testid="stTabsScrollRight"]'))) {
+                        var leftover = child.querySelector('[role="tablist"]');
+                        if (leftover && !(keepList && leftover === keepList)) hideOrphanTabList(leftover);
+                        return;
+                    }
                     child.classList.add('dashboard-tabs-list-shell');
                     child.style.setProperty('display', 'none', 'important');
                     child.style.setProperty('height', '0', 'important');
@@ -11563,6 +11738,7 @@ def inject_sticky_tabs_script():
                         filterBox.classList.add('dashboard-filter-sticky-with-tabs');
                         try { pruneMainTabScrollWraps(filterBox, keep); } catch (ePr) {}
                         try { ensureMainTabScrollArrows(keep); } catch (eScrA) {}
+                        try { wireHostTabScrollArrows(); } catch (eHostA) {}
                         try { ensureCloudStickyTabsNative(filterBox); } catch (eCloud) {}
                         if (host) {
                             host.classList.add('dashboard-tabs-host-compact');
@@ -11672,12 +11848,24 @@ def inject_sticky_tabs_script():
                 shield.style.setProperty('display', 'block', 'important');
                 shield.style.setProperty('position', 'fixed', 'important');
                 shield.style.setProperty('top', '0', 'important');
-                shield.style.setProperty('left', rect.left + 'px', 'important');
-                shield.style.setProperty('width', rect.width + 'px', 'important');
+                var left = rect.left;
+                try {
+                    var toggles = collectSidebarToggles();
+                    var ti, br;
+                    for (ti = 0; ti < toggles.length; ti++) {
+                        br = toggles[ti].getBoundingClientRect();
+                        if (br.width > 8 && br.height > 8 && br.right > left) {
+                            left = Math.round(br.right + 8);
+                        }
+                    }
+                } catch (eShL) {}
+                shield.style.setProperty('left', left + 'px', 'important');
+                shield.style.setProperty('width', Math.max(0, Math.round(rect.left + rect.width - left)) + 'px', 'important');
                 shield.style.setProperty('height', top + 'px', 'important');
                 shield.style.setProperty('background', '#F8FAFC', 'important');
                 shield.style.setProperty('z-index', '989', 'important');
                 shield.style.setProperty('pointer-events', 'none', 'important');
+                try { ensureSidebarToggleLive(); } catch (eShT) {}
             }
             function syncIpadTopShield(topPx) {
                 /* iPad: 흰 가림막이 좌 >> · 우 메뉴를 덮지 않게 숨김.
@@ -11895,6 +12083,7 @@ def inject_sticky_tabs_script():
                     tabList = findMainTabList();
                 }
                 try { if (tabList) ensureMainTabScrollArrows(tabList); } catch (eTabArr) {}
+                try { wireHostTabScrollArrows(); } catch (eHostA3) {}
                 var filterH = Math.max(48, Math.round(targetBox.getBoundingClientRect().height) || 0);
                 publishBarGeometry(topPx, side, maxW || Math.max(120, (vw || 0) - side * 2), filterH);
                 /* iPad만: 맥 syncFixedBar와 같이 필터 슬롯을 접어 본문 위 빈 키를 없앰 */
@@ -12455,7 +12644,10 @@ def inject_sticky_tabs_script():
                     parentWin.visualViewport.addEventListener('resize', function() { scheduleSync(100); }, { passive: true });
                 }
                 parentDoc.addEventListener('click', function(e) {
+                    try { ensureSidebarToggleLive(); } catch (eSbC) {}
                     if (e.target.closest('[data-testid="collapsedControl"]') ||
+                        e.target.closest('[data-testid="stExpandSidebarButton"]') ||
+                        e.target.closest('[data-testid="stSidebarCollapsedControl"]') ||
                         e.target.closest('[role="tab"]')) {
                         scheduleSync(100);
                         scheduleSync(400);
@@ -12481,6 +12673,7 @@ def inject_sticky_tabs_script():
                     if (fb && !isElementFixed(fb)) {
                         syncFixedBar();
                     }
+                    try { ensureSidebarToggleLive(); } catch (eSbMac) {}
                 }, cloudMode ? 900 : 4000);
                 /* Cloud 첫 로딩: 비건강/비고정일 때만 재장착 (건강 시 rAF 스로틀 완화) */
                 if (cloudMode && !parentWin.__dashboardStickyGeoRaf) {
@@ -14206,7 +14399,7 @@ elif not _drive_upload_hit:
 if not _is_streamlit_cloud():
     if st.sidebar.button(
         "☁️ Drive 복사본으로 동기화",
-        help="Desktop/dashboard/uproad 의 CSV·매출을 캐시로 가져옵니다. (폴더명이 기준)",
+        help="로컬 데이터는 Drive로, 코드는 Cloud(office/main)로 같이 올립니다.",
     ):
         st.session_state.pop("_drive_synced_this_upload", None)
         _pull = None
@@ -14239,6 +14432,15 @@ if not _is_streamlit_cloud():
         _msg = dict(_pull or {})
         _msg["local_uproad"] = True
         _msg["drive_push"] = _push
+        _code = None
+        try:
+            from office_code_push import push_office_code
+
+            with st.spinner("코드를 Cloud에 올리는 중..."):
+                _code = push_office_code()
+        except Exception as _ce:
+            _code = {"ok": False, "error": str(_ce)}
+        _msg["code_push"] = _code
         st.session_state["_drive_sync_out_msg"] = _msg
         st.rerun()
 else:
@@ -14254,7 +14456,7 @@ else:
                     _dr = sync_dashboard_copy_on_boot(
                         CACHE_DIR,
                         force_refresh=False,
-                        include_worklog=False,
+                        include_worklog=True,
                         protect_newer_local=False,
                     )
                 try:
@@ -14314,6 +14516,14 @@ if isinstance(_drive_out, dict):
         st.sidebar.caption("Drive 경로 없음 — 맥에서 Google Drive 앱 확인")
     elif not _drive_out.get("ok"):
         st.sidebar.warning(f"Drive 동기화 실패: {_drive_out.get('error') or '알 수 없음'}")
+    _code_push = _drive_out.get("code_push")
+    if isinstance(_code_push, dict):
+        if _code_push.get("ok") and _code_push.get("committed"):
+            st.sidebar.caption("코드도 Cloud에 올렸습니다.")
+        elif _code_push.get("ok"):
+            st.sidebar.caption("코드는 이미 Cloud와 같습니다.")
+        elif _code_push.get("error"):
+            st.sidebar.warning(f"코드 올리기 실패: {_code_push.get('error')}")
 
 _drive_pull = st.session_state.pop("_drive_pull_msg", None)
 if isinstance(_drive_pull, tuple) and len(_drive_pull) == 2:
@@ -14899,7 +15109,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 92
+    _STICKY_INJECT_VER = 100
     _ACTIVE_TAB_INJECT_VER = 13
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None

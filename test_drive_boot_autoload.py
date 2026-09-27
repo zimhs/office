@@ -108,8 +108,7 @@ class BootPathRegressionTest(unittest.TestCase):
         code = "\n".join(ln for ln in seg.splitlines() if not ln.lstrip().startswith("#"))
         self.assertIn("force_refresh=False", code)
         self.assertNotIn("force_refresh=True", code)
-        self.assertIn("include_worklog=False", code)
-        self.assertNotIn("include_worklog=True", code)
+        self.assertIn("include_worklog=True", code)
 
 
 if __name__ == "__main__":

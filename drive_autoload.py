@@ -44,6 +44,10 @@ _CACHE_MAP: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("탱크.csv", "tank_cache.dat", "탱크.csv"),
     ("기화기.csv", "vaporizer_cache.dat", "기화기.csv"),
     ("통합탱크재고.csv", "integrated_cache.dat", "통합탱크재고.csv"),
+    ("추가사업장.json", "client_extra_sites.json", None),
+    ("메일연락처.csv", "price_increase/mail_contacts.csv", None),
+    ("방문할일.json", "visit_calendar/store.json", None),
+    ("시장조사_직접입력.json", "market_research/manual_entries.json", None),
 )
 
 _SALES_NAME_RE = re.compile(r"^20\d{2}(\d{2})?\.csv$", re.IGNORECASE)
@@ -614,20 +618,23 @@ def sync_local_uproad_into_cache(
                     copied.append(f"-sales/{gone}")
 
         if include_worklog:
-            wl_src = os.path.join(src_root, "worklog")
-            if os.path.isdir(wl_src):
-                wl_local = os.path.join(cache_dir, "worklog")
-                os.makedirs(wl_local, exist_ok=True)
-                try:
-                    for wname in os.listdir(wl_src):
-                        if not _is_worklog_day_file(wname) and wname != "template.xlsx":
-                            continue
-                        src = os.path.join(wl_src, wname)
-                        dst = os.path.join(wl_local, wname)
-                        if os.path.isfile(src) and _atomic_copy(src, dst):
-                            copied.append(f"worklog/{wname}")
-                except OSError:
-                    pass
+            copied.extend(
+                _copy_worklog_tree(
+                    os.path.join(src_root, "worklog"),
+                    os.path.join(cache_dir, "worklog"),
+                    force=force_apply,
+                )
+            )
+        mr_src = os.path.join(src_root, _MR_UPLOAD_DRIVE)
+        if not os.path.isdir(mr_src):
+            mr_src = os.path.join(src_root, "market_research", "uploads")
+        copied.extend(
+            _copy_market_research_uploads(
+                mr_src,
+                os.path.join(cache_dir, "market_research", "uploads"),
+                force=force_apply,
+            )
+        )
 
         return {
             "ok": True,
@@ -743,23 +750,21 @@ def sync_drive_copy_into_cache(
                 for gone in prune_annual_if_monthly(sales_dir):
                     copied.append(f"-sales/{gone}")
 
-        # worklog 하위 폴더 (부트 시 생략 가능)
         if include_worklog:
-            wl_drive = os.path.join(drive_root, "worklog")
-            if os.path.isdir(wl_drive):
-                wl_local = os.path.join(cache_dir, "worklog")
-                os.makedirs(wl_local, exist_ok=True)
-                try:
-                    for wname in os.listdir(wl_drive):
-                        if not _is_worklog_day_file(wname) and wname != "template.xlsx":
-                            continue
-                        src = os.path.join(wl_drive, wname)
-                        dst = os.path.join(wl_local, wname)
-                        if force_refresh or _should_replace(src, dst):
-                            if _atomic_copy(src, dst):
-                                copied.append(f"worklog/{wname}")
-                except OSError:
-                    pass
+            copied.extend(
+                _copy_worklog_tree(
+                    os.path.join(drive_root, "worklog"),
+                    os.path.join(cache_dir, "worklog"),
+                    force=force_refresh,
+                )
+            )
+        copied.extend(
+            _copy_market_research_uploads(
+                os.path.join(drive_root, _MR_UPLOAD_DRIVE),
+                os.path.join(cache_dir, "market_research", "uploads"),
+                force=force_refresh,
+            )
+        )
 
         return {
             "ok": True,
@@ -913,6 +918,21 @@ def sync_cache_to_drive_copy(cache_dir: str = "./uploaded_cache", *, force: bool
                 except OSError:
                     pass
 
+        copied.extend(
+            _copy_worklog_tree(
+                os.path.join(cache_dir, "worklog"),
+                os.path.join(drive_root, "worklog"),
+                force=force,
+            )
+        )
+        copied.extend(
+            _copy_market_research_uploads(
+                os.path.join(cache_dir, "market_research", "uploads"),
+                os.path.join(drive_root, _MR_UPLOAD_DRIVE),
+                force=force,
+            )
+        )
+
         return {
             "ok": True,
             "skipped": False,
@@ -954,6 +974,78 @@ def _is_worklog_day_file(name: str) -> bool:
     if name == "template.xlsx" or name.startswith("_preview_") or "_인쇄" in name:
         return False
     return bool(_WORKLOG_DAY_RE.match(name))
+
+
+_MR_UPLOAD_DRIVE = "시장조사업로드"
+_MR_SKIP = (".pkl", ".sig")
+
+
+def _copy_tree_filtered(
+    src_root: str,
+    dst_root: str,
+    *,
+    skip_suffixes: Tuple[str, ...] = (),
+    force: bool = False,
+    label: str = "",
+) -> List[str]:
+    copied: List[str] = []
+    if not src_root or not os.path.isdir(src_root):
+        return copied
+    for dirpath, dirnames, filenames in os.walk(src_root):
+        dirnames[:] = [d for d in dirnames if not str(d).startswith(".")]
+        for fn in filenames:
+            if not fn or str(fn).startswith("."):
+                continue
+            if any(str(fn).endswith(suf) for suf in skip_suffixes):
+                continue
+            src = os.path.join(dirpath, fn)
+            if not os.path.isfile(src):
+                continue
+            rel = os.path.relpath(src, src_root)
+            dst = os.path.join(dst_root, rel)
+            if not force and not _should_replace(src, dst):
+                continue
+            if _atomic_copy(src, dst):
+                copied.append(f"{label}/{rel}" if label else rel)
+    return copied
+
+
+def _copy_worklog_tree(src_root: str, dst_root: str, *, force: bool = False) -> List[str]:
+    copied: List[str] = []
+    if not src_root or not os.path.isdir(src_root):
+        return copied
+    os.makedirs(dst_root, exist_ok=True)
+    try:
+        names = os.listdir(src_root)
+    except OSError:
+        names = []
+    for name in names:
+        if not _is_worklog_day_file(name) and name != "template.xlsx":
+            continue
+        src = os.path.join(src_root, name)
+        dst = os.path.join(dst_root, name)
+        if not os.path.isfile(src):
+            continue
+        if not force and not _should_replace(src, dst):
+            continue
+        if _atomic_copy(src, dst):
+            copied.append(f"worklog/{name}")
+    arch = os.path.join(src_root, "일지")
+    if os.path.isdir(arch):
+        copied.extend(
+            _copy_tree_filtered(arch, os.path.join(dst_root, "일지"), force=force, label="worklog/일지")
+        )
+    return copied
+
+
+def _copy_market_research_uploads(src_root: str, dst_root: str, *, force: bool = False) -> List[str]:
+    return _copy_tree_filtered(
+        src_root,
+        dst_root,
+        skip_suffixes=_MR_SKIP,
+        force=force,
+        label="시장조사업로드",
+    )
 
 
 def resolve_drive_worklog_archive_dir(year: Optional[int] = None) -> Optional[str]:

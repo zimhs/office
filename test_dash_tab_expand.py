@@ -87,8 +87,21 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("dashboard-tab-scroll-next", src)
         self.assertIn("aria-label', '이전 탭'", src)
         self.assertIn("function sizeMainTabScrollWrap", src)
-        self.assertIn("_sticky_py_ver = 91", src)
-        self.assertIn("_STICKY_INJECT_VER = 92", src)
+        self.assertIn("_sticky_py_ver = 100", src)
+        self.assertIn("_STICKY_INJECT_VER = 100", src)
+        self.assertIn("function ensureSidebarToggleLive", src)
+        self.assertNotIn(
+            "html:not(.dashboard-touch-mode) [data-testid=\"collapsedControl\"],\n"
+            "            html:not(.dashboard-touch-mode) [data-testid=\"stSidebarCollapsedControl\"] {\n"
+            "                display: flex !important;",
+            src,
+        )
+        self.assertIn("tid === 'stTabsScrollLeft'", src)
+        self.assertIn("function removeStickyTabScrollWraps", src)
+        self.assertIn("function wireHostTabScrollArrows", src)
+        self.assertIn(".dashboard-filter-sticky .dashboard-tab-scroll-btn", src)
+        self.assertIn("[data-testid=\"stTabsScrollLeft\"]", src)
+        self.assertNotIn("if (prev) prev.disabled = list.scrollLeft <= 2;", src)
         self.assertIn("z-index: 999980 !important", src)
         self.assertNotIn("z-index: 999999 !important", src)
         self.assertIn("Safari 주소창 접힘", src)

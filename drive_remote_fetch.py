@@ -18,6 +18,7 @@ from drive_autoload import (
     DEBT_CACHE_REL,
     DRIVE_COPY_NAME,
     _CACHE_MAP,
+    _MR_UPLOAD_DRIVE,
     _SALES_NAME_RE,
     _SKIP_ANNUAL_IF_MONTHLY,
     _atomic_copy,
@@ -406,6 +407,32 @@ def sync_drive_copy_from_remote(
         else:
             for wf in wl_files:
                 wname = str(wf.get("name") or "")
+                mime = str(wf.get("mimeType") or "")
+                if mime.endswith("folder") and wname == "일지":
+                    year_files, yerr = _list_children(str(wf.get("id")))
+                    if yerr:
+                        copied.append(f"worklog_err:{yerr}")
+                        continue
+                    for yf in year_files:
+                        yname = str(yf.get("name") or "")
+                        if not str(yf.get("mimeType") or "").endswith("folder"):
+                            continue
+                        month_files, merr = _list_children(str(yf.get("id")))
+                        if merr:
+                            continue
+                        ydir = os.path.join(wl_dir, "일지", yname)
+                        os.makedirs(ydir, exist_ok=True)
+                        for mf in month_files:
+                            mname = str(mf.get("name") or "")
+                            if not mname.endswith(".xlsx"):
+                                continue
+                            mdst = os.path.join(ydir, mname)
+                            if not _remote_differs_from_cache(mf, mdst, force_refresh=force_refresh):
+                                continue
+                            raw, _ = _drive_download(str(mf.get("id")))
+                            if raw and _write_bytes(mdst, raw):
+                                copied.append(f"worklog/일지/{yname}/{mname}")
+                    continue
                 if not _WORKLOG_DAY_RE.match(wname) and wname != "template.xlsx":
                     continue
                 wdst = os.path.join(wl_dir, wname)
@@ -414,6 +441,25 @@ def sync_drive_copy_from_remote(
                 raw, _ = _drive_download(str(wf.get("id")))
                 if raw and _write_bytes(wdst, raw):
                     copied.append(f"worklog/{wname}")
+
+    mr_meta = by_name.get(_MR_UPLOAD_DRIVE)
+    if mr_meta and str(mr_meta.get("mimeType") or "").endswith("folder"):
+        mr_dir = os.path.join(cache_dir, "market_research", "uploads")
+        os.makedirs(mr_dir, exist_ok=True)
+        mr_files, mr_err = _list_children(str(mr_meta.get("id")))
+        if not mr_err:
+            for mf in mr_files:
+                mname = str(mf.get("name") or "")
+                if not mname or str(mf.get("mimeType") or "").endswith("folder"):
+                    continue
+                if mname.endswith(".pkl") or mname.endswith(".sig"):
+                    continue
+                mdst = os.path.join(mr_dir, mname)
+                if not _remote_differs_from_cache(mf, mdst, force_refresh=force_refresh):
+                    continue
+                raw, _ = _drive_download(str(mf.get("id")))
+                if raw and _write_bytes(mdst, raw):
+                    copied.append(f"시장조사업로드/{mname}")
 
     return {
         "ok": True,

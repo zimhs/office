@@ -85,6 +85,19 @@ class Tab2ExtraSitesTest(unittest.TestCase):
         self.assertNotIn("with tab5:", tab6)
         self.assertNotIn("with tab7:", tab6)
 
+    def test_drive_sync_lists_include_extra_sites(self):
+        from cache_remote_sync import _STATIC_REL
+        from drive_autoload import _CACHE_MAP
+
+        self.assertIn(("추가사업장.json", "client_extra_sites.json", None), _CACHE_MAP)
+        self.assertIn(("메일연락처.csv", "price_increase/mail_contacts.csv", None), _CACHE_MAP)
+        self.assertIn(("방문할일.json", "visit_calendar/store.json", None), _CACHE_MAP)
+        self.assertIn(("시장조사_직접입력.json", "market_research/manual_entries.json", None), _CACHE_MAP)
+        self.assertIn("client_extra_sites.json", _STATIC_REL)
+        self.assertIn("price_increase/mail_contacts.csv", _STATIC_REL)
+        self.assertIn("visit_calendar/store.json", _STATIC_REL)
+        self.assertIn("market_research/manual_entries.json", _STATIC_REL)
+
 
 if __name__ == "__main__":
     unittest.main()

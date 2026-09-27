@@ -1,6 +1,7 @@
 """업무일지 비고란(Y~AB) — 원본 한 줄 글자수·읽기/쓰기."""
 from __future__ import annotations
 
+import os
 import unittest
 from datetime import date
 from unittest import mock
@@ -16,7 +17,14 @@ class WorklogRemarkColumnTest(unittest.TestCase):
         self.assertEqual(self.wt._remark_line_units(), 16)
         self.assertEqual(self.wt._hangul_line_limit(self.wt._remark_line_units()), 8)
         self.assertEqual(self.wt._hangul_line_limit(self.wt._client_line_units()), 8)
-        self.assertEqual(self.wt._hangul_line_limit(self.wt._content_line_units()), 37)
+        n = self.wt._hangul_line_limit(self.wt._content_line_units())
+        self.assertEqual(n, 35)
+        self.assertEqual(self.wt._WL_CONTENT_HANGUL, 35)
+        em = self.wt._preview_em_px()
+        inner = self.wt._preview_cell_inner_px("content")
+        self.assertLessEqual(35 * em, inner + 1e-6)
+        self.assertGreater(36 * em, inner)
+        self.assertLessEqual(8 * 18, self.wt._orig_cell_px("client"))
         label = self.wt._wl_col_limit_label("비고", self.wt._remark_line_units())
         self.assertIn("비고", label)
         self.assertIn("원본 한글 8자", label)
@@ -75,12 +83,18 @@ class WorklogRemarkColumnTest(unittest.TestCase):
         self.assertLessEqual(self.wt._display_units(chunks[0]), self.wt._remark_line_units())
 
     def test_spaces_follow_original_cell_width(self):
-        self.assertAlmostEqual(self.wt._char_units(" "), 0.58)
+        self.assertAlmostEqual(self.wt._char_units(" "), 1.0)
         self.assertEqual(self.wt._char_units("가"), 2)
         self.assertEqual(self.wt._orig_cell_px("content"), 666)
         self.assertAlmostEqual(self.wt._look_font_pt(), 14.0 * self.wt._WL_INPUT_LOOK_SCALE)
+        self.assertAlmostEqual(self.wt._look_font_pt("content"), 14.0 * self.wt._WL_INPUT_LOOK_SCALE)
+        self.assertAlmostEqual(self.wt._input_look_scale("content"), self.wt._WL_INPUT_LOOK_SCALE)
         self.assertGreater(self.wt._WL_INPUT_LOOK_SCALE, self.wt._WL_PREVIEW_SCALE)
-        self.assertEqual(self.wt._input_cell_px("content"), int(round(666 * self.wt._WL_INPUT_LOOK_SCALE)))
+        self.assertEqual(
+            self.wt._input_cell_px("content"),
+            int(round(int(self.wt._orig_cell_px("content")) * self.wt._WL_INPUT_LOOK_SCALE))
+            + int(self.wt._WL_INPUT_CONTENT_CHROME_PX),
+        )
         self.assertEqual(self.wt._orig_cell_px("client"), 148)
         self.assertEqual(self.wt._orig_cell_px("remark"), self.wt._orig_cell_px("client"))
         self.assertEqual(self.wt._input_cell_px("client"), self.wt._input_cell_px("remark"))
@@ -95,15 +109,18 @@ class WorklogRemarkColumnTest(unittest.TestCase):
         self.assertEqual(len(self.wt._chunk_text(eight, self.wt._remark_line_units())), 1)
         self.assertGreaterEqual(len(self.wt._chunk_text(nine, self.wt._remark_line_units())), 2)
         max_u = self.wt._content_line_units()
-        hangul_ok = "가" * 37
-        hangul_over = "가" * 38
+        n = self.wt._hangul_line_limit(max_u)
+        hangul_ok = "가" * n
+        hangul_over = "가" * (n + 1)
         self.assertLessEqual(self.wt._display_units(hangul_ok), max_u)
         self.assertGreater(self.wt._display_units(hangul_over), max_u)
         self.assertEqual(len(self.wt._chunk_text(hangul_ok, max_u)), 1)
         self.assertGreaterEqual(len(self.wt._chunk_text(hangul_over, max_u)), 2)
-        # 띄어쓰기는 한글보다 좁아 원본 칸 끝까지 더 쓴 뒤에 다음 칸으로 간다.
-        pairs_fit = "가 " * 28
-        pairs_over = "가 " * 29
+        # 띄어쓰기+한글이 미리보기 칸을 채우면 다음 칸.
+        pair_u = self.wt._char_units("가") + self.wt._char_units(" ")
+        pairs_n = int(max_u // pair_u)
+        pairs_fit = "가 " * pairs_n
+        pairs_over = ("가 " * pairs_n) + "가가"
         self.assertLessEqual(self.wt._display_units(pairs_fit), max_u)
         self.assertGreater(self.wt._display_units(pairs_over), max_u)
         self.assertEqual(len(self.wt._chunk_text(pairs_fit, max_u)), 1)
@@ -111,15 +128,22 @@ class WorklogRemarkColumnTest(unittest.TestCase):
 
     def test_mid_start_counts_space_like_preview(self):
         max_u = self.wt._content_line_units()
+        n = self.wt._hangul_line_limit(max_u)
         indent = " " * 12
-        over = indent + ("가" * 37)
-        self.assertGreater(self.wt._display_units(over), self.wt._display_units("가" * 37))
+        over = indent + ("가" * n)
+        self.assertGreater(self.wt._display_units(over), self.wt._display_units("가" * n))
         self.assertGreater(self.wt._display_units(over), max_u)
         head, tail = self.wt._fit_by_units(over, max_u)
         self.assertLessEqual(self.wt._display_units(head), max_u)
+        self.assertTrue(head.startswith(" "))
         self.assertTrue(tail.startswith("가"))
         self.assertFalse(tail.startswith(" "))
         self.assertGreaterEqual(len(self.wt._chunk_text(over, max_u)), 2)
+        # 중간부터: 앞 공백+한글이 미리보기 칸을 채우면 다음 칸.
+        remain = max_u - self.wt._display_units(indent)
+        fit_n = int(remain // 2)
+        self.assertEqual(len(self.wt._chunk_text(indent + ("가" * fit_n), max_u)), 1)
+        self.assertGreaterEqual(len(self.wt._chunk_text(indent + ("가" * (fit_n + 1)), max_u)), 2)
 
     def test_ui_shows_original_limits(self):
         with open(self.wt.__file__, encoding="utf-8") as f:
@@ -131,6 +155,10 @@ class WorklogRemarkColumnTest(unittest.TestCase):
         self.assertNotIn("제미나이", src)
         self.assertNotIn("worklog_google_ai_search", src)
         self.assertNotIn("_mount_google_ai_search", src)
+        self.assertNotIn("_render_worklog_ai_review_block", src)
+        self.assertNotIn("_wl_ai_call_google", src)
+        self.assertNotIn("문구 수정", src)
+        self.assertNotIn("전문적이고 간결하게", src)
         self.assertIn('st.text_area("익일업무"', src)
         self.assertIn('st.text_area("특이사항"', src)
         self.assertIn("fixed_rows", src)

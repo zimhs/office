@@ -31,6 +31,7 @@ _STATIC_REL = (
     "address.csv",
     "industry.csv",
     "debt.csv",
+    "client_extra_sites.json",
     "tank_cache.dat",
     "tank_cache.dat_name.txt",
     "vaporizer_cache.dat",
@@ -38,6 +39,8 @@ _STATIC_REL = (
     "integrated_cache.dat",
     "integrated_cache.dat_name.txt",
     "price_increase/mail_contacts.csv",
+    "visit_calendar/store.json",
+    "market_research/manual_entries.json",
 )
 
 

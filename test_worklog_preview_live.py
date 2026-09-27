@@ -136,6 +136,42 @@ class WorklogPreviewLiveTest(unittest.TestCase):
         finally:
             os.unlink(tmp.name)
 
+    def test_preview_font_matches_excel_batang(self):
+        """인쇄·미리보기 글씨 = 엑셀 바탕체 14pt 보통. 나눔명조를 앞에 두지 않는다."""
+        stack = self.wt._WL_FONT_STACK
+        self.assertIn("BatangChe", stack)
+        self.assertIn("바탕체", stack)
+        self.assertLess(stack.index("BatangChe"), stack.index("Nanum"))
+        self.assertIn("WLExcelBatang", self.wt._WL_FONT_FACE_CSS)
+        self.assertIn("local('BatangChe')", self.wt._WL_FONT_FACE_CSS)
+        self.assertIn("font-weight:400", self.wt._WL_FONT_FACE_CSS)
+        self.assertIn("font-synthesis:none", self.wt._WL_FONT_RENDER_CSS)
+        tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+        tmp.close()
+        try:
+            from openpyxl.styles import Font
+
+            wb = Workbook()
+            ws = wb.active
+            ws["G8"] = "상세하러간다"
+            ws["G8"].font = Font(name="바탕체", size=14, bold=False)
+            wb.save(tmp.name)
+            wb.close()
+            html = self.wt.workbook_to_html(tmp.name, include_logo=False)
+            self.assertIn("font-size:14.0pt", html)
+            self.assertIn("font-weight:400", html)
+            self.assertIn("BatangChe", html)
+            self.assertIn("font-synthesis:none", html)
+            host = self.wt._excel_preview_host_html(tmp.name, scale=0.65)
+            self.assertIn("WLExcelBatang", host)
+            self.assertIn("font-synthesis:none", host)
+            printed = self.wt.render_worklog_view_html(tmp.name, print_mode=True, scale=1.0)
+            self.assertIn("WLExcelBatang", printed)
+            self.assertIn("font-weight:400", printed)
+            self.assertIn("font-synthesis:none", printed)
+        finally:
+            os.unlink(tmp.name)
+
 
 if __name__ == "__main__":
     unittest.main()
