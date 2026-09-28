@@ -136,6 +136,52 @@ def _vc_is_darwin_local() -> bool:
     return True
 
 
+def _vc_use_mcal_date_input() -> bool:
+    """맥 로컬·Cloud 데스크톱은 date_input. 아이패드 date_input은 끝나지 않는다."""
+    if _vc_is_darwin_local():
+        return True
+    return _vc_is_streamlit_cloud() and not _vc_is_touch_ui()
+
+
+def _vc_use_ipad_layout() -> bool:
+    """아이패드 전폭 레이아웃. Cloud에는 쓰지 않는다 — 로컬과 같은 2열."""
+    if _vc_is_streamlit_cloud():
+        return False
+    return _vc_is_touch_ui()
+
+
+def _vc_drop_touch_media(css: str) -> str:
+    """Cloud·맥 데스크톱에는 아이패드 @media를 넣지 않는다."""
+    if _vc_use_ipad_layout():
+        return css
+    out: list[str] = []
+    i = 0
+    needle = "@media (hover: none) and (pointer: coarse)"
+    while True:
+        j = css.find(needle, i)
+        if j < 0:
+            out.append(css[i:])
+            break
+        out.append(css[i:j])
+        brace = css.find("{", j)
+        if brace < 0:
+            break
+        depth = 0
+        k = brace
+        while k < len(css):
+            ch = css[k]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    k += 1
+                    break
+            k += 1
+        i = k
+    return "".join(out)
+
+
 _VC_STRIP = None
 _VC_STRIP_READY = False
 
@@ -1002,7 +1048,7 @@ def delivery_chips(month: date, deliveries: list[dict] | None = None) -> dict[st
 
 
 def _vc_css() -> str:
-    return """
+    return _vc_drop_touch_media("""
     <style>
     .vc-toolbar {
       display: flex; align-items: center; gap: 10px;
@@ -1296,7 +1342,7 @@ def _vc_css() -> str:
       div[class*="st-key-vc_mcal_box"] .stHorizontalBlock { gap: 4px !important; margin: 0 4px 4px !important; }
     }
     </style>
-    """
+    """)
 
 
 def _shift_month(d: date, delta: int) -> date:
@@ -1401,7 +1447,7 @@ def _vc_date_field(label: str, *, key: str, default: date):
     coerced = _as_date(raw)
     if coerced is not None and raw != coerced:
         st.session_state[key] = coerced
-    if _vc_is_mac_local():
+    if _vc_use_mcal_date_input():
         return st.date_input(label, format="YYYY/MM/DD", key=key)
     base = coerced or default
     opts = [base + timedelta(days=i) for i in range(-14, 61)]
@@ -1454,7 +1500,7 @@ def _on_jump_today() -> None:
 
 def _sync_selected_from_mcal_widget() -> None:
     """스케줄 날짜 위젯 → 선택일. 위젯 키는 여기서 쓰지 않는다(재실행 루프 방지)."""
-    if _vc_is_mac_local():
+    if _vc_use_mcal_date_input():
         d = _as_date(st.session_state.get("vc_mcal_date"))
     else:
         raw = st.session_state.get("vc_mcal_iso")
@@ -1719,7 +1765,7 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
                 st.caption("담당자와 거래처를 고르면 지정 납품 목록이 여기에 표시됩니다.")
             _render_visit_log(store, stf, cli)
 
-        if not _vc_is_touch_ui():
+        if not _vc_use_ipad_layout():
             left, right = st.columns([1, 1], gap="medium")
             with left:
                 _vc_delivery_col()
@@ -2081,7 +2127,7 @@ def _render_month_col(
 
 def _mcal_grid_css() -> str:
     """달력 fragment 안에 넣는다. 탭 바깥 CSS는 새로고침 전엔 안 바뀐다."""
-    return """
+    return _vc_drop_touch_media("""
     <style>
     /* vc-grid-stColumn-v3 */
     div[class*="st-key-vc_mcal_box"] .stHorizontalBlock { gap: 6px !important; margin: 0 6px 6px !important; }
@@ -2211,7 +2257,7 @@ def _mcal_grid_css() -> str:
       .vc-strip-html .vc-strip-wd span, .vc-strip-html .vc-strip-nm span { flex: 0 0 2.2rem; min-width: 2.2rem; }
     }
     </style>
-    """
+    """)
 
 
 def _mcal_chips_html(marks: list[dict]) -> str:
@@ -2366,12 +2412,12 @@ def _render_month_cal(
             st.session_state["vc_mcal_date"] = coerced
         elif "vc_mcal_date" not in st.session_state:
             st.session_state["vc_mcal_date"] = selected
-        if _vc_is_mac_local():
+        if _vc_use_mcal_date_input():
             st.markdown(
                 _mcal_head_html()
                 + _mcal_month_html(
                     month, selected, today, weeks, cells,
-                    pick_href=not _vc_is_streamlit_cloud(),
+                    pick_href=_vc_is_darwin_local(),
                 ),
                 unsafe_allow_html=True,
             )
@@ -2390,24 +2436,6 @@ def _render_month_cal(
                     month, selected, today, weeks, cells, pick_href=False
                 ),
                 unsafe_allow_html=True,
-            )
-            last = calendar.monthrange(month.year, month.month)[1]
-            month_isos = [
-                date(month.year, month.month, n).isoformat()
-                for n in range(1, last + 1)
-            ]
-            iso0 = (
-                selected.isoformat()
-                if (selected.year, selected.month) == (month.year, month.month)
-                else date(month.year, month.month, min(selected.day, last)).isoformat()
-            )
-            if st.session_state.get("vc_mcal_iso") not in month_isos:
-                st.session_state["vc_mcal_iso"] = iso0
-            st.selectbox(
-                "스케줄 날짜",
-                options=month_isos,
-                format_func=lambda iso: f"{int(iso[8:10])}일",
-                key="vc_mcal_iso",
             )
 
 
