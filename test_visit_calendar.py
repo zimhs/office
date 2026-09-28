@@ -493,6 +493,8 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("_VC_SUN_BG", src)
         self.assertIn("def _strip_tag", src)
         self.assertIn("def _render_day_strip", src)
+        self.assertIn("def _vc_use_day_strip_component", src)
+        self.assertIn("_vc_use_day_strip_component()", src)
         self.assertIn("visit_day_strip_v1", src)
         self.assertIn('setStateValue("iso"', src)
         self.assertIn("on_iso_change=_on_strip_iso_change", src)
@@ -560,6 +562,8 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("render_visit_calendar_tab", tab13)
         self.assertNotIn("_dash_defer_heavy_stub", tab13)
         self.assertIn("시작부터 펼침", tab13)
+        self.assertIn("if not is_touch_ui() and not _is_streamlit_cloud()", tab13)
+        self.assertIn("v2 재등록으로 방문탭이 안 끝난다", tab13)
         mount = app[app.index("def _dash_should_defer_heavy_tab") : app.index("def _dash_defer_heavy_stub")]
         self.assertNotIn("_DASH_TAB_VISIT", mount)
         body = src[src.index("def _render_visit_body") : src.index("def _render_day_strip")]

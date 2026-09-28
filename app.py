@@ -18602,14 +18602,16 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.session_state.pop(f"_dash_force_tab_{_DASH_TAB_VISIT}", None)
                 import visit_calendar_tab as _vc_tab
 
-                _vc_path = getattr(_vc_tab, "__file__", None) or ""
-                _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
-                if "_vc_mod_mtime" not in st.session_state:
-                    st.session_state["_vc_mod_mtime"] = _vc_mtime
-                elif st.session_state.get("_vc_mod_mtime") != _vc_mtime:
-                    _vc_tab = importlib.reload(_vc_tab)
-                    st.session_state["_vc_mod_mtime"] = _vc_mtime
-                    sys.modules["visit_calendar_tab"] = _vc_tab
+                # 맥 로컬만 모듈 reload. Cloud·아이패드는 v2 재등록으로 방문탭이 안 끝난다.
+                if not is_touch_ui() and not _is_streamlit_cloud():
+                    _vc_path = getattr(_vc_tab, "__file__", None) or ""
+                    _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
+                    if "_vc_mod_mtime" not in st.session_state:
+                        st.session_state["_vc_mod_mtime"] = _vc_mtime
+                    elif st.session_state.get("_vc_mod_mtime") != _vc_mtime:
+                        _vc_tab = importlib.reload(_vc_tab)
+                        st.session_state["_vc_mod_mtime"] = _vc_mtime
+                        sys.modules["visit_calendar_tab"] = _vc_tab
                 _vc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
                 _vc_tab.render_visit_calendar_tab(_vc_df, latest_update_str=latest_update_str)
             except ModuleNotFoundError:

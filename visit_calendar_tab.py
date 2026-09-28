@@ -61,6 +61,35 @@ def _vc_is_touch_ui() -> bool:
     return bool(st.session_state.get("force_touch_ui"))
 
 
+def _vc_is_streamlit_cloud() -> bool:
+    """Cloud만 True. 로컬 맥은 False."""
+    try:
+        if (os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT") or "").strip().lower() == "cloud":
+            return True
+    except Exception:
+        pass
+    try:
+        if os.path.isdir("/mount/src"):
+            return True
+    except Exception:
+        pass
+    try:
+        if (os.environ.get("HOME") or "").rstrip("/") == "/home/adminuser":
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _vc_use_day_strip_component() -> bool:
+    """맥 로컬만 납품줄 v2. Cloud·아이패드는 iframe이 Safari에서 끝나지 않는다."""
+    if _VC_STRIP is None:
+        return False
+    if _vc_is_touch_ui() or _vc_is_streamlit_cloud():
+        return False
+    return True
+
+
 def _s(v) -> str:
     if v is None:
         return ""
@@ -1394,6 +1423,8 @@ def _vc_rerun() -> None:
     try:
         st.rerun(scope="fragment")
     except Exception:
+        if _vc_is_touch_ui() or _vc_is_streamlit_cloud():
+            return
         st.rerun()
 
 
@@ -1422,9 +1453,8 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         st.session_state["vc_staff"] = st.session_state.get("_vc_staff") or default_staff
     if "vc_client" not in st.session_state:
         prev = _s(st.session_state.get("_vc_client"))
-        st.session_state["vc_client"] = prev or None
-    elif st.session_state.get("vc_client") == "":
-        st.session_state["vc_client"] = None
+        if prev:
+            st.session_state["vc_client"] = prev
 
     month = st.session_state.get("_vc_month") or date(today.year, today.month, 1)
     st.markdown(_vc_css(), unsafe_allow_html=True)
@@ -1753,7 +1783,7 @@ def _on_strip_iso_change() -> None:
 def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]], today: date) -> None:
     """이번 달 1일~말일을 가로로 한 줄에 요일·벌크·실린더와 함께 보여 고른다."""
     days = _strip_days_payload(month, chips, selected, today)
-    if _VC_STRIP is not None:
+    if _vc_use_day_strip_component():
         _VC_STRIP(
             key="vc_strip_host",
             data={"days": days, "selected": selected.isoformat(), "today": today.isoformat()},
