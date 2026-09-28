@@ -186,6 +186,48 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn('placeholder="품목명 입력"', filt)
         self.assertGreaterEqual(filt.count("index=None"), 3)
         self.assertNotIn("accept_new_options=True", filt)
+        self.assertIn("def _dash_header_lite_select", src)
+        self.assertIn("def _dash_keep_header_option", src)
+        self.assertIn("_dash_header_lite_select(is_touch_ui()", filt)
+        self.assertIn("아이패드 로그인·첫 헤더", filt)
+        self.assertIn("_dash_filter_select_injected", src)
+        self.assertIn("_dash_sticky_just_injected", src)
+        self.assertIn("force=not is_touch_ui()", src)
+        inj = src.split("def _dash_inject_filter_select_script_for_run")[1].split(
+            "def _dash_inject_sticky_resync_script", 1
+        )[0]
+        self.assertIn("세션 1회만", inj)
+        self.assertIn("is_touch_ui()", inj)
+
+
+class HeaderLiteSelectTest(unittest.TestCase):
+    def _load(self):
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        start = src.find("def _dash_norm_filter_input")
+        keep = src.find("def _dash_keep_header_option")
+        lite = src.find("def _dash_header_lite_select")
+        end_keep = src.find("\ndef ", keep + 1)
+        end_lite = src.find("\ndef ", lite + 1)
+        end_norm = src.find("\ndef ", start + 1)
+        ns = {}
+        exec(src[start:end_norm], ns)
+        exec(src[lite:end_lite], ns)
+        exec(src[keep:end_keep], ns)
+        return ns
+
+    def test_ipad_without_staff_is_lite_mac_is_not(self):
+        ns = self._load()
+        self.assertTrue(ns["_dash_header_lite_select"](True, False))
+        self.assertFalse(ns["_dash_header_lite_select"](True, True))
+        self.assertFalse(ns["_dash_header_lite_select"](False, False))
+        self.assertFalse(ns["_dash_header_lite_select"](False, True))
+
+    def test_keep_option_drops_all_label(self):
+        ns = self._load()
+        self.assertEqual(ns["_dash_keep_header_option"]("한신테크", "전체 거래처"), ["한신테크"])
+        self.assertEqual(ns["_dash_keep_header_option"]("전체 거래처", "전체 거래처"), [])
+        self.assertEqual(ns["_dash_keep_header_option"](None, "전체 거래처"), [])
 
 
 class WorklogDraftSurviveFilterTest(unittest.TestCase):

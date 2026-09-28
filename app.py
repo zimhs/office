@@ -5874,11 +5874,33 @@ def list_filter_client_options(df):
     """상단 거래처 목록: 분리된 종속명 + 부모명(전부 종속 분리돼도 부모 유지)."""
     if df is None or df.empty or "거래처" not in df.columns:
         return []
-    names = set(df["거래처"].dropna().astype(str).str.strip().unique())
+
+    def _uniq(col) -> set[str]:
+        if col is None:
+            return set()
+        raw = col.dropna()
+        if raw.empty:
+            return set()
+        vals = raw.unique()
+        out = {str(x).strip() for x in vals}
+        out.discard("")
+        return out
+
+    names = _uniq(df["거래처"])
     if "거래처_원본" in df.columns:
-        names |= set(df["거래처_원본"].dropna().astype(str).str.strip().unique())
-    names.discard("")
+        names |= _uniq(df["거래처_원본"])
     return sorted(names)
+
+
+def _dash_header_lite_select(touch: bool, has_staff: bool) -> bool:
+    """아이패드·담당자 없음: 헤더 셀렉트에 전 거래처·품목을 넣지 않는다. 맥은 False."""
+    return bool(touch) and not bool(has_staff)
+
+
+def _dash_keep_header_option(raw, all_label: str) -> list[str]:
+    """이미 고른 값만 셀렉트에 남긴다. 전체 라벨은 넣지 않는다."""
+    s = _dash_norm_filter_input(raw, all_label)
+    return [s] if s else []
 
 
 def _dash_series_eq(series, value):
@@ -6855,8 +6877,16 @@ def _dash_inject_filter_select_script() -> None:
 
 
 def _dash_inject_filter_select_script_for_run() -> None:
-    """필터 select JS — 로컬·Cloud 공통: fragment rerun마다 주입 (DOM 교체 대응)."""
+    """필터 select JS.
+
+    맥: fragment rerun마다 주입(기존).
+    아이패드: parent 위임·interval이 남으므로 세션 1회만 — iframe이 헤더 로딩을 키움.
+    """
+    if is_touch_ui() and st.session_state.get("_dash_filter_select_injected"):
+        return
     _dash_inject_filter_select_script()
+    if is_touch_ui():
+        st.session_state["_dash_filter_select_injected"] = True
 
 
 def _dash_inject_sticky_resync_script(*, force: bool = False) -> None:
@@ -14792,10 +14822,23 @@ def _dash_filter_and_tabs_fragment() -> None:
                     else df_base_opts
                 )
             df_staff_for_opts = st.session_state.get("_dash_staff_slice_df", df_base_opts)
-            _client_opts_sig = (start_date, end_date, tuple(selected_staff or ()), int(len(df_staff_for_opts)))
+            _header_lite = _dash_header_lite_select(is_touch_ui(), bool(selected_staff))
+            _client_opts_sig = (
+                start_date,
+                end_date,
+                tuple(selected_staff or ()),
+                int(len(df_staff_for_opts)),
+                "lite" if _header_lite else "full",
+            )
             if st.session_state.get("_dash_client_opts_sig") != _client_opts_sig:
                 st.session_state["_dash_client_opts_sig"] = _client_opts_sig
-                if df_staff_for_opts.empty:
+                if _header_lite:
+                    # 아이패드 로그인·첫 헤더: 전 거래처 unique를 셀렉트에 넣지 않는다.
+                    _client_opts = _dash_keep_header_option(
+                        st.session_state.get(_DASH_FILTER_CLIENT_KEY),
+                        _DASH_FILTER_ALL_CLIENT,
+                    )
+                elif df_staff_for_opts.empty:
                     _client_opts = []
                 else:
                     _client_opts = list_filter_client_options(df_staff_for_opts)
@@ -14835,7 +14878,14 @@ def _dash_filter_and_tabs_fragment() -> None:
             _item_opts_sig = (_client_opts_sig, selected_client, int(len(df_client_for_opts)))
             if st.session_state.get("_dash_item_opts_sig") != _item_opts_sig:
                 st.session_state["_dash_item_opts_sig"] = _item_opts_sig
-                if df_client_for_opts.empty or "품목명" not in df_client_for_opts.columns:
+                if _header_lite:
+                    st.session_state["_dash_item_opts_tuple"] = tuple(
+                        _dash_keep_header_option(
+                            st.session_state.get(_DASH_FILTER_ITEM_KEY),
+                            _DASH_FILTER_ALL_ITEM,
+                        )
+                    )
+                elif df_client_for_opts.empty or "품목명" not in df_client_for_opts.columns:
                     st.session_state["_dash_item_opts_tuple"] = ()
                 else:
                     st.session_state["_dash_item_opts_tuple"] = tuple(
@@ -15119,6 +15169,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
         st.session_state["_ipad_sticky_ver"] = 47
+        st.session_state["_dash_sticky_just_injected"] = True
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=13, heavy_indices=(9, 10, 11, 12)
@@ -18596,22 +18647,35 @@ def _dash_filter_and_tabs_fragment() -> None:
 
         with tab13:
             try:
-                # 시작부터 펼침. 매출·일지 전체 스캔은 거래처를 고른 뒤에만 한다.
+                # 로그인·다른 탭에서는 달력·할일 위젯을 만들지 않는다.
+                # 탭을 누르면 cookie 스크립트가 「화면 불러오기」를 눌러 그때 그린다.
                 _vc_mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
-                _vc_mounted[_DASH_TAB_VISIT] = True
-                st.session_state.pop(f"_dash_force_tab_{_DASH_TAB_VISIT}", None)
-                import visit_calendar_tab as _vc_tab
+                _vc_force = bool(st.session_state.pop(f"_dash_force_tab_{_DASH_TAB_VISIT}", False))
+                _vc_active = _dash_active_tab_idx()
+                if _vc_active is not None and _vc_active != _DASH_TAB_VISIT:
+                    _vc_mounted[_DASH_TAB_VISIT] = False
+                _vc_on = _vc_active == _DASH_TAB_VISIT
+                if not (_vc_force or _vc_on or _vc_mounted.get(_DASH_TAB_VISIT)):
+                    _dash_defer_heavy_stub(
+                        "📅 방문·할일",
+                        _DASH_TAB_VISIT,
+                        "_dash_bak_visit",
+                        _DASH_VC_STATE_PREFIXES,
+                    )
+                else:
+                    _vc_mounted[_DASH_TAB_VISIT] = True
+                    import visit_calendar_tab as _vc_tab
 
-                _vc_path = getattr(_vc_tab, "__file__", None) or ""
-                _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
-                if "_vc_mod_mtime" not in st.session_state:
-                    st.session_state["_vc_mod_mtime"] = _vc_mtime
-                elif st.session_state.get("_vc_mod_mtime") != _vc_mtime:
-                    _vc_tab = importlib.reload(_vc_tab)
-                    st.session_state["_vc_mod_mtime"] = _vc_mtime
-                    sys.modules["visit_calendar_tab"] = _vc_tab
-                _vc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
-                _vc_tab.render_visit_calendar_tab(_vc_df, latest_update_str=latest_update_str)
+                    _vc_path = getattr(_vc_tab, "__file__", None) or ""
+                    _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
+                    if "_vc_mod_mtime" not in st.session_state:
+                        st.session_state["_vc_mod_mtime"] = _vc_mtime
+                    elif st.session_state.get("_vc_mod_mtime") != _vc_mtime:
+                        _vc_tab = importlib.reload(_vc_tab)
+                        st.session_state["_vc_mod_mtime"] = _vc_mtime
+                        sys.modules["visit_calendar_tab"] = _vc_tab
+                    _vc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                    _vc_tab.render_visit_calendar_tab(_vc_df, latest_update_str=latest_update_str)
             except ModuleNotFoundError:
                 st.error(
                     "방문·할일 모듈(`visit_calendar_tab.py`)을 찾을 수 없습니다. "
@@ -18623,8 +18687,12 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.info("다른 탭은 정상 이용 가능합니다.")
 
     _dash_inject_filter_select_script_for_run()
-    # 로컬·Cloud 공통: fragment/탭 전환·heavy 로드 후 고정바 1회 재동기화
-    _dash_inject_sticky_resync_script(force=True)
+    # 맥: 매 run force 재동기화(기존). 아이패드: sticky를 방금 심었으면
+    # iframe을 하나 더 만들지 않는다. boot interval이 탭을 고정바에 붙인다.
+    if is_touch_ui() and st.session_state.pop("_dash_sticky_just_injected", False):
+        pass
+    else:
+        _dash_inject_sticky_resync_script(force=not is_touch_ui())
 
 
 _dash_filter_and_tabs_fragment()

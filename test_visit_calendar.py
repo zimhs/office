@@ -433,10 +433,12 @@ class VisitCalendarTest(unittest.TestCase):
         ss = _SS()
         ss["vc_day_2026-09-17"] = True
         ss["vc_strip_host"] = {"iso": "2026-09-17"}
+        ss["vc_mcal_host"] = {"iso": "2026-09-17"}
         ss["_vc_selected"] = date(2026, 9, 17)
         ss["_dash_bak_visit"] = {
             "vc_day_2026-09-17": True,
             "vc_strip_host": {"iso": "2026-09-17"},
+            "vc_mcal_host": {"iso": "2026-09-17"},
             "_vc_selected": date(2026, 9, 17),
         }
         with patch.object(self.vc.st, "session_state", ss):
@@ -445,6 +447,8 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertNotIn("vc_day_2026-09-17", ss["_dash_bak_visit"])
         self.assertIn("vc_strip_host", ss)
         self.assertIn("vc_strip_host", ss["_dash_bak_visit"])
+        self.assertIn("vc_mcal_host", ss)
+        self.assertIn("vc_mcal_host", ss["_dash_bak_visit"])
         self.assertEqual(ss["_vc_selected"], date(2026, 9, 17))
 
     def test_cached_history_skips_second_merge(self):
@@ -558,8 +562,10 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn('_DASH_VC_STATE_PREFIXES = ("_vc_",)', app)
         tab13 = app[app.index("with tab13:") : app.index("방문·할일 탭 오류")]
         self.assertIn("render_visit_calendar_tab", tab13)
-        self.assertNotIn("_dash_defer_heavy_stub", tab13)
-        self.assertIn("시작부터 펼침", tab13)
+        self.assertIn("_dash_defer_heavy_stub", tab13)
+        self.assertIn("로그인·다른 탭에서는 달력·할일 위젯을 만들지 않는다", tab13)
+        self.assertIn("_dash_active_tab_idx()", tab13)
+        self.assertNotIn("시작부터 펼침", tab13)
         mount = app[app.index("def _dash_should_defer_heavy_tab") : app.index("def _dash_defer_heavy_stub")]
         self.assertNotIn("_DASH_TAB_VISIT", mount)
         body = src[src.index("def _render_visit_body") : src.index("def _render_day_strip")]
@@ -602,6 +608,14 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("max-width: 850px", src)
         self.assertIn("min-width: 851px", src)
         self.assertIn("월간 달력을 전폭으로", block)
+        self.assertIn("include_sales=False", block)
+        self.assertIn("visit_month_cal_v1", src)
+        self.assertIn("def _mcal_touch_weeks", src)
+        self.assertIn("on_iso_change=_on_mcal_iso_change", src)
+        self.assertIn("_VC_TODO_TOUCH_PAGE", src)
+        self.assertIn("할일 {todo_more}건 더 보기", src)
+        self.assertIn("_month_schedule_items_html", src)
+        self.assertIn("삭제는 위에서 날을 고른 뒤", src)
 
     def test_staff_lists_do_not_scan_all_staff_from_sales(self):
         df = pd.DataFrame({"담당자": ["홍길동"] * 200, "거래처": ["한신테크"] * 200})
@@ -631,6 +645,62 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("한신테크", clients)
         self.assertIn("이엔에이치", clients)
         self.assertNotIn("다른곳", clients)
+
+    def test_ipad_staff_clients_skip_sales_scan(self):
+        df = pd.DataFrame(
+            {
+                "담당자": ["김혁수"] * 3,
+                "거래처": ["한국메티슨특수가스", "한신테크", "아주큰거래처"],
+            }
+        )
+        self.vc.add_visit(
+            {"date": date(2026, 9, 17), "staff": "김혁수", "client": "이엔에이치", "status": "done"}
+        )
+        clients = self.vc._staff_clients(df, "김혁수", include_sales=False)
+        self.assertIn("이엔에이치", clients)
+        self.assertNotIn("한신테크", clients)
+        self.assertNotIn("아주큰거래처", clients)
+
+    def test_staff_mask_keeps_spaced_staff(self):
+        df = pd.DataFrame(
+            {
+                "담당자": ["김혁수", "김혁수 "],
+                "거래처": ["한신테크", "이엔에이치"],
+            }
+        )
+        names = self.vc._sales_client_names(df, "김혁수")
+        self.assertIn("한신테크", names)
+        self.assertIn("이엔에이치", names)
+
+    def test_mcal_touch_weeks_marks_selected_and_chips(self):
+        month = date(2026, 9, 1)
+        weeks = self.vc.month_cal_weeks(month)
+        cells = {
+            "2026-09-07": [{"kind": "visit", "label": "한신테크", "mine": True}],
+            "2026-09-23": [{"kind": "planned", "label": "라콜 주식회사(구.신정우)"}],
+        }
+        rows = self.vc._mcal_touch_weeks(month, date(2026, 9, 7), date(2026, 9, 17), weeks, cells)
+        flat = [c for w in rows for c in w]
+        sel = next(c for c in flat if c["iso"] == "2026-09-07")
+        plan = next(c for c in flat if c["iso"] == "2026-09-23")
+        today = next(c for c in flat if c["iso"] == "2026-09-17")
+        self.assertTrue(sel["sel"])
+        self.assertEqual(sel["chips"][0]["kind"], "visit")
+        self.assertTrue(sel["chips"][0]["mine"])
+        self.assertEqual(plan["chips"][0]["kind"], "planned")
+        self.assertTrue(plan["chips"][0]["label"].startswith("라콜") or "라콜" in plan["chips"][0]["label"])
+        self.assertTrue(today["today"])
+        self.assertFalse(today["out"])
+
+    def test_todo_more_increments_page(self):
+        class _SS(dict):
+            pass
+
+        ss = _SS()
+        with patch.object(self.vc.st, "session_state", ss):
+            self.vc._on_todo_more()
+            self.vc._on_todo_more()
+        self.assertEqual(ss["_vc_todo_touch_n"], self.vc._VC_TODO_TOUCH_PAGE * 3)
 
 
 if __name__ == "__main__":
