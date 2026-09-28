@@ -1382,6 +1382,15 @@ def _on_pick_day(d: date) -> None:
     """일자만 고른다. 월은 ‹ › · 오늘에서만 바꾼다."""
     st.session_state["_vc_selected"] = d
     st.session_state["_vc_open_delivery"] = True
+    st.session_state["vc_mcal_date"] = d
+
+
+def _on_mcal_date_change() -> None:
+    d = st.session_state.get("vc_mcal_date")
+    if isinstance(d, datetime):
+        d = d.date()
+    if isinstance(d, date):
+        _on_pick_day(d)
 
 
 def _on_shift_month(delta: int) -> None:
@@ -1393,13 +1402,16 @@ def _on_shift_month(delta: int) -> None:
     sel = st.session_state.get("_vc_selected")
     if isinstance(sel, date) and (sel.year, sel.month) != (new.year, new.month):
         last = calendar.monthrange(new.year, new.month)[1]
-        st.session_state["_vc_selected"] = date(new.year, new.month, min(sel.day, last))
+        clamped = date(new.year, new.month, min(sel.day, last))
+        st.session_state["_vc_selected"] = clamped
+        st.session_state["vc_mcal_date"] = clamped
 
 
 def _on_jump_today() -> None:
     today = date.today()
     st.session_state["_vc_month"] = date(today.year, today.month, 1)
     st.session_state["_vc_selected"] = today
+    st.session_state["vc_mcal_date"] = today
 
 
 def _on_todo_done(todo_id: str) -> None:
@@ -1868,6 +1880,9 @@ def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]],
             on_iso_change=_on_strip_iso_change,
         )
         return
+    if not _vc_is_mac_local():
+        st.markdown(_strip_fallback_html(days, selected.isoformat()), unsafe_allow_html=True)
+        return
     _render_strip_buttons(days, "vc_strip_", _on_pick_day)
 
 
@@ -1990,6 +2005,72 @@ def _mcal_grid_css() -> str:
     @media (hover: none) and (pointer: coarse) and (min-width: 851px) and (max-width: 1180px) and (orientation: landscape) {
       div[class*="st-key-vc_mcal_2"] button { min-height: 6.6rem !important; padding: 4px 2px 6px !important; }
       div[class*="st-key-vc_mcal_box"] .stHorizontalBlock { gap: 4px !important; margin: 0 4px 4px !important; }
+      .vc-mcal-table td { min-height: 6.6rem; padding: 4px 2px 6px; }
+    }
+    .vc-mcal-head {
+      display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px;
+      margin: 0 6px 4px;
+    }
+    .vc-mcal-th {
+      text-align: center; font-size: 10px; font-weight: 700;
+      letter-spacing: -0.2px; padding: 2px 0 4px; color: #6b7280;
+    }
+    .vc-mcal-th.sun { color: #d23b3b; }
+    .vc-mcal-th.sat { color: #3b6fd8; }
+    .vc-mcal-table {
+      width: 100%; border-collapse: separate; border-spacing: 6px;
+      table-layout: fixed; margin: 0 0 8px;
+    }
+    .vc-mcal-table td {
+      background: #fff; border: 1px solid #eceff3; border-radius: 10px;
+      vertical-align: top; padding: 6px 2px 8px; min-height: 8.2rem;
+      text-align: center;
+    }
+    .vc-mcal-table td.sun { background: #fff3f1; }
+    .vc-mcal-table td.sat { background: #eef4fc; }
+    .vc-mcal-table td.sel { background: #e8eaed; }
+    .vc-mcal-table td.out { color: #80868b; }
+    .vc-mcal-table td.today { box-shadow: inset 0 0 0 1.5px #9aa8bc; }
+    .vc-mcal-num { font-size: 12px; font-weight: 600; color: #3c4043; padding-bottom: 4px; }
+    .vc-strip-html { width: 100%; margin: 0 0 8px; }
+    .vc-strip-html .vc-strip-wd,
+    .vc-strip-html .vc-strip-days,
+    .vc-strip-html .vc-strip-nm {
+      display: flex; gap: 3px; width: 100%;
+    }
+    .vc-strip-html .vc-strip-wd { margin-bottom: 2px; }
+    .vc-strip-html .vc-strip-nm { margin-top: 2px; }
+    .vc-strip-html .vc-strip-wd span {
+      flex: 1; min-width: 0; text-align: center; font-size: 10px; font-weight: 700;
+      line-height: 1.1;
+    }
+    .vc-strip-html .vc-strip-days span {
+      flex: 1; min-width: 0; min-height: 2.7rem; padding: 2px 0;
+      border-radius: 10px; font-size: 10px; font-weight: 600; background: #fff;
+      color: #3c4043; border: 1px solid #eceff3; text-align: center;
+      white-space: pre-line; line-height: 1.15; display: flex;
+      align-items: center; justify-content: center;
+    }
+    .vc-strip-html .vc-strip-days span.mix { background: #ece6f8; color: #5b4b8a; }
+    .vc-strip-html .vc-strip-days span.bulk { background: #e8f0fe; color: #1a73e8; }
+    .vc-strip-html .vc-strip-days span.other { background: #f6eee4; color: #8d6e63; }
+    .vc-strip-html .vc-strip-days span.sat { background: #eef4fc; color: #3b6fd8; }
+    .vc-strip-html .vc-strip-days span.sun { background: #fff3f1; color: #d23b3b; }
+    .vc-strip-html .vc-strip-days span.today { box-shadow: inset 0 0 0 1.5px #1a73e8; }
+    .vc-strip-html .vc-strip-days span.sel {
+      background: #1a73e8 !important; color: #fff !important; border-color: #1a73e8 !important;
+    }
+    .vc-strip-html .vc-strip-nm span {
+      flex: 1; min-width: 0; text-align: center; font-size: 9px; font-weight: 700;
+      color: #137333; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    @media (hover: none) and (pointer: coarse) and (orientation: portrait) {
+      .vc-strip-html { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .vc-strip-html .vc-strip-wd,
+      .vc-strip-html .vc-strip-days,
+      .vc-strip-html .vc-strip-nm { width: max-content; min-width: 100%; }
+      .vc-strip-html .vc-strip-days span { flex: 0 0 2.2rem; min-width: 2.2rem; }
+      .vc-strip-html .vc-strip-wd span, .vc-strip-html .vc-strip-nm span { flex: 0 0 2.2rem; min-width: 2.2rem; }
     }
     </style>
     """
@@ -2075,6 +2156,39 @@ def _mcal_month_html(
     return "<table class='vc-mcal-table'><tbody>" + "".join(rows) + "</tbody></table>"
 
 
+def _strip_fallback_html(days: list[dict], selected_iso: str) -> str:
+    wd = "".join(
+        f'<span style="color:{html.escape(str(d.get("wdc") or "#6b7280"))}">{html.escape(str(d.get("wd") or ""))}</span>'
+        for d in days
+    )
+    cells = []
+    names = []
+    for d in days:
+        iso = str(d.get("iso") or "")
+        cls = " ".join(
+            x
+            for x in (
+                str(d.get("kind") or ""),
+                "sel" if iso == selected_iso else "",
+                "today" if d.get("today") else "",
+            )
+            if x
+        )
+        tag = str(d.get("tag") or "")
+        lab = f"{d.get('day')}<br>{html.escape(tag)}" if tag else str(d.get("day") or "")
+        cells.append(f'<span class="{html.escape(cls)}">{lab}</span>')
+        nm = str(d.get("name") or "")
+        mcls = "planned" if d.get("mark") == "planned" else ""
+        names.append(f'<span class="{mcls}">{html.escape(nm) if nm else "&nbsp;"}</span>')
+    return (
+        '<div class="vc-strip-html">'
+        f'<div class="vc-strip-wd">{wd}</div>'
+        f'<div class="vc-strip-days">{"".join(cells)}</div>'
+        f'<div class="vc-strip-nm">{"".join(names)}</div>'
+        "</div>"
+    )
+
+
 def _render_month_cal(
     month: date,
     selected: date,
@@ -2102,6 +2216,23 @@ def _render_month_cal(
             f"</div></div>",
             unsafe_allow_html=True,
         )
+        if not _vc_is_mac_local():
+            if "vc_mcal_date" not in st.session_state:
+                st.session_state["vc_mcal_date"] = selected
+            st.markdown(
+                _mcal_head_html() + _mcal_month_html(month, selected, today, weeks, cells),
+                unsafe_allow_html=True,
+            )
+            first, last = weeks[0][0], weeks[-1][-1]
+            st.date_input(
+                "스케줄 날짜",
+                min_value=first,
+                max_value=last,
+                format="YYYY/MM/DD",
+                key="vc_mcal_date",
+                on_change=_on_mcal_date_change,
+            )
+            return
         wd_cols = st.columns(7, gap="small")
         for i, wd in enumerate(_CAL_HEADERS):
             cls = " sun" if i == 0 else (" sat" if i == 6 else "")

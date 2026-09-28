@@ -547,6 +547,12 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("def schedule_cells", src)
         self.assertIn("def _render_month_cal", src)
         self.assertIn("vc_mcal_", src)
+        cal = src[src.index("def _render_month_cal") : src.index("def _render_month_schedule")]
+        self.assertIn("_vc_is_mac_local()", cal)
+        self.assertIn("_mcal_month_html(", cal)
+        self.assertIn('key="vc_mcal_date"', cal)
+        self.assertIn("def _on_mcal_date_change", src)
+        self.assertIn("def _strip_fallback_html", src)
         self.assertNotIn("def week_days", src)
         self.assertNotIn("def week_schedule_cells", src)
         self.assertIn("def _weekday_name", src)
