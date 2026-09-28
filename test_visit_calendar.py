@@ -570,6 +570,9 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("def _sync_selected_from_mcal_widget", src)
         self.assertIn("def _vc_date_field", src)
         self.assertIn("_sync_selected_from_mcal_widget()", src)
+        self.assertIn("vc_client_q", src)
+        self.assertIn("vc_light_todo_sel", src)
+        self.assertIn("_month_schedule_items_html(done", src)
         self.assertIn("def _strip_fallback_html", src)
         self.assertIn("def _apply_query_day_pick", src)
         self.assertIn("vc-mcal-hit", src)
@@ -600,7 +603,9 @@ class VisitCalendarTest(unittest.TestCase):
         tab13 = app[app.index("with tab13:") : app.index("방문·할일 탭 오류")]
         self.assertIn("render_visit_calendar_tab", tab13)
         self.assertIn("_dash_defer_heavy_stub", tab13)
-        self.assertIn("카카오맵 등이 먼저 끝나게", tab13)
+        self.assertIn("쿠키로 처음부터 펼치면", tab13)
+        self.assertIn("그리기가 끝난 뒤에만 펼침 유지", tab13)
+        self.assertNotIn("_vc_active", tab13)
         self.assertIn("if not is_touch_ui() and not _is_streamlit_cloud()", tab13)
         self.assertIn("v2 재등록으로 방문탭이 안 끝난다", tab13)
         mount = app[app.index("def _dash_should_defer_heavy_tab") : app.index("def _dash_defer_heavy_stub")]

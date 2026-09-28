@@ -18596,12 +18596,11 @@ def _dash_filter_and_tabs_fragment() -> None:
 
         with tab13:
             try:
-                # Cloud·아이패드: 카카오맵 등이 먼저 끝나게 방문 달력은 이 탭을 열 때만 그린다.
-                # 맥 로컬은 시작부터 펼침.
+                # Cloud·아이패드: 쿠키로 처음부터 펼치면 첫 페인트에 달력까지 붙어 로딩이 안 끝난다.
+                # 「화면 불러오기」/탭 remount 로 연 뒤에만 그린다. 맥 로컬은 시작부터 펼침.
                 _vc_force = bool(st.session_state.pop(f"_dash_force_tab_{_DASH_TAB_VISIT}", None))
                 _vc_mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
-                _vc_active = _dash_active_tab_idx() == _DASH_TAB_VISIT
-                _vc_need = _vc_force or bool(_vc_mounted.get(_DASH_TAB_VISIT)) or _vc_active
+                _vc_need = _vc_force or bool(_vc_mounted.get(_DASH_TAB_VISIT))
                 if (_is_streamlit_cloud() or is_touch_ui()) and not _vc_need:
                     _dash_defer_heavy_stub(
                         "📅 방문·할일",
@@ -18610,7 +18609,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                         _DASH_VC_STATE_PREFIXES,
                     )
                 else:
-                    _vc_mounted[_DASH_TAB_VISIT] = True
                     import visit_calendar_tab as _vc_tab
 
                     # 맥 로컬만 모듈 reload. Cloud·아이패드는 v2 재등록으로 방문탭이 안 끝난다.
@@ -18625,6 +18623,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                             sys.modules["visit_calendar_tab"] = _vc_tab
                     _vc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
                     _vc_tab.render_visit_calendar_tab(_vc_df, latest_update_str=latest_update_str)
+                    # 그리기가 끝난 뒤에만 펼침 유지. 중간에 붙이면 새로고침이 바로 달력을 다시 켠다.
+                    _vc_mounted[_DASH_TAB_VISIT] = True
             except ModuleNotFoundError:
                 st.error(
                     "방문·할일 모듈(`visit_calendar_tab.py`)을 찾을 수 없습니다. "

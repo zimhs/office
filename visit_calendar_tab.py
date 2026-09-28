@@ -1635,14 +1635,28 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
                     or ""
                 )
             else:
+                q = st.text_input(
+                    "거래처 검색",
+                    key="vc_client_q",
+                    placeholder="거래처명 입력",
+                )
+                qq = _s(q).casefold()
+                cur = _s(st.session_state.get("vc_client"))
+                opts = [
+                    c
+                    for c in (clients or [])
+                    if qq and qq in c.casefold()
+                ][:40]
+                if not qq:
+                    opts = [cur] if cur else [""]
+                if cur and cur not in opts:
+                    opts = [cur] + [x for x in opts if x != cur]
                 client = (
                     st.selectbox(
                         "거래처",
-                        options=clients or [""],
-                        index=None,
-                        placeholder="거래처명 입력",
+                        options=opts or [""],
                         key="vc_client",
-                        help="이 담당자의 매출 거래처가 모두 나옵니다. 고르면 달력·방문·할일에 연동됩니다.",
+                        help="검색어를 넣으면 담당자 매출 거래처가 나옵니다.",
                     )
                     or ""
                 )
@@ -2366,6 +2380,18 @@ def _render_month_schedule(
         unsafe_allow_html=True,
     )
     c1, c2 = st.columns(2, gap="medium")
+    if not _vc_is_mac_local():
+        with c1:
+            st.markdown(
+                _month_schedule_items_html(done, selected, client, "visit"),
+                unsafe_allow_html=True,
+            )
+        with c2:
+            st.markdown(
+                _month_schedule_items_html(planned, selected, client, "planned"),
+                unsafe_allow_html=True,
+            )
+        return
     with c1:
         _render_month_col("기방문", done, selected, client, "visit", "vc_ms_x_")
     with c2:
@@ -2449,6 +2475,41 @@ def _render_visit_log(store: dict, staff: str, client: str) -> None:
     if not rows:
         st.caption("체크한 방문 내역이 없습니다.")
         return
+    if not _vc_is_mac_local():
+        for v in rows:
+            d = _iso(v.get("date"))
+            wd = ""
+            try:
+                if d:
+                    wd = f" ({_WEEKDAYS[date.fromisoformat(d).weekday()]})"
+            except ValueError:
+                wd = ""
+            note = f" · {_s(v.get('note'))}" if _s(v.get("note")) else ""
+            kind = "방문예정" if (_s(v.get("status")) or "done") == "planned" else "방문"
+            st.markdown(f"- **{d}{wd}** · {kind} · {v.get('client') or '-'}{note}")
+        ids = [str(v.get("id") or "") for v in rows if str(v.get("id") or "")]
+        labels = {
+            str(v.get("id") or ""): f"{_iso(v.get('date'))} · {_s(v.get('client')) or '-'}"
+            for v in rows
+            if str(v.get("id") or "")
+        }
+        if ids:
+            pick = st.selectbox(
+                "삭제할 방문",
+                options=[""] + ids,
+                format_func=lambda i: labels.get(i, "선택") if i else "선택",
+                key="vc_light_log_sel",
+            )
+            st.button(
+                "선택한 방문 삭제",
+                key="vc_light_log_del",
+                disabled=not pick,
+                on_click=_on_delete_visit_id,
+                args=(str(pick),),
+            )
+        if extra:
+            st.caption(f"최근 40건만 표시 · 나머지 {extra}건")
+        return
     for v in rows:
         d = _iso(v.get("date"))
         wd = ""
@@ -2499,6 +2560,22 @@ def _render_delivery_list(
     n_bulk = sum(1 for r in ordered if r.get("bulk") or _is_bulk_item(r.get("item") or ""))
     n_other = len(ordered) - n_bulk
     st.caption(f"벌크 {n_bulk}건 · {_CYLINDER} {n_other}건")
+    if not _vc_is_mac_local():
+        lines = [
+            "|구분|품목|충전량|출고량|매출액|",
+            "|---|---|---|---|---|",
+        ]
+        for r in ordered:
+            bulk = bool(r.get("bulk") or _is_bulk_item(r.get("item") or ""))
+            kind = "벌크" if bulk else _CYLINDER
+            qty = _fmt_qty(r.get("qty"))
+            fill = qty if bulk else ""
+            out = "" if bulk else qty
+            lines.append(
+                f"|{kind}|{html.escape(_s(r.get('item')))}|{fill}|{out}|{_fmt_qty(r.get('amount'))}|"
+            )
+        st.markdown("\n".join(lines))
+        return
     table = pd.DataFrame(
         [
             {
@@ -2553,6 +2630,61 @@ def _render_todo_panel(selected: date, staff: str, client: str, store: dict) -> 
 
     if not todos:
         st.caption("할일이 없습니다. 아래에서 업체명과 세부사항을 넣어 추가하세요.")
+    elif not _vc_is_mac_local():
+        labels: dict[str, str] = {}
+        for t in todos:
+            tid = str(t.get("id") or "")
+            if not tid:
+                continue
+            plain_name = _s(t.get("title") or t.get("client")) or "할일"
+            due_s = _iso(t.get("due"))
+            mark = "★ " if t.get("starred") else ""
+            done_m = "완료 · " if t.get("done") else ""
+            extra = f" · {due_s[5:]}" if due_s else ""
+            note = _s(t.get("note"))
+            note_h = f" · {note}" if note else ""
+            st.markdown(f"- {mark}{done_m}**{plain_name}**{extra}{note_h}")
+            labels[tid] = f"{mark}{plain_name}{extra}"
+        ids = list(labels)
+        pick = st.selectbox(
+            "할일 선택",
+            options=[""] + ids,
+            format_func=lambda i: labels.get(i, "선택") if i else "선택",
+            key="vc_light_todo_sel",
+        )
+        a1, a2, a3, a4 = st.columns(4)
+        with a1:
+            st.button(
+                "완료",
+                key="vc_light_todo_done",
+                disabled=not pick,
+                on_click=_on_todo_done,
+                args=(str(pick),),
+            )
+        with a2:
+            st.button(
+                "별표",
+                key="vc_light_todo_star",
+                disabled=not pick,
+                on_click=_on_todo_star,
+                args=(str(pick),),
+            )
+        with a3:
+            st.button(
+                "편집",
+                key="vc_light_todo_edit",
+                disabled=not pick,
+                on_click=_on_pick_todo,
+                args=(str(pick),),
+            )
+        with a4:
+            st.button(
+                "삭제",
+                key="vc_light_todo_del",
+                disabled=not pick,
+                on_click=_on_todo_delete,
+                args=(str(pick),),
+            )
     else:
         for t in todos:
             tid = str(t.get("id") or "")
