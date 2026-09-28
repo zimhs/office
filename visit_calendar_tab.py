@@ -2314,10 +2314,7 @@ def _strip_fallback_html(days: list[dict], selected_iso: str) -> str:
         )
         tag = str(d.get("tag") or "")
         lab = f"{d.get('day')}<br>{html.escape(tag)}" if tag else str(d.get("day") or "")
-        href = html.escape(_vc_pick_href(iso), quote=True)
-        cells.append(
-            f'<a class="{html.escape(cls)}" href="{href}">{lab}</a>'
-        )
+        cells.append(f'<span class="{html.escape(cls)}">{lab}</span>')
         nm = str(d.get("name") or "")
         mcls = "planned" if d.get("mark") == "planned" else ""
         names.append(f'<span class="{mcls}">{html.escape(nm) if nm else "&nbsp;"}</span>')
@@ -2383,7 +2380,7 @@ def _render_month_cal(
             st.markdown(
                 _mcal_head_html()
                 + _mcal_month_html(
-                    month, selected, today, weeks, cells, pick_href=True
+                    month, selected, today, weeks, cells, pick_href=False
                 ),
                 unsafe_allow_html=True,
             )
@@ -2399,14 +2396,15 @@ def _render_month_cal(
             )
             if st.session_state.get("vc_mcal_iso") not in month_isos:
                 st.session_state["vc_mcal_iso"] = iso0
-            st.selectbox(
-                "스케줄 날짜",
+            st.caption("날짜는 아래 숫자를 누르세요.")
+            st.pills(
+                "날짜 선택",
                 options=month_isos,
-                format_func=lambda iso: (
-                    f"{iso[5:7]}/{iso[8:10]} "
-                    f"({_WEEKDAYS[date.fromisoformat(iso).weekday()]})"
-                ),
+                format_func=lambda iso: str(int(iso[8:10])),
+                selection_mode="single",
+                required=True,
                 key="vc_mcal_iso",
+                width="stretch",
             )
 
 
