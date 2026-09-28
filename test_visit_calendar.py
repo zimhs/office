@@ -440,11 +440,13 @@ class VisitCalendarTest(unittest.TestCase):
         ss["vc_mcal_date"] = date(2026, 9, 17)
         ss["vc_mcal_box"] = object()
         ss["vc_strip_host"] = {"iso": "2026-09-17"}
+        ss["vc_mcal_host"] = {"iso": "2026-09-17"}
         ss["_vc_selected"] = date(2026, 9, 17)
         ss["_dash_bak_visit"] = {
             "vc_day_2026-09-17": True,
             "vc_mcal_date": date(2026, 9, 17),
             "vc_strip_host": {"iso": "2026-09-17"},
+            "vc_mcal_host": {"iso": "2026-09-17"},
             "_vc_selected": date(2026, 9, 17),
         }
         with patch.object(self.vc.st, "session_state", ss):
@@ -456,11 +458,15 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("vc_mcal_box", ss)
         self.assertIn("vc_mcal_date", ss["_dash_bak_visit"])
         self.assertIn("vc_strip_host", ss)
+        self.assertIn("vc_mcal_host", ss)
         self.assertIn("vc_strip_host", ss["_dash_bak_visit"])
+        self.assertIn("vc_mcal_host", ss["_dash_bak_visit"])
         self.assertEqual(ss["_vc_selected"], date(2026, 9, 17))
         self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_date"))
         self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_box"))
         self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_iso"))
+        self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_host"))
+        self.assertFalse(self.vc._is_vc_purge_key("vc_touch_day"))
         self.assertTrue(self.vc._is_vc_purge_key("vc_mcal_2026-09-17"))
 
     def test_cached_history_skips_second_merge(self):
@@ -513,14 +519,15 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("_render_strip_buttons(days, \"vc_strip_\"", strip_fn)
         self.assertIn("_strip_button_theme_css", strip_fn)
         self.assertNotIn("pick_href=True", strip_fn)
-        self.assertNotIn("_strip_fallback_html", strip_fn)
+        self.assertIn("_strip_fallback_html(days, selected.isoformat())", strip_fn)
+        self.assertIn("_vc_is_touch_ui()", strip_fn)
         self.assertNotIn("_render_cloud_day_pick", strip_fn)
         self.assertNotIn("_render_week_pick_buttons", strip_fn)
         self.assertIn("def _vc_use_day_strip_component", src)
         self.assertIn("_vc_use_day_strip_component()", src)
         self.assertIn("def _vc_is_mac_local", src)
         mac_fn = src[src.index("def _vc_is_mac_local") : src.index("def _vc_is_streamlit_cloud")]
-        self.assertIn("return _vc_is_darwin_local()", mac_fn)
+        self.assertIn("return _vc_is_darwin_local() and not _vc_is_touch_ui()", mac_fn)
         self.assertNotIn("return True", mac_fn)
         self.assertNotIn("sys.platform != \"darwin\"", src[src.index("def _vc_is_touch_ui") : src.index("def _vc_is_streamlit_cloud")])
         self.assertIn("def _vc_is_darwin_local", src)
@@ -533,7 +540,10 @@ class VisitCalendarTest(unittest.TestCase):
         ensure = src[src.index("def _vc_ensure_strip") : src.index("def _on_strip_iso_change")]
         self.assertIn("_vc_is_darwin_local()", ensure)
         self.assertIn('setStateValue("iso"', src)
-        self.assertIn("on_iso_change=_on_strip_iso_change", src)
+        self.assertIn("_apply_v2_iso_host", src)
+        self.assertIn("def _on_strip_iso_change", src)
+        self.assertNotIn("on_iso_change=_on_strip_iso_change", src[src.index("def _render_day_strip") : src.index("def _month_row_html")])
+        self.assertNotIn("default={\"iso\": selected.isoformat()}", src[src.index("def _render_day_strip") : src.index("def _month_row_html")])
         self.assertIn("def _visit_day_block", src)
         self.assertIn("def month_cal_weeks", src)
         self.assertIn("_CAL_HEADERS", src)
@@ -586,13 +596,21 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("vc_mcal_", src)
         cal = src[src.index("def _render_month_cal") : src.index("def _render_month_schedule")]
         self.assertIn("_mcal_month_html(", cal)
-        self.assertIn('key="vc_mcal_date"', cal)
-        self.assertIn("pick_href=True", cal)
+        self.assertNotIn('key="vc_mcal_date"', cal)
+        self.assertNotIn("pick_href=True", cal)
+        self.assertIn("pick_href=False", cal)
+        self.assertNotIn("스케줄 날짜", cal)
+        self.assertIn("_vc_use_mcal_component()", cal)
+        self.assertIn("_vc_is_touch_ui()", cal)
         self.assertIn("_render_mcal_day_buttons(", cal)
-        self.assertNotIn("pick_href=False", cal)
-        self.assertIn('key=f"vc_mcal_{iso}"', src[src.index("def _render_mcal_day_buttons") : src.index("def _mcal_head_html")])
-        self.assertIn("_vc_use_mcal_date_input()", cal)
-        self.assertIn("st.date_input(", cal)
+        self.assertIn("visit_month_cal_v1", src)
+        self.assertIn("vc_mcal_host", src)
+        btns = src[src.index("def _render_mcal_day_buttons") : src.index("def _mcal_head_html")]
+        self.assertIn('key=f"vc_mcal_{iso}"', btns)
+        self.assertNotIn("opacity:.35", btns)
+        self.assertNotIn("d.month != month.month", btns)
+        self.assertNotIn("_vc_use_mcal_date_input()", cal)
+        self.assertNotIn("st.date_input(", cal)
         self.assertNotIn("on_change=_on_mcal_date_change", cal)
         self.assertNotIn("st.pills(", cal)
         self.assertNotIn('key="vc_mcal_iso"', cal)
@@ -609,7 +627,8 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("def _on_mcal_date_change", src)
         self.assertIn("def _sync_selected_from_mcal_widget", src)
         self.assertIn("def _vc_date_field", src)
-        self.assertIn("_sync_selected_from_mcal_widget()", src)
+        self.assertIn("_apply_v2_iso_host(\"vc_strip_host\")", src)
+        self.assertIn("_apply_v2_iso_host(\"vc_mcal_host\")", src)
         self.assertIn("vc_client_q", src)
         self.assertIn("vc_light_todo_sel", src)
         self.assertIn("_month_schedule_items_html(done", src)
@@ -666,9 +685,14 @@ class VisitCalendarTest(unittest.TestCase):
         block = src[src.index("def _visit_day_block") : src.index("def _client_short")]
         self.assertIn("_apply_pending_month_nav()", block)
         self.assertIn("_apply_pending_mcal_pick()", block)
-        self.assertIn('key="vc_prev_month"', block)
+        self.assertIn("_pick_touch_visible_day", block)
+        self.assertIn('key="vc_touch_day"', src)
+        self.assertIn("st-key-vc_visit_frag", src)
+        self.assertIn('data-stale="true"', src)
         self.assertIn('key="vc_next_month"', block)
         self.assertIn('key="vc_jump_today"', block)
+        self.assertNotIn("on_click=_on_shift_month", block)
+        self.assertNotIn("on_click=_on_jump_today", block)
         self.assertIn('key="vc_staff"', block)
         self.assertIn('key="vc_client"', block)
         self.assertIn("_vc_day_payload", block)
