@@ -578,7 +578,7 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("pick_href=True", cal)
         self.assertIn("pick_href=False", cal)
         self.assertNotIn("st.pills(", cal)
-        self.assertNotIn('key="vc_mcal_iso"', cal)
+        self.assertIn('key="vc_mcal_iso"', cal)
         self.assertNotIn("_vc_pick_href(iso)", src[src.index("def _strip_fallback_html") : src.index("def _render_month_cal")])
         self.assertIn("Cloud·아이패드: fragment가 끝나지 않아", src)
         self.assertIn("def _on_mcal_date_change", src)
