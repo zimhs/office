@@ -1723,7 +1723,8 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
     if _vc_is_mac_local():
         st.fragment(_visit_day_block)()
     else:
-        _visit_day_block()
+        # 아이패드·Cloud: 날짜 조작이 전 탭을 다시 돌리지 않게 fragment만 다시 그린다.
+        st.fragment(_visit_day_block)()
 
 
 def _client_short(name: str) -> str:
@@ -2334,14 +2335,14 @@ def _render_month_cal(
             st.session_state["vc_mcal_date"] = coerced
         elif "vc_mcal_date" not in st.session_state:
             st.session_state["vc_mcal_date"] = selected
-        st.markdown(
-            _mcal_head_html()
-            + _mcal_month_html(
-                month, selected, today, weeks, cells, pick_href=_vc_is_mac_local()
-            ),
-            unsafe_allow_html=True,
-        )
         if _vc_is_mac_local():
+            st.markdown(
+                _mcal_head_html()
+                + _mcal_month_html(
+                    month, selected, today, weeks, cells, pick_href=True
+                ),
+                unsafe_allow_html=True,
+            )
             first, last = weeks[0][0], weeks[-1][-1]
             st.date_input(
                 "스케줄 날짜",
@@ -2351,19 +2352,18 @@ def _render_month_cal(
                 key="vc_mcal_date",
             )
         else:
-            opts = list(days)
-            cur = _as_date(st.session_state.get("vc_mcal_date")) or selected
-            if cur not in opts:
-                opts = [cur] + opts
-            st.selectbox(
-                "스케줄 날짜",
-                options=opts,
-                format_func=lambda d: (
-                    f"{d.month}/{d.day} ({_WEEKDAYS[d.weekday()]})"
-                    + ("" if d.month == month.month else " ·")
-                ),
-                key="vc_mcal_date",
-            )
+            st.markdown(_mcal_head_html(), unsafe_allow_html=True)
+            for week in weeks:
+                cols = st.columns(7, gap="small")
+                for i, d in enumerate(week):
+                    iso = d.isoformat()
+                    with cols[i]:
+                        st.button(
+                            _mcal_button_label(d, cells.get(iso) or []),
+                            key=f"vc_mcal_{iso}",
+                            type="secondary",
+                            width="stretch",
+                        )
 
 
 def _render_month_schedule(
