@@ -1360,7 +1360,7 @@ def _apply_pending_month_nav() -> None:
         st.session_state.pop("vc_jump_today", None)
 
 
-_VC_KEEP_KEYS = frozenset({"vc_strip_host", "vc_mcal_date", "vc_mcal_box"})
+_VC_KEEP_KEYS = frozenset({"vc_strip_host", "vc_mcal_date", "vc_mcal_box", "vc_mcal_iso"})
 
 
 def _is_vc_purge_key(k: str) -> bool:
@@ -1411,15 +1411,25 @@ def _vc_date_field(label: str, *, key: str, default: date):
 
 def _on_pick_day(d: date) -> None:
     """일자만 고른다. 월은 ‹ › · 오늘에서만 바꾼다."""
+    iso = d.isoformat()
     st.session_state["_vc_selected"] = d
     st.session_state["_vc_open_delivery"] = True
     if st.session_state.get("vc_mcal_date") != d:
         st.session_state["vc_mcal_date"] = d
+    if st.session_state.get("vc_mcal_iso") != iso:
+        st.session_state["vc_mcal_iso"] = iso
 
 
 def _sync_selected_from_mcal_widget() -> None:
     """스케줄 날짜 위젯 → 선택일. 위젯 키는 여기서 쓰지 않는다(재실행 루프 방지)."""
-    d = _as_date(st.session_state.get("vc_mcal_date"))
+    if _vc_is_mac_local():
+        d = _as_date(st.session_state.get("vc_mcal_date"))
+    else:
+        raw = st.session_state.get("vc_mcal_iso")
+        try:
+            d = date.fromisoformat(str(raw or "")[:10]) if raw else None
+        except ValueError:
+            d = None
     if d is None:
         return
     if st.session_state.get("_vc_selected") != d:
@@ -1447,6 +1457,7 @@ def _on_shift_month(delta: int) -> None:
         clamped = date(new.year, new.month, min(sel.day, last))
         st.session_state["_vc_selected"] = clamped
         st.session_state["vc_mcal_date"] = clamped
+        st.session_state["vc_mcal_iso"] = clamped.isoformat()
 
 
 def _on_jump_today() -> None:
@@ -1454,6 +1465,7 @@ def _on_jump_today() -> None:
     st.session_state["_vc_month"] = date(today.year, today.month, 1)
     st.session_state["_vc_selected"] = today
     st.session_state["vc_mcal_date"] = today
+    st.session_state["vc_mcal_iso"] = today.isoformat()
 
 
 def _on_todo_done(todo_id: str) -> None:
@@ -1586,6 +1598,7 @@ def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str:
     _apply_query_day_pick()
     _vc_clear_strip_hosts_if_unused()
     _apply_pending_month_nav()
+    _apply_pending_mcal_pick()
     _purge_vc_button_keys()
     _render_visit_body(df, latest_update_str)
 
@@ -2137,6 +2150,7 @@ def _mcal_grid_css() -> str:
     .vc-mcal-table td .vc-mcal-hit,
     .vc-mcal-table td a.vc-mcal-hit {
       color: inherit; text-decoration: none; display: block; min-height: 8.2rem;
+      cursor: pointer; -webkit-tap-highlight-color: rgba(26,115,232,0.25);
     }
     .vc-mcal-num { font-size: 12px; font-weight: 600; color: #3c4043; padding-bottom: 4px; }
     .vc-strip-html { width: 100%; margin: 0 0 8px; }
@@ -2151,20 +2165,30 @@ def _mcal_grid_css() -> str:
       flex: 1; min-width: 0; text-align: center; font-size: 10px; font-weight: 700;
       line-height: 1.1;
     }
-    .vc-strip-html .vc-strip-days span {
+    .vc-strip-html .vc-strip-days span,
+    .vc-strip-html .vc-strip-days a {
       flex: 1; min-width: 0; min-height: 2.7rem; padding: 2px 0;
       border-radius: 10px; font-size: 10px; font-weight: 600; background: #fff;
       color: #3c4043; border: 1px solid #eceff3; text-align: center;
       white-space: pre-line; line-height: 1.15; display: flex;
       align-items: center; justify-content: center;
+      text-decoration: none; cursor: pointer;
+      -webkit-tap-highlight-color: rgba(26,115,232,0.25);
     }
-    .vc-strip-html .vc-strip-days span.mix { background: #ece6f8; color: #5b4b8a; }
-    .vc-strip-html .vc-strip-days span.bulk { background: #e8f0fe; color: #1a73e8; }
-    .vc-strip-html .vc-strip-days span.other { background: #f6eee4; color: #8d6e63; }
-    .vc-strip-html .vc-strip-days span.sat { background: #eef4fc; color: #3b6fd8; }
-    .vc-strip-html .vc-strip-days span.sun { background: #fff3f1; color: #d23b3b; }
-    .vc-strip-html .vc-strip-days span.today { box-shadow: inset 0 0 0 1.5px #1a73e8; }
-    .vc-strip-html .vc-strip-days span.sel {
+    .vc-strip-html .vc-strip-days span.mix,
+    .vc-strip-html .vc-strip-days a.mix { background: #ece6f8; color: #5b4b8a; }
+    .vc-strip-html .vc-strip-days span.bulk,
+    .vc-strip-html .vc-strip-days a.bulk { background: #e8f0fe; color: #1a73e8; }
+    .vc-strip-html .vc-strip-days span.other,
+    .vc-strip-html .vc-strip-days a.other { background: #f6eee4; color: #8d6e63; }
+    .vc-strip-html .vc-strip-days span.sat,
+    .vc-strip-html .vc-strip-days a.sat { background: #eef4fc; color: #3b6fd8; }
+    .vc-strip-html .vc-strip-days span.sun,
+    .vc-strip-html .vc-strip-days a.sun { background: #fff3f1; color: #d23b3b; }
+    .vc-strip-html .vc-strip-days span.today,
+    .vc-strip-html .vc-strip-days a.today { box-shadow: inset 0 0 0 1.5px #1a73e8; }
+    .vc-strip-html .vc-strip-days span.sel,
+    .vc-strip-html .vc-strip-days a.sel {
       background: #1a73e8 !important; color: #fff !important; border-color: #1a73e8 !important;
     }
     .vc-strip-html .vc-strip-nm span {
@@ -2176,7 +2200,8 @@ def _mcal_grid_css() -> str:
       .vc-strip-html .vc-strip-wd,
       .vc-strip-html .vc-strip-days,
       .vc-strip-html .vc-strip-nm { width: max-content; min-width: 100%; }
-      .vc-strip-html .vc-strip-days span { flex: 0 0 2.2rem; min-width: 2.2rem; }
+      .vc-strip-html .vc-strip-days span,
+      .vc-strip-html .vc-strip-days a { flex: 0 0 2.2rem; min-width: 2.2rem; }
       .vc-strip-html .vc-strip-wd span, .vc-strip-html .vc-strip-nm span { flex: 0 0 2.2rem; min-width: 2.2rem; }
     }
     </style>
@@ -2289,7 +2314,10 @@ def _strip_fallback_html(days: list[dict], selected_iso: str) -> str:
         )
         tag = str(d.get("tag") or "")
         lab = f"{d.get('day')}<br>{html.escape(tag)}" if tag else str(d.get("day") or "")
-        cells.append(f'<span class="{html.escape(cls)}">{lab}</span>')
+        href = html.escape(_vc_pick_href(iso), quote=True)
+        cells.append(
+            f'<a class="{html.escape(cls)}" href="{href}">{lab}</a>'
+        )
         nm = str(d.get("name") or "")
         mcls = "planned" if d.get("mark") == "planned" else ""
         names.append(f'<span class="{mcls}">{html.escape(nm) if nm else "&nbsp;"}</span>')
@@ -2352,18 +2380,34 @@ def _render_month_cal(
                 key="vc_mcal_date",
             )
         else:
-            st.markdown(_mcal_head_html(), unsafe_allow_html=True)
-            for week in weeks:
-                cols = st.columns(7, gap="small")
-                for i, d in enumerate(week):
-                    iso = d.isoformat()
-                    with cols[i]:
-                        st.button(
-                            _mcal_button_label(d, cells.get(iso) or []),
-                            key=f"vc_mcal_{iso}",
-                            type="secondary",
-                            width="stretch",
-                        )
+            st.markdown(
+                _mcal_head_html()
+                + _mcal_month_html(
+                    month, selected, today, weeks, cells, pick_href=True
+                ),
+                unsafe_allow_html=True,
+            )
+            last = calendar.monthrange(month.year, month.month)[1]
+            month_isos = [
+                date(month.year, month.month, n).isoformat()
+                for n in range(1, last + 1)
+            ]
+            iso0 = (
+                selected.isoformat()
+                if (selected.year, selected.month) == (month.year, month.month)
+                else date(month.year, month.month, min(selected.day, last)).isoformat()
+            )
+            if st.session_state.get("vc_mcal_iso") not in month_isos:
+                st.session_state["vc_mcal_iso"] = iso0
+            st.selectbox(
+                "스케줄 날짜",
+                options=month_isos,
+                format_func=lambda iso: (
+                    f"{iso[5:7]}/{iso[8:10]} "
+                    f"({_WEEKDAYS[date.fromisoformat(iso).weekday()]})"
+                ),
+                key="vc_mcal_iso",
+            )
 
 
 def _render_month_schedule(

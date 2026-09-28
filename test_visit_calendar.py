@@ -459,6 +459,7 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertEqual(ss["_vc_selected"], date(2026, 9, 17))
         self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_date"))
         self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_box"))
+        self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_iso"))
         self.assertTrue(self.vc._is_vc_purge_key("vc_mcal_2026-09-17"))
 
     def test_cached_history_skips_second_merge(self):
@@ -539,6 +540,11 @@ class VisitCalendarTest(unittest.TestCase):
         mount_fn = src[src.index("def render_visit_calendar_tab") : src.index("def _render_visit_body")]
         self.assertNotIn("def _visit_body", mount_fn)
         self.assertIn("_render_visit_body(df, latest_update_str)", mount_fn)
+        self.assertIn("_apply_pending_mcal_pick()", mount_fn)
+        self.assertLess(
+            mount_fn.index("_apply_pending_mcal_pick()"),
+            mount_fn.index("_purge_vc_button_keys()"),
+        )
         self.assertIn("def _mcal_button_label", src)
         self.assertNotIn("disabled=out", src)
         pick = src[src.index("def _on_pick_day") : src.index("def _on_shift_month")]
@@ -561,11 +567,13 @@ class VisitCalendarTest(unittest.TestCase):
         cal = src[src.index("def _render_month_cal") : src.index("def _render_month_schedule")]
         self.assertIn("_mcal_month_html(", cal)
         self.assertIn('key="vc_mcal_date"', cal)
-        self.assertIn('key=f"vc_mcal_{iso}"', cal)
+        self.assertNotIn('key=f"vc_mcal_{iso}"', cal)
+        self.assertIn('key="vc_mcal_iso"', cal)
         self.assertIn("_vc_is_mac_local()", cal)
         self.assertIn("st.date_input(", cal)
         self.assertNotIn("on_change=_on_mcal_date_change", cal)
         self.assertIn("pick_href=True", cal)
+        self.assertIn("_vc_pick_href(iso)", src[src.index("def _strip_fallback_html") : src.index("def _render_month_cal")])
         self.assertIn("아이패드·Cloud: 날짜 조작이 전 탭을 다시 돌리지 않게", src)
         self.assertIn("def _on_mcal_date_change", src)
         self.assertIn("def _sync_selected_from_mcal_widget", src)
