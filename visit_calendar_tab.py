@@ -419,6 +419,20 @@ def _clients_from_store(staff: str, store: dict | None = None) -> list[str]:
     return names
 
 
+def _staff_mask(df: pd.DataFrame, staff: str) -> pd.Series:
+    """담당자 열을 가능한 한 복사 없이 고른다. 값이 이미 정리돼 있으면 strip을 건너뛴다."""
+    col = df["담당자"]
+    if col.dtype == object:
+        mask = col.eq(staff)
+        try:
+            leftover = col[~mask]
+            if leftover.empty or not bool(leftover.astype(str).str.strip().eq(staff).any()):
+                return mask
+        except (ValueError, TypeError):
+            pass
+    return col.astype(str).str.strip() == staff
+
+
 def _sales_client_names(df: pd.DataFrame | None, staff: str) -> list[str]:
     """선택 담당자의 매출 거래처. 담당자·행수가 같으면 다시 훑지 않는다."""
     if df is None or df.empty or not staff:
@@ -427,11 +441,11 @@ def _sales_client_names(df: pd.DataFrame | None, staff: str) -> list[str]:
         return []
     n = int(len(df))
     box = _vc_state_dict("_vc_staff_clients")
-    sig = (staff, n, "c2")
+    sig = (staff, n, "c3")
     hit = box.get("names")
     if box.get("sig") == sig and isinstance(hit, list):
         return hit
-    work = df[df["담당자"].astype(str).str.strip() == staff]
+    work = df.loc[_staff_mask(df, staff)]
     names = {
         _s(x)
         for x in pd.unique(work["거래처"].astype(str))
@@ -450,10 +464,21 @@ def _sales_client_names(df: pd.DataFrame | None, staff: str) -> list[str]:
     return out
 
 
-def _staff_clients(df: pd.DataFrame | None, staff: str, store: dict | None = None) -> list[str]:
-    """담당자 매출 거래처 전부 + 방문·할일에 적힌 이름."""
+def _staff_clients(
+    df: pd.DataFrame | None,
+    staff: str,
+    store: dict | None = None,
+    *,
+    include_sales: bool = True,
+) -> list[str]:
+    """담당자 매출 거래처 + 방문·할일에 적힌 이름.
+
+    include_sales=False 는 아이패드 첫 로딩용. 매출 전 거래처를 셀렉트에
+    넣지 않고, 저장된 이름·직접 입력만 쓴다. 맥은 기본값 그대로다.
+    """
     names = set(_clients_from_store(staff, store))
-    names.update(_sales_client_names(df, staff))
+    if include_sales:
+        names.update(_sales_client_names(df, staff))
     try:
         cur = _s(st.session_state.get("vc_client"))
         if cur and cur not in _SKIP_CLIENT:
@@ -1237,6 +1262,7 @@ _VC_BUTTON_PREFIXES = (
     "vc_todo_pick_",
     "vc_todo_show_hidden",
     "vc_todo_cancel_edit",
+    "vc_todo_more",
 )
 
 
@@ -1272,7 +1298,7 @@ def _purge_vc_button_keys() -> None:
     for k in list(st.session_state.keys()):
         if not (isinstance(k, str) and k.startswith(_VC_BUTTON_PREFIXES)):
             continue
-        if k == "vc_strip_host":
+        if k.endswith("_host"):
             continue
         st.session_state.pop(k, None)
     bak = st.session_state.get("_dash_bak_visit")
@@ -1280,7 +1306,7 @@ def _purge_vc_button_keys() -> None:
         for k in list(bak):
             if not (isinstance(k, str) and k.startswith(_VC_BUTTON_PREFIXES)):
                 continue
-            if k == "vc_strip_host":
+            if k.endswith("_host"):
                 continue
             bak.pop(k, None)
 
@@ -1355,6 +1381,14 @@ def _on_cancel_todo_edit() -> None:
 
 def _on_toggle_show_done() -> None:
     st.session_state["vc_hide_done"] = not bool(st.session_state.get("vc_hide_done", True))
+
+
+_VC_TODO_TOUCH_PAGE = 12
+
+
+def _on_todo_more() -> None:
+    cur = int(st.session_state.get("_vc_todo_touch_n") or _VC_TODO_TOUCH_PAGE)
+    st.session_state["_vc_todo_touch_n"] = cur + _VC_TODO_TOUCH_PAGE
 
 
 def _on_toggle_visit(d: date, staff: str, client: str, status: str = "done") -> None:
@@ -1435,10 +1469,13 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         _apply_pending_mcal_pick()
         sel: date = st.session_state.get("_vc_selected") or today
         mon = st.session_state.get("_vc_month") or month
+        touch = _vc_is_touch_ui()
         f1, f2 = st.columns([1, 1])
         with f1:
             staff = st.selectbox("담당자", options=staffs or [""], key="vc_staff")
-        clients = _staff_clients(df, staff, store0)
+        # 아이패드 로그인·첫 로딩: 매출 전 거래처를 셀렉트에 넣지 않는다.
+        # 맥은 담당자 매출 거래처 전부를 그대로 보여 준다.
+        clients = _staff_clients(df, staff, store0, include_sales=not touch)
         with f2:
             client = (
                 st.selectbox(
@@ -1448,7 +1485,11 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
                     placeholder="거래처명 입력",
                     key="vc_client",
                     accept_new_options=True,
-                    help="이 담당자의 매출 거래처가 모두 나옵니다. 고르면 달력·방문·할일에 연동됩니다.",
+                    help=(
+                        "업체명을 입력하거나 고르면 달력·방문·할일에 연동됩니다."
+                        if touch
+                        else "이 담당자의 매출 거래처가 모두 나옵니다. 고르면 달력·방문·할일에 연동됩니다."
+                    ),
                 )
                 or ""
             )
@@ -1734,6 +1775,172 @@ except Exception:  # pragma: no cover
     _VC_STRIP = None
 
 
+_VC_MCAL_HTML = """<div class="vc-mcal-root"></div>"""
+_VC_MCAL_CSS = f"""
+.vc-mcal-root {{ width:100%; }}
+.vc-mcal-grid {{
+  display:grid; grid-template-columns:repeat(7,minmax(0,1fr));
+  gap:4px; width:100%;
+}}
+.vc-mcal-grid.wd {{ margin-bottom:4px; }}
+.vc-mcal-grid.wd span {{
+  text-align:center; font-size:10px; font-weight:700;
+  letter-spacing:-0.2px; padding:2px 0; color:#6b7280;
+}}
+.vc-mcal-grid.wd span.sun {{ color:{_VC_SUN_FG}; }}
+.vc-mcal-grid.wd span.sat {{ color:{_VC_SAT_FG}; }}
+.vc-mcal-grid button {{
+  min-height:7.2rem; padding:6px 2px 8px; border-radius:10px;
+  background:#fff; color:#3c4043; border:1px solid #eceff3;
+  font-size:13px; font-weight:600; line-height:1.25;
+  white-space:pre-line; text-align:center; cursor:pointer;
+  touch-action:manipulation;
+}}
+.vc-mcal-grid button.sun {{ background:{_VC_SUN_BG}; color:{_VC_SUN_FG}; }}
+.vc-mcal-grid button.sat {{ background:{_VC_SAT_BG}; color:{_VC_SAT_FG}; }}
+.vc-mcal-grid button.out {{ color:#80868b; background:#fff; }}
+.vc-mcal-grid button.today {{ box-shadow:inset 0 0 0 1.5px #9aa8bc; }}
+.vc-mcal-grid button.sel {{
+  background:#e8eaed !important; color:#202124 !important; border-color:#c5cedb !important;
+}}
+.vc-mcal-chip {{
+  display:block; font-size:10px; font-weight:700; line-height:1.2;
+  border-radius:4px; padding:1px 2px; margin-top:2px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}}
+.vc-mcal-chip.visit {{ background:#e6f4ea; color:#137333; }}
+.vc-mcal-chip.planned {{ background:#fff4e5; color:#c47d00; }}
+.vc-mcal-chip.prior {{ background:#e8f0fe; color:#1a73e8; }}
+.vc-mcal-chip.mine {{ box-shadow:inset 0 0 0 1px #1a73e8; }}
+@media (min-width:851px) and (max-width:1180px) and (orientation:landscape) {{
+  .vc-mcal-grid button {{ min-height:6.6rem; padding:4px 2px 6px; }}
+}}
+"""
+_VC_MCAL_JS = r"""
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => (
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+  ));
+}
+
+export default function (component) {
+  const { data, parentElement, setStateValue } = component;
+  const root = parentElement.querySelector(".vc-mcal-root");
+  if (!root) return;
+  const weeks = Array.isArray(data && data.weeks) ? data.weeks : [];
+  const headers = Array.isArray(data && data.headers) ? data.headers : [];
+  const selected = String((data && data.selected) || "");
+  let html = '<div class="vc-mcal-grid wd">';
+  headers.forEach((wd, i) => {
+    const cls = i === 0 ? "sun" : i === 6 ? "sat" : "";
+    html += '<span class="' + cls + '">' + esc(wd) + "</span>";
+  });
+  html += "</div><div class=\"vc-mcal-grid days\">";
+  weeks.forEach((week) => {
+    (Array.isArray(week) ? week : []).forEach((cell) => {
+      const iso = String((cell && cell.iso) || "");
+      const wd = Number((cell && cell.wd) || 0);
+      const cls = [
+        wd === 0 ? "sun" : wd === 6 ? "sat" : "",
+        cell && cell.out ? "out" : "",
+        iso === selected || (cell && cell.sel) ? "sel" : "",
+        cell && cell.today ? "today" : "",
+      ].filter(Boolean).join(" ");
+      html += '<button type="button" data-iso="' + esc(iso) + '" class="' + cls + '">';
+      html += "<div>" + esc(cell && cell.day) + "</div>";
+      const chips = Array.isArray(cell && cell.chips) ? cell.chips : [];
+      chips.forEach((ch) => {
+        const k = String((ch && ch.kind) || "visit");
+        const mine = ch && ch.mine ? " mine" : "";
+        html += '<span class="vc-mcal-chip ' + esc(k) + mine + '">' + esc(ch && ch.label) + "</span>";
+      });
+      html += "</button>";
+    });
+  });
+  html += "</div>";
+  if (root.innerHTML !== html) root.innerHTML = html;
+  if (!root.dataset.vcBound) {
+    root.dataset.vcBound = "1";
+    root.addEventListener("click", (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest("[data-iso]") : null;
+      if (!btn || !root.contains(btn)) return;
+      const iso = btn.getAttribute("data-iso") || "";
+      if (!iso) return;
+      root.querySelectorAll("[data-iso]").forEach((el) => el.classList.toggle("sel", el === btn));
+      setStateValue("iso", iso);
+    });
+  }
+}
+"""
+try:
+    _VC_MCAL = st.components.v2.component(
+        "visit_month_cal_v1",
+        html=_VC_MCAL_HTML,
+        css=_VC_MCAL_CSS,
+        js=_VC_MCAL_JS,
+    )
+except Exception:  # pragma: no cover
+    _VC_MCAL = None
+
+
+def _on_mcal_iso_change() -> None:
+    raw = st.session_state.get("vc_mcal_host")
+    iso = ""
+    if raw is not None:
+        iso = str(getattr(raw, "iso", "") or "")
+        if not iso and isinstance(raw, dict):
+            iso = str(raw.get("iso") or "")
+    try:
+        d = date.fromisoformat(iso[:10])
+    except ValueError:
+        return
+    if st.session_state.get("_vc_selected") == d:
+        return
+    _on_pick_day(d)
+
+
+def _mcal_touch_weeks(
+    month: date,
+    selected: date,
+    today: date,
+    weeks: list[list[date]],
+    cells: dict[str, list[dict]],
+) -> list[list[dict]]:
+    """아이패드 월간 달력 1개 컴포넌트용. 맥 버튼 격자는 쓰지 않는다."""
+    sel_iso = selected.isoformat()
+    today_iso = today.isoformat()
+    tags = {"visit": "방문", "planned": "예정", "prior": "기방문"}
+    out: list[list[dict]] = []
+    for week in weeks:
+        row: list[dict] = []
+        for i, d in enumerate(week):
+            iso = d.isoformat()
+            marks = cells.get(iso) or []
+            extra = max(0, len(marks) - _MCAL_SLOTS)
+            chips: list[dict] = []
+            for j, m in enumerate(marks[:_MCAL_SLOTS]):
+                kind = str(m.get("kind") or "visit")
+                raw = _s(m.get("label")) or tags.get(kind, "")
+                lab = _client_short(raw) if kind != "prior" else raw
+                if j == _MCAL_SLOTS - 1 and extra:
+                    lab = f"{lab} +{extra}"
+                chips.append({"kind": kind, "label": lab, "mine": bool(m.get("mine"))})
+            out_day = d.month != month.month
+            row.append(
+                {
+                    "iso": iso,
+                    "day": d.day,
+                    "out": out_day,
+                    "sel": iso == sel_iso,
+                    "today": (not out_day) and iso == today_iso,
+                    "wd": i,
+                    "chips": chips,
+                }
+            )
+        out.append(row)
+    return out
+
+
 def _on_strip_iso_change() -> None:
     raw = st.session_state.get("vc_strip_host")
     iso = ""
@@ -1995,6 +2202,28 @@ def _render_month_cal(
     n_visit = sum(1 for items in cells.values() for x in items if x.get("kind") == "visit")
     n_plan = sum(1 for items in cells.values() for x in items if x.get("kind") == "planned")
     n_prior = sum(1 for items in cells.values() for x in items if x.get("kind") == "prior")
+    if _vc_is_touch_ui() and _VC_MCAL is not None:
+        st.markdown(
+            f"<div class='vc-mcal'>"
+            f"<div class='vc-mcal-title'>{month.year}년 {month.month}월 스케줄</div>"
+            f"<div class='vc-mcal-leg'>"
+            f"<span><i style='background:#137333'></i>방문 {n_visit}</span>"
+            f"<span><i style='background:#c47d00'></i>방문예정 {n_plan}</span>"
+            f"<span><i style='background:#1a73e8'></i>기방문 {n_prior}</span>"
+            f"</div></div>",
+            unsafe_allow_html=True,
+        )
+        _VC_MCAL(
+            key="vc_mcal_host",
+            data={
+                "headers": list(_CAL_HEADERS),
+                "weeks": _mcal_touch_weeks(month, selected, today, weeks, cells),
+                "selected": selected.isoformat(),
+            },
+            default={"iso": selected.isoformat()},
+            on_iso_change=_on_mcal_iso_change,
+        )
+        return
     st.markdown(_mcal_grid_css(), unsafe_allow_html=True)
     with st.container(key="vc_mcal_box"):
         st.markdown(
@@ -2071,6 +2300,12 @@ def _render_month_schedule(
         unsafe_allow_html=True,
     )
     c1, c2 = st.columns(2, gap="medium")
+    if _vc_is_touch_ui():
+        with c1:
+            st.markdown(_month_schedule_items_html(done, selected, client, "visit"), unsafe_allow_html=True)
+        with c2:
+            st.markdown(_month_schedule_items_html(planned, selected, client, "planned"), unsafe_allow_html=True)
+        return
     with c1:
         _render_month_col("기방문", done, selected, client, "visit", "vc_ms_x_")
     with c2:
@@ -2153,6 +2388,28 @@ def _render_visit_log(store: dict, staff: str, client: str) -> None:
     rows = rows[:40]
     if not rows:
         st.caption("체크한 방문 내역이 없습니다.")
+        return
+    if _vc_is_touch_ui():
+        parts = ["<div class='vc-log-touch'>"]
+        for v in rows:
+            d = _iso(v.get("date"))
+            wd = ""
+            try:
+                if d:
+                    wd = f" ({_WEEKDAYS[date.fromisoformat(d).weekday()]})"
+            except ValueError:
+                wd = ""
+            note = f" · {html.escape(_s(v.get('note')))}" if _s(v.get("note")) else ""
+            kind = "방문예정" if (_s(v.get("status")) or "done") == "planned" else "방문"
+            parts.append(
+                f"<div class='vc-log-row'>- <b>{html.escape(d)}{wd}</b> · {kind} · "
+                f"{html.escape(_s(v.get('client')) or '-')}{note}</div>"
+            )
+        parts.append("</div>")
+        st.markdown("".join(parts), unsafe_allow_html=True)
+        if extra:
+            st.caption(f"최근 40건만 표시 · 나머지 {extra}건")
+        st.caption("삭제는 위에서 날을 고른 뒤 「삭제」를 누르세요.")
         return
     for v in rows:
         d = _iso(v.get("date"))
@@ -2250,6 +2507,12 @@ def _render_todo_panel(selected: date, staff: str, client: str, store: dict) -> 
     if hide_done:
         todos = [t for t in todos if not t.get("done")]
     todos.sort(key=lambda t: (0 if t.get("starred") else 1, 1 if t.get("done") else 0, _iso(t.get("due")) or "9999", _s(t.get("title"))))
+    todo_more = 0
+    if _vc_is_touch_ui() and todos:
+        n_show = int(st.session_state.get("_vc_todo_touch_n") or _VC_TODO_TOUCH_PAGE)
+        n_show = max(_VC_TODO_TOUCH_PAGE, n_show)
+        todo_more = max(0, len(todos) - n_show)
+        todos = todos[:n_show]
     edit_id = str(st.session_state.get("_vc_edit_todo") or "")
     edit_item = next((t for t in all_todos if str(t.get("id")) == edit_id), None)
     if edit_id and not edit_item:
@@ -2314,6 +2577,13 @@ def _render_todo_panel(selected: date, staff: str, client: str, store: dict) -> 
                     args=(tid,),
                 )
             st.markdown("</div>", unsafe_allow_html=True)
+        if todo_more:
+            st.button(
+                f"할일 {todo_more}건 더 보기",
+                key="vc_todo_more",
+                width="stretch",
+                on_click=_on_todo_more,
+            )
 
     if edit_item:
         cap, cancel = st.columns([1.35, 0.65])
