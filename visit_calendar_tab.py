@@ -1669,84 +1669,6 @@ def _vc_pick_href(iso: str) -> str:
     return "?" + "&".join(bits)
 
 
-def _vc_inject_visit_tab_hold_script() -> None:
-    """Cloud HTML 달력 클릭은 전체 재실행이다. 방문 탭을 다시 고르지 않으면 영업종합요약으로 간다."""
-    if _vc_is_darwin_local():
-        return
-    st.components.v1.html(
-        """
-        <script>
-        (function () {
-          var KEY = 'dash_vc_hold_tab';
-          var doc = window.parent.document;
-          var win = window.parent;
-          function mainTabList() {
-            var lists = doc.querySelectorAll('[role="tablist"]');
-            var best = null, bestN = 0, i, n, el, st;
-            for (i = 0; i < lists.length; i++) {
-              el = lists[i];
-              n = el.querySelectorAll('[role="tab"]').length;
-              if (n < 4) continue;
-              if (el.classList && el.classList.contains('dashboard-tabs-in-filter')) {
-                if (n > bestN) { bestN = n; best = el; }
-                continue;
-              }
-              try {
-                st = win.getComputedStyle(el);
-                if (st && (st.display === 'none' || st.visibility === 'hidden')) continue;
-              } catch (eSt) {}
-              if (n >= 13 && n > bestN) { bestN = n; best = el; }
-              else if (!best && n > bestN) { bestN = n; best = el; }
-            }
-            return best;
-          }
-          function visitTab() {
-            var list = mainTabList();
-            if (!list) return null;
-            var tabs = list.querySelectorAll('[role="tab"]');
-            var i, lab, t;
-            for (i = 0; i < tabs.length; i++) {
-              t = tabs[i];
-              lab = (t.textContent || '');
-              if (lab.indexOf('방문') >= 0 && lab.indexOf('할일') >= 0) return t;
-            }
-            return tabs[12] || null;
-          }
-          function hold() {
-            try {
-              var until = parseInt(win.sessionStorage.getItem(KEY) || '0', 10);
-              if (!until || Date.now() > until) return;
-              var t = visitTab();
-              if (t && t.getAttribute('aria-selected') !== 'true') t.click();
-            } catch (eHold) {}
-          }
-          if (!doc.__dashVcHoldTabReady) {
-            doc.__dashVcHoldTabReady = true;
-            doc.addEventListener('click', function (ev) {
-              try {
-                var a = ev.target && ev.target.closest && ev.target.closest('a[href*="vc_pick="]');
-                if (a) {
-                  win.sessionStorage.setItem(KEY, String(Date.now() + 15000));
-                  return;
-                }
-                var tab = ev.target && ev.target.closest && ev.target.closest('[role="tab"]');
-                if (!tab) return;
-                var vt = visitTab();
-                if (vt && tab !== vt) win.sessionStorage.removeItem(KEY);
-              } catch (eClick) {}
-            }, true);
-          }
-          hold();
-          setTimeout(hold, 50);
-          setTimeout(hold, 200);
-          setTimeout(hold, 800);
-        })();
-        </script>
-        """,
-        height=0,
-    )
-
-
 def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str: str = "") -> None:
     """방문 미팅 캘린더 + 할일 목록."""
     st.markdown(
@@ -1754,7 +1676,6 @@ def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str:
         unsafe_allow_html=True,
     )
     _apply_query_day_pick()
-    _vc_inject_visit_tab_hold_script()
     _vc_clear_strip_hosts_if_unused()
     _apply_pending_month_nav()
     _apply_pending_strip_pick()
@@ -2199,13 +2120,7 @@ def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]],
             on_iso_change=_on_strip_iso_change,
         )
         return
-    if not _vc_is_darwin_local():
-        # Cloud는 일자 버튼을 안 만든다. 첫 화면부터 60칸이면 방문 탭 시작 로딩이 길어진다.
-        st.markdown(
-            _strip_fallback_html(days, selected.isoformat(), pick_href=True),
-            unsafe_allow_html=True,
-        )
-        return
+    # Cloud HTML <a href>는 Streamlit이 새 창으로 연다. 같은 화면 버튼만 쓴다.
     st.markdown(_strip_button_theme_css(days), unsafe_allow_html=True)
     _render_strip_wd_row(days)
     _render_strip_buttons(days, "vc_strip_", _on_pick_day)
@@ -2456,14 +2371,50 @@ def _mcal_button_label(d: date, marks: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _mcal_button_theme_css(
+    month: date, selected: date, today: date, weeks: list[list[date]]
+) -> str:
+    """로컬 스케줄 칸과 같은 선택·오늘·주말 색. type=primary는 CSS에 가려진다."""
+    sel_iso = selected.isoformat() if isinstance(selected, date) else ""
+    today_iso = today.isoformat() if isinstance(today, date) else ""
+    rules = ["<style>"]
+    for week in weeks:
+        for i, d in enumerate(week):
+            if d.month != month.month:
+                continue
+            iso = d.isoformat()
+            sel = f'div[class*="st-key-vc_mcal_{iso}"] button'
+            if iso == sel_iso:
+                rules.append(
+                    f"{sel}{{background:#e8eaed!important;color:#202124!important;"
+                    "border-color:#c5c9d0!important;}"
+                )
+            elif i == 0:
+                rules.append(
+                    f"{sel}{{background:{_VC_SUN_BG}!important;color:{_VC_SUN_FG}!important;}}"
+                )
+            elif i == 6:
+                rules.append(
+                    f"{sel}{{background:{_VC_SAT_BG}!important;color:{_VC_SAT_FG}!important;}}"
+                )
+            if iso == today_iso:
+                rules.append(f"{sel}{{box-shadow:inset 0 0 0 1.5px #1a73e8!important;}}")
+    rules.append("</style>")
+    return "".join(rules)
+
+
 def _render_mcal_day_buttons(
     month: date,
     selected: date,
     weeks: list[list[date]],
     cells: dict[str, list[dict]],
+    today: date | None = None,
 ) -> None:
-    """Cloud: HTML 칸은 눌리지 않는다. 로컬 칸 버튼과 같이 on_click으로 선택일을 바꾼다."""
+    """Cloud: HTML 링크는 새 창이 된다. 같은 화면 버튼으로 선택일을 바꾼다."""
     sel_iso = selected.isoformat() if isinstance(selected, date) else ""
+    today = today or date.today()
+    picked = None
+    st.markdown(_mcal_button_theme_css(month, selected, today, weeks), unsafe_allow_html=True)
     st.markdown(_mcal_head_html(), unsafe_allow_html=True)
     for week in weeks:
         cols = st.columns(7, gap="small")
@@ -2476,7 +2427,7 @@ def _render_mcal_day_buttons(
                         unsafe_allow_html=True,
                     )
                     continue
-                st.button(
+                clicked = st.button(
                     _mcal_button_label(d, cells.get(iso) or []),
                     key=f"vc_mcal_{iso}",
                     type="primary" if iso == sel_iso else "secondary",
@@ -2484,6 +2435,11 @@ def _render_mcal_day_buttons(
                     on_click=_on_pick_day,
                     args=(d,),
                 )
+                if clicked:
+                    picked = d
+    if picked is not None and st.session_state.get("_vc_selected") != picked:
+        _on_pick_day(picked)
+        _vc_rerun()
 
 
 def _mcal_head_html() -> str:
@@ -2620,14 +2576,7 @@ def _render_month_cal(
                 key="vc_mcal_date",
             )
         else:
-            # Cloud: 칸 버튼 대신 HTML. 첫 로딩을 짧게 두고 로컬과 같은 선택·주말 색을 쓴다.
-            st.markdown(
-                _mcal_head_html()
-                + _mcal_month_html(
-                    month, selected, today, weeks, cells, pick_href=True
-                ),
-                unsafe_allow_html=True,
-            )
+            _render_mcal_day_buttons(month, selected, weeks, cells, today)
 
 
 def _render_month_schedule(
@@ -3240,11 +3189,12 @@ def _on_t2d_strip_iso_change() -> None:
 
 
 def _render_strip_buttons(days: list[dict], key_pfx: str, on_pick) -> None:
+    picked = None
     cols = st.columns(len(days) or 1, gap="small")
     for i, cell in enumerate(days):
         d = date.fromisoformat(cell["iso"])
         with cols[i]:
-            st.button(
+            clicked = st.button(
                 f"{cell['day']}\n{cell['tag']}" if cell["tag"] else str(cell["day"]),
                 key=f"{key_pfx}{cell['iso']}",
                 type="primary" if cell.get("sel") else "secondary",
@@ -3252,6 +3202,12 @@ def _render_strip_buttons(days: list[dict], key_pfx: str, on_pick) -> None:
                 on_click=on_pick,
                 args=(d,),
             )
+            if clicked:
+                picked = d
+    sel_key = "_t2d_selected" if key_pfx.startswith("t2d_") else "_vc_selected"
+    if picked is not None and st.session_state.get(sel_key) != picked:
+        on_pick(picked)
+        _vc_rerun()
 
 
 def _render_t2d_day_strip(
