@@ -65,6 +65,8 @@ def _pin_worklog_scroll() -> None:
 
 
 def _render_worklog_scroll_lock(iso: str) -> None:
+    if _wl_quiet_ui():
+        return
     _WL_SCROLL_LOCK(
         key="wl_scroll_lock",
         data={"iso": iso, "pin": int(st.session_state.get("wl_scroll_pin") or 0)},
@@ -81,6 +83,33 @@ def _wl_quiet_ui() -> bool:
     except Exception: pass
     try: return platform.system() != "Darwin"
     except Exception: return True
+
+
+def _wl_mount_v2_lines_editor(*, key, data, default, on_lines_change, changed_key: str, session_lines: list[str]):
+    """Cloud·아이패드는 v2 iframe 대신 text_area. 맥 로컬 편집기는 그대로."""
+    if _wl_quiet_ui():
+        raw = st.text_area(
+            "줄 편집",
+            value="\n".join(str(x or "") for x in session_lines),
+            key=f"{key}__ta",
+            height=200,
+            label_visibility="collapsed",
+        )
+        out = [str(x) for x in str(raw or "").split("\n")]
+        if out != [str(x or "") for x in session_lines]:
+            st.session_state[changed_key] = True
+
+        class _QuietLines:
+            def __init__(self, lines: list[str]) -> None:
+                self.lines = lines
+
+        return _QuietLines(out)
+    return _WL_LINES_EDITOR(
+        key=key,
+        data=data,
+        default=default,
+        on_lines_change=on_lines_change,
+    )
 
 
 def _wl_is_streamlit_cloud() -> bool:
@@ -5512,11 +5541,13 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             _maybe_remember_comp_focus(iso, entry_i, "cl", focus_cur, _entry_client_key)
 
     _seed_comp_focus_seen(iso, entry_i, "cl", focus_n)
-    result = _WL_LINES_EDITOR(
+    result = _wl_mount_v2_lines_editor(
         key=ck,
         data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "cl"), "max_u": int(max_u), "cell_w": int(_orig_cell_px("client")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "client", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0},
         default={"lines": lines},
         on_lines_change=_on_clients_change,
+        changed_key=f"wl_clients_user_edit_{iso}_{entry_i}",
+        session_lines=lines,
     )
     
     forced = st.session_state.pop(f"wl_force_comp_clients_{iso}_{entry_i}", None)
@@ -5576,11 +5607,13 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             _maybe_remember_comp_focus(iso, entry_i, "ln", focus_cur, _entry_line_key)
 
     _seed_comp_focus_seen(iso, entry_i, "ln", focus_n)
-    result = _WL_LINES_EDITOR(
+    result = _wl_mount_v2_lines_editor(
         key=ck,
         data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "ln"), "max_u": float(max_u), "cell_w": int(_orig_cell_px("content")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "content", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0},
         default={"lines": lines},
         on_lines_change=_on_lines_change,
+        changed_key=f"wl_lines_user_edit_{iso}_{entry_i}",
+        session_lines=lines,
     )
     
     forced = st.session_state.pop(f"wl_force_comp_lines_{iso}_{entry_i}", None)
@@ -5649,11 +5682,13 @@ def _mount_entry_remark_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             _maybe_remember_comp_focus(iso, entry_i, "rm", focus_cur, _entry_remark_key)
 
     _seed_comp_focus_seen(iso, entry_i, "rm", focus_n)
-    result = _WL_LINES_EDITOR(
+    result = _wl_mount_v2_lines_editor(
         key=ck,
         data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "rm"), "max_u": int(max_u), "cell_w": int(_orig_cell_px("remark")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "remark", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_remarks_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0},
         default={"lines": lines},
         on_lines_change=_on_remarks_change,
+        changed_key=f"wl_remarks_user_edit_{iso}_{entry_i}",
+        session_lines=lines,
     )
 
     forced = st.session_state.pop(f"wl_force_comp_remarks_{iso}_{entry_i}", None)
@@ -6240,6 +6275,9 @@ def _mount_worklog_live_preview(
     patches: dict[str, str] | None = None,
     page: int = 1,
 ) -> None:
+    if _wl_quiet_ui():
+        components.html(html or "", height=max(120, int(height or 480)), scrolling=True)
+        return
     _WL_PREVIEW_HOST(
         key=key,
         data={
@@ -6964,12 +7002,13 @@ def _render_worklog_input_panel(selected: date) -> None:
                     focus_caret = None
 
                 # Enter 줄바꿈만 서버로. focus/caret trigger는 클릭마다 rerun·ERROR를 만들어 버튼을 죽인다.
-                _WL_ENTER_HOOK(
-                    key="wl_enter_hook_nav",
-                    data={"iso": iso2, "focus_key": focus_key if isinstance(focus_key, str) else "", "focus_caret": (int(focus_caret) if isinstance(focus_caret, (int, float)) else ""), "client_max_u": _client_line_units(), "content_max_u": _content_line_units(), "remark_max_u": _remark_line_units()},
-                    on_enter_change=_on_enter_trigger,
-                    height=1,
-                )
+                if not _wl_quiet_ui():
+                    _WL_ENTER_HOOK(
+                        key="wl_enter_hook_nav",
+                        data={"iso": iso2, "focus_key": focus_key if isinstance(focus_key, str) else "", "focus_caret": (int(focus_caret) if isinstance(focus_caret, (int, float)) else ""), "client_max_u": _client_line_units(), "content_max_u": _content_line_units(), "remark_max_u": _remark_line_units()},
+                        on_enter_change=_on_enter_trigger,
+                        height=1,
+                    )
             _wl_entry_editor()
 
 

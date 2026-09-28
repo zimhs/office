@@ -6,6 +6,7 @@ import html
 import json
 import os
 import re
+import sys
 import unicodedata
 import uuid
 from datetime import date, datetime, timedelta
@@ -74,7 +75,25 @@ def _vc_is_touch_ui() -> bool:
             return True
     except Exception:
         pass
+    try:
+        # Cloud는 Linux. 아이패드 크롬은 Macintosh UA라 맥으로 오인되면 iframe이 다시 뜬다.
+        if sys.platform != "darwin":
+            return True
+    except Exception:
+        pass
     return bool(st.session_state.get("force_touch_ui"))
+
+
+def _vc_is_mac_local() -> bool:
+    """납품줄 v2·fragment는 맥 Desktop 프로세스만. Cloud(Linux)·아이패드는 제외."""
+    try:
+        if sys.platform != "darwin":
+            return False
+    except Exception:
+        return False
+    if _vc_is_streamlit_cloud() or _vc_is_touch_ui():
+        return False
+    return True
 
 
 def _vc_is_streamlit_cloud() -> bool:
@@ -122,7 +141,7 @@ _VC_STRIP_READY = False
 
 def _vc_use_day_strip_component() -> bool:
     """맥 로컬만 납품줄 v2. Cloud·아이패드는 등록·마운트 모두 하지 않는다."""
-    if _vc_is_touch_ui() or _vc_is_streamlit_cloud():
+    if not _vc_is_mac_local():
         return False
     return _vc_ensure_strip() is not None
 
@@ -1505,7 +1524,6 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
     month = st.session_state.get("_vc_month") or date(today.year, today.month, 1)
     st.markdown(_vc_css(), unsafe_allow_html=True)
 
-    @st.fragment
     def _visit_day_block() -> None:
         _apply_pending_month_nav()
         _apply_pending_mcal_pick()
@@ -1588,7 +1606,10 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         if latest_update_str:
             st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
-    _visit_day_block()
+    if _vc_is_mac_local():
+        st.fragment(_visit_day_block)()
+    else:
+        _visit_day_block()
 
 
 def _client_short(name: str) -> str:
@@ -1805,7 +1826,7 @@ def _vc_ensure_strip():
     if _VC_STRIP_READY:
         return _VC_STRIP
     _VC_STRIP_READY = True
-    if _vc_is_touch_ui() or _vc_is_streamlit_cloud():
+    if not _vc_is_mac_local():
         _VC_STRIP = None
         return None
     try:
@@ -2673,7 +2694,6 @@ def render_tab2_delivery_status(
         staff = _s(staff)
         client = _s(client)
 
-        @st.fragment
         def _t2d_body() -> None:
             _apply_pending_t2d_month_nav()
             _apply_pending_t2d_strip_pick()
@@ -2735,5 +2755,8 @@ def render_tab2_delivery_status(
                     unsafe_allow_html=True,
                 )
 
-        _t2d_body()
+        if _vc_is_mac_local():
+            st.fragment(_t2d_body)()
+        else:
+            _t2d_body()
 
