@@ -1708,6 +1708,8 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         _apply_pending_month_nav()
         _apply_pending_strip_pick()
         _apply_pending_mcal_pick()
+        # fragment 재실행은 바깥 purge를 안 탄다. 버튼 True 잔여면 달력·월이동이 오류 난다.
+        _purge_vc_button_keys()
         if _vc_use_mcal_date_input():
             _sync_selected_from_mcal_widget()
         sel: date = st.session_state.get("_vc_selected") or today
@@ -1816,8 +1818,12 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         if latest_update_str:
             st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
-    # 로컬과 같이 fragment. Cloud에서 날짜 클릭이 전체 재실행되면 영업종합요약이 비친다.
-    st.fragment(_visit_day_block)()
+    # 로컬 무손실: fragment. Cloud는 바깥 필터 fragment 안에 또 겹치면 본문이 수분 빈다.
+    # Cloud 날짜·월 이동은 바깥 `_dash_filter_and_tabs_fragment` 범위로만 다시 그린다.
+    if _vc_is_darwin_local():
+        st.fragment(_visit_day_block)()
+    else:
+        _visit_day_block()
 
 
 def _client_short(name: str) -> str:
@@ -2110,6 +2116,40 @@ def _render_strip_wd_row(days: list[dict]) -> None:
     )
 
 
+def _on_cloud_day_change() -> None:
+    """Cloud 날짜 selectbox. 그리는 도중에 _on_pick_day를 호출하면 재실행이 안 끝난다."""
+    mon = st.session_state.get("_vc_month")
+    if not isinstance(mon, date):
+        return
+    key = f"vc_cloud_day_{mon.year:04d}-{mon.month:02d}"
+    raw = st.session_state.get(key)
+    try:
+        day = int(str(raw).replace("일", "").strip())
+    except ValueError:
+        return
+    last = calendar.monthrange(mon.year, mon.month)[1]
+    d = date(mon.year, mon.month, min(max(day, 1), last))
+    if st.session_state.get("_vc_selected") != d:
+        _on_pick_day(d)
+
+
+def _render_cloud_day_pick(month: date, selected: date) -> None:
+    """Cloud: 로컬과 같은 달력 그림 + 날짜 한 개. 칸 버튼 60개는 첫 로딩이 수분 걸린다."""
+    last = calendar.monthrange(month.year, month.month)[1]
+    labels = [f"{d}일" for d in range(1, last + 1)]
+    key = f"vc_cloud_day_{month.year:04d}-{month.month:02d}"
+    if (selected.year, selected.month) == (month.year, month.month):
+        cur = selected.day
+    else:
+        cur = min(max(selected.day, 1), last)
+    lab = f"{cur}일"
+    if key not in st.session_state:
+        st.session_state[key] = lab
+    elif st.session_state.get(key) not in labels:
+        st.session_state[key] = lab
+    st.selectbox("날짜", labels, key=key, on_change=_on_cloud_day_change)
+
+
 def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]], today: date) -> None:
     """이번 달 1일~말일을 가로로 한 줄에 요일·벌크·실린더와 함께 보여 고른다."""
     days = _strip_days_payload(month, chips, selected, today)
@@ -2121,10 +2161,18 @@ def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]],
             on_iso_change=_on_strip_iso_change,
         )
         return
-    # Cloud HTML 칸은 그림이라 눌리지 않는다. 같은 화면 버튼으로 고른다.
-    st.markdown(_strip_button_theme_css(days), unsafe_allow_html=True)
-    _render_strip_wd_row(days)
-    _render_strip_buttons(days, "vc_strip_", _on_pick_day)
+    if _vc_is_darwin_local():
+        # 로컬 무손실: 칸 버튼 그대로.
+        st.markdown(_strip_button_theme_css(days), unsafe_allow_html=True)
+        _render_strip_wd_row(days)
+        _render_strip_buttons(days, "vc_strip_", _on_pick_day)
+        return
+    # Cloud: 로컬과 같은 납품줄 그림. 칸 버튼은 fragment에서 수분 동안 비게 한다.
+    st.markdown(
+        _strip_fallback_html(days, selected.isoformat()),
+        unsafe_allow_html=True,
+    )
+    _render_cloud_day_pick(month, selected)
 
 
 def _month_row_html(row: dict, selected: date, client: str) -> str:
@@ -2555,6 +2603,7 @@ def _render_month_cal(
             unsafe_allow_html=True,
         )
         if _vc_use_mcal_date_input():
+            # 로컬 무손실: HTML 칸 + date_input.
             raw = st.session_state.get("vc_mcal_date")
             coerced = _as_date(raw)
             if coerced is not None and raw != coerced:
@@ -2577,7 +2626,15 @@ def _render_month_cal(
                 key="vc_mcal_date",
             )
         else:
-            _render_mcal_day_buttons(month, selected, weeks, cells, today)
+            # Cloud: 로컬과 같은 스케줄 달력 그림. 칸 버튼 60개는 fragment에서 수분 빈다.
+            # 날짜는 납품줄 아래 selectbox(_render_cloud_day_pick)로 고른다.
+            st.markdown(
+                _mcal_head_html()
+                + _mcal_month_html(
+                    month, selected, today, weeks, cells, pick_href=False
+                ),
+                unsafe_allow_html=True,
+            )
 
 
 def _render_month_schedule(
