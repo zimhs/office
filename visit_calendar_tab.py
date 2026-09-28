@@ -56,20 +56,46 @@ def _vc_is_touch_ui() -> bool:
         ):
             st.session_state["force_touch_ui"] = True
             return True
+        plat = ""
+        mobile = ""
+        if headers is not None:
+            plat = str(
+                headers.get("Sec-CH-UA-Platform")
+                or headers.get("sec-ch-ua-platform")
+                or ""
+            )
+            mobile = str(
+                headers.get("Sec-CH-UA-Mobile")
+                or headers.get("sec-ch-ua-mobile")
+                or ""
+            )
+        if "ipad" in plat.lower() or "ios" in plat.lower() or mobile.strip() in {"?1", "1", "true"}:
+            st.session_state["force_touch_ui"] = True
+            return True
     except Exception:
         pass
     return bool(st.session_state.get("force_touch_ui"))
 
 
 def _vc_is_streamlit_cloud() -> bool:
-    """Cloud만 True. 로컬 맥은 False."""
+    """Cloud만 True. 로컬 맥은 False. app.py _is_streamlit_cloud 와 같은 신호."""
     try:
         if (os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT") or "").strip().lower() == "cloud":
             return True
     except Exception:
         pass
+    for _k in ("STREAMLIT_CLOUD", "IS_STREAMLIT_CLOUD"):
+        try:
+            _v = (os.environ.get(_k) or "").strip().lower()
+            if _v in ("1", "true", "yes"):
+                return True
+        except Exception:
+            pass
     try:
         if os.path.isdir("/mount/src"):
+            return True
+        cwd = os.path.abspath(os.getcwd())
+        if cwd.startswith("/mount/src"):
             return True
     except Exception:
         pass
@@ -78,16 +104,35 @@ def _vc_is_streamlit_cloud() -> bool:
             return True
     except Exception:
         pass
+    try:
+        headers = getattr(getattr(st, "context", None), "headers", None)
+        host = ""
+        if headers is not None:
+            host = str(headers.get("host") or headers.get("Host") or "")
+        if "streamlit.app" in host.lower():
+            return True
+    except Exception:
+        pass
     return False
 
 
+_VC_STRIP = None
+_VC_STRIP_READY = False
+
+
 def _vc_use_day_strip_component() -> bool:
-    """맥 로컬만 납품줄 v2. Cloud·아이패드는 iframe이 Safari에서 끝나지 않는다."""
-    if _VC_STRIP is None:
-        return False
+    """맥 로컬만 납품줄 v2. Cloud·아이패드는 등록·마운트 모두 하지 않는다."""
     if _vc_is_touch_ui() or _vc_is_streamlit_cloud():
         return False
-    return True
+    return _vc_ensure_strip() is not None
+
+
+def _vc_clear_strip_hosts_if_unused() -> None:
+    """v2를 안 쓰는 세션에 남은 iframe 호스트 값이 있으면 Safari가 계속 기다린다."""
+    if _vc_use_day_strip_component():
+        return
+    st.session_state.pop("vc_strip_host", None)
+    st.session_state.pop("t2d_strip_host", None)
 
 
 def _s(v) -> str:
@@ -1434,6 +1479,7 @@ def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str:
         "<div class='sub-header dashboard-tab-panel-head'>📅 방문·할일</div>",
         unsafe_allow_html=True,
     )
+    _vc_clear_strip_hosts_if_unused()
     _apply_pending_month_nav()
     _purge_vc_button_keys()
     _render_visit_body(df, latest_update_str)
@@ -1753,15 +1799,25 @@ export default function (component) {
   }
 }
 """
-try:
-    _VC_STRIP = st.components.v2.component(
-        "visit_day_strip_v1",
-        html=_VC_STRIP_HTML,
-        css=_VC_STRIP_CSS,
-        js=_VC_STRIP_JS,
-    )
-except Exception:  # pragma: no cover
-    _VC_STRIP = None
+def _vc_ensure_strip():
+    """맥 로컬 첫 사용 때만 v2를 등록한다. import 시 Cloud·아이패드에 iframe을 만들지 않는다."""
+    global _VC_STRIP, _VC_STRIP_READY
+    if _VC_STRIP_READY:
+        return _VC_STRIP
+    _VC_STRIP_READY = True
+    if _vc_is_touch_ui() or _vc_is_streamlit_cloud():
+        _VC_STRIP = None
+        return None
+    try:
+        _VC_STRIP = st.components.v2.component(
+            "visit_day_strip_v1",
+            html=_VC_STRIP_HTML,
+            css=_VC_STRIP_CSS,
+            js=_VC_STRIP_JS,
+        )
+    except Exception:  # pragma: no cover
+        _VC_STRIP = None
+    return _VC_STRIP
 
 
 def _on_strip_iso_change() -> None:
@@ -1791,19 +1847,7 @@ def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]],
             on_iso_change=_on_strip_iso_change,
         )
         return
-    last = calendar.monthrange(month.year, month.month)[1]
-    cols = st.columns(last, gap="small")
-    for i, cell in enumerate(days):
-        d = date.fromisoformat(cell["iso"])
-        with cols[i]:
-            st.button(
-                f"{cell['day']}\n{cell['tag']}" if cell["tag"] else str(cell["day"]),
-                key=f"vc_strip_{cell['iso']}",
-                type="secondary",
-                width="stretch",
-                on_click=_on_pick_day,
-                args=(d,),
-            )
+    _render_strip_buttons(days, "vc_strip_", _on_pick_day)
 
 
 def _month_row_html(row: dict, selected: date, client: str) -> str:
@@ -2580,11 +2624,26 @@ def _on_t2d_strip_iso_change() -> None:
     _on_t2d_pick_day(d)
 
 
+def _render_strip_buttons(days: list[dict], key_pfx: str, on_pick) -> None:
+    cols = st.columns(len(days) or 1, gap="small")
+    for i, cell in enumerate(days):
+        d = date.fromisoformat(cell["iso"])
+        with cols[i]:
+            st.button(
+                f"{cell['day']}\n{cell['tag']}" if cell["tag"] else str(cell["day"]),
+                key=f"{key_pfx}{cell['iso']}",
+                type="secondary",
+                width="stretch",
+                on_click=on_pick,
+                args=(d,),
+            )
+
+
 def _render_t2d_day_strip(
     month: date, selected: date, chips: dict[str, list[dict]], today: date
 ) -> None:
     days = _strip_days_payload(month, chips, selected, today)
-    if _VC_STRIP is not None:
+    if _vc_use_day_strip_component():
         _VC_STRIP(
             key="t2d_strip_host",
             data={
@@ -2597,25 +2656,14 @@ def _render_t2d_day_strip(
             on_iso_change=_on_t2d_strip_iso_change,
         )
         return
-    last = calendar.monthrange(month.year, month.month)[1]
-    cols = st.columns(last, gap="small")
-    for i, cell in enumerate(days):
-        d = date.fromisoformat(cell["iso"])
-        with cols[i]:
-            st.button(
-                f"{cell['day']}\n{cell['tag']}" if cell["tag"] else str(cell["day"]),
-                key=f"t2d_strip_{cell['iso']}",
-                type="secondary",
-                width="stretch",
-                on_click=_on_t2d_pick_day,
-                args=(d,),
-            )
+    _render_strip_buttons(days, "t2d_strip_", _on_t2d_pick_day)
 
 
 def render_tab2_delivery_status(
     df: pd.DataFrame | None, staff: str, client: str
 ) -> None:
     """거래처 분석 상단 납품현황. 담당자·거래처는 메인 고정바 값을 쓴다."""
+    _vc_clear_strip_hosts_if_unused()
     _apply_pending_t2d_month_nav()
     _apply_pending_t2d_strip_pick()
     _purge_t2d_button_keys()
