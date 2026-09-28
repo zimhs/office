@@ -1797,11 +1797,8 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         if latest_update_str:
             st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
-    if _vc_is_darwin_local():
-        st.fragment(_visit_day_block)()
-    else:
-        # Cloud·아이패드: fragment가 끝나지 않아 방문 탭이 무한 로딩된다.
-        _visit_day_block()
+    # 로컬과 같이 fragment. 없으면 칸·오늘 클릭이 전체 재실행되며 첫 탭으로 간다.
+    st.fragment(_visit_day_block)()
 
 
 def _client_short(name: str) -> str:
@@ -2060,10 +2057,7 @@ def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]],
             on_iso_change=_on_strip_iso_change,
         )
         return
-    if _vc_is_darwin_local():
-        _render_strip_buttons(days, "vc_strip_", _on_pick_day)
-        return
-    st.markdown(_strip_fallback_html(days, selected.isoformat()), unsafe_allow_html=True)
+    _render_strip_buttons(days, "vc_strip_", _on_pick_day)
 
 
 def _month_row_html(row: dict, selected: date, client: str) -> str:
@@ -2311,6 +2305,36 @@ def _mcal_button_label(d: date, marks: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _render_mcal_day_buttons(
+    month: date,
+    selected: date,
+    weeks: list[list[date]],
+    cells: dict[str, list[dict]],
+) -> None:
+    """Cloud·아이패드: HTML 칸은 눌리지 않는다. 이번 달 일자만 버튼으로 고른다."""
+    sel_iso = selected.isoformat() if isinstance(selected, date) else ""
+    st.markdown(_mcal_head_html(), unsafe_allow_html=True)
+    for week in weeks:
+        cols = st.columns(7, gap="small")
+        for i, d in enumerate(week):
+            iso = d.isoformat()
+            with cols[i]:
+                if d.month != month.month:
+                    st.markdown(
+                        f"<div class='vc-mcal-num' style='opacity:.35;text-align:center'>{d.day}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    continue
+                st.button(
+                    _mcal_button_label(d, cells.get(iso) or []),
+                    key=f"vc_mcal_{iso}",
+                    type="primary" if iso == sel_iso else "secondary",
+                    width="stretch",
+                    on_click=_on_pick_day,
+                    args=(d,),
+                )
+
+
 def _mcal_head_html() -> str:
     ths: list[str] = []
     for i, wd in enumerate(_CAL_HEADERS):
@@ -2441,25 +2465,7 @@ def _render_month_cal(
                 key="vc_mcal_date",
             )
         else:
-            st.markdown(
-                _mcal_head_html()
-                + _mcal_month_html(
-                    month, selected, today, weeks, cells, pick_href=False
-                ),
-                unsafe_allow_html=True,
-            )
-            last = calendar.monthrange(month.year, month.month)[1]
-            if "vc_mcal_day" not in st.session_state:
-                st.session_state["vc_mcal_day"] = (
-                    selected.day if isinstance(selected, date) else 1
-                )
-            st.number_input(
-                "스케줄 일",
-                min_value=1,
-                max_value=int(last),
-                step=1,
-                key="vc_mcal_day",
-            )
+            _render_mcal_day_buttons(month, selected, weeks, cells)
 
 
 def _render_month_schedule(
@@ -3079,7 +3085,7 @@ def _render_strip_buttons(days: list[dict], key_pfx: str, on_pick) -> None:
             st.button(
                 f"{cell['day']}\n{cell['tag']}" if cell["tag"] else str(cell["day"]),
                 key=f"{key_pfx}{cell['iso']}",
-                type="secondary",
+                type="primary" if cell.get("sel") else "secondary",
                 width="stretch",
                 on_click=on_pick,
                 args=(d,),
