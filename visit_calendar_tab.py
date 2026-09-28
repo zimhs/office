@@ -1360,37 +1360,79 @@ def _apply_pending_month_nav() -> None:
         st.session_state.pop("vc_jump_today", None)
 
 
+_VC_KEEP_KEYS = frozenset({"vc_strip_host", "vc_mcal_date", "vc_mcal_box"})
+
+
+def _is_vc_purge_key(k: str) -> bool:
+    """일자 버튼 잔여만 지운다. 스케줄 날짜 위젯·컨테이너는 지우면 재실행이 안 끝난다."""
+    if k in _VC_KEEP_KEYS:
+        return False
+    if k.startswith("vc_mcal_"):
+        return len(k) > 8 and k[8].isdigit()
+    return k.startswith(_VC_BUTTON_PREFIXES)
+
+
 def _purge_vc_button_keys() -> None:
     """버튼 값은 session_state로 넣을 수 없다. 예전 백업·클릭 잔여를 지운다."""
     for k in list(st.session_state.keys()):
-        if not (isinstance(k, str) and k.startswith(_VC_BUTTON_PREFIXES)):
-            continue
-        if k == "vc_strip_host":
-            continue
-        st.session_state.pop(k, None)
+        if isinstance(k, str) and _is_vc_purge_key(k):
+            st.session_state.pop(k, None)
     bak = st.session_state.get("_dash_bak_visit")
     if isinstance(bak, dict):
         for k in list(bak):
-            if not (isinstance(k, str) and k.startswith(_VC_BUTTON_PREFIXES)):
-                continue
-            if k == "vc_strip_host":
-                continue
-            bak.pop(k, None)
+            if isinstance(k, str) and _is_vc_purge_key(k):
+                bak.pop(k, None)
+
+
+def _as_date(v) -> date | None:
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    return None
+
+
+def _vc_date_field(label: str, *, key: str, default: date):
+    """맥은 date_input. Cloud·아이패드는 네이티브 달력이 핸드셰이크를 안 끝내서 selectbox."""
+    if key not in st.session_state:
+        st.session_state[key] = default
+    raw = st.session_state.get(key)
+    coerced = _as_date(raw)
+    if coerced is not None and raw != coerced:
+        st.session_state[key] = coerced
+    if _vc_is_mac_local():
+        return st.date_input(label, format="YYYY/MM/DD", key=key)
+    base = coerced or default
+    opts = [base + timedelta(days=i) for i in range(-14, 61)]
+    if base not in opts:
+        opts = [base] + opts
+    return st.selectbox(label, options=opts, key=key)
 
 
 def _on_pick_day(d: date) -> None:
     """일자만 고른다. 월은 ‹ › · 오늘에서만 바꾼다."""
     st.session_state["_vc_selected"] = d
     st.session_state["_vc_open_delivery"] = True
-    st.session_state["vc_mcal_date"] = d
+    if st.session_state.get("vc_mcal_date") != d:
+        st.session_state["vc_mcal_date"] = d
+
+
+def _sync_selected_from_mcal_widget() -> None:
+    """스케줄 날짜 위젯 → 선택일. 위젯 키는 여기서 쓰지 않는다(재실행 루프 방지)."""
+    d = _as_date(st.session_state.get("vc_mcal_date"))
+    if d is None:
+        return
+    if st.session_state.get("_vc_selected") != d:
+        st.session_state["_vc_selected"] = d
+        st.session_state["_vc_open_delivery"] = True
 
 
 def _on_mcal_date_change() -> None:
-    d = st.session_state.get("vc_mcal_date")
-    if isinstance(d, datetime):
-        d = d.date()
-    if isinstance(d, date):
-        _on_pick_day(d)
+    d = _as_date(st.session_state.get("vc_mcal_date"))
+    if d is None:
+        return
+    st.session_state["_vc_selected"] = d
+    st.session_state["_vc_open_delivery"] = True
 
 
 def _on_shift_month(delta: int) -> None:
@@ -1571,6 +1613,7 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
     def _visit_day_block() -> None:
         _apply_pending_month_nav()
         _apply_pending_mcal_pick()
+        _sync_selected_from_mcal_widget()
         sel: date = st.session_state.get("_vc_selected") or today
         mon = st.session_state.get("_vc_month") or month
         f1, f2 = st.columns([1, 1])
@@ -1578,18 +1621,31 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
             staff = st.selectbox("담당자", options=staffs or [""], key="vc_staff")
         clients = _staff_clients(df, staff, store0)
         with f2:
-            client = (
-                st.selectbox(
-                    "거래처",
-                    options=clients or [""],
-                    index=None,
-                    placeholder="거래처명 입력",
-                    key="vc_client",
-                    accept_new_options=True,
-                    help="이 담당자의 매출 거래처가 모두 나옵니다. 고르면 달력·방문·할일에 연동됩니다.",
+            if _vc_is_mac_local():
+                client = (
+                    st.selectbox(
+                        "거래처",
+                        options=clients or [""],
+                        index=None,
+                        placeholder="거래처명 입력",
+                        key="vc_client",
+                        accept_new_options=True,
+                        help="이 담당자의 매출 거래처가 모두 나옵니다. 고르면 달력·방문·할일에 연동됩니다.",
+                    )
+                    or ""
                 )
-                or ""
-            )
+            else:
+                client = (
+                    st.selectbox(
+                        "거래처",
+                        options=clients or [""],
+                        index=None,
+                        placeholder="거래처명 입력",
+                        key="vc_client",
+                        help="이 담당자의 매출 거래처가 모두 나옵니다. 고르면 달력·방문·할일에 연동됩니다.",
+                    )
+                    or ""
+                )
         st.session_state["_vc_staff"] = staff
         st.session_state["_vc_client"] = client
         stf = str(staff or "")
@@ -2063,6 +2119,7 @@ def _mcal_grid_css() -> str:
     .vc-mcal-table td.sel { background: #e8eaed; }
     .vc-mcal-table td.out { color: #80868b; }
     .vc-mcal-table td.today { box-shadow: inset 0 0 0 1.5px #9aa8bc; }
+    .vc-mcal-table td .vc-mcal-hit,
     .vc-mcal-table td a.vc-mcal-hit {
       color: inherit; text-decoration: none; display: block; min-height: 8.2rem;
     }
@@ -2164,6 +2221,8 @@ def _mcal_month_html(
     today: date,
     weeks: list[list[date]],
     cells: dict[str, list[dict]],
+    *,
+    pick_href: bool = False,
 ) -> str:
     sel_iso = selected.isoformat()
     today_iso = today.isoformat()
@@ -2181,14 +2240,16 @@ def _mcal_month_html(
             if not out and iso == today_iso:
                 cls.append("today")
             klass = " ".join(x for x in cls if x)
-            href = html.escape(_vc_pick_href(iso), quote=True)
-            tds.append(
-                f"<td class='{klass}'>"
-                f"<a class='vc-mcal-hit' href='{href}'>"
+            body = (
                 f"<div class='vc-mcal-num'>{d.day}</div>"
                 f"{_mcal_chips_html(cells.get(iso) or [])}"
-                f"</a></td>"
             )
+            if pick_href:
+                href = html.escape(_vc_pick_href(iso), quote=True)
+                hit = f"<a class='vc-mcal-hit' href='{href}'>{body}</a>"
+            else:
+                hit = f"<div class='vc-mcal-hit'>{body}</div>"
+            tds.append(f"<td class='{klass}'>{hit}</td>")
         rows.append("<tr>" + "".join(tds) + "</tr>")
     return "<table class='vc-mcal-table'><tbody>" + "".join(rows) + "</tbody></table>"
 
@@ -2253,21 +2314,42 @@ def _render_month_cal(
             f"</div></div>",
             unsafe_allow_html=True,
         )
-        if "vc_mcal_date" not in st.session_state:
+        raw = st.session_state.get("vc_mcal_date")
+        coerced = _as_date(raw)
+        if coerced is not None and raw != coerced:
+            st.session_state["vc_mcal_date"] = coerced
+        elif "vc_mcal_date" not in st.session_state:
             st.session_state["vc_mcal_date"] = selected
         st.markdown(
-            _mcal_head_html() + _mcal_month_html(month, selected, today, weeks, cells),
+            _mcal_head_html()
+            + _mcal_month_html(
+                month, selected, today, weeks, cells, pick_href=_vc_is_mac_local()
+            ),
             unsafe_allow_html=True,
         )
-        first, last = weeks[0][0], weeks[-1][-1]
-        st.date_input(
-            "스케줄 날짜",
-            min_value=first,
-            max_value=last,
-            format="YYYY/MM/DD",
-            key="vc_mcal_date",
-            on_change=_on_mcal_date_change,
-        )
+        if _vc_is_mac_local():
+            first, last = weeks[0][0], weeks[-1][-1]
+            st.date_input(
+                "스케줄 날짜",
+                min_value=first,
+                max_value=last,
+                format="YYYY/MM/DD",
+                key="vc_mcal_date",
+            )
+        else:
+            opts = list(days)
+            cur = _as_date(st.session_state.get("vc_mcal_date")) or selected
+            if cur not in opts:
+                opts = [cur] + opts
+            st.selectbox(
+                "스케줄 날짜",
+                options=opts,
+                format_func=lambda d: (
+                    f"{d.month}/{d.day} ({_WEEKDAYS[d.weekday()]})"
+                    + ("" if d.month == month.month else " ·")
+                ),
+                key="vc_mcal_date",
+            )
 
 
 def _render_month_schedule(
@@ -2551,9 +2633,7 @@ def _render_todo_panel(selected: date, staff: str, client: str, store: dict) -> 
         name_in = st.text_input("업체명", placeholder=client or "업체명", key="vc_todo_name")
         detail_in = st.text_input("세부사항", placeholder="세부사항", key="vc_todo_detail")
         due_default = _todo_due_date(edit_item.get("due")) if edit_item else selected
-        if "vc_todo_due" not in st.session_state:
-            st.session_state["vc_todo_due"] = due_default or selected
-        due = st.date_input("날짜", format="YYYY/MM/DD", key="vc_todo_due")
+        due = _vc_date_field("날짜", key="vc_todo_due", default=due_default or selected)
         save_label = "저장" if edit_item else "＋ 할 일 추가"
         if st.form_submit_button(save_label, type="primary"):
             try:

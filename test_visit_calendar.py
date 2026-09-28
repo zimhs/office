@@ -435,20 +435,31 @@ class VisitCalendarTest(unittest.TestCase):
 
         ss = _SS()
         ss["vc_day_2026-09-17"] = True
+        ss["vc_mcal_2026-09-17"] = True
+        ss["vc_mcal_date"] = date(2026, 9, 17)
+        ss["vc_mcal_box"] = object()
         ss["vc_strip_host"] = {"iso": "2026-09-17"}
         ss["_vc_selected"] = date(2026, 9, 17)
         ss["_dash_bak_visit"] = {
             "vc_day_2026-09-17": True,
+            "vc_mcal_date": date(2026, 9, 17),
             "vc_strip_host": {"iso": "2026-09-17"},
             "_vc_selected": date(2026, 9, 17),
         }
         with patch.object(self.vc.st, "session_state", ss):
             self.vc._purge_vc_button_keys()
         self.assertNotIn("vc_day_2026-09-17", ss)
+        self.assertNotIn("vc_mcal_2026-09-17", ss)
         self.assertNotIn("vc_day_2026-09-17", ss["_dash_bak_visit"])
+        self.assertIn("vc_mcal_date", ss)
+        self.assertIn("vc_mcal_box", ss)
+        self.assertIn("vc_mcal_date", ss["_dash_bak_visit"])
         self.assertIn("vc_strip_host", ss)
         self.assertIn("vc_strip_host", ss["_dash_bak_visit"])
         self.assertEqual(ss["_vc_selected"], date(2026, 9, 17))
+        self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_date"))
+        self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_box"))
+        self.assertTrue(self.vc._is_vc_purge_key("vc_mcal_2026-09-17"))
 
     def test_cached_history_skips_second_merge(self):
         df = pd.DataFrame(
@@ -551,7 +562,14 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("_mcal_month_html(", cal)
         self.assertIn('key="vc_mcal_date"', cal)
         self.assertNotIn('key=f"vc_mcal_{iso}"', cal)
+        self.assertIn("_vc_is_mac_local()", cal)
+        self.assertIn("st.date_input(", cal)
+        self.assertNotIn("on_change=_on_mcal_date_change", cal)
+        self.assertIn("pick_href=", cal)
         self.assertIn("def _on_mcal_date_change", src)
+        self.assertIn("def _sync_selected_from_mcal_widget", src)
+        self.assertIn("def _vc_date_field", src)
+        self.assertIn("_sync_selected_from_mcal_widget()", src)
         self.assertIn("def _strip_fallback_html", src)
         self.assertIn("def _apply_query_day_pick", src)
         self.assertIn("vc-mcal-hit", src)
