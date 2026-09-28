@@ -6,7 +6,6 @@ import html
 import json
 import os
 import re
-import sys
 import unicodedata
 import uuid
 from datetime import date, datetime, timedelta
@@ -75,25 +74,12 @@ def _vc_is_touch_ui() -> bool:
             return True
     except Exception:
         pass
-    try:
-        # Cloud는 Linux. 아이패드 크롬은 Macintosh UA라 맥으로 오인되면 iframe이 다시 뜬다.
-        if sys.platform != "darwin":
-            return True
-    except Exception:
-        pass
     return bool(st.session_state.get("force_touch_ui"))
 
 
 def _vc_is_mac_local() -> bool:
-    """납품줄 v2·fragment는 맥 Desktop 프로세스만. Cloud(Linux)·아이패드는 제외."""
-    try:
-        if sys.platform != "darwin":
-            return False
-    except Exception:
-        return False
-    if _vc_is_streamlit_cloud() or _vc_is_touch_ui():
-        return False
-    return True
+    """맥 로컬·Cloud 데스크톱은 같은 달력. 아이패드만 가벼운 경로."""
+    return not _vc_is_touch_ui()
 
 
 def _vc_is_streamlit_cloud() -> bool:
@@ -140,7 +126,7 @@ _VC_STRIP_READY = False
 
 
 def _vc_use_day_strip_component() -> bool:
-    """맥 로컬만 납품줄 v2. Cloud·아이패드는 등록·마운트 모두 하지 않는다."""
+    """맥 로컬·Cloud 데스크톱은 납품줄 v2. 아이패드만 등록·마운트하지 않는다."""
     if not _vc_is_mac_local():
         return False
     return _vc_ensure_strip() is not None
@@ -1393,7 +1379,7 @@ def _as_date(v) -> date | None:
 
 
 def _vc_date_field(label: str, *, key: str, default: date):
-    """맥은 date_input. Cloud·아이패드는 네이티브 달력이 핸드셰이크를 안 끝내서 selectbox."""
+    """맥·Cloud 데스크톱은 date_input. 아이패드는 네이티브 달력이 핸드셰이크를 안 끝내서 selectbox."""
     if key not in st.session_state:
         st.session_state[key] = default
     raw = st.session_state.get(key)
@@ -1558,7 +1544,7 @@ def _vc_rerun() -> None:
     try:
         st.rerun(scope="fragment")
     except Exception:
-        if _vc_is_touch_ui() or _vc_is_streamlit_cloud():
+        if _vc_is_touch_ui():
             return
         st.rerun()
 
@@ -1741,7 +1727,7 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
     if _vc_is_mac_local():
         st.fragment(_visit_day_block)()
     else:
-        # 아이패드·Cloud: 날짜 조작이 전 탭을 다시 돌리지 않게 fragment만 다시 그린다.
+        # 아이패드: 날짜 조작이 전 탭을 다시 돌리지 않게 fragment만 다시 그린다.
         st.fragment(_visit_day_block)()
 
 
@@ -1954,7 +1940,7 @@ export default function (component) {
 }
 """
 def _vc_ensure_strip():
-    """맥 로컬 첫 사용 때만 v2를 등록한다. import 시 Cloud·아이패드에 iframe을 만들지 않는다."""
+    """맥 로컬·Cloud 데스크톱 첫 사용 때 v2를 등록한다. 아이패드에는 iframe을 만들지 않는다."""
     global _VC_STRIP, _VC_STRIP_READY
     if _VC_STRIP_READY:
         return _VC_STRIP
