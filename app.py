@@ -5874,11 +5874,33 @@ def list_filter_client_options(df):
     """상단 거래처 목록: 분리된 종속명 + 부모명(전부 종속 분리돼도 부모 유지)."""
     if df is None or df.empty or "거래처" not in df.columns:
         return []
-    names = set(df["거래처"].dropna().astype(str).str.strip().unique())
+
+    def _uniq(col) -> set[str]:
+        if col is None:
+            return set()
+        raw = col.dropna()
+        if raw.empty:
+            return set()
+        vals = raw.unique()
+        out = {str(x).strip() for x in vals}
+        out.discard("")
+        return out
+
+    names = _uniq(df["거래처"])
     if "거래처_원본" in df.columns:
-        names |= set(df["거래처_원본"].dropna().astype(str).str.strip().unique())
-    names.discard("")
+        names |= _uniq(df["거래처_원본"])
     return sorted(names)
+
+
+def _dash_header_lite_select(touch: bool, has_staff: bool) -> bool:
+    """아이패드·담당자 없음: 헤더 셀렉트에 전 거래처·품목을 넣지 않는다. 맥은 False."""
+    return bool(touch) and not bool(has_staff)
+
+
+def _dash_keep_header_option(raw, all_label: str) -> list[str]:
+    """이미 고른 값만 셀렉트에 남긴다. 전체 라벨은 넣지 않는다."""
+    s = _dash_norm_filter_input(raw, all_label)
+    return [s] if s else []
 
 
 def _dash_series_eq(series, value):
@@ -6855,8 +6877,16 @@ def _dash_inject_filter_select_script() -> None:
 
 
 def _dash_inject_filter_select_script_for_run() -> None:
-    """필터 select JS — 로컬·Cloud 공통: fragment rerun마다 주입 (DOM 교체 대응)."""
+    """필터 select JS.
+
+    맥: fragment rerun마다 주입(기존).
+    아이패드: parent 위임·interval이 남으므로 세션 1회만 — iframe이 헤더 로딩을 키움.
+    """
+    if is_touch_ui() and st.session_state.get("_dash_filter_select_injected"):
+        return
     _dash_inject_filter_select_script()
+    if is_touch_ui():
+        st.session_state["_dash_filter_select_injected"] = True
 
 
 def _dash_inject_sticky_resync_script(*, force: bool = False) -> None:
@@ -14792,10 +14822,23 @@ def _dash_filter_and_tabs_fragment() -> None:
                     else df_base_opts
                 )
             df_staff_for_opts = st.session_state.get("_dash_staff_slice_df", df_base_opts)
-            _client_opts_sig = (start_date, end_date, tuple(selected_staff or ()), int(len(df_staff_for_opts)))
+            _header_lite = _dash_header_lite_select(is_touch_ui(), bool(selected_staff))
+            _client_opts_sig = (
+                start_date,
+                end_date,
+                tuple(selected_staff or ()),
+                int(len(df_staff_for_opts)),
+                "lite" if _header_lite else "full",
+            )
             if st.session_state.get("_dash_client_opts_sig") != _client_opts_sig:
                 st.session_state["_dash_client_opts_sig"] = _client_opts_sig
-                if df_staff_for_opts.empty:
+                if _header_lite:
+                    # 아이패드 로그인·첫 헤더: 전 거래처 unique를 셀렉트에 넣지 않는다.
+                    _client_opts = _dash_keep_header_option(
+                        st.session_state.get(_DASH_FILTER_CLIENT_KEY),
+                        _DASH_FILTER_ALL_CLIENT,
+                    )
+                elif df_staff_for_opts.empty:
                     _client_opts = []
                 else:
                     _client_opts = list_filter_client_options(df_staff_for_opts)
@@ -14835,7 +14878,14 @@ def _dash_filter_and_tabs_fragment() -> None:
             _item_opts_sig = (_client_opts_sig, selected_client, int(len(df_client_for_opts)))
             if st.session_state.get("_dash_item_opts_sig") != _item_opts_sig:
                 st.session_state["_dash_item_opts_sig"] = _item_opts_sig
-                if df_client_for_opts.empty or "품목명" not in df_client_for_opts.columns:
+                if _header_lite:
+                    st.session_state["_dash_item_opts_tuple"] = tuple(
+                        _dash_keep_header_option(
+                            st.session_state.get(_DASH_FILTER_ITEM_KEY),
+                            _DASH_FILTER_ALL_ITEM,
+                        )
+                    )
+                elif df_client_for_opts.empty or "품목명" not in df_client_for_opts.columns:
                     st.session_state["_dash_item_opts_tuple"] = ()
                 else:
                     st.session_state["_dash_item_opts_tuple"] = tuple(
@@ -15119,6 +15169,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.session_state["_dash_sticky_inject_ver"] = _STICKY_INJECT_VER
         st.session_state["_ipad_sticky_injected"] = True
         st.session_state["_ipad_sticky_ver"] = 47
+        st.session_state["_dash_sticky_just_injected"] = True
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
             min_tabs=13, heavy_indices=(9, 10, 11, 12)
@@ -18623,8 +18674,12 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.info("다른 탭은 정상 이용 가능합니다.")
 
     _dash_inject_filter_select_script_for_run()
-    # 로컬·Cloud 공통: fragment/탭 전환·heavy 로드 후 고정바 1회 재동기화
-    _dash_inject_sticky_resync_script(force=True)
+    # 맥: 매 run force 재동기화(기존). 아이패드: sticky를 방금 심었으면
+    # iframe을 하나 더 만들지 않는다. boot interval이 탭을 고정바에 붙인다.
+    if is_touch_ui() and st.session_state.pop("_dash_sticky_just_injected", False):
+        pass
+    else:
+        _dash_inject_sticky_resync_script(force=not is_touch_ui())
 
 
 _dash_filter_and_tabs_fragment()
