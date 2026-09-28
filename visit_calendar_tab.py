@@ -1717,7 +1717,7 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
             staff = st.selectbox("담당자", options=staffs or [""], key="vc_staff")
         clients = _staff_clients(df, staff, store0)
         with f2:
-            if _vc_is_darwin_local() or _vc_is_streamlit_cloud():
+            if _vc_is_darwin_local():
                 client = (
                     st.selectbox(
                         "거래처",
@@ -1816,11 +1816,8 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         if latest_update_str:
             st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
-    # 맥은 로컬과 같이 fragment. Cloud에 올리면 방문 탭 본문이 수분 동안 안 뜬다.
-    if _vc_is_darwin_local():
-        st.fragment(_visit_day_block)()
-    else:
-        _visit_day_block()
+    # 로컬과 같이 fragment. Cloud에서 날짜 클릭이 전체 재실행되면 영업종합요약이 비친다.
+    st.fragment(_visit_day_block)()
 
 
 def _client_short(name: str) -> str:
