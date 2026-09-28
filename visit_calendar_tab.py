@@ -1067,6 +1067,11 @@ def _vc_css() -> str:
       opacity: 1 !important;
       transition: none !important;
     }
+    div[class*="st-key-vc_touch_mcal"] {
+      border: 1px solid #dadce0;
+      border-radius: 10px;
+      overflow: hidden;
+    }
     div[class*="st-key-vc_jump_today"],
     div[class*="st-key-vc_prev_month"],
     div[class*="st-key-vc_next_month"] {
@@ -1444,7 +1449,7 @@ _VC_KEEP_KEYS = frozenset(
         "vc_mcal_iso",
         "vc_mcal_day",
         "vc_visit_frag",
-        "vc_touch_day",
+        "vc_touch_mcal",
     }
 )
 
@@ -1520,31 +1525,82 @@ def _on_pick_day(d: date) -> None:
         st.session_state["vc_mcal_day"] = d.day
 
 
-def _pick_touch_visible_day(month: date, selected: date) -> date:
-    """아이패드: 칸 버튼 없이 보이는 날짜만 고른다. 맥 데스크톱은 이 위젯을 쓰지 않는다."""
-    visible = [d for w in month_cal_weeks(month) for d in w]
-    opts = [d.isoformat() for d in visible]
-    if not opts:
-        return selected
-    cur = selected.isoformat() if selected.isoformat() in opts else opts[0]
-    if st.session_state.get("vc_touch_day") not in opts:
-        st.session_state["vc_touch_day"] = cur
-    picked = st.selectbox(
-        "날짜",
-        options=opts,
-        format_func=lambda iso: (
-            f"{int(iso[5:7])}/{int(iso[8:10])} ({_WEEKDAYS[date.fromisoformat(iso).weekday()]})"
-        ),
-        key="vc_touch_day",
-        help="달력에 보이는 날입니다. 고르면 같은 화면에서 방문·할일을 넣을 수 있습니다.",
-    )
+def _touch_df_cells(event) -> list:
+    if event is None:
+        return []
+    sel = getattr(event, "selection", None)
+    if sel is None and isinstance(event, dict):
+        sel = event.get("selection")
+    if sel is None:
+        return []
+    cells = getattr(sel, "cells", None)
+    if cells is None and isinstance(sel, dict):
+        cells = sel.get("cells")
+    return list(cells or [])
+
+
+def _touch_cell_to_date(cell, weeks: list[list[date]]) -> date | None:
+    if not (isinstance(cell, (list, tuple)) and len(cell) >= 2):
+        return None
     try:
-        d = date.fromisoformat(str(picked or "")[:10])
-    except ValueError:
-        return selected
-    if d != selected:
-        _on_pick_day(d)
-    return d
+        ri = int(cell[0])
+    except (TypeError, ValueError):
+        return None
+    col = cell[1]
+    if isinstance(col, str):
+        if col not in _CAL_HEADERS:
+            return None
+        ci = _CAL_HEADERS.index(col)
+    else:
+        try:
+            ci = int(col)
+        except (TypeError, ValueError):
+            return None
+    if 0 <= ri < len(weeks) and 0 <= ci < len(weeks[ri]):
+        return weeks[ri][ci]
+    return None
+
+
+def _render_touch_mcal_df(
+    month: date,
+    selected: date,
+    today: date,
+    weeks: list[list[date]],
+    cells: dict[str, list[dict]],
+) -> None:
+    """아이패드: 달력 칸 버튼 대신 표 한 장에서 칸을 고른다. 맥 데스크톱은 쓰지 않는다."""
+    rows: list[list[str]] = []
+    for week in weeks:
+        labels: list[str] = []
+        for d in week:
+            marks = cells.get(d.isoformat()) or []
+            tag = ""
+            if marks:
+                raw = _s(marks[0].get("label")) or ""
+                tag = _client_short(raw)[:6]
+            if d.month != month.month:
+                lab = f"({d.day})"
+            else:
+                lab = str(d.day)
+            if tag:
+                lab = f"{lab} {tag}"
+            if d == selected:
+                lab = f"[{lab}]"
+            elif d == today:
+                lab = f"{lab}·"
+            labels.append(lab)
+        rows.append(labels)
+    df = pd.DataFrame(rows, columns=list(_CAL_HEADERS))
+    st.dataframe(
+        df,
+        hide_index=True,
+        width="stretch",
+        height=min(440, 58 * (len(rows) + 1)),
+        row_height=52,
+        on_select=_on_touch_mcal_select,
+        selection_mode="single-cell",
+        key="vc_touch_mcal",
+    )
 
 
 def _on_mcal_date_change() -> None:
@@ -1569,6 +1625,8 @@ def _on_shift_month(delta: int) -> None:
         st.session_state["vc_mcal_date"] = clamped
         st.session_state["vc_mcal_iso"] = clamped.isoformat()
         st.session_state["vc_mcal_day"] = clamped.day
+    if _vc_is_touch_ui():
+        st.session_state.pop("vc_touch_mcal", None)
 
 
 def _on_jump_today() -> None:
@@ -1578,6 +1636,21 @@ def _on_jump_today() -> None:
     st.session_state["vc_mcal_date"] = today
     st.session_state["vc_mcal_iso"] = today.isoformat()
     st.session_state["vc_mcal_day"] = today.day
+    if _vc_is_touch_ui():
+        st.session_state.pop("vc_touch_mcal", None)
+
+
+def _on_touch_mcal_select() -> None:
+    """아이패드 표 칸 선택. 콜백이 본문보다 먼저 돌아 납품·스케줄이 같은 날을 본다."""
+    month = st.session_state.get("_vc_month")
+    if not isinstance(month, date):
+        month = date.today().replace(day=1)
+    weeks = month_cal_weeks(month)
+    for cell in _touch_df_cells(st.session_state.get("vc_touch_mcal")):
+        picked = _touch_cell_to_date(cell, weeks)
+        if picked is not None:
+            _on_pick_day(picked)
+            return
 
 
 def _sync_selected_from_mcal_widget() -> None:
@@ -1827,8 +1900,6 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
                     st.button("‹", key="vc_prev_month", width="content")
                 with n3:
                     st.button("›", key="vc_next_month", width="content")
-            if _vc_is_touch_ui():
-                sel = _pick_touch_visible_day(mon, sel)
             store, deliveries, history = _vc_day_payload(df, stf, cli, mon)
             prefix = f"{mon.year:04d}-{mon.month:02d}-"
             month_deliveries = [r for r in deliveries if str(r.get("date") or "").startswith(prefix)]
@@ -2799,13 +2870,7 @@ def _render_month_cal(
                 data=_mcal_v2_payload(month, selected, today, weeks, cells),
             )
         elif _vc_is_touch_ui():
-            st.markdown(
-                _mcal_head_html()
-                + _mcal_month_html(
-                    month, selected, today, weeks, cells, pick_href=False
-                ),
-                unsafe_allow_html=True,
-            )
+            _render_touch_mcal_df(month, selected, today, weeks, cells)
         else:
             _render_mcal_day_buttons(month, selected, weeks, cells, today)
 

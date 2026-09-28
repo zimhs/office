@@ -466,7 +466,7 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_box"))
         self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_iso"))
         self.assertFalse(self.vc._is_vc_purge_key("vc_mcal_host"))
-        self.assertFalse(self.vc._is_vc_purge_key("vc_touch_day"))
+        self.assertFalse(self.vc._is_vc_purge_key("vc_touch_mcal"))
         self.assertTrue(self.vc._is_vc_purge_key("vc_mcal_2026-09-17"))
 
     def test_cached_history_skips_second_merge(self):
@@ -595,10 +595,10 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("def _render_month_cal", src)
         self.assertIn("vc_mcal_", src)
         cal = src[src.index("def _render_month_cal") : src.index("def _render_month_schedule")]
-        self.assertIn("_mcal_month_html(", cal)
+        self.assertIn("_render_touch_mcal_df(", cal)
+        self.assertNotIn("_mcal_month_html(", cal)
         self.assertNotIn('key="vc_mcal_date"', cal)
         self.assertNotIn("pick_href=True", cal)
-        self.assertIn("pick_href=False", cal)
         self.assertNotIn("스케줄 날짜", cal)
         self.assertIn("_vc_use_mcal_component()", cal)
         self.assertIn("_vc_is_touch_ui()", cal)
@@ -685,8 +685,11 @@ class VisitCalendarTest(unittest.TestCase):
         block = src[src.index("def _visit_day_block") : src.index("def _client_short")]
         self.assertIn("_apply_pending_month_nav()", block)
         self.assertIn("_apply_pending_mcal_pick()", block)
-        self.assertIn("_pick_touch_visible_day", block)
-        self.assertIn('key="vc_touch_day"', src)
+        self.assertNotIn("_pick_touch_visible_day", src)
+        self.assertNotIn('key="vc_touch_day"', src)
+        self.assertIn('key="vc_touch_mcal"', src)
+        self.assertIn("on_select=_on_touch_mcal_select", src)
+        self.assertIn("selection_mode=\"single-cell\"", src)
         self.assertIn("st-key-vc_visit_frag", src)
         self.assertIn('data-stale="true"', src)
         self.assertIn('key="vc_next_month"', block)
@@ -727,6 +730,18 @@ class VisitCalendarTest(unittest.TestCase):
         clients = self.vc._staff_clients(df, "김혁수")
         self.assertIn("이엔에이치", clients)
         self.assertNotIn("한신테크", clients)
+
+    def test_touch_mcal_cell_maps_visible_days(self):
+        weeks = self.vc.month_cal_weeks(date(2026, 9, 1))
+        self.assertEqual(self.vc._touch_cell_to_date((0, "일"), weeks), weeks[0][0])
+        self.assertEqual(self.vc._touch_cell_to_date([2, "수"], weeks), weeks[2][3])
+        self.assertIsNone(self.vc._touch_cell_to_date((99, "일"), weeks))
+        self.assertEqual(
+            self.vc._touch_df_cells({"selection": {"cells": [[1, "월"]]}}),
+            [[1, "월"]],
+        )
+        self.assertEqual(weeks[0][0].month, 8)
+        self.assertEqual(weeks[-1][-1].month, 10)
 
     def test_staff_clients_include_all_sales_for_staff(self):
         df = pd.DataFrame(
