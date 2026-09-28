@@ -106,6 +106,8 @@ class VisitCalendarTest(unittest.TestCase):
         )
         weeks = self.vc.month_cal_weeks(date(2026, 9, 1))
         self.assertEqual(len(weeks[0]), 7)
+        self.assertEqual(weeks[0][0].weekday(), 6)
+        self.assertEqual(weeks[0][6].weekday(), 5)
         days = [d for w in weeks for d in w]
         cells = self.vc.schedule_cells(
             self.vc.load_store(),
@@ -124,6 +126,31 @@ class VisitCalendarTest(unittest.TestCase):
         html = self.vc._mcal_chips_html(cells["2026-09-23"])
         self.assertIn("planned", html)
         self.assertIn("라콜", html)
+        self.assertEqual(html.count("<span class='vc-mcal-slot"), 5)
+        empty = self.vc._mcal_chips_html([])
+        self.assertEqual(empty.count("vc-mcal-slot empty"), 5)
+        six = self.vc._mcal_chips_html(
+            [{"kind": "visit", "label": f"거래처{i}"} for i in range(6)]
+        )
+        self.assertEqual(six.count("<span class='vc-mcal-slot"), 5)
+        self.assertIn("+1", six)
+        grid = self.vc._mcal_head_html() + self.vc._mcal_month_html(
+            date(2026, 9, 1),
+            date(2026, 9, 23),
+            date(2026, 9, 17),
+            weeks,
+            cells,
+        )
+        self.assertIn("vc-mcal-head", grid)
+        self.assertIn("vc-mcal-table", grid)
+        self.assertIn(">일</div>", grid)
+        self.assertIn(">토</div>", grid)
+        self.assertIn("vc-mcal-th sun", grid)
+        self.assertIn("<td ", grid)
+        lab = self.vc._mcal_button_label(date(2026, 9, 23), cells["2026-09-23"])
+        self.assertTrue(lab.startswith("23\n"))
+        self.assertEqual(lab.count("\n"), 5)
+        self.assertIn("라콜", lab)
 
     def test_month_visit_rows_splits_done_and_planned(self):
         self.vc.add_visit(
@@ -274,6 +301,13 @@ class VisitCalendarTest(unittest.TestCase):
         kinds = {c["kind"] for c in only["2026-09-10"]}
         self.assertEqual(kinds, {"bulk", "other"})
         self.assertNotIn("visit", kinds)
+        days = self.vc._strip_days_payload(
+            date(2026, 9, 1), only, date(2026, 9, 10), date(2026, 9, 17)
+        )
+        cell = next(x for x in days if x["iso"] == "2026-09-10")
+        self.assertEqual(cell["name"], "")
+        self.assertEqual(cell["mark"], "")
+        self.assertIn(cell["tag"], ("벌·실", "벌크", "실린더"))
 
     def test_t2d_delivery_rows_skip_full_staff_map(self):
         df = pd.DataFrame(
@@ -288,11 +322,15 @@ class VisitCalendarTest(unittest.TestCase):
                 "품목명": ["N2 (kg, Bulk)", "아세틸렌", "CO2 (kg, Bulk)"],
                 "출고량": [1200.0, 2.0, 800.0],
                 "매출액": [1000.0, 50.0, 400.0],
+                "단가": [0.83, 25.0, 0.5],
             }
         )
         rows = self.vc._t2d_delivery_rows(df, "김혁수", "한국메티슨특수가스")
         self.assertEqual(len(rows), 3)
         self.assertTrue(any(r.get("bulk") for r in rows))
+        by_item = {r["item"]: r for r in rows}
+        self.assertAlmostEqual(by_item["아세틸렌"]["unit_price"], 25.0)
+        self.assertAlmostEqual(by_item["N2 (kg, Bulk)"]["unit_price"], 0.83)
         self.assertFalse(any(r["date"] == "2026-09-16" for r in rows))
         sep = self.vc._t2d_delivery_rows(
             df, "김혁수", "한국메티슨특수가스", month=date(2026, 9, 1)
@@ -315,6 +353,7 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn('key="t2d_strip_host"', strip)
         self.assertIn('"hideNames": True', strip)
         self.assertIn('heading="납품 내역"', fn)
+        self.assertIn("show_unit_price=True", fn)
         self.assertIn("_t2d_delivery_rows", fn)
         self.assertIn("month=month", fn)
         self.assertNotIn("_sales_delivery_rows(df, staff, client)", fn)
@@ -445,6 +484,39 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("on_iso_change=_on_strip_iso_change", src)
         self.assertIn("def _visit_day_block", src)
         self.assertIn("def month_cal_weeks", src)
+        self.assertIn("_CAL_HEADERS", src)
+        self.assertEqual(self.vc._CAL_HEADERS, ("일", "월", "화", "수", "목", "금", "토"))
+        self.assertEqual(self.vc._CAL_FIRST, 6)
+        self.assertIn('key="vc_mcal_box"', src)
+        self.assertIn("st-key-vc_mcal_box", src)
+        self.assertIn("border: 1.5px solid #9aa8bc", src)
+        self.assertIn("vc-grid-stColumn-v3", src)
+        self.assertIn("def _mcal_grid_css", src)
+        self.assertIn("def _apply_pending_mcal_pick", src)
+        self.assertIn("def _apply_pending_month_nav", src)
+        self.assertIn("def _vc_day_payload", src)
+        payload = src[src.index("def _vc_day_payload") : src.index("def _worklog_visit_dates")]
+        self.assertIn("ck = (staff, client)", payload)
+        self.assertNotIn("month.year", payload)
+        mount_fn = src[src.index("def render_visit_calendar_tab") : src.index("def _render_visit_body")]
+        self.assertNotIn("def _visit_body", mount_fn)
+        self.assertIn("_render_visit_body(df, latest_update_str)", mount_fn)
+        self.assertIn("def _mcal_button_label", src)
+        self.assertNotIn("disabled=out", src)
+        pick = src[src.index("def _on_pick_day") : src.index("def _on_shift_month")]
+        self.assertNotIn("_vc_month", pick)
+        self.assertIn("#e8eaed", src)
+        self.assertIn(".stColumn", src)
+        self.assertIn("border-radius: 10px", src)
+        self.assertIn("#eceff3", src)
+        self.assertIn("min-height: 1.22rem", src)
+        self.assertIn('gap="small"', src)
+        self.assertIn("_MCAL_SLOTS = 5", src)
+        self.assertIn("vc-mcal-slot", src)
+        self.assertIn("text-align: center", src)
+        self.assertNotIn('.stColumn:has(div[class*="st-key-vc_mcal_{iso}"]){{background:#1a73e8', src)
+        self.assertIn("#fff3f1", src)
+        self.assertIn("#eef4fc", src)
         self.assertIn("def schedule_cells", src)
         self.assertIn("def _render_month_cal", src)
         self.assertIn("vc_mcal_", src)
@@ -482,17 +554,39 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("_staff_from_store", body)
         self.assertIn("_staff_clients", body)
         self.assertIn("달력·방문·할일에 연동", src)
+        pre = src[src.index("def _render_visit_body") : src.index("def _visit_day_block")]
+        self.assertNotIn('key="vc_prev_month"', pre)
+        self.assertNotIn('key="vc_next_month"', pre)
+        self.assertNotIn('key="vc_jump_today"', pre)
+        self.assertNotIn('key="vc_staff"', pre)
+        self.assertNotIn('key="vc_client"', pre)
         block = src[src.index("def _visit_day_block") : src.index("def _client_short")]
+        self.assertIn("_apply_pending_month_nav()", block)
+        self.assertIn("_apply_pending_mcal_pick()", block)
+        self.assertIn('key="vc_prev_month"', block)
+        self.assertIn('key="vc_next_month"', block)
+        self.assertIn('key="vc_jump_today"', block)
+        self.assertIn('key="vc_staff"', block)
+        self.assertIn('key="vc_client"', block)
+        self.assertIn("_vc_day_payload", block)
         self.assertIn("_render_day_strip", block)
+        self.assertIn("delivery_chips(mon, month_deliveries)", block)
+        self.assertNotIn("calendar_chips(store, history, mon, month_deliveries)", block)
         self.assertIn("_render_delivery_list", block)
+        self.assertNotIn("show_unit_price=True", block)
         self.assertLess(block.index("left, right = st.columns"), block.index("_render_month_cal"))
+        self.assertLess(block.index("_vc_delivery_col()"), block.index("_render_todo_panel"))
+        self.assertLess(block.index("_render_todo_panel"), block.index("with right:"))
         self.assertLess(block.index("_render_month_cal"), block.index("_render_day_agenda"))
         self.assertLess(block.index("_render_day_agenda"), block.index("_render_month_schedule"))
-        self.assertLess(block.index("_render_month_schedule"), block.index("_render_todo_panel"))
         self.assertGreater(block.index("_render_day_agenda"), block.index("with right:"))
         self.assertIn("def _vc_is_touch_ui", src)
         self.assertIn("_vc_is_touch_ui()", block)
         self.assertIn("pointer: coarse", src)
+        self.assertIn("orientation: portrait", src)
+        self.assertIn("orientation: landscape", src)
+        self.assertIn("max-width: 850px", src)
+        self.assertIn("min-width: 851px", src)
         self.assertIn("월간 달력을 전폭으로", block)
 
     def test_staff_lists_do_not_scan_all_staff_from_sales(self):

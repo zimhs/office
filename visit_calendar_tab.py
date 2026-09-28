@@ -17,9 +17,12 @@ import streamlit as st
 VC_DIR = os.path.join("uploaded_cache", "visit_calendar")
 VC_STORE = os.path.join(VC_DIR, "store.json")
 _WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
+_CAL_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
+_CAL_FIRST = calendar.SUNDAY
 _CYLINDER = "실린더"
-_VC_SAT_BG, _VC_SAT_FG = "#f4f8ff", "#3b6fd8"
-_VC_SUN_BG, _VC_SUN_FG = "#fff6f5", "#d23b3b"
+_VC_SAT_BG, _VC_SAT_FG = "#eef4fc", "#3b6fd8"
+_VC_SUN_BG, _VC_SUN_FG = "#fff3f1", "#d23b3b"
+_MCAL_SLOTS = 5
 
 
 def _vc_is_touch_ui() -> bool:
@@ -152,6 +155,10 @@ def save_store(store: dict) -> None:
     }
     with open(VC_STORE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+    try:
+        st.session_state.pop("_vc_day_data", None)
+    except Exception:
+        pass
 
 
 def add_todo(fields: dict) -> dict:
@@ -266,8 +273,8 @@ def month_visit_rows(store: dict, month: date, staff: str = "") -> list[dict]:
 
 
 def month_cal_weeks(month: date) -> list[list[date]]:
-    """월 달력 격자(월~일). 앞뒤 달 날짜도 칸을 채운다."""
-    return calendar.Calendar(firstweekday=0).monthdatescalendar(month.year, month.month)
+    """월 달력 격자(일~토). 앞뒤 달 날짜도 칸을 채운다."""
+    return calendar.Calendar(firstweekday=_CAL_FIRST).monthdatescalendar(month.year, month.month)
 
 
 def schedule_cells(
@@ -597,13 +604,19 @@ def _t2d_delivery_rows(
         if "매출액" in work.columns
         else pd.Series(0.0, index=work.index)
     )
+    prices = (
+        pd.to_numeric(work["단가"], errors="coerce")
+        if "단가" in work.columns
+        else pd.Series(float("nan"), index=work.index)
+    )
     bulk = items.str.upper().str.contains("BULK", na=False) | items.str.contains("벌크", na=False)
     out: list[dict] = []
-    for iso, item, qty, amt, is_bulk, cname, dropped in zip(
+    for iso, item, qty, amt, price, is_bulk, cname, dropped in zip(
         isos.tolist(),
         items.tolist(),
         qtys.tolist(),
         amts.tolist(),
+        prices.tolist(),
         bulk.tolist(),
         names.tolist(),
         skip.tolist(),
@@ -613,12 +626,21 @@ def _t2d_delivery_rows(
         name = _s(item) or "납품"
         if name.lower() in {"nan", "none"}:
             name = "납품"
+        q = 0.0 if pd.isna(qty) else float(qty)
+        a = 0.0 if pd.isna(amt) else float(amt)
+        if price is not None and not pd.isna(price) and float(price) != 0:
+            unit = float(price)
+        elif q:
+            unit = a / q
+        else:
+            unit = None
         out.append(
             {
                 "date": iso,
                 "item": name,
-                "qty": 0.0 if pd.isna(qty) else float(qty),
-                "amount": 0.0 if pd.isna(amt) else float(amt),
+                "qty": q,
+                "amount": a,
+                "unit_price": unit,
                 "staff": staff,
                 "client": _s(cname),
                 "source": "납품",
@@ -652,6 +674,25 @@ def _vc_state_dict(name: str) -> dict:
         return cur
     except Exception:
         return {}
+
+
+def _vc_day_payload(
+    df: pd.DataFrame | None, staff: str, client: str, month: date
+) -> tuple[dict, list[dict], list[dict]]:
+    """담당·거래처가 같으면 월 이동에도 납품·일지 맵을 다시 만들지 않는다."""
+    ck = (staff, client)
+    box = _vc_state_dict("_vc_day_data")
+    if box.get("ck") == ck and isinstance(box.get("store"), dict):
+        return box["store"], list(box.get("deliveries") or []), list(box.get("history") or [])
+    store = load_store()
+    deliveries = _sales_delivery_rows(df, staff, client) if client else []
+    history = _worklog_visit_dates(client) if client else []
+    box.clear()
+    box["ck"] = ck
+    box["store"] = store
+    box["deliveries"] = deliveries
+    box["history"] = history
+    return store, deliveries, history
 
 
 def _worklog_visit_dates(client: str) -> list[dict]:
@@ -793,7 +834,7 @@ def calendar_chips(
     """구글 캘린더 칸에 붙일 이벤트 칩. 벌크는 품목+충전량, 그외는 실린더."""
     visible = {
         d.isoformat()
-        for week in calendar.Calendar(firstweekday=0).monthdatescalendar(month.year, month.month)
+        for week in month_cal_weeks(month)
         for d in week
     }
     out: dict[str, list[dict]] = {}
@@ -939,9 +980,17 @@ def _vc_css() -> str:
     .vc-month-row.sel { background: #e8f0fe; border-radius: 6px; }
     .vc-month-row.mine .n { color: #1a73e8; }
     .vc-month-empty { color: #9aa0a6; font-size: 13px; padding: 8px 4px; }
+    div[class*="st-key-vc_mcal_box"] {
+      border: 1.5px solid #9aa8bc !important;
+      border-radius: 12px !important;
+      overflow: hidden !important;
+      background: #fff !important;
+      margin: 0 0 12px !important;
+      padding: 0 !important;
+    }
+    /* vc-grid-stColumn-v3 */
     .vc-mcal {
-      border: 1px solid #e8eaed; border-radius: 14px;
-      padding: 10px 10px 8px; background: #fff; margin: 0 0 12px;
+      padding: 10px 10px 8px;
     }
     .vc-mcal-title {
       font-size: 16px; font-weight: 600; color: #3c4043;
@@ -956,33 +1005,60 @@ def _vc_css() -> str:
       margin-right: 4px; vertical-align: 1px;
     }
     .vc-mcal-wd {
-      text-align: center; font-size: 11px; font-weight: 700;
-      letter-spacing: -0.2px; padding: 0 0 4px;
+      text-align: center; font-size: 10px; font-weight: 700;
+      letter-spacing: -0.2px; padding: 2px 0 4px; color: #6b7280;
+      background: transparent;
     }
-    .vc-mcal-chips {
-      min-height: 2.4rem; display: flex; flex-direction: column; gap: 2px;
-      padding: 2px 0 6px;
+    .vc-mcal-wd.sun { color: #d23b3b; }
+    .vc-mcal-wd.sat { color: #3b6fd8; }
+    div[class*="st-key-vc_mcal_box"] .stHorizontalBlock {
+      gap: 6px !important; margin: 0 6px 6px !important;
     }
-    .vc-mcal-chip {
-      display: block; font-size: 10px; font-weight: 700; line-height: 1.25;
-      border-radius: 5px; padding: 1px 4px;
+    div[class*="st-key-vc_mcal_box"] .stColumn {
+      border: none !important;
+      padding: 0 !important; min-width: 0 !important;
+      background: transparent !important;
+    }
+    div[class*="st-key-vc_mcal_box"] .stHorizontalBlock:has(div[class*="st-key-vc_mcal_2"]) .stColumn {
+      background: #fff !important;
+      border: 1px solid #eceff3 !important;
+      border-radius: 10px !important;
+    }
+    div[class*="st-key-vc_mcal_box"] .stHorizontalBlock:has(div[class*="st-key-vc_mcal_2"]) > .stColumn:nth-child(1) {
+      background: #fff3f1 !important;
+    }
+    div[class*="st-key-vc_mcal_box"] .stHorizontalBlock:has(div[class*="st-key-vc_mcal_2"]) > .stColumn:nth-child(7) {
+      background: #eef4fc !important;
+    }
+    .vc-mcal-slots, .vc-mcal-chips {
+      display: flex; flex-direction: column; align-items: center; gap: 0;
+      padding: 0 2px 4px; text-align: center;
+    }
+    .vc-mcal-slot, .vc-mcal-chip {
+      display: block; width: 100%; font-size: 10px; font-weight: 700; line-height: 1.2;
+      min-height: 1.22rem; padding: 1px 2px;
+      border: none; border-radius: 0; box-shadow: none;
+      text-align: center;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .vc-mcal-chip.visit { background: #e6f4ea; color: #137333; }
-    .vc-mcal-chip.planned { background: #fff4e5; color: #c47d00; }
-    .vc-mcal-chip.prior { background: #e8f0fe; color: #1a73e8; }
-    .vc-mcal-chip.mine { box-shadow: inset 0 0 0 1px #1a73e8; }
-    .vc-mcal-more { font-size: 10px; color: #80868b; padding-left: 2px; }
-    div[class*="st-key-vc_mcal_"] { margin: 0 !important; }
-    div[class*="st-key-vc_mcal_"] button {
-      min-height: 1.7rem !important; height: 1.7rem !important;
-      padding: 0 !important; border-radius: 8px !important;
+    .vc-mcal-slot.empty { background: transparent; color: transparent; }
+    .vc-mcal-slot.visit, .vc-mcal-chip.visit { background: #e6f4ea; color: #137333; }
+    .vc-mcal-slot.planned, .vc-mcal-chip.planned { background: #fff4e5; color: #c47d00; }
+    .vc-mcal-slot.prior, .vc-mcal-chip.prior { background: #e8f0fe; color: #1a73e8; }
+    .vc-mcal-slot.mine, .vc-mcal-chip.mine { box-shadow: none; }
+    .vc-mcal-more { font-size: 10px; color: #80868b; text-align: center; }
+    div[class*="st-key-vc_mcal_2"] { margin: 0 !important; }
+    div[class*="st-key-vc_mcal_2"] button {
+      min-height: 8.2rem !important; height: auto !important;
+      padding: 6px 2px 8px !important; border-radius: 10px !important;
       font-size: 12px !important; font-weight: 600 !important;
-      background: #f8fafc !important; color: #3c4043 !important;
+      background: #fff !important; color: #3c4043 !important;
       border: 1px solid #eceff3 !important; box-shadow: none !important;
+      justify-content: center !important; text-align: center !important;
+      white-space: pre-line !important; line-height: 1.25 !important;
     }
-    div[class*="st-key-vc_mcal_"] button:disabled {
-      background: #fff !important; color: #c4c7cc !important; border-color: transparent !important;
+    div[class*="st-key-vc_mcal_2"] button:disabled {
+      background: #fafbfc !important; color: #c4c7cc !important; border: none !important;
     }
     div[class*="st-key-vc_todo_q"] input,
     div[class*="st-key-vc_todo_name"] input,
@@ -1064,8 +1140,8 @@ def _vc_css() -> str:
         min-height: 3.1rem !important; height: 3.1rem !important;
         font-size: 12px !important;
       }
-      div[class*="st-key-vc_mcal_"] button {
-        min-height: 2.5rem !important; height: 2.5rem !important;
+      div[class*="st-key-vc_mcal_2"] button {
+        min-height: 8.2rem !important; height: auto !important;
         font-size: 14px !important;
         touch-action: manipulation;
       }
@@ -1081,8 +1157,33 @@ def _vc_css() -> str:
       div[class*="st-key-vc_todo_x_"] button {
         min-height: 2.6rem !important; height: 2.6rem !important;
       }
-      .vc-mcal-chip { font-size: 11px; }
+      .vc-mcal-slot, .vc-mcal-chip { font-size: 11px; }
       .vc-month-col { -webkit-overflow-scrolling: touch; }
+    }
+    /* iPad Mini 7 세로(CSS 744×1133) — 칸은 전폭, 납품줄은 가로 스크롤 */
+    @media (hover: none) and (pointer: coarse) and (max-width: 850px) and (orientation: portrait) {
+      .vc-toolbar .vc-title { font-size: 17px; line-height: 28px; }
+      div[class*="st-key-vc_mcal_2"] button {
+        min-height: 7.2rem !important;
+        font-size: 13px !important;
+      }
+      .vc-mcal-slot, .vc-mcal-chip { font-size: 10px; }
+      div[class*="st-key-vc_mcal_box"] .stHorizontalBlock { gap: 4px !important; margin: 0 4px 4px !important; }
+    }
+    /* iPad Mini 7 가로(CSS 1133×744) — 높이만 줄이고 7칸 전폭 유지 */
+    @media (hover: none) and (pointer: coarse) and (min-width: 851px) and (max-width: 1180px) and (orientation: landscape) {
+      .vc-toolbar { padding: 0 0 2px; min-height: 26px; }
+      .vc-toolbar .vc-title { font-size: 18px; line-height: 26px; }
+      div[class*="st-key-vc_jump_today"] button,
+      div[class*="st-key-vc_prev_month"] button,
+      div[class*="st-key-vc_next_month"] button {
+        min-height: 2.3rem !important; height: 2.3rem !important;
+      }
+      div[class*="st-key-vc_mcal_2"] button {
+        min-height: 6.6rem !important;
+        padding: 4px 2px 6px !important;
+      }
+      div[class*="st-key-vc_mcal_box"] .stHorizontalBlock { gap: 4px !important; margin: 0 4px 4px !important; }
     }
     </style>
     """
@@ -1123,6 +1224,33 @@ _VC_BUTTON_PREFIXES = (
 )
 
 
+def _apply_pending_mcal_pick() -> None:
+    """스케줄 달력 클릭을 purge 전에 반영한다. 지우면 일자 이동이 사라진다."""
+    for k in list(st.session_state.keys()):
+        if not (isinstance(k, str) and k.startswith("vc_mcal_") and len(k) > 8 and k[8].isdigit()):
+            continue
+        if st.session_state.get(k) is not True:
+            continue
+        try:
+            _on_pick_day(date.fromisoformat(k[8:18]))
+        except ValueError:
+            pass
+        st.session_state.pop(k, None)
+
+
+def _apply_pending_month_nav() -> None:
+    """월 이동 클릭을 purge 전에 반영한다. 전체 재실행이면 로딩이 길어진다."""
+    if st.session_state.get("vc_prev_month") is True:
+        _on_shift_month(-1)
+        st.session_state.pop("vc_prev_month", None)
+    elif st.session_state.get("vc_next_month") is True:
+        _on_shift_month(1)
+        st.session_state.pop("vc_next_month", None)
+    elif st.session_state.get("vc_jump_today") is True:
+        _on_jump_today()
+        st.session_state.pop("vc_jump_today", None)
+
+
 def _purge_vc_button_keys() -> None:
     """버튼 값은 session_state로 넣을 수 없다. 예전 백업·클릭 잔여를 지운다."""
     for k in list(st.session_state.keys()):
@@ -1136,8 +1264,8 @@ def _purge_vc_button_keys() -> None:
 
 
 def _on_pick_day(d: date) -> None:
+    """일자만 고른다. 월은 ‹ › · 오늘에서만 바꾼다."""
     st.session_state["_vc_selected"] = d
-    st.session_state["_vc_month"] = date(d.year, d.month, 1)
     st.session_state["_vc_open_delivery"] = True
 
 
@@ -1253,13 +1381,9 @@ def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str:
         "<div class='sub-header dashboard-tab-panel-head'>📅 방문·할일</div>",
         unsafe_allow_html=True,
     )
+    _apply_pending_month_nav()
     _purge_vc_button_keys()
-
-    @st.fragment
-    def _visit_body() -> None:
-        _render_visit_body(df, latest_update_str)
-
-    _visit_body()
+    _render_visit_body(df, latest_update_str)
 
 
 def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
@@ -1283,56 +1407,54 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
     month = st.session_state.get("_vc_month") or date(today.year, today.month, 1)
     st.markdown(_vc_css(), unsafe_allow_html=True)
 
-    head_l, head_r = st.columns([2.35, 1.05])
-    with head_l:
-        st.markdown(
-            f"<div class='vc-toolbar'><span class='vc-title'>{month.year}년 {month.month}월</span></div>",
-            unsafe_allow_html=True,
-        )
-    with head_r:
-        n1, n2, n3 = st.columns([1.15, 0.42, 0.42], gap="small")
-        with n1:
-            st.button("오늘", key="vc_jump_today", width="content", on_click=_on_jump_today)
-        with n2:
-            st.button("‹", key="vc_prev_month", width="content", on_click=_on_shift_month, args=(-1,))
-        with n3:
-            st.button("›", key="vc_next_month", width="content", on_click=_on_shift_month, args=(1,))
-    f1, f2 = st.columns([1, 1])
-    with f1:
-        staff = st.selectbox("담당자", options=staffs or [""], key="vc_staff")
-    clients = _staff_clients(df, staff, store0)
-    with f2:
-        client = (
-            st.selectbox(
-                "거래처",
-                options=clients or [""],
-                index=None,
-                placeholder="거래처명 입력",
-                key="vc_client",
-                accept_new_options=True,
-                help="이 담당자의 매출 거래처가 모두 나옵니다. 고르면 달력·방문·할일에 연동됩니다.",
-            )
-            or ""
-        )
-
-    st.session_state["_vc_staff"] = staff
-    st.session_state["_vc_client"] = client
-
     @st.fragment
     def _visit_day_block() -> None:
+        _apply_pending_month_nav()
+        _apply_pending_mcal_pick()
         sel: date = st.session_state.get("_vc_selected") or today
         mon = st.session_state.get("_vc_month") or month
-        stf = str(st.session_state.get("vc_staff") or staff or "")
-        cli = str(st.session_state.get("vc_client") or client or "")
-        store = load_store()
-        deliveries = _sales_delivery_rows(df, stf, cli) if cli else []
+        f1, f2 = st.columns([1, 1])
+        with f1:
+            staff = st.selectbox("담당자", options=staffs or [""], key="vc_staff")
+        clients = _staff_clients(df, staff, store0)
+        with f2:
+            client = (
+                st.selectbox(
+                    "거래처",
+                    options=clients or [""],
+                    index=None,
+                    placeholder="거래처명 입력",
+                    key="vc_client",
+                    accept_new_options=True,
+                    help="이 담당자의 매출 거래처가 모두 나옵니다. 고르면 달력·방문·할일에 연동됩니다.",
+                )
+                or ""
+            )
+        st.session_state["_vc_staff"] = staff
+        st.session_state["_vc_client"] = client
+        stf = str(staff or "")
+        cli = str(client or "")
+        head_l, head_r = st.columns([2.35, 1.05])
+        with head_l:
+            st.markdown(
+                f"<div class='vc-toolbar'><span class='vc-title'>{mon.year}년 {mon.month}월</span></div>",
+                unsafe_allow_html=True,
+            )
+        with head_r:
+            n1, n2, n3 = st.columns([1.15, 0.42, 0.42], gap="small")
+            with n1:
+                st.button("오늘", key="vc_jump_today", width="content")
+            with n2:
+                st.button("‹", key="vc_prev_month", width="content")
+            with n3:
+                st.button("›", key="vc_next_month", width="content")
+        store, deliveries, history = _vc_day_payload(df, stf, cli, mon)
         prefix = f"{mon.year:04d}-{mon.month:02d}-"
         month_deliveries = [r for r in deliveries if str(r.get("date") or "").startswith(prefix)]
-        history = _worklog_visit_dates(cli) if cli else []
-        chips = calendar_chips(store, history, mon, month_deliveries)
+        chips = delivery_chips(mon, month_deliveries)
         day_deliveries = delivery_rows_on(deliveries, sel)
         _render_day_strip(mon, sel, chips, today)
-        st.caption("달력 아래 짧은 이름은 표시용입니다. 방문·방문예정·기방문은 오른쪽 월간 스케줄에서 보세요.")
+        st.caption("위 줄은 납품(벌크·실린더)만 표시합니다. 방문은 오른쪽 월간 스케줄에서 보세요.")
 
         def _vc_delivery_col() -> None:
             if cli and day_deliveries:
@@ -1352,11 +1474,11 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
             left, right = st.columns([1, 1], gap="medium")
             with left:
                 _vc_delivery_col()
+                _render_todo_panel(sel, stf, cli, store)
             with right:
                 _render_month_cal(mon, sel, store, stf, cli, history, today)
                 _render_day_agenda(sel, store, stf, cli)
                 _render_month_schedule(mon, store, stf, sel, cli)
-                _render_todo_panel(sel, stf, cli, store)
         else:
             # 아이패드: 월간 달력을 전폭으로 — 반쪽 7칸은 펜슬·손가락으로 누를 수 없다.
             _render_month_cal(mon, sel, store, stf, cli, history, today)
@@ -1518,6 +1640,15 @@ _VC_STRIP_CSS = f"""
 }}
 .vc-strip-nm span.planned {{
   color:#c47d00; font-style:italic; border-bottom:1px dashed #e37400;
+}}
+@media (hover: none) and (pointer: coarse) and (orientation: portrait) {{
+  .vc-strip-root {{ overflow-x:auto; -webkit-overflow-scrolling:touch; }}
+  .vc-strip-wd, .vc-strip-days, .vc-strip-nm {{ width:max-content; min-width:100%; }}
+  .vc-strip-days button {{ flex:0 0 2.2rem; min-width:2.2rem; }}
+  .vc-strip-wd span, .vc-strip-nm span {{ flex:0 0 2.2rem; min-width:2.2rem; }}
+}}
+@media (hover: none) and (pointer: coarse) and (orientation: landscape) {{
+  .vc-strip-days button {{ min-height:2.4rem; height:2.4rem; }}
 }}
 """
 _VC_STRIP_JS = r"""
@@ -1694,24 +1825,137 @@ def _render_month_col(
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _mcal_grid_css() -> str:
+    """달력 fragment 안에 넣는다. 탭 바깥 CSS는 새로고침 전엔 안 바뀐다."""
+    return """
+    <style>
+    /* vc-grid-stColumn-v3 */
+    div[class*="st-key-vc_mcal_box"] .stHorizontalBlock { gap: 6px !important; margin: 0 6px 6px !important; }
+    div[class*="st-key-vc_mcal_box"] .stColumn {
+      border: none !important; padding: 0 !important; min-width: 0 !important;
+      background: transparent !important;
+    }
+    div[class*="st-key-vc_mcal_box"] .stHorizontalBlock:has(div[class*="st-key-vc_mcal_2"]) .stColumn {
+      background: #fff !important;
+      border: 1px solid #eceff3 !important;
+      border-radius: 10px !important;
+    }
+    div[class*="st-key-vc_mcal_box"] .stHorizontalBlock:has(div[class*="st-key-vc_mcal_2"]) > .stColumn:nth-child(1) {
+      background: #fff3f1 !important;
+    }
+    div[class*="st-key-vc_mcal_box"] .stHorizontalBlock:has(div[class*="st-key-vc_mcal_2"]) > .stColumn:nth-child(7) {
+      background: #eef4fc !important;
+    }
+    .vc-mcal-wd {
+      text-align: center; font-size: 10px; font-weight: 700;
+      letter-spacing: -0.2px; padding: 2px 0 4px; color: #6b7280;
+      background: transparent;
+    }
+    .vc-mcal-wd.sun { color: #d23b3b; }
+    .vc-mcal-wd.sat { color: #3b6fd8; }
+    div[class*="st-key-vc_mcal_2"] { margin: 0 !important; }
+    div[class*="st-key-vc_mcal_2"] button {
+      min-height: 8.2rem !important; height: auto !important;
+      padding: 6px 2px 8px !important; border-radius: 10px !important;
+      white-space: pre-line !important; line-height: 1.25 !important;
+      justify-content: center !important; text-align: center !important;
+      cursor: pointer !important;
+    }
+    .vc-mcal-slots, .vc-mcal-chips { text-align: center; align-items: center; }
+    .vc-mcal-slot, .vc-mcal-chip {
+      border: none !important; border-radius: 0 !important; box-shadow: none !important;
+      text-align: center !important;
+    }
+    @media (hover: none) and (pointer: coarse) and (max-width: 850px) and (orientation: portrait) {
+      div[class*="st-key-vc_mcal_2"] button { min-height: 7.2rem !important; font-size: 13px !important; }
+      div[class*="st-key-vc_mcal_box"] .stHorizontalBlock { gap: 4px !important; margin: 0 4px 4px !important; }
+    }
+    @media (hover: none) and (pointer: coarse) and (min-width: 851px) and (max-width: 1180px) and (orientation: landscape) {
+      div[class*="st-key-vc_mcal_2"] button { min-height: 6.6rem !important; padding: 4px 2px 6px !important; }
+      div[class*="st-key-vc_mcal_box"] .stHorizontalBlock { gap: 4px !important; margin: 0 4px 4px !important; }
+    }
+    </style>
+    """
+
+
 def _mcal_chips_html(marks: list[dict]) -> str:
-    if not marks:
-        return "<div class='vc-mcal-chips'></div>"
+    """일자 칸에 값 5줄을 항상 그린다. 비어 있으면 빈 칸."""
     tags = {"visit": "방문", "planned": "예정", "prior": "기방문"}
     parts: list[str] = []
-    extra = 0
-    for i, m in enumerate(marks):
-        if i >= 3:
-            extra += 1
-            continue
-        kind = str(m.get("kind") or "visit")
-        raw = _s(m.get("label")) or tags.get(kind, "")
-        lab = html.escape(_client_short(raw) if kind != "prior" else raw)
-        mine = " mine" if m.get("mine") else ""
-        parts.append(f"<span class='vc-mcal-chip {html.escape(kind)}{mine}'>{lab}</span>")
-    if extra:
-        parts.append(f"<span class='vc-mcal-more'>+{extra}</span>")
-    return "<div class='vc-mcal-chips'>" + "".join(parts) + "</div>"
+    extra = max(0, len(marks) - _MCAL_SLOTS)
+    for i in range(_MCAL_SLOTS):
+        if i < len(marks):
+            m = marks[i]
+            kind = str(m.get("kind") or "visit")
+            raw = _s(m.get("label")) or tags.get(kind, "")
+            lab = html.escape(_client_short(raw) if kind != "prior" else raw)
+            mine = " mine" if m.get("mine") else ""
+            more = f" +{extra}" if i == _MCAL_SLOTS - 1 and extra else ""
+            parts.append(
+                f"<span class='vc-mcal-slot {html.escape(kind)}{mine}'>{lab}{more}</span>"
+            )
+        else:
+            parts.append("<span class='vc-mcal-slot empty'></span>")
+    return "<div class='vc-mcal-slots'>" + "".join(parts) + "</div>"
+
+
+def _mcal_button_label(d: date, marks: list[dict]) -> str:
+    """일자+값 5줄을 한 버튼에 넣어 칸 전체를 누를 수 있게 한다."""
+    tags = {"visit": "방문", "planned": "예정", "prior": "기방문"}
+    lines = [str(d.day)]
+    extra = max(0, len(marks) - _MCAL_SLOTS)
+    for i in range(_MCAL_SLOTS):
+        if i < len(marks):
+            m = marks[i]
+            kind = str(m.get("kind") or "visit")
+            raw = _s(m.get("label")) or tags.get(kind, "")
+            lab = _client_short(raw) if kind != "prior" else raw
+            more = f" +{extra}" if i == _MCAL_SLOTS - 1 and extra else ""
+            lines.append(f"{lab}{more}")
+        else:
+            lines.append("\u00a0")
+    return "\n".join(lines)
+
+
+def _mcal_head_html() -> str:
+    ths: list[str] = []
+    for i, wd in enumerate(_CAL_HEADERS):
+        cls = " sun" if i == 0 else (" sat" if i == 6 else "")
+        ths.append(f"<div class='vc-mcal-th{cls}'>{wd}</div>")
+    return "<div class='vc-mcal-head'>" + "".join(ths) + "</div>"
+
+
+def _mcal_month_html(
+    month: date,
+    selected: date,
+    today: date,
+    weeks: list[list[date]],
+    cells: dict[str, list[dict]],
+) -> str:
+    sel_iso = selected.isoformat()
+    today_iso = today.isoformat()
+    rows: list[str] = []
+    for week in weeks:
+        tds: list[str] = []
+        for i, d in enumerate(week):
+            iso = d.isoformat()
+            out = d.month != month.month
+            cls = ["sun" if i == 0 else "sat" if i == 6 else ""]
+            if out:
+                cls.append("out")
+            elif iso == sel_iso:
+                cls.append("sel")
+            if not out and iso == today_iso:
+                cls.append("today")
+            klass = " ".join(x for x in cls if x)
+            tds.append(
+                f"<td class='{klass}'>"
+                f"<div class='vc-mcal-num'>{d.day}</div>"
+                f"{_mcal_chips_html(cells.get(iso) or [])}"
+                f"</td>"
+            )
+        rows.append("<tr>" + "".join(tds) + "</tr>")
+    return "<table class='vc-mcal-table'><tbody>" + "".join(rows) + "</tbody></table>"
 
 
 def _render_month_cal(
@@ -1729,61 +1973,66 @@ def _render_month_cal(
     n_visit = sum(1 for items in cells.values() for x in items if x.get("kind") == "visit")
     n_plan = sum(1 for items in cells.values() for x in items if x.get("kind") == "planned")
     n_prior = sum(1 for items in cells.values() for x in items if x.get("kind") == "prior")
-    st.markdown("<div class='vc-mcal'>", unsafe_allow_html=True)
-    st.markdown(
-        f"<div class='vc-mcal-title'>{month.year}년 {month.month}월 스케줄</div>"
-        f"<div class='vc-mcal-leg'>"
-        f"<span><i style='background:#137333'></i>방문 {n_visit}</span>"
-        f"<span><i style='background:#c47d00'></i>방문예정 {n_plan}</span>"
-        f"<span><i style='background:#1a73e8'></i>기방문 {n_prior}</span>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-    wd_cols = st.columns(7, gap="small")
-    for i, wd in enumerate(_WEEKDAYS):
-        color = _VC_SAT_FG if i == 5 else (_VC_SUN_FG if i == 6 else "#6b7280")
-        wd_cols[i].markdown(
-            f"<div class='vc-mcal-wd' style='color:{color}'>{wd}</div>",
+    st.markdown(_mcal_grid_css(), unsafe_allow_html=True)
+    with st.container(key="vc_mcal_box"):
+        st.markdown(
+            f"<div class='vc-mcal'>"
+            f"<div class='vc-mcal-title'>{month.year}년 {month.month}월 스케줄</div>"
+            f"<div class='vc-mcal-leg'>"
+            f"<span><i style='background:#137333'></i>방문 {n_visit}</span>"
+            f"<span><i style='background:#c47d00'></i>방문예정 {n_plan}</span>"
+            f"<span><i style='background:#1a73e8'></i>기방문 {n_prior}</span>"
+            f"</div></div>",
             unsafe_allow_html=True,
         )
-    sel_iso = selected.isoformat()
-    today_iso = today.isoformat()
-    hi: list[str] = []
-    for week in weeks:
-        cols = st.columns(7, gap="small")
-        for i, d in enumerate(week):
-            iso = d.isoformat()
-            out = d.month != month.month
-            with cols[i]:
-                st.button(
-                    str(d.day),
-                    key=f"vc_mcal_{iso}",
-                    width="stretch",
-                    disabled=out,
-                    on_click=_on_pick_day,
-                    args=(d,),
-                    help=None if out else f"{iso} 선택",
-                )
-                st.markdown(_mcal_chips_html(cells.get(iso) or []), unsafe_allow_html=True)
-            if not out and iso == sel_iso:
-                hi.append(
-                    f'div[class*="st-key-vc_mcal_{iso}"] button{{background:#1a73e8!important;color:#fff!important;border-color:#1a73e8!important;}}'
-                )
-            elif not out and iso == today_iso:
-                hi.append(
-                    f'div[class*="st-key-vc_mcal_{iso}"] button{{box-shadow:inset 0 0 0 1.5px #1a73e8!important;}}'
-                )
-            elif not out and i == 5:
-                hi.append(
-                    f'div[class*="st-key-vc_mcal_{iso}"] button{{background:{_VC_SAT_BG}!important;color:{_VC_SAT_FG}!important;}}'
-                )
-            elif not out and i == 6:
-                hi.append(
-                    f'div[class*="st-key-vc_mcal_{iso}"] button{{background:{_VC_SUN_BG}!important;color:{_VC_SUN_FG}!important;}}'
-                )
-    if hi:
-        st.markdown(f"<style>{''.join(hi)}</style>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+        wd_cols = st.columns(7, gap="small")
+        for i, wd in enumerate(_CAL_HEADERS):
+            cls = " sun" if i == 0 else (" sat" if i == 6 else "")
+            wd_cols[i].markdown(
+                f"<div class='vc-mcal-wd{cls}'>{wd}</div>",
+                unsafe_allow_html=True,
+            )
+        sel_iso = selected.isoformat()
+        today_iso = today.isoformat()
+        hi: list[str] = []
+        for week in weeks:
+            cols = st.columns(7, gap="small")
+            for i, d in enumerate(week):
+                iso = d.isoformat()
+                out = d.month != month.month
+                with cols[i]:
+                    st.button(
+                        _mcal_button_label(d, cells.get(iso) or []),
+                        key=f"vc_mcal_{iso}",
+                        width="stretch",
+                        on_click=_on_pick_day,
+                        args=(d,),
+                        help=f"{iso} 선택",
+                    )
+                if iso == sel_iso:
+                    hi.append(
+                        f'div[class*="st-key-vc_mcal_{iso}"] button'
+                        f'{{background:#e8eaed!important;color:#202124!important;border-color:#c5cedb!important;}}'
+                    )
+                elif iso == today_iso:
+                    hi.append(
+                        f'div[class*="st-key-vc_mcal_{iso}"] button'
+                        f'{{box-shadow:inset 0 0 0 1.5px #9aa8bc!important;}}'
+                    )
+                elif out:
+                    hi.append(
+                        f'div[class*="st-key-vc_mcal_{iso}"] button{{color:#80868b!important;}}'
+                    )
+                elif i == 0:
+                    hi.append(
+                        f'div[class*="st-key-vc_mcal_{iso}"] button{{color:{_VC_SUN_FG}!important;}}'
+                    )
+                elif i == 6:
+                    hi.append(
+                        f'div[class*="st-key-vc_mcal_{iso}"] button{{color:{_VC_SAT_FG}!important;}}'
+                    )
+        if hi:
+            st.markdown(f"<style>{''.join(hi)}</style>", unsafe_allow_html=True)
 
 
 def _render_month_schedule(
@@ -1917,6 +2166,7 @@ def _render_delivery_list(
     all_rows: list[dict],
     *,
     heading: str | None = None,
+    show_unit_price: bool = False,
 ) -> None:
     wd = _WEEKDAYS[selected.weekday()]
     title = heading or "지정 납품 목록"
@@ -1938,6 +2188,11 @@ def _render_delivery_list(
                 "구분": "벌크" if (r.get("bulk") or _is_bulk_item(r.get("item") or "")) else _CYLINDER,
                 "날짜": r.get("date"),
                 "품목": r.get("item"),
+                **(
+                    {"단가": _fmt_qty(r.get("unit_price"))}
+                    if show_unit_price
+                    else {}
+                ),
                 "충전량": _fmt_qty(r.get("qty")) if (r.get("bulk") or _is_bulk_item(r.get("item") or "")) else "",
                 "출고량": "" if (r.get("bulk") or _is_bulk_item(r.get("item") or "")) else _fmt_qty(r.get("qty")),
                 "매출액": _fmt_qty(r.get("amount")),
@@ -2346,7 +2601,14 @@ def render_tab2_delivery_status(
             _render_t2d_day_strip(month, selected, chips, today)
             day_rows = delivery_rows_on(deliveries, selected)
             if day_rows:
-                _render_delivery_list(client, selected, day_rows, deliveries, heading="납품 내역")
+                _render_delivery_list(
+                    client,
+                    selected,
+                    day_rows,
+                    deliveries,
+                    heading="납품 내역",
+                    show_unit_price=True,
+                )
             else:
                 st.markdown(
                     "<div class='t2d-empty' style='min-height:56px;margin-top:10px'>"
