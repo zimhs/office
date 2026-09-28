@@ -137,10 +137,8 @@ def _vc_is_darwin_local() -> bool:
 
 
 def _vc_use_mcal_date_input() -> bool:
-    """맥 로컬·Cloud 데스크톱은 date_input. 아이패드 date_input은 끝나지 않는다."""
-    if _vc_is_darwin_local():
-        return True
-    return _vc_is_streamlit_cloud() and not _vc_is_touch_ui()
+    """date_input은 맥 로컬만. Cloud에 올리면 날짜 선택이 화면을 깨고 로딩이 안 끝난다."""
+    return _vc_is_darwin_local()
 
 
 def _vc_use_ipad_layout() -> bool:
@@ -2406,18 +2404,17 @@ def _render_month_cal(
             f"</div></div>",
             unsafe_allow_html=True,
         )
-        raw = st.session_state.get("vc_mcal_date")
-        coerced = _as_date(raw)
-        if coerced is not None and raw != coerced:
-            st.session_state["vc_mcal_date"] = coerced
-        elif "vc_mcal_date" not in st.session_state:
-            st.session_state["vc_mcal_date"] = selected
         if _vc_use_mcal_date_input():
+            raw = st.session_state.get("vc_mcal_date")
+            coerced = _as_date(raw)
+            if coerced is not None and raw != coerced:
+                st.session_state["vc_mcal_date"] = coerced
+            elif "vc_mcal_date" not in st.session_state:
+                st.session_state["vc_mcal_date"] = selected
             st.markdown(
                 _mcal_head_html()
                 + _mcal_month_html(
-                    month, selected, today, weeks, cells,
-                    pick_href=_vc_is_darwin_local(),
+                    month, selected, today, weeks, cells, pick_href=True
                 ),
                 unsafe_allow_html=True,
             )
@@ -2436,6 +2433,24 @@ def _render_month_cal(
                     month, selected, today, weeks, cells, pick_href=False
                 ),
                 unsafe_allow_html=True,
+            )
+            last = calendar.monthrange(month.year, month.month)[1]
+            month_isos = [
+                date(month.year, month.month, n).isoformat()
+                for n in range(1, last + 1)
+            ]
+            iso0 = (
+                selected.isoformat()
+                if (selected.year, selected.month) == (month.year, month.month)
+                else date(month.year, month.month, min(selected.day, last)).isoformat()
+            )
+            if st.session_state.get("vc_mcal_iso") not in month_isos:
+                st.session_state["vc_mcal_iso"] = iso0
+            st.selectbox(
+                "스케줄 날짜",
+                options=month_isos,
+                format_func=lambda iso: f"{iso[5:7]}/{iso[8:10]}",
+                key="vc_mcal_iso",
             )
 
 
