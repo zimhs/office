@@ -1504,12 +1504,44 @@ def _vc_rerun() -> None:
         st.rerun()
 
 
+def _apply_query_day_pick() -> None:
+    try:
+        raw = st.query_params.get("vc_pick", "")
+        if isinstance(raw, list):
+            raw = raw[0] if raw else ""
+        raw = str(raw or "").strip()
+        if not raw:
+            return
+        d = date.fromisoformat(raw[:10])
+    except ValueError:
+        return
+    _on_pick_day(d)
+    try:
+        del st.query_params["vc_pick"]
+    except Exception:
+        pass
+
+
+def _vc_pick_href(iso: str) -> str:
+    bits = [f"vc_pick={iso}"]
+    try:
+        tu = st.query_params.get("touch_ui", "")
+        if isinstance(tu, list):
+            tu = tu[0] if tu else ""
+        if str(tu) == "1":
+            bits.append("touch_ui=1")
+    except Exception:
+        pass
+    return "?" + "&".join(bits)
+
+
 def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str: str = "") -> None:
     """방문 미팅 캘린더 + 할일 목록."""
     st.markdown(
         "<div class='sub-header dashboard-tab-panel-head'>📅 방문·할일</div>",
         unsafe_allow_html=True,
     )
+    _apply_query_day_pick()
     _vc_clear_strip_hosts_if_unused()
     _apply_pending_month_nav()
     _purge_vc_button_keys()
@@ -2031,6 +2063,9 @@ def _mcal_grid_css() -> str:
     .vc-mcal-table td.sel { background: #e8eaed; }
     .vc-mcal-table td.out { color: #80868b; }
     .vc-mcal-table td.today { box-shadow: inset 0 0 0 1.5px #9aa8bc; }
+    .vc-mcal-table td a.vc-mcal-hit {
+      color: inherit; text-decoration: none; display: block; min-height: 8.2rem;
+    }
     .vc-mcal-num { font-size: 12px; font-weight: 600; color: #3c4043; padding-bottom: 4px; }
     .vc-strip-html { width: 100%; margin: 0 0 8px; }
     .vc-strip-html .vc-strip-wd,
@@ -2146,11 +2181,13 @@ def _mcal_month_html(
             if not out and iso == today_iso:
                 cls.append("today")
             klass = " ".join(x for x in cls if x)
+            href = html.escape(_vc_pick_href(iso), quote=True)
             tds.append(
                 f"<td class='{klass}'>"
+                f"<a class='vc-mcal-hit' href='{href}'>"
                 f"<div class='vc-mcal-num'>{d.day}</div>"
                 f"{_mcal_chips_html(cells.get(iso) or [])}"
-                f"</td>"
+                f"</a></td>"
             )
         rows.append("<tr>" + "".join(tds) + "</tr>")
     return "<table class='vc-mcal-table'><tbody>" + "".join(rows) + "</tbody></table>"
@@ -2216,71 +2253,21 @@ def _render_month_cal(
             f"</div></div>",
             unsafe_allow_html=True,
         )
-        if not _vc_is_mac_local():
-            if "vc_mcal_date" not in st.session_state:
-                st.session_state["vc_mcal_date"] = selected
-            st.markdown(
-                _mcal_head_html() + _mcal_month_html(month, selected, today, weeks, cells),
-                unsafe_allow_html=True,
-            )
-            first, last = weeks[0][0], weeks[-1][-1]
-            st.date_input(
-                "스케줄 날짜",
-                min_value=first,
-                max_value=last,
-                format="YYYY/MM/DD",
-                key="vc_mcal_date",
-                on_change=_on_mcal_date_change,
-            )
-            return
-        wd_cols = st.columns(7, gap="small")
-        for i, wd in enumerate(_CAL_HEADERS):
-            cls = " sun" if i == 0 else (" sat" if i == 6 else "")
-            wd_cols[i].markdown(
-                f"<div class='vc-mcal-wd{cls}'>{wd}</div>",
-                unsafe_allow_html=True,
-            )
-        sel_iso = selected.isoformat()
-        today_iso = today.isoformat()
-        hi: list[str] = []
-        for week in weeks:
-            cols = st.columns(7, gap="small")
-            for i, d in enumerate(week):
-                iso = d.isoformat()
-                out = d.month != month.month
-                with cols[i]:
-                    st.button(
-                        _mcal_button_label(d, cells.get(iso) or []),
-                        key=f"vc_mcal_{iso}",
-                        width="stretch",
-                        on_click=_on_pick_day,
-                        args=(d,),
-                        help=f"{iso} 선택",
-                    )
-                if iso == sel_iso:
-                    hi.append(
-                        f'div[class*="st-key-vc_mcal_{iso}"] button'
-                        f'{{background:#e8eaed!important;color:#202124!important;border-color:#c5cedb!important;}}'
-                    )
-                elif iso == today_iso:
-                    hi.append(
-                        f'div[class*="st-key-vc_mcal_{iso}"] button'
-                        f'{{box-shadow:inset 0 0 0 1.5px #9aa8bc!important;}}'
-                    )
-                elif out:
-                    hi.append(
-                        f'div[class*="st-key-vc_mcal_{iso}"] button{{color:#80868b!important;}}'
-                    )
-                elif i == 0:
-                    hi.append(
-                        f'div[class*="st-key-vc_mcal_{iso}"] button{{color:{_VC_SUN_FG}!important;}}'
-                    )
-                elif i == 6:
-                    hi.append(
-                        f'div[class*="st-key-vc_mcal_{iso}"] button{{color:{_VC_SAT_FG}!important;}}'
-                    )
-        if hi:
-            st.markdown(f"<style>{''.join(hi)}</style>", unsafe_allow_html=True)
+        if "vc_mcal_date" not in st.session_state:
+            st.session_state["vc_mcal_date"] = selected
+        st.markdown(
+            _mcal_head_html() + _mcal_month_html(month, selected, today, weeks, cells),
+            unsafe_allow_html=True,
+        )
+        first, last = weeks[0][0], weeks[-1][-1]
+        st.date_input(
+            "스케줄 날짜",
+            min_value=first,
+            max_value=last,
+            format="YYYY/MM/DD",
+            key="vc_mcal_date",
+            on_change=_on_mcal_date_change,
+        )
 
 
 def _render_month_schedule(
