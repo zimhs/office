@@ -602,11 +602,12 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn('_DASH_VC_STATE_PREFIXES = ("_vc_",)', app)
         tab13 = app[app.index("with tab13:") : app.index("방문·할일 탭 오류")]
         self.assertIn("render_visit_calendar_tab", tab13)
-        self.assertIn("_dash_defer_heavy_stub", tab13)
-        self.assertIn("쿠키로 처음부터 펼치면", tab13)
-        self.assertIn("그리기가 끝난 뒤에만 펼침 유지", tab13)
-        self.assertNotIn("_vc_active", tab13)
+        self.assertNotIn("_dash_defer_heavy_stub", tab13)
+        self.assertIn("탭 클릭 때 stub remount", tab13)
         self.assertIn("if not is_touch_ui() and not _is_streamlit_cloud()", tab13)
+        self.assertIn("v2 재등록으로 방문탭이 안 끝난다", tab13)
+        self.assertIn("heavy_indices=(9, 10, 11)", app)
+        self.assertNotIn("heavy_indices=(9, 10, 11, 12)", app)
         self.assertIn("v2 재등록으로 방문탭이 안 끝난다", tab13)
         mount = app[app.index("def _dash_should_defer_heavy_tab") : app.index("def _dash_defer_heavy_stub")]
         self.assertNotIn("_DASH_TAB_VISIT", mount)

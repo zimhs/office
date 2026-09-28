@@ -15110,7 +15110,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
     _STICKY_INJECT_VER = 100
-    _ACTIVE_TAB_INJECT_VER = 13
+    _ACTIVE_TAB_INJECT_VER = 14
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
@@ -15121,7 +15121,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.session_state["_ipad_sticky_ver"] = 47
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
-            min_tabs=13, heavy_indices=(9, 10, 11, 12)
+            min_tabs=13, heavy_indices=(9, 10, 11)
         )
         st.session_state["_dash_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
         st.session_state["_dash_cloud_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
@@ -18596,35 +18596,22 @@ def _dash_filter_and_tabs_fragment() -> None:
 
         with tab13:
             try:
-                # Cloud·아이패드: 쿠키로 처음부터 펼치면 첫 페인트에 달력까지 붙어 로딩이 안 끝난다.
-                # 「화면 불러오기」/탭 remount 로 연 뒤에만 그린다. 맥 로컬은 시작부터 펼침.
-                _vc_force = bool(st.session_state.pop(f"_dash_force_tab_{_DASH_TAB_VISIT}", None))
-                _vc_mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
-                _vc_need = _vc_force or bool(_vc_mounted.get(_DASH_TAB_VISIT))
-                if (_is_streamlit_cloud() or is_touch_ui()) and not _vc_need:
-                    _dash_defer_heavy_stub(
-                        "📅 방문·할일",
-                        _DASH_TAB_VISIT,
-                        "_dash_bak_visit",
-                        _DASH_VC_STATE_PREFIXES,
-                    )
-                else:
-                    import visit_calendar_tab as _vc_tab
+                # Cloud·아이패드도 가벼운 달력을 처음부터 붙여 둔다.
+                # 탭 클릭 때 stub remount(전체 재실행)를 하면 아이패드에서 빈 화면만 남는다.
+                import visit_calendar_tab as _vc_tab
 
-                    # 맥 로컬만 모듈 reload. Cloud·아이패드는 v2 재등록으로 방문탭이 안 끝난다.
-                    if not is_touch_ui() and not _is_streamlit_cloud():
-                        _vc_path = getattr(_vc_tab, "__file__", None) or ""
-                        _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
-                        if "_vc_mod_mtime" not in st.session_state:
-                            st.session_state["_vc_mod_mtime"] = _vc_mtime
-                        elif st.session_state.get("_vc_mod_mtime") != _vc_mtime:
-                            _vc_tab = importlib.reload(_vc_tab)
-                            st.session_state["_vc_mod_mtime"] = _vc_mtime
-                            sys.modules["visit_calendar_tab"] = _vc_tab
-                    _vc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
-                    _vc_tab.render_visit_calendar_tab(_vc_df, latest_update_str=latest_update_str)
-                    # 그리기가 끝난 뒤에만 펼침 유지. 중간에 붙이면 새로고침이 바로 달력을 다시 켠다.
-                    _vc_mounted[_DASH_TAB_VISIT] = True
+                # 맥 로컬만 모듈 reload. Cloud·아이패드는 v2 재등록으로 방문탭이 안 끝난다.
+                if not is_touch_ui() and not _is_streamlit_cloud():
+                    _vc_path = getattr(_vc_tab, "__file__", None) or ""
+                    _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
+                    if "_vc_mod_mtime" not in st.session_state:
+                        st.session_state["_vc_mod_mtime"] = _vc_mtime
+                    elif st.session_state.get("_vc_mod_mtime") != _vc_mtime:
+                        _vc_tab = importlib.reload(_vc_tab)
+                        st.session_state["_vc_mod_mtime"] = _vc_mtime
+                        sys.modules["visit_calendar_tab"] = _vc_tab
+                _vc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                _vc_tab.render_visit_calendar_tab(_vc_df, latest_update_str=latest_update_str)
             except ModuleNotFoundError:
                 st.error(
                     "방문·할일 모듈(`visit_calendar_tab.py`)을 찾을 수 없습니다. "
