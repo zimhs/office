@@ -1067,11 +1067,6 @@ def _vc_css() -> str:
       opacity: 1 !important;
       transition: none !important;
     }
-    div[class*="st-key-vc_touch_mcal"] {
-      border: 1px solid #dadce0;
-      border-radius: 10px;
-      overflow: hidden;
-    }
     div[class*="st-key-vc_jump_today"],
     div[class*="st-key-vc_prev_month"],
     div[class*="st-key-vc_next_month"] {
@@ -1449,7 +1444,7 @@ _VC_KEEP_KEYS = frozenset(
         "vc_mcal_iso",
         "vc_mcal_day",
         "vc_visit_frag",
-        "vc_touch_mcal",
+        "vc_touch_slide",
     }
 )
 
@@ -1525,82 +1520,71 @@ def _on_pick_day(d: date) -> None:
         st.session_state["vc_mcal_day"] = d.day
 
 
-def _touch_df_cells(event) -> list:
-    if event is None:
-        return []
-    sel = getattr(event, "selection", None)
-    if sel is None and isinstance(event, dict):
-        sel = event.get("selection")
-    if sel is None:
-        return []
-    cells = getattr(sel, "cells", None)
-    if cells is None and isinstance(sel, dict):
-        cells = sel.get("cells")
-    return list(cells or [])
+def _touch_visible_days(month: date) -> list[date]:
+    return [d for w in month_cal_weeks(month) for d in w]
 
 
-def _touch_cell_to_date(cell, weeks: list[list[date]]) -> date | None:
-    if not (isinstance(cell, (list, tuple)) and len(cell) >= 2):
-        return None
+def _touch_slide_index(month: date, selected: date) -> int:
+    vis = _touch_visible_days(month)
+    if not vis:
+        return 0
     try:
-        ri = int(cell[0])
-    except (TypeError, ValueError):
-        return None
-    col = cell[1]
-    if isinstance(col, str):
-        if col not in _CAL_HEADERS:
-            return None
-        ci = _CAL_HEADERS.index(col)
+        return vis.index(selected)
+    except ValueError:
+        best = 0
+        dist: int | None = None
+        for i, d in enumerate(vis):
+            n = abs((d - selected).days)
+            if dist is None or n < dist:
+                dist = n
+                best = i
+        return best
+
+
+def _reset_touch_slide(month: date, selected: date) -> None:
+    vis = _touch_visible_days(month)
+    if not vis or not isinstance(selected, date):
+        st.session_state["vc_touch_slide"] = 0
     else:
-        try:
-            ci = int(col)
-        except (TypeError, ValueError):
-            return None
-    if 0 <= ri < len(weeks) and 0 <= ci < len(weeks[ri]):
-        return weeks[ri][ci]
-    return None
+        st.session_state["vc_touch_slide"] = _touch_slide_index(month, selected)
+    st.session_state.pop("vc_touch_mcal", None)
 
 
-def _render_touch_mcal_df(
+def _render_touch_mcal_html(
     month: date,
     selected: date,
     today: date,
     weeks: list[list[date]],
     cells: dict[str, list[dict]],
 ) -> None:
-    """아이패드: 달력 칸 버튼 대신 표 한 장에서 칸을 고른다. 맥 데스크톱은 쓰지 않는다."""
-    rows: list[list[str]] = []
-    for week in weeks:
-        labels: list[str] = []
-        for d in week:
-            marks = cells.get(d.isoformat()) or []
-            tag = ""
-            if marks:
-                raw = _s(marks[0].get("label")) or ""
-                tag = _client_short(raw)[:6]
-            if d.month != month.month:
-                lab = f"({d.day})"
-            else:
-                lab = str(d.day)
-            if tag:
-                lab = f"{lab} {tag}"
-            if d == selected:
-                lab = f"[{lab}]"
-            elif d == today:
-                lab = f"{lab}·"
-            labels.append(lab)
-        rows.append(labels)
-    df = pd.DataFrame(rows, columns=list(_CAL_HEADERS))
-    st.dataframe(
-        df,
-        hide_index=True,
-        width="stretch",
-        height=min(440, 58 * (len(rows) + 1)),
-        row_height=52,
-        on_select=_on_touch_mcal_select,
-        selection_mode="single-cell",
-        key="vc_touch_mcal",
+    """아이패드: 칸 그림 + 슬라이더 하나. 표·목록·칸 버튼은 쓰지 않는다."""
+    st.session_state.pop("vc_touch_mcal", None)
+    st.markdown(
+        _mcal_head_html()
+        + _mcal_month_html(
+            month, selected, today, weeks, cells, pick_href=False
+        ),
+        unsafe_allow_html=True,
     )
+    vis = [d for w in weeks for d in w]
+    if not vis:
+        return
+    cur = st.session_state.get("vc_touch_slide")
+    if not isinstance(cur, (int, float)) or int(cur) < 0 or int(cur) >= len(vis):
+        st.session_state["vc_touch_slide"] = _touch_slide_index(month, selected)
+    st.slider(
+        "날짜 이동",
+        min_value=0,
+        max_value=len(vis) - 1,
+        key="vc_touch_slide",
+        on_change=_on_touch_slide_change,
+    )
+    try:
+        shown = vis[int(st.session_state.get("vc_touch_slide") or 0)]
+    except (TypeError, ValueError, IndexError):
+        shown = selected
+    extra = " · 다른 달" if shown.month != month.month else ""
+    st.caption(f"{shown.month}/{shown.day} ({_WEEKDAYS[shown.weekday()]}){extra}")
 
 
 def _on_mcal_date_change() -> None:
@@ -1626,7 +1610,8 @@ def _on_shift_month(delta: int) -> None:
         st.session_state["vc_mcal_iso"] = clamped.isoformat()
         st.session_state["vc_mcal_day"] = clamped.day
     if _vc_is_touch_ui():
-        st.session_state.pop("vc_touch_mcal", None)
+        sel2 = st.session_state.get("_vc_selected")
+        _reset_touch_slide(new, sel2 if isinstance(sel2, date) else new)
 
 
 def _on_jump_today() -> None:
@@ -1637,20 +1622,23 @@ def _on_jump_today() -> None:
     st.session_state["vc_mcal_iso"] = today.isoformat()
     st.session_state["vc_mcal_day"] = today.day
     if _vc_is_touch_ui():
-        st.session_state.pop("vc_touch_mcal", None)
+        _reset_touch_slide(date(today.year, today.month, 1), today)
 
 
-def _on_touch_mcal_select() -> None:
-    """아이패드 표 칸 선택. 콜백이 본문보다 먼저 돌아 납품·스케줄이 같은 날을 본다."""
+def _on_touch_slide_change() -> None:
+    """아이패드 슬라이더. 콜백이 본문보다 먼저 돌아 납품·스케줄이 같은 날을 본다."""
     month = st.session_state.get("_vc_month")
     if not isinstance(month, date):
-        month = date.today().replace(day=1)
-    weeks = month_cal_weeks(month)
-    for cell in _touch_df_cells(st.session_state.get("vc_touch_mcal")):
-        picked = _touch_cell_to_date(cell, weeks)
-        if picked is not None:
-            _on_pick_day(picked)
-            return
+        return
+    vis = _touch_visible_days(month)
+    try:
+        idx = int(st.session_state.get("vc_touch_slide"))
+    except (TypeError, ValueError):
+        return
+    if 0 <= idx < len(vis):
+        d = vis[idx]
+        if st.session_state.get("_vc_selected") != d:
+            _on_pick_day(d)
 
 
 def _sync_selected_from_mcal_widget() -> None:
@@ -2870,7 +2858,7 @@ def _render_month_cal(
                 data=_mcal_v2_payload(month, selected, today, weeks, cells),
             )
         elif _vc_is_touch_ui():
-            _render_touch_mcal_df(month, selected, today, weeks, cells)
+            _render_touch_mcal_html(month, selected, today, weeks, cells)
         else:
             _render_mcal_day_buttons(month, selected, weeks, cells, today)
 
