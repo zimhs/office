@@ -687,9 +687,14 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertNotIn('key="vc_jump_today"', pre)
         self.assertNotIn('key="vc_staff"', pre)
         self.assertNotIn('key="vc_client"', pre)
+        self.assertIn('setdefault("vc_strip_host"', pre)
+        self.assertIn('setdefault("vc_mcal_host"', pre)
         block = src[src.index("def _visit_day_block") : src.index("def _client_short")]
         self.assertIn("_apply_pending_month_nav()", block)
         self.assertIn("_apply_pending_mcal_pick()", block)
+        self.assertIn("_apply_v2_calendar_picks()", block)
+        self.assertNotIn('_apply_v2_iso_host("vc_strip_host")', block)
+        self.assertNotIn('_apply_v2_iso_host("vc_mcal_host")', block)
         self.assertNotIn("_pick_touch_visible_day", src)
         self.assertNotIn('key="vc_touch_day"', src)
         self.assertNotIn('key="vc_touch_mcal"', src)
@@ -701,7 +706,8 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertNotIn("st.dataframe(", touch)
         self.assertNotIn("st.selectbox(", touch)
         self.assertIn("st-key-vc_visit_frag", src)
-        self.assertIn('data-stale="true"', src)
+        self.assertIn('[data-testid="stElementContainer"]', src)
+        self.assertIn(':has(> [data-testid="stLayoutWrapper"] > [class*="st-key-vc_visit_frag"])', src)
         self.assertIn('key="vc_next_month"', block)
         self.assertIn('key="vc_jump_today"', block)
         self.assertNotIn("on_click=_on_shift_month", block)
@@ -750,6 +756,105 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertEqual(vis[0].month, 8)
         self.assertEqual(vis[-1].month, 10)
         self.assertEqual(self.vc._touch_slide_index(month, vis[-1]), len(vis) - 1)
+
+    def test_v2_calendar_picks_clicked_host_not_stale_other(self):
+        class _SS(dict):
+            pass
+
+        def _run(ss):
+            with patch.object(self.vc.st, "session_state", ss), patch.object(
+                self.vc, "_vc_is_darwin_local", return_value=True
+            ), patch.object(self.vc, "_vc_is_touch_ui", return_value=False):
+                self.vc._apply_v2_calendar_picks()
+
+        strip_click = _SS()
+        strip_click["_vc_selected"] = date(2026, 9, 10)
+        strip_click["vc_strip_host"] = {"iso": "2026-09-17"}
+        strip_click["vc_mcal_host"] = {"iso": "2026-09-10"}
+        strip_click["_vc_v2_cal_ready"] = True
+        strip_click["_vc_v2_strip_seen"] = "2026-09-10"
+        strip_click["_vc_v2_mcal_seen"] = "2026-09-10"
+        _run(strip_click)
+        self.assertEqual(strip_click["_vc_selected"], date(2026, 9, 17))
+        _run(strip_click)
+        self.assertEqual(strip_click["_vc_selected"], date(2026, 9, 17))
+
+        mcal_click = _SS()
+        mcal_click["_vc_selected"] = date(2026, 9, 10)
+        mcal_click["vc_strip_host"] = {"iso": "2026-09-10"}
+        mcal_click["vc_mcal_host"] = {"iso": "2026-09-23"}
+        mcal_click["_vc_v2_cal_ready"] = True
+        mcal_click["_vc_v2_strip_seen"] = "2026-09-10"
+        mcal_click["_vc_v2_mcal_seen"] = "2026-09-10"
+        _run(mcal_click)
+        self.assertEqual(mcal_click["_vc_selected"], date(2026, 9, 23))
+        _run(mcal_click)
+        self.assertEqual(mcal_click["_vc_selected"], date(2026, 9, 23))
+
+        leftover = _SS()
+        leftover["_vc_selected"] = date(2026, 9, 28)
+        leftover["vc_strip_host"] = {"iso": "2026-09-10"}
+        leftover["vc_mcal_host"] = {"iso": "2026-09-10"}
+        _run(leftover)
+        self.assertEqual(leftover["_vc_selected"], date(2026, 9, 28))
+
+    def test_visit_tab_paused_on_cloud_and_ipad(self):
+        with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=True), patch.object(
+            self.vc, "_vc_is_touch_ui", return_value=False
+        ):
+            self.assertTrue(self.vc._vc_tab_paused())
+        with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=False), patch.object(
+            self.vc, "_vc_is_touch_ui", return_value=True
+        ):
+            self.assertTrue(self.vc._vc_tab_paused())
+        with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=False), patch.object(
+            self.vc, "_vc_is_touch_ui", return_value=False
+        ):
+            self.assertFalse(self.vc._vc_tab_paused())
+        src = Path(self.vc.__file__).read_text(encoding="utf-8")
+        mount = src[src.index("def render_visit_calendar_tab") : src.index("def _render_visit_body")]
+        self.assertLess(mount.index("_vc_tab_paused()"), mount.index("_render_visit_body("))
+        self.assertIn("expanded=False", mount)
+
+    def test_mcal_slot_click_picks_client_with_shade(self):
+        marks = [
+            {"kind": "visit", "label": "에스엔케이", "mine": False},
+            {"kind": "planned", "label": "엠케이러스", "mine": True},
+            {"kind": "prior", "label": "기방문", "mine": False},
+        ]
+        slots = self.vc._mcal_slot_view(marks)
+        self.assertEqual(slots[0]["client"], "에스엔케이")
+        self.assertEqual(slots[1]["client"], "엠케이러스")
+        self.assertTrue(slots[1]["pick"])
+        self.assertFalse(slots[0]["pick"])
+        self.assertEqual(slots[2]["client"], "")
+        self.assertEqual(slots[3]["kind"], "empty")
+        html = self.vc._mcal_chips_html(marks)
+        self.assertIn("planned mine pick", html)
+        src = Path(self.vc.__file__).read_text(encoding="utf-8")
+        self.assertIn('setStateValue("client"', src)
+        self.assertIn("data-client", src)
+        self.assertIn(".vc-mcal-slot.pick", src)
+
+        class _SS(dict):
+            pass
+
+        ss = _SS()
+        ss["_vc_selected"] = date(2026, 9, 29)
+        ss["vc_strip_host"] = {"iso": "2026-09-29"}
+        ss["vc_mcal_host"] = {"iso": "2026-09-29", "client": "엠케이러스"}
+        ss["_vc_v2_cal_ready"] = True
+        ss["_vc_v2_strip_seen"] = "2026-09-29"
+        ss["_vc_v2_mcal_seen"] = "2026-09-29"
+        ss["_vc_v2_mcal_client_seen"] = ""
+        with patch.object(self.vc.st, "session_state", ss), patch.object(
+            self.vc, "_vc_is_darwin_local", return_value=True
+        ), patch.object(self.vc, "_vc_is_touch_ui", return_value=False):
+            self.vc._apply_v2_calendar_picks()
+            self.assertEqual(ss["vc_client"], "엠케이러스")
+            ss["vc_client"] = "다른곳"
+            self.vc._apply_v2_calendar_picks()
+            self.assertEqual(ss["vc_client"], "다른곳")
 
     def test_staff_clients_include_all_sales_for_staff(self):
         df = pd.DataFrame(

@@ -134,6 +134,11 @@ def _vc_is_darwin_local() -> bool:
     return True
 
 
+def _vc_tab_paused() -> bool:
+    """Cloud·아이패드는 방문·할일 본문을 그리지 않는다. 맥 데스크톱만 연다."""
+    return _vc_is_streamlit_cloud() or _vc_is_touch_ui()
+
+
 def _vc_use_mcal_date_input() -> bool:
     """date_input은 맥 데스크톱만. 아이패드에 올리면 날짜 선택이 화면을 깨고 로딩이 안 끝난다."""
     return _vc_is_darwin_local() and not _vc_is_touch_ui()
@@ -1061,9 +1066,14 @@ def _vc_css() -> str:
       padding: 2px 0 4px; color: #3c4043; min-height: 32px;
     }
     .vc-toolbar .vc-title { font-size: 20px; font-weight: 500; letter-spacing: -0.3px; line-height: 32px; }
-    div[class*="st-key-vc_visit_frag"][data-stale="true"],
-    div[class*="st-key-vc_visit_frag"] [data-stale="true"],
-    div[class*="st-key-vc_visit_frag"] div[data-testid="stElementContainer"][data-stale="true"] {
+    /* 실제 DOM: st-key-vc_visit_frag 는 stVerticalBlock 자신.
+       stale opacity 는 자식 stElementContainer(e1rw0b1u1)에 걸린다.
+       data-stale 조건이면 타이밍에 못 잡아 흐려진다. */
+    div[class*="st-key-vc_visit_frag"][data-testid="stVerticalBlock"],
+    div[class*="st-key-vc_visit_frag"] [data-testid="stElementContainer"],
+    div[data-testid="stLayoutWrapper"]:has(> [class*="st-key-vc_visit_frag"]),
+    div[data-testid="stVerticalBlock"]:has(> [data-testid="stLayoutWrapper"] > [class*="st-key-vc_visit_frag"]),
+    div[data-testid="stVerticalBlock"]:has(> [data-testid="stLayoutWrapper"] > [class*="st-key-vc_visit_frag"]) [data-testid="stElementContainer"] {
       opacity: 1 !important;
       transition: none !important;
     }
@@ -1213,7 +1223,10 @@ def _vc_css() -> str:
     .vc-mcal-slot.visit, .vc-mcal-chip.visit { background: #e6f4ea; color: #137333; }
     .vc-mcal-slot.planned, .vc-mcal-chip.planned { background: #fff4e5; color: #c47d00; }
     .vc-mcal-slot.prior, .vc-mcal-chip.prior { background: #e8f0fe; color: #1a73e8; }
-    .vc-mcal-slot.mine, .vc-mcal-chip.mine { box-shadow: none; }
+    .vc-mcal-slot.mine, .vc-mcal-chip.mine,
+    .vc-mcal-slot.pick, .vc-mcal-chip.pick {
+      background: #c5cad3 !important; color: #202124 !important;
+    }
     .vc-mcal-more { font-size: 10px; color: #80868b; text-align: center; }
     div[class*="st-key-vc_mcal_2"] { margin: 0 !important; }
     div[class*="st-key-vc_mcal_2"] button {
@@ -1520,6 +1533,15 @@ def _on_pick_day(d: date) -> None:
         st.session_state["vc_mcal_day"] = d.day
 
 
+def _on_pick_client(name: str) -> None:
+    """달력 칸의 업체명을 고른다. 거래처 칸·방문 입력에 바로 연동한다."""
+    name = _s(name)
+    if not name:
+        return
+    st.session_state["vc_client"] = name
+    st.session_state["_vc_client"] = name
+
+
 def _touch_visible_days(month: date) -> list[date]:
     return [d for w in month_cal_weeks(month) for d in w]
 
@@ -1788,6 +1810,10 @@ def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str:
         "<div class='sub-header dashboard-tab-panel-head'>📅 방문·할일</div>",
         unsafe_allow_html=True,
     )
+    if _vc_tab_paused():
+        with st.expander("방문·할일 — Cloud·아이패드 임시 중지", expanded=False):
+            st.caption("로딩 문제로 Cloud·아이패드에서는 잠시 닫아 두었습니다. 맥 로컬에서 이용하세요.")
+        return
     _apply_query_day_pick()
     _vc_clear_strip_hosts_if_unused()
     _apply_pending_month_nav()
@@ -1813,6 +1839,13 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         prev = _s(st.session_state.get("_vc_client"))
         if prev:
             st.session_state["vc_client"] = prev
+        elif _vc_is_darwin_local() and not _vc_is_touch_ui():
+            st.session_state["vc_client"] = ""
+    if _vc_is_darwin_local() and not _vc_is_touch_ui():
+        sel0 = st.session_state.get("_vc_selected") or today
+        iso0 = sel0.isoformat() if isinstance(sel0, date) else today.isoformat()
+        st.session_state.setdefault("vc_strip_host", {"iso": iso0})
+        st.session_state.setdefault("vc_mcal_host", {"iso": iso0})
 
     month = st.session_state.get("_vc_month") or date(today.year, today.month, 1)
     st.markdown(_vc_css(), unsafe_allow_html=True)
@@ -1821,9 +1854,9 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         _apply_pending_month_nav()
         _apply_pending_strip_pick()
         _apply_pending_mcal_pick()
-        _apply_v2_iso_host("vc_strip_host")
-        _apply_v2_iso_host("vc_mcal_host")
+        _apply_v2_calendar_picks()
         with st.container(key="vc_visit_frag"):
+            st.markdown(_vc_css(), unsafe_allow_html=True)
             sel: date = st.session_state.get("_vc_selected") or today
             mon = st.session_state.get("_vc_month") or month
             f1, f2 = st.columns([1, 1])
@@ -2210,6 +2243,10 @@ _VC_MCAL_CSS = f"""
 .vc-mcal-slot.visit {{ background:#e6f4ea; color:#137333; }}
 .vc-mcal-slot.planned {{ background:#fff4e5; color:#c47d00; }}
 .vc-mcal-slot.prior {{ background:#e8f0fe; color:#1a73e8; }}
+.vc-mcal-slot.pick, .vc-mcal-slot.mine {{
+  background:#c5cad3 !important; color:#202124 !important;
+}}
+.vc-mcal-slot[data-client] {{ cursor:pointer; }}
 """
 _VC_MCAL_JS = r"""
 function esc(s) {
@@ -2250,7 +2287,11 @@ export default function (component) {
       for (const s of slots) {
         const kind = String((s && s.kind) || "empty");
         const lab = String((s && s.label) || "");
-        html += '<span class="vc-mcal-slot ' + esc(kind) + '">' + (lab ? esc(lab) : "&nbsp;") + "</span>";
+        const client = String((s && s.client) || "");
+        let scls = esc(kind);
+        if (s && s.pick) scls += " pick";
+        const attr = client ? ' data-client="' + esc(client) + '"' : "";
+        html += '<span class="vc-mcal-slot ' + scls + '"' + attr + '>' + (lab ? esc(lab) : "&nbsp;") + "</span>";
       }
       html += "</div></button></td>";
     }
@@ -2261,14 +2302,23 @@ export default function (component) {
   if (!root.dataset.vcBound) {
     root.dataset.vcBound = "1";
     root.addEventListener("click", (ev) => {
-      const btn = ev.target && ev.target.closest ? ev.target.closest("[data-iso]") : null;
+      const t = ev.target;
+      const slot = t && t.closest ? t.closest(".vc-mcal-slot") : null;
+      const btn = t && t.closest ? t.closest("[data-iso]") : null;
       if (!btn || !root.contains(btn)) return;
       const iso = btn.getAttribute("data-iso") || "";
       if (!iso) return;
+      const client = (slot && root.contains(slot)) ? (slot.getAttribute("data-client") || "") : "";
       root.querySelectorAll("td").forEach((td) => {
         const hit = td.querySelector("[data-iso]");
         td.classList.toggle("sel", !!(hit && hit.getAttribute("data-iso") === iso));
       });
+      if (client) {
+        root.querySelectorAll(".vc-mcal-slot").forEach((el) => {
+          el.classList.toggle("pick", el === slot);
+        });
+        setStateValue("client", client);
+      }
       setStateValue("iso", iso);
     });
   }
@@ -2297,6 +2347,40 @@ def _vc_ensure_mcal():
     return _VC_MCAL
 
 
+def _slot_pick_name(kind: str, label: str) -> str:
+    """기방문·빈 칸은 고르지 않는다. 방문 칸의 업체 정식명만 넘긴다."""
+    raw = _s(label)
+    if kind == "prior" or raw in {"", "방문", "방문예정", "예정", "기방문"}:
+        return ""
+    return raw
+
+
+def _mcal_slot_view(marks: list[dict]) -> list[dict]:
+    """일자 칸 5줄. 고른 업체는 pick, 클릭용 client는 정식명."""
+    tags = {"visit": "방문", "planned": "예정", "prior": "기방문"}
+    extra = max(0, len(marks) - _MCAL_SLOTS)
+    slots: list[dict] = []
+    for j in range(_MCAL_SLOTS):
+        if j < len(marks):
+            m = marks[j]
+            kind = str(m.get("kind") or "visit")
+            raw = _s(m.get("label")) or tags.get(kind, "")
+            lab = _client_short(raw) if kind != "prior" else raw
+            if j == _MCAL_SLOTS - 1 and extra:
+                lab = f"{lab} +{extra}"
+            slots.append(
+                {
+                    "kind": kind,
+                    "label": lab,
+                    "client": _slot_pick_name(kind, raw),
+                    "pick": bool(m.get("mine")),
+                }
+            )
+        else:
+            slots.append({"kind": "empty", "label": "", "client": "", "pick": False})
+    return slots
+
+
 def _mcal_v2_payload(
     month: date,
     selected: date,
@@ -2306,26 +2390,11 @@ def _mcal_v2_payload(
 ) -> dict:
     sel_iso = selected.isoformat() if isinstance(selected, date) else ""
     today_iso = today.isoformat() if isinstance(today, date) else ""
-    tags = {"visit": "방문", "planned": "예정", "prior": "기방문"}
     out_weeks: list[list[dict]] = []
     for week in weeks:
         row: list[dict] = []
         for i, d in enumerate(week):
             iso = d.isoformat()
-            marks = cells.get(iso) or []
-            extra = max(0, len(marks) - _MCAL_SLOTS)
-            slots: list[dict] = []
-            for j in range(_MCAL_SLOTS):
-                if j < len(marks):
-                    m = marks[j]
-                    kind = str(m.get("kind") or "visit")
-                    raw = _s(m.get("label")) or tags.get(kind, "")
-                    lab = _client_short(raw) if kind != "prior" else raw
-                    if j == _MCAL_SLOTS - 1 and extra:
-                        lab = f"{lab} +{extra}"
-                    slots.append({"kind": kind, "label": lab})
-                else:
-                    slots.append({"kind": "empty", "label": ""})
             row.append(
                 {
                     "iso": iso,
@@ -2335,28 +2404,93 @@ def _mcal_v2_payload(
                     "sat": i == 6,
                     "sel": iso == sel_iso,
                     "today": iso == today_iso,
-                    "slots": slots,
+                    "slots": _mcal_slot_view(cells.get(iso) or []),
                 }
             )
         out_weeks.append(row)
     return {"weeks": out_weeks, "selected": sel_iso, "today": today_iso}
 
 
-def _apply_v2_iso_host(key: str) -> None:
-    """v2 기본값 콜백 없이 호스트 iso만 반영한다. 첫 페인트에서 본문이 한 번 더 그려지지 않게 한다."""
+def _v2_host_iso(key: str) -> str:
     raw = st.session_state.get(key)
     iso = ""
     if raw is not None:
         iso = str(getattr(raw, "iso", "") or "")
         if not iso and isinstance(raw, dict):
             iso = str(raw.get("iso") or "")
+    iso = str(iso or "")[:10]
     try:
-        d = date.fromisoformat(iso[:10])
+        date.fromisoformat(iso)
     except ValueError:
+        return ""
+    return iso
+
+
+def _v2_host_client(key: str) -> str:
+    raw = st.session_state.get(key)
+    name = ""
+    if raw is not None:
+        name = str(getattr(raw, "client", "") or "")
+        if not name and isinstance(raw, dict):
+            name = str(raw.get("client") or "")
+    return _s(name)
+
+
+def _apply_v2_iso_host(key: str) -> None:
+    """v2 기본값 콜백 없이 호스트 iso만 반영한다. 첫 페인트에서 본문이 한 번 더 그려지지 않게 한다."""
+    iso = _v2_host_iso(key)
+    if not iso:
         return
+    d = date.fromisoformat(iso)
     if st.session_state.get("_vc_selected") == d:
         return
     _on_pick_day(d)
+
+
+def _apply_v2_calendar_picks() -> None:
+    """납품줄·스케줄 v2 중 방금 누른 쪽만 고른다. 둘 다 적용하면 안 누른 쪽이 이전 날로 되돌린다."""
+    if not _vc_is_darwin_local() or _vc_is_touch_ui():
+        return
+    strip_iso = _v2_host_iso("vc_strip_host")
+    mcal_iso = _v2_host_iso("vc_mcal_host")
+    mcal_client = _v2_host_client("vc_mcal_host")
+    if "_vc_v2_cal_ready" not in st.session_state:
+        st.session_state["_vc_v2_cal_ready"] = True
+        st.session_state["_vc_v2_strip_seen"] = strip_iso
+        st.session_state["_vc_v2_mcal_seen"] = mcal_iso
+        st.session_state["_vc_v2_mcal_client_seen"] = mcal_client
+        return
+    last_strip = str(st.session_state.get("_vc_v2_strip_seen") or "")
+    last_mcal = str(st.session_state.get("_vc_v2_mcal_seen") or "")
+    last_client = str(st.session_state.get("_vc_v2_mcal_client_seen") or "")
+    strip_click = bool(strip_iso) and strip_iso != last_strip
+    mcal_click = bool(mcal_iso) and mcal_iso != last_mcal
+    sel = st.session_state.get("_vc_selected")
+    sel_iso = sel.isoformat() if isinstance(sel, date) else ""
+    picked = ""
+    if strip_click and not mcal_click:
+        picked = strip_iso
+    elif mcal_click and not strip_click:
+        picked = mcal_iso
+    elif strip_click and mcal_click:
+        if strip_iso != sel_iso:
+            picked = strip_iso
+        elif mcal_iso != sel_iso:
+            picked = mcal_iso
+    if picked:
+        try:
+            d = date.fromisoformat(picked)
+        except ValueError:
+            d = None
+        if d is not None and st.session_state.get("_vc_selected") != d:
+            _on_pick_day(d)
+    if mcal_client and mcal_client != last_client:
+        _on_pick_client(mcal_client)
+    if strip_iso:
+        st.session_state["_vc_v2_strip_seen"] = strip_iso
+    if mcal_iso:
+        st.session_state["_vc_v2_mcal_seen"] = mcal_iso
+    st.session_state["_vc_v2_mcal_client_seen"] = mcal_client
 
 
 def _on_mcal_iso_change() -> None:
@@ -2542,6 +2676,10 @@ def _mcal_grid_css() -> str:
       border: none !important; border-radius: 0 !important; box-shadow: none !important;
       text-align: center !important;
     }
+    .vc-mcal-slot.mine, .vc-mcal-chip.mine,
+    .vc-mcal-slot.pick, .vc-mcal-chip.pick {
+      background: #c5cad3 !important; color: #202124 !important;
+    }
     @media (hover: none) and (pointer: coarse) and (max-width: 850px) and (orientation: portrait) {
       div[class*="st-key-vc_mcal_2"] button { min-height: 7.2rem !important; font-size: 13px !important; }
       div[class*="st-key-vc_mcal_box"] .stHorizontalBlock { gap: 4px !important; margin: 0 4px 4px !important; }
@@ -2637,23 +2775,16 @@ def _mcal_grid_css() -> str:
 
 
 def _mcal_chips_html(marks: list[dict]) -> str:
-    """일자 칸에 값 5줄을 항상 그린다. 비어 있으면 빈 칸."""
-    tags = {"visit": "방문", "planned": "예정", "prior": "기방문"}
+    """일자 칸에 값 5줄을 항상 그린다. 비어 있으면 빈 칸. 고른 업체는 pick 음영."""
     parts: list[str] = []
-    extra = max(0, len(marks) - _MCAL_SLOTS)
-    for i in range(_MCAL_SLOTS):
-        if i < len(marks):
-            m = marks[i]
-            kind = str(m.get("kind") or "visit")
-            raw = _s(m.get("label")) or tags.get(kind, "")
-            lab = html.escape(_client_short(raw) if kind != "prior" else raw)
-            mine = " mine" if m.get("mine") else ""
-            more = f" +{extra}" if i == _MCAL_SLOTS - 1 and extra else ""
-            parts.append(
-                f"<span class='vc-mcal-slot {html.escape(kind)}{mine}'>{lab}{more}</span>"
-            )
-        else:
+    for s in _mcal_slot_view(marks):
+        kind = str(s.get("kind") or "empty")
+        if kind == "empty":
             parts.append("<span class='vc-mcal-slot empty'></span>")
+            continue
+        lab = html.escape(_s(s.get("label")))
+        mark = " mine pick" if s.get("pick") else ""
+        parts.append(f"<span class='vc-mcal-slot {html.escape(kind)}{mark}'>{lab or '&nbsp;'}</span>")
     return "<div class='vc-mcal-slots'>" + "".join(parts) + "</div>"
 
 
