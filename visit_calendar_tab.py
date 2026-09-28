@@ -1420,23 +1420,6 @@ def _on_pick_day(d: date) -> None:
         st.session_state["vc_mcal_iso"] = iso
 
 
-def _sync_selected_from_mcal_widget() -> None:
-    """스케줄 날짜 위젯 → 선택일. 위젯 키는 여기서 쓰지 않는다(재실행 루프 방지)."""
-    if _vc_is_mac_local():
-        d = _as_date(st.session_state.get("vc_mcal_date"))
-    else:
-        raw = st.session_state.get("vc_mcal_iso")
-        try:
-            d = date.fromisoformat(str(raw or "")[:10]) if raw else None
-        except ValueError:
-            d = None
-    if d is None:
-        return
-    if st.session_state.get("_vc_selected") != d:
-        st.session_state["_vc_selected"] = d
-        st.session_state["_vc_open_delivery"] = True
-
-
 def _on_mcal_date_change() -> None:
     d = _as_date(st.session_state.get("vc_mcal_date"))
     if d is None:
@@ -1466,6 +1449,28 @@ def _on_jump_today() -> None:
     st.session_state["_vc_selected"] = today
     st.session_state["vc_mcal_date"] = today
     st.session_state["vc_mcal_iso"] = today.isoformat()
+
+
+def _sync_selected_from_mcal_widget() -> None:
+    """스케줄 날짜 위젯 → 선택일. 위젯 키는 여기서 쓰지 않는다(재실행 루프 방지)."""
+    if _vc_is_mac_local():
+        d = _as_date(st.session_state.get("vc_mcal_date"))
+    else:
+        raw = st.session_state.get("vc_mcal_iso")
+        if not isinstance(raw, str) or len(raw) < 10:
+            return
+        try:
+            d = date.fromisoformat(raw[:10])
+        except ValueError:
+            return
+        mon = st.session_state.get("_vc_month")
+        if isinstance(mon, date) and (d.year, d.month) != (mon.year, mon.month):
+            return
+    if d is None:
+        return
+    if st.session_state.get("_vc_selected") != d:
+        st.session_state["_vc_selected"] = d
+        st.session_state["_vc_open_delivery"] = True
 
 
 def _on_todo_done(todo_id: str) -> None:
@@ -2396,15 +2401,11 @@ def _render_month_cal(
             )
             if st.session_state.get("vc_mcal_iso") not in month_isos:
                 st.session_state["vc_mcal_iso"] = iso0
-            st.caption("날짜는 아래 숫자를 누르세요.")
-            st.pills(
-                "날짜 선택",
+            st.selectbox(
+                "스케줄 날짜",
                 options=month_isos,
-                format_func=lambda iso: str(int(iso[8:10])),
-                selection_mode="single",
-                required=True,
+                format_func=lambda iso: f"{int(iso[8:10])}일",
                 key="vc_mcal_iso",
-                width="stretch",
             )
 
 
