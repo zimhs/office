@@ -1403,7 +1403,9 @@ def _apply_pending_month_nav() -> None:
         st.session_state.pop("vc_jump_today", None)
 
 
-_VC_KEEP_KEYS = frozenset({"vc_strip_host", "vc_mcal_date", "vc_mcal_box", "vc_mcal_iso"})
+_VC_KEEP_KEYS = frozenset(
+    {"vc_strip_host", "vc_mcal_date", "vc_mcal_box", "vc_mcal_iso", "vc_mcal_day"}
+)
 
 
 def _is_vc_purge_key(k: str) -> bool:
@@ -1436,20 +1438,32 @@ def _as_date(v) -> date | None:
 
 
 def _vc_date_field(label: str, *, key: str, default: date):
-    """맥·Cloud 데스크톱은 date_input. 아이패드는 네이티브 달력이 핸드셰이크를 안 끝내서 selectbox."""
-    if key not in st.session_state:
-        st.session_state[key] = default
-    raw = st.session_state.get(key)
-    coerced = _as_date(raw)
-    if coerced is not None and raw != coerced:
-        st.session_state[key] = coerced
+    """맥은 date_input. Cloud·아이패드는 날짜 객체/ISO selectbox가 재실행을 안 끝내서 문자열만 받는다."""
+    if default is None or not isinstance(default, date):
+        default = date.today()
     if _vc_use_mcal_date_input():
+        if key not in st.session_state:
+            st.session_state[key] = default
+        raw = st.session_state.get(key)
+        coerced = _as_date(raw)
+        if coerced is not None and raw != coerced:
+            st.session_state[key] = coerced
         return st.date_input(label, format="YYYY/MM/DD", key=key)
-    base = coerced or default
-    opts = [base + timedelta(days=i) for i in range(-14, 61)]
-    if base not in opts:
-        opts = [base] + opts
-    return st.selectbox(label, options=opts, key=key)
+    cur = st.session_state.get(key)
+    d0 = _as_date(cur)
+    iso0 = (d0 or default).isoformat()
+    if key not in st.session_state:
+        st.session_state[key] = iso0
+    elif not isinstance(cur, str):
+        st.session_state[key] = iso0
+    raw = st.text_input(label, key=key)
+    parsed = _as_date(raw)
+    if parsed is None:
+        try:
+            parsed = date.fromisoformat(str(raw or "")[:10])
+        except ValueError:
+            parsed = default
+    return parsed
 
 
 def _on_pick_day(d: date) -> None:
@@ -1461,6 +1475,8 @@ def _on_pick_day(d: date) -> None:
         st.session_state["vc_mcal_date"] = d
     if st.session_state.get("vc_mcal_iso") != iso:
         st.session_state["vc_mcal_iso"] = iso
+    if st.session_state.get("vc_mcal_day") != d.day:
+        st.session_state["vc_mcal_day"] = d.day
 
 
 def _on_mcal_date_change() -> None:
@@ -1484,6 +1500,7 @@ def _on_shift_month(delta: int) -> None:
         st.session_state["_vc_selected"] = clamped
         st.session_state["vc_mcal_date"] = clamped
         st.session_state["vc_mcal_iso"] = clamped.isoformat()
+        st.session_state["vc_mcal_day"] = clamped.day
 
 
 def _on_jump_today() -> None:
@@ -1492,6 +1509,7 @@ def _on_jump_today() -> None:
     st.session_state["_vc_selected"] = today
     st.session_state["vc_mcal_date"] = today
     st.session_state["vc_mcal_iso"] = today.isoformat()
+    st.session_state["vc_mcal_day"] = today.day
 
 
 def _sync_selected_from_mcal_widget() -> None:
@@ -1499,16 +1517,14 @@ def _sync_selected_from_mcal_widget() -> None:
     if _vc_use_mcal_date_input():
         d = _as_date(st.session_state.get("vc_mcal_date"))
     else:
-        raw = st.session_state.get("vc_mcal_iso")
-        if not isinstance(raw, str) or len(raw) < 10:
-            return
-        try:
-            d = date.fromisoformat(raw[:10])
-        except ValueError:
-            return
         mon = st.session_state.get("_vc_month")
-        if isinstance(mon, date) and (d.year, d.month) != (mon.year, mon.month):
+        if not isinstance(mon, date):
             return
+        day = st.session_state.get("vc_mcal_day")
+        if not isinstance(day, (int, float)):
+            return
+        last = calendar.monthrange(mon.year, mon.month)[1]
+        d = date(mon.year, mon.month, min(max(int(day), 1), last))
     if d is None:
         return
     if st.session_state.get("_vc_selected") != d:
@@ -2433,22 +2449,16 @@ def _render_month_cal(
                 unsafe_allow_html=True,
             )
             last = calendar.monthrange(month.year, month.month)[1]
-            month_isos = [
-                date(month.year, month.month, n).isoformat()
-                for n in range(1, last + 1)
-            ]
-            iso0 = (
-                selected.isoformat()
-                if (selected.year, selected.month) == (month.year, month.month)
-                else date(month.year, month.month, min(selected.day, last)).isoformat()
-            )
-            if st.session_state.get("vc_mcal_iso") not in month_isos:
-                st.session_state["vc_mcal_iso"] = iso0
-            st.selectbox(
-                "스케줄 날짜",
-                options=month_isos,
-                format_func=lambda iso: f"{iso[5:7]}/{iso[8:10]}",
-                key="vc_mcal_iso",
+            if "vc_mcal_day" not in st.session_state:
+                st.session_state["vc_mcal_day"] = (
+                    selected.day if isinstance(selected, date) else 1
+                )
+            st.number_input(
+                "스케줄 일",
+                min_value=1,
+                max_value=int(last),
+                step=1,
+                key="vc_mcal_day",
             )
 
 
@@ -3093,7 +3103,10 @@ def _render_t2d_day_strip(
             on_iso_change=_on_t2d_strip_iso_change,
         )
         return
-    _render_strip_buttons(days, "t2d_strip_", _on_t2d_pick_day)
+    if _vc_is_darwin_local():
+        _render_strip_buttons(days, "t2d_strip_", _on_t2d_pick_day)
+        return
+    st.markdown(_strip_fallback_html(days, selected.isoformat()), unsafe_allow_html=True)
 
 
 def render_tab2_delivery_status(
