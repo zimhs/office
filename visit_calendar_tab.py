@@ -1818,8 +1818,12 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         if latest_update_str:
             st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
-    # 로컬과 같이 fragment. Cloud에서 날짜 클릭이 전체 재실행되면 영업종합요약이 비친다.
-    st.fragment(_visit_day_block)()
+    # 로컬 무손실: fragment. Cloud는 바깥 필터 fragment 안에 또 겹치면 본문이 수분 빈다.
+    # Cloud 날짜·월 이동은 바깥 `_dash_filter_and_tabs_fragment` 범위로만 다시 그린다.
+    if _vc_is_darwin_local():
+        st.fragment(_visit_day_block)()
+    else:
+        _visit_day_block()
 
 
 def _client_short(name: str) -> str:

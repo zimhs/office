@@ -526,6 +526,8 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertNotIn("sys.platform != \"darwin\"", src[src.index("def _vc_is_touch_ui") : src.index("def _vc_is_streamlit_cloud")])
         self.assertIn("def _vc_is_darwin_local", src)
         self.assertIn("st.fragment(_visit_day_block)()", src)
+        self.assertIn("_vc_is_darwin_local()", src[src.index("st.fragment(_visit_day_block)()") - 120 : src.index("st.fragment(_visit_day_block)()") + 80])
+        self.assertIn("_visit_day_block()", src)
         self.assertIn("def _on_cloud_day_change", src)
         self.assertIn("def _render_cloud_day_pick", src)
         self.assertIn("def _vc_ensure_strip", src)
@@ -608,7 +610,8 @@ class VisitCalendarTest(unittest.TestCase):
         t2d_html = src[src.index("def _render_t2d_day_strip") : src.index("def render_tab2_delivery_status")]
         self.assertIn("_strip_fallback_html(days, selected.isoformat())", t2d_html)
         self.assertNotIn("pick_href=True", t2d_html)
-        self.assertIn("로컬과 같이 fragment", src)
+        self.assertIn("로컬 무손실: fragment", src)
+        self.assertIn("바깥 필터 fragment", src)
         self.assertIn("def _on_mcal_date_change", src)
         self.assertIn("def _sync_selected_from_mcal_widget", src)
         self.assertIn("def _vc_date_field", src)
