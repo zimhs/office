@@ -512,6 +512,12 @@ class VisitCalendarTest(unittest.TestCase):
         strip_fn = src[src.index("def _render_day_strip") : src.index("def _month_row_html")]
         self.assertIn("_render_strip_buttons(days, \"vc_strip_\"", strip_fn)
         self.assertIn("_strip_button_theme_css", strip_fn)
+        self.assertIn("_strip_fallback_html(days, selected.isoformat(), pick_href=True)", strip_fn)
+        cloud_strip = strip_fn[
+            strip_fn.index("if not _vc_is_darwin_local()") : strip_fn.index("_render_strip_buttons")
+        ]
+        self.assertIn("return", cloud_strip)
+        self.assertNotIn("_render_strip_buttons", cloud_strip)
         self.assertNotIn("_render_week_pick_buttons", strip_fn)
         self.assertIn("def _vc_use_day_strip_component", src)
         self.assertIn("_vc_use_day_strip_component()", src)
@@ -549,6 +555,8 @@ class VisitCalendarTest(unittest.TestCase):
         mount_fn = src[src.index("def render_visit_calendar_tab") : src.index("def _render_visit_body")]
         self.assertNotIn("def _visit_body", mount_fn)
         self.assertIn("_render_visit_body(df, latest_update_str)", mount_fn)
+        self.assertIn("_vc_inject_visit_tab_hold_script()", mount_fn)
+        self.assertIn("def _vc_inject_visit_tab_hold_script", src)
         self.assertIn("_apply_pending_mcal_pick()", mount_fn)
         self.assertIn("_apply_pending_strip_pick()", mount_fn)
         self.assertLess(
@@ -582,7 +590,7 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("_mcal_month_html(", cal)
         self.assertIn('key="vc_mcal_date"', cal)
         self.assertIn("pick_href=True", cal)
-        self.assertIn("_render_mcal_day_buttons(", cal)
+        self.assertNotIn("_render_mcal_day_buttons(", cal)
         self.assertIn('key=f"vc_mcal_{iso}"', src[src.index("def _render_mcal_day_buttons") : src.index("def _mcal_head_html")])
         self.assertIn("_vc_use_mcal_date_input()", cal)
         self.assertIn("st.date_input(", cal)
@@ -595,7 +603,10 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("_apply_pending_strip_pick()", src)
         self.assertNotIn("def _render_week_pick_buttons", src)
         self.assertNotIn("def _sunday_week", src)
-        self.assertNotIn("_vc_pick_href(iso)", src[src.index("def _strip_fallback_html") : src.index("def _render_month_cal")])
+        self.assertIn("_vc_pick_href(iso)", src[src.index("def _strip_fallback_html") : src.index("def _render_month_cal")])
+        t2d_html = src[src.index("def _render_t2d_day_strip") : src.index("def render_tab2_delivery_status")]
+        self.assertIn("_strip_fallback_html(days, selected.isoformat())", t2d_html)
+        self.assertNotIn("pick_href=True", t2d_html)
         self.assertIn("로컬과 같이 fragment", src)
         self.assertIn("def _on_mcal_date_change", src)
         self.assertIn("def _sync_selected_from_mcal_widget", src)

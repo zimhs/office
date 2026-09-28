@@ -1669,6 +1669,84 @@ def _vc_pick_href(iso: str) -> str:
     return "?" + "&".join(bits)
 
 
+def _vc_inject_visit_tab_hold_script() -> None:
+    """Cloud HTML 달력 클릭은 전체 재실행이다. 방문 탭을 다시 고르지 않으면 영업종합요약으로 간다."""
+    if _vc_is_darwin_local():
+        return
+    st.components.v1.html(
+        """
+        <script>
+        (function () {
+          var KEY = 'dash_vc_hold_tab';
+          var doc = window.parent.document;
+          var win = window.parent;
+          function mainTabList() {
+            var lists = doc.querySelectorAll('[role="tablist"]');
+            var best = null, bestN = 0, i, n, el, st;
+            for (i = 0; i < lists.length; i++) {
+              el = lists[i];
+              n = el.querySelectorAll('[role="tab"]').length;
+              if (n < 4) continue;
+              if (el.classList && el.classList.contains('dashboard-tabs-in-filter')) {
+                if (n > bestN) { bestN = n; best = el; }
+                continue;
+              }
+              try {
+                st = win.getComputedStyle(el);
+                if (st && (st.display === 'none' || st.visibility === 'hidden')) continue;
+              } catch (eSt) {}
+              if (n >= 13 && n > bestN) { bestN = n; best = el; }
+              else if (!best && n > bestN) { bestN = n; best = el; }
+            }
+            return best;
+          }
+          function visitTab() {
+            var list = mainTabList();
+            if (!list) return null;
+            var tabs = list.querySelectorAll('[role="tab"]');
+            var i, lab, t;
+            for (i = 0; i < tabs.length; i++) {
+              t = tabs[i];
+              lab = (t.textContent || '');
+              if (lab.indexOf('방문') >= 0 && lab.indexOf('할일') >= 0) return t;
+            }
+            return tabs[12] || null;
+          }
+          function hold() {
+            try {
+              var until = parseInt(win.sessionStorage.getItem(KEY) || '0', 10);
+              if (!until || Date.now() > until) return;
+              var t = visitTab();
+              if (t && t.getAttribute('aria-selected') !== 'true') t.click();
+            } catch (eHold) {}
+          }
+          if (!doc.__dashVcHoldTabReady) {
+            doc.__dashVcHoldTabReady = true;
+            doc.addEventListener('click', function (ev) {
+              try {
+                var a = ev.target && ev.target.closest && ev.target.closest('a[href*="vc_pick="]');
+                if (a) {
+                  win.sessionStorage.setItem(KEY, String(Date.now() + 15000));
+                  return;
+                }
+                var tab = ev.target && ev.target.closest && ev.target.closest('[role="tab"]');
+                if (!tab) return;
+                var vt = visitTab();
+                if (vt && tab !== vt) win.sessionStorage.removeItem(KEY);
+              } catch (eClick) {}
+            }, true);
+          }
+          hold();
+          setTimeout(hold, 50);
+          setTimeout(hold, 200);
+          setTimeout(hold, 800);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str: str = "") -> None:
     """방문 미팅 캘린더 + 할일 목록."""
     st.markdown(
@@ -1676,6 +1754,7 @@ def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str:
         unsafe_allow_html=True,
     )
     _apply_query_day_pick()
+    _vc_inject_visit_tab_hold_script()
     _vc_clear_strip_hosts_if_unused()
     _apply_pending_month_nav()
     _apply_pending_strip_pick()
@@ -1768,11 +1847,11 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         with head_r:
             n1, n2, n3 = st.columns([1.15, 0.42, 0.42], gap="small")
             with n1:
-                st.button("오늘", key="vc_jump_today", width="content")
+                st.button("오늘", key="vc_jump_today", width="content", on_click=_on_jump_today)
             with n2:
-                st.button("‹", key="vc_prev_month", width="content")
+                st.button("‹", key="vc_prev_month", width="content", on_click=_on_shift_month, args=(-1,))
             with n3:
-                st.button("›", key="vc_next_month", width="content")
+                st.button("›", key="vc_next_month", width="content", on_click=_on_shift_month, args=(1,))
         store, deliveries, history = _vc_day_payload(df, stf, cli, mon)
         prefix = f"{mon.year:04d}-{mon.month:02d}-"
         month_deliveries = [r for r in deliveries if str(r.get("date") or "").startswith(prefix)]
@@ -2121,8 +2200,14 @@ def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]],
         )
         return
     if not _vc_is_darwin_local():
-        st.markdown(_strip_button_theme_css(days), unsafe_allow_html=True)
-        _render_strip_wd_row(days)
+        # Cloud는 일자 버튼을 안 만든다. 첫 화면부터 60칸이면 방문 탭 시작 로딩이 길어진다.
+        st.markdown(
+            _strip_fallback_html(days, selected.isoformat(), pick_href=True),
+            unsafe_allow_html=True,
+        )
+        return
+    st.markdown(_strip_button_theme_css(days), unsafe_allow_html=True)
+    _render_strip_wd_row(days)
     _render_strip_buttons(days, "vc_strip_", _on_pick_day)
 
 
@@ -2448,7 +2533,7 @@ def _mcal_month_html(
     return "<table class='vc-mcal-table'><tbody>" + "".join(rows) + "</tbody></table>"
 
 
-def _strip_fallback_html(days: list[dict], selected_iso: str) -> str:
+def _strip_fallback_html(days: list[dict], selected_iso: str, *, pick_href: bool = False) -> str:
     wd = "".join(
         f'<span style="color:{html.escape(str(d.get("wdc") or "#6b7280"))}">{html.escape(str(d.get("wd") or ""))}</span>'
         for d in days
@@ -2468,7 +2553,11 @@ def _strip_fallback_html(days: list[dict], selected_iso: str) -> str:
         )
         tag = str(d.get("tag") or "")
         lab = f"{d.get('day')}<br>{html.escape(tag)}" if tag else str(d.get("day") or "")
-        cells.append(f'<span class="{html.escape(cls)}">{lab}</span>')
+        if pick_href and iso:
+            href = html.escape(_vc_pick_href(iso), quote=True)
+            cells.append(f'<a class="{html.escape(cls)}" href="{href}">{lab}</a>')
+        else:
+            cells.append(f'<span class="{html.escape(cls)}">{lab}</span>')
         nm = str(d.get("name") or "")
         mcls = "planned" if d.get("mark") == "planned" else ""
         names.append(f'<span class="{mcls}">{html.escape(nm) if nm else "&nbsp;"}</span>')
@@ -2531,7 +2620,14 @@ def _render_month_cal(
                 key="vc_mcal_date",
             )
         else:
-            _render_mcal_day_buttons(month, selected, weeks, cells)
+            # Cloud: 칸 버튼 대신 HTML. 첫 로딩을 짧게 두고 로컬과 같은 선택·주말 색을 쓴다.
+            st.markdown(
+                _mcal_head_html()
+                + _mcal_month_html(
+                    month, selected, today, weeks, cells, pick_href=True
+                ),
+                unsafe_allow_html=True,
+            )
 
 
 def _render_month_schedule(
