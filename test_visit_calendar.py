@@ -425,12 +425,19 @@ class VisitCalendarTest(unittest.TestCase):
 
         ss = _SS()
         ss["vc_day_2026-09-17"] = True
+        ss["vc_strip_host"] = {"iso": "2026-09-17"}
         ss["_vc_selected"] = date(2026, 9, 17)
-        ss["_dash_bak_visit"] = {"vc_day_2026-09-17": True, "_vc_selected": date(2026, 9, 17)}
+        ss["_dash_bak_visit"] = {
+            "vc_day_2026-09-17": True,
+            "vc_strip_host": {"iso": "2026-09-17"},
+            "_vc_selected": date(2026, 9, 17),
+        }
         with patch.object(self.vc.st, "session_state", ss):
             self.vc._purge_vc_button_keys()
         self.assertNotIn("vc_day_2026-09-17", ss)
         self.assertNotIn("vc_day_2026-09-17", ss["_dash_bak_visit"])
+        self.assertIn("vc_strip_host", ss)
+        self.assertIn("vc_strip_host", ss["_dash_bak_visit"])
         self.assertEqual(ss["_vc_selected"], date(2026, 9, 17))
 
     def test_cached_history_skips_second_merge(self):

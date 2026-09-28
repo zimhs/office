@@ -1254,13 +1254,19 @@ def _apply_pending_month_nav() -> None:
 def _purge_vc_button_keys() -> None:
     """버튼 값은 session_state로 넣을 수 없다. 예전 백업·클릭 잔여를 지운다."""
     for k in list(st.session_state.keys()):
-        if isinstance(k, str) and k.startswith(_VC_BUTTON_PREFIXES):
-            st.session_state.pop(k, None)
+        if not (isinstance(k, str) and k.startswith(_VC_BUTTON_PREFIXES)):
+            continue
+        if k == "vc_strip_host":
+            continue
+        st.session_state.pop(k, None)
     bak = st.session_state.get("_dash_bak_visit")
     if isinstance(bak, dict):
         for k in list(bak):
-            if isinstance(k, str) and k.startswith(_VC_BUTTON_PREFIXES):
-                bak.pop(k, None)
+            if not (isinstance(k, str) and k.startswith(_VC_BUTTON_PREFIXES)):
+                continue
+            if k == "vc_strip_host":
+                continue
+            bak.pop(k, None)
 
 
 def _on_pick_day(d: date) -> None:
