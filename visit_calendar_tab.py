@@ -79,10 +79,8 @@ def _vc_is_touch_ui() -> bool:
 
 
 def _vc_is_mac_local() -> bool:
-    """맥 로컬과 Cloud 방문 달력은 같다. 가벼운 경로는 쓰지 않는다."""
-    if _vc_is_streamlit_cloud():
-        return True
-    return not _vc_is_touch_ui()
+    """맥 로컬만. Cloud에 맥 위젯·fragment를 올리면 방문 탭이 끝나지 않는다."""
+    return _vc_is_darwin_local()
 
 
 def _vc_is_streamlit_cloud() -> bool:
@@ -1500,6 +1498,8 @@ def _sync_selected_from_mcal_widget() -> None:
     """스케줄 날짜 위젯 → 선택일. 위젯 키는 여기서 쓰지 않는다(재실행 루프 방지)."""
     if _vc_use_mcal_date_input():
         d = _as_date(st.session_state.get("vc_mcal_date"))
+    elif _vc_is_streamlit_cloud():
+        return
     else:
         raw = st.session_state.get("vc_mcal_iso")
         if not isinstance(raw, str) or len(raw) < 10:
@@ -1783,11 +1783,11 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         if latest_update_str:
             st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
-    if _vc_is_mac_local():
+    if _vc_is_darwin_local():
         st.fragment(_visit_day_block)()
     else:
-        # 아이패드: 날짜 조작이 전 탭을 다시 돌리지 않게 fragment만 다시 그린다.
-        st.fragment(_visit_day_block)()
+        # Cloud·아이패드: fragment가 끝나지 않아 방문 탭이 무한 로딩된다.
+        _visit_day_block()
 
 
 def _client_short(name: str) -> str:
@@ -2433,24 +2433,6 @@ def _render_month_cal(
                     month, selected, today, weeks, cells, pick_href=False
                 ),
                 unsafe_allow_html=True,
-            )
-            last = calendar.monthrange(month.year, month.month)[1]
-            month_isos = [
-                date(month.year, month.month, n).isoformat()
-                for n in range(1, last + 1)
-            ]
-            iso0 = (
-                selected.isoformat()
-                if (selected.year, selected.month) == (month.year, month.month)
-                else date(month.year, month.month, min(selected.day, last)).isoformat()
-            )
-            if st.session_state.get("vc_mcal_iso") not in month_isos:
-                st.session_state["vc_mcal_iso"] = iso0
-            st.selectbox(
-                "스케줄 날짜",
-                options=month_isos,
-                format_func=lambda iso: f"{iso[5:7]}/{iso[8:10]}",
-                key="vc_mcal_iso",
             )
 
 
