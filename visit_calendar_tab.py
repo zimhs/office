@@ -1376,6 +1376,22 @@ _VC_BUTTON_PREFIXES = (
 )
 
 
+def _apply_pending_strip_pick() -> None:
+    """납품줄 클릭을 purge 전에 반영한다. on_click이 안 먹어도 True 값으로 일자 이동한다."""
+    pfx = "vc_strip_"
+    n = len(pfx)
+    for k in list(st.session_state.keys()):
+        if not (isinstance(k, str) and k.startswith(pfx) and len(k) >= n + 10):
+            continue
+        if st.session_state.get(k) is not True:
+            continue
+        try:
+            _on_pick_day(date.fromisoformat(k[n : n + 10]))
+        except ValueError:
+            pass
+        st.session_state.pop(k, None)
+
+
 def _apply_pending_mcal_pick() -> None:
     """스케줄 달력 클릭을 purge 전에 반영한다. 지우면 일자 이동이 사라진다."""
     for k in list(st.session_state.keys()):
@@ -1662,6 +1678,7 @@ def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str:
     _apply_query_day_pick()
     _vc_clear_strip_hosts_if_unused()
     _apply_pending_month_nav()
+    _apply_pending_strip_pick()
     _apply_pending_mcal_pick()
     _purge_vc_button_keys()
     _render_visit_body(df, latest_update_str)
@@ -1689,6 +1706,7 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
 
     def _visit_day_block() -> None:
         _apply_pending_month_nav()
+        _apply_pending_strip_pick()
         _apply_pending_mcal_pick()
         _sync_selected_from_mcal_widget()
         sel: date = st.session_state.get("_vc_selected") or today
@@ -1698,7 +1716,7 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
             staff = st.selectbox("담당자", options=staffs or [""], key="vc_staff")
         clients = _staff_clients(df, staff, store0)
         with f2:
-            if _vc_is_mac_local():
+            if _vc_is_darwin_local() or _vc_is_streamlit_cloud():
                 client = (
                     st.selectbox(
                         "거래처",
@@ -2046,30 +2064,49 @@ def _on_strip_iso_change() -> None:
     _on_pick_day(d)
 
 
-def _sunday_week(d: date) -> list[date]:
-    """로컬 달력과 같은 일요일 시작 주."""
-    off = (d.weekday() + 1) % 7
-    start = d - timedelta(days=off)
-    return [start + timedelta(days=i) for i in range(7)]
-
-
-def _render_week_pick_buttons(selected: date) -> None:
-    """Cloud·아이패드: 일자 버튼 60개는 로딩이 길다. 이번 주 7칸만 고르고 납품·스케줄 HTML이 따라간다."""
-    if not isinstance(selected, date):
-        selected = date.today()
-    sel_iso = selected.isoformat()
-    cols = st.columns(7, gap="small")
-    for i, d in enumerate(_sunday_week(selected)):
-        iso = d.isoformat()
-        with cols[i]:
-            st.button(
-                f"{_CAL_HEADERS[i]} {d.day}",
-                key=f"vc_week_{iso}",
-                type="primary" if iso == sel_iso else "secondary",
-                width="stretch",
-                on_click=_on_pick_day,
-                args=(d,),
+def _strip_button_theme_css(days: list[dict]) -> str:
+    """로컬 v2 납품줄과 같은 토·일·선택·오늘 색을 Streamlit 버튼에 입힌다."""
+    rules = [
+        "<style>",
+        'div[class*="st-key-vc_strip_"] button{min-height:2.7rem!important;height:auto!important;'
+        "border-radius:10px!important;font-size:10px!important;padding:2px 0!important;"
+        "white-space:pre-line!important;line-height:1.15!important;}",
+    ]
+    for d in days:
+        iso = str(d.get("iso") or "")
+        if len(iso) < 10:
+            continue
+        sel = f'div[class*="st-key-vc_strip_{iso}"] button'
+        kind = str(d.get("kind") or "")
+        if d.get("sel"):
+            rules.append(
+                f"{sel}{{background:#1a73e8!important;color:#fff!important;border-color:#1a73e8!important;}}"
             )
+            continue
+        if kind == "sun":
+            rules.append(
+                f"{sel}{{background:{_VC_SUN_BG}!important;color:{_VC_SUN_FG}!important;}}"
+            )
+        elif kind == "sat":
+            rules.append(
+                f"{sel}{{background:{_VC_SAT_BG}!important;color:{_VC_SAT_FG}!important;}}"
+            )
+        if d.get("today"):
+            rules.append(f"{sel}{{box-shadow:inset 0 0 0 1.5px #1a73e8!important;}}")
+    rules.append("</style>")
+    return "".join(rules)
+
+
+def _render_strip_wd_row(days: list[dict]) -> None:
+    wd = "".join(
+        f'<span style="color:{html.escape(str(d.get("wdc") or "#6b7280"))}">'
+        f'{html.escape(str(d.get("wd") or ""))}</span>'
+        for d in days
+    )
+    st.markdown(
+        f'<div class="vc-strip-html"><div class="vc-strip-wd">{wd}</div></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]], today: date) -> None:
@@ -2083,11 +2120,10 @@ def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]],
             on_iso_change=_on_strip_iso_change,
         )
         return
-    if _vc_is_darwin_local():
-        _render_strip_buttons(days, "vc_strip_", _on_pick_day)
-        return
-    st.markdown(_strip_fallback_html(days, selected.isoformat()), unsafe_allow_html=True)
-    _render_week_pick_buttons(selected)
+    if not _vc_is_darwin_local():
+        st.markdown(_strip_button_theme_css(days), unsafe_allow_html=True)
+        _render_strip_wd_row(days)
+    _render_strip_buttons(days, "vc_strip_", _on_pick_day)
 
 
 def _month_row_html(row: dict, selected: date, client: str) -> str:
@@ -2335,6 +2371,36 @@ def _mcal_button_label(d: date, marks: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _render_mcal_day_buttons(
+    month: date,
+    selected: date,
+    weeks: list[list[date]],
+    cells: dict[str, list[dict]],
+) -> None:
+    """Cloud: HTML 칸은 눌리지 않는다. 로컬 칸 버튼과 같이 on_click으로 선택일을 바꾼다."""
+    sel_iso = selected.isoformat() if isinstance(selected, date) else ""
+    st.markdown(_mcal_head_html(), unsafe_allow_html=True)
+    for week in weeks:
+        cols = st.columns(7, gap="small")
+        for i, d in enumerate(week):
+            iso = d.isoformat()
+            with cols[i]:
+                if d.month != month.month:
+                    st.markdown(
+                        f"<div class='vc-mcal-num' style='opacity:.35;text-align:center'>{d.day}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    continue
+                st.button(
+                    _mcal_button_label(d, cells.get(iso) or []),
+                    key=f"vc_mcal_{iso}",
+                    type="primary" if iso == sel_iso else "secondary",
+                    width="stretch",
+                    on_click=_on_pick_day,
+                    args=(d,),
+                )
+
+
 def _mcal_head_html() -> str:
     ths: list[str] = []
     for i, wd in enumerate(_CAL_HEADERS):
@@ -2465,13 +2531,7 @@ def _render_month_cal(
                 key="vc_mcal_date",
             )
         else:
-            st.markdown(
-                _mcal_head_html()
-                + _mcal_month_html(
-                    month, selected, today, weeks, cells, pick_href=False
-                ),
-                unsafe_allow_html=True,
-            )
+            _render_mcal_day_buttons(month, selected, weeks, cells)
 
 
 def _render_month_schedule(

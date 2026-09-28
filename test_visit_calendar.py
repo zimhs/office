@@ -511,8 +511,8 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("def _render_day_strip", src)
         strip_fn = src[src.index("def _render_day_strip") : src.index("def _month_row_html")]
         self.assertIn("_render_strip_buttons(days, \"vc_strip_\"", strip_fn)
-        self.assertIn("_strip_fallback_html", strip_fn)
-        self.assertIn("_render_week_pick_buttons", strip_fn)
+        self.assertIn("_strip_button_theme_css", strip_fn)
+        self.assertNotIn("_render_week_pick_buttons", strip_fn)
         self.assertIn("def _vc_use_day_strip_component", src)
         self.assertIn("_vc_use_day_strip_component()", src)
         self.assertIn("def _vc_is_mac_local", src)
@@ -550,6 +550,11 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertNotIn("def _visit_body", mount_fn)
         self.assertIn("_render_visit_body(df, latest_update_str)", mount_fn)
         self.assertIn("_apply_pending_mcal_pick()", mount_fn)
+        self.assertIn("_apply_pending_strip_pick()", mount_fn)
+        self.assertLess(
+            mount_fn.index("_apply_pending_strip_pick()"),
+            mount_fn.index("_purge_vc_button_keys()"),
+        )
         self.assertLess(
             mount_fn.index("_apply_pending_mcal_pick()"),
             mount_fn.index("_purge_vc_button_keys()"),
@@ -577,9 +582,8 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("_mcal_month_html(", cal)
         self.assertIn('key="vc_mcal_date"', cal)
         self.assertIn("pick_href=True", cal)
-        self.assertIn("pick_href=False", cal)
-        self.assertNotIn("_render_mcal_day_buttons(", cal)
-        self.assertNotIn('key=f"vc_mcal_{iso}"', src)
+        self.assertIn("_render_mcal_day_buttons(", cal)
+        self.assertIn('key=f"vc_mcal_{iso}"', src[src.index("def _render_mcal_day_buttons") : src.index("def _mcal_head_html")])
         self.assertIn("_vc_use_mcal_date_input()", cal)
         self.assertIn("st.date_input(", cal)
         self.assertNotIn("on_change=_on_mcal_date_change", cal)
@@ -587,8 +591,10 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertNotIn("st.pills(", cal)
         self.assertNotIn('key="vc_mcal_iso"', cal)
         self.assertNotIn('key="vc_mcal_day"', cal)
-        self.assertIn("def _render_week_pick_buttons", src)
-        self.assertIn("def _sunday_week", src)
+        self.assertIn("def _apply_pending_strip_pick", src)
+        self.assertIn("_apply_pending_strip_pick()", src)
+        self.assertNotIn("def _render_week_pick_buttons", src)
+        self.assertNotIn("def _sunday_week", src)
         self.assertNotIn("_vc_pick_href(iso)", src[src.index("def _strip_fallback_html") : src.index("def _render_month_cal")])
         self.assertIn("로컬과 같이 fragment", src)
         self.assertIn("def _on_mcal_date_change", src)
