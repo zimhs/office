@@ -562,8 +562,10 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn('_DASH_VC_STATE_PREFIXES = ("_vc_",)', app)
         tab13 = app[app.index("with tab13:") : app.index("방문·할일 탭 오류")]
         self.assertIn("render_visit_calendar_tab", tab13)
-        self.assertNotIn("_dash_defer_heavy_stub", tab13)
-        self.assertIn("시작부터 펼침", tab13)
+        self.assertIn("_dash_defer_heavy_stub", tab13)
+        self.assertIn("로그인·다른 탭에서는 달력·할일 위젯을 만들지 않는다", tab13)
+        self.assertIn("_dash_active_tab_idx()", tab13)
+        self.assertNotIn("시작부터 펼침", tab13)
         mount = app[app.index("def _dash_should_defer_heavy_tab") : app.index("def _dash_defer_heavy_stub")]
         self.assertNotIn("_DASH_TAB_VISIT", mount)
         body = src[src.index("def _render_visit_body") : src.index("def _render_day_strip")]
@@ -606,7 +608,7 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("max-width: 850px", src)
         self.assertIn("min-width: 851px", src)
         self.assertIn("월간 달력을 전폭으로", block)
-        self.assertIn("include_sales=not touch", block)
+        self.assertIn("include_sales=False", block)
         self.assertIn("visit_month_cal_v1", src)
         self.assertIn("def _mcal_touch_weeks", src)
         self.assertIn("on_iso_change=_on_mcal_iso_change", src)

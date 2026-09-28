@@ -1473,9 +1473,9 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
         f1, f2 = st.columns([1, 1])
         with f1:
             staff = st.selectbox("담당자", options=staffs or [""], key="vc_staff")
-        # 아이패드 로그인·첫 로딩: 매출 전 거래처를 셀렉트에 넣지 않는다.
-        # 맥은 담당자 매출 거래처 전부를 그대로 보여 준다.
-        clients = _staff_clients(df, staff, store0, include_sales=not touch)
+        # 매출 전 거래처 unique는 셀렉트에 넣지 않는다. 납품 스캔은 거래처를 고른 뒤.
+        # 터치 인식이 늦어도 로그인·탭 열기 로딩이 커지지 않게 한다.
+        clients = _staff_clients(df, staff, store0, include_sales=False)
         with f2:
             client = (
                 st.selectbox(
@@ -2202,7 +2202,7 @@ def _render_month_cal(
     n_visit = sum(1 for items in cells.values() for x in items if x.get("kind") == "visit")
     n_plan = sum(1 for items in cells.values() for x in items if x.get("kind") == "planned")
     n_prior = sum(1 for items in cells.values() for x in items if x.get("kind") == "prior")
-    if _vc_is_touch_ui() and _VC_MCAL is not None:
+    if _VC_MCAL is not None:
         st.markdown(
             f"<div class='vc-mcal'>"
             f"<div class='vc-mcal-title'>{month.year}년 {month.month}월 스케줄</div>"
@@ -2300,16 +2300,10 @@ def _render_month_schedule(
         unsafe_allow_html=True,
     )
     c1, c2 = st.columns(2, gap="medium")
-    if _vc_is_touch_ui():
-        with c1:
-            st.markdown(_month_schedule_items_html(done, selected, client, "visit"), unsafe_allow_html=True)
-        with c2:
-            st.markdown(_month_schedule_items_html(planned, selected, client, "planned"), unsafe_allow_html=True)
-        return
     with c1:
-        _render_month_col("기방문", done, selected, client, "visit", "vc_ms_x_")
+        st.markdown(_month_schedule_items_html(done, selected, client, "visit"), unsafe_allow_html=True)
     with c2:
-        _render_month_col("방문예정", planned, selected, client, "planned", "vc_ms_x_")
+        st.markdown(_month_schedule_items_html(planned, selected, client, "planned"), unsafe_allow_html=True)
 
 
 def _render_day_agenda(selected: date, store: dict, staff: str, client: str) -> None:
@@ -2389,28 +2383,7 @@ def _render_visit_log(store: dict, staff: str, client: str) -> None:
     if not rows:
         st.caption("체크한 방문 내역이 없습니다.")
         return
-    if _vc_is_touch_ui():
-        parts = ["<div class='vc-log-touch'>"]
-        for v in rows:
-            d = _iso(v.get("date"))
-            wd = ""
-            try:
-                if d:
-                    wd = f" ({_WEEKDAYS[date.fromisoformat(d).weekday()]})"
-            except ValueError:
-                wd = ""
-            note = f" · {html.escape(_s(v.get('note')))}" if _s(v.get("note")) else ""
-            kind = "방문예정" if (_s(v.get("status")) or "done") == "planned" else "방문"
-            parts.append(
-                f"<div class='vc-log-row'>- <b>{html.escape(d)}{wd}</b> · {kind} · "
-                f"{html.escape(_s(v.get('client')) or '-')}{note}</div>"
-            )
-        parts.append("</div>")
-        st.markdown("".join(parts), unsafe_allow_html=True)
-        if extra:
-            st.caption(f"최근 40건만 표시 · 나머지 {extra}건")
-        st.caption("삭제는 위에서 날을 고른 뒤 「삭제」를 누르세요.")
-        return
+    parts = ["<div class='vc-log-touch'>"]
     for v in rows:
         d = _iso(v.get("date"))
         wd = ""
@@ -2419,23 +2392,17 @@ def _render_visit_log(store: dict, staff: str, client: str) -> None:
                 wd = f" ({_WEEKDAYS[date.fromisoformat(d).weekday()]})"
         except ValueError:
             wd = ""
-        note = f" · {_s(v.get('note'))}" if _s(v.get("note")) else ""
+        note = f" · {html.escape(_s(v.get('note')))}" if _s(v.get("note")) else ""
         kind = "방문예정" if (_s(v.get("status")) or "done") == "planned" else "방문"
-        lab, btn = st.columns([1.55, 0.18])
-        with lab:
-            st.markdown(f"- **{d}{wd}** · {kind} · {v.get('client') or '-'}{note}")
-        with btn:
-            vid = str(v.get("id") or "")
-            if vid:
-                st.button(
-                    "×",
-                    key=f"vc_log_x_{vid}",
-                    help="삭제하면 달력·월간 일정·내역에서 사라집니다.",
-                    on_click=_on_delete_visit_id,
-                    args=(vid,),
-                )
+        parts.append(
+            f"<div class='vc-log-row'>- <b>{html.escape(d)}{wd}</b> · {kind} · "
+            f"{html.escape(_s(v.get('client')) or '-')}{note}</div>"
+        )
+    parts.append("</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
     if extra:
         st.caption(f"최근 40건만 표시 · 나머지 {extra}건")
+    st.caption("삭제는 위에서 날을 고른 뒤 「삭제」를 누르세요.")
 
 
 def _render_delivery_list(
@@ -2508,7 +2475,7 @@ def _render_todo_panel(selected: date, staff: str, client: str, store: dict) -> 
         todos = [t for t in todos if not t.get("done")]
     todos.sort(key=lambda t: (0 if t.get("starred") else 1, 1 if t.get("done") else 0, _iso(t.get("due")) or "9999", _s(t.get("title"))))
     todo_more = 0
-    if _vc_is_touch_ui() and todos:
+    if todos:
         n_show = int(st.session_state.get("_vc_todo_touch_n") or _VC_TODO_TOUCH_PAGE)
         n_show = max(_VC_TODO_TOUCH_PAGE, n_show)
         todo_more = max(0, len(todos) - n_show)
