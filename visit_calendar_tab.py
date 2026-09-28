@@ -6,6 +6,7 @@ import html
 import json
 import os
 import re
+import sys
 import unicodedata
 import uuid
 from datetime import date, datetime, timedelta
@@ -78,7 +79,9 @@ def _vc_is_touch_ui() -> bool:
 
 
 def _vc_is_mac_local() -> bool:
-    """맥 로컬·Cloud 데스크톱은 같은 달력. 아이패드만 가벼운 경로."""
+    """맥 로컬과 Cloud 방문 달력은 같다. 가벼운 경로는 쓰지 않는다."""
+    if _vc_is_streamlit_cloud():
+        return True
     return not _vc_is_touch_ui()
 
 
@@ -121,13 +124,25 @@ def _vc_is_streamlit_cloud() -> bool:
     return False
 
 
+def _vc_is_darwin_local() -> bool:
+    """납품줄 v2는 맥 Desktop 프로세스만. Cloud에 올리면 방문 탭이 끝나지 않는다."""
+    try:
+        if sys.platform != "darwin":
+            return False
+    except Exception:
+        return False
+    if _vc_is_streamlit_cloud():
+        return False
+    return True
+
+
 _VC_STRIP = None
 _VC_STRIP_READY = False
 
 
 def _vc_use_day_strip_component() -> bool:
-    """맥 로컬·Cloud 데스크톱은 납품줄 v2. 아이패드만 등록·마운트하지 않는다."""
-    if not _vc_is_mac_local():
+    """맥 로컬만 납품줄 v2. Cloud에는 iframe을 만들지 않는다."""
+    if not _vc_is_darwin_local():
         return False
     return _vc_ensure_strip() is not None
 
@@ -1940,12 +1955,12 @@ export default function (component) {
 }
 """
 def _vc_ensure_strip():
-    """맥 로컬·Cloud 데스크톱 첫 사용 때 v2를 등록한다. 아이패드에는 iframe을 만들지 않는다."""
+    """맥 로컬 첫 사용 때만 v2를 등록한다. Cloud에는 iframe을 만들지 않는다."""
     global _VC_STRIP, _VC_STRIP_READY
     if _VC_STRIP_READY:
         return _VC_STRIP
     _VC_STRIP_READY = True
-    if not _vc_is_mac_local():
+    if not _vc_is_darwin_local():
         _VC_STRIP = None
         return None
     try:
@@ -1987,10 +2002,10 @@ def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]],
             on_iso_change=_on_strip_iso_change,
         )
         return
-    if not _vc_is_mac_local():
-        st.markdown(_strip_fallback_html(days, selected.isoformat()), unsafe_allow_html=True)
+    if _vc_is_darwin_local():
+        _render_strip_buttons(days, "vc_strip_", _on_pick_day)
         return
-    _render_strip_buttons(days, "vc_strip_", _on_pick_day)
+    st.markdown(_strip_fallback_html(days, selected.isoformat()), unsafe_allow_html=True)
 
 
 def _month_row_html(row: dict, selected: date, client: str) -> str:
@@ -2355,7 +2370,8 @@ def _render_month_cal(
             st.markdown(
                 _mcal_head_html()
                 + _mcal_month_html(
-                    month, selected, today, weeks, cells, pick_href=True
+                    month, selected, today, weeks, cells,
+                    pick_href=not _vc_is_streamlit_cloud(),
                 ),
                 unsafe_allow_html=True,
             )
