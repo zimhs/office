@@ -571,6 +571,19 @@ def _t2d_delivery_rows(
         return []
     if "매출일_dt" not in df.columns:
         return []
+    n = int(len(df))
+    my = (month.year, month.month) if isinstance(month, date) else None
+    amt = 0.0
+    if "매출액" in df.columns:
+        try:
+            amt = float(pd.to_numeric(df["매출액"], errors="coerce").sum())
+        except Exception:
+            amt = 0.0
+    sig = (staff, client, my, n, round(amt, 2), "t2d3")
+    box = _vc_state_dict("_t2d_row_cache")
+    hit = box.get("rows")
+    if box.get("sig") == sig and isinstance(hit, list):
+        return list(hit)
     work = df
     if staff and "담당자" in work.columns:
         col = work["담당자"]
@@ -648,6 +661,9 @@ def _t2d_delivery_rows(
             }
         )
     out.sort(key=lambda x: (str(x.get("date") or ""), str(x.get("item") or "")), reverse=True)
+    box.clear()
+    box["sig"] = sig
+    box["rows"] = out
     return out
 
 
@@ -2457,15 +2473,47 @@ def _t2d_css() -> str:
     """
 
 
+def _apply_pending_t2d_strip_pick() -> None:
+    """납품달력 클릭을 purge 전에 반영한다. 호스트 키는 지우지 않는다."""
+    raw = st.session_state.get("t2d_strip_host")
+    iso = ""
+    if raw is not None:
+        iso = str(getattr(raw, "iso", "") or "")
+        if not iso and isinstance(raw, dict):
+            iso = str(raw.get("iso") or "")
+    try:
+        d = date.fromisoformat(iso[:10])
+    except ValueError:
+        return
+    if st.session_state.get("_t2d_selected") == d:
+        return
+    _on_t2d_pick_day(d)
+
+
+def _apply_pending_t2d_month_nav() -> None:
+    if st.session_state.get("t2d_prev_month") is True:
+        _on_t2d_shift_month(-1)
+        st.session_state.pop("t2d_prev_month", None)
+    elif st.session_state.get("t2d_next_month") is True:
+        _on_t2d_shift_month(1)
+        st.session_state.pop("t2d_next_month", None)
+    elif st.session_state.get("t2d_jump_today") is True:
+        _on_t2d_jump_today()
+        st.session_state.pop("t2d_jump_today", None)
+
+
 def _purge_t2d_button_keys() -> None:
     for k in list(st.session_state.keys()):
-        if isinstance(k, str) and k.startswith(_T2D_BUTTON_PREFIXES):
-            st.session_state.pop(k, None)
+        if not (isinstance(k, str) and k.startswith(_T2D_BUTTON_PREFIXES)):
+            continue
+        if k == "t2d_strip_host":
+            continue
+        st.session_state.pop(k, None)
 
 
 def _on_t2d_pick_day(d: date) -> None:
+    """일자만 고른다. 월은 ‹ › · 오늘에서만 바꾼다."""
     st.session_state["_t2d_selected"] = d
-    st.session_state["_t2d_month"] = date(d.year, d.month, 1)
 
 
 def _on_t2d_shift_month(delta: int) -> None:
@@ -2538,6 +2586,8 @@ def render_tab2_delivery_status(
     df: pd.DataFrame | None, staff: str, client: str
 ) -> None:
     """거래처 분석 상단 납품현황. 담당자·거래처는 메인 고정바 값을 쓴다."""
+    _apply_pending_t2d_month_nav()
+    _apply_pending_t2d_strip_pick()
     _purge_t2d_button_keys()
     st.markdown(_t2d_css(), unsafe_allow_html=True)
     with st.container(key="tab2_delivery_status"):
@@ -2547,6 +2597,8 @@ def render_tab2_delivery_status(
 
         @st.fragment
         def _t2d_body() -> None:
+            _apply_pending_t2d_month_nav()
+            _apply_pending_t2d_strip_pick()
             today = date.today()
             if "_t2d_month" not in st.session_state:
                 st.session_state["_t2d_month"] = date(today.year, today.month, 1)
@@ -2579,28 +2631,11 @@ def render_tab2_delivery_status(
             with head_r:
                 n1, n2, n3 = st.columns([1.15, 0.42, 0.42], gap="small")
                 with n1:
-                    st.button(
-                        "오늘",
-                        key="t2d_jump_today",
-                        width="content",
-                        on_click=_on_t2d_jump_today,
-                    )
+                    st.button("오늘", key="t2d_jump_today", width="content")
                 with n2:
-                    st.button(
-                        "‹",
-                        key="t2d_prev_month",
-                        width="content",
-                        on_click=_on_t2d_shift_month,
-                        args=(-1,),
-                    )
+                    st.button("‹", key="t2d_prev_month", width="content")
                 with n3:
-                    st.button(
-                        "›",
-                        key="t2d_next_month",
-                        width="content",
-                        on_click=_on_t2d_shift_month,
-                        args=(1,),
-                    )
+                    st.button("›", key="t2d_next_month", width="content")
             deliveries = _t2d_delivery_rows(df, staff, client, month=month)
             month_deliveries = deliveries
             chips = delivery_chips(month, month_deliveries)

@@ -326,7 +326,9 @@ class VisitCalendarTest(unittest.TestCase):
             }
         )
         rows = self.vc._t2d_delivery_rows(df, "김혁수", "한국메티슨특수가스")
+        again = self.vc._t2d_delivery_rows(df, "김혁수", "한국메티슨특수가스")
         self.assertEqual(len(rows), 3)
+        self.assertEqual([r["date"] for r in rows], [r["date"] for r in again])
         self.assertTrue(any(r.get("bulk") for r in rows))
         by_item = {r["item"]: r for r in rows}
         self.assertAlmostEqual(by_item["아세틸렌"]["unit_price"], 25.0)
@@ -356,6 +358,11 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("show_unit_price=True", fn)
         self.assertIn("_t2d_delivery_rows", fn)
         self.assertIn("month=month", fn)
+        self.assertIn("_apply_pending_t2d_strip_pick()", fn)
+        self.assertIn("_apply_pending_t2d_month_nav()", fn)
+        self.assertIn('if k == "t2d_strip_host"', src)
+        pick = src[src.index("def _on_t2d_pick_day") : src.index("def _on_t2d_shift_month")]
+        self.assertNotIn("_t2d_month", pick)
         self.assertNotIn("_sales_delivery_rows(df, staff, client)", fn)
         self.assertNotIn('selectbox("담당자"', fn)
         self.assertNotIn('selectbox("거래처"', fn)
