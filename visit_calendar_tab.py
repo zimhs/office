@@ -2046,6 +2046,32 @@ def _on_strip_iso_change() -> None:
     _on_pick_day(d)
 
 
+def _sunday_week(d: date) -> list[date]:
+    """로컬 달력과 같은 일요일 시작 주."""
+    off = (d.weekday() + 1) % 7
+    start = d - timedelta(days=off)
+    return [start + timedelta(days=i) for i in range(7)]
+
+
+def _render_week_pick_buttons(selected: date) -> None:
+    """Cloud·아이패드: 일자 버튼 60개는 로딩이 길다. 이번 주 7칸만 고르고 납품·스케줄 HTML이 따라간다."""
+    if not isinstance(selected, date):
+        selected = date.today()
+    sel_iso = selected.isoformat()
+    cols = st.columns(7, gap="small")
+    for i, d in enumerate(_sunday_week(selected)):
+        iso = d.isoformat()
+        with cols[i]:
+            st.button(
+                f"{_CAL_HEADERS[i]} {d.day}",
+                key=f"vc_week_{iso}",
+                type="primary" if iso == sel_iso else "secondary",
+                width="stretch",
+                on_click=_on_pick_day,
+                args=(d,),
+            )
+
+
 def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]], today: date) -> None:
     """이번 달 1일~말일을 가로로 한 줄에 요일·벌크·실린더와 함께 보여 고른다."""
     days = _strip_days_payload(month, chips, selected, today)
@@ -2057,7 +2083,11 @@ def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]],
             on_iso_change=_on_strip_iso_change,
         )
         return
-    _render_strip_buttons(days, "vc_strip_", _on_pick_day)
+    if _vc_is_darwin_local():
+        _render_strip_buttons(days, "vc_strip_", _on_pick_day)
+        return
+    st.markdown(_strip_fallback_html(days, selected.isoformat()), unsafe_allow_html=True)
+    _render_week_pick_buttons(selected)
 
 
 def _month_row_html(row: dict, selected: date, client: str) -> str:
@@ -2305,36 +2335,6 @@ def _mcal_button_label(d: date, marks: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _render_mcal_day_buttons(
-    month: date,
-    selected: date,
-    weeks: list[list[date]],
-    cells: dict[str, list[dict]],
-) -> None:
-    """Cloud·아이패드: HTML 칸은 눌리지 않는다. 이번 달 일자만 버튼으로 고른다."""
-    sel_iso = selected.isoformat() if isinstance(selected, date) else ""
-    st.markdown(_mcal_head_html(), unsafe_allow_html=True)
-    for week in weeks:
-        cols = st.columns(7, gap="small")
-        for i, d in enumerate(week):
-            iso = d.isoformat()
-            with cols[i]:
-                if d.month != month.month:
-                    st.markdown(
-                        f"<div class='vc-mcal-num' style='opacity:.35;text-align:center'>{d.day}</div>",
-                        unsafe_allow_html=True,
-                    )
-                    continue
-                st.button(
-                    _mcal_button_label(d, cells.get(iso) or []),
-                    key=f"vc_mcal_{iso}",
-                    type="primary" if iso == sel_iso else "secondary",
-                    width="stretch",
-                    on_click=_on_pick_day,
-                    args=(d,),
-                )
-
-
 def _mcal_head_html() -> str:
     ths: list[str] = []
     for i, wd in enumerate(_CAL_HEADERS):
@@ -2465,7 +2465,13 @@ def _render_month_cal(
                 key="vc_mcal_date",
             )
         else:
-            _render_mcal_day_buttons(month, selected, weeks, cells)
+            st.markdown(
+                _mcal_head_html()
+                + _mcal_month_html(
+                    month, selected, today, weeks, cells, pick_href=False
+                ),
+                unsafe_allow_html=True,
+            )
 
 
 def _render_month_schedule(
