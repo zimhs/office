@@ -839,6 +839,14 @@ class VisitCalendarTest(unittest.TestCase):
             self.vc, "_vc_is_touch_ui", return_value=False
         ):
             self.assertFalse(self.vc._vc_tab_paused())
+        with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=True), patch.object(
+            self.vc, "_vc_is_touch_ui", return_value=True
+        ), patch.object(self.vc, "_vc_try_on", return_value=True):
+            self.assertFalse(self.vc._vc_tab_paused())
+        with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=False), patch.object(
+            self.vc, "_vc_is_touch_ui", return_value=False
+        ), patch.object(self.vc, "_vc_try_on", side_effect=AssertionError("mac must not read flag")):
+            self.assertFalse(self.vc._vc_tab_paused())
         src = Path(self.vc.__file__).read_text(encoding="utf-8")
         mount = src[src.index("def render_visit_calendar_tab") : src.index("def _render_visit_body")]
         self.assertLess(mount.index("_vc_tab_paused()"), mount.index("_render_visit_body("))

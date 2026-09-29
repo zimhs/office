@@ -136,9 +136,27 @@ def _vc_is_darwin_local() -> bool:
     return True
 
 
+def _vc_try_on() -> bool:
+    """주소에 ?vc_on=1 이 있으면 이 세션만 Cloud·아이패드에서도 연다(시험용)."""
+    try:
+        if st.session_state.get("_vc_try_on") is True:
+            return True
+        v = st.query_params.get("vc_on", "")
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        if str(v) == "1":
+            st.session_state["_vc_try_on"] = True
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _vc_tab_paused() -> bool:
     """Cloud·아이패드는 방문·할일 본문을 그리지 않는다. 맥 데스크톱만 연다."""
-    return _vc_is_streamlit_cloud() or _vc_is_touch_ui()
+    if not (_vc_is_streamlit_cloud() or _vc_is_touch_ui()):
+        return False
+    return not _vc_try_on()
 
 
 def _vc_use_mcal_date_input() -> bool:
@@ -1842,7 +1860,10 @@ def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str:
     )
     if _vc_tab_paused():
         with st.expander("방문·할일 — Cloud·아이패드 임시 중지", expanded=False):
-            st.caption("로딩 문제로 Cloud·아이패드에서는 잠시 닫아 두었습니다. 맥 로컬에서 이용하세요.")
+            st.caption(
+                "로딩 문제로 Cloud·아이패드에서는 잠시 닫아 두었습니다. 맥 로컬에서 이용하세요. "
+                "시험해 보려면 주소 끝에 ?vc_on=1 을 붙여 여세요."
+            )
         return
     _apply_query_day_pick()
     _vc_clear_strip_hosts_if_unused()
