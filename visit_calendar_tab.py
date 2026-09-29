@@ -3720,7 +3720,17 @@ def _render_t2d_day_strip(
         return
     # Cloud·아이패드: HTML 칸은 그림이라 눌리지 않는다. 방문탭과 같은 버튼 줄로 고른다.
     st.markdown(
-        _strip_button_theme_css(days).replace("st-key-vc_strip_", "st-key-t2d_strip_"),
+        _strip_button_theme_css(days).replace("st-key-vc_strip_", "st-key-t2d_strip_")
+        + "<style>"
+        'div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-t2d_strip_"]){gap:3px!important;}'
+        'div[class*="st-key-t2d_strip_"] button{min-width:0!important;}'
+        'div[class*="st-key-t2d_strip_"] button p{white-space:pre-line!important;'
+        "overflow:visible!important;text-overflow:clip!important;}"
+        ".vc-strip-html{width:100%;margin:0 0 4px;}"
+        ".vc-strip-html .vc-strip-wd{display:flex;gap:3px;width:100%;margin-bottom:2px;}"
+        ".vc-strip-html .vc-strip-wd span{flex:1;min-width:0;text-align:center;"
+        "font-size:10px;font-weight:700;line-height:1.1;}"
+        "</style>",
         unsafe_allow_html=True,
     )
     _render_strip_wd_row(days)

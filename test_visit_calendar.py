@@ -851,6 +851,9 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn('replace("st-key-vc_strip_", "st-key-t2d_strip_")', strip)
         body = src[src.index("def render_tab2_delivery_status") :]
         self.assertIn("if _vc_is_mac_local() or not _vc_is_darwin_local():", body)
+        darwin_ret = strip.index("return", strip.index("if _vc_is_darwin_local():"))
+        for rule in ("gap:3px", "min-width:0", ".vc-strip-html .vc-strip-wd{display:flex"):
+            self.assertGreater(strip.index(rule), darwin_ret)
 
     def test_touch_buttons_flag_only_swaps_ipad_calendar(self):
         src = Path(self.vc.__file__).read_text(encoding="utf-8")
