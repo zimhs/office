@@ -852,6 +852,16 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertLess(mount.index("_vc_tab_paused()"), mount.index("_render_visit_body("))
         self.assertIn("expanded=False", mount)
 
+    def test_touch_buttons_flag_only_swaps_ipad_calendar(self):
+        src = Path(self.vc.__file__).read_text(encoding="utf-8")
+        strip = src[src.index("def _render_day_strip") : src.index("def _month_row_html")]
+        self.assertIn("_vc_is_touch_ui() and not _vc_touch_buttons()", strip)
+        cal = src[src.index("def _render_month_cal") : src.index("def _render_month_schedule")]
+        self.assertIn("elif _vc_is_touch_ui() and not _vc_touch_buttons():", cal)
+        self.assertIn("_render_mcal_day_buttons(", cal)
+        self.assertLess(cal.index("_vc_use_mcal_component()"), cal.index("_vc_touch_buttons()"))
+        self.assertIn('query_params.get("vc_btn"', src)
+
     def test_mcal_slot_click_picks_client_with_shade(self):
         marks = [
             {"kind": "visit", "label": "에스엔케이", "mine": False},

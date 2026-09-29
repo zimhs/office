@@ -152,6 +152,22 @@ def _vc_try_on() -> bool:
     return False
 
 
+def _vc_touch_buttons() -> bool:
+    """주소에 ?vc_btn=1 이면 아이패드도 Cloud 데스크톱과 같은 버튼 달력을 쓴다(시험용)."""
+    try:
+        if st.session_state.get("_vc_touch_btn") is True:
+            return True
+        v = st.query_params.get("vc_btn", "")
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        if str(v) == "1":
+            st.session_state["_vc_touch_btn"] = True
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _vc_tab_paused() -> bool:
     """Cloud·아이패드는 방문·할일 본문을 그리지 않는다. 맥 데스크톱만 연다."""
     if not (_vc_is_streamlit_cloud() or _vc_is_touch_ui()):
@@ -2606,7 +2622,7 @@ def _render_day_strip(month: date, selected: date, chips: dict[str, list[dict]],
             data={"days": days, "selected": selected.isoformat(), "today": today.isoformat()},
         )
         return
-    if _vc_is_touch_ui():
+    if _vc_is_touch_ui() and not _vc_touch_buttons():
         st.markdown(_strip_fallback_html(days, selected.isoformat()), unsafe_allow_html=True)
         return
     # Cloud 데스크톱: HTML 칸은 그림이라 눌리지 않는다. 같은 화면 버튼으로 고른다.
@@ -3037,7 +3053,7 @@ def _render_month_cal(
                 key="vc_mcal_host",
                 data=_mcal_v2_payload(month, selected, today, weeks, cells),
             )
-        elif _vc_is_touch_ui():
+        elif _vc_is_touch_ui() and not _vc_touch_buttons():
             _render_touch_mcal_html(month, selected, today, weeks, cells)
         else:
             _render_mcal_day_buttons(month, selected, weeks, cells, today)
