@@ -169,10 +169,8 @@ def _vc_touch_buttons() -> bool:
 
 
 def _vc_tab_paused() -> bool:
-    """Cloud·아이패드는 방문·할일 본문을 그리지 않는다. 맥 데스크톱만 연다."""
-    if not (_vc_is_streamlit_cloud() or _vc_is_touch_ui()):
-        return False
-    return not _vc_try_on()
+    """다시 막아야 하면 True를 돌려준다. 지금은 Cloud·아이패드·맥 모두 연다."""
+    return False
 
 
 def _vc_use_mcal_date_input() -> bool:
@@ -2879,7 +2877,17 @@ def _mcal_button_theme_css(
     """로컬 스케줄 칸과 같은 선택·오늘·주말 색. type=primary는 CSS에 가려진다."""
     sel_iso = selected.isoformat() if isinstance(selected, date) else ""
     today_iso = today.isoformat() if isinstance(today, date) else ""
-    rules = ["<style>"]
+    rules = [
+        "<style>",
+        'div[class*="st-key-vc_mcal_2"] button{align-items:flex-start!important;'
+        "justify-content:center!important;}",
+        'div[class*="st-key-vc_mcal_2"] button > div,'
+        'div[class*="st-key-vc_mcal_2"] button [data-testid="stMarkdownContainer"]'
+        "{width:100%!important;max-width:100%!important;}",
+        'div[class*="st-key-vc_mcal_2"] button p{white-space:pre-line!important;'
+        "overflow:hidden!important;text-overflow:clip!important;text-align:center!important;"
+        "margin:0!important;width:100%!important;}",
+    ]
     for week in weeks:
         for i, d in enumerate(week):
             iso = d.isoformat()

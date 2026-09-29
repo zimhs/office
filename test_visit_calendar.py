@@ -826,27 +826,18 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertEqual(dst.read_text(encoding="utf-8"), Path(self.store).read_text(encoding="utf-8"))
         self.assertIn("엠케이러스", dst.read_text(encoding="utf-8"))
 
-    def test_visit_tab_paused_on_cloud_and_ipad(self):
-        with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=True), patch.object(
-            self.vc, "_vc_is_touch_ui", return_value=False
-        ):
-            self.assertTrue(self.vc._vc_tab_paused())
-        with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=False), patch.object(
-            self.vc, "_vc_is_touch_ui", return_value=True
-        ):
-            self.assertTrue(self.vc._vc_tab_paused())
-        with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=False), patch.object(
-            self.vc, "_vc_is_touch_ui", return_value=False
-        ):
-            self.assertFalse(self.vc._vc_tab_paused())
-        with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=True), patch.object(
-            self.vc, "_vc_is_touch_ui", return_value=True
-        ), patch.object(self.vc, "_vc_try_on", return_value=True):
-            self.assertFalse(self.vc._vc_tab_paused())
-        with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=False), patch.object(
-            self.vc, "_vc_is_touch_ui", return_value=False
-        ), patch.object(self.vc, "_vc_try_on", side_effect=AssertionError("mac must not read flag")):
-            self.assertFalse(self.vc._vc_tab_paused())
+    def test_visit_tab_open_on_cloud_and_ipad(self):
+        for cloud, touch in ((True, False), (False, True), (True, True), (False, False)):
+            with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=cloud), patch.object(
+                self.vc, "_vc_is_touch_ui", return_value=touch
+            ):
+                self.assertFalse(self.vc._vc_tab_paused())
+        css = self.vc._mcal_button_theme_css(
+            date(2026, 9, 1), date(2026, 9, 29), date(2026, 9, 29), self.vc.month_cal_weeks(date(2026, 9, 1))
+        )
+        self.assertIn('st-key-vc_mcal_2"] button{align-items:flex-start', css)
+        self.assertIn("white-space:pre-line", css)
+        self.assertIn("text-align:center", css)
         src = Path(self.vc.__file__).read_text(encoding="utf-8")
         mount = src[src.index("def render_visit_calendar_tab") : src.index("def _render_visit_body")]
         self.assertLess(mount.index("_vc_tab_paused()"), mount.index("_render_visit_body("))
