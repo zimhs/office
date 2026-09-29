@@ -153,19 +153,19 @@ def _vc_try_on() -> bool:
 
 
 def _vc_touch_buttons() -> bool:
-    """주소에 ?vc_btn=1 이면 아이패드도 Cloud 데스크톱과 같은 버튼 달력을 쓴다(시험용)."""
+    """아이패드도 Cloud 데스크톱과 같은 버튼 달력. 주소에 ?vc_btn=0 이면 슬라이더."""
     try:
-        if st.session_state.get("_vc_touch_btn") is True:
-            return True
+        if st.session_state.get("_vc_touch_slider") is True:
+            return False
         v = st.query_params.get("vc_btn", "")
         if isinstance(v, list):
             v = v[0] if v else ""
-        if str(v) == "1":
-            st.session_state["_vc_touch_btn"] = True
-            return True
+        if str(v) == "0":
+            st.session_state["_vc_touch_slider"] = True
+            return False
     except Exception:
         pass
-    return False
+    return True
 
 
 def _vc_tab_paused() -> bool:

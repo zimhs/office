@@ -862,6 +862,19 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertLess(cal.index("_vc_use_mcal_component()"), cal.index("_vc_touch_buttons()"))
         self.assertIn('query_params.get("vc_btn"', src)
 
+        class _SS(dict):
+            pass
+
+        class _QP(dict):
+            pass
+
+        with patch.object(self.vc.st, "session_state", _SS()), patch.object(self.vc.st, "query_params", _QP()):
+            self.assertTrue(self.vc._vc_touch_buttons())
+        with patch.object(self.vc.st, "session_state", _SS()), patch.object(
+            self.vc.st, "query_params", _QP(vc_btn="0")
+        ):
+            self.assertFalse(self.vc._vc_touch_buttons())
+
     def test_mcal_slot_click_picks_client_with_shade(self):
         marks = [
             {"kind": "visit", "label": "에스엔케이", "mine": False},
