@@ -2188,11 +2188,33 @@ def load_sent_log() -> pd.DataFrame:
     return _load_sent_log_cached(PI_SENT_LOG, mtime)
 
 
+_LAST_SENT_MEMO: dict = {"sig": None, "df": None, "hits": {}}
+
+
 def last_sent_for_client(client: str, log_df: Optional[pd.DataFrame] = None) -> dict:
     """성공 발송만, 가장 최근 1건."""
     if not client:
         return {}
-    df = log_df if log_df is not None else load_sent_log()
+    if log_df is not None:
+        return _last_sent_from_df(client, log_df)
+    try:
+        sig = (PI_SENT_LOG, float(os.path.getmtime(PI_SENT_LOG))) if os.path.isfile(PI_SENT_LOG) else None
+    except OSError:
+        sig = None
+    if sig is None:
+        return _last_sent_from_df(client, load_sent_log())
+    if _LAST_SENT_MEMO["sig"] != sig:
+        _LAST_SENT_MEMO.update(sig=sig, df=load_sent_log(), hits={})
+    hits = _LAST_SENT_MEMO["hits"]
+    key = str(client)
+    if key not in hits:
+        hits[key] = _last_sent_from_df(client, _LAST_SENT_MEMO["df"])
+    return dict(hits[key])
+
+
+def _last_sent_from_df(client: str, df: Optional[pd.DataFrame]) -> dict:
+    if not client:
+        return {}
     if df is None or df.empty:
         return {}
     sub = df[df["client"].astype(str).str.strip() == str(client).strip()]
