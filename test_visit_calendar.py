@@ -356,7 +356,7 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn('key="t2d_strip_host"', strip)
         self.assertIn("_vc_use_day_strip_component()", strip)
         self.assertIn("_render_strip_buttons(days, \"t2d_strip_\"", strip)
-        self.assertIn("_strip_fallback_html(days, selected.isoformat())", strip)
+        self.assertNotIn("_strip_fallback_html(", strip)
         self.assertNotIn("if _VC_STRIP is not None:", strip)
         self.assertIn('"hideNames": True', strip)
         self.assertIn('heading="납품 내역"', fn)
@@ -627,7 +627,7 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertNotIn("def _sunday_week", src)
         self.assertIn("_vc_pick_href(iso)", src[src.index("def _strip_fallback_html") : src.index("def _render_month_cal")])
         t2d_html = src[src.index("def _render_t2d_day_strip") : src.index("def render_tab2_delivery_status")]
-        self.assertIn("_strip_fallback_html(days, selected.isoformat())", t2d_html)
+        self.assertIn("_render_strip_wd_row(days)", t2d_html)
         self.assertNotIn("pick_href=True", t2d_html)
         self.assertIn("로컬과 같이 fragment", src)
         self.assertIn("def _on_mcal_date_change", src)
@@ -842,6 +842,15 @@ class VisitCalendarTest(unittest.TestCase):
         mount = src[src.index("def render_visit_calendar_tab") : src.index("def _render_visit_body")]
         self.assertLess(mount.index("_vc_tab_paused()"), mount.index("_render_visit_body("))
         self.assertIn("expanded=False", mount)
+
+    def test_t2d_strip_buttons_on_cloud_mac_unchanged(self):
+        src = Path(self.vc.__file__).read_text(encoding="utf-8")
+        strip = src[src.index("def _render_t2d_day_strip") : src.index("def render_tab2_delivery_status")]
+        self.assertLess(strip.index("_vc_use_day_strip_component()"), strip.index("_vc_is_darwin_local()"))
+        self.assertNotIn("_strip_fallback_html", strip)
+        self.assertIn('replace("st-key-vc_strip_", "st-key-t2d_strip_")', strip)
+        body = src[src.index("def render_tab2_delivery_status") :]
+        self.assertIn("if _vc_is_mac_local() or not _vc_is_darwin_local():", body)
 
     def test_touch_buttons_flag_only_swaps_ipad_calendar(self):
         src = Path(self.vc.__file__).read_text(encoding="utf-8")

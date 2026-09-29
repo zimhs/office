@@ -3718,7 +3718,13 @@ def _render_t2d_day_strip(
     if _vc_is_darwin_local():
         _render_strip_buttons(days, "t2d_strip_", _on_t2d_pick_day)
         return
-    st.markdown(_strip_fallback_html(days, selected.isoformat()), unsafe_allow_html=True)
+    # Cloud·아이패드: HTML 칸은 그림이라 눌리지 않는다. 방문탭과 같은 버튼 줄로 고른다.
+    st.markdown(
+        _strip_button_theme_css(days).replace("st-key-vc_strip_", "st-key-t2d_strip_"),
+        unsafe_allow_html=True,
+    )
+    _render_strip_wd_row(days)
+    _render_strip_buttons(days, "t2d_strip_", _on_t2d_pick_day)
 
 
 def render_tab2_delivery_status(
@@ -3796,7 +3802,7 @@ def render_tab2_delivery_status(
                     unsafe_allow_html=True,
                 )
 
-        if _vc_is_mac_local():
+        if _vc_is_mac_local() or not _vc_is_darwin_local():
             st.fragment(_t2d_body)()
         else:
             _t2d_body()
