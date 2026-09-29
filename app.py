@@ -13205,7 +13205,8 @@ def inject_top30_month_bridge():
                         url.searchParams.set("touch_ui", "1");
                         try { parentWin.history.replaceState(null, "", url.toString()); } catch (eHs2) {}
                         try {
-                            if (parentWin.sessionStorage.getItem("__dash_touch_boot") !== "1") {
+                            /* 서버가 이미 터치로 그렸으면 재로드는 흰 화면만 만든다 */
+                            if (!__SERVER_TOUCH__ && parentWin.sessionStorage.getItem("__dash_touch_boot") !== "1") {
                                 parentWin.sessionStorage.setItem("__dash_touch_boot", "1");
                                 parentWin.location.replace(url.toString());
                                 return;
@@ -13318,7 +13319,7 @@ def inject_top30_month_bridge():
             }
         })();
         </script>
-        """,
+        """.replace("__SERVER_TOUCH__", "true" if is_touch_ui() else "false"),
         height=0,
     )
 def is_touch_ui():
@@ -13480,7 +13481,8 @@ def inject_ipad_plotly_controls():
                         url.searchParams.set("touch_ui", "1");
                         try { parentWin.history.replaceState(null, "", url.toString()); } catch (eHs3) {}
                         try {
-                            if (parentWin.sessionStorage.getItem("__dash_touch_boot") !== "1") {
+                            /* 서버가 이미 터치로 그렸으면 재로드는 흰 화면만 만든다 */
+                            if (!__SERVER_TOUCH__ && parentWin.sessionStorage.getItem("__dash_touch_boot") !== "1") {
                                 parentWin.sessionStorage.setItem("__dash_touch_boot", "1");
                                 parentWin.location.replace(url.toString());
                                 return;
@@ -13491,7 +13493,7 @@ def inject_ipad_plotly_controls():
             } catch (e2) {}
         })();
         </script>
-        """,
+        """.replace("__SERVER_TOUCH__", "true" if is_touch_ui() else "false"),
         height=0,
     )
 def render_frozen_styler_html(
