@@ -861,6 +861,34 @@ def lookup_email(client: str, mail_df: pd.DataFrame) -> str:
     return hit
 
 
+_MAIL_INDEX_CACHE: dict = {}
+
+
+def _mail_index(mail_df: pd.DataFrame) -> list[tuple[str, str, str, str, str]]:
+    """연락처 행별 (원래이름, norm, core, 이메일, person). 일괄 목록 200곳이 표를 매번 iterrows 하면 시작이 30초 넘게 걸린다."""
+    names = mail_df["거래처"].tolist() if "거래처" in mail_df.columns else [None] * len(mail_df)
+    emails = mail_df["이메일"].tolist() if "이메일" in mail_df.columns else [None] * len(mail_df)
+    sig = (len(mail_df), tuple(map(repr, names)), tuple(map(repr, emails)))
+    if _MAIL_INDEX_CACHE.get("sig") == sig:
+        return _MAIL_INDEX_CACHE["rows"]
+    rows: list[tuple[str, str, str, str, str]] = []
+    for _, row in mail_df.iterrows():
+        raw = _clean_client_label(row.get("거래처"))
+        rows.append(
+            (
+                raw,
+                _norm_name(raw),
+                _core_name(raw),
+                str(row.get("이메일") or "").strip(),
+                _person_key(raw),
+            )
+        )
+    _MAIL_INDEX_CACHE.clear()
+    _MAIL_INDEX_CACHE["sig"] = sig
+    _MAIL_INDEX_CACHE["rows"] = rows
+    return rows
+
+
 def lookup_email_with_meta(client: str, mail_df: pd.DataFrame) -> tuple[str, str]:
     """(이메일, 매칭된연락처명). 없으면 ('', '')."""
     if not client or mail_df is None or mail_df.empty:
@@ -868,18 +896,15 @@ def lookup_email_with_meta(client: str, mail_df: pd.DataFrame) -> tuple[str, str
     client = _clean_client_label(client)
     key = _norm_name(client)
     core = _core_name(client)
+    idx = _mail_index(mail_df)
     # 1) 정확 일치
-    for _, row in mail_df.iterrows():
-        n = _norm_name(_clean_client_label(row.get("거래처")))
+    for raw, n, _c, em, _pc in idx:
         if n == key:
-            return str(row.get("이메일") or "").strip(), _clean_client_label(row.get("거래처"))
+            return em, raw
     # 2) 한쪽이 다른 쪽을 포함 (대영가스상 ⊂ 대영가스상사)
     best = ("", "", 0)  # email, name, score
-    for _, row in mail_df.iterrows():
-        raw = _clean_client_label(row.get("거래처"))
-        n = _norm_name(raw)
-        c = _core_name(raw)
-        em = str(row.get("이메일") or "").strip()
+    pk = _person_key(client)
+    for raw, n, c, em, pc in idx:
         if not n or not em:
             continue
         score = 0
@@ -890,8 +915,6 @@ def lookup_email_with_meta(client: str, mail_df: pd.DataFrame) -> tuple[str, str
         elif core and c and (core.startswith(c) or c.startswith(core)) and min(len(c), len(core)) >= 4:
             score = min(len(c), len(core))
         else:
-            pk = _person_key(client)
-            pc = _person_key(raw)
             if pk and pc and pk == pc and len(pk) >= 2:
                 score = len(pk)
         if score > best[2]:

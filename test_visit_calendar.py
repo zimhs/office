@@ -122,7 +122,8 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("visit", kinds7)
         self.assertTrue(any(x.get("mine") for x in cells["2026-09-07"]))
         self.assertIn("planned", kinds23)
-        self.assertIn("prior", kinds10)
+        self.assertNotIn("prior", kinds10)
+        self.assertNotIn("기방문", str(cells))
         html = self.vc._mcal_chips_html(cells["2026-09-23"])
         self.assertIn("planned", html)
         self.assertIn("라콜", html)
@@ -797,6 +798,33 @@ class VisitCalendarTest(unittest.TestCase):
         leftover["vc_mcal_host"] = {"iso": "2026-09-10"}
         _run(leftover)
         self.assertEqual(leftover["_vc_selected"], date(2026, 9, 28))
+
+    def test_day_payload_skips_worklog_index(self):
+        with patch.object(self.vc.st, "session_state", {}), patch.object(
+            self.vc, "_build_worklog_client_index", side_effect=AssertionError("slow worklog scan")
+        ):
+            store, deliveries, history = self.vc._vc_day_payload(
+                None, "김혁수", "대영가스상사", date(2026, 9, 1)
+            )
+        self.assertEqual(history, [])
+        self.assertIsInstance(store, dict)
+
+    def test_save_store_mirrors_to_drive_copy(self):
+        drive = tempfile.TemporaryDirectory()
+        self.addCleanup(drive.cleanup)
+        with patch.object(self.vc, "_vc_drive_store_path", return_value=""):
+            self.vc.add_visit(
+                {"date": date(2026, 9, 29), "staff": "김혁수", "client": "에스엔케이", "status": "planned"}
+            )
+        self.assertEqual(self.vc._vc_drive_store_path(), "")
+        dst = Path(drive.name) / "방문할일.json"
+        with patch.object(self.vc, "_vc_drive_store_path", return_value=str(dst)):
+            self.vc.add_visit(
+                {"date": date(2026, 9, 30), "staff": "김혁수", "client": "엠케이러스", "status": "done"}
+            )
+        self.assertTrue(dst.is_file())
+        self.assertEqual(dst.read_text(encoding="utf-8"), Path(self.store).read_text(encoding="utf-8"))
+        self.assertIn("엠케이러스", dst.read_text(encoding="utf-8"))
 
     def test_visit_tab_paused_on_cloud_and_ipad(self):
         with patch.object(self.vc, "_vc_is_streamlit_cloud", return_value=True), patch.object(

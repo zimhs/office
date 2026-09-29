@@ -17,6 +17,8 @@ import streamlit as st
 
 VC_DIR = os.path.join("uploaded_cache", "visit_calendar")
 VC_STORE = os.path.join(VC_DIR, "store.json")
+_VC_DEFAULT_STORE = VC_STORE
+_VC_DRIVE_NAME = "방문할일.json"
 _WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
 _CAL_HEADERS = ("일", "월", "화", "수", "목", "금", "토")
 _CAL_FIRST = calendar.SUNDAY
@@ -306,10 +308,43 @@ def save_store(store: dict) -> None:
     }
     with open(VC_STORE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+    _mirror_store_to_drive(payload)
     try:
         st.session_state.pop("_vc_day_data", None)
     except Exception:
         pass
+
+
+def _vc_drive_store_path() -> str:
+    """맥 부팅 동기화가 새로고침마다 Drive 방문할일.json으로 store.json을 덮는다."""
+    if VC_STORE != _VC_DEFAULT_STORE or _vc_is_streamlit_cloud():
+        return ""
+    try:
+        from drive_autoload import resolve_drive_dashboard_copy
+
+        root = resolve_drive_dashboard_copy()
+    except Exception:
+        return ""
+    if not root or not os.path.isdir(root):
+        return ""
+    return os.path.join(root, _VC_DRIVE_NAME)
+
+
+def _mirror_store_to_drive(payload: dict) -> None:
+    dst = _vc_drive_store_path()
+    if not dst:
+        return
+    tmp = dst + ".uploading"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, dst)
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
 
 
 def add_todo(fields: dict) -> dict:
@@ -435,7 +470,7 @@ def schedule_cells(
     history: list[dict] | None = None,
     client: str = "",
 ) -> dict[str, list[dict]]:
-    """칸별 표시. visit=방문, planned=방문예정, prior=기방문(업무일지)."""
+    """칸별 표시. visit=방문, planned=방문예정. 업무일지 기방문은 지울 수 없어 칸에 넣지 않는다."""
     want = {d.isoformat() for d in days}
     staff_s = _s(staff)
     client_key = _company_key(client)
@@ -463,12 +498,6 @@ def schedule_cells(
         kind = "planned" if stt == "planned" else "visit"
         name = _s(v.get("client")) or ("방문예정" if kind == "planned" else "방문")
         _add(iso, kind, name, mine=bool(client_key and _company_key(name) == client_key))
-    for h in history or []:
-        if not isinstance(h, dict):
-            continue
-        if str(h.get("source") or "") != "업무일지":
-            continue
-        _add(_iso(h.get("date")), "prior", "기방문")
     return out
 
 
@@ -853,7 +882,8 @@ def _vc_day_payload(
         return box["store"], list(box.get("deliveries") or []), list(box.get("history") or [])
     store = load_store()
     deliveries = _sales_delivery_rows(df, staff, client) if client else []
-    history = _worklog_visit_dates(client) if client else []
+    # 업무일지 색인은 일지 xlsx를 전부 열어 새 세션마다 ~10초. 달력 칸에 기방문을 안 그리므로 만들지 않는다.
+    history: list[dict] = []
     box.clear()
     box["ck"] = ck
     box["store"] = store
@@ -2970,7 +3000,6 @@ def _render_month_cal(
     cells = schedule_cells(store, days, staff, history, client)
     n_visit = sum(1 for items in cells.values() for x in items if x.get("kind") == "visit")
     n_plan = sum(1 for items in cells.values() for x in items if x.get("kind") == "planned")
-    n_prior = sum(1 for items in cells.values() for x in items if x.get("kind") == "prior")
     st.markdown(_mcal_grid_css(), unsafe_allow_html=True)
     with st.container(key="vc_mcal_box"):
         st.markdown(
@@ -2979,7 +3008,6 @@ def _render_month_cal(
             f"<div class='vc-mcal-leg'>"
             f"<span><i style='background:#137333'></i>방문 {n_visit}</span>"
             f"<span><i style='background:#c47d00'></i>방문예정 {n_plan}</span>"
-            f"<span><i style='background:#1a73e8'></i>기방문 {n_prior}</span>"
             f"</div></div>",
             unsafe_allow_html=True,
         )
