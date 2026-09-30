@@ -5652,7 +5652,11 @@ def clear_debt_runtime_caches(session=None) -> None:
             session = None
     if session is None:
         return
+    # _dash_debt_staff_sig 도 반드시 제거.
+    # 표만 지우고 sig를 남기면, 업로드 후 같은 내용으로 「불러오기」할 때
+    # 재구성이 건너뛰어져 staff/filtered 가 빈표 → 채권관리 빈화면이 된다.
     for key in (
+        "_dash_debt_staff_sig",
         "_dash_debt_filter_sig",
         "_dash_staff_debt_df",
         "_dash_filtered_debt_df",
@@ -14953,7 +14957,12 @@ def _dash_filter_and_tabs_fragment() -> None:
         debt_frame_fingerprint(debt_df),
     )
     _debt_staff_sig = (tuple(selected_staff or ()), _debt_data_sig)
-    if st.session_state.get("_dash_debt_staff_sig") != _debt_staff_sig:
+    # 표 키가 없으면 sig가 같아도 재구성 (불러오기 후 빈화면 방지)
+    _debt_staff_missing = "_dash_staff_debt_df" not in st.session_state
+    if (
+        st.session_state.get("_dash_debt_staff_sig") != _debt_staff_sig
+        or _debt_staff_missing
+    ):
         st.session_state["_dash_debt_staff_sig"] = _debt_staff_sig
         if not debt_df.empty:
             if selected_staff:
@@ -14967,7 +14976,11 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.session_state["_dash_staff_debt_df"] = pd.DataFrame()
     staff_debt_df = st.session_state.get("_dash_staff_debt_df", pd.DataFrame())
     _debt_filter_sig = (_debt_staff_sig, selected_client)
-    if st.session_state.get("_dash_debt_filter_sig") != _debt_filter_sig:
+    _debt_filter_missing = "_dash_filtered_debt_df" not in st.session_state
+    if (
+        st.session_state.get("_dash_debt_filter_sig") != _debt_filter_sig
+        or _debt_filter_missing
+    ):
         st.session_state["_dash_debt_filter_sig"] = _debt_filter_sig
         if selected_client != "전체 거래처" and not staff_debt_df.empty:
             st.session_state["_dash_filtered_debt_df"] = staff_debt_df[
@@ -17229,6 +17242,22 @@ def _dash_filter_and_tabs_fragment() -> None:
                         height=480,
                         status_month_cols=numeric_cols,
                     )
+            else:
+                st.info(
+                    "현재 필터(담당자·거래처)에 해당하는 채권 행이 없습니다. "
+                    "상단 필터를 「전체」로 바꾸거나, 사이드바에서 채권.csv를 다시 불러오세요."
+                )
+        else:
+            if debt_bytes:
+                st.warning(
+                    "채권 파일을 읽었지만 표로 변환하지 못했습니다. "
+                    "CSV에 '거래처','구분' 열이 있는지 확인한 뒤 다시 업로드·불러오기 하세요."
+                )
+            else:
+                st.info(
+                    "채권 데이터가 없습니다. 사이드바에서 채권.csv를 업로드하거나 "
+                    "「불러오기」로 경로 파일을 불러오세요."
+                )
     # Tab 6: 📍 대한민국 V-World 고해상도 한글/위성 지도 적용
     with tab6:
         _defer_tab6 = _dash_should_defer_light_tab(5)

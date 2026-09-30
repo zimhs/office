@@ -102,5 +102,62 @@ class DebtStampProtectsDriveOverwriteTest(unittest.TestCase):
             self.assertFalse(local_debt_upload_should_keep(tmp, drive_src=drive))
 
 
+class DebtReloadBlankScreenRegressionTest(unittest.TestCase):
+    """업로드 후 같은 내용 「불러오기」 시 staff/filtered 빈표 → 빈화면 회귀 방지."""
+
+    def test_clear_debt_runtime_caches_drops_staff_sig(self):
+        session = {
+            "_dash_debt_staff_sig": (("담당자A",), ("sha", ("empty",))),
+            "_dash_debt_filter_sig": "old",
+            "_dash_staff_debt_df": "frame",
+            "_dash_filtered_debt_df": "frame",
+            "debt_od_filters": ["악성"],
+            "unrelated": 1,
+        }
+        clear_debt_runtime_caches(session)
+        for key in (
+            "_dash_debt_staff_sig",
+            "_dash_debt_filter_sig",
+            "_dash_staff_debt_df",
+            "_dash_filtered_debt_df",
+            "debt_od_filters",
+        ):
+            self.assertNotIn(key, session)
+        self.assertEqual(session.get("unrelated"), 1)
+
+    def test_same_sha_reload_rebuilds_when_staff_df_missing(self):
+        """예전 버그: sig만 남고 표가 없으면 재구성 스킵 → 빈 filtered."""
+        raw = _csv("same", 555)
+        debt_df = load_debt_file(raw)
+        self.assertFalse(debt_df.empty)
+        sha = debt_bytes_fingerprint(raw)
+        data_sig = (sha, debt_frame_fingerprint(debt_df))
+        staff_sig = ((), data_sig)
+        # clear 후 표만 없고 sig는 남은 상태(버그 재현 조건)
+        session = {"_dash_debt_staff_sig": staff_sig}
+        staff_missing = "_dash_staff_debt_df" not in session
+        must_rebuild = session.get("_dash_debt_staff_sig") != staff_sig or staff_missing
+        self.assertTrue(must_rebuild)
+        # 재구성 시뮬레이션 (담당자 전체)
+        session["_dash_debt_staff_sig"] = staff_sig
+        session["_dash_staff_debt_df"] = debt_df
+        session["_dash_debt_filter_sig"] = (staff_sig, "전체 거래처")
+        session["_dash_filtered_debt_df"] = debt_df
+        self.assertFalse(session["_dash_filtered_debt_df"].empty)
+
+    def test_tab5_has_empty_state_messages(self):
+        with open(os.path.join(os.path.dirname(__file__), "app.py"), encoding="utf-8") as f:
+            src = f.read()
+        tab5 = src.split("# Tab 5:", 1)[1].split("# Tab 6:", 1)[0]
+        self.assertIn("현재 필터(담당자·거래처)에 해당하는 채권 행이 없습니다", tab5)
+        self.assertIn("채권 데이터가 없습니다", tab5)
+        self.assertIn("_dash_debt_staff_sig", src)
+        # clear 목록에 staff_sig 포함
+        clear_fn = src.split("def clear_debt_runtime_caches", 1)[1].split(
+            "def resolve_cached_debt_bytes", 1
+        )[0]
+        self.assertIn('"_dash_debt_staff_sig"', clear_fn)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
