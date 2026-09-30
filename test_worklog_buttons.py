@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 from unittest.mock import patch
 
 
@@ -219,6 +220,30 @@ class WorklogButtonRestoreTest(unittest.TestCase):
         self.ss[f"wl_focus_ln_{iso}"] = self.wt._entry_line_key(iso, 0, 4)
         self.assertEqual(self.wt._comp_send_focus(iso, 0, "ln"), 4)
         self.assertEqual(self.wt._comp_send_focus(iso, 1, "ln"), -1)
+
+    def test_calendar_month_nav_uses_on_click_not_wl_rerun(self):
+        """◀▶ 는 on_click 으로 달을 바꾼다. if button+_wl_rerun 은 fragment에서 막힌다."""
+        with open(self.wt.__file__, encoding="utf-8") as f:
+            src = f.read()
+        cal = src[src.index("def _render_month_calendar") : src.index("def _worklog_summary_html_body")]
+        self.assertIn("on_click=_on_wl_cal_prev_month", cal)
+        self.assertIn("on_click=_on_wl_cal_next_month", cal)
+        self.assertNotIn('_wl_rerun()', cal)
+        self.assertIn("def _on_wl_cal_prev_month", src)
+        self.assertIn("def _on_wl_cal_next_month", src)
+
+    def test_calendar_month_nav_callbacks_shift_month(self):
+        self.ss["worklog_month"] = date(2026, 10, 1)
+        self.wt._on_wl_cal_prev_month()
+        self.assertEqual(self.ss["worklog_month"], date(2026, 9, 1))
+        self.wt._on_wl_cal_next_month()
+        self.assertEqual(self.ss["worklog_month"], date(2026, 10, 1))
+        self.ss["worklog_month"] = date(2026, 1, 1)
+        self.wt._on_wl_cal_prev_month()
+        self.assertEqual(self.ss["worklog_month"], date(2025, 12, 1))
+        self.ss["worklog_month"] = date(2026, 12, 1)
+        self.wt._on_wl_cal_next_month()
+        self.assertEqual(self.ss["worklog_month"], date(2027, 1, 1))
 
     def test_action_buttons_use_on_click_not_extra_rerun(self):
         with open(self.wt.__file__, encoding="utf-8") as f:
