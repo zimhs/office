@@ -65,11 +65,6 @@ uploaded_cache/worklog/_preview_*
 uploaded_cache/worklog/*_인쇄*
 !uploaded_cache/market_research/
 !uploaded_cache/market_research/**
-!uploaded_cache/quarterly_analysis/
-!uploaded_cache/quarterly_analysis/template.xlsx
-uploaded_cache/quarterly_analysis/work.xlsx
-uploaded_cache/quarterly_analysis/*.xlsx
-!uploaded_cache/quarterly_analysis/template.xlsx
 !uploaded_cache/market_research/개별/
 !uploaded_cache/market_research/개별/**
 # 탭에서 올린 사용자 엑셀은 커밋하지 않음
