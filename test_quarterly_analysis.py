@@ -139,6 +139,45 @@ class QuarterlyAnalysisTest(unittest.TestCase):
         self.assertEqual(qa._qa_parse_quarter_label("2026년 2분기"), (2026, 2))
         self.assertEqual(qa._QA_QUARTER_MONTHS[2], (4, 5, 6))
 
+    def test_goal_and_perf_table_html(self):
+        goal_html = qa._qa_goal_table_html(
+            2026,
+            (1, 2, 3),
+            (1538, 1371, 1525),
+            (1429, 1135, 1584),
+            (1152, 1261, 1343),
+            ("▼7%", "▼17%", "▲4%", "▼6%"),
+            ("▲24%", "▼9%", "▲17%", "▲10%"),
+        )
+        self.assertIn("■ 목표 / 달성", goal_html)
+        self.assertIn("1,538", goal_html)
+        self.assertIn("▼7%", goal_html)
+        self.assertIn("전년 매출", goal_html)
+        dash = qa.compute_dashboard_values(
+            self._sample_df(),
+            year=2026,
+            months=(1, 2, 3),
+            goals={"E6": 1500, "G6": 1400, "I6": 1500},
+        )
+        rows = qa._qa_build_perf_rows(dash)
+        labels = [r["label"] for r in rows]
+        self.assertEqual(labels[:5], ["L-O2", "L-N2", "L-AR", "L-CO2", "LPG"])
+        self.assertIn("Bulk 합계", labels)
+        self.assertIn("Gas Cylinder", labels)
+        perf_html = qa._qa_perf_table_html(2026, (1, 2, 3), rows)
+        self.assertIn("■ 실적 / 분석", perf_html)
+        self.assertIn("L-O2", perf_html)
+        self.assertIn("qa-bulk", perf_html)
+
+    def test_ui_has_quarter_buttons(self):
+        with open(qa.__file__, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('f"{i}분기"', src)
+        self.assertIn("qa_qbtn_", src)
+        self.assertIn("_qa_goal_table_html", src)
+        self.assertIn("_qa_perf_table_html", src)
+        self.assertIn("목표 입력", src)
+
     def test_app_wires_tab(self):
         with open("app.py", encoding="utf-8") as f:
             app = f.read()

@@ -1,6 +1,7 @@
 """분기 사업분석 탭 — 엑셀 레이아웃·수식은 그대로 두고, 라벨별 대시보드 값만 반영한다."""
 from __future__ import annotations
 
+import html
 import os
 import re
 import shutil
@@ -387,26 +388,6 @@ def compute_dashboard_values(
     return out
 
 
-def _qa_preview_table(
-    excel_vals: dict[str, Any],
-    dash_vals: dict[str, Any],
-    months: tuple[int, int, int],
-) -> pd.DataFrame:
-    rows = []
-    for f in _QA_FIELDS:
-        addr = f["cell"]
-        rows.append(
-            {
-                "셀": addr,
-                "라벨": _qa_field_label(str(f["label"]), months),
-                "엑셀 현재": excel_vals.get(addr),
-                "반영 값": dash_vals.get(addr),
-                "구분": "목표(직접입력)" if f["kind"] == "goal" else "대시보드",
-            }
-        )
-    return pd.DataFrame(rows)
-
-
 def _qa_num_or(raw: Any, default: float = 0.0) -> float:
     try:
         if raw is None or raw == "":
@@ -416,65 +397,292 @@ def _qa_num_or(raw: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _qa_fmt_int(v: Any) -> str:
+    try:
+        return f"{int(round(float(v))):,}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _qa_fmt_arrow(v: Any) -> str:
+    s = str(v or "-")
+    if s.startswith("▲"):
+        return f'<span style="color:#d32f2f;font-weight:700">{html.escape(s)}</span>'
+    if s.startswith("▼"):
+        return f'<span style="color:#1565c0;font-weight:700">{html.escape(s)}</span>'
+    return html.escape(s)
+
+
+def _qa_css() -> str:
+    return """
+<style>
+.qa-wrap { font-family: "Malgun Gothic","Apple SD Gothic Neo",sans-serif; margin: 0 0 1.2rem; }
+.qa-head { display:flex; justify-content:space-between; align-items:flex-end; margin: 0 0 .45rem; }
+.qa-title { font-size: 1.15rem; font-weight: 800; color:#222; }
+.qa-unit { font-size: .85rem; color:#555; }
+.qa-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:14px; }
+.qa-table th, .qa-table td { border:1px solid #333; padding:6px 8px; text-align:center; }
+.qa-table th { background:#5a5a5a; color:#fff; font-weight:700; }
+.qa-table .qa-left { text-align:left; font-weight:700; background:#fafafa; }
+.qa-table .qa-year { background:#eee; font-weight:800; vertical-align:middle; }
+.qa-table .qa-gray { background:#ececec; }
+.qa-table .qa-bulk { background:#fff59d; color:#c62828; font-weight:800; }
+.qa-table .qa-bulk td { background:#fff59d; color:#c62828; font-weight:800; }
+.qa-qbar { display:flex; gap:.4rem; flex-wrap:wrap; margin:.2rem 0 .8rem; }
+</style>
+"""
+
+
+def _qa_goal_table_html(
+    year: int,
+    months: tuple[int, int, int],
+    goals: tuple[int, int, int],
+    sales: tuple[int, int, int],
+    prior: tuple[int, int, int],
+    rates_goal: tuple[str, str, str, str],
+    rates_prior: tuple[str, str, str, str],
+) -> str:
+    m1, m2, m3 = months
+    gsum = sum(goals)
+    ssum = sum(sales)
+    psum = sum(prior)
+    rows = [
+        ("목표", goals + (gsum,), "", False),
+        ("실적", sales + (ssum,), "", False),
+        ("달성률", rates_goal[:3] + (rates_goal[3],), "arrow", False),
+        ("전년 매출", prior + (psum,), "", True),
+        ("전년 비교", rates_prior[:3] + (rates_prior[3],), "arrow", True),
+    ]
+    body = []
+    for i, (lab, vals, kind, gray) in enumerate(rows):
+        cls = "qa-gray" if gray else ""
+        tds = []
+        if i == 0:
+            tds.append(
+                f'<td class="qa-year" rowspan="3">{html.escape(str(year))}년</td>'
+            )
+        if i < 3:
+            tds.append(f'<td class="qa-left">{html.escape(lab)}</td>')
+        else:
+            tds.append(f'<td class="qa-left {cls}" colspan="2">{html.escape(lab)}</td>')
+        for v in vals:
+            if kind == "arrow":
+                cell = _qa_fmt_arrow(v)
+            else:
+                cell = html.escape(_qa_fmt_int(v))
+            tds.append(f'<td class="{cls}">{cell}</td>')
+        body.append("<tr>" + "".join(tds) + "</tr>")
+    return f"""
+<div class="qa-wrap">
+  <div class="qa-head">
+    <div class="qa-title">■ 목표 / 달성</div>
+    <div class="qa-unit">(단위 : 백만원, 부가세 별도)</div>
+  </div>
+  <table class="qa-table">
+    <thead>
+      <tr>
+        <th colspan="2">구 분</th>
+        <th>{m1}월</th><th>{m2}월</th><th>{m3}월</th><th>합계</th>
+      </tr>
+    </thead>
+    <tbody>{"".join(body)}</tbody>
+  </table>
+</div>
+"""
+
+
+def _qa_perf_table_html(
+    year: int,
+    months: tuple[int, int, int],
+    rows: list[dict[str, Any]],
+) -> str:
+    """rows: label, curr[3], prior[3], rates[3], bulk?"""
+    prior_y = year - 1
+    y2 = str(year)[2:]
+    yp = str(prior_y)[2:]
+    m1, m2, m3 = months
+    head = f"""
+      <tr>
+        <th rowspan="2">구분</th>
+        <th colspan="3">{m1}월</th>
+        <th colspan="3">{m2}월</th>
+        <th colspan="3">{m3}월</th>
+      </tr>
+      <tr>
+        <th>'{y2}년 {m1}월</th><th>'{yp}년 {m1}월</th><th>전년 대비</th>
+        <th>'{y2}년 {m2}월</th><th>'{yp}년 {m2}월</th><th>전년 대비</th>
+        <th>'{y2}년 {m3}월</th><th>'{yp}년 {m3}월</th><th>전년 대비</th>
+      </tr>
+    """
+    body = []
+    for r in rows:
+        bulk = bool(r.get("bulk"))
+        tr_cls = ' class="qa-bulk"' if bulk else ""
+        lab = html.escape(str(r.get("label") or ""))
+        cells = [f'<td class="qa-left">{lab}</td>']
+        curr = list(r.get("curr") or [0, 0, 0])
+        prior = list(r.get("prior") or [0, 0, 0])
+        rates = list(r.get("rates") or ["-", "-", "-"])
+        for i in range(3):
+            cells.append(f"<td>{html.escape(_qa_fmt_int(curr[i]))}</td>")
+            cells.append(f"<td>{html.escape(_qa_fmt_int(prior[i]))}</td>")
+            cells.append(f"<td>{_qa_fmt_arrow(rates[i])}</td>")
+        body.append(f"<tr{tr_cls}>" + "".join(cells) + "</tr>")
+    return f"""
+<div class="qa-wrap">
+  <div class="qa-head">
+    <div class="qa-title">■ 실적 / 분석</div>
+    <div class="qa-unit">(단위 : TON, BT)</div>
+  </div>
+  <table class="qa-table">
+    <thead>{head}</thead>
+    <tbody>{"".join(body)}</tbody>
+  </table>
+</div>
+"""
+
+
+def _qa_build_perf_rows(dash_vals: dict[str, Any]) -> list[dict[str, Any]]:
+    """셀 맵 → 실적/분석 표 행."""
+    item_rows = [
+        ("L-O2", 21, False),
+        ("L-N2", 22, False),
+        ("L-AR", 23, False),
+        ("L-CO2", 24, False),
+        ("LPG", 25, False),
+    ]
+    out: list[dict[str, Any]] = []
+    bulk_curr = [0, 0, 0]
+    bulk_prior = [0, 0, 0]
+    for lab, row, _ in item_rows:
+        # D/E/F = m1, G/H/I = m2, J/K/L = m3
+        curr = [
+            int(_qa_num_or(dash_vals.get(f"D{row}"), 0)),
+            int(_qa_num_or(dash_vals.get(f"G{row}"), 0)),
+            int(_qa_num_or(dash_vals.get(f"J{row}"), 0)),
+        ]
+        prior = [
+            int(_qa_num_or(dash_vals.get(f"E{row}"), 0)),
+            int(_qa_num_or(dash_vals.get(f"H{row}"), 0)),
+            int(_qa_num_or(dash_vals.get(f"K{row}"), 0)),
+        ]
+        rates = [
+            str(dash_vals.get(f"F{row}") or "-"),
+            str(dash_vals.get(f"I{row}") or "-"),
+            str(dash_vals.get(f"L{row}") or "-"),
+        ]
+        for i in range(3):
+            bulk_curr[i] += curr[i]
+            bulk_prior[i] += prior[i]
+        out.append({"label": lab, "curr": curr, "prior": prior, "rates": rates})
+    bulk_rates = [
+        _qa_arrow_pct(bulk_curr[i], bulk_prior[i]) for i in range(3)
+    ]
+    out.append(
+        {
+            "label": "Bulk 합계",
+            "curr": bulk_curr,
+            "prior": bulk_prior,
+            "rates": bulk_rates,
+            "bulk": True,
+        }
+    )
+    out.append(
+        {
+            "label": "Gas Cylinder",
+            "curr": [
+                int(_qa_num_or(dash_vals.get("D27"), 0)),
+                int(_qa_num_or(dash_vals.get("G27"), 0)),
+                int(_qa_num_or(dash_vals.get("J27"), 0)),
+            ],
+            "prior": [
+                int(_qa_num_or(dash_vals.get("E27"), 0)),
+                int(_qa_num_or(dash_vals.get("H27"), 0)),
+                int(_qa_num_or(dash_vals.get("K27"), 0)),
+            ],
+            "rates": [
+                str(dash_vals.get("F27") or "-"),
+                str(dash_vals.get("I27") or "-"),
+                str(dash_vals.get("L27") or "-"),
+            ],
+        }
+    )
+    return out
+
+
 def render_quarterly_analysis_tab(
     df: pd.DataFrame | None = None, latest_update_str: str = ""
 ) -> None:
-    """분기 사업분석 — 분기 스크롤 선택·목표 직접입력 후 엑셀 반영."""
+    """분기 사업분석 — 목표/달성·실적/분석 표 + 분기 버튼 + 목표 입력."""
     st.markdown(
         "<div class='sub-header dashboard-tab-panel-head'>📊 분기 사업분석</div>",
         unsafe_allow_html=True,
     )
-    st.caption(
-        "임시 탭 · 엑셀 레이아웃·수식은 그대로 두고, 라벨 값만 「반영」으로 씁니다. "
-        f"시트 `{QA_SHEET}` · 작업파일 `{QA_WORK}`"
-    )
-    if load_workbook is None:
-        st.error("openpyxl 이 없어 엑셀을 열 수 없습니다.")
-        return
+    st.markdown(_qa_css(), unsafe_allow_html=True)
+    if latest_update_str:
+        st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
-    try:
-        path = _qa_ensure_workfile()
-    except FileNotFoundError as err:
-        st.error(str(err))
-        st.info("템플릿 xlsx를 uploaded_cache/quarterly_analysis/template.xlsx 에 넣어 주세요.")
-        return
+    path = ""
+    excel_vals: dict[str, Any] = {}
+    if load_workbook is not None:
+        try:
+            path = _qa_ensure_workfile()
+            excel_vals = _qa_read_cells(path, [f["cell"] for f in _QA_FIELDS])
+        except Exception as err:
+            st.warning(f"엑셀 작업파일: {err}")
 
-    q_opts = _qa_quarter_options()
-    default_q = _qa_default_quarter_label()
-    if "qa_quarter" not in st.session_state:
-        st.session_state["qa_quarter"] = default_q if default_q in q_opts else q_opts[-5]
-    elif st.session_state.get("qa_quarter") not in q_opts:
-        st.session_state["qa_quarter"] = default_q if default_q in q_opts else q_opts[-5]
+    today = date.today()
+    default_lab = _qa_default_quarter_label()
+    dy, dq = _qa_parse_quarter_label(default_lab)
+    if "qa_year" not in st.session_state:
+        st.session_state["qa_year"] = dy
+    if "qa_q" not in st.session_state:
+        st.session_state["qa_q"] = dq
 
-    q_lab = st.selectbox(
-        "분기 선택 (스크롤)",
-        options=q_opts,
-        key="qa_quarter",
-        help="목록을 스크롤해 연도·분기를 고릅니다.",
-    )
-    year, quarter = _qa_parse_quarter_label(str(q_lab))
+    ycol, q1, q2, q3, q4, sp = st.columns([1.1, 0.85, 0.85, 0.85, 0.85, 2.2])
+    with ycol:
+        year = int(
+            st.number_input(
+                "연도",
+                min_value=2020,
+                max_value=2100,
+                step=1,
+                key="qa_year",
+            )
+        )
+    quarter = int(st.session_state.get("qa_q") or 1)
+    for i, col in enumerate((q1, q2, q3, q4), start=1):
+        with col:
+            st.write("")  # align with number_input
+            clicked = st.button(
+                f"{i}분기",
+                key=f"qa_qbtn_{i}",
+                type="primary" if quarter == i else "secondary",
+                width="stretch",
+            )
+            if clicked and quarter != i:
+                st.session_state["qa_q"] = i
+                st.rerun()
+    with sp:
+        st.write("")
+        st.caption("분기를 누르면 월 집계·표가 바뀝니다.")
+
+    quarter = int(st.session_state.get("qa_q") or 1)
     months = _QA_QUARTER_MONTHS.get(quarter, (1, 2, 3))
-    st.caption(f"선택: {year}년 {quarter}분기 · {months[0]}–{months[2]}월")
 
-    cells = [f["cell"] for f in _QA_FIELDS]
-    try:
-        excel_vals = _qa_read_cells(path, cells)
-    except Exception as err:
-        st.error(f"엑셀 읽기 오류: {err}")
-        return
-
-    st.markdown("##### 목표 (백만원, 직접 입력)")
-    g1, g2, g3 = st.columns(3)
-    # 분기 바뀔 때 엑셀 목표로 시드. 같은 분기에서는 사용자 입력을 유지.
     seed_key = f"qa_goal_seed_{year}_{quarter}"
     if st.session_state.get("qa_goal_seed_for") != seed_key:
         st.session_state["qa_goal_seed_for"] = seed_key
         st.session_state["qa_goal_m1"] = int(_qa_num_or(excel_vals.get("E6"), 0))
         st.session_state["qa_goal_m2"] = int(_qa_num_or(excel_vals.get("G6"), 0))
         st.session_state["qa_goal_m3"] = int(_qa_num_or(excel_vals.get("I6"), 0))
+
+    st.markdown("**목표 입력** (백만원 · 표의 「목표」행)")
+    # 구분 열 폭에 맞춰 월 입력
+    _pad, g1, g2, g3, gsum_c = st.columns([1.35, 1, 1, 1, 1])
     with g1:
         goal_m1 = st.number_input(
-            f"목표 · {months[0]}월",
+            f"{months[0]}월 목표",
             min_value=0,
             max_value=1_000_000,
             step=1,
@@ -482,7 +690,7 @@ def render_quarterly_analysis_tab(
         )
     with g2:
         goal_m2 = st.number_input(
-            f"목표 · {months[1]}월",
+            f"{months[1]}월 목표",
             min_value=0,
             max_value=1_000_000,
             step=1,
@@ -490,18 +698,54 @@ def render_quarterly_analysis_tab(
         )
     with g3:
         goal_m3 = st.number_input(
-            f"목표 · {months[2]}월",
+            f"{months[2]}월 목표",
             min_value=0,
             max_value=1_000_000,
             step=1,
             key="qa_goal_m3",
         )
-    user_goals = {"E6": int(goal_m1), "G6": int(goal_m2), "I6": int(goal_m3)}
+    with gsum_c:
+        st.metric("목표 합계", f"{int(goal_m1) + int(goal_m2) + int(goal_m3):,}")
 
+    user_goals = {"E6": int(goal_m1), "G6": int(goal_m2), "I6": int(goal_m3)}
     dash_vals = compute_dashboard_values(
         df, year=int(year), months=months, goals=user_goals
     )
-    preview = _qa_preview_table(excel_vals, dash_vals, months)
+
+    goals_t = (int(goal_m1), int(goal_m2), int(goal_m3))
+    sales_t = (
+        int(_qa_num_or(dash_vals.get("E7"), 0)),
+        int(_qa_num_or(dash_vals.get("G7"), 0)),
+        int(_qa_num_or(dash_vals.get("I7"), 0)),
+    )
+    prior_t = (
+        int(_qa_num_or(dash_vals.get("E9"), 0)),
+        int(_qa_num_or(dash_vals.get("G9"), 0)),
+        int(_qa_num_or(dash_vals.get("I9"), 0)),
+    )
+    rates_goal = (
+        str(dash_vals.get("E8") or "-"),
+        str(dash_vals.get("G8") or "-"),
+        str(dash_vals.get("I8") or "-"),
+        str(dash_vals.get("K8") or "-"),
+    )
+    rates_prior = (
+        str(dash_vals.get("E10") or "-"),
+        str(dash_vals.get("G10") or "-"),
+        str(dash_vals.get("I10") or "-"),
+        str(dash_vals.get("K10") or "-"),
+    )
+
+    st.markdown(
+        _qa_goal_table_html(
+            year, months, goals_t, sales_t, prior_t, rates_goal, rates_prior
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        _qa_perf_table_html(year, months, _qa_build_perf_rows(dash_vals)),
+        unsafe_allow_html=True,
+    )
 
     c1, c2, c3 = st.columns([1.2, 1.2, 2])
     with c1:
@@ -509,9 +753,7 @@ def render_quarterly_analysis_tab(
     with c2:
         reset = st.button("템플릿으로 초기화", key="qa_reset", width="stretch")
     with c3:
-        if latest_update_str:
-            st.caption(f"대시보드 기준 시각: {latest_update_str}")
-        if os.path.isfile(path):
+        if path and os.path.isfile(path):
             with open(path, "rb") as fh:
                 st.download_button(
                     "작업 엑셀 다운로드",
@@ -531,21 +773,23 @@ def render_quarterly_analysis_tab(
             st.error("템플릿 파일이 없습니다.")
 
     if apply:
-        to_write = {
-            addr: dash_vals[addr]
-            for addr in cells
-            if addr in dash_vals and dash_vals[addr] is not None
-        }
-        try:
-            n = _qa_write_cells(path, to_write)
-            st.success(f"엑셀에 {n}개 칸을 반영했습니다. (수식·레이아웃 유지 · 목표 포함)")
-            st.rerun()
-        except Exception as err:
-            st.error(f"반영 실패: {err}")
+        if not path:
+            st.error("엑셀 작업파일이 없어 반영할 수 없습니다.")
+        else:
+            cells = [f["cell"] for f in _QA_FIELDS]
+            to_write = {
+                addr: dash_vals[addr]
+                for addr in cells
+                if addr in dash_vals and dash_vals[addr] is not None
+            }
+            try:
+                n = _qa_write_cells(path, to_write)
+                st.success(f"엑셀에 {n}개 칸을 반영했습니다. (수식·레이아웃 유지)")
+                st.rerun()
+            except Exception as err:
+                st.error(f"반영 실패: {err}")
 
-    st.markdown("##### 라벨별 값")
-    st.dataframe(preview, width="stretch", hide_index=True)
     st.caption(
-        "목표는 위 입력값을 엑셀 E6/G6/I6에 반영합니다. "
-        "합계(K6/K7/K9)·Bulk 합계(SUM) 수식 칸은 쓰지 않습니다."
+        "실적·전년·수량은 대시보드 매출로 집계합니다. "
+        "L-O2~LPG 외 품목은 Gas Cylinder로 넣습니다. 합계 수식 칸은 엑셀에서 유지됩니다."
     )
