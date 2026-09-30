@@ -6170,13 +6170,14 @@ def _dash_memo(store_name, sig, factory, *, limit=24):
 
 
 # 상단 필터 rerun 시 무거운 탭 생략용 — 탭 인덱스 = st.tabs 순서
-# 로컬·Cloud 공통: 업무일지·시장조사·공문·방문할일 포함 13탭 (8502 분리 종료)
+# 로컬·Cloud 공통: 업무일지·시장조사·공문·방문할일·분기사업분석 포함 14탭 (8502 분리 종료)
 def _dash_cloud_merged_tabs() -> bool:
     """영업 대시보드에 업무일지·공문 포함(로컬 8501·Cloud 동일)."""
     return True
 
 
 _DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER, _DASH_TAB_VISIT = 9, 10, 11, 12
+_DASH_TAB_QUARTERLY = 13
 _DASH_TAB_MARKET_LOCAL = 9  # 하위 호환(미사용)
 # 예전 필터-rerun 생략 대상(카카오맵·설비·탱크·수익성). 지금은 모든 탭을 시작부터 펼침.
 _DASH_LIGHT_DEFER_TAB_IDX = frozenset({5, 6, 7, 8})
@@ -15096,7 +15097,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
     _dash_note_filter_change_for_heavy_tabs()
     _DASH_CLOUD_TABS = _dash_cloud_merged_tabs()
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14 = st.tabs(
         [
             "📌 영업 종합 요약",
             "🏢 거래처 분석",
@@ -15111,6 +15112,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             "🔎 시장조사",
             "📨 메일",
             "📅 방문·할일",
+            "📊 분기 사업분석",
         ]
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
@@ -15127,7 +15129,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.session_state["_ipad_sticky_ver"] = 47
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
-            min_tabs=13, heavy_indices=(9, 10, 11)
+            min_tabs=14, heavy_indices=(9, 10, 11)
         )
         st.session_state["_dash_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
         st.session_state["_dash_cloud_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
@@ -18626,6 +18628,31 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.info("다른 탭은 정상 이용 가능합니다.")
             except Exception as _vc_err:
                 st.error(f"방문·할일 탭 오류: {_vc_err}")
+                st.info("다른 탭은 정상 이용 가능합니다.")
+
+        with tab14:
+            try:
+                import quarterly_analysis_tab as _qa_tab
+
+                if not is_touch_ui() and not _is_streamlit_cloud():
+                    _qa_path = getattr(_qa_tab, "__file__", None) or ""
+                    _qa_mtime = os.path.getmtime(_qa_path) if _qa_path and os.path.exists(_qa_path) else 0
+                    if "_qa_mod_mtime" not in st.session_state:
+                        st.session_state["_qa_mod_mtime"] = _qa_mtime
+                    elif st.session_state.get("_qa_mod_mtime") != _qa_mtime:
+                        _qa_tab = importlib.reload(_qa_tab)
+                        st.session_state["_qa_mod_mtime"] = _qa_mtime
+                        sys.modules["quarterly_analysis_tab"] = _qa_tab
+                _qa_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                _qa_tab.render_quarterly_analysis_tab(_qa_df, latest_update_str=latest_update_str)
+            except ModuleNotFoundError:
+                st.error(
+                    "분기 사업분석 모듈(`quarterly_analysis_tab.py`)을 찾을 수 없습니다. "
+                    "배포 파일에 포함되었는지 확인해 주세요."
+                )
+                st.info("다른 탭은 정상 이용 가능합니다.")
+            except Exception as _qa_err:
+                st.error(f"분기 사업분석 탭 오류: {_qa_err}")
                 st.info("다른 탭은 정상 이용 가능합니다.")
 
     _dash_inject_filter_select_script_for_run()
