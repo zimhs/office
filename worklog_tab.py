@@ -4039,6 +4039,36 @@ def _on_wl_cal_day(iso: str) -> None:
     _open_worklog_saved_date(new)
 
 
+def _wl_cal_month_anchor() -> date:
+    """달력에 그려질 월의 1일. 없으면 선택일(또는 오늘) 기준."""
+    anchor = st.session_state.get("worklog_month")
+    if isinstance(anchor, date):
+        return date(anchor.year, anchor.month, 1)
+    sel = st.session_state.get("worklog_selected")
+    if isinstance(sel, date):
+        return date(sel.year, sel.month, 1)
+    today = date.today()
+    return date(today.year, today.month, 1)
+
+
+def _on_wl_cal_prev_month() -> None:
+    """◀ 콜백 — fragment 본문보다 먼저 달을 바꿔 같은 클릭 렌더에 반영한다."""
+    anchor = _wl_cal_month_anchor()
+    y, m = anchor.year, anchor.month - 1
+    if m < 1:
+        y, m = y - 1, 12
+    st.session_state["worklog_month"] = date(y, m, 1)
+
+
+def _on_wl_cal_next_month() -> None:
+    """▶ 콜백 — fragment 본문보다 먼저 달을 바꿔 같은 클릭 렌더에 반영한다."""
+    anchor = _wl_cal_month_anchor()
+    y, m = anchor.year, anchor.month + 1
+    if m > 12:
+        y, m = y + 1, 1
+    st.session_state["worklog_month"] = date(y, m, 1)
+
+
 def _run_pending_worklog_date_change() -> bool:
     """대기 중인 날짜 변경은 대상 날짜를 연다. 파일은 저장 버튼에서 기록한다."""
     pending = st.session_state.pop("wl_pending_date_change", None)
@@ -6132,24 +6162,31 @@ def _clear_wl_cal_nav_keys() -> None:
 
 def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
     _clear_wl_cal_nav_keys()
-    if "worklog_month" not in st.session_state: st.session_state["worklog_month"] = date(selected.year, selected.month, 1)
-    month_anchor: date = st.session_state["worklog_month"]
+    if "worklog_month" not in st.session_state:
+        st.session_state["worklog_month"] = date(selected.year, selected.month, 1)
+    # on_click 이 이미 달을 바꿨으면 그 값을 그대로 그린다 (클릭 후 _wl_rerun 불필요)
+    month_anchor: date = _wl_cal_month_anchor()
+    st.session_state["worklog_month"] = month_anchor
 
     st.markdown("""<style>div[data-testid="stPopoverBody"] { max-width: 340px !important; width: 340px !important; padding: 0.55rem 0.6rem 0.65rem !important; } div[data-testid="stPopoverBody"] div[class*="st-key-wl_day_"] button, div[data-testid="stPopoverBody"] div[class*="st-key-wl_prev_month"] button, div[data-testid="stPopoverBody"] div[class*="st-key-wl_next_month"] button, div[data-testid="stPopoverBody"] div[class*="st-key-wl_today"] button { min-height: 2.15rem !important; height: 2.15rem !important; padding: 0 0.2rem !important; font-size: 0.95rem !important; font-weight: 600 !important; line-height: 1.1 !important; border-radius: 7px !important; } div[data-testid="stPopoverBody"] [data-testid="stCaptionContainer"] { font-size: 0.74rem !important; margin-bottom: 0.3rem !important; } div[data-testid="stPopoverBody"] [data-testid="stHorizontalBlock"] { gap: 0.3rem !important; } div[data-testid="stPopoverBody"] [data-testid="column"] { padding: 0 !important; }</style>""", unsafe_allow_html=True)
 
     nav = st.columns([0.85, 0.85, 2.6, 1.2], gap="small")
     with nav[0]:
-        if st.button("◀", key="wl_prev_month", width="stretch"):
-            y, m = month_anchor.year, month_anchor.month - 1
-            if m < 1: y, m = y - 1, 12
-            st.session_state["worklog_month"] = date(y, m, 1)
-            _wl_rerun()
+        # ◀▶ 는 일자 버튼과 같이 on_click 으로 달을 먼저 바꾼다.
+        # if st.button + _wl_rerun 은 fragment debounce에 막혀 로컬에서 월이 안 바뀌었다.
+        st.button(
+            "◀",
+            key="wl_prev_month",
+            width="stretch",
+            on_click=_on_wl_cal_prev_month,
+        )
     with nav[1]:
-        if st.button("▶", key="wl_next_month", width="stretch"):
-            y, m = month_anchor.year, month_anchor.month + 1
-            if m > 12: y, m = y + 1, 1
-            st.session_state["worklog_month"] = date(y, m, 1)
-            _wl_rerun()
+        st.button(
+            "▶",
+            key="wl_next_month",
+            width="stretch",
+            on_click=_on_wl_cal_next_month,
+        )
     with nav[2]:
         st.markdown(f"<div style='text-align:center;font-weight:800;font-size:16px;padding:3px 0;line-height:1.2;color:#0F172A;'>{month_anchor.year}년 {month_anchor.month}월</div>", unsafe_allow_html=True)
     with nav[3]:
