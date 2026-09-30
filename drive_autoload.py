@@ -376,12 +376,16 @@ def _source_freshness_key(path: str, *, kind: str, name: str) -> Tuple[int, int,
     """같은 이름 파일이 여러 경로에 있으면 내용 세대(기간·종료일·크기)로 고른다.
 
     mtime 은 Drive 복사가 덮어써서 최신처럼 보이므로 쓰지 않는다.
+    채권은 같은 달 재업로드 시 금액·크기가 줄 수 있으므로 last_month 만 쓴다.
+    (금액 합으로 고르면 Drive 옛 큰 파일이 로컬 수정본을 덮는다.)
     """
     if not path or not os.path.isfile(path):
         return (0, 0, 0)
     if generation_from_file is not None:
         try:
             gen = generation_from_file(path, kind=kind, name=name)
+            if kind == "debt":
+                return (int(gen[0] or 0), 0, 0)
             return (int(gen[0] or 0), int(gen[1] or 0), int(gen[2] or 0))
         except Exception:
             pass
@@ -401,6 +405,14 @@ def _prefer_newer_source(
     if not current or not os.path.isfile(current):
         return candidate
     if not candidate or not os.path.isfile(candidate):
+        return current
+    # 채권: 더 늦은 달만 교체. 같은 달이면 먼저 잡은 경로(로컬 uproad) 유지.
+    # Drive 옛 파일이 금액 합만 크다고 이기면 업로드·수정본이 이전값으로 되돌아간다.
+    if kind == "debt":
+        cur_m = _source_freshness_key(current, kind=kind, name=name)[0]
+        cand_m = _source_freshness_key(candidate, kind=kind, name=name)[0]
+        if cand_m > cur_m:
+            return candidate
         return current
     if _source_freshness_key(candidate, kind=kind, name=name) > _source_freshness_key(
         current, kind=kind, name=name
@@ -502,10 +514,43 @@ def load_sidebar_slot_from_connected_path(
             "error": f"경로에 {src_name} 없음",
         }
     dst = os.path.join(cache_dir, rel)
+    # 사이드바 업로드 직후 스탬프된 채권은 Drive/옛 경로 불러오기로 덮지 않음
+    if (
+        rel == DEBT_CACHE_REL
+        and src
+        and local_debt_upload_should_keep(cache_dir, drive_src=src)
+    ):
+        try:
+            local_sha = _file_sha256(dst)
+            src_sha = _file_sha256(src)
+        except Exception:
+            local_sha, src_sha = "", "x"
+        if local_sha and src_sha and local_sha != src_sha:
+            return {
+                "ok": True,
+                "copied": [],
+                "blocked": 1,
+                "source": src_root,
+                "slot": slot,
+                "note": (
+                    f"방금 업로드한 채권을 유지했습니다. "
+                    f"경로 {src_name} 이 다르거나 예전본이라 덮지 않았습니다."
+                ),
+            }
     wrote = False
     reason = ""
+    # 로컬 uproad 불러오기는 사용자가 명시한 적용 — 같은 달 수정본(금액↓)도 강제 반영
+    _local_up = resolve_local_uproad_dir()
+    _force_local = bool(
+        kind in ("debt", "sales")
+        and _local_up
+        and src
+        and os.path.abspath(src).startswith(os.path.abspath(_local_up) + os.sep)
+    )
     if kind in ("debt", "sales") and copy_file_if_newer is not None:
-        wrote, reason = copy_file_if_newer(src, dst, cache_dir, kind=kind, name=src_name)
+        wrote, reason = copy_file_if_newer(
+            src, dst, cache_dir, kind=kind, name=src_name, force=_force_local
+        )
         if not wrote and reason == "same":
             wrote = True
     else:

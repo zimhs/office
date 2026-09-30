@@ -110,6 +110,40 @@ class SidebarSlotLoadTest(unittest.TestCase):
                 b,
             )
 
+    def test_debt_prefer_keeps_local_over_larger_drive_same_month(self):
+        """같은 달이면 금액 합이 큰 Drive 옛본이 로컬 수정본을 덮지 않아야 한다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            local = os.path.join(tmp, "uproad")
+            drive = os.path.join(tmp, "drive")
+            cache = os.path.join(tmp, "cache")
+            os.makedirs(local)
+            os.makedirs(drive)
+
+            def _debt(amount: int) -> bytes:
+                months = ",".join(f"{i}월" for i in range(1, 13))
+                vals = ",".join(str(amount if i == 9 else 0) for i in range(1, 13))
+                return f"거래처,구분,{months}\nA,잔액,{vals}\n".encode("utf-8-sig")
+
+            revised = _debt(80)  # 로컬 수정(금액↓)
+            stale = _debt(999_999_999)  # Drive 이전값(금액↑)
+            with open(os.path.join(local, "채권.csv"), "wb") as f:
+                f.write(revised)
+            with open(os.path.join(drive, "채권.csv"), "wb") as f:
+                f.write(stale)
+            lp = os.path.join(local, "채권.csv")
+            dp = os.path.join(drive, "채권.csv")
+            self.assertEqual(
+                _prefer_newer_source(lp, dp, kind="debt", name="채권.csv"),
+                lp,
+            )
+            with patch(
+                "drive_autoload._connected_data_roots", return_value=[local, drive]
+            ):
+                res = load_sidebar_slot_from_connected_path("debt", cache)
+            self.assertTrue(res.get("ok"), res)
+            with open(os.path.join(cache, "debt.csv"), "rb") as f:
+                self.assertEqual(f.read(), revised)
+
     def test_missing_file_errors(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, "uproad")

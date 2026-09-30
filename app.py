@@ -5624,6 +5624,17 @@ def persist_debt_bytes(debt_bytes, cache_path: str, folder_csv: str = "채권.cs
             f.write(debt_bytes)
     except Exception:
         pass
+    # 로컬 uproad/채권.csv 도 같이 맞춤 — 「불러오기」가 Drive 옛본으로 되돌리지 않게
+    try:
+        from drive_autoload import resolve_local_uproad_dir as _debt_uproad_dir
+
+        _up = _debt_uproad_dir()
+        if _up and os.path.isdir(_up):
+            _up_debt = os.path.join(_up, "채권.csv")
+            with open(_up_debt, "wb") as f:
+                f.write(debt_bytes)
+    except Exception:
+        pass
     sha = debt_bytes_fingerprint(debt_bytes)
     if write_debt_upload_stamp is not None:
         try:
