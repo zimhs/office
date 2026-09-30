@@ -9157,26 +9157,26 @@ def compute_debt_status_by_client(disp_debt, payment_terms_map=None):
         out[client] = format_debt_status_label(overdue, od_m)
     return out
 def _debt_label_cell_style(client, gubun, color_map, compact=False):
-    """채권표 거래처/구분 — 가독성 우선(14px·선명 대비)."""
-    pad = "5px 5px" if compact else "7px 9px"
+    """채권표 거래처/구분 — 거래처분석 표와 같은 글꼴·13px·보통 굵기."""
+    pad = "5px 5px" if compact else "6px 8px"
     base = (
         f"padding:{pad};border-bottom:1px solid #CBD5E1;white-space:nowrap;"
-        "font-size:14px;font-weight:500;line-height:1.45;vertical-align:middle;"
-        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        "overflow:hidden;text-overflow:ellipsis;color:#0F172A;"
+        "font-size:13px;font-weight:400;line-height:1.35;vertical-align:middle;"
+        "font-family:inherit;"
+        "overflow:hidden;text-overflow:ellipsis;color:#31333F;"
     )
     if client == "📌 [전체 합계]":
         return base + "background-color:#E2E8F0;font-weight:700;text-align:center;"
     bg = color_map.get(client, "#FFFFFF")
     return base + f"background-color:{bg};text-align:center;"
 def _debt_num_cell_font(compact=False):
-    """채권표 숫자 — 거래처명보다 한 단계 작게, 대비 강화."""
-    pad = "5px 5px" if compact else "7px 9px"
+    """채권표 숫자 — 거래처분석 표와 같은 글꼴·13px·보통 굵기."""
+    pad = "5px 5px" if compact else "6px 8px"
     return (
         f"padding:{pad};border-bottom:1px solid #CBD5E1;white-space:nowrap;"
-        "font-size:13px;font-weight:500;line-height:1.45;vertical-align:middle;text-align:center;"
-        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
-        "font-variant-numeric:tabular-nums;color:#0F172A;"
+        "font-size:13px;font-weight:400;line-height:1.35;vertical-align:middle;text-align:center;"
+        "font-family:inherit;"
+        "font-variant-numeric:tabular-nums;color:#31333F;"
     )
 PAYMENT_TERMS_PATH = os.path.join(CACHE_DIR, "payment_terms.csv")
 PAYMENT_TERMS_FALLBACK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "payment_terms.csv")
@@ -9356,12 +9356,15 @@ def render_interactive_html_table(
     <!DOCTYPE html>
     <html><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap">
     <style>
         html, body {{
             margin: 0;
             height: 100%;
             overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-family: "Source Sans 3", "Source Sans Pro", "Segoe UI", Roboto,
+                "Helvetica Neue", Arial, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+            -webkit-font-smoothing: antialiased;
             font-size: 13px;
             font-weight: 400;
             color: #31333F;
@@ -9472,7 +9475,8 @@ def render_interactive_html_table(
             background: #fff;
         }}
         table {{ width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; }}
-        th, td {{ font-weight: 400; }}
+        th, td {{ font-weight: 400; border-right: 1px solid #CBD5E1; }}
+        th:last-child, td:last-child {{ border-right: none; }}
         .dash-cell-selectable {{ cursor: cell; user-select: none; -webkit-user-select: none; }}
         .dash-cell-selectable.selected {{
             outline: 2px solid #2563EB;
