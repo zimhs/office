@@ -71,5 +71,52 @@ class ResolveClientAddressTest(unittest.TestCase):
         )
 
 
+class MergeAddressSourcesTest(unittest.TestCase):
+    def test_merge_fills_missing_from_second_source(self):
+        a = {"가스코아산(몰드스틸)": "화성시"}
+        b = {
+            "가스코아산(대창)": "경기도 시흥시 공단1대로 391",
+            "가스코아산(몰드스틸)": "옛주소",
+        }
+        m = merge_address_dicts(a, b)
+        self.assertEqual(m["가스코아산(몰드스틸)"], "화성시")  # 앞 출처 우선
+        self.assertEqual(m["가스코아산(대창)"], "경기도 시흥시 공단1대로 391")
+
+    def test_load_merged_reads_uproad_gap(self):
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = os.path.join(tmp, "cache")
+            uproad = os.path.join(tmp, "uproad")
+            os.makedirs(cache)
+            os.makedirs(uproad)
+            # 캐시에는 대창 없음
+            cache_csv = (
+                "거래처,주소\n가스코아산(몰드스틸),화성시\n"
+            ).encode("utf-8-sig")
+            with open(os.path.join(cache, "address.csv"), "wb") as f:
+                f.write(cache_csv)
+            with open(os.path.join(uproad, "주소.csv"), "wb") as f:
+                f.write(_simple_csv())
+            with patch(
+                "drive_autoload.resolve_local_uproad_dir", return_value=uproad
+            ):
+                d = load_merged_address_dict(cache_csv, cache)
+            self.assertEqual(
+                resolve_client_address("가스코아산(대창)", d),
+                "경기도 시흥시 공단1대로 391",
+            )
+
+    def test_tab2_hint_and_clear_helpers_exist(self):
+        with open(os.path.join(os.path.dirname(__file__), "app.py"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("def clear_address_runtime_caches", src)
+        self.assertIn("def load_merged_address_dict", src)
+        self.assertIn('slot == "address"', src)
+        self.assertIn("주소록", src)
+        self.assertIn("사이드바 주소.csv를 업로드하거나", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -5048,15 +5048,85 @@ def resolve_client_address(client_name, addr_dict):
     if not client_name or client_name == "전체 거래처" or not addr_dict:
         return None
     name = unicodedata.normalize("NFC", str(client_name)).strip()
+    # 보이지 않는 제어문자 제거 (복붙·엑셀 잔여)
+    name = "".join(
+        ch for ch in name if unicodedata.category(ch) not in ("Cf", "Cc")
+    ).strip()
     if name in addr_dict:
         return addr_dict[name]
     n = _normalize_client_name_for_address(name)
     if not n:
         return None
+    # 정규화 키 인덱스 (한 번만)
     for k, v in addr_dict.items():
         if _normalize_client_name_for_address(k) == n:
             return v
+    # 끝부분 괄호 별칭: 매출명 가스코아산(대창) ↔ 주소록 키에 대창만 있는 경우 등은 제외.
+    # 반대로 주소록이 "가스코아산(대창) " 공백·전각만 다른 경우는 위에서 처리됨.
     return None
+
+
+def clear_address_runtime_caches() -> None:
+    """주소록 파싱 캐시를 버려 새로 올린/불러온 CSV가 바로 반영되게 한다."""
+    try:
+        load_address_file.clear()
+    except Exception:
+        pass
+
+
+def merge_address_dicts(*dicts) -> dict:
+    """여러 주소록을 합친다. 앞에 있는 출처가 우선, 비어 있는 키만 뒤로 채운다."""
+    out = {}
+    for d in dicts:
+        if not d:
+            continue
+        for k, v in d.items():
+            key = unicodedata.normalize("NFC", str(k or "")).strip()
+            val = str(v or "").strip()
+            if not key or not val or val.lower() in ("nan", "none"):
+                continue
+            if key not in out:
+                out[key] = val
+    return out
+
+
+def _read_address_bytes_from_path(path: str):
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        return raw or None
+    except OSError:
+        return None
+
+
+def load_merged_address_dict(primary_bytes, cache_dir: str = CACHE_DIR) -> dict:
+    """캐시 주소록 + 로컬 uproad/주소.csv + 폴더 주소.csv 를 합쳐 누락을 채운다.
+
+    캐시에 가스코아산(대창)이 없어도 uproad 원본에 있으면 거래처분석에 보이게 한다.
+    """
+    parts = []
+    if primary_bytes:
+        parts.append(load_address_file(primary_bytes))
+    try:
+        from drive_autoload import resolve_local_uproad_dir as _addr_uproad
+
+        up = _addr_uproad()
+        if up:
+            up_raw = _read_address_bytes_from_path(os.path.join(up, "주소.csv"))
+            if up_raw and up_raw != primary_bytes:
+                parts.append(load_address_file(up_raw))
+    except Exception:
+        pass
+    folder_raw = _read_address_bytes_from_path("주소.csv")
+    if folder_raw and folder_raw != primary_bytes:
+        parts.append(load_address_file(folder_raw))
+    if cache_dir:
+        cache_raw = _read_address_bytes_from_path(os.path.join(cache_dir, "address.csv"))
+        if cache_raw and cache_raw != primary_bytes:
+            parts.append(load_address_file(cache_raw))
+    return merge_address_dicts(*parts)
 
 
 _TAB2_EXTRA_SITES_FILE = os.path.join(CACHE_DIR, "client_extra_sites.json")
@@ -13993,6 +14063,8 @@ def _sidebar_run_connected_load(slot: str) -> None:
         st.session_state["_dash_sales_cache_cleared"] = True
         for _pk in ("_dash_base_pivot_store", "_dash_pivot_store"):
             st.session_state.pop(_pk, None)
+    if slot == "address":
+        clear_address_runtime_caches()
     st.session_state["_sb_slot_msg"] = res
     st.rerun()
 
@@ -14246,6 +14318,21 @@ os.makedirs(sales_cache_dir, exist_ok=True)
 if address_file_up is not None:
     addr_bytes = address_file_up.getvalue()
     with open(addr_cache_path, "wb") as f: f.write(addr_bytes)
+    # 같은 세션에서 옛 파싱 결과가 남지 않게 한다
+    _addr_sha = hashlib.sha256(addr_bytes).hexdigest() if addr_bytes else ""
+    if _addr_sha and _addr_sha != st.session_state.get("_addr_applied_sha"):
+        clear_address_runtime_caches()
+        st.session_state["_addr_applied_sha"] = _addr_sha
+        # uproad 에도 맞춰 두면 「불러오기」와 내용이 같다
+        try:
+            from drive_autoload import resolve_local_uproad_dir as _addr_up_dir
+
+            _up = _addr_up_dir()
+            if _up and os.path.isdir(_up):
+                with open(os.path.join(_up, "주소.csv"), "wb") as f:
+                    f.write(addr_bytes)
+        except Exception:
+            pass
 elif os.path.exists(addr_cache_path):
     with open(addr_cache_path, "rb") as f: addr_bytes = f.read()
 elif os.path.exists("주소.csv"):
@@ -14653,7 +14740,16 @@ if st.sidebar.button(
     if _is_streamlit_cloud():
         st.session_state["_drive_restore_after_clear"] = True
     st.rerun()
-addr_dict = load_address_file(addr_bytes) if addr_bytes else {}
+addr_dict = load_merged_address_dict(addr_bytes, CACHE_DIR)
+if addr_dict:
+    st.sidebar.caption(f"주소록 로드됨: {len(addr_dict):,}곳")
+elif addr_bytes:
+    st.sidebar.warning(
+        "주소록 파일을 읽었지만 주소를 찾지 못했습니다. "
+        "CSV에 '거래처'(또는 사업체명)·'주소' 열이 있는지 확인하세요."
+    )
+else:
+    st.sidebar.caption("주소록 없음 · 사이드바에서 주소.csv 업로드/불러오기")
 industry_dict = load_industry_file(ind_bytes) if ind_bytes else {}
 industry_staff_map = load_industry_staff_map(ind_bytes) if ind_bytes else {}
 debt_df = load_debt_file(debt_bytes) if debt_bytes else pd.DataFrame()
@@ -15799,6 +15895,16 @@ def _dash_filter_and_tabs_fragment() -> None:
                         f"📍 {html.escape(client_addr)}</div>",
                         unsafe_allow_html=True,
                     )
+                    if (
+                        client_addr == "등록된 주소 정보가 없습니다."
+                        and selected_client
+                        and selected_client != "전체 거래처"
+                    ):
+                        st.caption(
+                            f"주소록 {len(addr_dict):,}곳 로드 · "
+                            f"「{selected_client}」 항목 없음. "
+                            "사이드바 주소.csv를 업로드하거나 「불러오기」 하세요."
+                        )
                     _render_tab2_extra_addr_box(selected_client)
 
             # 목록에 없는 거래처도 기업정보만 조회 가능 (상단 필터·매출 집계는 변경 없음)
