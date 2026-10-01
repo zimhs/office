@@ -16,6 +16,7 @@ class SidebarCollapseFullwidthTest(unittest.TestCase):
         self.assertIn("dashboard-sidebar-collapsed", self.src)
         self.assertIn("max-width: 0 !important", self.src)
         self.assertIn("forceLocalSidebarLayout", self.src)
+        self.assertIn("grid-template-columns: 0 minmax(0, 1fr)", self.src)
 
     def test_main_fullwidth_when_sidebar_collapsed(self):
         self.assertIn("stExpandSidebarButton", self.src)
@@ -24,22 +25,26 @@ class SidebarCollapseFullwidthTest(unittest.TestCase):
     def test_sticky_script_uses_fullwidth_when_closed(self):
         self.assertIn("sidebarLooksOpen()", self.src)
         self.assertIn("sidebarExpandBtnVisible", self.src)
-        self.assertIn("STICKY_SCRIPT_VER_MAC = 44", self.src)
+        self.assertIn("STICKY_SCRIPT_VER_MAC = 45", self.src)
         self.assertIn("__dashboardStickyGeoFrozen = null", self.src)
 
-    def test_expand_button_not_killed_by_false_collapse(self):
-        """열린 사이드바를 접힌 것으로 오인하면 >> 가 DOM에서 사라진다."""
+    def test_expand_button_kept_and_width_preserved(self):
+        """>> 는 유지하고, 열린 폭은 removeProperty로 지우지 않고 저장/복구."""
+        self.assertIn("saveSidebarInlineSize", self.src)
+        self.assertIn("restoreSidebarInlineSize", self.src)
+        self.assertIn("data-dash-sb-saved", self.src)
         self.assertIn("collapsedSure", self.src)
         self.assertIn("openSure", self.src)
-        self.assertIn("clearForcedSidebarStyles", self.src)
-        # 사이드바 자식을 display:none 하면 열기 버튼/내부 컨트롤이 깨질 수 있음
-        self.assertNotIn(
-            'html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stSidebar"] > div',
-            self.src,
-        )
+        # >> 가 보이면 aria보다 접힘으로 본다
+        self.assertIn("if (sidebarExpandBtnVisible()) return false;", self.src)
         self.assertIn(
             '[data-testid="stExpandSidebarButton"] {\n'
             "                visibility: visible !important;",
+            self.src,
+        )
+        # 접힘 시 사이드바 자식 숨김(>> 는 헤더에 있어 안전) + grid 잔여폭 제거
+        self.assertIn(
+            'html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stSidebar"] > div',
             self.src,
         )
 
