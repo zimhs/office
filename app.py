@@ -15125,7 +15125,9 @@ if isinstance(_drive_out, dict):
         if _code_push.get("ok") and _code_push.get("committed"):
             st.sidebar.caption("코드도 Cloud에 올렸습니다.")
         elif _code_push.get("ok"):
-            st.sidebar.caption("코드는 이미 Cloud와 같습니다.")
+            st.sidebar.caption(
+                str(_code_push.get("note") or "코드는 이미 Cloud와 같습니다.")
+            )
         elif _code_push.get("error"):
             st.sidebar.warning(f"코드 올리기 실패: {_code_push.get('error')}")
 
