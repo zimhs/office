@@ -4956,20 +4956,21 @@ def create_item_share_hbar(share_series, title_text="당해 년평균 품목별 
 # ==========================================
 # 3. 데이터 로딩 & 메모리 캐싱 (최적화) - Error 무시(on_bad_lines) 적용
 # ==========================================
-def _pick_address_book_columns(columns):
-    """주소록 CSV에서 (거래처명열, 주소열)을 고른다.
+def _compact_addr_header(label: str) -> str:
+    return str(label or "").strip().replace(" ", "").replace("\n", "")
 
-    ERP 내보내기는 앞열이 사업체코드·사업체명이라 0·1열만 쓰면
-    코드→상호로 잘못 매핑되어 가스코아산(대창) 주소가 안 나온다.
+
+def _pick_address_book_columns(columns):
+    """주소록/사업체원본에서 (거래처명열, 주소열)을 고른다.
+
+    ERP·엑셀 원본은 앞열이 코드이거나 제목행이 있어 0·1열만 쓰면
+    가스코아산(대창) 주소가 빠진다. 사업체명+주소 열을 이름으로 고른다.
     """
     cols = list(columns)
     if len(cols) < 2:
         return None, None
 
-    def _compact(label: str) -> str:
-        return str(label or "").strip().replace(" ", "").replace("\n", "")
-
-    labels = [(_compact(c), c) for c in cols]
+    labels = [(_compact_addr_header(c), c) for c in cols]
 
     def _find(cands: tuple[str, ...]):
         # 정확 일치만. startswith("거래처")는 "거래처구분"을 잡아 ERP 매핑이 깨진다.
@@ -4981,7 +4982,7 @@ def _pick_address_book_columns(columns):
 
     # 거래처/사업체명 우선. 상호는 ERP에서 법인명((주)대창)이라 매출 거래처명과 안 맞음
     k_col = _find(("거래처명", "거래처", "사업체명", "업체명", "고객명"))
-    v_col = _find(("사업장주소", "도로명주소", "상세주소", "주소"))
+    v_col = _find(("사업장주소", "도로명주소", "상세주소", "주소", "소재지"))
     if k_col is not None and v_col is not None and k_col != v_col:
         return k_col, v_col
     # 단순 2열 주소록(거래처,주소,…)
@@ -5002,45 +5003,189 @@ def _normalize_client_name_for_address(s) -> str:
     return "".join(t.split())
 
 
+def _is_blank_address_value(val) -> bool:
+    s = str(val or "").strip().lower()
+    if not s or s in ("nan", "none", "nat", "-", "--", "- -"):
+        return True
+    if re.fullmatch(r"[-\s]+", s):
+        return True
+    return False
+
+
+_ADDR_NAME_KEYS = frozenset({"거래처명", "거래처", "사업체명", "업체명", "고객명"})
+_ADDR_ADDR_KEYS = frozenset({"사업장주소", "도로명주소", "상세주소", "주소", "소재지"})
+
+
+def _find_address_header_row(df_no_header: pd.DataFrame, max_scan: int = 20) -> int | None:
+    """제목행이 있는 엑셀/CSV에서 사업체명·주소 헤더 행을 찾는다."""
+    if df_no_header is None or df_no_header.empty:
+        return None
+    limit = min(int(max_scan), len(df_no_header))
+    for i in range(limit):
+        cells = {
+            _compact_addr_header(x)
+            for x in df_no_header.iloc[i].tolist()
+            if str(x).strip() and str(x).strip().lower() != "nan"
+        }
+        if cells & _ADDR_NAME_KEYS and cells & _ADDR_ADDR_KEYS:
+            return i
+    return None
+
+
+def _find_address_header_in_text(text: str, max_scan: int = 30) -> int | None:
+    """CSV 텍스트에서 헤더 행을 찾는다.
+
+    제목행(열 1개) 뒤에 본문 헤더가 오면 pandas on_bad_lines=skip 이
+    헤더·데이터 행을 버려 가스코아산(대창) 등이 통째로 빠진다.
+    줄 단위 csv 스캔으로 헤더 위치를 먼저 잡는다.
+    """
+    import csv as _csv
+
+    if not text:
+        return None
+    lines = text.splitlines()
+    limit = min(int(max_scan), len(lines))
+    for i in range(limit):
+        line = lines[i]
+        if not str(line).strip():
+            continue
+        try:
+            row = next(_csv.reader([line]))
+        except Exception:
+            continue
+        cells = {
+            _compact_addr_header(x)
+            for x in row
+            if str(x).strip() and str(x).strip().lower() != "nan"
+        }
+        if cells & _ADDR_NAME_KEYS and cells & _ADDR_ADDR_KEYS:
+            return i
+    return None
+
+
+def _decode_address_csv_text(raw: bytes) -> tuple[str | None, str | None]:
+    """주소 CSV 바이트 → (text, encoding). UTF-16·cp949·utf-8 순."""
+    if not raw:
+        return None, None
+    # UTF-16 BOM
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        for enc in ("utf-16", "utf-16-le", "utf-16-be"):
+            try:
+                return raw.decode(enc), enc
+            except UnicodeDecodeError:
+                continue
+    # UTF-8 BOM
+    if raw[:3] == b"\xef\xbb\xbf":
+        try:
+            return raw.decode("utf-8-sig"), "utf-8-sig"
+        except UnicodeDecodeError:
+            pass
+    for enc in ("utf-8-sig", "cp949", "euc-kr", "utf-8"):
+        try:
+            return raw.decode(enc), enc
+        except UnicodeDecodeError:
+            continue
+    return None, None
+
+
+def _dataframe_from_address_bytes(address_bytes) -> pd.DataFrame:
+    """CSV 또는 엑셀 사업체원본 → DataFrame. 헤더 행을 자동 탐색한다."""
+    raw = bytes(address_bytes or b"")
+    if not raw:
+        return pd.DataFrame()
+
+    # xlsx / xlsm (zip)
+    if raw[:2] == b"PK":
+        try:
+            probe = pd.read_excel(io.BytesIO(raw), header=None, dtype=object)
+        except Exception:
+            return pd.DataFrame()
+        hdr = _find_address_header_row(probe)
+        if hdr is None:
+            try:
+                return pd.read_excel(io.BytesIO(raw), dtype=object)
+            except Exception:
+                return pd.DataFrame()
+        try:
+            return pd.read_excel(io.BytesIO(raw), header=hdr, dtype=object)
+        except Exception:
+            return pd.DataFrame()
+
+    # 구형 xls
+    if raw[:8] == b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1":
+        try:
+            probe = pd.read_excel(io.BytesIO(raw), header=None, dtype=object, engine="xlrd")
+            hdr = _find_address_header_row(probe)
+            if hdr is None:
+                return pd.read_excel(io.BytesIO(raw), dtype=object, engine="xlrd")
+            return pd.read_excel(io.BytesIO(raw), header=hdr, dtype=object, engine="xlrd")
+        except Exception:
+            return pd.DataFrame()
+
+    # CSV — 제목행이 있어도 헤더를 줄 단위로 먼저 찾고, 그 행부터 읽는다.
+    # pandas 기본 skip_blank_lines=True 면 header=N 인덱스가 빈 줄만큼 밀려
+    # 데이터 행이 헤더로 잡히는 문제가 있다 → 헤더 줄부터 잘라 header=0 으로 읽는다.
+    text, enc = _decode_address_csv_text(raw)
+    if text is None or enc is None:
+        return pd.DataFrame()
+    hdr = _find_address_header_in_text(text)
+    try:
+        if hdr is None:
+            return pd.read_csv(
+                io.BytesIO(raw),
+                encoding=enc,
+                on_bad_lines="skip",
+                engine="python",
+                dtype=object,
+            )
+        sliced = "\n".join(text.splitlines()[hdr:])
+        return pd.read_csv(
+            io.StringIO(sliced),
+            on_bad_lines="skip",
+            engine="python",
+            dtype=object,
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def _address_dict_from_dataframe(temp_addr: pd.DataFrame) -> dict:
+    if temp_addr is None or temp_addr.empty or len(temp_addr.columns) < 2:
+        return {}
+    k_col, v_col = _pick_address_book_columns(temp_addr.columns)
+    if k_col is None or v_col is None:
+        return {}
+    work = temp_addr.dropna(subset=[k_col]).copy()
+    keys = (
+        work[k_col]
+        .astype(str)
+        .map(lambda x: unicodedata.normalize("NFC", x).strip())
+    )
+    vals = work[v_col].astype(str).str.strip()
+    out = {}
+    for k, v in zip(keys, vals):
+        if not k or k.lower() in ("nan", "none"):
+            continue
+        if _is_blank_address_value(v):
+            continue
+        out.setdefault(k, v)
+    return out
+
+
 @st.cache_data(show_spinner="주소록을 읽어오는 중입니다...")
 def load_address_file(address_bytes):
+    """거래처 주소록 CSV·엑셀(사업체명/주소) 로드.
+
+    원본 엑셀에 가스코아산(대창)+주소가 있어도 CSV만 받거나 제목행을
+    헤더로 못 보면 불러오지 못했다.
+    """
     if not address_bytes:
         return {}
     try:
-        for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
-            try:
-                temp_addr = pd.read_csv(
-                    io.BytesIO(address_bytes),
-                    encoding=enc,
-                    on_bad_lines="skip",
-                    engine="python",
-                )
-                if len(temp_addr.columns) >= 2:
-                    k_col, v_col = _pick_address_book_columns(temp_addr.columns)
-                    if k_col is None or v_col is None:
-                        break
-                    temp_addr = temp_addr.dropna(subset=[k_col])
-                    keys = (
-                        temp_addr[k_col]
-                        .astype(str)
-                        .map(lambda x: unicodedata.normalize("NFC", x).strip())
-                    )
-                    vals = temp_addr[v_col].astype(str).str.strip()
-                    # 빈/NaN 주소는 제외
-                    ok = vals.ne("") & vals.str.lower().ne("nan") & vals.str.lower().ne("none")
-                    out = {}
-                    for k, v in zip(keys[ok], vals[ok]):
-                        if not k or k.lower() in ("nan", "none"):
-                            continue
-                        # 같은 이름 중복 시 주소 있는 첫 값을 유지
-                        out.setdefault(k, v)
-                    return out
-                break
-            except UnicodeDecodeError:
-                continue
+        df = _dataframe_from_address_bytes(address_bytes)
+        return _address_dict_from_dataframe(df)
     except Exception:
-        pass
-    return {}
+        return {}
 
 
 def resolve_client_address(client_name, addr_dict):
@@ -5101,31 +5246,83 @@ def _read_address_bytes_from_path(path: str):
         return None
 
 
-def load_merged_address_dict(primary_bytes, cache_dir: str = CACHE_DIR) -> dict:
-    """캐시 주소록 + 로컬 uproad/주소.csv + 폴더 주소.csv 를 합쳐 누락을 채운다.
+def _normalized_address_csv_bytes(addr_map: dict) -> bytes:
+    """파싱된 주소 dict → 표준 거래처,주소 CSV (utf-8-sig)."""
+    buf = io.StringIO()
+    buf.write("거래처,주소\n")
+    for k, v in (addr_map or {}).items():
+        key = str(k or "").replace('"', '""').strip()
+        val = str(v or "").replace('"', '""').strip()
+        if not key or _is_blank_address_value(val):
+            continue
+        buf.write(f'"{key}","{val}"\n')
+    return buf.getvalue().encode("utf-8-sig")
 
-    캐시에 가스코아산(대창)이 없어도 uproad 원본에 있으면 거래처분석에 보이게 한다.
-    """
-    parts = []
-    if primary_bytes:
-        parts.append(load_address_file(primary_bytes))
+
+def _list_local_address_source_paths(cache_dir: str = CACHE_DIR) -> list:
+    """캐시·uproad·폴더에서 주소/사업체 원본 후보 경로."""
+    names = (
+        "주소.csv",
+        "주소.xlsx",
+        "주소.xls",
+        "사업체.csv",
+        "사업체.xlsx",
+        "사업체목록.xlsx",
+        "거래처주소.csv",
+        "거래처주소.xlsx",
+    )
+    out = []
+    seen = set()
+
+    def _add(path: str):
+        if not path or not os.path.isfile(path):
+            return
+        ap = os.path.abspath(path)
+        if ap in seen:
+            return
+        seen.add(ap)
+        out.append(ap)
+
+    if cache_dir:
+        for n in ("address.csv", "address.xlsx", "address.xls"):
+            _add(os.path.join(cache_dir, n))
     try:
         from drive_autoload import resolve_local_uproad_dir as _addr_uproad
 
         up = _addr_uproad()
-        if up:
-            up_raw = _read_address_bytes_from_path(os.path.join(up, "주소.csv"))
-            if up_raw and up_raw != primary_bytes:
-                parts.append(load_address_file(up_raw))
+        if up and os.path.isdir(up):
+            for n in names:
+                _add(os.path.join(up, n))
+            # uproad 안 이름에 '주소'·'사업체' 들어간 xlsx/csv 추가
+            try:
+                for fn in os.listdir(up):
+                    low = fn.lower()
+                    if not (low.endswith(".csv") or low.endswith(".xlsx") or low.endswith(".xls")):
+                        continue
+                    if ("주소" in fn) or ("사업체" in fn) or ("address" in low):
+                        _add(os.path.join(up, fn))
+            except OSError:
+                pass
     except Exception:
         pass
-    folder_raw = _read_address_bytes_from_path("주소.csv")
-    if folder_raw and folder_raw != primary_bytes:
-        parts.append(load_address_file(folder_raw))
-    if cache_dir:
-        cache_raw = _read_address_bytes_from_path(os.path.join(cache_dir, "address.csv"))
-        if cache_raw and cache_raw != primary_bytes:
-            parts.append(load_address_file(cache_raw))
+    for n in names:
+        _add(n)
+    return out
+
+
+def load_merged_address_dict(primary_bytes, cache_dir: str = CACHE_DIR) -> dict:
+    """캐시 주소록 + 로컬 uproad 사업체/주소 원본을 합쳐 누락을 채운다.
+
+    원본 엑셀에 가스코아산(대창) 주소가 있으면 CSV 캐시가 비어도 채운다.
+    """
+    parts = []
+    if primary_bytes:
+        parts.append(load_address_file(primary_bytes))
+    for path in _list_local_address_source_paths(cache_dir):
+        raw = _read_address_bytes_from_path(path)
+        if not raw or raw == primary_bytes:
+            continue
+        parts.append(load_address_file(raw))
     return merge_address_dicts(*parts)
 
 
@@ -14065,6 +14262,17 @@ def _sidebar_run_connected_load(slot: str) -> None:
             st.session_state.pop(_pk, None)
     if slot == "address":
         clear_address_runtime_caches()
+        # 불러온 주소.csv에 가스코아산(대창)이 들어왔는지 바로 확인 문구
+        try:
+            _ap = os.path.join(CACHE_DIR, "address.csv")
+            if os.path.isfile(_ap):
+                with open(_ap, "rb") as _af:
+                    _ad = load_address_file(_af.read())
+                res = dict(res or {})
+                res["address_count"] = len(_ad or {})
+                res["has_daechang"] = bool(_ad and "가스코아산(대창)" in _ad)
+        except Exception:
+            pass
     st.session_state["_sb_slot_msg"] = res
     st.rerun()
 
@@ -14086,6 +14294,16 @@ if isinstance(_sb_slot_out, dict):
         st.sidebar.success(f"경로에서 {len(_copied)}개 불러옴")
         if _sb_slot_out.get("source"):
             st.sidebar.caption(f"출처: {_sb_slot_out.get('source')}")
+        if _sb_slot_out.get("slot") == "address" and _sb_slot_out.get("address_count") is not None:
+            _n = int(_sb_slot_out.get("address_count") or 0)
+            _dc = " · 가스코아산(대창) 포함" if _sb_slot_out.get("has_daechang") else ""
+            if _n:
+                st.sidebar.caption(f"주소록 파싱: {_n:,}곳{_dc}")
+            else:
+                st.sidebar.warning(
+                    "주소.csv는 복사됐지만 사업체명·주소 열을 못 찾았습니다. "
+                    "파일 상단 제목/열 이름을 확인하세요."
+                )
     elif _sb_slot_out.get("ok") and _sb_slot_out.get("note"):
         st.sidebar.info(_sb_slot_out.get("note"))
     elif _sb_slot_out.get("ok") and int(_sb_slot_out.get("blocked") or 0) > 0:
@@ -14100,7 +14318,11 @@ if isinstance(_sb_slot_out, dict):
 elif isinstance(_sb_slot_out, tuple) and len(_sb_slot_out) == 2:
     st.sidebar.warning(str(_sb_slot_out[1]))
 
-address_file_up = st.sidebar.file_uploader("거래처 주소록 (CSV)", type=["csv"])
+address_file_up = st.sidebar.file_uploader(
+    "거래처 주소록 (CSV)",
+    type=["csv", "xlsx", "xls"],
+    help="uproad/주소.csv — 사업체명·주소 열 (제목행 있어도 됨). 가스코아산(대창) 등",
+)
 _sidebar_slot_load_button("address", "주소.csv")
 industry_file_up = st.sidebar.file_uploader("🏢 거래처 업종 분류 (CSV)", type=["csv"])
 _sidebar_slot_load_button("industry", "업체대분류.csv")
@@ -14316,14 +14538,27 @@ integrated_cache_path = os.path.join(CACHE_DIR, "integrated_cache.dat")
 sales_cache_dir = os.path.join(CACHE_DIR, "sales")
 os.makedirs(sales_cache_dir, exist_ok=True)
 if address_file_up is not None:
-    addr_bytes = address_file_up.getvalue()
-    with open(addr_cache_path, "wb") as f: f.write(addr_bytes)
-    # 같은 세션에서 옛 파싱 결과가 남지 않게 한다
+    _addr_up_raw = address_file_up.getvalue()
+    # 엑셀 원본도 파싱 후 표준 주소.csv 로 저장 (이후 경로·캐시와 동일 형식)
+    clear_address_runtime_caches()
+    _addr_parsed = load_address_file(_addr_up_raw)
+    if _addr_parsed:
+        addr_bytes = _normalized_address_csv_bytes(_addr_parsed)
+    else:
+        addr_bytes = _addr_up_raw
+    with open(addr_cache_path, "wb") as f:
+        f.write(addr_bytes)
+    # 원본 엑셀은 별도 보관 (재파싱·확인용)
+    _up_name = str(getattr(address_file_up, "name", "") or "").lower()
+    if _up_name.endswith((".xlsx", ".xls")):
+        try:
+            with open(os.path.join(CACHE_DIR, "address_source.xlsx"), "wb") as f:
+                f.write(_addr_up_raw)
+        except Exception:
+            pass
     _addr_sha = hashlib.sha256(addr_bytes).hexdigest() if addr_bytes else ""
     if _addr_sha and _addr_sha != st.session_state.get("_addr_applied_sha"):
-        clear_address_runtime_caches()
         st.session_state["_addr_applied_sha"] = _addr_sha
-        # uproad 에도 맞춰 두면 「불러오기」와 내용이 같다
         try:
             from drive_autoload import resolve_local_uproad_dir as _addr_up_dir
 
@@ -14333,6 +14568,20 @@ if address_file_up is not None:
                     f.write(addr_bytes)
         except Exception:
             pass
+        if _addr_parsed:
+            st.sidebar.success(
+                f"주소록 반영: {len(_addr_parsed):,}곳"
+                + (
+                    " · 가스코아산(대창) 포함"
+                    if "가스코아산(대창)" in _addr_parsed
+                    else ""
+                )
+            )
+        else:
+            st.sidebar.warning(
+                "파일을 읽었지만 사업체명·주소 열을 찾지 못했습니다. "
+                "원본 엑셀(사업체명/주소)인지 확인하세요."
+            )
 elif os.path.exists(addr_cache_path):
     with open(addr_cache_path, "rb") as f: addr_bytes = f.read()
 elif os.path.exists("주소.csv"):
