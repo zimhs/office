@@ -329,10 +329,8 @@ def inject_custom_css():
             [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown {
                 color: #334155 !important;
             }
-            /* 로컬: 접힘 후에도 react-resizable/grid 잔여폭이 남아 본문이 밀림.
-               >> 열기 버튼은 헤더(사이드바 밖)에 있으므로 사이드바 자식 숨김 OK. */
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stSidebar"],
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) section[data-testid="stSidebar"],
+            /* 접힘/펼침 상태는 Streamlit(aria)만 따른다 — JS로 width/display 강제하지 않음.
+               aria=false 일 때만 CSS로 잔여 폭·고정바 left를 보정(분기사업분석 안정 + 갭 보완). */
             html:not(.dashboard-touch-mode) [data-testid="stSidebar"][aria-expanded="false"],
             html:not(.dashboard-touch-mode) section[data-testid="stSidebar"][aria-expanded="false"] {
                 min-width: 0 !important;
@@ -341,39 +339,18 @@ def inject_custom_css():
                 margin: 0 !important;
                 padding: 0 !important;
                 border: none !important;
-                overflow: hidden !important;
                 flex: 0 0 0px !important;
+                overflow: hidden !important;
             }
-            /* 자식 숨김은 aria=false 일 때만 — JS class 오판으로 >> 가 사라지는 진동 방지 */
-            html:not(.dashboard-touch-mode) [data-testid="stSidebar"][aria-expanded="false"] > div,
-            html:not(.dashboard-touch-mode) section[data-testid="stSidebar"][aria-expanded="false"] > div {
-                display: none !important;
+            html:not(.dashboard-touch-mode) [data-testid="stAppViewContainer"]:has([data-testid="stSidebar"][aria-expanded="false"]) {
+                grid-template-columns: 0 minmax(0, 1fr) !important;
             }
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stMain"],
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) section.main,
             html:not(.dashboard-touch-mode) [data-testid="stAppViewContainer"]:has([data-testid="stSidebar"][aria-expanded="false"]) [data-testid="stMain"],
             html:not(.dashboard-touch-mode) [data-testid="stAppViewContainer"]:has([data-testid="stSidebar"][aria-expanded="false"]) section.main {
                 width: 100% !important;
                 max-width: 100% !important;
                 margin-left: 0 !important;
                 flex: 1 1 auto !important;
-            }
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stAppViewContainer"],
-            html:not(.dashboard-touch-mode) [data-testid="stAppViewContainer"]:has([data-testid="stSidebar"][aria-expanded="false"]) {
-                grid-template-columns: 0 minmax(0, 1fr) !important;
-            }
-            /* 열기 버튼(>>)은 헤더에 있으며 항상 클릭 가능하게 */
-            [data-testid="stExpandSidebarButton"] {
-                visibility: visible !important;
-                opacity: 1 !important;
-                pointer-events: auto !important;
-                z-index: 1000008 !important;
-            }
-            /* 접힘(aria=false 또는 >>) 시 고정바 전체폭 — JS 인라인이 없을 때 안전망 */
-            html:has([data-testid="stSidebar"][aria-expanded="false"]):not(.dashboard-touch-mode),
-            html:has([data-testid="stExpandSidebarButton"]):not(.dashboard-touch-mode) {
-                --dashboard-bar-left: 12px;
-                --dashboard-bar-width: calc(100vw - 24px);
             }
             html:has([data-testid="stSidebar"][aria-expanded="false"]):not(.dashboard-touch-mode) .dashboard-filter-sticky,
             html:has([data-testid="stSidebar"][aria-expanded="false"]):not(.dashboard-touch-mode)
@@ -384,7 +361,12 @@ def inject_custom_css():
                 left: 12px !important;
                 width: calc(100vw - 24px) !important;
                 max-width: calc(100vw - 24px) !important;
-                right: auto !important;
+            }
+            [data-testid="stExpandSidebarButton"] {
+                visibility: visible !important;
+                opacity: 1 !important;
+                pointer-events: auto !important;
+                z-index: 1000008 !important;
             }
 
             div[data-testid="column"] { align-self: flex-start; }
@@ -10986,7 +10968,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 105
+    _sticky_py_ver = 106
     components.html(
         """
         <script>
@@ -11028,7 +11010,7 @@ def inject_sticky_tabs_script():
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 48; /* v48: 접힘 진동 제거 — aria 우선, 폴링 강제 중단 */
+            var STICKY_SCRIPT_VER_MAC = 49; /* v49: 분기사업분석 시점처럼 Streamlit 기본 접힘 복원 */
             var STICKY_SCRIPT_VER_IPAD = 70; /* v70: 좌 >> · 우 Share 표시. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
@@ -11036,6 +11018,19 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardStickyTouchReady = 0;
                 parentWin.__dashboardTabsUnifiedOk = false;
                 parentWin.__dashboardContentSnapOk = false;
+                try {
+                    if (parentWin.__dashboardSidebarAriaObs) {
+                        parentWin.__dashboardSidebarAriaObs.disconnect();
+                        parentWin.__dashboardSidebarAriaObs = null;
+                    }
+                } catch (eObsClr) {}
+                try {
+                    if (parentWin.__dashboardCollapseWatch) {
+                        clearInterval(parentWin.__dashboardCollapseWatch);
+                        parentWin.__dashboardCollapseWatch = null;
+                    }
+                } catch (eCwClr) {}
+                try { parentDoc.documentElement.classList.remove('dashboard-sidebar-collapsed'); } catch (eClR) {}
                 parentWin.__dashboardStickyPyVer = PY_STICKY_VER;
             }
             try { parentDoc.documentElement.classList.add('dashboard-tabs-unified'); } catch (eUni0) {}
@@ -11426,174 +11421,18 @@ def inject_sticky_tabs_script():
                     + 'z-index:999980!important;}'
                 );
             }
-            function sidebarExpandBtnPresent() {
-                /* Streamlit은 접혔을 때만 헤더에 stExpandSidebarButton을 둔다. */
-                try {
-                    return !!parentDoc.querySelector('[data-testid="stExpandSidebarButton"]');
-                } catch (eP) {
-                    return false;
-                }
-            }
-            function sidebarExpandBtnVisible() {
-                /* 접힘 전용 >> 만. 펼침 상태 << 접기 버튼과 절대 섞지 않는다. */
-                try {
-                    var exp = parentDoc.querySelector('[data-testid="stExpandSidebarButton"]');
-                    if (!exp) return false;
-                    var er = exp.getBoundingClientRect();
-                    var st = parentWin.getComputedStyle(exp);
-                    if (er.width < 2 || er.height < 2) return false;
-                    if (st.visibility === 'hidden' || st.display === 'none') return false;
-                    if (parseFloat(st.opacity || '1') < 0.05) return false;
-                    return true;
-                } catch (eExp) {
-                    return false;
-                }
-            }
-            function sidebarAriaState() {
-                try {
-                    var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
-                    return sidebar ? sidebar.getAttribute('aria-expanded') : null;
-                } catch (eA) {
-                    return null;
-                }
-            }
-            function sidebarIsCollapsedSure() {
-                /* Streamlit 권위: aria=true 이면 절대 접힘으로 보지 않음(>> 실종·진동 방지).
-                   접힘 확실 = aria=false, 또는 aria 없고 >> 만 있을 때. */
-                var aria = sidebarAriaState();
-                if (aria === 'true') return false;
-                if (aria === 'false') return true;
-                return sidebarExpandBtnPresent();
-            }
             function sidebarLooksOpen() {
-                var aria = sidebarAriaState();
-                if (aria === 'true') return true;
-                if (aria === 'false') return false;
-                if (sidebarExpandBtnPresent()) return false;
+                /* 분기사업분석 안정 시점과 동일: aria만 신뢰. JS width 강제 없음. */
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (!sidebar) return false;
+                if (sidebar.getAttribute('aria-expanded') === 'false') return false;
+                if (sidebar.getAttribute('aria-expanded') === 'true') return true;
                 try {
                     var r = sidebar.getBoundingClientRect();
-                    if (r.width < 40 || r.right < 48 || r.left < -16) return false;
-                    return r.width > 80 && r.height > 80 && r.left >= -2;
+                    return r.width > 80 && r.height > 80;
                 } catch (eR) {
-                    return true;
-                }
-            }
-            function fullWidthBarRect(base) {
-                var vw = 0;
-                try {
-                    vw = (parentWin.visualViewport && parentWin.visualViewport.width)
-                        || parentWin.innerWidth
-                        || 0;
-                } catch (eVw2) {
-                    vw = parentWin.innerWidth || 0;
-                }
-                var pad = 12;
-                var left = pad;
-                var width = Math.max(280, (vw || 1200) - pad * 2);
-                return {
-                    left: left,
-                    width: width,
-                    top: (base && base.top) || 0,
-                    bottom: (base && base.bottom) || 0,
-                    height: (base && base.height) || 0
-                };
-            }
-            function markStickyDeployVer() {
-                try {
-                    parentDoc.documentElement.setAttribute('data-dash-sticky-ver', String(STICKY_SCRIPT_VER_MAC));
-                    parentDoc.documentElement.setAttribute('data-dash-sticky-py', String(PY_STICKY_VER));
-                } catch (eMk) {}
-            }
-            function enforceCollapsedStickyBar() {
-                /* 접힘이 확실할 때만 고정바 전체폭. aria=true 이면 손대지 않음. */
-                try {
-                    if (!sidebarIsCollapsedSure()) return false;
-                } catch (eOpen) {
                     return false;
                 }
-                var filterBox = null;
-                try { filterBox = findFilterBox(); } catch (eFb) { filterBox = null; }
-                if (!filterBox) {
-                    try {
-                        filterBox = parentDoc.querySelector('.dashboard-filter-sticky')
-                            || parentDoc.querySelector('[data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker)');
-                    } catch (eFb2) {}
-                }
-                if (!filterBox) return false;
-                var topMac = 44;
-                try { topMac = getTopOffsetMac(); } catch (eTop) {}
-                var rect = fullWidthBarRect(null);
-                try {
-                    filterBox.classList.add('dashboard-filter-sticky');
-                    filterBox.style.setProperty('position', 'fixed', 'important');
-                    filterBox.style.setProperty('top', topMac + 'px', 'important');
-                    filterBox.style.setProperty('left', rect.left + 'px', 'important');
-                    filterBox.style.setProperty('width', rect.width + 'px', 'important');
-                    filterBox.style.setProperty('max-width', rect.width + 'px', 'important');
-                    filterBox.style.setProperty('right', 'auto', 'important');
-                    filterBox.style.setProperty('z-index', cloudMode ? '100' : '990', 'important');
-                } catch (eSt) {}
-                try {
-                    var filterH = Math.max(48, Math.round(filterBox.getBoundingClientRect().height) || 0);
-                    publishBarGeometry(topMac, rect.left, rect.width, filterH);
-                } catch (ePub) {}
-                try {
-                    parentWin.__dashboardStickyGeoFrozen = null;
-                    lastGeoKey = '';
-                } catch (eClr) {}
-                return true;
-            }
-            function saveSidebarInlineSize(sidebar) {
-                if (!sidebar || sidebar.getAttribute('data-dash-sb-saved') === '1') return;
-                try {
-                    sidebar.setAttribute('data-dash-sb-w', sidebar.style.getPropertyValue('width') || '');
-                    sidebar.setAttribute('data-dash-sb-min', sidebar.style.getPropertyValue('min-width') || '');
-                    sidebar.setAttribute('data-dash-sb-max', sidebar.style.getPropertyValue('max-width') || '');
-                    sidebar.setAttribute('data-dash-sb-flex', sidebar.style.getPropertyValue('flex') || '');
-                    sidebar.setAttribute('data-dash-sb-fb', sidebar.style.getPropertyValue('flex-basis') || '');
-                    sidebar.setAttribute('data-dash-sb-saved', '1');
-                } catch (eSave) {}
-            }
-            function restoreSidebarInlineSize(sidebar) {
-                if (!sidebar || sidebar.getAttribute('data-dash-sb-saved') !== '1') return;
-                var map = [
-                    ['width', 'data-dash-sb-w'],
-                    ['min-width', 'data-dash-sb-min'],
-                    ['max-width', 'data-dash-sb-max'],
-                    ['flex', 'data-dash-sb-flex'],
-                    ['flex-basis', 'data-dash-sb-fb']
-                ];
-                var i, prop, key, val;
-                for (i = 0; i < map.length; i++) {
-                    prop = map[i][0];
-                    key = map[i][1];
-                    val = sidebar.getAttribute(key) || '';
-                    try {
-                        if (val) sidebar.style.setProperty(prop, val);
-                        else sidebar.style.removeProperty(prop);
-                    } catch (eRs) {}
-                    try { sidebar.removeAttribute(key); } catch (eRk) {}
-                }
-                try {
-                    sidebar.style.removeProperty('margin');
-                    sidebar.style.removeProperty('padding');
-                    sidebar.style.removeProperty('border');
-                    sidebar.style.removeProperty('overflow');
-                    sidebar.style.removeProperty('pointer-events');
-                } catch (eRm) {}
-                try { sidebar.removeAttribute('data-dash-sb-saved'); } catch (eFlag) {}
-            }
-            function clearForcedMainStyles(main) {
-                if (!main || main.getAttribute('data-dash-main-forced') !== '1') return;
-                try {
-                    main.style.removeProperty('width');
-                    main.style.removeProperty('max-width');
-                    main.style.removeProperty('margin-left');
-                    main.style.removeProperty('flex');
-                    main.removeAttribute('data-dash-main-forced');
-                } catch (eM) {}
             }
             function keepExpandBtnAlive() {
                 try {
@@ -11604,81 +11443,7 @@ def inject_sticky_tabs_script():
                     exp.style.setProperty('pointer-events', 'auto', 'important');
                     exp.style.setProperty('display', 'inline-flex', 'important');
                     exp.style.setProperty('z-index', '1000008', 'important');
-                    var btn = exp.matches('button') ? exp : exp.querySelector('button');
-                    if (btn) {
-                        try { btn.disabled = false; } catch (eDis) {}
-                        btn.style.setProperty('pointer-events', 'auto', 'important');
-                        btn.style.setProperty('visibility', 'visible', 'important');
-                        btn.style.setProperty('opacity', '1', 'important');
-                    }
                 } catch (eExpLive) {}
-            }
-            function forceLocalSidebarLayout() {
-                /* 로컬만. aria=true 이면 강제 접힘을 즉시 해제(>> 복구).
-                   접힘 강제(JS width:0)는 aria=false 일 때만 — CSS가 1차, JS는 보조.
-                   자식 display:none 은 JS로 하지 않음(React/>> 진동 원인). */
-                try {
-                    if (touchMode && !isLocalDesktopHost()) return;
-                } catch (eTm) {
-                    if (touchMode) return;
-                }
-                var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
-                var main = parentDoc.querySelector('[data-testid="stMain"]')
-                    || parentDoc.querySelector('section.main');
-                var aria = sidebar ? sidebar.getAttribute('aria-expanded') : null;
-                var collapsed = false;
-                try { collapsed = sidebarIsCollapsedSure(); } catch (eCs) { collapsed = (aria === 'false'); }
-                try {
-                    var prev = parentDoc.documentElement.classList.contains('dashboard-sidebar-collapsed');
-                    parentDoc.documentElement.classList.toggle('dashboard-sidebar-collapsed', collapsed);
-                    if (prev !== collapsed) {
-                        parentWin.__dashboardStickyGeoFrozen = null;
-                        lastGeoKey = '';
-                    }
-                } catch (eCl) {}
-                if (!sidebar) return;
-                if (!collapsed) {
-                    restoreSidebarInlineSize(sidebar);
-                    clearForcedMainStyles(main);
-                    /* 이전에 JS로 숨긴 자식이 있으면 복구 */
-                    try {
-                        var node2 = sidebar.firstElementChild;
-                        while (node2) {
-                            try {
-                                if (node2.getAttribute('data-dash-kid-forced') === '1') {
-                                    node2.style.removeProperty('width');
-                                    node2.style.removeProperty('min-width');
-                                    node2.style.removeProperty('max-width');
-                                    node2.style.removeProperty('display');
-                                    node2.removeAttribute('data-dash-kid-forced');
-                                }
-                            } catch (eN2) {}
-                            node2 = node2.nextElementSibling;
-                        }
-                    } catch (eKids2) {}
-                    return;
-                }
-                /* aria=false(접힘 확실): 잔여 폭만 제거. 자식 display:none 금지. */
-                saveSidebarInlineSize(sidebar);
-                try {
-                    sidebar.style.setProperty('min-width', '0px', 'important');
-                    sidebar.style.setProperty('max-width', '0px', 'important');
-                    sidebar.style.setProperty('width', '0px', 'important');
-                    sidebar.style.setProperty('flex', '0 0 0px', 'important');
-                    sidebar.style.setProperty('flex-basis', '0px', 'important');
-                    sidebar.style.setProperty('margin', '0', 'important');
-                    sidebar.style.setProperty('padding', '0', 'important');
-                    sidebar.style.setProperty('border', 'none', 'important');
-                    sidebar.style.setProperty('overflow', 'hidden', 'important');
-                } catch (eSet) {}
-                if (main) {
-                    main.style.setProperty('width', '100%', 'important');
-                    main.style.setProperty('max-width', '100%', 'important');
-                    main.style.setProperty('margin-left', '0', 'important');
-                    main.style.setProperty('flex', '1 1 auto', 'important');
-                    try { main.setAttribute('data-dash-main-forced', '1'); } catch (eMf) {}
-                }
-                keepExpandBtnAlive();
             }
             function collectSidebarToggles() {
                 var seen = [];
@@ -11863,7 +11628,6 @@ def inject_sticky_tabs_script():
                 return;
             }
             if (!isTouchPadEarly() && parentWin.__dashboardStickyMacReady === STICKY_SCRIPT_VER_MAC) {
-                try { markStickyDeployVer(); } catch (eVerSkip) {}
                 try { keepExpandBtnAlive(); } catch (eKeepSkip) {}
                 try {
                     if (typeof parentWin.__dashboardFixDuplicateTabs === 'function') {
@@ -11966,12 +11730,12 @@ def inject_sticky_tabs_script():
                         width = Math.max(280, Math.min(left + width, m.right) - left);
                     }
                 }
-                /* 사이드바 접힘: 본문/고정바가 예전 사이드바 폭만큼 오른쪽에 남는 경우 전체 폭으로 */
+                /* 읽기 전용: aria=false 또는 >> 있으면 고정바 좌표만 전체폭.
+                   사이드바 DOM/style 은 절대 수정하지 않음. */
                 try {
-                    if (sidebarIsCollapsedSure() && vw > 0) {
-                        var pad = 12;
-                        left = pad;
-                        width = Math.max(280, vw - pad * 2);
+                    if (!sidebarLooksOpen() && vw > 0) {
+                        left = 12;
+                        width = Math.max(280, vw - 24);
                     }
                 } catch (eSbFull) {}
                 if (vw > 0 && left + width > vw - 2) {
@@ -13087,25 +12851,14 @@ def inject_sticky_tabs_script():
                 cleanupOrphanStickyFilters();
                 try { parentDoc.documentElement.classList.add('dashboard-tabs-unified'); } catch (eU3) {}
                 try { fixDuplicateMainTabs(true); } catch (eSf) {}
-                try { markStickyDeployVer(); } catch (eVer) {}
                 if (touchMode) {
-                    /* 로컬 Desktop이 touch로 오인된 경우에도 접힘 갭/고정바 보정 */
-                    try {
-                        if (isLocalDesktopHost()) {
-                            try { forceLocalSidebarLayout(); } catch (eForceT) {}
-                            try { enforceCollapsedStickyBar(); } catch (eEnfT) {}
-                        }
-                    } catch (eLocT) {}
                     if (isFilterDropdownOpen()) return;
                     applyIpad0804Hack();
-                    try {
-                        if (isLocalDesktopHost()) enforceCollapsedStickyBar();
-                    } catch (eEnfT2) {}
+                    try { keepExpandBtnAlive(); } catch (eKeepT) {}
                     return;
                 }
-                /* Mac: 필터 fixed (탭줄은 필터 DOM 안 — 통짜 통합바) */
-                try { forceLocalSidebarLayout(); } catch (eForceSb) {}
-                try { enforceCollapsedStickyBar(); } catch (eEnf0) {}
+                /* Mac: 필터 fixed. 사이드바 접힘/폭은 Streamlit 기본(분기사업분석 안정 시점). */
+                try { keepExpandBtnAlive(); } catch (eKeep0) {}
                 var filterBox = findFilterBox();
                 if (!filterBox) {
                     parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
@@ -13120,15 +12873,13 @@ def inject_sticky_tabs_script():
                 }
                 try { if (cloudMode) rectMac = cloudAvoidSidebarOverlap(rectMac); } catch (eCloudGeo) {}
                 var topMac = getTopOffsetMac();
-                var sbCollapsed = false;
-                try { sbCollapsed = sidebarIsCollapsedSure(); } catch (eSbC) { sbCollapsed = false; }
-                /* 부팅 중 top/left/width 동결 — 접힘 시에는 동결 금지(옛 left에 고정바 잔류 방지) */
+                /* 부팅 중 top/left/width 동결 — 좌표 재계산이 고정바를 두둑 흔듦 */
                 var vwNow = parentWin.innerWidth || 0;
                 var geoKey = Math.round(topMac) + ':' + Math.round(rectMac.left) + ':' + Math.round(rectMac.width);
                 var frozen = parentWin.__dashboardStickyGeoFrozen;
                 var bootGeo = Date.now() < (stickyBootTs + STICKY_BOOT_MS);
                 var vwShift = !!(lastViewportW && Math.abs(vwNow - lastViewportW) > 8);
-                if (!sbCollapsed && bootGeo && frozen && !vwShift && lastGeoKey) {
+                if (bootGeo && frozen && !vwShift && lastGeoKey) {
                     if (Math.abs(frozen.top - topMac) < 10
                         && Math.abs(frozen.left - rectMac.left) < 12
                         && Math.abs(frozen.width - rectMac.width) < 16) {
@@ -13143,24 +12894,12 @@ def inject_sticky_tabs_script():
                         geoKey = lastGeoKey;
                     }
                 }
-                /* 접힘: 본문 rect/동결/Cloud 보정과 무관하게 고정바를 화면 전체폭으로 */
-                if (sbCollapsed) {
-                    rectMac = fullWidthBarRect(rectMac);
-                    geoKey = Math.round(topMac) + ':' + Math.round(rectMac.left) + ':' + Math.round(rectMac.width);
-                    try {
-                        parentWin.__dashboardStickyGeoFrozen = null;
-                        lastGeoKey = '';
-                    } catch (eClrGeo) {}
-                }
                 filterBox.classList.add('dashboard-filter-sticky');
                 filterBox.style.setProperty('position', 'fixed', 'important');
                 filterBox.style.setProperty('top', topMac + 'px', 'important');
                 filterBox.style.setProperty('left', rectMac.left + 'px', 'important');
                 filterBox.style.setProperty('width', rectMac.width + 'px', 'important');
                 filterBox.style.setProperty('max-width', rectMac.width + 'px', 'important');
-                if (sbCollapsed) {
-                    filterBox.style.setProperty('right', 'auto', 'important');
-                }
                 filterBox.style.setProperty('z-index', cloudMode ? '100' : '990', 'important');
                 filterBox.style.setProperty('overflow', 'visible', 'important');
                 /* 필터 fixed 슬롯만 접기(스페이서가 이 슬롯 안에 있으면 접지 않음) */
@@ -13193,22 +12932,14 @@ def inject_sticky_tabs_script():
                 /* 로컬·Cloud 공통: 실측 스페이서 + 본문 틈 실측 제거 */
                 applySpacerForBar(filterBox, filterH, false);
                 try { snapContentToBar(filterBox); } catch (eSnapM) {}
-                /* 접힘 좌표는 동결하지 않음 — 다시 열었다 접을 때 옛 left 재사용 방지 */
-                if (mountedOk && !sbCollapsed) {
+                if (mountedOk) {
                     parentWin.__dashboardStickyGeoFrozen = {
                         top: topMac, left: rectMac.left, width: rectMac.width
                     };
                     lastGeoKey = geoKey;
-                } else if (sbCollapsed) {
-                    try {
-                        parentWin.__dashboardStickyGeoFrozen = null;
-                        lastGeoKey = '';
-                    } catch (eClrGeo2) {}
                 }
                 try { bindDashboardFilterTextInputs(); } catch (eBindMac) {}
                 try { ensureCloudStickyTabsNative(filterBox); } catch (eCloudMac) {}
-                /* 마지막에 한 번 더 — 위에서 잘못된 left를 넣었어도 접힘이면 덮어씀 */
-                try { if (sbCollapsed) enforceCollapsedStickyBar(); } catch (eEnfEnd) {}
             }
             
             function mutationTouchesMainTabs(mutations) {
@@ -13507,7 +13238,9 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardMacScheduleSync = scheduleSync;
                 parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
                 parentWin.__dashboardStickyMacReady = STICKY_SCRIPT_VER_MAC;
-                try { markStickyDeployVer(); } catch (eVer2) {}
+                try {
+                    parentDoc.documentElement.setAttribute('data-dash-sticky-ver', String(STICKY_SCRIPT_VER_MAC));
+                } catch (eVer2) {}
                 parentWin.addEventListener('resize', function() { scheduleSync(120); }, { passive: true });
                 parentWin.addEventListener('pageshow', function() { scheduleSync(120); }, { passive: true });
                 if (parentWin.visualViewport) {
@@ -13521,39 +13254,31 @@ def inject_sticky_tabs_script():
                         e.target.closest('[data-testid="stSidebarCollapsedControl"]') ||
                         e.target.closest('[data-testid="stSidebar"] button') ||
                         e.target.closest('[role="tab"]')) {
-                        /* 사이드바 접기/펼치기 직후 고정바 left 동결을 풀어 전체폭으로 맞춤 */
+                        /* 접기/펼치기 후 고정바 좌표만 다시 맞춤 — 사이드바 width는 Streamlit에 맡김 */
                         try {
                             parentWin.__dashboardStickyGeoFrozen = null;
                             lastGeoKey = '';
                         } catch (eClr) {}
-                        /* 연속 강제 폴링 대신 짧은 debounce sync 만 — 진동 방지 */
-                        scheduleSync(100);
-                        scheduleSync(350);
+                        scheduleSync(80);
+                        scheduleSync(220);
+                        scheduleSync(500);
                     }
                 }, true);
-                /* v47 접힘 감시 인터벌 제거 — 700ms 강제 접힘이 >> 실종·본문 깜빡임 원인 */
                 try {
                     if (parentWin.__dashboardCollapseWatch) {
                         clearInterval(parentWin.__dashboardCollapseWatch);
                         parentWin.__dashboardCollapseWatch = null;
                     }
                 } catch (eCw0) {}
+                try {
+                    if (parentWin.__dashboardSidebarAriaObs) {
+                        parentWin.__dashboardSidebarAriaObs.disconnect();
+                        parentWin.__dashboardSidebarAriaObs = null;
+                    }
+                } catch (eAriaClr) {}
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (sidebar) {
                     sidebar.addEventListener('transitionend', function() { scheduleSync(100); });
-                    try {
-                        if (!parentWin.__dashboardSidebarAriaObs) {
-                            parentWin.__dashboardSidebarAriaObs = new MutationObserver(function() {
-                                try { forceLocalSidebarLayout(); } catch (eFa) {}
-                                try { keepExpandBtnAlive(); } catch (eKa) {}
-                                scheduleSync(120);
-                            });
-                            parentWin.__dashboardSidebarAriaObs.observe(sidebar, {
-                                attributes: true,
-                                attributeFilter: ['aria-expanded', 'style', 'class']
-                            });
-                        }
-                    } catch (eAriaObs) {}
                 }
                 /* Cloud/로딩: 건강할 때는 스킵 — 주기 sync가 스페이서 높이를 두둑 흔들림 */
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
