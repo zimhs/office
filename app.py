@@ -11,6 +11,7 @@ import importlib
 import subprocess
 import shutil
 import tempfile
+import unicodedata
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
@@ -4955,6 +4956,52 @@ def create_item_share_hbar(share_series, title_text="당해 년평균 품목별 
 # ==========================================
 # 3. 데이터 로딩 & 메모리 캐싱 (최적화) - Error 무시(on_bad_lines) 적용
 # ==========================================
+def _pick_address_book_columns(columns):
+    """주소록 CSV에서 (거래처명열, 주소열)을 고른다.
+
+    ERP 내보내기는 앞열이 사업체코드·사업체명이라 0·1열만 쓰면
+    코드→상호로 잘못 매핑되어 가스코아산(대창) 주소가 안 나온다.
+    """
+    cols = list(columns)
+    if len(cols) < 2:
+        return None, None
+
+    def _compact(label: str) -> str:
+        return str(label or "").strip().replace(" ", "").replace("\n", "")
+
+    labels = [(_compact(c), c) for c in cols]
+
+    def _find(cands: tuple[str, ...]):
+        # 정확 일치만. startswith("거래처")는 "거래처구분"을 잡아 ERP 매핑이 깨진다.
+        for cand in cands:
+            for compact, orig in labels:
+                if compact == cand:
+                    return orig
+        return None
+
+    # 거래처/사업체명 우선. 상호는 ERP에서 법인명((주)대창)이라 매출 거래처명과 안 맞음
+    k_col = _find(("거래처명", "거래처", "사업체명", "업체명", "고객명"))
+    v_col = _find(("사업장주소", "도로명주소", "상세주소", "주소"))
+    if k_col is not None and v_col is not None and k_col != v_col:
+        return k_col, v_col
+    # 단순 2열 주소록(거래처,주소,…)
+    return cols[0], cols[1]
+
+
+def _normalize_client_name_for_address(s) -> str:
+    """주소 매칭용 거래처명 정규화 (NFC·공백·법인·전각괄호)."""
+    t = unicodedata.normalize("NFC", str(s or "")).strip()
+    t = (
+        t.replace("(주)", "")
+        .replace("㈜", "")
+        .replace("주식회사", "")
+        .replace("(유)", "")
+        .replace("（", "(")
+        .replace("）", ")")
+    )
+    return "".join(t.split())
+
+
 @st.cache_data(show_spinner="주소록을 읽어오는 중입니다...")
 def load_address_file(address_bytes):
     if not address_bytes:
@@ -4962,16 +5009,32 @@ def load_address_file(address_bytes):
     try:
         for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
             try:
-                temp_addr = pd.read_csv(io.BytesIO(address_bytes), encoding=enc, on_bad_lines='skip', engine='python')
+                temp_addr = pd.read_csv(
+                    io.BytesIO(address_bytes),
+                    encoding=enc,
+                    on_bad_lines="skip",
+                    engine="python",
+                )
                 if len(temp_addr.columns) >= 2:
-                    k_col = temp_addr.columns[0]
-                    v_col = temp_addr.columns[1]
+                    k_col, v_col = _pick_address_book_columns(temp_addr.columns)
+                    if k_col is None or v_col is None:
+                        break
                     temp_addr = temp_addr.dropna(subset=[k_col])
-                    keys = temp_addr[k_col].astype(str).str.strip()
+                    keys = (
+                        temp_addr[k_col]
+                        .astype(str)
+                        .map(lambda x: unicodedata.normalize("NFC", x).strip())
+                    )
                     vals = temp_addr[v_col].astype(str).str.strip()
                     # 빈/NaN 주소는 제외
                     ok = vals.ne("") & vals.str.lower().ne("nan") & vals.str.lower().ne("none")
-                    return dict(zip(keys[ok], vals[ok]))
+                    out = {}
+                    for k, v in zip(keys[ok], vals[ok]):
+                        if not k or k.lower() in ("nan", "none"):
+                            continue
+                        # 같은 이름 중복 시 주소 있는 첫 값을 유지
+                        out.setdefault(k, v)
+                    return out
                 break
             except UnicodeDecodeError:
                 continue
@@ -4981,20 +5044,17 @@ def load_address_file(address_bytes):
 
 
 def resolve_client_address(client_name, addr_dict):
-    """거래처명 → 주소. 정확 일치 후 공백/법인표기 완화 매칭."""
+    """거래처명 → 주소. 정확 일치 후 공백/법인표기·NFC 완화 매칭."""
     if not client_name or client_name == "전체 거래처" or not addr_dict:
         return None
-    name = str(client_name).strip()
+    name = unicodedata.normalize("NFC", str(client_name)).strip()
     if name in addr_dict:
         return addr_dict[name]
-    # (주)/주식회사 표기 차이 완화
-    def _norm(s):
-        s = str(s).strip()
-        s = s.replace("(주)", "").replace("주식회사", "").replace("(유)", "")
-        return "".join(s.split())
-    n = _norm(name)
+    n = _normalize_client_name_for_address(name)
+    if not n:
+        return None
     for k, v in addr_dict.items():
-        if _norm(k) == n:
+        if _normalize_client_name_for_address(k) == n:
             return v
     return None
 
