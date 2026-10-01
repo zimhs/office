@@ -370,11 +370,22 @@ def inject_custom_css():
                 pointer-events: auto !important;
                 z-index: 1000008 !important;
             }
-            /* 접힘(>> 존재) 시 고정바가 옛 사이드바 left에 남지 않게 — JS 보정 전에도 적용 */
+            /* 접힘(>> 존재) 시 고정바·본문 전체폭 — 변수 + 직접 left (JS 오설정 덮어쓰기 전에도) */
             html:has([data-testid="stExpandSidebarButton"]):not(.dashboard-touch-mode),
             html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) {
                 --dashboard-bar-left: 12px;
                 --dashboard-bar-width: calc(100vw - 24px);
+            }
+            html:has([data-testid="stExpandSidebarButton"]):not(.dashboard-touch-mode) .dashboard-filter-sticky,
+            html:has([data-testid="stExpandSidebarButton"]):not(.dashboard-touch-mode)
+                [data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker),
+            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) .dashboard-filter-sticky,
+            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode)
+                [data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker) {
+                left: 12px !important;
+                width: calc(100vw - 24px) !important;
+                max-width: calc(100vw - 24px) !important;
+                right: auto !important;
             }
 
             div[data-testid="column"] { align-self: flex-start; }
@@ -10976,7 +10987,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 103
+    _sticky_py_ver = 104
     components.html(
         """
         <script>
@@ -11018,7 +11029,7 @@ def inject_sticky_tabs_script():
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 46; /* v46: 접힘 시 고정바 left/width 강제 전체폭 */
+            var STICKY_SCRIPT_VER_MAC = 47; /* v47: 로컬 touch 오인 해제 + 접힘 고정바/갭 강제 */
             var STICKY_SCRIPT_VER_IPAD = 70; /* v70: 좌 >> · 우 Share 표시. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
@@ -11348,14 +11359,27 @@ def inject_sticky_tabs_script():
                 return lastH;
             }
             function isTouchPadEarly() {
-                function fromNav(nav) {
+                function iosUa(nav) {
                     if (!nav) return false;
                     var ua = String(nav.userAgent || '');
-                    if (/iPad|iPhone|iPod/.test(ua)) return true;
+                    return /iPad|iPhone|iPod/.test(ua);
+                }
+                function fromNav(nav) {
+                    if (!nav) return false;
+                    if (iosUa(nav)) return true;
                     var pts = nav.maxTouchPoints || 0;
                     if (nav.platform === 'MacIntel' && pts > 1) return true;
                     return false;
                 }
+                /* 로컬 Desktop(localhost): Mac 트랙패드/터치스크린을 iPad로 오인하면
+                   Mac 전용 접힘·고정바 보정이 전부 스킵된다. 실제 iOS UA만 touch. */
+                try {
+                    if (isLocalDesktopHost()) {
+                        try { if (iosUa(navigator)) return true; } catch (eL0) {}
+                        try { if (iosUa(parentWin.navigator)) return true; } catch (eL1) {}
+                        return false;
+                    }
+                } catch (eLocTp) {}
                 try { if (fromNav(navigator)) return true; } catch (e0) {}
                 try { if (fromNav(parentWin.navigator)) return true; } catch (e1) {}
                 try {
@@ -11464,6 +11488,52 @@ def inject_sticky_tabs_script():
                     height: (base && base.height) || 0
                 };
             }
+            function markStickyDeployVer() {
+                try {
+                    parentDoc.documentElement.setAttribute('data-dash-sticky-ver', String(STICKY_SCRIPT_VER_MAC));
+                    parentDoc.documentElement.setAttribute('data-dash-sticky-py', String(PY_STICKY_VER));
+                } catch (eMk) {}
+            }
+            function enforceCollapsedStickyBar() {
+                /* touch/Mac 경로와 무관 — 접힘이면 고정바 left를 무조건 전체폭으로.
+                   (JS 인라인 !important 가 CSS :has() 를 덮어쓰던 문제 차단) */
+                try {
+                    if (sidebarLooksOpen()) return false;
+                } catch (eOpen) {
+                    return false;
+                }
+                var filterBox = null;
+                try { filterBox = findFilterBox(); } catch (eFb) { filterBox = null; }
+                if (!filterBox) {
+                    try {
+                        filterBox = parentDoc.querySelector('.dashboard-filter-sticky')
+                            || parentDoc.querySelector('[data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker)');
+                    } catch (eFb2) {}
+                }
+                if (!filterBox) return false;
+                var topMac = 44;
+                try { topMac = getTopOffsetMac(); } catch (eTop) {}
+                var rect = fullWidthBarRect(null);
+                try {
+                    filterBox.classList.add('dashboard-filter-sticky');
+                    filterBox.style.setProperty('position', 'fixed', 'important');
+                    filterBox.style.setProperty('top', topMac + 'px', 'important');
+                    filterBox.style.setProperty('left', rect.left + 'px', 'important');
+                    filterBox.style.setProperty('width', rect.width + 'px', 'important');
+                    filterBox.style.setProperty('max-width', rect.width + 'px', 'important');
+                    filterBox.style.setProperty('right', 'auto', 'important');
+                    filterBox.style.setProperty('z-index', cloudMode ? '100' : '990', 'important');
+                } catch (eSt) {}
+                try {
+                    var filterH = Math.max(48, Math.round(filterBox.getBoundingClientRect().height) || 0);
+                    publishBarGeometry(topMac, rect.left, rect.width, filterH);
+                } catch (ePub) {}
+                try {
+                    parentWin.__dashboardStickyGeoFrozen = null;
+                    lastGeoKey = '';
+                } catch (eClr) {}
+                return true;
+            }
             function saveSidebarInlineSize(sidebar) {
                 if (!sidebar || sidebar.getAttribute('data-dash-sb-saved') === '1') return;
                 try {
@@ -11518,7 +11588,12 @@ def inject_sticky_tabs_script():
                 /* 로컬만: >> 또는 aria=false 일 때만 잔여 width 제거.
                    열린 폭은 저장 후 복원해 resizable 기본값으로 커지지 않게 한다.
                    Streamlit 인라인 width는 매 프레임 removeProperty 하지 않는다. */
-                if (touchMode) return;
+                /* localhost Mac이 touch로 오인돼도 접힘 보정은 반드시 실행 */
+                try {
+                    if (touchMode && !isLocalDesktopHost()) return;
+                } catch (eTm) {
+                    if (touchMode) return;
+                }
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 var main = parentDoc.querySelector('[data-testid="stMain"]')
                     || parentDoc.querySelector('section.main');
@@ -11792,6 +11867,9 @@ def inject_sticky_tabs_script():
                 return;
             }
             if (!isTouchPadEarly() && parentWin.__dashboardStickyMacReady === STICKY_SCRIPT_VER_MAC) {
+                try { markStickyDeployVer(); } catch (eVerSkip) {}
+                try { forceLocalSidebarLayout(); } catch (eForceSkip) {}
+                try { enforceCollapsedStickyBar(); } catch (eEnfSkip) {}
                 try {
                     if (typeof parentWin.__dashboardFixDuplicateTabs === 'function') {
                         parentWin.__dashboardFixDuplicateTabs(true);
@@ -13014,13 +13092,25 @@ def inject_sticky_tabs_script():
                 cleanupOrphanStickyFilters();
                 try { parentDoc.documentElement.classList.add('dashboard-tabs-unified'); } catch (eU3) {}
                 try { fixDuplicateMainTabs(true); } catch (eSf) {}
+                try { markStickyDeployVer(); } catch (eVer) {}
                 if (touchMode) {
+                    /* 로컬 Desktop이 touch로 오인된 경우에도 접힘 갭/고정바 보정 */
+                    try {
+                        if (isLocalDesktopHost()) {
+                            try { forceLocalSidebarLayout(); } catch (eForceT) {}
+                            try { enforceCollapsedStickyBar(); } catch (eEnfT) {}
+                        }
+                    } catch (eLocT) {}
                     if (isFilterDropdownOpen()) return;
                     applyIpad0804Hack();
+                    try {
+                        if (isLocalDesktopHost()) enforceCollapsedStickyBar();
+                    } catch (eEnfT2) {}
                     return;
                 }
                 /* Mac: 필터 fixed (탭줄은 필터 DOM 안 — 통짜 통합바) */
                 try { forceLocalSidebarLayout(); } catch (eForceSb) {}
+                try { enforceCollapsedStickyBar(); } catch (eEnf0) {}
                 var filterBox = findFilterBox();
                 if (!filterBox) {
                     parentWin.__dashTabRetry = (parentWin.__dashTabRetry || 0) + 1;
@@ -13073,6 +13163,9 @@ def inject_sticky_tabs_script():
                 filterBox.style.setProperty('left', rectMac.left + 'px', 'important');
                 filterBox.style.setProperty('width', rectMac.width + 'px', 'important');
                 filterBox.style.setProperty('max-width', rectMac.width + 'px', 'important');
+                if (sbCollapsed) {
+                    filterBox.style.setProperty('right', 'auto', 'important');
+                }
                 filterBox.style.setProperty('z-index', cloudMode ? '100' : '990', 'important');
                 filterBox.style.setProperty('overflow', 'visible', 'important');
                 /* 필터 fixed 슬롯만 접기(스페이서가 이 슬롯 안에 있으면 접지 않음) */
@@ -13119,6 +13212,8 @@ def inject_sticky_tabs_script():
                 }
                 try { bindDashboardFilterTextInputs(); } catch (eBindMac) {}
                 try { ensureCloudStickyTabsNative(filterBox); } catch (eCloudMac) {}
+                /* 마지막에 한 번 더 — 위에서 잘못된 left를 넣었어도 접힘이면 덮어씀 */
+                try { if (sbCollapsed) enforceCollapsedStickyBar(); } catch (eEnfEnd) {}
             }
             
             function mutationTouchesMainTabs(mutations) {
@@ -13417,6 +13512,7 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardMacScheduleSync = scheduleSync;
                 parentWin.__dashboardFixDuplicateTabs = fixDuplicateMainTabs;
                 parentWin.__dashboardStickyMacReady = STICKY_SCRIPT_VER_MAC;
+                try { markStickyDeployVer(); } catch (eVer2) {}
                 parentWin.addEventListener('resize', function() { scheduleSync(120); }, { passive: true });
                 parentWin.addEventListener('pageshow', function() { scheduleSync(120); }, { passive: true });
                 if (parentWin.visualViewport) {
@@ -13434,11 +13530,24 @@ def inject_sticky_tabs_script():
                             parentWin.__dashboardStickyGeoFrozen = null;
                             lastGeoKey = '';
                         } catch (eClr) {}
+                        try { forceLocalSidebarLayout(); } catch (eForceC) {}
+                        try { enforceCollapsedStickyBar(); } catch (eEnfC) {}
                         scheduleSync(80);
                         scheduleSync(220);
                         scheduleSync(500);
                     }
                 }, true);
+                /* 접힘 잔류 left 감시 — sync가 스킵돼도 고정바·갭을 주기적으로 교정 */
+                try {
+                    if (parentWin.__dashboardCollapseWatch) {
+                        clearInterval(parentWin.__dashboardCollapseWatch);
+                    }
+                } catch (eCw0) {}
+                parentWin.__dashboardCollapseWatch = setInterval(function() {
+                    try { markStickyDeployVer(); } catch (eVw) {}
+                    try { forceLocalSidebarLayout(); } catch (eForceW) {}
+                    try { enforceCollapsedStickyBar(); } catch (eEnfW) {}
+                }, 700);
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (sidebar) {
                     sidebar.addEventListener('transitionend', function() { scheduleSync(100); });
@@ -13447,6 +13556,8 @@ def inject_sticky_tabs_script():
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
                     if (isFilterDropdownOpen()) return;
                     try { unpinBadFixedShells(); } catch (eUn) {}
+                    try { forceLocalSidebarLayout(); } catch (eForceI) {}
+                    try { enforceCollapsedStickyBar(); } catch (eEnfI) {}
                     var fb = findFilterBox();
                     var all = collectMainTabLists();
                     var healthy = false;
@@ -13460,7 +13571,7 @@ def inject_sticky_tabs_script():
                         syncFixedBar();
                     }
                     try { ensureSidebarToggleLive(); } catch (eSbMac) {}
-                }, cloudMode ? 900 : 4000);
+                }, cloudMode ? 900 : 1200);
                 /* Cloud 첫 로딩: 비건강/비고정일 때만 재장착 (건강 시 rAF 스로틀 완화) */
                 if (cloudMode && !parentWin.__dashboardStickyGeoRaf) {
                     var geoUntil = Date.now() + 10000;
