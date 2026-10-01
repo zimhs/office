@@ -329,6 +329,32 @@ def inject_custom_css():
             [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown {
                 color: #334155 !important;
             }
+            /* 로컬: 사이드바 접힘 후에도 폭(~21rem)이 남아 본문이 오른쪽으로 밀리는 문제.
+               aria-expanded=false 이면 레이아웃에서 폭을 제거하고 본문을 전체 폭으로. */
+            html:not(.dashboard-touch-mode) [data-testid="stSidebar"][aria-expanded="false"],
+            html:not(.dashboard-touch-mode) section[data-testid="stSidebar"][aria-expanded="false"] {
+                min-width: 0 !important;
+                max-width: 0 !important;
+                width: 0 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                border: none !important;
+                overflow: visible !important;
+                transform: translateX(-100%) !important;
+                pointer-events: none !important;
+                flex: 0 0 0 !important;
+            }
+            html:not(.dashboard-touch-mode) [data-testid="stSidebar"][aria-expanded="false"] > div,
+            html:not(.dashboard-touch-mode) section[data-testid="stSidebar"][aria-expanded="false"] > div {
+                display: none !important;
+            }
+            html:not(.dashboard-touch-mode) [data-testid="stAppViewContainer"]:has([data-testid="stSidebar"][aria-expanded="false"]) [data-testid="stMain"],
+            html:not(.dashboard-touch-mode) [data-testid="stAppViewContainer"]:has([data-testid="stSidebar"][aria-expanded="false"]) section.main {
+                width: 100% !important;
+                max-width: 100% !important;
+                margin-left: 0 !important;
+                flex: 1 1 100% !important;
+            }
 
             div[data-testid="column"] { align-self: flex-start; }
 
@@ -10971,7 +10997,7 @@ def inject_sticky_tabs_script():
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 41;
+            var STICKY_SCRIPT_VER_MAC = 42; /* v42: 사이드바 접힘 시 본문·고정바 전체폭 */
             var STICKY_SCRIPT_VER_IPAD = 70; /* v70: 좌 >> · 우 Share 표시. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
@@ -11652,6 +11678,14 @@ def inject_sticky_tabs_script():
                         width = Math.max(280, Math.min(left + width, m.right) - left);
                     }
                 }
+                /* 사이드바 접힘: 본문/고정바가 예전 사이드바 폭만큼 오른쪽에 남는 경우 전체 폭으로 */
+                try {
+                    if (!sidebarLooksOpen() && vw > 0) {
+                        var pad = 12;
+                        left = pad;
+                        width = Math.max(280, vw - pad * 2);
+                    }
+                } catch (eSbFull) {}
                 if (vw > 0 && left + width > vw - 2) {
                     width = Math.max(280, vw - left - 2);
                 }
@@ -13160,9 +13194,16 @@ def inject_sticky_tabs_script():
                     if (e.target.closest('[data-testid="collapsedControl"]') ||
                         e.target.closest('[data-testid="stExpandSidebarButton"]') ||
                         e.target.closest('[data-testid="stSidebarCollapsedControl"]') ||
+                        e.target.closest('[data-testid="stSidebar"] button') ||
                         e.target.closest('[role="tab"]')) {
-                        scheduleSync(100);
-                        scheduleSync(400);
+                        /* 사이드바 접기/펼치기 직후 고정바 left 동결을 풀어 전체폭으로 맞춤 */
+                        try {
+                            parentWin.__dashboardStickyGeoFrozen = null;
+                            lastGeoKey = '';
+                        } catch (eClr) {}
+                        scheduleSync(80);
+                        scheduleSync(220);
+                        scheduleSync(500);
                     }
                 }, true);
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
