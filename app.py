@@ -370,6 +370,12 @@ def inject_custom_css():
                 pointer-events: auto !important;
                 z-index: 1000008 !important;
             }
+            /* 접힘(>> 존재) 시 고정바가 옛 사이드바 left에 남지 않게 — JS 보정 전에도 적용 */
+            html:has([data-testid="stExpandSidebarButton"]):not(.dashboard-touch-mode),
+            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) {
+                --dashboard-bar-left: 12px;
+                --dashboard-bar-width: calc(100vw - 24px);
+            }
 
             div[data-testid="column"] { align-self: flex-start; }
 
@@ -10970,7 +10976,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 102
+    _sticky_py_ver = 103
     components.html(
         """
         <script>
@@ -11012,7 +11018,7 @@ def inject_sticky_tabs_script():
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 45; /* v45: 접힘 전체폭 복구 + 열림 폭 보존 */
+            var STICKY_SCRIPT_VER_MAC = 46; /* v46: 접힘 시 고정바 left/width 강제 전체폭 */
             var STICKY_SCRIPT_VER_IPAD = 70; /* v70: 좌 >> · 우 Share 표시. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
@@ -11397,6 +11403,15 @@ def inject_sticky_tabs_script():
                     + 'z-index:999980!important;}'
                 );
             }
+            function sidebarExpandBtnPresent() {
+                /* Streamlit은 접혔을 때만 헤더에 stExpandSidebarButton을 둔다.
+                   크기/opacity 애니메이션 중에도 DOM 존재 = 접힘으로 본다. */
+                try {
+                    return !!parentDoc.querySelector('[data-testid="stExpandSidebarButton"]');
+                } catch (eP) {
+                    return false;
+                }
+            }
             function sidebarExpandBtnVisible() {
                 /* 접힘 전용 >> 만. 펼침 상태 << 접기 버튼과 절대 섞지 않는다. */
                 try {
@@ -11415,9 +11430,9 @@ def inject_sticky_tabs_script():
             function sidebarLooksOpen() {
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (!sidebar) return false;
-                /* stExpandSidebarButton(>>)만 신뢰 — << 접기 버튼과 절대 혼동하지 않음.
-                   >> 가 보이면 Streamlit이 접힌 UI이므로 aria보다 우선. */
-                if (sidebarExpandBtnVisible()) return false;
+                /* >> DOM 존재만으로 접힘 — 고정바가 옛 left에 남는 주원인 차단.
+                   << 와 혼동하지 않도록 stExpandSidebarButton만 본다. */
+                if (sidebarExpandBtnPresent()) return false;
                 var aria = sidebar.getAttribute('aria-expanded');
                 if (aria === 'false') return false;
                 if (aria === 'true') return true;
@@ -11428,6 +11443,26 @@ def inject_sticky_tabs_script():
                 } catch (eR) {
                     return true;
                 }
+            }
+            function fullWidthBarRect(base) {
+                var vw = 0;
+                try {
+                    vw = (parentWin.visualViewport && parentWin.visualViewport.width)
+                        || parentWin.innerWidth
+                        || 0;
+                } catch (eVw2) {
+                    vw = parentWin.innerWidth || 0;
+                }
+                var pad = 12;
+                var left = pad;
+                var width = Math.max(280, (vw || 1200) - pad * 2);
+                return {
+                    left: left,
+                    width: width,
+                    top: (base && base.top) || 0,
+                    bottom: (base && base.bottom) || 0,
+                    height: (base && base.height) || 0
+                };
             }
             function saveSidebarInlineSize(sidebar) {
                 if (!sidebar || sidebar.getAttribute('data-dash-sb-saved') === '1') return;
@@ -11488,10 +11523,10 @@ def inject_sticky_tabs_script():
                 var main = parentDoc.querySelector('[data-testid="stMain"]')
                     || parentDoc.querySelector('section.main');
                 var aria = sidebar ? sidebar.getAttribute('aria-expanded') : null;
-                var expandVisible = sidebarExpandBtnVisible();
-                /* >> 가 보이면 접힘 확실. aria=true 여도 >> 우선(잔여폭·잘못된 aria 대비). */
-                var collapsedSure = expandVisible || (aria === 'false');
-                var openSure = (aria === 'true') && !expandVisible;
+                var expandPresent = sidebarExpandBtnPresent();
+                /* >> DOM 있으면 접힘 확실. aria=true 여도 >> 우선(잔여폭·잘못된 aria 대비). */
+                var collapsedSure = expandPresent || (aria === 'false');
+                var openSure = (aria === 'true') && !expandPresent;
                 var collapsed = collapsedSure && !openSure;
                 try {
                     var prev = parentDoc.documentElement.classList.contains('dashboard-sidebar-collapsed');
@@ -13000,13 +13035,15 @@ def inject_sticky_tabs_script():
                 }
                 try { if (cloudMode) rectMac = cloudAvoidSidebarOverlap(rectMac); } catch (eCloudGeo) {}
                 var topMac = getTopOffsetMac();
-                /* 부팅 중 top/left/width 동결 — 좌표 재계산이 고정바를 두둑 흔듦 */
+                var sbCollapsed = false;
+                try { sbCollapsed = !sidebarLooksOpen(); } catch (eSbC) { sbCollapsed = false; }
+                /* 부팅 중 top/left/width 동결 — 접힘 시에는 동결 금지(옛 left에 고정바 잔류 방지) */
                 var vwNow = parentWin.innerWidth || 0;
                 var geoKey = Math.round(topMac) + ':' + Math.round(rectMac.left) + ':' + Math.round(rectMac.width);
                 var frozen = parentWin.__dashboardStickyGeoFrozen;
                 var bootGeo = Date.now() < (stickyBootTs + STICKY_BOOT_MS);
                 var vwShift = !!(lastViewportW && Math.abs(vwNow - lastViewportW) > 8);
-                if (bootGeo && frozen && !vwShift && lastGeoKey) {
+                if (!sbCollapsed && bootGeo && frozen && !vwShift && lastGeoKey) {
                     if (Math.abs(frozen.top - topMac) < 10
                         && Math.abs(frozen.left - rectMac.left) < 12
                         && Math.abs(frozen.width - rectMac.width) < 16) {
@@ -13020,6 +13057,15 @@ def inject_sticky_tabs_script():
                         };
                         geoKey = lastGeoKey;
                     }
+                }
+                /* 접힘: 본문 rect/동결/Cloud 보정과 무관하게 고정바를 화면 전체폭으로 */
+                if (sbCollapsed) {
+                    rectMac = fullWidthBarRect(rectMac);
+                    geoKey = Math.round(topMac) + ':' + Math.round(rectMac.left) + ':' + Math.round(rectMac.width);
+                    try {
+                        parentWin.__dashboardStickyGeoFrozen = null;
+                        lastGeoKey = '';
+                    } catch (eClrGeo) {}
                 }
                 filterBox.classList.add('dashboard-filter-sticky');
                 filterBox.style.setProperty('position', 'fixed', 'important');
@@ -13059,11 +13105,17 @@ def inject_sticky_tabs_script():
                 /* 로컬·Cloud 공통: 실측 스페이서 + 본문 틈 실측 제거 */
                 applySpacerForBar(filterBox, filterH, false);
                 try { snapContentToBar(filterBox); } catch (eSnapM) {}
-                if (mountedOk) {
+                /* 접힘 좌표는 동결하지 않음 — 다시 열었다 접을 때 옛 left 재사용 방지 */
+                if (mountedOk && !sbCollapsed) {
                     parentWin.__dashboardStickyGeoFrozen = {
                         top: topMac, left: rectMac.left, width: rectMac.width
                     };
                     lastGeoKey = geoKey;
+                } else if (sbCollapsed) {
+                    try {
+                        parentWin.__dashboardStickyGeoFrozen = null;
+                        lastGeoKey = '';
+                    } catch (eClrGeo2) {}
                 }
                 try { bindDashboardFilterTextInputs(); } catch (eBindMac) {}
                 try { ensureCloudStickyTabsNative(filterBox); } catch (eCloudMac) {}
