@@ -1,6 +1,7 @@
 """주소록 로드·거래처 주소 매칭 (ERP 다중열·가스코아산(대창))."""
 from __future__ import annotations
 
+import io
 import os
 import unittest
 
@@ -29,6 +30,82 @@ def _erp_csv() -> bytes:
     ).encode("utf-8-sig")
 
 
+def _erp_csv_with_title_rows() -> bytes:
+    """uproad/주소.csv 처럼 상단에 제목·빈 줄이 있는 ERP CSV (cp949)."""
+    import csv
+
+    buf = io.StringIO()
+    buf.write("사업체원본\n\n")
+    w = csv.writer(buf)
+    # 스크린샷처럼 빈 열이 섞인 헤더
+    w.writerow(
+        [
+            "사업체명",
+            "",
+            "영업담당자",
+            "상호",
+            "",
+            "대표자",
+            "",
+            "사업자번호",
+            "업태",
+            "",
+            "",
+            "업종",
+            "",
+            "주소",
+        ]
+    )
+    w.writerow(
+        [
+            "가스코아산(대창)",
+            "",
+            "담당자없음",
+            "(주)대창",
+            "",
+            "",
+            "",
+            "- -",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "경기도 시흥시 공단1대로 391",
+        ]
+    )
+    w.writerow(
+        [
+            "가스코아산(아래스가스)",
+            "",
+            "담당자없음",
+            "아레스가스솔루션(주)",
+            "",
+            "박래성",
+            "",
+            "143-81-23575",
+            "제조업",
+            "",
+            "",
+            "산업용가스제조업",
+            "",
+            "충청남도 아산시",
+        ]
+    )
+    return buf.getvalue().encode("cp949")
+
+
+def _erp_csv_title_utf8() -> bytes:
+    return (
+        "사업체 목록\n"
+        "\n"
+        "사업체코드,사업체명,납품지역,매입/매출공유,영업담당자,사업체구분,"
+        "거래처구분,상호,대표자명,사업자등록번호,업태,업종,우편번호,주소\n"
+        "00540,가스코아산(대창),,[아산] 가스코아산,담당자없음,거래처 본사,"
+        "거래업체,(주)대창,,,,,,경기도 시흥시 공단1대로 391\n"
+    ).encode("utf-8-sig")
+
+
 class AddressBookColumnPickTest(unittest.TestCase):
     def test_simple_two_col_book(self):
         d = load_address_file(_simple_csv())
@@ -44,6 +121,57 @@ class AddressBookColumnPickTest(unittest.TestCase):
             resolve_client_address("가스코아산(대창)", d),
             "경기도 시흥시 공단1대로 391",
         )
+
+    def test_title_rows_cp949_empty_cols_keeps_대창(self):
+        """제목행+빈열 CSV에서 on_bad_lines skip 때문에 대창이 빠지던 버그."""
+        d = load_address_file(_erp_csv_with_title_rows())
+        self.assertEqual(
+            d.get("가스코아산(대창)"),
+            "경기도 시흥시 공단1대로 391",
+        )
+        self.assertEqual(
+            resolve_client_address("가스코아산(대창)", d),
+            "경기도 시흥시 공단1대로 391",
+        )
+
+    def test_title_rows_utf8_erp(self):
+        d = load_address_file(_erp_csv_title_utf8())
+        self.assertEqual(d.get("가스코아산(대창)"), "경기도 시흥시 공단1대로 391")
+
+    def test_utf16_csv(self):
+        text = (
+            "거래처,주소\n"
+            "가스코아산(대창),경기도 시흥시 공단1대로 391\n"
+        )
+        d = load_address_file(text.encode("utf-16"))
+        self.assertEqual(d.get("가스코아산(대창)"), "경기도 시흥시 공단1대로 391")
+
+    def test_code_first_columns_not_used_as_keys(self):
+        """앞열 코드·사업체명만 쓰면 키가 00540이 되어 영신방재 조회가 전부 실패한다."""
+        raw = (
+            "사업체코드,사업체명,상호,회사주소\n"
+            "00540,가스코아산(대창),(주)대창,경기도 시흥시 공단1대로 391\n"
+            "00128,영신방재,(주)영신방재,경기도 화성시 송산면 송산산단길 127\n"
+        ).encode("utf-8-sig")
+        d = load_address_file(raw)
+        self.assertNotIn("00540", d)
+        self.assertNotIn("00128", d)
+        self.assertEqual(
+            resolve_client_address("영신방재", d),
+            "경기도 화성시 송산면 송산산단길 127",
+        )
+        self.assertEqual(
+            resolve_client_address("가스코아산(대창)", d),
+            "경기도 시흥시 공단1대로 391",
+        )
+
+    def test_fallback_cols_skip_code_header(self):
+        raw = (
+            "코드,이름,비고,주소\n"
+            "99,영신방재,x,경기도 화성시 송산면 송산산단길 127\n"
+        ).encode("utf-8-sig")
+        d = load_address_file(raw)
+        self.assertEqual(d.get("영신방재"), "경기도 화성시 송산면 송산산단길 127")
 
 
 class ResolveClientAddressTest(unittest.TestCase):
