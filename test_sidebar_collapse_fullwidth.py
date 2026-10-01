@@ -25,8 +25,12 @@ class SidebarCollapseFullwidthTest(unittest.TestCase):
     def test_sticky_script_uses_fullwidth_when_closed(self):
         self.assertIn("sidebarLooksOpen()", self.src)
         self.assertIn("sidebarExpandBtnVisible", self.src)
-        self.assertIn("STICKY_SCRIPT_VER_MAC = 45", self.src)
+        self.assertIn("sidebarExpandBtnPresent", self.src)
+        self.assertIn("fullWidthBarRect", self.src)
+        self.assertIn("STICKY_SCRIPT_VER_MAC = 46", self.src)
         self.assertIn("__dashboardStickyGeoFrozen = null", self.src)
+        # 접힘 시 고정바 좌표를 동결/본문 rect보다 나중에 전체폭으로 덮어씀
+        self.assertIn("접힘: 본문 rect/동결/Cloud 보정과 무관하게 고정바를 화면 전체폭으로", self.src)
 
     def test_expand_button_kept_and_width_preserved(self):
         """>> 는 유지하고, 열린 폭은 removeProperty로 지우지 않고 저장/복구."""
@@ -35,8 +39,8 @@ class SidebarCollapseFullwidthTest(unittest.TestCase):
         self.assertIn("data-dash-sb-saved", self.src)
         self.assertIn("collapsedSure", self.src)
         self.assertIn("openSure", self.src)
-        # >> 가 보이면 aria보다 접힘으로 본다
-        self.assertIn("if (sidebarExpandBtnVisible()) return false;", self.src)
+        # >> DOM 존재만으로 접힘 (크기/opacity 검사 실패로 고정바가 남는 것 방지)
+        self.assertIn("if (sidebarExpandBtnPresent()) return false;", self.src)
         self.assertIn(
             '[data-testid="stExpandSidebarButton"] {\n'
             "                visibility: visible !important;",
