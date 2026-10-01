@@ -24,8 +24,24 @@ class SidebarCollapseFullwidthTest(unittest.TestCase):
     def test_sticky_script_uses_fullwidth_when_closed(self):
         self.assertIn("sidebarLooksOpen()", self.src)
         self.assertIn("sidebarExpandBtnVisible", self.src)
-        self.assertIn("STICKY_SCRIPT_VER_MAC = 43", self.src)
+        self.assertIn("STICKY_SCRIPT_VER_MAC = 44", self.src)
         self.assertIn("__dashboardStickyGeoFrozen = null", self.src)
+
+    def test_expand_button_not_killed_by_false_collapse(self):
+        """열린 사이드바를 접힌 것으로 오인하면 >> 가 DOM에서 사라진다."""
+        self.assertIn("collapsedSure", self.src)
+        self.assertIn("openSure", self.src)
+        self.assertIn("clearForcedSidebarStyles", self.src)
+        # 사이드바 자식을 display:none 하면 열기 버튼/내부 컨트롤이 깨질 수 있음
+        self.assertNotIn(
+            'html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stSidebar"] > div',
+            self.src,
+        )
+        self.assertIn(
+            '[data-testid="stExpandSidebarButton"] {\n'
+            "                visibility: visible !important;",
+            self.src,
+        )
 
 
 if __name__ == "__main__":
