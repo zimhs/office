@@ -2473,6 +2473,17 @@ def detect_worklog_date_presence(d: date, *, include_remote: bool = True) -> dic
     cached = st.session_state.get(cache_k)
     if isinstance(cached, dict):
         return cached
+    if _worklog_day_marked_deleted(d):
+        out = {
+            "local": False,
+            "archive": False,
+            "drive": False,
+            "cloud": False,
+            "any": False,
+            "locations": [],
+        }
+        st.session_state[cache_k] = out
+        return out
     local = os.path.isfile(worklog_path(d))
     archive = False
     drive = False
@@ -2880,6 +2891,15 @@ def list_saved_worklog_dates() -> set[str]:
     except OSError:
         pass
     out.update(_list_archive_saved_dates())
+    # 삭제한 날짜는 달력 • / 존재 판정에서 제외 (새로고침 후 부활 방지)
+    try:
+        from worklog_remote_sync import _load_deleted_days
+
+        deleted = set(_load_deleted_days(WORKLOG_DIR).keys())
+        if deleted:
+            out -= deleted
+    except Exception:
+        pass
     st.session_state["wl_saved_dates_cache"] = out
     return out
 
@@ -2936,7 +2956,19 @@ def _cells_from_worksheet(ws, d: date) -> dict:
     return cells
 
 
+def _worklog_day_marked_deleted(d: date) -> bool:
+    """로컬 삭제 목록에 있으면 True — Drive/월별시트로 되살리지 않음."""
+    try:
+        from worklog_remote_sync import is_worklog_day_deleted
+
+        return bool(is_worklog_day_deleted(d.isoformat(), WORKLOG_DIR))
+    except Exception:
+        return False
+
+
 def read_worklog_cells(d: date) -> dict:
+    if _worklog_day_marked_deleted(d):
+        return _empty_cells(d)
     path = worklog_path(d)
     if not os.path.exists(path) or load_workbook is None:
         arch = read_worklog_cells_from_archive(d)
@@ -2949,6 +2981,8 @@ def read_worklog_cells(d: date) -> dict:
 
 
 def read_worklog_cells_from_archive(d: date) -> dict | None:
+    if _worklog_day_marked_deleted(d):
+        return None
     if load_workbook is None:
         return None
     month_path = worklog_archive_month_path(d, create_year=False)
@@ -6360,6 +6394,8 @@ def _render_worklog_summary_block(selected: date, cells: dict) -> None:
 def _try_pull_remote_worklog_day(d: date) -> bool:
     """로컬에 없을 때 Drive 동기화 후 파일 존재 여부 확인 (Gist 미사용)."""
     iso = d.isoformat()
+    if _worklog_day_marked_deleted(d):
+        return False
     if os.path.isfile(worklog_path(d)):
         return False
     tried_k = f"wl_remote_pull_tried_{iso}"
