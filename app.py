@@ -344,8 +344,7 @@ def inject_custom_css():
                 overflow: hidden !important;
                 flex: 0 0 0px !important;
             }
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stSidebar"] > div,
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) section[data-testid="stSidebar"] > div,
+            /* 자식 숨김은 aria=false 일 때만 — JS class 오판으로 >> 가 사라지는 진동 방지 */
             html:not(.dashboard-touch-mode) [data-testid="stSidebar"][aria-expanded="false"] > div,
             html:not(.dashboard-touch-mode) section[data-testid="stSidebar"][aria-expanded="false"] > div {
                 display: none !important;
@@ -370,17 +369,17 @@ def inject_custom_css():
                 pointer-events: auto !important;
                 z-index: 1000008 !important;
             }
-            /* 접힘(>> 존재) 시 고정바·본문 전체폭 — 변수 + 직접 left (JS 오설정 덮어쓰기 전에도) */
-            html:has([data-testid="stExpandSidebarButton"]):not(.dashboard-touch-mode),
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) {
+            /* 접힘(aria=false 또는 >>) 시 고정바 전체폭 — JS 인라인이 없을 때 안전망 */
+            html:has([data-testid="stSidebar"][aria-expanded="false"]):not(.dashboard-touch-mode),
+            html:has([data-testid="stExpandSidebarButton"]):not(.dashboard-touch-mode) {
                 --dashboard-bar-left: 12px;
                 --dashboard-bar-width: calc(100vw - 24px);
             }
+            html:has([data-testid="stSidebar"][aria-expanded="false"]):not(.dashboard-touch-mode) .dashboard-filter-sticky,
+            html:has([data-testid="stSidebar"][aria-expanded="false"]):not(.dashboard-touch-mode)
+                [data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker),
             html:has([data-testid="stExpandSidebarButton"]):not(.dashboard-touch-mode) .dashboard-filter-sticky,
             html:has([data-testid="stExpandSidebarButton"]):not(.dashboard-touch-mode)
-                [data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker),
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) .dashboard-filter-sticky,
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode)
                 [data-testid="stVerticalBlockBorderWrapper"]:has(#sticky-marker) {
                 left: 12px !important;
                 width: calc(100vw - 24px) !important;
@@ -10987,7 +10986,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 104
+    _sticky_py_ver = 105
     components.html(
         """
         <script>
@@ -11029,7 +11028,7 @@ def inject_sticky_tabs_script():
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 47; /* v47: 로컬 touch 오인 해제 + 접힘 고정바/갭 강제 */
+            var STICKY_SCRIPT_VER_MAC = 48; /* v48: 접힘 진동 제거 — aria 우선, 폴링 강제 중단 */
             var STICKY_SCRIPT_VER_IPAD = 70; /* v70: 좌 >> · 우 Share 표시. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
@@ -11428,8 +11427,7 @@ def inject_sticky_tabs_script():
                 );
             }
             function sidebarExpandBtnPresent() {
-                /* Streamlit은 접혔을 때만 헤더에 stExpandSidebarButton을 둔다.
-                   크기/opacity 애니메이션 중에도 DOM 존재 = 접힘으로 본다. */
+                /* Streamlit은 접혔을 때만 헤더에 stExpandSidebarButton을 둔다. */
                 try {
                     return !!parentDoc.querySelector('[data-testid="stExpandSidebarButton"]');
                 } catch (eP) {
@@ -11451,15 +11449,29 @@ def inject_sticky_tabs_script():
                     return false;
                 }
             }
+            function sidebarAriaState() {
+                try {
+                    var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
+                    return sidebar ? sidebar.getAttribute('aria-expanded') : null;
+                } catch (eA) {
+                    return null;
+                }
+            }
+            function sidebarIsCollapsedSure() {
+                /* Streamlit 권위: aria=true 이면 절대 접힘으로 보지 않음(>> 실종·진동 방지).
+                   접힘 확실 = aria=false, 또는 aria 없고 >> 만 있을 때. */
+                var aria = sidebarAriaState();
+                if (aria === 'true') return false;
+                if (aria === 'false') return true;
+                return sidebarExpandBtnPresent();
+            }
             function sidebarLooksOpen() {
+                var aria = sidebarAriaState();
+                if (aria === 'true') return true;
+                if (aria === 'false') return false;
+                if (sidebarExpandBtnPresent()) return false;
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (!sidebar) return false;
-                /* >> DOM 존재만으로 접힘 — 고정바가 옛 left에 남는 주원인 차단.
-                   << 와 혼동하지 않도록 stExpandSidebarButton만 본다. */
-                if (sidebarExpandBtnPresent()) return false;
-                var aria = sidebar.getAttribute('aria-expanded');
-                if (aria === 'false') return false;
-                if (aria === 'true') return true;
                 try {
                     var r = sidebar.getBoundingClientRect();
                     if (r.width < 40 || r.right < 48 || r.left < -16) return false;
@@ -11495,10 +11507,9 @@ def inject_sticky_tabs_script():
                 } catch (eMk) {}
             }
             function enforceCollapsedStickyBar() {
-                /* touch/Mac 경로와 무관 — 접힘이면 고정바 left를 무조건 전체폭으로.
-                   (JS 인라인 !important 가 CSS :has() 를 덮어쓰던 문제 차단) */
+                /* 접힘이 확실할 때만 고정바 전체폭. aria=true 이면 손대지 않음. */
                 try {
-                    if (sidebarLooksOpen()) return false;
+                    if (!sidebarIsCollapsedSure()) return false;
                 } catch (eOpen) {
                     return false;
                 }
@@ -11584,11 +11595,28 @@ def inject_sticky_tabs_script():
                     main.removeAttribute('data-dash-main-forced');
                 } catch (eM) {}
             }
+            function keepExpandBtnAlive() {
+                try {
+                    var exp = parentDoc.querySelector('[data-testid="stExpandSidebarButton"]');
+                    if (!exp) return;
+                    exp.style.setProperty('visibility', 'visible', 'important');
+                    exp.style.setProperty('opacity', '1', 'important');
+                    exp.style.setProperty('pointer-events', 'auto', 'important');
+                    exp.style.setProperty('display', 'inline-flex', 'important');
+                    exp.style.setProperty('z-index', '1000008', 'important');
+                    var btn = exp.matches('button') ? exp : exp.querySelector('button');
+                    if (btn) {
+                        try { btn.disabled = false; } catch (eDis) {}
+                        btn.style.setProperty('pointer-events', 'auto', 'important');
+                        btn.style.setProperty('visibility', 'visible', 'important');
+                        btn.style.setProperty('opacity', '1', 'important');
+                    }
+                } catch (eExpLive) {}
+            }
             function forceLocalSidebarLayout() {
-                /* 로컬만: >> 또는 aria=false 일 때만 잔여 width 제거.
-                   열린 폭은 저장 후 복원해 resizable 기본값으로 커지지 않게 한다.
-                   Streamlit 인라인 width는 매 프레임 removeProperty 하지 않는다. */
-                /* localhost Mac이 touch로 오인돼도 접힘 보정은 반드시 실행 */
+                /* 로컬만. aria=true 이면 강제 접힘을 즉시 해제(>> 복구).
+                   접힘 강제(JS width:0)는 aria=false 일 때만 — CSS가 1차, JS는 보조.
+                   자식 display:none 은 JS로 하지 않음(React/>> 진동 원인). */
                 try {
                     if (touchMode && !isLocalDesktopHost()) return;
                 } catch (eTm) {
@@ -11598,11 +11626,8 @@ def inject_sticky_tabs_script():
                 var main = parentDoc.querySelector('[data-testid="stMain"]')
                     || parentDoc.querySelector('section.main');
                 var aria = sidebar ? sidebar.getAttribute('aria-expanded') : null;
-                var expandPresent = sidebarExpandBtnPresent();
-                /* >> DOM 있으면 접힘 확실. aria=true 여도 >> 우선(잔여폭·잘못된 aria 대비). */
-                var collapsedSure = expandPresent || (aria === 'false');
-                var openSure = (aria === 'true') && !expandPresent;
-                var collapsed = collapsedSure && !openSure;
+                var collapsed = false;
+                try { collapsed = sidebarIsCollapsedSure(); } catch (eCs) { collapsed = (aria === 'false'); }
                 try {
                     var prev = parentDoc.documentElement.classList.contains('dashboard-sidebar-collapsed');
                     parentDoc.documentElement.classList.toggle('dashboard-sidebar-collapsed', collapsed);
@@ -11615,6 +11640,7 @@ def inject_sticky_tabs_script():
                 if (!collapsed) {
                     restoreSidebarInlineSize(sidebar);
                     clearForcedMainStyles(main);
+                    /* 이전에 JS로 숨긴 자식이 있으면 복구 */
                     try {
                         var node2 = sidebar.firstElementChild;
                         while (node2) {
@@ -11632,7 +11658,7 @@ def inject_sticky_tabs_script():
                     } catch (eKids2) {}
                     return;
                 }
-                /* collapsed: 잔여 폭 제거. 기존 Streamlit width는 저장해 두었다가 복구. */
+                /* aria=false(접힘 확실): 잔여 폭만 제거. 자식 display:none 금지. */
                 saveSidebarInlineSize(sidebar);
                 try {
                     sidebar.style.setProperty('min-width', '0px', 'important');
@@ -11645,19 +11671,6 @@ def inject_sticky_tabs_script():
                     sidebar.style.setProperty('border', 'none', 'important');
                     sidebar.style.setProperty('overflow', 'hidden', 'important');
                 } catch (eSet) {}
-                try {
-                    var node = sidebar.firstElementChild;
-                    while (node) {
-                        try {
-                            node.style.setProperty('width', '0px', 'important');
-                            node.style.setProperty('min-width', '0px', 'important');
-                            node.style.setProperty('max-width', '0px', 'important');
-                            node.style.setProperty('display', 'none', 'important');
-                            node.setAttribute('data-dash-kid-forced', '1');
-                        } catch (eN) {}
-                        node = node.nextElementSibling;
-                    }
-                } catch (eKids) {}
                 if (main) {
                     main.style.setProperty('width', '100%', 'important');
                     main.style.setProperty('max-width', '100%', 'important');
@@ -11665,24 +11678,7 @@ def inject_sticky_tabs_script():
                     main.style.setProperty('flex', '1 1 auto', 'important');
                     try { main.setAttribute('data-dash-main-forced', '1'); } catch (eMf) {}
                 }
-                /* >> 열기 버튼 생존·클릭 보장 (사이드바 밖 헤더) */
-                try {
-                    var exp = parentDoc.querySelector('[data-testid="stExpandSidebarButton"]');
-                    if (exp) {
-                        exp.style.setProperty('visibility', 'visible', 'important');
-                        exp.style.setProperty('opacity', '1', 'important');
-                        exp.style.setProperty('pointer-events', 'auto', 'important');
-                        exp.style.setProperty('display', 'inline-flex', 'important');
-                        exp.style.setProperty('z-index', '1000008', 'important');
-                        var btn = exp.matches('button') ? exp : exp.querySelector('button');
-                        if (btn) {
-                            try { btn.disabled = false; } catch (eDis) {}
-                            btn.style.setProperty('pointer-events', 'auto', 'important');
-                            btn.style.setProperty('visibility', 'visible', 'important');
-                            btn.style.setProperty('opacity', '1', 'important');
-                        }
-                    }
-                } catch (eExpLive) {}
+                keepExpandBtnAlive();
             }
             function collectSidebarToggles() {
                 var seen = [];
@@ -11868,8 +11864,7 @@ def inject_sticky_tabs_script():
             }
             if (!isTouchPadEarly() && parentWin.__dashboardStickyMacReady === STICKY_SCRIPT_VER_MAC) {
                 try { markStickyDeployVer(); } catch (eVerSkip) {}
-                try { forceLocalSidebarLayout(); } catch (eForceSkip) {}
-                try { enforceCollapsedStickyBar(); } catch (eEnfSkip) {}
+                try { keepExpandBtnAlive(); } catch (eKeepSkip) {}
                 try {
                     if (typeof parentWin.__dashboardFixDuplicateTabs === 'function') {
                         parentWin.__dashboardFixDuplicateTabs(true);
@@ -11973,7 +11968,7 @@ def inject_sticky_tabs_script():
                 }
                 /* 사이드바 접힘: 본문/고정바가 예전 사이드바 폭만큼 오른쪽에 남는 경우 전체 폭으로 */
                 try {
-                    if (!sidebarLooksOpen() && vw > 0) {
+                    if (sidebarIsCollapsedSure() && vw > 0) {
                         var pad = 12;
                         left = pad;
                         width = Math.max(280, vw - pad * 2);
@@ -13126,7 +13121,7 @@ def inject_sticky_tabs_script():
                 try { if (cloudMode) rectMac = cloudAvoidSidebarOverlap(rectMac); } catch (eCloudGeo) {}
                 var topMac = getTopOffsetMac();
                 var sbCollapsed = false;
-                try { sbCollapsed = !sidebarLooksOpen(); } catch (eSbC) { sbCollapsed = false; }
+                try { sbCollapsed = sidebarIsCollapsedSure(); } catch (eSbC) { sbCollapsed = false; }
                 /* 부팅 중 top/left/width 동결 — 접힘 시에는 동결 금지(옛 left에 고정바 잔류 방지) */
                 var vwNow = parentWin.innerWidth || 0;
                 var geoKey = Math.round(topMac) + ':' + Math.round(rectMac.left) + ':' + Math.round(rectMac.width);
@@ -13520,6 +13515,7 @@ def inject_sticky_tabs_script():
                 }
                 parentDoc.addEventListener('click', function(e) {
                     try { ensureSidebarToggleLive(); } catch (eSbC) {}
+                    try { keepExpandBtnAlive(); } catch (eKeep) {}
                     if (e.target.closest('[data-testid="collapsedControl"]') ||
                         e.target.closest('[data-testid="stExpandSidebarButton"]') ||
                         e.target.closest('[data-testid="stSidebarCollapsedControl"]') ||
@@ -13530,34 +13526,40 @@ def inject_sticky_tabs_script():
                             parentWin.__dashboardStickyGeoFrozen = null;
                             lastGeoKey = '';
                         } catch (eClr) {}
-                        try { forceLocalSidebarLayout(); } catch (eForceC) {}
-                        try { enforceCollapsedStickyBar(); } catch (eEnfC) {}
-                        scheduleSync(80);
-                        scheduleSync(220);
-                        scheduleSync(500);
+                        /* 연속 강제 폴링 대신 짧은 debounce sync 만 — 진동 방지 */
+                        scheduleSync(100);
+                        scheduleSync(350);
                     }
                 }, true);
-                /* 접힘 잔류 left 감시 — sync가 스킵돼도 고정바·갭을 주기적으로 교정 */
+                /* v47 접힘 감시 인터벌 제거 — 700ms 강제 접힘이 >> 실종·본문 깜빡임 원인 */
                 try {
                     if (parentWin.__dashboardCollapseWatch) {
                         clearInterval(parentWin.__dashboardCollapseWatch);
+                        parentWin.__dashboardCollapseWatch = null;
                     }
                 } catch (eCw0) {}
-                parentWin.__dashboardCollapseWatch = setInterval(function() {
-                    try { markStickyDeployVer(); } catch (eVw) {}
-                    try { forceLocalSidebarLayout(); } catch (eForceW) {}
-                    try { enforceCollapsedStickyBar(); } catch (eEnfW) {}
-                }, 700);
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (sidebar) {
                     sidebar.addEventListener('transitionend', function() { scheduleSync(100); });
+                    try {
+                        if (!parentWin.__dashboardSidebarAriaObs) {
+                            parentWin.__dashboardSidebarAriaObs = new MutationObserver(function() {
+                                try { forceLocalSidebarLayout(); } catch (eFa) {}
+                                try { keepExpandBtnAlive(); } catch (eKa) {}
+                                scheduleSync(120);
+                            });
+                            parentWin.__dashboardSidebarAriaObs.observe(sidebar, {
+                                attributes: true,
+                                attributeFilter: ['aria-expanded', 'style', 'class']
+                            });
+                        }
+                    } catch (eAriaObs) {}
                 }
                 /* Cloud/로딩: 건강할 때는 스킵 — 주기 sync가 스페이서 높이를 두둑 흔들림 */
                 parentWin.__dashboardStickyTouchInterval = setInterval(function() {
                     if (isFilterDropdownOpen()) return;
                     try { unpinBadFixedShells(); } catch (eUn) {}
-                    try { forceLocalSidebarLayout(); } catch (eForceI) {}
-                    try { enforceCollapsedStickyBar(); } catch (eEnfI) {}
+                    try { keepExpandBtnAlive(); } catch (eKeepI) {}
                     var fb = findFilterBox();
                     var all = collectMainTabLists();
                     var healthy = false;
@@ -13571,7 +13573,7 @@ def inject_sticky_tabs_script():
                         syncFixedBar();
                     }
                     try { ensureSidebarToggleLive(); } catch (eSbMac) {}
-                }, cloudMode ? 900 : 1200);
+                }, cloudMode ? 900 : 4000);
                 /* Cloud 첫 로딩: 비건강/비고정일 때만 재장착 (건강 시 rAF 스로틀 완화) */
                 if (cloudMode && !parentWin.__dashboardStickyGeoRaf) {
                     var geoUntil = Date.now() + 10000;
