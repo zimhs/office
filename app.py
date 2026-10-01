@@ -6063,6 +6063,20 @@ def filter_df_by_selected_client(df, selected_client):
     return df.loc[_dash_series_eq(df["거래처"], sel)].copy()
 
 
+def filter_equipment_by_branch(df, selected_branch, col: str = "지사"):
+    """설비재고 지사 필터.
+
+    `[울산]` 을 str.contains(regex)로 쓰면 문자 클래스라 `[아산]`(산)까지 걸린다.
+    괄호가 있는 지사명은 정확 일치로 필터한다.
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    if not selected_branch or selected_branch == "전체 지사" or col not in df.columns:
+        return df
+    want = str(selected_branch).strip()
+    return df.loc[df[col].astype(str).str.strip() == want].copy()
+
+
 def _parse_sales_uploaded_tuples(file_tuples):
     """매출 CSV 바이트 튜플 → DataFrame (캐시 없음, 순수 파싱)."""
     if not file_tuples:
@@ -17850,11 +17864,9 @@ def _dash_filter_and_tabs_fragment() -> None:
                 if selected_equip_type in ["전체 보기", "탱크 재고"]:
                     st.markdown("<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>🛢️ 초저온 탱크 재고 현황</div>", unsafe_allow_html=True)
                     if not df_tank.empty:
-                        filtered_tank = df_tank.copy()
-                        if selected_branch != "전체 지사" and '지사' in filtered_tank.columns:
-                            filtered_tank = filtered_tank[filtered_tank['지사'].astype(str).str.contains(selected_branch)]
+                        filtered_tank = filter_equipment_by_branch(df_tank, selected_branch)
                         if selected_status != "전체 상태" and '사용구분' in filtered_tank.columns:
-                            filtered_tank = filtered_tank[filtered_tank['사용구분'].astype(str).str.contains(selected_status)]
+                            filtered_tank = filtered_tank[filtered_tank['사용구분'].astype(str).str.contains(selected_status, regex=False)]
                         if selected_eq_item != "전체 품목/형식" and '품목' in filtered_tank.columns:
                             filtered_tank = filtered_tank[filtered_tank['품목'].astype(str).str.strip() == selected_eq_item]
             
@@ -17865,11 +17877,9 @@ def _dash_filter_and_tabs_fragment() -> None:
         
                     st.markdown(f"<div style='font-size: 16px; font-weight: 700; color: #1E3A8A; margin-bottom: 10px;'>♨️ 기화기 재고 현황</div>", unsafe_allow_html=True)
                     if not df_vaporizer.empty:
-                        filtered_vap = df_vaporizer.copy()
-                        if selected_branch != "전체 지사" and '지사' in filtered_vap.columns:
-                            filtered_vap = filtered_vap[filtered_vap['지사'].astype(str).str.contains(selected_branch)]
+                        filtered_vap = filter_equipment_by_branch(df_vaporizer, selected_branch)
                         if selected_status != "전체 상태" and '사용구분' in filtered_vap.columns:
-                            filtered_vap = filtered_vap[filtered_vap['사용구분'].astype(str).str.contains(selected_status)]
+                            filtered_vap = filtered_vap[filtered_vap['사용구분'].astype(str).str.contains(selected_status, regex=False)]
                         if selected_eq_item != "전체 품목/형식" and '기화형식' in filtered_vap.columns:
                             filtered_vap = filtered_vap[filtered_vap['기화형식'].astype(str).str.strip() == selected_eq_item]
             
