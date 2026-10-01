@@ -1055,17 +1055,86 @@ def _copy_tree_filtered(
     return copied
 
 
+def _worklog_deleted_isos(local_dir: str) -> set:
+    """로컬에서 삭제한 업무일지 날짜(ISO). Drive 복사가 되살리지 않게 쓴다."""
+    try:
+        from worklog_remote_sync import _load_deleted_days
+
+        return set(_load_deleted_days(local_dir).keys())
+    except Exception:
+        return set()
+
+
+def _purge_deleted_worklog_days_local(
+    local_dir: str,
+    *,
+    deleted_isos: Optional[set] = None,
+) -> List[str]:
+    """삭제 목록 날짜가 일자파일·월별시트로 되살아난 경우 로컬/대상에서 다시 제거."""
+    removed: List[str] = []
+    deleted = set(deleted_isos) if deleted_isos is not None else _worklog_deleted_isos(local_dir)
+    if not deleted:
+        return removed
+    for iso in sorted(deleted):
+        day_path = os.path.join(local_dir, f"{iso}.xlsx")
+        if os.path.isfile(day_path):
+            try:
+                os.remove(day_path)
+                removed.append(f"-worklog/{iso}.xlsx")
+            except OSError:
+                pass
+        try:
+            from datetime import date as _date
+
+            from worklog_tab import delete_worklog_archive_sheet_at
+
+            d = _date.fromisoformat(iso)
+            # 캐시 안 일지 + Desktop/Drive 아카이브 모두 정리
+            candidates: List[str] = []
+            cache_month = os.path.join(local_dir, "일지", str(d.year), f"{d.month}월.xlsx")
+            candidates.append(cache_month)
+            try:
+                from worklog_tab import worklog_archive_month_path
+
+                mp = worklog_archive_month_path(d, create_year=False)
+                if mp:
+                    candidates.append(mp)
+            except Exception:
+                pass
+            drive_arch = resolve_drive_worklog_archive_dir(d.year)
+            if drive_arch:
+                candidates.append(os.path.join(drive_arch, f"{d.month}월.xlsx"))
+            seen: set[str] = set()
+            for month_p in candidates:
+                ap = os.path.abspath(month_p)
+                if ap in seen or not os.path.isfile(month_p):
+                    continue
+                seen.add(ap)
+                got = delete_worklog_archive_sheet_at(month_p, d)
+                if got:
+                    removed.append(f"-worklog/일지/{d.year}/{d.month}월.xlsx#{d.day}")
+        except Exception:
+            pass
+    return removed
+
+
 def _copy_worklog_tree(src_root: str, dst_root: str, *, force: bool = False) -> List[str]:
     copied: List[str] = []
     if not src_root or not os.path.isdir(src_root):
         return copied
     os.makedirs(dst_root, exist_ok=True)
+    # Drive↔캐시 어느 쪽이든 삭제 목록(보통 캐시)을 존중
+    deleted_isos = _worklog_deleted_isos(dst_root) | _worklog_deleted_isos(src_root)
     try:
         names = os.listdir(src_root)
     except OSError:
         names = []
     for name in names:
         if not _is_worklog_day_file(name) and name != "template.xlsx":
+            continue
+        iso = name.replace(".xlsx", "") if name.endswith(".xlsx") else name
+        if name != "template.xlsx" and iso in deleted_isos:
+            # 삭제된 날짜는 Drive에 남아 있어도 로컬로 가져오지 않음
             continue
         src = os.path.join(src_root, name)
         dst = os.path.join(dst_root, name)
@@ -1079,6 +1148,11 @@ def _copy_worklog_tree(src_root: str, dst_root: str, *, force: bool = False) -> 
     if os.path.isdir(arch):
         copied.extend(
             _copy_tree_filtered(arch, os.path.join(dst_root, "일지"), force=force, label="worklog/일지")
+        )
+    # 월별 xlsx가 Drive에서 통째로 오면 삭제 시트까지 되살아남 → 즉시 재제거
+    if deleted_isos:
+        copied.extend(
+            _purge_deleted_worklog_days_local(dst_root, deleted_isos=deleted_isos)
         )
     return copied
 
@@ -1170,6 +1244,16 @@ def sync_worklog_bidirectional(
                             copied.append(f"Drive삭제:{name}")
                         except OSError:
                             pass
+                        # 월별 일지 시트도 Drive에 남아 있으면 제거
+                        try:
+                            iso = name.replace(".xlsx", "")
+                            from datetime import date as _date
+
+                            d_del = _date.fromisoformat(iso)
+                            for dn in delete_worklog_day_from_drive(d_del, local_dir):
+                                copied.append(f"Drive삭제:{dn}")
+                        except Exception:
+                            pass
                         continue
                 except Exception:
                     pass
@@ -1196,6 +1280,11 @@ def sync_worklog_bidirectional(
         elif os.path.isfile(drv_t) and not os.path.isfile(loc_t):
             if _atomic_copy(drv_t, loc_t):
                 copied.append("←Drive:template.xlsx")
+        # 삭제 목록 날짜가 일자/월별시트로 되살아난 경우 정리
+        try:
+            copied.extend(_purge_deleted_worklog_days_local(local_dir))
+        except Exception:
+            pass
         _WL_SYNC_DONE = True
         return {
             "ok": True,
