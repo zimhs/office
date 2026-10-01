@@ -329,8 +329,8 @@ def inject_custom_css():
             [data-testid="stSidebar"] label, [data-testid="stSidebar"] .stMarkdown {
                 color: #334155 !important;
             }
-            /* 로컬: 사이드바 접힘 후에도 react-resizable 인라인 width(~300px)가 남아
-               본문이 오른쪽으로 밀림. JS가 html.dashboard-sidebar-collapsed 를 켠다. */
+            /* 로컬: Streamlit이 접힌 뒤에도 resizable width가 남을 때만 보조.
+               (열기 버튼 >> 는 헤더에 있으므로 사이드바 자식을 display:none 하지 않음) */
             html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stSidebar"],
             html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) section[data-testid="stSidebar"] {
                 min-width: 0 !important;
@@ -339,13 +339,7 @@ def inject_custom_css():
                 margin: 0 !important;
                 padding: 0 !important;
                 border: none !important;
-                overflow: hidden !important;
-                pointer-events: none !important;
                 flex: 0 0 0px !important;
-            }
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stSidebar"] > div,
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) section[data-testid="stSidebar"] > div {
-                display: none !important;
             }
             html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stMain"],
             html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) section.main {
@@ -354,8 +348,12 @@ def inject_custom_css():
                 margin-left: 0 !important;
                 flex: 1 1 auto !important;
             }
-            html.dashboard-sidebar-collapsed:not(.dashboard-touch-mode) [data-testid="stAppViewContainer"] {
-                grid-template-columns: 0 minmax(0, 1fr) !important;
+            /* 열기 버튼(>>)은 항상 클릭 가능하게 */
+            [data-testid="stExpandSidebarButton"] {
+                visibility: visible !important;
+                opacity: 1 !important;
+                pointer-events: auto !important;
+                z-index: 1000008 !important;
             }
 
             div[data-testid="column"] { align-self: flex-start; }
@@ -10957,7 +10955,7 @@ def inject_sticky_tabs_script():
     - 로컬·Cloud·iPad 공통: 프록시 탭바 없이 Streamlit 네이티브 탭만 유지
     """
     _cloud_sticky_js = "true" if _is_streamlit_cloud() else "false"
-    _sticky_py_ver = 100
+    _sticky_py_ver = 101
     components.html(
         """
         <script>
@@ -10999,7 +10997,7 @@ def inject_sticky_tabs_script():
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 43; /* v43: >> 표시·resizable 잔여폭까지 강제 전체폭 */
+            var STICKY_SCRIPT_VER_MAC = 44; /* v44: << 오인으로 >> 열기 버튼 사라짐 수정 */
             var STICKY_SCRIPT_VER_IPAD = 70; /* v70: 좌 >> · 우 Share 표시. 맥 수치 무손실 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
@@ -11385,13 +11383,9 @@ def inject_sticky_tabs_script():
                 );
             }
             function sidebarExpandBtnVisible() {
-                /* Streamlit 1.64: 접히면 헤더에 stExpandSidebarButton(>>)이 보인다. */
+                /* 접힘 전용 >> 만. 펼침 상태 << 접기 버튼과 절대 섞지 않는다. */
                 try {
                     var exp = parentDoc.querySelector('[data-testid="stExpandSidebarButton"]');
-                    if (!exp) {
-                        var list = collectSidebarToggles();
-                        exp = list && list.length ? list[0] : null;
-                    }
                     if (!exp) return false;
                     var er = exp.getBoundingClientRect();
                     var st = parentWin.getComputedStyle(exp);
@@ -11407,100 +11401,94 @@ def inject_sticky_tabs_script():
                 var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (!sidebar) return false;
                 var aria = sidebar.getAttribute('aria-expanded');
-                if (aria === 'false') return false;
-                /* >> 버튼이 보이면 접힌 상태 (aria가 늦거나 없는 경우 대비) */
-                if (sidebarExpandBtnVisible()) return false;
+                /* Streamlit 상태를 최우선 — 강제 width:0 때문에 rect가 작아져도
+                   aria=true 이면 열린 것으로 본다 (안 그러면 >> 가 DOM에서 사라짐). */
                 if (aria === 'true') return true;
+                if (aria === 'false') return false;
+                if (sidebarExpandBtnVisible()) return false;
                 try {
                     var r = sidebar.getBoundingClientRect();
-                    /* translateX 로 왼쪽으로 빠진 경우 width는 남아도 right≈0 */
                     if (r.width < 40 || r.right < 48 || r.left < -16) return false;
                     return r.width > 80 && r.height > 80 && r.left >= -2;
                 } catch (eR) {
-                    return false;
+                    return true; /* 불확실하면 열어 둔 쪽으로 — 열기 버튼 실종 방지 */
                 }
             }
-            function forceLocalSidebarLayout() {
-                /* 로컬만: react-resizable 인라인 width가 접힘 후에도 남아 본문을 민다. */
-                if (touchMode) return;
-                var open = sidebarLooksOpen();
-                var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
-                var main = parentDoc.querySelector('[data-testid="stMain"]')
-                    || parentDoc.querySelector('section.main');
-                try {
-                    parentDoc.documentElement.classList.toggle(
-                        'dashboard-sidebar-collapsed',
-                        !open
-                    );
-                } catch (eCl) {}
-                if (!sidebar) return;
-                var props = ['min-width', 'max-width', 'width', 'flex-basis', 'flex', 'margin', 'padding', 'border'];
+            function clearForcedSidebarStyles(sidebar, main) {
+                var props = ['min-width', 'max-width', 'width', 'flex-basis', 'flex', 'margin', 'padding', 'border', 'overflow', 'pointer-events'];
                 var i;
-                if (!open) {
-                    for (i = 0; i < props.length; i++) {
-                        try {
-                            if (props[i] === 'flex') {
-                                sidebar.style.setProperty('flex', '0 0 0px', 'important');
-                            } else if (props[i] === 'flex-basis') {
-                                sidebar.style.setProperty('flex-basis', '0px', 'important');
-                            } else if (props[i] === 'width' || props[i] === 'min-width' || props[i] === 'max-width') {
-                                sidebar.style.setProperty(props[i], '0px', 'important');
-                            } else if (props[i] === 'margin' || props[i] === 'padding') {
-                                sidebar.style.setProperty(props[i], '0', 'important');
-                            } else if (props[i] === 'border') {
-                                sidebar.style.setProperty(props[i], 'none', 'important');
-                            }
-                        } catch (eSet) {}
-                    }
-                    sidebar.style.setProperty('overflow', 'hidden', 'important');
-                    sidebar.style.setProperty('pointer-events', 'none', 'important');
-                    try {
-                        var node = sidebar.firstElementChild;
-                        while (node) {
-                            try {
-                                node.style.setProperty('width', '0px', 'important');
-                                node.style.setProperty('min-width', '0px', 'important');
-                                node.style.setProperty('max-width', '0px', 'important');
-                                node.style.setProperty('display', 'none', 'important');
-                            } catch (eN) {}
-                            node = node.nextElementSibling;
-                        }
-                    } catch (eKids) {}
-                    if (main) {
-                        main.style.setProperty('width', '100%', 'important');
-                        main.style.setProperty('max-width', '100%', 'important');
-                        main.style.setProperty('margin-left', '0', 'important');
-                        main.style.setProperty('flex', '1 1 auto', 'important');
-                    }
-                } else {
+                if (sidebar) {
                     for (i = 0; i < props.length; i++) {
                         try { sidebar.style.removeProperty(props[i]); } catch (eRm) {}
                     }
-                    try {
-                        sidebar.style.removeProperty('overflow');
-                        sidebar.style.removeProperty('pointer-events');
-                    } catch (eRm2) {}
-                    try {
-                        var node2 = sidebar.firstElementChild;
-                        while (node2) {
-                            try {
-                                node2.style.removeProperty('width');
-                                node2.style.removeProperty('min-width');
-                                node2.style.removeProperty('max-width');
-                                node2.style.removeProperty('display');
-                            } catch (eN2) {}
-                            node2 = node2.nextElementSibling;
-                        }
-                    } catch (eKids2) {}
-                    if (main) {
-                        try {
-                            main.style.removeProperty('width');
-                            main.style.removeProperty('max-width');
-                            main.style.removeProperty('margin-left');
-                            main.style.removeProperty('flex');
-                        } catch (eM) {}
-                    }
                 }
+                if (main) {
+                    try {
+                        main.style.removeProperty('width');
+                        main.style.removeProperty('max-width');
+                        main.style.removeProperty('margin-left');
+                        main.style.removeProperty('flex');
+                    } catch (eM) {}
+                }
+            }
+            function forceLocalSidebarLayout() {
+                /* 로컬만: Streamlit이 접었을 때만(aria=false 또는 >> 표시) 잔여 width 제거.
+                   열린 상태를 접힌 것으로 오인하면 >> 버튼이 DOM에서 사라진다. */
+                if (touchMode) return;
+                var sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
+                var main = parentDoc.querySelector('[data-testid="stMain"]')
+                    || parentDoc.querySelector('section.main');
+                var aria = sidebar ? sidebar.getAttribute('aria-expanded') : null;
+                var expandVisible = sidebarExpandBtnVisible();
+                /* 확실할 때만 접힘 강제. aria=true 이면 무조건 복구. */
+                var collapsedSure = (aria === 'false') || expandVisible;
+                var openSure = (aria === 'true');
+                try {
+                    parentDoc.documentElement.classList.toggle(
+                        'dashboard-sidebar-collapsed',
+                        collapsedSure && !openSure
+                    );
+                } catch (eCl) {}
+                if (!sidebar) return;
+                if (openSure || !collapsedSure) {
+                    clearForcedSidebarStyles(sidebar, main);
+                    return;
+                }
+                /* collapsedSure: Streamlit이 접은 상태 → 잔여 폭만 제거 (자식 display:none 금지) */
+                try {
+                    sidebar.style.setProperty('min-width', '0px', 'important');
+                    sidebar.style.setProperty('max-width', '0px', 'important');
+                    sidebar.style.setProperty('width', '0px', 'important');
+                    sidebar.style.setProperty('flex', '0 0 0px', 'important');
+                    sidebar.style.setProperty('flex-basis', '0px', 'important');
+                    sidebar.style.setProperty('margin', '0', 'important');
+                    sidebar.style.setProperty('padding', '0', 'important');
+                    sidebar.style.setProperty('border', 'none', 'important');
+                } catch (eSet) {}
+                if (main) {
+                    main.style.setProperty('width', '100%', 'important');
+                    main.style.setProperty('max-width', '100%', 'important');
+                    main.style.setProperty('margin-left', '0', 'important');
+                    main.style.setProperty('flex', '1 1 auto', 'important');
+                }
+                /* >> 열기 버튼 생존·클릭 보장 */
+                try {
+                    var exp = parentDoc.querySelector('[data-testid="stExpandSidebarButton"]');
+                    if (exp) {
+                        exp.style.setProperty('visibility', 'visible', 'important');
+                        exp.style.setProperty('opacity', '1', 'important');
+                        exp.style.setProperty('pointer-events', 'auto', 'important');
+                        exp.style.setProperty('display', 'inline-flex', 'important');
+                        exp.style.setProperty('z-index', '1000008', 'important');
+                        var btn = exp.matches('button') ? exp : exp.querySelector('button');
+                        if (btn) {
+                            try { btn.disabled = false; } catch (eDis) {}
+                            btn.style.setProperty('pointer-events', 'auto', 'important');
+                            btn.style.setProperty('visibility', 'visible', 'important');
+                            btn.style.setProperty('opacity', '1', 'important');
+                        }
+                    }
+                } catch (eExpLive) {}
             }
             function collectSidebarToggles() {
                 var seen = [];
