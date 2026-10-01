@@ -4956,15 +4956,90 @@ def create_item_share_hbar(share_series, title_text="당해 년평균 품목별 
 # ==========================================
 # 3. 데이터 로딩 & 메모리 캐싱 (최적화) - Error 무시(on_bad_lines) 적용
 # ==========================================
+_ADDR_NAME_KEYS = frozenset(
+    {"거래처명", "거래처", "사업체명", "업체명", "고객명", "회사명", "사업장명", "이름"}
+)
+_ADDR_ADDR_KEYS = frozenset(
+    {"사업장주소", "도로명주소", "상세주소", "주소", "소재지", "회사주소"}
+)
+
+
 def _compact_addr_header(label: str) -> str:
-    return str(label or "").strip().replace(" ", "").replace("\n", "")
+    t = str(label or "").strip().replace(" ", "").replace("\n", "")
+    # 엑셀/CSV 잔여 특수공백
+    t = t.replace("\u00a0", "").replace("\u200b", "")
+    if t.lower().startswith("unnamed"):
+        return ""
+    return t
 
 
-def _pick_address_book_columns(columns):
+def _is_blank_address_value(val) -> bool:
+    s = str(val or "").strip().lower()
+    if not s or s in ("nan", "none", "nat", "-", "--", "- -"):
+        return True
+    if re.fullmatch(r"[-\s]+", s):
+        return True
+    return False
+
+
+def _header_looks_like_code(compact: str) -> bool:
+    c = str(compact or "")
+    if not c:
+        return True
+    if c in ("사업체코드", "거래처코드", "코드", "번호", "no", "No", "NO"):
+        return True
+    if c.endswith("코드"):
+        return True
+    if c.endswith("번호") and "전화" not in c and "사업자" not in c and "팩스" not in c:
+        return True
+    return False
+
+
+def _header_looks_like_name(compact: str) -> bool:
+    if not compact or _header_looks_like_code(compact):
+        return False
+    if compact in _ADDR_NAME_KEYS or compact in ("이름", "회사명", "사업장명", "고객"):
+        return True
+    # 거래처구분·거래처유형 등은 제외
+    if compact.startswith("거래처") and compact != "거래처" and compact != "거래처명":
+        return False
+    return False
+
+
+def _header_looks_like_address(compact: str) -> bool:
+    if not compact or _header_looks_like_code(compact):
+        return False
+    if compact in _ADDR_ADDR_KEYS:
+        return True
+    # 회사주소·고객주소 등. 주소구분·주소유형 제외
+    if compact.endswith("주소") and "구분" not in compact and "유형" not in compact:
+        return True
+    return False
+
+
+def _cell_looks_like_address(val) -> bool:
+    s = str(val or "").strip()
+    if _is_blank_address_value(s):
+        return False
+    if re.search(r"(시|도|군|구|로|길|읍|면|동|가)\s*\d*", s):
+        return True
+    if re.search(r"(특별시|광역시|특별자치)", s):
+        return True
+    return False
+
+
+def _cell_looks_like_code(val) -> bool:
+    s = str(val or "").strip()
+    if not s or s.lower() in ("nan", "none"):
+        return False
+    return bool(re.fullmatch(r"\d{3,8}", s))
+
+
+def _pick_address_book_columns(columns, sample_df: pd.DataFrame | None = None):
     """주소록/사업체원본에서 (거래처명열, 주소열)을 고른다.
 
     ERP·엑셀 원본은 앞열이 코드이거나 제목행이 있어 0·1열만 쓰면
-    가스코아산(대창) 주소가 빠진다. 사업체명+주소 열을 이름으로 고른다.
+    코드→상호로 매핑되어 영신방재·가스코아산(대창) 주소가 전부 안 나온다.
     """
     cols = list(columns)
     if len(cols) < 2:
@@ -4972,20 +5047,64 @@ def _pick_address_book_columns(columns):
 
     labels = [(_compact_addr_header(c), c) for c in cols]
 
-    def _find(cands: tuple[str, ...]):
-        # 정확 일치만. startswith("거래처")는 "거래처구분"을 잡아 ERP 매핑이 깨진다.
-        for cand in cands:
+    def _find_name():
+        for cand in ("거래처명", "거래처", "사업체명", "업체명", "고객명", "회사명", "사업장명", "이름"):
             for compact, orig in labels:
                 if compact == cand:
                     return orig
+        for compact, orig in labels:
+            if _header_looks_like_name(compact):
+                return orig
         return None
 
-    # 거래처/사업체명 우선. 상호는 ERP에서 법인명((주)대창)이라 매출 거래처명과 안 맞음
-    k_col = _find(("거래처명", "거래처", "사업체명", "업체명", "고객명"))
-    v_col = _find(("사업장주소", "도로명주소", "상세주소", "주소", "소재지"))
+    def _find_addr():
+        for cand in ("사업장주소", "도로명주소", "상세주소", "주소", "소재지", "회사주소"):
+            for compact, orig in labels:
+                if compact == cand:
+                    return orig
+        for compact, orig in labels:
+            if _header_looks_like_address(compact):
+                return orig
+        return None
+
+    k_col = _find_name()
+    v_col = _find_addr()
     if k_col is not None and v_col is not None and k_col != v_col:
         return k_col, v_col
-    # 단순 2열 주소록(거래처,주소,…)
+
+    # 헤더 이름만으로 못 고르면 샘플 값으로 점수 (코드열·전화번호열 회피)
+    if sample_df is not None and not sample_df.empty:
+        probe = sample_df.head(80)
+        best_k, best_v, best_score = None, None, -1.0
+        for kc in cols:
+            ks = probe[kc].astype(str)
+            code_ratio = float(ks.map(_cell_looks_like_code).mean()) if len(ks) else 1.0
+            if code_ratio > 0.5:
+                continue
+            compact_k = _compact_addr_header(kc)
+            if _header_looks_like_code(compact_k) or _header_looks_like_address(compact_k):
+                continue
+            for vc in cols:
+                if vc == kc:
+                    continue
+                vs = probe[vc].astype(str)
+                addr_ratio = float(vs.map(_cell_looks_like_address).mean()) if len(vs) else 0.0
+                if addr_ratio < 0.2:
+                    continue
+                score = addr_ratio * 2.0 - code_ratio
+                if _header_looks_like_name(compact_k):
+                    score += 0.5
+                if _header_looks_like_address(_compact_addr_header(vc)):
+                    score += 0.5
+                if score > best_score:
+                    best_score, best_k, best_v = score, kc, vc
+        if best_k is not None and best_v is not None:
+            return best_k, best_v
+
+    # 단순 2열: 첫 열이 코드처럼 보이면 1·2열 사용
+    c0 = _compact_addr_header(cols[0])
+    if _header_looks_like_code(c0) and len(cols) >= 3:
+        return cols[1], cols[2]
     return cols[0], cols[1]
 
 
@@ -4999,21 +5118,10 @@ def _normalize_client_name_for_address(s) -> str:
         .replace("(유)", "")
         .replace("（", "(")
         .replace("）", ")")
+        .replace("\u00a0", "")
+        .replace("\u200b", "")
     )
     return "".join(t.split())
-
-
-def _is_blank_address_value(val) -> bool:
-    s = str(val or "").strip().lower()
-    if not s or s in ("nan", "none", "nat", "-", "--", "- -"):
-        return True
-    if re.fullmatch(r"[-\s]+", s):
-        return True
-    return False
-
-
-_ADDR_NAME_KEYS = frozenset({"거래처명", "거래처", "사업체명", "업체명", "고객명"})
-_ADDR_ADDR_KEYS = frozenset({"사업장주소", "도로명주소", "상세주소", "주소", "소재지"})
 
 
 def _find_address_header_row(df_no_header: pd.DataFrame, max_scan: int = 20) -> int | None:
@@ -5152,21 +5260,53 @@ def _dataframe_from_address_bytes(address_bytes) -> pd.DataFrame:
 def _address_dict_from_dataframe(temp_addr: pd.DataFrame) -> dict:
     if temp_addr is None or temp_addr.empty or len(temp_addr.columns) < 2:
         return {}
-    k_col, v_col = _pick_address_book_columns(temp_addr.columns)
+    k_col, v_col = _pick_address_book_columns(temp_addr.columns, temp_addr)
     if k_col is None or v_col is None:
         return {}
+    out = _address_dict_from_dataframe_forced(temp_addr, k_col, v_col)
+
+    # 코드→상호로 잘못 잡히면(키가 숫자·값이 주소가 아님) 내용 점수로 다시 고른다
+    if out:
+        addr_vals = sum(1 for v in out.values() if _cell_looks_like_address(v))
+        if addr_vals < max(1, int(len(out) * 0.25)):
+            # 이름 헤더 매칭을 무시하고 샘플 점수만 쓰도록 임시로 헤더를 Unnamed 취급하지 않음
+            scored_k, scored_v = None, None
+            probe = temp_addr.head(80)
+            best = -1.0
+            for kc in temp_addr.columns:
+                ks = probe[kc].astype(str)
+                if float(ks.map(_cell_looks_like_code).mean()) > 0.5:
+                    continue
+                if _header_looks_like_address(_compact_addr_header(kc)):
+                    continue
+                for vc in temp_addr.columns:
+                    if vc == kc:
+                        continue
+                    ar = float(probe[vc].astype(str).map(_cell_looks_like_address).mean())
+                    if ar < 0.25:
+                        continue
+                    if ar > best:
+                        best, scored_k, scored_v = ar, kc, vc
+            if scored_k and scored_v and (scored_k, scored_v) != (k_col, v_col):
+                alt = _address_dict_from_dataframe_forced(temp_addr, scored_k, scored_v)
+                if len(alt) >= max(3, len(out) // 2):
+                    return alt
+    return out
+
+
+def _address_dict_from_dataframe_forced(temp_addr: pd.DataFrame, k_col, v_col) -> dict:
     work = temp_addr.dropna(subset=[k_col]).copy()
-    keys = (
-        work[k_col]
-        .astype(str)
-        .map(lambda x: unicodedata.normalize("NFC", x).strip())
-    )
-    vals = work[v_col].astype(str).str.strip()
     out = {}
-    for k, v in zip(keys, vals):
-        if not k or k.lower() in ("nan", "none"):
+    for k, v in zip(
+        work[k_col].astype(str).map(lambda x: unicodedata.normalize("NFC", x).strip()),
+        work[v_col].astype(str).str.strip(),
+    ):
+        if not k or k.lower() in ("nan", "none") or _cell_looks_like_code(k):
             continue
         if _is_blank_address_value(v):
+            continue
+        # 전화·팩스 열을 주소로 오인한 경우 제외
+        if re.fullmatch(r"[\d\-+()\s]{7,}", v):
             continue
         out.setdefault(k, v)
     return out
@@ -5174,10 +5314,9 @@ def _address_dict_from_dataframe(temp_addr: pd.DataFrame) -> dict:
 
 @st.cache_data(show_spinner="주소록을 읽어오는 중입니다...")
 def load_address_file(address_bytes):
-    """거래처 주소록 CSV·엑셀(사업체명/주소) 로드.
+    """거래처 주소록 CSV(uproad/주소.csv) 로드.
 
-    원본 엑셀에 가스코아산(대창)+주소가 있어도 CSV만 받거나 제목행을
-    헤더로 못 보면 불러오지 못했다.
+    제목행·빈 열·코드열이 있어도 사업체명→주소로 맞춘다.
     """
     if not address_bytes:
         return {}
@@ -5202,12 +5341,25 @@ def resolve_client_address(client_name, addr_dict):
     n = _normalize_client_name_for_address(name)
     if not n:
         return None
-    # 정규화 키 인덱스 (한 번만)
+    # 정규화 키 인덱스
+    norm_hits = []
     for k, v in addr_dict.items():
-        if _normalize_client_name_for_address(k) == n:
+        kn = _normalize_client_name_for_address(k)
+        if kn == n:
             return v
-    # 끝부분 괄호 별칭: 매출명 가스코아산(대창) ↔ 주소록 키에 대창만 있는 경우 등은 제외.
-    # 반대로 주소록이 "가스코아산(대창) " 공백·전각만 다른 경우는 위에서 처리됨.
+        if kn and (n in kn or kn in n) and len(n) >= 2:
+            norm_hits.append((k, v, kn))
+    # 유일 부분일치만 허용 (영신방재 ↔ 영신방재주식회사 등)
+    if len(norm_hits) == 1:
+        return norm_hits[0][1]
+    if len(norm_hits) > 1:
+        # 더 짧은 쪽·완전 포함 우선
+        exactish = [h for h in norm_hits if h[2] == n or h[2].startswith(n) or n.startswith(h[2])]
+        if len(exactish) == 1:
+            return exactish[0][1]
+        exactish.sort(key=lambda h: abs(len(h[2]) - len(n)))
+        if exactish and abs(len(exactish[0][2]) - len(n)) <= 2:
+            return exactish[0][1]
     return None
 
 
@@ -14262,15 +14414,27 @@ def _sidebar_run_connected_load(slot: str) -> None:
             st.session_state.pop(_pk, None)
     if slot == "address":
         clear_address_runtime_caches()
-        # 불러온 주소.csv에 가스코아산(대창)이 들어왔는지 바로 확인 문구
+        # ERP 다중열·제목행 CSV를 파싱한 뒤 표준 거래처,주소 로 캐시에 다시 씀
         try:
             _ap = os.path.join(CACHE_DIR, "address.csv")
             if os.path.isfile(_ap):
                 with open(_ap, "rb") as _af:
-                    _ad = load_address_file(_af.read())
+                    _raw_addr = _af.read()
+                clear_address_runtime_caches()
+                _ad = load_address_file(_raw_addr)
+                if _ad:
+                    _norm = _normalized_address_csv_bytes(_ad)
+                    with open(_ap, "wb") as _af:
+                        _af.write(_norm)
+                    clear_address_runtime_caches()
                 res = dict(res or {})
                 res["address_count"] = len(_ad or {})
                 res["has_daechang"] = bool(_ad and "가스코아산(대창)" in _ad)
+                res["has_yeongsin"] = bool(
+                    _ad and resolve_client_address("영신방재", _ad)
+                )
+                if _ad:
+                    res["sample_keys"] = list(_ad.keys())[:3]
         except Exception:
             pass
     st.session_state["_sb_slot_msg"] = res
@@ -14296,9 +14460,18 @@ if isinstance(_sb_slot_out, dict):
             st.sidebar.caption(f"출처: {_sb_slot_out.get('source')}")
         if _sb_slot_out.get("slot") == "address" and _sb_slot_out.get("address_count") is not None:
             _n = int(_sb_slot_out.get("address_count") or 0)
-            _dc = " · 가스코아산(대창) 포함" if _sb_slot_out.get("has_daechang") else ""
+            _bits = []
+            if _sb_slot_out.get("has_daechang"):
+                _bits.append("대창")
+            if _sb_slot_out.get("has_yeongsin"):
+                _bits.append("영신방재")
+            _dc = (" · " + ",".join(_bits)) if _bits else ""
             if _n:
                 st.sidebar.caption(f"주소록 파싱: {_n:,}곳{_dc}")
+                if not _bits and _sb_slot_out.get("sample_keys"):
+                    st.sidebar.caption(
+                        "키 예시: " + ", ".join(map(str, _sb_slot_out.get("sample_keys") or []))
+                    )
             else:
                 st.sidebar.warning(
                     "주소.csv는 복사됐지만 사업체명·주소 열을 못 찾았습니다. "

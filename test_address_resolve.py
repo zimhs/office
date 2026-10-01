@@ -146,6 +146,33 @@ class AddressBookColumnPickTest(unittest.TestCase):
         d = load_address_file(text.encode("utf-16"))
         self.assertEqual(d.get("가스코아산(대창)"), "경기도 시흥시 공단1대로 391")
 
+    def test_code_first_columns_not_used_as_keys(self):
+        """앞열 코드·사업체명만 쓰면 키가 00540이 되어 영신방재 조회가 전부 실패한다."""
+        raw = (
+            "사업체코드,사업체명,상호,회사주소\n"
+            "00540,가스코아산(대창),(주)대창,경기도 시흥시 공단1대로 391\n"
+            "00128,영신방재,(주)영신방재,경기도 화성시 송산면 송산산단길 127\n"
+        ).encode("utf-8-sig")
+        d = load_address_file(raw)
+        self.assertNotIn("00540", d)
+        self.assertNotIn("00128", d)
+        self.assertEqual(
+            resolve_client_address("영신방재", d),
+            "경기도 화성시 송산면 송산산단길 127",
+        )
+        self.assertEqual(
+            resolve_client_address("가스코아산(대창)", d),
+            "경기도 시흥시 공단1대로 391",
+        )
+
+    def test_fallback_cols_skip_code_header(self):
+        raw = (
+            "코드,이름,비고,주소\n"
+            "99,영신방재,x,경기도 화성시 송산면 송산산단길 127\n"
+        ).encode("utf-8-sig")
+        d = load_address_file(raw)
+        self.assertEqual(d.get("영신방재"), "경기도 화성시 송산면 송산산단길 127")
+
 
 class ResolveClientAddressTest(unittest.TestCase):
     def test_exact_and_nfc_parens(self):
