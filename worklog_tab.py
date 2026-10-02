@@ -2236,36 +2236,64 @@ def _iter_google_drive_roots() -> list[str]:
     return roots
 
 def resolve_worklog_archive_root() -> str | None:
-    """…/Desktop/업무/일지 또는 Drive 경로. 세션 캐시로 상단 필터 rerun 시 Drive 스캔 생략."""
+    """…/Desktop/업무/일지 우선. 「다른 컴퓨터」옛 백업은 Desktop이 있을 때 쓰지 않는다.
+
+    세션 캐시로 상단 필터 rerun 시 Drive 스캔 생략.
+    """
     cached = st.session_state.get("_wl_archive_root_cache")
     if isinstance(cached, dict) and "path" in cached:
         return cached.get("path")
-    candidates: list[str] = []
     home = os.path.expanduser("~")
-    candidates.append(os.path.join(home, "Desktop", "업무", "일지"))
-    for groot in _iter_google_drive_roots():
-        for other_name in ("다른 컴퓨터", "Computers"):
-            other = os.path.join(groot, other_name)
-            if not os.path.isdir(other): continue
-            try: pcs = sorted(os.listdir(other))
-            except OSError: continue
-            pcs.sort(key=lambda n: (0 if "(1)" in n else 1, n))
-            for pc in pcs: candidates.append(os.path.join(other, pc, WORKLOG_ARCHIVE_REL))
+    local_desktop = os.path.join(home, "Desktop", "업무", "일지")
+    desktop_dir = os.path.join(home, "Desktop")
     found: str | None = None
-    existing = [p for p in candidates if os.path.isdir(p)]
-    if existing:
-        found = existing[0]
-    else:
-        for p in candidates:
-            parent = os.path.dirname(p)
-            grand = os.path.dirname(parent)
-            if os.path.isdir(grand):
+    # 1) 실제 맥 Desktop — 저장·달력의 기준. Drive「다른 컴퓨터」옛 복사본보다 우선.
+    if os.path.isdir(local_desktop):
+        found = local_desktop
+    elif os.path.isdir(desktop_dir):
+        try:
+            os.makedirs(local_desktop, exist_ok=True)
+            found = local_desktop
+        except OSError:
+            found = None
+    # 2) Desktop이 없을 때만 Drive「다른 컴퓨터」…/Desktop/업무/일지 (최신 mtime 폴더)
+    if not found:
+        drive_candidates: list[str] = []
+        for groot in _iter_google_drive_roots():
+            for other_name in ("다른 컴퓨터", "Computers"):
+                other = os.path.join(groot, other_name)
+                if not os.path.isdir(other):
+                    continue
                 try:
-                    os.makedirs(p, exist_ok=True)
-                    found = p
-                    break
+                    pcs = sorted(os.listdir(other))
                 except OSError:
                     continue
+                for pc in pcs:
+                    drive_candidates.append(os.path.join(other, pc, WORKLOG_ARCHIVE_REL))
+        existing = [p for p in drive_candidates if os.path.isdir(p)]
+        if existing:
+            def _root_mtime(p: str) -> float:
+                try:
+                    return max(
+                        (os.path.getmtime(os.path.join(dp, f)) for dp, _, fs in os.walk(p) for f in fs),
+                        default=os.path.getmtime(p),
+                    )
+                except OSError:
+                    return 0.0
+
+            existing.sort(key=_root_mtime, reverse=True)
+            found = existing[0]
+        else:
+            for p in drive_candidates:
+                parent = os.path.dirname(p)
+                grand = os.path.dirname(parent)
+                if os.path.isdir(grand):
+                    try:
+                        os.makedirs(p, exist_ok=True)
+                        found = p
+                        break
+                    except OSError:
+                        continue
     st.session_state["_wl_archive_root_cache"] = {"path": found}
     return found
 
@@ -2346,18 +2374,102 @@ def _worklog_archive_legacy_sheet_title(d: date) -> str:
     return d.isoformat()
 
 
+def _worklog_archive_padded_sheet_title(d: date) -> str:
+    """옛 파일에 남은 0채움 일 시트명 (예: 03)."""
+    return f"{d.day:02d}"
+
+
 def _worklog_archive_sheet_titles_for_lookup(d: date) -> tuple[str, ...]:
-    """현재(일) + 레거시(YYYY-MM-DD) 워크시트명."""
+    """현재(일) + 0채움 일 + 레거시(YYYY-MM-DD) 워크시트명."""
     cur = worklog_archive_sheet_title(d)
+    pad = _worklog_archive_padded_sheet_title(d)
     leg = _worklog_archive_legacy_sheet_title(d)
-    return (cur,) if cur == leg else (cur, leg)
+    out: list[str] = [cur]
+    if pad != cur:
+        out.append(pad)
+    if leg not in out:
+        out.append(leg)
+    return tuple(out)
 
 
 def _resolve_archive_sheet_name(sheetnames: list[str] | tuple[str, ...], d: date) -> str | None:
+    names = set(sheetnames or ())
     for title in _worklog_archive_sheet_titles_for_lookup(d):
-        if title in sheetnames:
+        if title in names:
             return title
+    # 시트명이 숫자면 일자로 해석 (03 → 3)
+    for name in sheetnames or ():
+        if str(name).isdigit() and int(name) == d.day:
+            return str(name)
     return None
+
+
+def _archive_sheet_day_number(name: str) -> int | None:
+    """월별 파일 시트명 → 일자. 추가페이지(16p2)·비일자는 None."""
+    s = str(name or "").strip()
+    if s.isdigit():
+        day = int(s)
+        return day if 1 <= day <= 31 else None
+    try:
+        return date.fromisoformat(s).day
+    except ValueError:
+        return None
+
+
+def _normalize_archive_month_day_sheets(wb) -> bool:
+    """0채움·ISO 시트명을 정규 일(3)로 합친다. 바뀌면 True.
+
+    옛「다른 컴퓨터」10월.xlsx 에 03·04 시트가 남아 달력 • 만 뜨고
+    정규 시트(3)를 못 찾는 문제를 막는다. 내용 있는 쪽을 남긴다.
+    """
+    if wb is None:
+        return False
+    changed = False
+    # day → 대표 시트명(정규 str(day) 우선)
+    by_day: dict[int, list[str]] = {}
+    for name in list(wb.sheetnames):
+        if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
+            continue
+        day = _archive_sheet_day_number(name)
+        if day is None:
+            continue
+        by_day.setdefault(day, []).append(name)
+    for day, names in by_day.items():
+        canon = str(day)
+        if len(names) == 1 and names[0] == canon:
+            continue
+        # 내용 있는 시트 우선, 같으면 정규명 우선
+        def _rank(n: str) -> tuple:
+            try:
+                cells = _cells_from_worksheet(wb[n], date(2000, 1, min(day, 28)))
+                has = 1 if _worklog_cells_have_draft(cells) else 0
+            except Exception:
+                has = 0
+            return (has, 1 if n == canon else 0)
+
+        names_sorted = sorted(names, key=_rank, reverse=True)
+        keep = names_sorted[0]
+        if keep != canon:
+            if canon in wb.sheetnames and canon != keep:
+                del wb[canon]
+            try:
+                wb[keep].title = canon
+                keep = canon
+                changed = True
+            except Exception:
+                pass
+        for n in list(wb.sheetnames):
+            if n == keep:
+                continue
+            if _archive_sheet_day_number(n) == day and not (
+                _is_archive_extra_sheet_name(n) or _is_day_extra_sheet_name(n)
+            ):
+                try:
+                    del wb[n]
+                    changed = True
+                except Exception:
+                    pass
+    return changed
 
 
 def _archive_sheet_sort_key(name: str) -> tuple:
@@ -2756,7 +2868,8 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
         src_ws = day_wb.active
         month_wb = load_workbook(month_path)
         try:
-            # 레거시 YYYY-MM-DD 시트 → 일(27) 시트로 통일
+            # 0채움(03)·ISO 시트 → 정규 일(3)로 합친 뒤 저장본을 덮는다
+            _normalize_archive_month_day_sheets(month_wb)
             if legacy_title != sheet_title and legacy_title in month_wb.sheetnames:
                 del month_wb[legacy_title]
             _clone_worksheet_to_workbook(src_ws, month_wb, sheet_title)
@@ -2826,7 +2939,11 @@ def delete_worklog_archive_sheet(d: date) -> str | None:
 def worklog_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"{d.isoformat()}.xlsx")
 
 def _list_archive_saved_dates() -> set[str]:
-    """맥 경로 …/일지/YYYY/N월.xlsx 시트(일) → 달력 • 표시용."""
+    """맥 경로 …/일지/YYYY/N월.xlsx 시트(일) → 달력 • 표시용.
+
+    시트명만 있고 칸이 비어 있으면 • 를 넣지 않는다.
+    0채움 시트(03)는 정규화한 뒤 실제 내용이 있을 때만 포함한다.
+    """
     out: set[str] = set()
     if load_workbook is None:
         return out
@@ -2857,21 +2974,29 @@ def _list_archive_saved_dates() -> set[str]:
                 continue
             path = os.path.join(year_dir, fname)
             try:
-                wb = load_workbook(path, read_only=True)
+                wb = load_workbook(path, data_only=False)
                 try:
-                    for name in wb.sheetnames:
-                        if name.isdigit():
-                            try:
-                                out.add(date(year, month, int(name)).isoformat())
-                            except ValueError:
-                                pass
-                        elif _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
+                    if _normalize_archive_month_day_sheets(wb):
+                        try:
+                            wb.save(path)
+                        except Exception:
+                            pass
+                    for name in list(wb.sheetnames):
+                        if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
                             continue
-                        else:
-                            try:
-                                out.add(date.fromisoformat(name).isoformat())
-                            except ValueError:
-                                pass
+                        day = _archive_sheet_day_number(name)
+                        if day is None:
+                            continue
+                        try:
+                            d = date(year, month, day)
+                        except ValueError:
+                            continue
+                        try:
+                            cells = _cells_from_worksheet(wb[name], d)
+                        except Exception:
+                            continue
+                        if _worklog_cells_have_draft(cells):
+                            out.add(d.isoformat())
                 finally:
                     wb.close()
             except Exception:
@@ -2886,8 +3011,26 @@ def list_saved_worklog_dates() -> set[str]:
     out: set[str] = set()
     try:
         for name in os.listdir(WORKLOG_DIR):
-            if name.endswith(".xlsx") and len(name) >= 15 and name[0:4].isdigit() and name not in {"template.xlsx"} and not name.startswith("_preview_") and "_인쇄" not in name:
-                out.add(name.replace(".xlsx", ""))
+            if (
+                not name.endswith(".xlsx")
+                or len(name) < 15
+                or not name[0:4].isdigit()
+                or name in {"template.xlsx"}
+                or name.startswith("_preview_")
+                or "_인쇄" in name
+            ):
+                continue
+            iso = name.replace(".xlsx", "")
+            try:
+                d = date.fromisoformat(iso)
+            except ValueError:
+                continue
+            # 빈 초안 일자파일은 달력 • 에 넣지 않는다
+            try:
+                if _worklog_cells_have_draft(read_worklog_cells(d)):
+                    out.add(iso)
+            except Exception:
+                out.add(iso)
     except OSError:
         pass
     out.update(_list_archive_saved_dates())
@@ -2991,6 +3134,11 @@ def read_worklog_cells_from_archive(d: date) -> dict | None:
     try:
         wb = load_workbook(month_path, data_only=False)
         try:
+            if _normalize_archive_month_day_sheets(wb):
+                try:
+                    wb.save(month_path)
+                except Exception:
+                    pass
             name = _resolve_archive_sheet_name(wb.sheetnames, d)
             if not name:
                 return None
@@ -6391,8 +6539,31 @@ def _render_worklog_summary_block(selected: date, cells: dict) -> None:
     )
 
 
+def _materialize_worklog_day_from_archive(d: date) -> bool:
+    """월별 일지 시트를 로컬 일자 파일로 복원. Drive 옛 일자파일보다 우선."""
+    if load_workbook is None or os.path.isfile(worklog_path(d)):
+        return False
+    try:
+        arch = read_worklog_cells_from_archive(d)
+    except Exception:
+        return False
+    if arch is None or not _worklog_cells_have_draft(arch):
+        return False
+    try:
+        extras = _read_extra_pages_from_archive(d)
+        packed = _attach_extra_pages(arch, extras)
+        write_cells_to_path(worklog_path(d), d, packed, force_template=True)
+    except Exception:
+        return False
+    return os.path.isfile(worklog_path(d))
+
+
 def _try_pull_remote_worklog_day(d: date) -> bool:
-    """로컬에 없을 때 Drive 동기화 후 파일 존재 여부 확인 (Gist 미사용)."""
+    """로컬에 없을 때 월별 일지 → Drive 순으로 복원 (Gist 미사용).
+
+    Desktop/업무/일지 월별 시트가 있으면 Drive worklog 옛 일자파일로
+    덮어쓰지 않는다 (10/01 입력분이 예전 데이터로 바뀌던 문제).
+    """
     iso = d.isoformat()
     if _worklog_day_marked_deleted(d):
         return False
@@ -6402,6 +6573,15 @@ def _try_pull_remote_worklog_day(d: date) -> bool:
     if st.session_state.get(tried_k):
         return False
     st.session_state[tried_k] = True
+    # 1) 월별 아카이브(실제 저장 경로) 우선
+    if _materialize_worklog_day_from_archive(d):
+        _invalidate_saved_dates_cache()
+        _invalidate_worklog_presence_cache(d)
+        st.session_state.pop(_boot_key(d), None)
+        st.session_state.pop(f"wl_open_ctx_{iso}", None)
+        st.session_state.pop(f"wl_remote_pull_tried_{iso}", None)
+        return True
+    # 2) 아카이브에 없을 때만 Drive worklog 일자파일
     if _wl_is_streamlit_cloud():
         try:
             from drive_autoload import sync_dashboard_copy_on_boot

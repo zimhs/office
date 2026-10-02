@@ -16,10 +16,12 @@ class _FakeSS(dict):
 
 
 def _write_day_xlsx(path: str, label: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     wb = Workbook()
     ws = wb.active
-    ws["C5"] = label
+    # 본문 칸(C8/G8) — 달력 • / draft 판정이 이 행을 본다
+    ws["C8"] = label
+    ws["G8"] = label
     wb.save(path)
     wb.close()
 
@@ -61,7 +63,7 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         wb = load_workbook(month_path, read_only=True)
         try:
             self.assertIn("3", wb.sheetnames)
-            self.assertEqual(wb["3"]["C5"].value, "day-3")
+            self.assertEqual(wb["3"]["C8"].value, "day-3")
         finally:
             wb.close()
 
@@ -135,7 +137,10 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         tpl = os.path.join(self._tmp.name, "template.xlsx")
         cache = os.path.join(self._tmp.name, "cache")
         os.makedirs(cache, exist_ok=True)
-        _write_day_xlsx(tpl, "tpl")
+        # 빈 템플릿 — 본문 칸이 없어야 달력 • 가 안 뜬다
+        wb_tpl = Workbook()
+        wb_tpl.save(tpl)
+        wb_tpl.close()
         with patch.object(self.wt, "WORKLOG_TEMPLATE", tpl), patch.object(self.wt, "WORKLOG_DIR", cache):
             info = self.wt.create_worklog_day_local(d)
             self.assertTrue(info["created"])
@@ -144,13 +149,119 @@ class WorklogMonthArchiveTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(cache, "2026-09-04.xlsx")))
             again = self.wt.create_worklog_day_local(d)
             self.assertFalse(again["created"])
+            self.ss.pop("wl_saved_dates_cache", None)
             dates = self.wt.list_saved_worklog_dates()
-            self.assertIn("2026-09-04", dates)
+            self.assertNotIn("2026-09-04", dates)
+            # 내용 저장 후에만 •
+            day_path = os.path.join(cache, "2026-09-04.xlsx")
+            _write_day_xlsx(day_path, "saved-4")
+            self.wt.upsert_worklog_archive_sheet(d, day_path, allow_overwrite=True)
+            self.ss.pop("wl_saved_dates_cache", None)
+            dates2 = self.wt.list_saved_worklog_dates()
+            self.assertIn("2026-09-04", dates2)
         wb = load_workbook(os.path.join(self.root, "2026", "9월.xlsx"), read_only=True)
         try:
             self.assertIn("4", wb.sheetnames)
         finally:
             wb.close()
+
+    def test_padded_day_sheets_normalize_and_show_on_calendar(self):
+        """옛 03·04 시트 → 정규 3·4 로 합치고 내용 있는 날만 •."""
+        month_dir = os.path.join(self.root, "2026")
+        os.makedirs(month_dir, exist_ok=True)
+        month_path = os.path.join(month_dir, "10월.xlsx")
+        wb = Workbook()
+        ws1 = wb.active
+        ws1.title = "1"
+        ws1["C8"] = "oct1-new"
+        ws1["G8"] = "oct1-new"
+        for day, label in (("03", "old-3"), ("04", "old-4"), ("05", "old-5"), ("07", "old-7"), ("10", "old-10")):
+            ws = wb.create_sheet(day)
+            ws["C8"] = label
+            ws["G8"] = label
+        # 빈 유령 시트는 • 제외
+        wb.create_sheet("06")
+        wb.save(month_path)
+        wb.close()
+
+        self.ss.pop("wl_saved_dates_cache", None)
+        dates = self.wt.list_saved_worklog_dates()
+        self.assertIn("2026-10-01", dates)
+        self.assertIn("2026-10-03", dates)
+        self.assertIn("2026-10-04", dates)
+        self.assertIn("2026-10-05", dates)
+        self.assertIn("2026-10-07", dates)
+        self.assertIn("2026-10-10", dates)
+        self.assertNotIn("2026-10-06", dates)
+
+        wb2 = load_workbook(month_path)
+        try:
+            self.assertIn("3", wb2.sheetnames)
+            self.assertNotIn("03", wb2.sheetnames)
+            self.assertIn("4", wb2.sheetnames)
+            self.assertNotIn("04", wb2.sheetnames)
+            cells = self.wt.read_worklog_cells_from_archive(date(2026, 10, 3))
+            self.assertIsNotNone(cells)
+            self.assertIn("old-3", str(cells.get("C8") or cells.get("G8") or ""))
+        finally:
+            wb2.close()
+
+    def test_try_pull_prefers_archive_over_drive_day(self):
+        """로컬 일자 파일이 없을 때 월별 시트를 Drive 옛 파일보다 먼저 복원한다."""
+        d = date(2026, 10, 1)
+        cache = os.path.join(self._tmp.name, "cache2")
+        os.makedirs(cache, exist_ok=True)
+        day_src = os.path.join(self._tmp.name, "seed-10-01.xlsx")
+        _write_day_xlsx(day_src, "from-archive")
+        self.wt.upsert_worklog_archive_sheet(d, day_src, allow_overwrite=True)
+        local_day = os.path.join(cache, "2026-10-01.xlsx")
+        self.assertFalse(os.path.isfile(local_day))
+
+        with patch.object(self.wt, "WORKLOG_DIR", cache), patch.object(
+            self.wt, "_wl_is_streamlit_cloud", return_value=False
+        ), patch.object(self.wt, "_worklog_day_marked_deleted", return_value=False), patch(
+            "drive_autoload.sync_worklog_bidirectional"
+        ) as sync_mock:
+            ok = self.wt._try_pull_remote_worklog_day(d)
+            self.assertTrue(ok)
+            sync_mock.assert_not_called()
+        self.assertTrue(os.path.isfile(local_day))
+        cells = self.wt.read_worklog_cells(d)
+        self.assertTrue(self.wt._worklog_cells_have_draft(cells))
+        self.assertIn("from-archive", str(cells.get("C8") or "") + str(cells.get("G8") or ""))
+
+    def test_archive_root_prefers_local_desktop_over_other_computers(self):
+        home = os.path.join(self._tmp.name, "home")
+        local = os.path.join(home, "Desktop", "업무", "일지")
+        other = os.path.join(
+            home,
+            "Library",
+            "CloudStorage",
+            "GoogleDrive-x",
+            "다른 컴퓨터",
+            "내 컴퓨터 (1)",
+            "Desktop",
+            "업무",
+            "일지",
+        )
+        os.makedirs(local, exist_ok=True)
+        os.makedirs(other, exist_ok=True)
+        os.makedirs(os.path.join(other, "2026"), exist_ok=True)
+        with open(os.path.join(other, "2026", "3월.xlsx"), "wb") as f:
+            f.write(b"PK")
+        # setUp 의 resolve mock 을 잠시 끄고 실제 우선순위를 검사한다
+        self._p_root.stop()
+        try:
+            with patch.object(self.wt.os.path, "expanduser", side_effect=lambda p: home if p == "~" else p), patch.object(
+                self.wt,
+                "_iter_google_drive_roots",
+                return_value=[os.path.join(home, "Library", "CloudStorage", "GoogleDrive-x")],
+            ):
+                self.ss.pop("_wl_archive_root_cache", None)
+                got = self.wt.resolve_worklog_archive_root()
+            self.assertEqual(got, local)
+        finally:
+            self._p_root.start()
 
 
 if __name__ == "__main__":
