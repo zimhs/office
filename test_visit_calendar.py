@@ -476,9 +476,29 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn(f"background:{self.vc._VC_SUN_BG}!important", css)
         self.assertIn("background:#ece6f8!important", css)
         self.assertIn("box-shadow:inset 0 0 0 1.5px #1a73e8!important", css)
+        self.assertIn("button p{font-size:10px!important", css)
         t2d_css = css.replace("st-key-vc_strip_", "st-key-t2d_strip_")
         self.assertIn("st-key-t2d_strip_2026-09-01", t2d_css)
         self.assertIn("#f6eee4", self.vc._STRIP_KIND_THEME["other"][0])
+
+    def test_t2d_cloud_font_css_matches_local_strip_size(self):
+        """Cloud 거래처분석 납품줄만 탭 본문 15px를 깨고 로컬 10px로 맞춘다."""
+        css = self.vc._t2d_cloud_font_css()
+        self.assertIn("t2d-cloud-font-v1", css)
+        self.assertIn("st-key-t2d_strip_", css)
+        self.assertIn("font-size: 10px !important", css)
+        self.assertIn("st-key-t2d_jump_today", css)
+        self.assertIn("font-size: 12px !important", css)
+        self.assertIn("st-key-t2d_prev_month", css)
+        self.assertIn("font-size: 15px !important", css)
+        with open(self.vc.__file__, encoding="utf-8") as f:
+            src = f.read()
+        body = src[src.index("def render_tab2_delivery_status") :]
+        self.assertIn("_t2d_cloud_font_css()", body)
+        self.assertIn("if _vc_is_streamlit_cloud()", body)
+        # 로컬 Darwin 경로는 cloud font CSS를 넣지 않는다
+        strip = src[src.index("def _render_t2d_day_strip") : src.index("def render_tab2_delivery_status")]
+        self.assertIn('_t2d_cloud_font_css() if _vc_is_streamlit_cloud()', strip)
 
     def test_purge_drops_day_button_keys(self):
         class _SS(dict):
