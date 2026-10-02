@@ -75,18 +75,17 @@ def _render_worklog_scroll_lock(iso: str) -> None:
 
 
 def _wl_quiet_ui() -> bool:
-    try:
-        if st.session_state.get("force_touch_ui") is True: return True
-        v = st.query_params.get("touch_ui", "")
-        if isinstance(v, (list, tuple)): v = v[0] if v else ""
-        if str(v).strip() in ("1", "true", "True"): return True
-    except Exception: pass
-    try: return platform.system() != "Darwin"
-    except Exception: return True
+    """아이패드(터치)만 quiet·text_area.
+
+    예전엔 Linux(Cloud 서버) 전체를 quiet로 봐서 맥 브라우저 Cloud 업무입력이
+    로컬 줄칸(남음 게이지·노란 비고) 대신 회색 textarea로 떨어졌다.
+    Cloud 데스크톱·맥 로컬은 CCv2 줄칸을 쓴다.
+    """
+    return _wl_is_ipad_ui()
 
 
 def _wl_mount_v2_lines_editor(*, key, data, default, on_lines_change, changed_key: str, session_lines: list[str]):
-    """Cloud·아이패드는 v2 iframe 대신 text_area. 맥 로컬 편집기는 그대로."""
+    """아이패드만 text_area. Cloud 데스크톱·맥 로컬은 CCv2 줄칸(로컬과 동일)."""
     if _wl_quiet_ui():
         raw = st.text_area(
             "줄 편집",
