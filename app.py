@@ -17490,11 +17490,13 @@ def _dash_filter_and_tabs_fragment() -> None:
         t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
 
         if not staff_pivot.empty:
-            share_cols = [c for c in ("전체매출비중", "당해매출비중") if c in staff_pivot.columns]
             format_dict = {
-                col: ("{:,.1f}%" if col in share_cols else "{:,.0f}")
+                col: "{:,.0f}"
                 for col in staff_pivot.columns
+                if col not in ("전체매출비중", "당해매출비중")
             }
+            format_dict["전체매출비중"] = "{:,.1f}%"
+            format_dict["당해매출비중"] = "{:,.1f}%"
     
             monthly_cols = [
                 c
@@ -17502,11 +17504,9 @@ def _dash_filter_and_tabs_fragment() -> None:
                 if c not in ["전체매출비중", "당해매출비중", "총 매출 합계 (만원)"]
             ]
     
-            styled_staff = staff_pivot.style.format(format_dict)
-            if share_cols:
-                styled_staff = styled_staff.background_gradient(cmap="Purples", subset=share_cols)
             styled_staff = (
-                styled_staff
+                staff_pivot.style.format(format_dict)
+                .background_gradient(cmap="Purples", subset=["전체매출비중", "당해매출비중"])
                 .background_gradient(cmap="Oranges", subset=["총 매출 합계 (만원)"])
                 .background_gradient(cmap="Blues", subset=monthly_cols)
             )
