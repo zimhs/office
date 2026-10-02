@@ -2586,22 +2586,27 @@ def _strip_button_theme_css(days: list[dict]) -> str:
         'div[class*="st-key-vc_strip_"] button{min-height:2.7rem!important;height:auto!important;'
         "border-radius:10px!important;font-size:10px!important;padding:2px 0!important;"
         "white-space:pre-line!important;line-height:1.15!important;}",
+        'div[class*="st-key-vc_strip_"] button p{font-size:10px!important;line-height:1.15!important;'
+        "margin:0!important;color:inherit!important;}",
     ]
     for d in days:
         iso = str(d.get("iso") or "")
         if len(iso) < 10:
             continue
         sel = f'div[class*="st-key-vc_strip_{iso}"] button'
+        sel_p = f"{sel},{sel} p"
         kind = str(d.get("kind") or "")
         if d.get("sel"):
             rules.append(
-                f"{sel}{{background:#1a73e8!important;color:#fff!important;border-color:#1a73e8!important;}}"
+                f"{sel}{{background:#1a73e8!important;border-color:#1a73e8!important;}}"
             )
+            rules.append(f"{sel_p}{{color:#fff!important;}}")
             continue
         theme = _STRIP_KIND_THEME.get(kind)
         if theme:
             bg, fg = theme
-            rules.append(f"{sel}{{background:{bg}!important;color:{fg}!important;}}")
+            rules.append(f"{sel}{{background:{bg}!important;}}")
+            rules.append(f"{sel_p}{{color:{fg}!important;}}")
         if d.get("today"):
             rules.append(f"{sel}{{box-shadow:inset 0 0 0 1.5px #1a73e8!important;}}")
     rules.append("</style>")
@@ -3608,6 +3613,61 @@ def _t2d_css() -> str:
     """
 
 
+def _t2d_cloud_font_css() -> str:
+    """Cloud만: 탭 본문 p 15px 규칙이 납품줄·이동 버튼 글자를 키우지 않게 로컬 v2와 맞춘다."""
+    panel = '[data-testid="stTabs"] [role="tabpanel"]:not([hidden])'
+    return f"""
+    <style>
+    /* t2d-cloud-font-v1 — 로컬 strip 10px / 오늘 12px / ‹› 15px */
+    {panel} div[class*="st-key-t2d_strip_"] button,
+    {panel} div[class*="st-key-t2d_strip_"] button p,
+    {panel} div[class*="st-key-t2d_strip_"] button [data-testid="stMarkdownContainer"],
+    {panel} div[class*="st-key-t2d_strip_"] button [data-testid="stMarkdownContainer"] p {{
+      font-size: 10px !important;
+      line-height: 1.15 !important;
+      font-weight: 600 !important;
+      letter-spacing: -0.2px !important;
+    }}
+    {panel} div[class*="st-key-t2d_strip_"] button p,
+    {panel} div[class*="st-key-t2d_strip_"] button [data-testid="stMarkdownContainer"] p {{
+      color: inherit !important;
+      margin: 0 !important;
+    }}
+    {panel} div[class*="st-key-t2d_jump_today"] button,
+    {panel} div[class*="st-key-t2d_jump_today"] button p {{
+      font-size: 12px !important;
+      line-height: 1.2 !important;
+      font-weight: 600 !important;
+      color: inherit !important;
+    }}
+    {panel} div[class*="st-key-t2d_prev_month"] button,
+    {panel} div[class*="st-key-t2d_next_month"] button,
+    {panel} div[class*="st-key-t2d_prev_month"] button p,
+    {panel} div[class*="st-key-t2d_next_month"] button p {{
+      font-size: 15px !important;
+      line-height: 28px !important;
+      font-weight: 600 !important;
+      color: inherit !important;
+    }}
+    {panel} .vc-strip-html .vc-strip-wd span {{
+      font-size: 10px !important;
+      font-weight: 700 !important;
+      line-height: 1.1 !important;
+    }}
+    {panel} div[class*="st-key-tab2_delivery_status"] .t2d-label {{
+      font-size: 11px !important;
+    }}
+    {panel} div[class*="st-key-tab2_delivery_status"] .t2d-meta {{
+      font-size: 13px !important;
+    }}
+    {panel} div[class*="st-key-tab2_delivery_status"] .t2d-title {{
+      font-size: 20px !important;
+      line-height: 32px !important;
+    }}
+    </style>
+    """
+
+
 def _apply_pending_t2d_strip_pick() -> None:
     """납품달력 클릭을 purge 전에 반영한다. 호스트 키는 지우지 않는다."""
     raw = st.session_state.get("t2d_strip_host")
@@ -3739,7 +3799,8 @@ def _render_t2d_day_strip(
         ".vc-strip-html .vc-strip-wd{display:flex;gap:3px;width:100%;margin-bottom:2px;}"
         ".vc-strip-html .vc-strip-wd span{flex:1;min-width:0;text-align:center;"
         "font-size:10px;font-weight:700;line-height:1.1;}"
-        "</style>",
+        "</style>"
+        + (_t2d_cloud_font_css() if _vc_is_streamlit_cloud() else ""),
         unsafe_allow_html=True,
     )
     _render_strip_wd_row(days)
@@ -3755,12 +3816,16 @@ def render_tab2_delivery_status(
     _apply_pending_t2d_strip_pick()
     _purge_t2d_button_keys()
     st.markdown(_t2d_css(), unsafe_allow_html=True)
+    if _vc_is_streamlit_cloud():
+        st.markdown(_t2d_cloud_font_css(), unsafe_allow_html=True)
     with st.container(key="tab2_delivery_status"):
         st.markdown("<div class='t2d-label'>납품현황</div>", unsafe_allow_html=True)
         staff = _s(staff)
         client = _s(client)
 
         def _t2d_body() -> None:
+            if _vc_is_streamlit_cloud():
+                st.markdown(_t2d_cloud_font_css(), unsafe_allow_html=True)
             _apply_pending_t2d_month_nav()
             _apply_pending_t2d_strip_pick()
             today = date.today()
