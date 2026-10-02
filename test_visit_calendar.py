@@ -431,6 +431,55 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertEqual(self.vc._weekday_color(sun), self.vc._VC_SUN_FG)
         self.assertEqual(self.vc._weekday_color(wed), "#6b7280")
 
+    def test_strip_button_theme_css_matches_local_kind_colors(self):
+        """Cloud 버튼 줄도 로컬 v2와 같은 벌크·실린더·주말 배경을 쓴다."""
+        days = [
+            {
+                "iso": "2026-09-01",
+                "kind": "bulk",
+                "sel": False,
+                "today": False,
+            },
+            {
+                "iso": "2026-09-04",
+                "kind": "other",
+                "sel": True,
+                "today": False,
+            },
+            {
+                "iso": "2026-09-05",
+                "kind": "sat",
+                "sel": False,
+                "today": False,
+            },
+            {
+                "iso": "2026-09-06",
+                "kind": "sun",
+                "sel": False,
+                "today": False,
+            },
+            {
+                "iso": "2026-09-11",
+                "kind": "mix",
+                "sel": False,
+                "today": True,
+            },
+        ]
+        css = self.vc._strip_button_theme_css(days)
+        self.assertIn("st-key-vc_strip_2026-09-01", css)
+        self.assertIn("background:#e8f0fe!important", css)
+        self.assertIn("color:#1a73e8!important", css)
+        self.assertIn("st-key-vc_strip_2026-09-04", css)
+        self.assertIn("background:#1a73e8!important", css)
+        self.assertIn("color:#fff!important", css)
+        self.assertIn(f"background:{self.vc._VC_SAT_BG}!important", css)
+        self.assertIn(f"background:{self.vc._VC_SUN_BG}!important", css)
+        self.assertIn("background:#ece6f8!important", css)
+        self.assertIn("box-shadow:inset 0 0 0 1.5px #1a73e8!important", css)
+        t2d_css = css.replace("st-key-vc_strip_", "st-key-t2d_strip_")
+        self.assertIn("st-key-t2d_strip_2026-09-01", t2d_css)
+        self.assertIn("#f6eee4", self.vc._STRIP_KIND_THEME["other"][0])
+
     def test_purge_drops_day_button_keys(self):
         class _SS(dict):
             pass

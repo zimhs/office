@@ -2566,8 +2566,21 @@ def _on_strip_iso_change() -> None:
     _apply_v2_iso_host("vc_strip_host")
 
 
+_STRIP_KIND_THEME = {
+    "mix": ("#ece6f8", "#5b4b8a"),
+    "bulk": ("#e8f0fe", "#1a73e8"),
+    "other": ("#f6eee4", "#8d6e63"),
+    "visit": ("#e6f4ea", "#137333"),
+    "planned": ("#fff4e5", "#c47d00"),
+    "todo": ("#fef7e0", "#b06000"),
+    "worklog": ("#e6f4ea", "#0b8043"),
+    "sat": (_VC_SAT_BG, _VC_SAT_FG),
+    "sun": (_VC_SUN_BG, _VC_SUN_FG),
+}
+
+
 def _strip_button_theme_css(days: list[dict]) -> str:
-    """로컬 v2 납품줄과 같은 토·일·선택·오늘 색을 Streamlit 버튼에 입힌다."""
+    """로컬 v2 납품줄과 같은 벌크·실린더·토·일·선택·오늘 색을 Streamlit 버튼에 입힌다."""
     rules = [
         "<style>",
         'div[class*="st-key-vc_strip_"] button{min-height:2.7rem!important;height:auto!important;'
@@ -2585,14 +2598,10 @@ def _strip_button_theme_css(days: list[dict]) -> str:
                 f"{sel}{{background:#1a73e8!important;color:#fff!important;border-color:#1a73e8!important;}}"
             )
             continue
-        if kind == "sun":
-            rules.append(
-                f"{sel}{{background:{_VC_SUN_BG}!important;color:{_VC_SUN_FG}!important;}}"
-            )
-        elif kind == "sat":
-            rules.append(
-                f"{sel}{{background:{_VC_SAT_BG}!important;color:{_VC_SAT_FG}!important;}}"
-            )
+        theme = _STRIP_KIND_THEME.get(kind)
+        if theme:
+            bg, fg = theme
+            rules.append(f"{sel}{{background:{bg}!important;color:{fg}!important;}}")
         if d.get("today"):
             rules.append(f"{sel}{{box-shadow:inset 0 0 0 1.5px #1a73e8!important;}}")
     rules.append("</style>")
