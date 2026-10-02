@@ -10935,9 +10935,21 @@ def cached_staff_pivot(df_base, desired_order):
         prop = row_totals / total_all * 100
     else:
         prop = 0.0
+
+    # 당해년도 매출만으로 비중 계산 (데이터 내 최신 연도)
+    current_year = str(df_base["연도"].astype(str).max()) if "연도" in df_base.columns else ""
+    yy = current_year[-2:] if len(current_year) >= 2 else current_year
+    year_cols = [c for c in df_p.columns if str(c).startswith(f"{yy}년 ")]
+    if year_cols:
+        year_totals = df_p[year_cols].sum(axis=1)
+        year_all = float(year_totals.sum())
+        year_prop = (year_totals / year_all * 100) if year_all > 0 else 0.0
+    else:
+        year_prop = 0.0
         
     df_p.insert(0, "총 매출 합계 (만원)", row_totals)
-    df_p.insert(0, "매출 비중 (%)", prop)
+    df_p.insert(0, "당해매출비중", year_prop)
+    df_p.insert(0, "전체매출비중", prop)
     
     df_p = df_p.sort_values(by="총 매출 합계 (만원)", ascending=False)
     return df_p
@@ -17478,14 +17490,23 @@ def _dash_filter_and_tabs_fragment() -> None:
         t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
 
         if not staff_pivot.empty:
-            format_dict = {col: "{:,.0f}" for col in staff_pivot.columns if col != "매출 비중 (%)"}
-            format_dict["매출 비중 (%)"] = "{:,.1f}%"
+            share_cols = [c for c in ("전체매출비중", "당해매출비중") if c in staff_pivot.columns]
+            format_dict = {
+                col: ("{:,.1f}%" if col in share_cols else "{:,.0f}")
+                for col in staff_pivot.columns
+            }
     
-            monthly_cols = [c for c in staff_pivot.columns if c not in ["매출 비중 (%)", "총 매출 합계 (만원)"]]
+            monthly_cols = [
+                c
+                for c in staff_pivot.columns
+                if c not in ["전체매출비중", "당해매출비중", "총 매출 합계 (만원)"]
+            ]
     
+            styled_staff = staff_pivot.style.format(format_dict)
+            if share_cols:
+                styled_staff = styled_staff.background_gradient(cmap="Purples", subset=share_cols)
             styled_staff = (
-                staff_pivot.style.format(format_dict)
-                .background_gradient(cmap="Purples", subset=["매출 비중 (%)"])
+                styled_staff
                 .background_gradient(cmap="Oranges", subset=["총 매출 합계 (만원)"])
                 .background_gradient(cmap="Blues", subset=monthly_cols)
             )
