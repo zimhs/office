@@ -26,6 +26,123 @@ _CYLINDER = "실린더"
 _VC_SAT_BG, _VC_SAT_FG = "#eef4fc", "#3b6fd8"
 _VC_SUN_BG, _VC_SUN_FG = "#fff3f1", "#d23b3b"
 _MCAL_SLOTS = 5
+# 한국천문연구원 월력 기준 설날·부처님오신날·추석 (양력 월일).
+_KR_LUNAR = {
+    2020: ((1, 25), (4, 30), (10, 1)),
+    2021: ((2, 12), (5, 19), (9, 21)),
+    2022: ((2, 1), (5, 8), (9, 10)),
+    2023: ((1, 22), (5, 27), (9, 29)),
+    2024: ((2, 10), (5, 15), (9, 17)),
+    2025: ((1, 29), (5, 5), (10, 6)),
+    2026: ((2, 17), (5, 24), (9, 25)),
+    2027: ((2, 7), (5, 13), (9, 15)),
+    2028: ((1, 27), (5, 2), (10, 3)),
+    2029: ((2, 13), (5, 20), (9, 22)),
+    2030: ((2, 3), (5, 9), (9, 12)),
+    2031: ((1, 23), (5, 28), (10, 1)),
+    2032: ((2, 11), (5, 16), (9, 19)),
+    2033: ((1, 31), (5, 6), (9, 8)),
+    2034: ((2, 19), (5, 25), (9, 28)),
+    2035: ((2, 8), (5, 15), (9, 16)),
+}
+# 선거·임시공휴일 등 연도별 지정일.
+_KR_HOLIDAY_EXTRA = {
+    date(2024, 4, 10): "국회의원선거",
+    date(2024, 10, 1): "임시공휴일",
+    date(2025, 1, 27): "임시공휴일",
+    date(2025, 6, 3): "대통령선거",
+    date(2026, 6, 3): "지방선거",
+}
+
+
+def _kr_ymd(year: int, md: tuple[int, int]) -> date:
+    return date(year, md[0], md[1])
+
+
+def _kr_next_open(start: date, occupied: set[date]) -> date:
+    d = start
+    while d in occupied or d.weekday() == 6:
+        d += timedelta(days=1)
+    return d
+
+
+def kr_holidays_year(year: int) -> dict[date, str]:
+    """해당 연도 대한민국 공휴일(양력). 일요일 자체는 넣지 않는다."""
+    hol: dict[date, str] = {}
+    overlap: set[date] = set()
+
+    def _put(d: date, name: str) -> None:
+        if d.year != year:
+            return
+        if d in hol and hol[d] != name:
+            overlap.add(d)
+        hol.setdefault(d, name)
+
+    _put(date(year, 1, 1), "신정")
+    _put(date(year, 3, 1), "삼일절")
+    _put(date(year, 5, 5), "어린이날")
+    _put(date(year, 6, 6), "현충일")
+    _put(date(year, 8, 15), "광복절")
+    _put(date(year, 10, 3), "개천절")
+    _put(date(year, 10, 9), "한글날")
+    _put(date(year, 12, 25), "성탄절")
+    if year >= 2026:
+        _put(date(year, 5, 1), "노동절")
+        _put(date(year, 7, 17), "제헌절")
+    lunar = _KR_LUNAR.get(year)
+    three: set[date] = set()
+    if lunar:
+        seollal = _kr_ymd(year, lunar[0])
+        buddha = _kr_ymd(year, lunar[1])
+        chuseok = _kr_ymd(year, lunar[2])
+        for d in (seollal - timedelta(days=1), seollal, seollal + timedelta(days=1)):
+            _put(d, "설날")
+            if d.year == year:
+                three.add(d)
+        _put(buddha, "부처님날")
+        for d in (chuseok - timedelta(days=1), chuseok, chuseok + timedelta(days=1)):
+            _put(d, "추석")
+            if d.year == year:
+                three.add(d)
+    for d, name in _KR_HOLIDAY_EXTRA.items():
+        if d.year == year:
+            _put(d, name)
+    sat_sun = {
+        date(year, 3, 1),
+        date(year, 5, 5),
+        date(year, 8, 15),
+        date(year, 10, 3),
+        date(year, 10, 9),
+    }
+    if year >= 2023:
+        if lunar:
+            sat_sun.add(_kr_ymd(year, lunar[1]))
+        sat_sun.add(date(year, 12, 25))
+    if year >= 2026:
+        sat_sun.add(date(year, 5, 1))
+        sat_sun.add(date(year, 7, 17))
+    occupied = set(hol)
+    for dt in sorted(sat_sun):
+        if dt not in hol:
+            continue
+        if dt.weekday() < 5 and dt not in overlap:
+            continue
+        nxt = _kr_next_open(dt + timedelta(days=1), occupied)
+        hol.setdefault(nxt, "대체휴일")
+        occupied.add(nxt)
+    for dt in sorted(three):
+        if dt.weekday() != 6:
+            continue
+        nxt = _kr_next_open(dt + timedelta(days=1), occupied)
+        hol.setdefault(nxt, "대체휴일")
+        occupied.add(nxt)
+    return hol
+
+
+def kr_holiday_name(d: date | None) -> str:
+    if not isinstance(d, date):
+        return ""
+    return kr_holidays_year(d.year).get(d, "")
 
 
 def _vc_is_touch_ui() -> bool:
@@ -2284,10 +2401,17 @@ _VC_MCAL_CSS = f"""
 }}
 .vc-mcal-table td.sun {{ background:#fff3f1; }}
 .vc-mcal-table td.sat {{ background:#eef4fc; }}
+.vc-mcal-table td.hol {{ background:#fff3f1; }}
 .vc-mcal-table td.sel {{ background:#e8eaed; }}
 .vc-mcal-table td.out {{ color:#80868b; }}
 .vc-mcal-table td.today {{ box-shadow:inset 0 0 0 1.5px #9aa8bc; }}
 .vc-mcal-table td.out .vc-mcal-num {{ color:#80868b; }}
+.vc-mcal-table td.hol .vc-mcal-num {{ color:#d23b3b; }}
+.vc-mcal-hol {{
+  display:block; font-size:10px; font-weight:700; color:#d23b3b;
+  line-height:1.2; padding-top:1px; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}}
 .vc-mcal-hit {{
   color:inherit; text-decoration:none; display:block; min-height:8.2rem;
   width:100%; border:none; background:transparent; padding:6px 2px 8px;
@@ -2340,13 +2464,16 @@ export default function (component) {
       const cls = [
         d.sun ? "sun" : "",
         d.sat ? "sat" : "",
+        d.hol ? "hol" : "",
         d.sel ? "sel" : "",
         d.out ? "out" : "",
         d.today ? "today" : "",
       ].filter(Boolean).join(" ");
       html += "<td class=\"" + cls + "\">";
       html += '<button type="button" class="vc-mcal-hit" data-iso="' + esc(iso) + '">';
-      html += '<div class="vc-mcal-num">' + esc(d.day) + "</div>";
+      html += '<div class="vc-mcal-num">' + esc(d.day);
+      if (d.hname) html += '<span class="vc-mcal-hol">' + esc(d.hname) + "</span>";
+      html += "</div>";
       html += '<div class="vc-mcal-slots">';
       const slots = Array.isArray(d.slots) ? d.slots : [];
       for (const s of slots) {
@@ -2460,6 +2587,7 @@ def _mcal_v2_payload(
         row: list[dict] = []
         for i, d in enumerate(week):
             iso = d.isoformat()
+            hname = kr_holiday_name(d)
             row.append(
                 {
                     "iso": iso,
@@ -2467,6 +2595,8 @@ def _mcal_v2_payload(
                     "out": d.month != month.month,
                     "sun": i == 0,
                     "sat": i == 6,
+                    "hol": bool(hname),
+                    "hname": hname,
                     "sel": iso == sel_iso,
                     "today": iso == today_iso,
                     "slots": _mcal_slot_view(cells.get(iso) or []),
@@ -2789,6 +2919,7 @@ def _mcal_grid_css() -> str:
     }
     .vc-mcal-table td.sun { background: #fff3f1; }
     .vc-mcal-table td.sat { background: #eef4fc; }
+    .vc-mcal-table td.hol { background: #fff3f1; }
     .vc-mcal-table td.sel { background: #e8eaed; }
     .vc-mcal-table td.out { color: #80868b; }
     .vc-mcal-table td.today { box-shadow: inset 0 0 0 1.5px #9aa8bc; }
@@ -2798,6 +2929,12 @@ def _mcal_grid_css() -> str:
       cursor: pointer; -webkit-tap-highlight-color: rgba(26,115,232,0.25);
     }
     .vc-mcal-num { font-size: 12px; font-weight: 600; color: #3c4043; padding-bottom: 4px; }
+    .vc-mcal-table td.hol .vc-mcal-num { color: #d23b3b; }
+    .vc-mcal-hol {
+      display: block; font-size: 10px; font-weight: 700; color: #d23b3b;
+      line-height: 1.2; padding-top: 1px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
     .vc-strip-html { width: 100%; margin: 0 0 8px; }
     .vc-strip-html .vc-strip-wd,
     .vc-strip-html .vc-strip-days,
@@ -2870,7 +3007,8 @@ def _mcal_chips_html(marks: list[dict]) -> str:
 def _mcal_button_label(d: date, marks: list[dict]) -> str:
     """일자+값 5줄을 한 버튼에 넣어 칸 전체를 누를 수 있게 한다."""
     tags = {"visit": "방문", "planned": "예정", "prior": "기방문"}
-    lines = [str(d.day)]
+    hname = kr_holiday_name(d)
+    lines = [f"{d.day} {hname}" if hname else str(d.day)]
     extra = max(0, len(marks) - _MCAL_SLOTS)
     for i in range(_MCAL_SLOTS):
         if i < len(marks):
@@ -2907,12 +3045,13 @@ def _mcal_button_theme_css(
             iso = d.isoformat()
             sel = f'div[class*="st-key-vc_mcal_{iso}"] button'
             out = d.month != month.month
+            hol = bool(kr_holiday_name(d))
             if iso == sel_iso:
                 rules.append(
                     f"{sel}{{background:#e8eaed!important;color:#202124!important;"
                     "border-color:#c5c9d0!important;}"
                 )
-            elif i == 0:
+            elif hol or i == 0:
                 rules.append(
                     f"{sel}{{background:{_VC_SUN_BG}!important;color:{_VC_SUN_FG}!important;}}"
                 )
@@ -2987,6 +3126,9 @@ def _mcal_month_html(
             iso = d.isoformat()
             out = d.month != month.month
             cls = ["sun" if i == 0 else "sat" if i == 6 else ""]
+            hname = kr_holiday_name(d)
+            if hname:
+                cls.append("hol")
             if out:
                 cls.append("out")
             elif iso == sel_iso:
@@ -2994,8 +3136,11 @@ def _mcal_month_html(
             if not out and iso == today_iso:
                 cls.append("today")
             klass = " ".join(x for x in cls if x)
+            hol_html = (
+                f"<span class='vc-mcal-hol'>{html.escape(hname)}</span>" if hname else ""
+            )
             body = (
-                f"<div class='vc-mcal-num'>{d.day}</div>"
+                f"<div class='vc-mcal-num'>{d.day}{hol_html}</div>"
                 f"{_mcal_chips_html(cells.get(iso) or [])}"
             )
             if pick_href:
