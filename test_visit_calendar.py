@@ -153,6 +153,36 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertEqual(lab.count("\n"), 5)
         self.assertIn("라콜", lab)
 
+    def test_kr_holidays_marked_on_month_grid(self):
+        self.assertEqual(self.vc.kr_holiday_name(date(2026, 10, 3)), "개천절")
+        self.assertEqual(self.vc.kr_holiday_name(date(2026, 10, 5)), "대체휴일")
+        self.assertEqual(self.vc.kr_holiday_name(date(2026, 10, 9)), "한글날")
+        self.assertEqual(self.vc.kr_holiday_name(date(2026, 10, 4)), "")
+        self.assertEqual(self.vc.kr_holiday_name(date(2026, 6, 6)), "현충일")
+        self.assertEqual(self.vc.kr_holiday_name(date(2026, 6, 8)), "")
+        weeks = self.vc.month_cal_weeks(date(2026, 10, 1))
+        html = self.vc._mcal_month_html(
+            date(2026, 10, 1),
+            date(2026, 10, 4),
+            date(2026, 10, 4),
+            weeks,
+            {},
+        )
+        self.assertIn("개천절", html)
+        self.assertIn("한글날", html)
+        self.assertIn("대체휴일", html)
+        self.assertIn("vc-mcal-hol", html)
+        self.assertRegex(html, r"<td class='[^']*hol")
+        lab = self.vc._mcal_button_label(date(2026, 10, 3), [])
+        self.assertTrue(lab.startswith("3 개천절\n"))
+        self.assertEqual(lab.count("\n"), 5)
+        payload = self.vc._mcal_v2_payload(
+            date(2026, 10, 1), date(2026, 10, 4), date(2026, 10, 4), weeks, {}
+        )
+        oct3 = next(d for w in payload["weeks"] for d in w if d["iso"] == "2026-10-03")
+        self.assertEqual(oct3["hname"], "개천절")
+        self.assertTrue(oct3["hol"])
+
     def test_month_visit_rows_splits_done_and_planned(self):
         self.vc.add_visit(
             {
