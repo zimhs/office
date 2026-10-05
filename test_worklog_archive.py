@@ -302,6 +302,85 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         self.ss.pop("wl_saved_dates_cache", None)
         self.assertIn("2026-02-07", self.wt.list_saved_worklog_dates())
 
+    def test_openpyxl_duplicate_sheet_101_normalized_on_load(self):
+        """openpyxl 충돌명 101 + 낡은 10 → 정규 10으로 합치고 새 값을 불러온다."""
+        month_dir = os.path.join(self.root, "2026")
+        os.makedirs(month_dir, exist_ok=True)
+        month_path = os.path.join(month_dir, "10월.xlsx")
+        wb = Workbook()
+        ws_old = wb.active
+        ws_old.title = "10"
+        ws_old["C5"] = self.wt.format_worklog_date(date(2026, 10, 10))
+        ws_old["C8"] = "STALE-OLD"
+        ws_old["G8"] = "STALE-OLD"
+        ws_new = wb.create_sheet("101")
+        ws_new["C5"] = self.wt.format_worklog_date(date(2026, 10, 10))
+        ws_new["C8"] = "CORRECT-NEW"
+        ws_new["G8"] = "CORRECT-NEW"
+        for day, lab in ((3, "d3"), (4, "d4"), (5, "d5"), (7, "d7")):
+            ws = wb.create_sheet(str(day))
+            ws["C8"] = lab
+            ws["G8"] = lab
+        wb.save(month_path)
+        wb.close()
+
+        cells = self.wt.read_worklog_cells_from_archive(date(2026, 10, 10))
+        self.assertIsNotNone(cells)
+        self.assertIn("CORRECT-NEW", str(cells.get("C8") or "") + str(cells.get("G8") or ""))
+        self.assertNotIn("STALE-OLD", str(cells.get("C8") or "") + str(cells.get("G8") or ""))
+
+        wb2 = load_workbook(month_path)
+        try:
+            self.assertIn("10", wb2.sheetnames)
+            self.assertNotIn("101", wb2.sheetnames)
+            self.assertEqual(wb2["10"]["C8"].value, "CORRECT-NEW")
+            self.assertEqual(
+                sorted((n for n in wb2.sheetnames if n.isdigit()), key=int),
+                ["3", "4", "5", "7", "10"],
+            )
+        finally:
+            wb2.close()
+
+    def test_first_month_upsert_drops_leftover_day_sheet_not_101(self):
+        """일자 파일에 Sheet+잔여 '10'이 있어도 월 파일은 '10'만 만들고 활성 내용을 담는다."""
+        day_xlsx = os.path.join(self._tmp.name, "day-10-dup.xlsx")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Sheet"
+        ws["C5"] = self.wt.format_worklog_date(date(2026, 10, 10))
+        ws["C8"] = "CORRECT-NEW"
+        ws["G8"] = "CORRECT-NEW"
+        leftover = wb.create_sheet("10")
+        leftover["C5"] = self.wt.format_worklog_date(date(2026, 10, 10))
+        leftover["C8"] = "STALE-OLD"
+        leftover["G8"] = "STALE-OLD"
+        wb.save(day_xlsx)
+        wb.close()
+
+        got = self.wt.upsert_worklog_archive_sheet(date(2026, 10, 10), day_xlsx)
+        month_path = os.path.join(self.root, "2026", "10월.xlsx")
+        self.assertEqual(got, month_path)
+
+        mwb = load_workbook(month_path)
+        try:
+            self.assertEqual(mwb.sheetnames, ["10"])
+            self.assertEqual(mwb["10"]["C8"].value, "CORRECT-NEW")
+            self.assertNotIn("101", mwb.sheetnames)
+        finally:
+            mwb.close()
+
+        cells = self.wt.read_worklog_cells_from_archive(date(2026, 10, 10))
+        self.assertIsNotNone(cells)
+        self.assertIn("CORRECT-NEW", str(cells.get("C8") or ""))
+
+    def test_openpyxl_duplicate_base_day_helper(self):
+        self.assertEqual(self.wt._openpyxl_duplicate_base_day("101"), 10)
+        self.assertEqual(self.wt._openpyxl_duplicate_base_day("102"), 10)
+        self.assertEqual(self.wt._openpyxl_duplicate_base_day("32"), 3)
+        self.assertIsNone(self.wt._openpyxl_duplicate_base_day("10"))
+        self.assertIsNone(self.wt._openpyxl_duplicate_base_day("11"))
+        self.assertIsNone(self.wt._openpyxl_duplicate_base_day("10p2"))
+
     def test_archive_root_prefers_local_desktop_over_other_computers(self):
         home = os.path.join(self._tmp.name, "home")
         local = os.path.join(home, "Desktop", "업무", "일지")

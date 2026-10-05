@@ -2429,10 +2429,63 @@ def _archive_sheet_day_number(
     return parsed.day
 
 
+def _openpyxl_duplicate_base_day(name: str) -> int | None:
+    """openpyxl 이름 충돌 시트 → 원래 일.
+
+    시트명 '10'이 이미 있으면 create/rename 결과가 '101'이 된다.
+    일(1–31)이 아닌 숫자 시트명만 충돌본으로 본다 ('11'은 11일로 남긴다).
+    """
+    s = str(name or "").strip()
+    if not s.isdigit():
+        return None
+    n = int(s)
+    if 1 <= n <= 31:
+        return None
+    for prefix_len in (2, 1):
+        if len(s) <= prefix_len:
+            continue
+        prefix = s[:prefix_len]
+        suffix = s[prefix_len:]
+        if not (prefix.isdigit() and suffix.isdigit()):
+            continue
+        day = int(prefix)
+        if 1 <= day <= 31 and int(suffix) >= 1:
+            return day
+    return None
+
+
+def _safe_rename_worksheet(wb, ws, title: str) -> str:
+    """시트 제목을 title로 바꾼다. 충돌 시 openpyxl의 '101' 자동명을 쓰지 않는다."""
+    want = str(title or "").strip()
+    if not want or wb is None or ws is None:
+        return getattr(ws, "title", "") if ws is not None else ""
+    if ws.title == want:
+        return want
+    if want in wb.sheetnames:
+        other = wb[want]
+        if other is not ws:
+            del wb[want]
+    ws.title = want
+    if ws.title != want:
+        # 드물게 자동 접미가 붙으면 충돌본을 지우고 다시 시도
+        mangled = ws.title
+        if want in wb.sheetnames and wb[want] is not ws:
+            del wb[want]
+        ws.title = want
+        if ws.title != want and mangled in wb.sheetnames and mangled != want:
+            # 최후: 새 시트에 복사하지 않고 이름만 강제할 수 없으면 mangled 유지 방지
+            try:
+                if want not in wb.sheetnames:
+                    ws.title = want
+            except Exception:
+                pass
+    return ws.title
+
+
 def _normalize_archive_month_day_sheets(
     wb, *, year: int | None = None, month: int | None = None
 ) -> bool:
-    """0채움·ISO 시트명을 정규 일(3)로 합친다. 바뀌면 True.
+    """0채움·ISO·openpyxl 충돌명(101)을 정규 일(10)로 합친다. 바뀌면 True.
 
     옛「다른 컴퓨터」10월.xlsx 에 03·04 시트가 남아 달력 • 만 뜨고
     정규 시트(3)를 못 찾는 문제를 막는다. 내용 있는 쪽을 남긴다.
@@ -2448,20 +2501,25 @@ def _normalize_archive_month_day_sheets(
             continue
         day = _archive_sheet_day_number(name, expect_year=year, expect_month=month)
         if day is None:
+            day = _openpyxl_duplicate_base_day(name)
+        if day is None:
             continue
         by_day.setdefault(day, []).append(name)
     for day, names in by_day.items():
         canon = str(day)
         if len(names) == 1 and names[0] == canon:
             continue
-        # 내용 있는 시트 우선, 같으면 정규명 우선
+        # 내용 있는 시트 우선. 둘 다 있으면 openpyxl 충돌본(101)을 고른다 —
+        # 첫 저장 때 active가 101로 밀리고 낡은 10이 남는 패턴을 복구한다.
         def _rank(n: str) -> tuple:
             try:
                 cells = _cells_from_worksheet(wb[n], date(2000, 1, min(day, 28)))
                 has = 1 if _worklog_cells_have_draft(cells) else 0
             except Exception:
                 has = 0
-            return (has, 1 if n == canon else 0)
+            is_dup = 1 if _openpyxl_duplicate_base_day(n) == day else 0
+            is_canon = 1 if n == canon else 0
+            return (has, is_dup, is_canon)
 
         names_sorted = sorted(names, key=_rank, reverse=True)
         keep = names_sorted[0]
@@ -2469,7 +2527,7 @@ def _normalize_archive_month_day_sheets(
             if canon in wb.sheetnames and canon != keep:
                 del wb[canon]
             try:
-                wb[keep].title = canon
+                _safe_rename_worksheet(wb, wb[keep], canon)
                 keep = canon
                 changed = True
             except Exception:
@@ -2477,7 +2535,11 @@ def _normalize_archive_month_day_sheets(
         for n in list(wb.sheetnames):
             if n == keep:
                 continue
-            if _archive_sheet_day_number(n, expect_year=year, expect_month=month) == day and not (
+            same_day = (
+                _archive_sheet_day_number(n, expect_year=year, expect_month=month) == day
+                or _openpyxl_duplicate_base_day(n) == day
+            )
+            if same_day and not (
                 _is_archive_extra_sheet_name(n) or _is_day_extra_sheet_name(n)
             ):
                 try:
@@ -2789,9 +2851,18 @@ def _copy_worksheet_cross_workbook(src_ws, dst_ws) -> None:
 
 def _clone_worksheet_to_workbook(src_ws, dst_wb, title: str):
     """날짜일지 시트를 월별 통합 파일로 복사 (원본 인쇄·열 너비·화면 배율 유지)."""
-    if title in dst_wb.sheetnames:
-        del dst_wb[title]
-    dst = dst_wb.create_sheet(title)
+    want = str(title or "").strip()
+    if want in dst_wb.sheetnames:
+        del dst_wb[want]
+    # openpyxl 충돌본(101 등)도 같이 제거
+    base_day = _archive_sheet_day_number(want)
+    if base_day is not None:
+        for name in list(dst_wb.sheetnames):
+            if _openpyxl_duplicate_base_day(name) == base_day:
+                del dst_wb[name]
+    dst = dst_wb.create_sheet(want)
+    if dst.title != want:
+        _safe_rename_worksheet(dst_wb, dst, want)
     _copy_worksheet_cross_workbook(src_ws, dst)
     return dst
 
@@ -2828,9 +2899,7 @@ def _rename_day_extra_sheets_to_archive(wb, d: date) -> None:
         new_title = _archive_extra_sheet_name(d, n)
         if name == new_title:
             continue
-        if new_title in wb.sheetnames:
-            del wb[new_title]
-        wb[name].title = new_title
+        _safe_rename_worksheet(wb, wb[name], new_title)
 
 
 def _sync_archive_extra_sheets(day_wb, month_wb, d: date) -> None:
@@ -2870,9 +2939,22 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
         month_wb = load_workbook(month_path)
         try:
             ws = month_wb.active
-            if ws.title != sheet_title:
-                ws.title = sheet_title
+            # 일자 파일에 남아 있던 동명·충돌 시트(10, 101)를 먼저 제거해야
+            # active 를 '10'으로 바꿀 때 openpyxl이 '101'로 자동개명하지 않는다.
+            for name in list(month_wb.sheetnames):
+                if name == ws.title:
+                    continue
+                if name == sheet_title or name in _worklog_archive_sheet_titles_for_lookup(d):
+                    del month_wb[name]
+                    continue
+                if _archive_sheet_day_number(name, expect_year=d.year, expect_month=d.month) == d.day:
+                    del month_wb[name]
+                    continue
+                if _openpyxl_duplicate_base_day(name) == d.day:
+                    del month_wb[name]
+            _safe_rename_worksheet(month_wb, ws, sheet_title)
             _rename_day_extra_sheets_to_archive(month_wb, d)
+            _normalize_archive_month_day_sheets(month_wb, year=d.year, month=d.month)
             month_wb.save(month_path)
         finally:
             month_wb.close()
@@ -2900,6 +2982,7 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
             for i, name in enumerate(names):
                 month_wb.move_sheet(name, offset=i - month_wb.sheetnames.index(name))
             _sync_archive_extra_sheets(day_wb, month_wb, d)
+            _normalize_archive_month_day_sheets(month_wb, year=d.year, month=d.month)
             month_wb.save(month_path)
         finally:
             month_wb.close()
