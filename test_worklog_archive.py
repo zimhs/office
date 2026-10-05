@@ -145,17 +145,19 @@ class WorklogMonthArchiveTest(unittest.TestCase):
             info = self.wt.create_worklog_day_local(d)
             self.assertTrue(info["created"])
             month_path = os.path.join(self.root, "2026", "9월.xlsx")
-            self.assertTrue(os.path.isfile(month_path))
+            # 빈 초안은 월별 아카이브에 넣지 않는다
+            self.assertFalse(os.path.isfile(month_path))
             self.assertTrue(os.path.isfile(os.path.join(cache, "2026-09-04.xlsx")))
             again = self.wt.create_worklog_day_local(d)
             self.assertFalse(again["created"])
             self.ss.pop("wl_saved_dates_cache", None)
             dates = self.wt.list_saved_worklog_dates()
             self.assertNotIn("2026-09-04", dates)
-            # 내용 저장 후에만 •
+            # 내용 저장 후에만 월별 시트·달력 •
             day_path = os.path.join(cache, "2026-09-04.xlsx")
             _write_day_xlsx(day_path, "saved-4")
             self.wt.upsert_worklog_archive_sheet(d, day_path, allow_overwrite=True)
+            self.assertTrue(os.path.isfile(month_path))
             self.ss.pop("wl_saved_dates_cache", None)
             dates2 = self.wt.list_saved_worklog_dates()
             self.assertIn("2026-09-04", dates2)
@@ -164,6 +166,69 @@ class WorklogMonthArchiveTest(unittest.TestCase):
             self.assertIn("4", wb.sheetnames)
         finally:
             wb.close()
+
+    def test_purge_removes_empty_and_keeps_saved_october_days(self):
+        """10월.xlsx 에 빈 3·4·5·7 과 저장본 10만 있으면 10만 남긴다."""
+        month_dir = os.path.join(self.root, "2026")
+        os.makedirs(month_dir, exist_ok=True)
+        month_path = os.path.join(month_dir, "10월.xlsx")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "10"
+        ws["C5"] = self.wt.format_worklog_date(date(2026, 10, 10))
+        ws["C8"] = "dash-10"
+        ws["G8"] = "dash-10"
+        for day in (3, 4, 5, 7):
+            w = wb.create_sheet(str(day))
+            w["C5"] = self.wt.format_worklog_date(date(2026, 10, day))
+            # 본문 없음 = 대시보드 미저장
+        wb.save(month_path)
+        wb.close()
+
+        changed = self.wt._repair_month_archive_file(month_path, year=2026, month=10)
+        self.assertTrue(changed)
+        wb2 = load_workbook(month_path)
+        try:
+            self.assertEqual(wb2.sheetnames, ["10"])
+            self.assertEqual(wb2["10"]["C8"].value, "dash-10")
+        finally:
+            wb2.close()
+
+        self.ss.pop("wl_saved_dates_cache", None)
+        dates = self.wt.list_saved_worklog_dates()
+        self.assertIn("2026-10-10", dates)
+        self.assertNotIn("2026-10-03", dates)
+        self.assertNotIn("2026-10-07", dates)
+
+    def test_upsert_purges_sibling_empty_sheets(self):
+        """10일 저장 시 같은 월의 빈 유령 시트는 제거된다."""
+        month_dir = os.path.join(self.root, "2026")
+        os.makedirs(month_dir, exist_ok=True)
+        month_path = os.path.join(month_dir, "10월.xlsx")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "3"
+        ws["C5"] = self.wt.format_worklog_date(date(2026, 10, 3))
+        for day in (4, 5, 7):
+            w = wb.create_sheet(str(day))
+            w["C5"] = self.wt.format_worklog_date(date(2026, 10, day))
+        wb.save(month_path)
+        wb.close()
+
+        day_xlsx = os.path.join(self._tmp.name, "day10.xlsx")
+        _write_day_xlsx(day_xlsx, "only-10")
+        wb = load_workbook(day_xlsx)
+        wb.active["C5"] = self.wt.format_worklog_date(date(2026, 10, 10))
+        wb.save(day_xlsx)
+        wb.close()
+
+        self.wt.upsert_worklog_archive_sheet(date(2026, 10, 10), day_xlsx)
+        mwb = load_workbook(month_path)
+        try:
+            self.assertEqual(mwb.sheetnames, ["10"])
+            self.assertEqual(mwb["10"]["C8"].value, "only-10")
+        finally:
+            mwb.close()
 
     def test_padded_day_sheets_normalize_and_show_on_calendar(self):
         """옛 03·04 시트 → 정규 3·4 로 합치고 내용 있는 날만 •."""

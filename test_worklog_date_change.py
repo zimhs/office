@@ -546,15 +546,27 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.wt._invalidate_worklog_presence_cache(d)
 
     def test_empty_archive_sheet_does_not_block_save_or_move(self):
-        """달력 • 없는 빈 3일 시트가 있어도 7일→3일 이동·저장이 된다."""
-        empty3, dest = date(2026, 9, 3), date(2026, 9, 3)
+        """빈 3일 유령 시트가 있어도 7일→3일 이동·저장이 된다. 빈 저장은 시트를 남기지 않는다."""
+        dest = date(2026, 9, 3)
         src = date(2026, 9, 7)
-        self._make_archive_only(empty3, self.wt._empty_cells(empty3))
+        # 저장 API를 거치지 않고 빈 시트만 심음(옛 유령 잔여)
+        month_path = os.path.join(self.arch, "2026", "9월.xlsx")
+        os.makedirs(os.path.dirname(month_path), exist_ok=True)
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "3"
+        ws["C5"] = self.wt.format_worklog_date(dest)
+        wb.save(month_path)
+        wb.close()
         self.assertTrue(self.wt.worklog_date_exists_in_archive(dest))
         self.assertFalse(self.wt.worklog_archive_has_saved_content(dest))
         ok, msg = self.wt.check_worklog_save_allowed(dest, had_local_at_open=False)
         self.assertTrue(ok, msg)
         self.assertEqual(msg, "")
+        # 빈 본문 저장은 유령 시트를 남기지 않는다
+        self.wt.save_worklog_cells(dest, self.wt._empty_cells(dest), force=True, allow_overwrite=True)
+        self.assertFalse(self.wt.worklog_date_exists_in_archive(dest))
         self.wt.save_worklog_cells(src, self._cells(src, "거래처7", "7일 내용"), force=True, allow_overwrite=True)
         with patch.object(self.wt, "_cells_from_widgets", side_effect=lambda d: self.wt.read_worklog_cells(d)):
             err = self.wt.apply_worklog_date_change(src, dest)

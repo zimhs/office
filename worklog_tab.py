@@ -2572,6 +2572,119 @@ def _normalize_archive_month_day_sheets(
     return changed
 
 
+
+def _archive_day_sheet_keep(wb, name: str, d: date) -> bool:
+    """달력 • / 보관 대상: 본문 내용이 있고 C5가 그 날짜(또는 비어 있음)."""
+    if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
+        return False
+    try:
+        labeled = _worksheet_labeled_date(wb[name])
+        if labeled is not None and labeled != d:
+            return False
+        cells = _cells_from_worksheet(wb[name], d)
+    except Exception:
+        return False
+    return _worklog_cells_have_draft(cells)
+
+
+def _purge_unsaved_archive_day_sheets(
+    wb, *, year: int, month: int, keep_days: set[int] | None = None
+) -> bool:
+    """월별 파일에서 대시보드 저장본이 아닌 일자 시트를 제거한다.
+
+    - 본문이 비어 있으면 삭제
+    - C5가 다른 날이면 삭제
+    - openpyxl 충돌명(101 등) 삭제
+    - keep_days에 넣은 일자는 빈 칸이어도 유지(방금 저장한 날)
+    """
+    if wb is None:
+        return False
+    changed = False
+    kept_days: set[int] = set(keep_days or ())
+    for name in list(wb.sheetnames):
+        if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
+            continue
+        dup = _openpyxl_duplicate_base_day(name)
+        day = _archive_sheet_day_number(name, expect_year=year, expect_month=month)
+        if day is None and dup is not None:
+            day = dup
+        if day is None:
+            continue
+        try:
+            d = date(year, month, day)
+        except ValueError:
+            try:
+                del wb[name]
+                changed = True
+            except Exception:
+                pass
+            continue
+        if keep_days is not None and day in keep_days:
+            kept_days.add(day)
+            continue
+        if dup is not None and name != str(day):
+            # 정규 일 시트가 따로 있으면 충돌본만 제거
+            if str(day) in wb.sheetnames and name != str(day):
+                try:
+                    del wb[name]
+                    changed = True
+                except Exception:
+                    pass
+                continue
+        if _archive_day_sheet_keep(wb, name, d):
+            kept_days.add(day)
+            continue
+        try:
+            del wb[name]
+            changed = True
+        except Exception:
+            pass
+    # 부모 일이 없는 추가페이지(Np2) 제거
+    for name in list(wb.sheetnames):
+        if not _is_archive_extra_sheet_name(name):
+            continue
+        m = re.fullmatch(r"(\d{1,2})p\d+", str(name).strip())
+        if not m:
+            continue
+        parent = int(m.group(1))
+        if parent not in kept_days:
+            try:
+                del wb[name]
+                changed = True
+            except Exception:
+                pass
+    return changed
+
+
+def _repair_month_archive_file(month_path: str, *, year: int, month: int) -> bool:
+    """디스크의 월별 xlsx를 열어 유령 시트를 지운다. 바뀌면 True."""
+    if load_workbook is None or not month_path or not os.path.isfile(month_path):
+        return False
+    try:
+        wb = load_workbook(month_path)
+    except Exception:
+        return False
+    try:
+        changed = _normalize_archive_month_day_sheets(wb, year=year, month=month)
+        changed = _purge_unsaved_archive_day_sheets(wb, year=year, month=month) or changed
+        remaining = [n for n in wb.sheetnames if n and not n.startswith("_")]
+        if not remaining:
+            wb.close()
+            try:
+                os.remove(month_path)
+            except OSError:
+                pass
+            return True
+        if changed:
+            wb.save(month_path)
+        return changed
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
 def _archive_sheet_sort_key(name: str) -> tuple:
     if name.isdigit():
         return (0, int(name))
@@ -2977,6 +3090,17 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
             _safe_rename_worksheet(month_wb, ws, sheet_title)
             _rename_day_extra_sheets_to_archive(month_wb, d)
             _normalize_archive_month_day_sheets(month_wb, year=d.year, month=d.month)
+            # 방금 넣은 일만 강제 유지, 그 외 빈·불일치 유령 시트 제거
+            _keep = set()
+            if sheet_title in month_wb.sheetnames:
+                try:
+                    if _worklog_cells_have_draft(_cells_from_worksheet(month_wb[sheet_title], d)):
+                        _keep.add(d.day)
+                except Exception:
+                    _keep.add(d.day)
+            _purge_unsaved_archive_day_sheets(
+                month_wb, year=d.year, month=d.month, keep_days=_keep
+            )
             month_wb.save(month_path)
         finally:
             month_wb.close()
@@ -3005,6 +3129,16 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
                 month_wb.move_sheet(name, offset=i - month_wb.sheetnames.index(name))
             _sync_archive_extra_sheets(day_wb, month_wb, d)
             _normalize_archive_month_day_sheets(month_wb, year=d.year, month=d.month)
+            _keep = set()
+            if sheet_title in month_wb.sheetnames:
+                try:
+                    if _worklog_cells_have_draft(_cells_from_worksheet(month_wb[sheet_title], d)):
+                        _keep.add(d.day)
+                except Exception:
+                    _keep.add(d.day)
+            _purge_unsaved_archive_day_sheets(
+                month_wb, year=d.year, month=d.month, keep_days=_keep
+            )
             month_wb.save(month_path)
         finally:
             month_wb.close()
@@ -3097,8 +3231,17 @@ def _list_archive_saved_dates() -> set[str]:
             try:
                 wb = load_workbook(path, data_only=False)
                 try:
-                    if _normalize_archive_month_day_sheets(wb, year=year, month=month):
+                    changed = _normalize_archive_month_day_sheets(wb, year=year, month=month)
+                    changed = _purge_unsaved_archive_day_sheets(wb, year=year, month=month) or changed
+                    if changed:
                         try:
+                            remaining = [n for n in wb.sheetnames if n and not n.startswith("_")]
+                            if not remaining:
+                                try:
+                                    os.remove(path)
+                                except OSError:
+                                    pass
+                                continue
                             wb.save(path)
                         except Exception:
                             pass
@@ -3533,26 +3676,22 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
 
 
 def create_worklog_day_local(d: date) -> dict:
-    """선택한 날짜의 엑셀 업무일지를 로컬에만 만든다 (캐시 + 월별 시트).
+    """선택한 날짜의 로컬 편집용 엑셀만 만든다.
 
-    Drive/Cloud는 작성 후 「저장」할 때 반영. 이미 있으면 덮어쓰지 않는다.
+    월별 아카이브(…/일지/YYYY/N월.xlsx)에는 「저장」으로 본문이 있을 때만 반영한다.
+    빈 시트를 미리 넣으면 입력하지 않은 날짜·값이 엑셀에 계속 남는다.
     """
     _ensure_dirs()
     path = worklog_path(d)
-    archive_exists = worklog_date_exists_in_archive(d)
     local_exists = os.path.isfile(path)
-    archive = None
+    archive = worklog_archive_month_path(d, create_year=False)
     if not local_exists:
         write_cells_to_path(path, d, _empty_cells(d), force_template=True)
-    if not archive_exists:
-        archive = upsert_worklog_archive_sheet(d, path, allow_overwrite=False)
-    else:
-        archive = worklog_archive_month_path(d, create_year=False)
-    _invalidate_saved_dates_cache()
     _invalidate_worklog_presence_cache(d)
-    created = not (local_exists or archive_exists)
+    created = not local_exists
     iso = d.isoformat()
-    st.session_state[f"wl_saved_ok_{iso}"] = True
+    # 빈 초안은 달력 • / 저장완료로 표시하지 않는다
+    st.session_state.pop(f"wl_saved_ok_{iso}", None)
     ctx = dict(st.session_state.get(f"wl_open_ctx_{iso}") or {})
     ctx["had_local"] = True
     st.session_state[f"wl_open_ctx_{iso}"] = ctx
@@ -3564,14 +3703,11 @@ def create_worklog_day_local(d: date) -> dict:
     st.session_state.pop(f"wl_sum_sig_v25_{iso}", None)
     st.session_state.pop(f"wl_sum_html_v25_{iso}", None)
     st.session_state[f"wl_left_excel_on_{iso}"] = False
-    saved_set = st.session_state.get("wl_saved_dates_cache")
-    if isinstance(saved_set, set):
-        saved_set.add(iso)
     target = describe_worklog_archive_target(d)
     if created:
-        msg = f"로컬 엑셀을 만들었습니다 · {target}"
+        msg = f"로컬 편집 파일을 만들었습니다 · 저장 시 {target}"
     else:
-        msg = f"이미 있는 날짜입니다 · {target}"
+        msg = f"이미 있는 로컬 파일입니다 · 저장 시 {target}"
     return {
         "created": created,
         "path": path,
@@ -7614,6 +7750,30 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     dev_caption(f"업무일지 빌드 {_WL_UI_BUILD}")
     _filt_changed = _dashboard_filters_changed_this_run()
     _arch_root = resolve_worklog_archive_root()
+    # 유령 일자 시트(빈 칸·C5 불일치)를 월별 파일에서 한 번 정리 → 대시보드•와 엑셀 일치
+    if _arch_root and not st.session_state.get("_wl_archive_purged_v1"):
+        st.session_state["_wl_archive_purged_v1"] = True
+        try:
+            repaired = False
+            for year_name in os.listdir(_arch_root):
+                if not (year_name.isdigit() and len(year_name) == 4):
+                    continue
+                year_dir = os.path.join(_arch_root, year_name)
+                if not os.path.isdir(year_dir):
+                    continue
+                year = int(year_name)
+                for fname in os.listdir(year_dir):
+                    m = re.match(r"^(\d{1,2})월\.xlsx$", fname)
+                    if not m:
+                        continue
+                    month = int(m.group(1))
+                    mp = os.path.join(year_dir, fname)
+                    if _repair_month_archive_file(mp, year=year, month=month):
+                        repaired = True
+            if repaired:
+                _invalidate_saved_dates_cache()
+        except Exception:
+            pass
     if is_dev_mode():
         if _arch_root:
             st.caption(f"월별 저장 경로: `{_arch_root}/{{연도}}/{{N}}월.xlsx` (날짜=시트명)")
