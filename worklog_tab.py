@@ -2234,65 +2234,87 @@ def _iter_google_drive_roots() -> list[str]:
     except OSError: return []
     return roots
 
-def resolve_worklog_archive_root() -> str | None:
-    """…/Desktop/업무/일지 우선. 「다른 컴퓨터」옛 백업은 Desktop이 있을 때 쓰지 않는다.
 
-    세션 캐시로 상단 필터 rerun 시 Drive 스캔 생략.
+def _archive_root_mtime(p: str) -> float:
+    try:
+        return max(
+            (os.path.getmtime(os.path.join(dp, f)) for dp, _, fs in os.walk(p) for f in fs),
+            default=os.path.getmtime(p),
+        )
+    except OSError:
+        return 0.0
+
+
+def _drive_other_computer_archive_candidates() -> list[str]:
+    """Drive「다른 컴퓨터/*/Desktop/업무/일지」후보 (웹 UI와 같은 경로)."""
+    out: list[str] = []
+    for groot in _iter_google_drive_roots():
+        for other_name in ("다른 컴퓨터", "Computers"):
+            other = os.path.join(groot, other_name)
+            if not os.path.isdir(other):
+                continue
+            try:
+                pcs = sorted(os.listdir(other))
+            except OSError:
+                continue
+            for pc in pcs:
+                out.append(os.path.join(other, pc, WORKLOG_ARCHIVE_REL))
+    return out
+
+
+def _pick_drive_other_computer_archive_root() -> str | None:
+    """기존 Drive「다른 컴퓨터」일지 폴더 중 저장 대상으로 쓸 경로.
+
+    「내 컴퓨터 (1)」처럼 실제 맥 Desktop 백업을 우선하고, 없으면 mtime이 가장 최근인 폴더.
+    """
+    candidates = _drive_other_computer_archive_candidates()
+    existing = [p for p in candidates if os.path.isdir(p)]
+    if existing:
+        def _score(p: str) -> tuple:
+            prefer = 0
+            if "내 컴퓨터 (1)" in p or "My Mac (1)" in p or "My Computer (1)" in p:
+                prefer = 3
+            elif "내 컴퓨터" in p or "My Mac" in p or "My Computer" in p:
+                prefer = 2
+            return (prefer, _archive_root_mtime(p))
+
+        existing.sort(key=_score, reverse=True)
+        return existing[0]
+    # 폴더만 없으면 Desktop/업무 아래에 일지를 만든다
+    for p in candidates:
+        grand = os.path.dirname(os.path.dirname(p))  # …/Desktop
+        if os.path.isdir(grand):
+            try:
+                os.makedirs(p, exist_ok=True)
+                return p
+            except OSError:
+                continue
+    return None
+
+
+def resolve_worklog_archive_root() -> str | None:
+    """월별 일지 저장 루트 = Drive「다른 컴퓨터/…/Desktop/업무/일지」.
+
+    Google Drive 웹의 「다른 컴퓨터 > 내 컴퓨터 (1) > Desktop > 업무 > 일지 > 2026」
+    과 같은 경로에 {N}월.xlsx 가 생기도록 한다.
+    Drive 마운트가 없을 때만 ~/Desktop/업무/일지 로 둔다.
     """
     cached = st.session_state.get("_wl_archive_root_cache")
     if isinstance(cached, dict) and "path" in cached:
         return cached.get("path")
-    home = os.path.expanduser("~")
-    local_desktop = os.path.join(home, "Desktop", "업무", "일지")
-    desktop_dir = os.path.join(home, "Desktop")
-    found: str | None = None
-    # 1) 실제 맥 Desktop — 저장·달력의 기준. Drive「다른 컴퓨터」옛 복사본보다 우선.
-    if os.path.isdir(local_desktop):
-        found = local_desktop
-    elif os.path.isdir(desktop_dir):
-        try:
-            os.makedirs(local_desktop, exist_ok=True)
-            found = local_desktop
-        except OSError:
-            found = None
-    # 2) Desktop이 없을 때만 Drive「다른 컴퓨터」…/Desktop/업무/일지 (최신 mtime 폴더)
+    found = _pick_drive_other_computer_archive_root()
     if not found:
-        drive_candidates: list[str] = []
-        for groot in _iter_google_drive_roots():
-            for other_name in ("다른 컴퓨터", "Computers"):
-                other = os.path.join(groot, other_name)
-                if not os.path.isdir(other):
-                    continue
-                try:
-                    pcs = sorted(os.listdir(other))
-                except OSError:
-                    continue
-                for pc in pcs:
-                    drive_candidates.append(os.path.join(other, pc, WORKLOG_ARCHIVE_REL))
-        existing = [p for p in drive_candidates if os.path.isdir(p)]
-        if existing:
-            def _root_mtime(p: str) -> float:
-                try:
-                    return max(
-                        (os.path.getmtime(os.path.join(dp, f)) for dp, _, fs in os.walk(p) for f in fs),
-                        default=os.path.getmtime(p),
-                    )
-                except OSError:
-                    return 0.0
-
-            existing.sort(key=_root_mtime, reverse=True)
-            found = existing[0]
-        else:
-            for p in drive_candidates:
-                parent = os.path.dirname(p)
-                grand = os.path.dirname(parent)
-                if os.path.isdir(grand):
-                    try:
-                        os.makedirs(p, exist_ok=True)
-                        found = p
-                        break
-                    except OSError:
-                        continue
+        home = os.path.expanduser("~")
+        local_desktop = os.path.join(home, "Desktop", "업무", "일지")
+        desktop_dir = os.path.join(home, "Desktop")
+        if os.path.isdir(local_desktop):
+            found = local_desktop
+        elif os.path.isdir(desktop_dir):
+            try:
+                os.makedirs(local_desktop, exist_ok=True)
+                found = local_desktop
+            except OSError:
+                found = None
     st.session_state["_wl_archive_root_cache"] = {"path": found}
     return found
 
@@ -6982,7 +7004,7 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             format="YYYY/MM/DD",
             key="wl_date_pick",
             on_change=_on_wl_date_pick_change,
-            help="기본은 그 날 저장본을 엽니다. 「날짜변경」을 켠 뒤 날짜를 고르면 지금 입력 중인 내용이 그 날로 옮겨집니다. 저장 시 Desktop/업무/일지/{연도}/{N}월.xlsx에 반영됩니다.",
+            help="기본은 그 날 저장본을 엽니다. 「날짜변경」을 켠 뒤 날짜를 고르면 지금 입력 중인 내용이 그 날로 옮겨집니다. 저장 시 Google Drive「다른 컴퓨터/…/Desktop/업무/일지/{연도}/{N}월.xlsx」에 반영됩니다.",
             width="stretch",
         )
         st.session_state["_wl_date_pick_live"] = True
@@ -7596,7 +7618,7 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
         if _arch_root:
             st.caption(f"월별 저장 경로: `{_arch_root}/{{연도}}/{{N}}월.xlsx` (날짜=시트명)")
         else:
-            st.caption("월별 저장 경로: `Desktop/업무/일지/{연도}/{N}월.xlsx` (Google Drive 동기화 시 「다른 컴퓨터/내 컴퓨터/Desktop/업무/일지」)")
+            st.caption("월별 저장 경로: `다른 컴퓨터/내 컴퓨터 (1)/Desktop/업무/일지/{연도}/{N}월.xlsx` (Drive 미마운트 시 ~/Desktop/업무/일지)")
         try:
             from drive_remote_fetch import drive_remote_configured
 

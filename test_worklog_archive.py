@@ -381,7 +381,8 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         self.assertIsNone(self.wt._openpyxl_duplicate_base_day("11"))
         self.assertIsNone(self.wt._openpyxl_duplicate_base_day("10p2"))
 
-    def test_archive_root_prefers_local_desktop_over_other_computers(self):
+    def test_archive_root_prefers_drive_other_computer_over_local(self):
+        """저장 루트는 Drive「다른 컴퓨터/내 컴퓨터 (1)/Desktop/업무/일지」를 쓴다."""
         home = os.path.join(self._tmp.name, "home")
         local = os.path.join(home, "Desktop", "업무", "일지")
         other = os.path.join(
@@ -410,7 +411,54 @@ class WorklogMonthArchiveTest(unittest.TestCase):
             ):
                 self.ss.pop("_wl_archive_root_cache", None)
                 got = self.wt.resolve_worklog_archive_root()
-            self.assertEqual(got, local)
+            self.assertEqual(got, other)
+        finally:
+            self._p_root.start()
+
+    def test_save_writes_under_drive_other_computer_year_folder(self):
+        """업무 입력 저장 → 다른 컴퓨터/…/일지/2026/10월.xlsx#10."""
+        home = os.path.join(self._tmp.name, "home_drive")
+        other = os.path.join(
+            home,
+            "Library",
+            "CloudStorage",
+            "GoogleDrive-x",
+            "다른 컴퓨터",
+            "내 컴퓨터 (1)",
+            "Desktop",
+            "업무",
+            "일지",
+        )
+        os.makedirs(other, exist_ok=True)
+        day_xlsx = os.path.join(self._tmp.name, "day-10.xlsx")
+        _write_day_xlsx(day_xlsx, "oct10-drive")
+        wb = load_workbook(day_xlsx)
+        wb.active["C5"] = self.wt.format_worklog_date(date(2026, 10, 10))
+        wb.save(day_xlsx)
+        wb.close()
+
+        self._p_root.stop()
+        try:
+            with patch.object(self.wt.os.path, "expanduser", side_effect=lambda p: home if p == "~" else p), patch.object(
+                self.wt,
+                "_iter_google_drive_roots",
+                return_value=[os.path.join(home, "Library", "CloudStorage", "GoogleDrive-x")],
+            ):
+                self.ss.pop("_wl_archive_root_cache", None)
+                got = self.wt.upsert_worklog_archive_sheet(date(2026, 10, 10), day_xlsx)
+            expect = os.path.join(other, "2026", "10월.xlsx")
+            self.assertEqual(got, expect)
+            self.assertTrue(os.path.isfile(expect))
+            mwb = load_workbook(expect, read_only=True)
+            try:
+                self.assertIn("10", mwb.sheetnames)
+                self.assertEqual(mwb["10"]["C8"].value, "oct10-drive")
+            finally:
+                mwb.close()
+            target = self.wt.describe_worklog_archive_target(date(2026, 10, 10))
+            self.assertIn("다른 컴퓨터", target)
+            self.assertIn("내 컴퓨터 (1)", target)
+            self.assertTrue(target.endswith("2026/10월.xlsx#10") or target.endswith(f"{expect}#10") or "#10" in target)
         finally:
             self._p_root.start()
 
