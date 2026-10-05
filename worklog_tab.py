@@ -6899,7 +6899,7 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             format="YYYY/MM/DD",
             key="wl_date_pick",
             on_change=_on_wl_date_pick_change,
-            help="기본은 그 날 저장본을 엽니다. 「날짜변경」을 켠 뒤 날짜를 고르면 지금 입력 중인 내용이 그 날로 옮겨집니다.",
+            help="기본은 그 날 저장본을 엽니다. 「날짜변경」을 켠 뒤 날짜를 고르면 지금 입력 중인 내용이 그 날로 옮겨집니다. 저장 시 Desktop/업무/일지/{연도}/{N}월.xlsx에 반영됩니다.",
             width="stretch",
         )
         st.session_state["_wl_date_pick_live"] = True

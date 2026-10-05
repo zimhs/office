@@ -169,6 +169,61 @@ class WorklogDateChangeTest(unittest.TestCase):
         dest = (self.ss.get(self.wt._entries_key(new)) or [{}])[0]
         self.assertFalse(str(dest.get("content") or "").strip())
 
+    def test_oct10_to_oct6_move_save_creates_sheet_in_2026_month_file(self):
+        """10/10 → 날짜변경 → 10/6 저장 시 Desktop/…/2026/10월.xlsx#6 이 생기고 10일은 제거된다."""
+        old, new = date(2026, 10, 10), date(2026, 10, 6)
+        self.wt.save_worklog_cells(
+            old, self._cells(old, "거래처10", "10일 업무"), force=True, allow_overwrite=True
+        )
+        month_path = os.path.join(self.arch, "2026", "10월.xlsx")
+        self.assertTrue(os.path.isfile(month_path))
+        # 예전 유령 빈 06 시트가 있어도 6일로 저장·정규화되어야 한다
+        wb = load_workbook(month_path)
+        if "06" not in wb.sheetnames:
+            wb.create_sheet("06")
+        wb.save(month_path)
+        wb.close()
+
+        self.ss["worklog_selected"] = old
+        self.ss["wl_date_move_mode"] = True
+        self.ss["wl_date_pick"] = new
+        with patch.object(
+            self.wt,
+            "_cells_from_widgets",
+            side_effect=lambda d: self._cells(d, "거래처10", "10일 업무"),
+        ):
+            self.wt._on_wl_date_pick_change()
+        self.assertEqual(self.ss["worklog_selected"], new)
+        self.assertEqual(self.ss.get("wl_date_retarget_from"), old.isoformat())
+
+        path = self.wt.commit_worklog_date_save(
+            old, new, self._cells(new, "거래처10", "10일 업무")
+        )
+        self.assertTrue(path.endswith("2026-10-06.xlsx"))
+        self.assertEqual(self.ss.get("wl_last_archive_path"), month_path)
+        target = self.ss.get("wl_last_archive_target") or self.wt.describe_worklog_archive_target(new)
+        self.assertIn("10월.xlsx#6", target)
+        self.assertIn("2026", target)
+
+        wb = load_workbook(month_path)
+        try:
+            self.assertIn("6", wb.sheetnames)
+            self.assertNotIn("06", wb.sheetnames)
+            self.assertNotIn("10", wb.sheetnames)
+            self.assertEqual(wb["6"]["C8"].value, "거래처10")
+            self.assertEqual(wb["6"]["G8"].value, "10일 업무")
+            self.assertTrue(str(wb["6"]["C5"].value or "").startswith("2026-10-06"))
+        finally:
+            wb.close()
+
+        self.ss.pop("wl_saved_dates_cache", None)
+        saved = self.wt.list_saved_worklog_dates()
+        self.assertIn("2026-10-06", saved)
+        self.assertNotIn("2026-10-10", saved)
+        got = self.wt.read_worklog_cells_from_archive(new)
+        self.assertIsNotNone(got)
+        self.assertEqual(got.get("G8"), "10일 업무")
+
     def test_date_move_mode_retargets_draft_and_keeps_until_save(self):
         """날짜변경을 켠 뒤 날짜를 고르면 편집중 내용이 그 날로 옮겨진다. 저장 전 예전 파일은 남는다."""
         old, new = date(2026, 9, 21), date(2026, 9, 18)
