@@ -230,6 +230,78 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         self.assertTrue(self.wt._worklog_cells_have_draft(cells))
         self.assertIn("from-archive", str(cells.get("C8") or "") + str(cells.get("G8") or ""))
 
+    def test_wrong_year_iso_sheet_does_not_mark_calendar_or_load(self):
+        """2026/2월.xlsx 안의 2024-02-07 시트는 2026-02-07로 취급하지 않는다."""
+        year_dir = os.path.join(self.root, "2026")
+        os.makedirs(year_dir, exist_ok=True)
+        month_path = os.path.join(year_dir, "2월.xlsx")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "2024-02-07"
+        ws["C5"] = "2024-02-07 (금)"
+        ws["C8"] = "from-2024"
+        ws["G8"] = "from-2024"
+        wb.save(month_path)
+        wb.close()
+
+        self.ss.pop("wl_saved_dates_cache", None)
+        dates = self.wt.list_saved_worklog_dates()
+        self.assertNotIn("2026-02-07", dates)
+        self.assertNotIn("2024-02-07", dates)
+
+        self.assertIsNone(self.wt.read_worklog_cells_from_archive(date(2026, 2, 7)))
+        # 정규화해도 다른 연 ISO는 일 시트로 합치지 않는다
+        wb2 = load_workbook(month_path)
+        try:
+            self.assertIn("2024-02-07", wb2.sheetnames)
+            self.assertNotIn("7", wb2.sheetnames)
+        finally:
+            wb2.close()
+
+    def test_sheet_with_mismatched_c5_date_skipped_for_year(self):
+        """시트명 7 이어도 C5가 2024면 2026-02-07 달력·불러오기에서 제외."""
+        year_dir = os.path.join(self.root, "2026")
+        os.makedirs(year_dir, exist_ok=True)
+        month_path = os.path.join(year_dir, "2월.xlsx")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "7"
+        ws["C5"] = "2024-02-07 (수)"
+        ws["C8"] = "ghost-2024"
+        ws["G8"] = "ghost-2024"
+        wb.save(month_path)
+        wb.close()
+
+        self.ss.pop("wl_saved_dates_cache", None)
+        dates = self.wt.list_saved_worklog_dates()
+        self.assertNotIn("2026-02-07", dates)
+        self.assertIsNone(self.wt.read_worklog_cells_from_archive(date(2026, 2, 7)))
+
+    def test_save_writes_selected_year_month_sheet(self):
+        """저장은 선택한 날짜의 연도 폴더·월 파일·일 시트에 쓴다."""
+        d = date(2026, 2, 7)
+        day_xlsx = os.path.join(self._tmp.name, "day.xlsx")
+        _write_day_xlsx(day_xlsx, "feb7-2026")
+        # C5도 지정일에 맞춤
+        wb = load_workbook(day_xlsx)
+        wb.active["C5"] = self.wt.format_worklog_date(d)
+        wb.save(day_xlsx)
+        wb.close()
+
+        got = self.wt.upsert_worklog_archive_sheet(d, day_xlsx, allow_overwrite=True)
+        expect = os.path.join(self.root, "2026", "2월.xlsx")
+        self.assertEqual(got, expect)
+        self.assertTrue(os.path.isfile(expect))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "2024", "2월.xlsx")))
+
+        cells = self.wt.read_worklog_cells_from_archive(d)
+        self.assertIsNotNone(cells)
+        self.assertIn("feb7-2026", str(cells.get("C8") or ""))
+        self.assertTrue(str(cells.get("date") or "").startswith("2026-02-07"))
+
+        self.ss.pop("wl_saved_dates_cache", None)
+        self.assertIn("2026-02-07", self.wt.list_saved_worklog_dates())
+
     def test_archive_root_prefers_local_desktop_over_other_computers(self):
         home = os.path.join(self._tmp.name, "home")
         local = os.path.join(home, "Desktop", "업무", "일지")
