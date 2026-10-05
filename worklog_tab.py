@@ -2396,30 +2396,47 @@ def _resolve_archive_sheet_name(sheetnames: list[str] | tuple[str, ...], d: date
     for title in _worklog_archive_sheet_titles_for_lookup(d):
         if title in names:
             return title
-    # 시트명이 숫자면 일자로 해석 (03 → 3)
+    # 시트명이 숫자면 일자로 해석 (03 → 3). 다른 연월 ISO는 제외.
     for name in sheetnames or ():
-        if str(name).isdigit() and int(name) == d.day:
+        if _archive_sheet_day_number(str(name), expect_year=d.year, expect_month=d.month) == d.day:
             return str(name)
     return None
 
 
-def _archive_sheet_day_number(name: str) -> int | None:
-    """월별 파일 시트명 → 일자. 추가페이지(16p2)·비일자는 None."""
+def _archive_sheet_day_number(
+    name: str,
+    *,
+    expect_year: int | None = None,
+    expect_month: int | None = None,
+) -> int | None:
+    """월별 파일 시트명 → 일자. 추가페이지·비일자·다른 연월 ISO는 None.
+
+    YYYY-MM-DD 시트는 파일의 연·월과 같을 때만 인정한다.
+    (예: 2026/2월.xlsx 안의 2024-02-07 은 2026-02-07로 취급하지 않는다.)
+    """
     s = str(name or "").strip()
     if s.isdigit():
         day = int(s)
         return day if 1 <= day <= 31 else None
     try:
-        return date.fromisoformat(s).day
+        parsed = date.fromisoformat(s)
     except ValueError:
         return None
+    if expect_year is not None and parsed.year != expect_year:
+        return None
+    if expect_month is not None and parsed.month != expect_month:
+        return None
+    return parsed.day
 
 
-def _normalize_archive_month_day_sheets(wb) -> bool:
+def _normalize_archive_month_day_sheets(
+    wb, *, year: int | None = None, month: int | None = None
+) -> bool:
     """0채움·ISO 시트명을 정규 일(3)로 합친다. 바뀌면 True.
 
     옛「다른 컴퓨터」10월.xlsx 에 03·04 시트가 남아 달력 • 만 뜨고
     정규 시트(3)를 못 찾는 문제를 막는다. 내용 있는 쪽을 남긴다.
+    다른 연·월 ISO 시트는 정규화 대상에서 제외한다.
     """
     if wb is None:
         return False
@@ -2429,7 +2446,7 @@ def _normalize_archive_month_day_sheets(wb) -> bool:
     for name in list(wb.sheetnames):
         if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
             continue
-        day = _archive_sheet_day_number(name)
+        day = _archive_sheet_day_number(name, expect_year=year, expect_month=month)
         if day is None:
             continue
         by_day.setdefault(day, []).append(name)
@@ -2460,7 +2477,7 @@ def _normalize_archive_month_day_sheets(wb) -> bool:
         for n in list(wb.sheetnames):
             if n == keep:
                 continue
-            if _archive_sheet_day_number(n) == day and not (
+            if _archive_sheet_day_number(n, expect_year=year, expect_month=month) == day and not (
                 _is_archive_extra_sheet_name(n) or _is_day_extra_sheet_name(n)
             ):
                 try:
@@ -2867,8 +2884,8 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
         src_ws = day_wb.active
         month_wb = load_workbook(month_path)
         try:
-            # 0채움(03)·ISO 시트 → 정규 일(3)로 합친 뒤 저장본을 덮는다
-            _normalize_archive_month_day_sheets(month_wb)
+            # 0채움(03)·같은 연월 ISO 시트 → 정규 일(3)로 합친 뒤 저장본을 덮는다
+            _normalize_archive_month_day_sheets(month_wb, year=d.year, month=d.month)
             if legacy_title != sheet_title and legacy_title in month_wb.sheetnames:
                 del month_wb[legacy_title]
             _clone_worksheet_to_workbook(src_ws, month_wb, sheet_title)
@@ -2975,7 +2992,7 @@ def _list_archive_saved_dates() -> set[str]:
             try:
                 wb = load_workbook(path, data_only=False)
                 try:
-                    if _normalize_archive_month_day_sheets(wb):
+                    if _normalize_archive_month_day_sheets(wb, year=year, month=month):
                         try:
                             wb.save(path)
                         except Exception:
@@ -2983,7 +3000,9 @@ def _list_archive_saved_dates() -> set[str]:
                     for name in list(wb.sheetnames):
                         if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
                             continue
-                        day = _archive_sheet_day_number(name)
+                        day = _archive_sheet_day_number(
+                            name, expect_year=year, expect_month=month
+                        )
                         if day is None:
                             continue
                         try:
@@ -2991,6 +3010,9 @@ def _list_archive_saved_dates() -> set[str]:
                         except ValueError:
                             continue
                         try:
+                            labeled = _worksheet_labeled_date(wb[name])
+                            if labeled is not None and labeled != d:
+                                continue
                             cells = _cells_from_worksheet(wb[name], d)
                         except Exception:
                             continue
@@ -3089,13 +3111,58 @@ def _cells_from_worksheet(ws, d: date) -> dict:
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
         v = ws.cell(r, 4).value
         cells[f"D{r}"] = "" if v is None else str(v)
+    # C5에 다른 연·월 날짜가 남아 있어도 요청한 d 기준으로 맞춘다.
     try:
         c_date = ws[WL_DATE_CELL].value
         if c_date is not None and not str(c_date).startswith("="):
-            cells["date"] = str(c_date)
+            parsed = _parse_worklog_sheet_date(str(c_date))
+            if parsed is None or parsed == d:
+                cells["date"] = str(c_date) if parsed is None else format_worklog_date(d)
+            else:
+                cells["date"] = format_worklog_date(d)
     except Exception:
         pass
     return cells
+
+
+def _parse_worklog_sheet_date(raw: str) -> date | None:
+    """시트 C5 표기(YYYY-MM-DD …) → date. 연도를 착각한 잔여 문자열 감지용."""
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    head = s[:10]
+    try:
+        return date.fromisoformat(head)
+    except ValueError:
+        pass
+    m = re.match(r"^(\d{4})[./-](\d{1,2})[./-](\d{1,2})", s)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _worksheet_labeled_date(ws) -> date | None:
+    """시트 C5에 적힌 날짜. 없거나 파싱 불가면 None."""
+    try:
+        c_date = ws[WL_DATE_CELL].value
+        if c_date is None or str(c_date).startswith("="):
+            return None
+        return _parse_worklog_sheet_date(str(c_date))
+    except Exception:
+        return None
+
+
+def _worklog_cells_belong_to_date(cells: dict | None, d: date) -> bool:
+    """cells['date']가 비어 있거나 d와 같으면 True. 다른 연·월이면 False."""
+    if not isinstance(cells, dict):
+        return True
+    parsed = _parse_worklog_sheet_date(str(cells.get("date") or ""))
+    if parsed is None:
+        return True
+    return parsed == d
 
 
 def _worklog_day_marked_deleted(d: date) -> bool:
@@ -3133,13 +3200,16 @@ def read_worklog_cells_from_archive(d: date) -> dict | None:
     try:
         wb = load_workbook(month_path, data_only=False)
         try:
-            if _normalize_archive_month_day_sheets(wb):
+            if _normalize_archive_month_day_sheets(wb, year=d.year, month=d.month):
                 try:
                     wb.save(month_path)
                 except Exception:
                     pass
             name = _resolve_archive_sheet_name(wb.sheetnames, d)
             if not name:
+                return None
+            labeled = _worksheet_labeled_date(wb[name])
+            if labeled is not None and labeled != d:
                 return None
             return _cells_from_worksheet(wb[name], d)
         finally:
