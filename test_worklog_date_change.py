@@ -194,7 +194,15 @@ class WorklogDateChangeTest(unittest.TestCase):
         ):
             self.wt._on_wl_date_pick_change()
         self.assertEqual(self.ss["worklog_selected"], new)
-        self.assertEqual(self.ss.get("wl_date_retarget_from"), old.isoformat())
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
+        moved_wb = load_workbook(month_path)
+        try:
+            self.assertIn("6", moved_wb.sheetnames)
+            self.assertNotIn("10", moved_wb.sheetnames)
+            self.assertNotIn("06", moved_wb.sheetnames)
+        finally:
+            moved_wb.close()
 
         path = self.wt.commit_worklog_date_save(
             old, new, self._cells(new, "거래처10", "10일 업무")
@@ -224,8 +232,8 @@ class WorklogDateChangeTest(unittest.TestCase):
         self.assertIsNotNone(got)
         self.assertEqual(got.get("G8"), "10일 업무")
 
-    def test_date_move_mode_retargets_draft_and_keeps_until_save(self):
-        """날짜변경을 켠 뒤 날짜를 고르면 편집중 내용이 그 날로 옮겨진다. 저장 전 예전 파일은 남는다."""
+    def test_date_move_mode_moves_saved_sheet_and_drops_old(self):
+        """날짜변경을 켠 뒤 날짜를 고르면 저장본이 그 날로 옮겨지고 예전 시트는 지워진다."""
         old, new = date(2026, 9, 21), date(2026, 9, 18)
         self.wt.save_worklog_cells(old, self._cells(old, "원에이엔지", "21일 초안"), force=True, allow_overwrite=True)
         self.ss["worklog_selected"] = old
@@ -235,12 +243,22 @@ class WorklogDateChangeTest(unittest.TestCase):
             self.wt._on_wl_date_pick_change()
         self.assertEqual(self.ss["worklog_selected"], new)
         self.assertFalse(self.ss.get("wl_date_move_mode"))
-        self.assertEqual(self.ss.get("wl_date_retarget_from"), old.isoformat())
-        self.assertIn(old.isoformat(), self.ss.get("wl_purge_dates") or [])
-        self.assertTrue(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertFalse(os.path.isfile(self.wt.worklog_path(old)))
+        self.assertTrue(os.path.isfile(self.wt.worklog_path(new)))
+        self.assertFalse(self.wt.worklog_date_exists_in_archive(old))
+        self.assertTrue(self.wt.worklog_date_exists_in_archive(new))
         dest = (self.ss.get(self.wt._entries_key(new)) or [{}])[0]
         self.assertEqual(dest.get("content"), "21일 초안")
         self.assertEqual((self.ss.get(self.wt._view_cells_key(new)) or {}).get("G8"), "21일 초안")
+        month_path = os.path.join(self.arch, "2026", "9월.xlsx")
+        wb = load_workbook(month_path)
+        try:
+            self.assertIn("18", wb.sheetnames)
+            self.assertNotIn("21", wb.sheetnames)
+            self.assertTrue(str(wb["18"]["C5"].value or "").startswith("2026-09-18"))
+            self.assertEqual(wb["18"]["G8"].value, "21일 초안")
+        finally:
+            wb.close()
 
     def test_date_move_mode_blocks_saved_dest(self):
         old, new = date(2026, 9, 21), date(2026, 9, 18)
