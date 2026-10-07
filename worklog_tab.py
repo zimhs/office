@@ -2573,11 +2573,98 @@ def _normalize_archive_month_day_sheets(
 
 
 
+def _path_is_worklog_template(path: str | None) -> bool:
+    """업무일지 양식 경로. 이 파일의 다른 시트는 저장된 일자가 아니다."""
+    if not path:
+        return False
+    try:
+        norm = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    except Exception:
+        norm = os.path.normcase(os.path.normpath(path))
+    candidates = [WORKLOG_TEMPLATE, WORKLOG_TEMPLATE_SRC]
+    for raw in candidates:
+        if not raw:
+            continue
+        try:
+            other = os.path.normcase(os.path.normpath(os.path.abspath(os.path.expanduser(raw))))
+        except Exception:
+            continue
+        if norm == other:
+            return True
+    parent = os.path.basename(os.path.dirname(norm))
+    return os.path.basename(norm) == "template.xlsx" and parent == "worklog"
+
+
+def _worksheet_date_is_formula(ws) -> bool:
+    """C5가 TODAY() 같은 수식이면 대시보드가 저장한 날짜가 아니다."""
+    try:
+        value = ws[WL_DATE_CELL].value
+    except Exception:
+        return False
+    return isinstance(value, str) and value.lstrip().startswith("=")
+
+
+def _strip_workbook_to_active_sheet(wb) -> bool:
+    """양식에 섞인 옛 일자 시트를 버리고 활성 시트만 남긴다."""
+    if wb is None or not getattr(wb, "worksheets", None):
+        return False
+    active = wb.active if getattr(wb.active, "title", None) else wb.worksheets[0]
+    title = active.title
+    changed = False
+    for name in list(wb.sheetnames):
+        if name == title:
+            continue
+        del wb[name]
+        changed = True
+    if title in wb.sheetnames:
+        wb.active = wb[title]
+    return changed
+
+
+def _drop_foreign_day_sheets(wb, d: date) -> bool:
+    """일자 파일에서 대상일이 아닌 숫자 시트를 제거한다. 활성 시트·추가페이지는 유지."""
+    if wb is None or not getattr(wb, "worksheets", None):
+        return False
+    active = wb.active if getattr(wb.active, "title", None) else wb.worksheets[0]
+    active_title = active.title
+    changed = False
+    for name in list(wb.sheetnames):
+        if name == active_title:
+            continue
+        if _is_day_extra_sheet_name(name) or _is_archive_extra_sheet_name(name, d):
+            continue
+        if _worksheet_date_is_formula(wb[name]):
+            try:
+                del wb[name]
+                changed = True
+            except Exception:
+                pass
+            continue
+        day = _archive_sheet_day_number(name, expect_year=d.year, expect_month=d.month)
+        if day is None:
+            day = _openpyxl_duplicate_base_day(name)
+        if day is None or day == d.day:
+            continue
+        try:
+            del wb[name]
+            changed = True
+        except Exception:
+            pass
+    if active_title in wb.sheetnames:
+        wb.active = wb[active_title]
+    return changed
+
+
 def _archive_day_sheet_keep(wb, name: str, d: date) -> bool:
-    """달력 • / 보관 대상: 본문 내용이 있고 C5가 그 날짜(또는 비어 있음)."""
+    """달력 • / 보관 대상: 본문 내용이 있고 C5가 그 날짜(또는 비어 있음).
+
+    C5가 수식이면 template.xlsx 에서 딸려 온 미저장 시트다.
+    """
     if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
         return False
     try:
+        if _worksheet_date_is_formula(wb[name]):
+            return False
         labeled = _worksheet_labeled_date(wb[name])
         if labeled is not None and labeled != d:
             return False
@@ -3068,12 +3155,29 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
         return month_path if os.path.exists(month_path) else None
     _migrate_legacy_month_workbook(d, month_path)
 
+    # 템플릿 경로는 양식만 있다. 그 안의 옛 일자 시트를 월별 파일에 넣지 않는다.
+    if _path_is_worklog_template(day_xlsx_path):
+        return None
+    # 일자 파일에 템플릿에서 복사된 다른 일 시트가 있으면 월별 파일로 넘기기 전에 버린다.
+    try:
+        src_wb = load_workbook(day_xlsx_path)
+        try:
+            if _drop_foreign_day_sheets(src_wb, d):
+                src_wb.save(day_xlsx_path)
+        finally:
+            src_wb.close()
+    except Exception:
+        pass
+
     # 첫 월 파일: 일지 xlsx를 그대로 복사 → 인쇄 미리보기·열 너비 100% 유지
     if not os.path.exists(month_path):
         shutil.copy2(day_xlsx_path, month_path)
         month_wb = load_workbook(month_path)
         try:
-            ws = month_wb.active
+            _drop_foreign_day_sheets(month_wb, d)
+            ws = month_wb.active if getattr(month_wb.active, "title", None) else (month_wb.worksheets[0] if month_wb.worksheets else None)
+            if ws is None:
+                return month_path
             # 일자 파일에 남아 있던 동명·충돌 시트(10, 101)를 먼저 제거해야
             # active 를 '10'으로 바꿀 때 openpyxl이 '101'로 자동개명하지 않는다.
             for name in list(month_wb.sheetnames):
@@ -3258,6 +3362,8 @@ def _list_archive_saved_dates() -> set[str]:
                         except ValueError:
                             continue
                         try:
+                            if _worksheet_date_is_formula(wb[name]):
+                                continue
                             labeled = _worksheet_labeled_date(wb[name])
                             if labeled is not None and labeled != d:
                                 continue
@@ -3601,10 +3707,15 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
     if load_workbook is None: raise RuntimeError("openpyxl 이 필요합니다.")
     _ensure_dirs()
     body, extras = _detach_extra_pages(cells)
+    copied_template = False
     if force_template or not os.path.exists(path):
         if not os.path.exists(WORKLOG_TEMPLATE): raise FileNotFoundError("업무일지 템플릿이 없습니다.")
         shutil.copy2(WORKLOG_TEMPLATE, path)
+        copied_template = True
     wb = load_workbook(path)
+    # template.xlsx 의 03·04·05·07·10·11 은 저장본이 아니다. 양식 시트만 남긴다.
+    if copied_template or _path_is_worklog_template(path):
+        _strip_workbook_to_active_sheet(wb)
     ws = wb.active
     if force_template: _clear_content_cells(ws)
     _apply_cells_to_worksheet(ws, d, body, include_panels=True)

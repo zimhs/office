@@ -230,6 +230,100 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         finally:
             mwb.close()
 
+    def test_template_formula_sheets_do_not_enter_month_file(self):
+        """template.xlsx 의 수식 날짜 시트는 7일 저장 때 월별 파일로 들어가지 않는다."""
+        day_xlsx = os.path.join(self._tmp.name, "2026-10-07.xlsx")
+        wb = Workbook()
+        first = wb.active
+        first.title = "03"
+        first["C5"] = '=TEXT(TODAY()-1, "yyyy-mm-dd (aaa)")'
+        first["G9"] = "미저장 3일"
+        for name, text in (("04", "미저장 4"), ("05", "미저장 5"), ("10", "미저장 10"), ("07", "옛 7")):
+            ws = wb.create_sheet(name)
+            ws["C5"] = '=TEXT(TODAY()-1, "yyyy-mm-dd (aaa)")'
+            ws["G9"] = text
+        real = wb.create_sheet("11")
+        real["C5"] = "2026-10-07 (수)"
+        real["C9"] = "에스엔케이"
+        real["G9"] = "정기방문"
+        wb.active = real
+        wb.save(day_xlsx)
+        wb.close()
+
+        self.wt.upsert_worklog_archive_sheet(date(2026, 10, 7), day_xlsx)
+        month = os.path.join(self.root, "2026", "10월.xlsx")
+        mwb = load_workbook(month)
+        try:
+            self.assertEqual(mwb.sheetnames, ["7"])
+            self.assertEqual(mwb["7"]["C9"].value, "에스엔케이")
+            self.assertFalse(self.wt._worksheet_date_is_formula(mwb["7"]))
+        finally:
+            mwb.close()
+        dwb = load_workbook(day_xlsx)
+        try:
+            self.assertNotIn("03", dwb.sheetnames)
+            self.assertNotIn("04", dwb.sheetnames)
+            self.assertNotIn("05", dwb.sheetnames)
+            self.assertNotIn("10", dwb.sheetnames)
+        finally:
+            dwb.close()
+
+    def test_formula_dated_sheets_are_purged_even_with_body(self):
+        """본문이 있어도 C5가 수식이면 미저장 시트라 월별 파일에서 뺀다."""
+        month_dir = os.path.join(self.root, "2026")
+        os.makedirs(month_dir, exist_ok=True)
+        month_path = os.path.join(month_dir, "10월.xlsx")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "7"
+        ws["C5"] = "2026-10-07 (수)"
+        ws["G9"] = "저장된 7일"
+        for day, text in ((3, "a"), (4, "b"), (5, "c"), (10, "d")):
+            w = wb.create_sheet(str(day))
+            w["C5"] = '=TEXT(TODAY()-1, "yyyy-mm-dd (aaa)")'
+            w["G9"] = text
+        wb.save(month_path)
+        wb.close()
+
+        self.assertTrue(self.wt._repair_month_archive_file(month_path, year=2026, month=10))
+        wb2 = load_workbook(month_path)
+        try:
+            self.assertEqual(wb2.sheetnames, ["7"])
+            self.assertEqual(wb2["7"]["G9"].value, "저장된 7일")
+        finally:
+            wb2.close()
+
+    def test_template_path_is_not_copied_into_archive(self):
+        cache = os.path.join(self._tmp.name, "worklog")
+        os.makedirs(cache, exist_ok=True)
+        tpl = os.path.join(cache, "template.xlsx")
+        wb = Workbook()
+        wb.active.title = "03"
+        wb.active["C5"] = '=TEXT(TODAY()-1, "yyyy-mm-dd (aaa)")'
+        wb.active["G9"] = "템플릿 잔여"
+        extra = wb.create_sheet("11")
+        extra["G9"] = "양식"
+        wb.active = extra
+        wb.save(tpl)
+        wb.close()
+        with patch.object(self.wt, "WORKLOG_TEMPLATE", tpl):
+            self.assertTrue(self.wt._path_is_worklog_template(tpl))
+            self.assertIsNone(self.wt.upsert_worklog_archive_sheet(date(2026, 10, 7), tpl))
+        self.assertFalse(os.path.isfile(os.path.join(self.root, "2026", "10월.xlsx")))
+
+        out = os.path.join(cache, "2026-10-07.xlsx")
+        cells = self.wt._empty_cells(date(2026, 10, 7))
+        cells["G9"] = "정기방문"
+        with patch.object(self.wt, "WORKLOG_DIR", cache), patch.object(self.wt, "WORKLOG_TEMPLATE", tpl):
+            self.wt.write_cells_to_path(out, date(2026, 10, 7), cells, force_template=True)
+        saved = load_workbook(out)
+        try:
+            self.assertEqual(len(saved.sheetnames), 1)
+            self.assertNotIn("03", saved.sheetnames)
+            self.assertEqual(saved.active["G9"].value, "정기방문")
+        finally:
+            saved.close()
+
     def test_padded_day_sheets_normalize_and_show_on_calendar(self):
         """옛 03·04 시트 → 정규 3·4 로 합치고 내용 있는 날만 •."""
         month_dir = os.path.join(self.root, "2026")
