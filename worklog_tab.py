@@ -4181,7 +4181,7 @@ def _on_toggle_date_move_mode() -> None:
 
 
 def _move_worklog_editor_to_date(new: date) -> bool:
-    """편집중인 글의 날짜만 바꾼다. 대상에 이미 저장본이 있으면 옮기지 않는다."""
+    """편집중인 글의 날짜를 바꾼다. 저장된 날은 엑셀 시트도 옮기고 예전 날짜는 지운다."""
     old = st.session_state.get("worklog_selected")
     if not isinstance(old, date):
         st.session_state["wl_date_move_mode"] = False
@@ -4195,6 +4195,17 @@ def _move_worklog_editor_to_date(new: date) -> bool:
         return False
     st.session_state.pop(_parked_cells_key(old), None)
     st.session_state.pop(_parked_cells_key(new), None)
+    if _worklog_day_is_persisted(old):
+        err = apply_worklog_date_change(old, new)
+        st.session_state["wl_date_move_mode"] = False
+        if err:
+            st.session_state["wl_date_err"] = err
+            _set_wl_date_pick(old)
+            st.session_state["wl_skip_sync_once"] = True
+            return False
+        _pin_worklog_scroll()
+        st.session_state["wl_skip_sync_once"] = True
+        return True
     try_retarget_worklog_editor_date(old, new)
     st.session_state["wl_date_move_mode"] = False
     return True
@@ -4318,9 +4329,14 @@ def retarget_worklog_editor_date(old: date, new: date) -> None:
 
 
 def commit_worklog_date_save(source: date, target: date, cells: dict) -> str:
-    """고른 날짜에 저장한다. 날짜만 바꾼 경우 예전 날짜 파일은 저장 때 지운다."""
+    """고른 날짜에 저장한다. 날짜를 바꾼 경우 예전 엑셀 시트는 지우고 시트명은 새 날짜가 된다."""
     cells = dict(cells or {})
     cells["date"] = format_worklog_date(target)
+    if source != target:
+        try:
+            _relocate_same_month_archive_sheet(source, target)
+        except Exception:
+            pass
     path = save_worklog_cells(target, cells, force=True, allow_overwrite=True)
     purge = _take_purge_dates(target)
     if source != target and source not in purge:
@@ -4444,6 +4460,79 @@ def _run_pending_worklog_date_change() -> bool:
     return True
 
 
+def _relocate_same_month_archive_sheet(old: date, new: date) -> bool:
+    """같은 달 파일에서 old 일 시트를 new 일 시트로 바꾼다. 예전 시트명은 남기지 않는다.
+
+    대상 시트가 없으면 이름을 바꾸고, 이미 있으면 예전 시트만 지운다.
+    바뀐 내용이 있으면 True.
+    """
+    if old == new or load_workbook is None:
+        return False
+    if old.year != new.year or old.month != new.month:
+        return False
+    month_path = worklog_archive_month_path(old, create_year=False)
+    if not month_path or not os.path.isfile(month_path):
+        return False
+    new_title = worklog_archive_sheet_title(new)
+    changed = False
+    wb = load_workbook(month_path)
+    try:
+        src_name = _resolve_archive_sheet_name(list(wb.sheetnames), old)
+        dst_name = _resolve_archive_sheet_name(list(wb.sheetnames), new)
+        if src_name and src_name != new_title:
+            if dst_name and dst_name != src_name:
+                try:
+                    dst_cells = _cells_from_worksheet(wb[dst_name], new)
+                    dst_has = _worklog_cells_have_draft(dst_cells)
+                except Exception:
+                    dst_has = True
+                if dst_has:
+                    del wb[src_name]
+                    src_name = None
+                    changed = True
+                else:
+                    del wb[dst_name]
+                    dst_name = None
+            if src_name and src_name in wb.sheetnames:
+                for title in _worklog_archive_sheet_titles_for_lookup(new):
+                    if title in wb.sheetnames and title != src_name:
+                        del wb[title]
+                _safe_rename_worksheet(wb, wb[src_name], new_title)
+                changed = True
+        if new_title in wb.sheetnames:
+            try:
+                wb[new_title][WL_DATE_CELL] = format_worklog_date(new)
+                changed = True
+            except Exception:
+                pass
+        for name in list(wb.sheetnames):
+            if not _is_archive_extra_sheet_name(name, old):
+                continue
+            n = _extra_page_n_from_sheet_name(name)
+            if not n:
+                continue
+            dest = _archive_extra_sheet_name(new, n)
+            if name != dest:
+                if dest in wb.sheetnames and dest != name:
+                    del wb[dest]
+                _safe_rename_worksheet(wb, wb[name], dest)
+                changed = True
+            try:
+                wb[dest][WL_DATE_CELL] = format_worklog_date(new)
+            except Exception:
+                pass
+        # 0채움·같은 날 잔여 시트는 정규 이름만 남긴다
+        if _normalize_archive_month_day_sheets(wb, year=new.year, month=new.month):
+            changed = True
+        if changed:
+            wb.save(month_path)
+    finally:
+        wb.close()
+    _invalidate_worklog_presence_cache(old)
+    _invalidate_worklog_presence_cache(new)
+    return changed
+
+
 def reassign_worklog_date(old: date, new: date, *, overwrite_dest: bool = True) -> str:
     if old == new: return "same"
     if not overwrite_dest:
@@ -4455,6 +4544,11 @@ def reassign_worklog_date(old: date, new: date, *, overwrite_dest: bool = True) 
     old_local = os.path.exists(worklog_path(old))
     old_persisted = _worklog_day_is_persisted(old)
     should_write = old_persisted or old_local or _worklog_cells_have_draft(cells)
+    if old_persisted or old_local:
+        try:
+            _relocate_same_month_archive_sheet(old, new)
+        except Exception:
+            pass
     if should_write:
         save_worklog_cells(new, cells, force=True, allow_overwrite=overwrite_dest)
     if old_persisted or old_local:
@@ -4495,6 +4589,10 @@ def reassign_worklog_date(old: date, new: date, *, overwrite_dest: bool = True) 
     _mark_worklog_day_writable(new, had_local=True)
     _invalidate_saved_dates_cache()
     _patch_saved_dates_after_move(old, new)
+    try:
+        _publish_view_cells(new, cells)
+    except Exception:
+        pass
     return "moved" if should_write else "retargeted"
 
 def _cell_fill_color(cell) -> str | None:
@@ -7004,7 +7102,7 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             format="YYYY/MM/DD",
             key="wl_date_pick",
             on_change=_on_wl_date_pick_change,
-            help="기본은 그 날 저장본을 엽니다. 「날짜변경」을 켠 뒤 날짜를 고르면 지금 입력 중인 내용이 그 날로 옮겨집니다. 저장 시 Google Drive「다른 컴퓨터/…/Desktop/업무/일지/{연도}/{N}월.xlsx」에 반영됩니다.",
+            help="기본은 그 날 저장본을 엽니다. 「날짜변경」을 켠 뒤 날짜를 고르면 저장된 일지가 그 날로 옮겨집니다. 예전 날짜 엑셀 시트는 제거되고 시트 이름은 새 날짜가 됩니다.",
             width="stretch",
         )
         st.session_state["_wl_date_pick_live"] = True
@@ -7017,13 +7115,13 @@ def _render_worklog_date_toolbar(selected: date) -> None:
             key="wl_date_move_btn",
             type="primary" if _move_on else "secondary",
             on_click=_on_toggle_date_move_mode,
-            help="켜 둔 뒤 날짜를 고르면 지금 편집중인 글의 날짜만 바뀝니다. 저장해야 확정됩니다.",
+            help="켜 둔 뒤 날짜를 고르면 저장된 일지가 그 날로 옮겨집니다. 예전 날짜 시트는 제거되고 시트 이름은 새 날짜가 됩니다.",
         )
         if st.button("삭제", width="content", key="wl_del_open_btn"):
             _pin_worklog_scroll()
             st.session_state["wl_del_confirm_open"] = True
     if _date_move_mode_on():
-        st.caption("날짜변경 켜짐 · 날짜를 고르면 지금 입력 중인 내용이 그 날로 옮겨집니다. 저장해야 확정됩니다.")
+        st.caption("날짜변경 켜짐 · 날짜를 고르면 저장된 일지가 그 날로 옮겨집니다. 예전 날짜 시트는 제거됩니다.")
     # 삭제 확인 — 팝오버 대신 세션 상태 기반 인라인 UI. 확정/취소 후 확실히 사라진다.
     # (st.popover 를 코드로 닫으면 프론트가 다시 열어버려 '깜박→부활'하는 문제를 회피)
     if st.session_state.get("wl_del_confirm_open"):
