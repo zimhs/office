@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import textwrap
 import unicodedata
 import uuid
 from datetime import date, datetime, timedelta
@@ -3759,58 +3760,63 @@ def _t2d_css() -> str:
 
 
 def _t2d_cloud_font_css() -> str:
-    """Cloud만: 탭 본문 p 15px 규칙이 납품줄·이동 버튼 글자를 키우지 않게 로컬 v2와 맞춘다."""
-    panel = '[data-testid="stTabs"] [role="tabpanel"]:not([hidden])'
-    return f"""
-    <style>
-    /* t2d-cloud-font-v1 — 로컬 strip 10px / 오늘 12px / ‹› 15px */
-    {panel} div[class*="st-key-t2d_strip_"] button,
-    {panel} div[class*="st-key-t2d_strip_"] button p,
-    {panel} div[class*="st-key-t2d_strip_"] button [data-testid="stMarkdownContainer"],
-    {panel} div[class*="st-key-t2d_strip_"] button [data-testid="stMarkdownContainer"] p {{
-      font-size: 10px !important;
-      line-height: 1.15 !important;
-      font-weight: 600 !important;
-      letter-spacing: -0.2px !important;
-    }}
-    {panel} div[class*="st-key-t2d_strip_"] button p,
-    {panel} div[class*="st-key-t2d_strip_"] button [data-testid="stMarkdownContainer"] p {{
-      color: inherit !important;
-      margin: 0 !important;
-    }}
-    {panel} div[class*="st-key-t2d_jump_today"] button,
-    {panel} div[class*="st-key-t2d_jump_today"] button p {{
-      font-size: 12px !important;
-      line-height: 1.2 !important;
-      font-weight: 600 !important;
-      color: inherit !important;
-    }}
-    {panel} div[class*="st-key-t2d_prev_month"] button,
-    {panel} div[class*="st-key-t2d_next_month"] button,
-    {panel} div[class*="st-key-t2d_prev_month"] button p,
-    {panel} div[class*="st-key-t2d_next_month"] button p {{
-      font-size: 15px !important;
-      line-height: 28px !important;
-      font-weight: 600 !important;
-      color: inherit !important;
-    }}
-    {panel} .vc-strip-html .vc-strip-wd span {{
-      font-size: 10px !important;
-      font-weight: 700 !important;
-      line-height: 1.1 !important;
-    }}
-    {panel} div[class*="st-key-tab2_delivery_status"] .t2d-label {{
-      font-size: 11px !important;
-    }}
-    {panel} div[class*="st-key-tab2_delivery_status"] .t2d-meta {{
-      font-size: 13px !important;
-    }}
-    {panel} div[class*="st-key-tab2_delivery_status"] .t2d-title {{
-      font-size: 20px !important;
-      line-height: 32px !important;
-    }}
-    </style>
+    """Cloud만: 탭 본문 p 15px 규칙이 납품줄·이동 버튼 글자를 키우지 않게 로컬 v2와 맞춘다.
+
+    앞 공백이 있으면 Streamlit markdown이 style을 코드블록으로 그려 달력이 깨진다.
     """
+    panel = '[data-testid="stTabs"] [role="tabpanel"]:not([hidden])'
+    return textwrap.dedent(
+        f"""\
+        <style>
+        /* t2d-cloud-font-v1 — 로컬 strip 10px / 오늘 12px / ‹› 15px */
+        {panel} div[class*="st-key-t2d_strip_"] button,
+        {panel} div[class*="st-key-t2d_strip_"] button p,
+        {panel} div[class*="st-key-t2d_strip_"] button [data-testid="stMarkdownContainer"],
+        {panel} div[class*="st-key-t2d_strip_"] button [data-testid="stMarkdownContainer"] p {{
+          font-size: 10px !important;
+          line-height: 1.15 !important;
+          font-weight: 600 !important;
+          letter-spacing: -0.2px !important;
+        }}
+        {panel} div[class*="st-key-t2d_strip_"] button p,
+        {panel} div[class*="st-key-t2d_strip_"] button [data-testid="stMarkdownContainer"] p {{
+          color: inherit !important;
+          margin: 0 !important;
+        }}
+        {panel} div[class*="st-key-t2d_jump_today"] button,
+        {panel} div[class*="st-key-t2d_jump_today"] button p {{
+          font-size: 12px !important;
+          line-height: 1.2 !important;
+          font-weight: 600 !important;
+          color: inherit !important;
+        }}
+        {panel} div[class*="st-key-t2d_prev_month"] button,
+        {panel} div[class*="st-key-t2d_next_month"] button,
+        {panel} div[class*="st-key-t2d_prev_month"] button p,
+        {panel} div[class*="st-key-t2d_next_month"] button p {{
+          font-size: 15px !important;
+          line-height: 28px !important;
+          font-weight: 600 !important;
+          color: inherit !important;
+        }}
+        {panel} .vc-strip-html .vc-strip-wd span {{
+          font-size: 10px !important;
+          font-weight: 700 !important;
+          line-height: 1.1 !important;
+        }}
+        {panel} div[class*="st-key-tab2_delivery_status"] .t2d-label {{
+          font-size: 11px !important;
+        }}
+        {panel} div[class*="st-key-tab2_delivery_status"] .t2d-meta {{
+          font-size: 13px !important;
+        }}
+        {panel} div[class*="st-key-tab2_delivery_status"] .t2d-title {{
+          font-size: 20px !important;
+          line-height: 32px !important;
+        }}
+        </style>
+        """
+    ).strip()
 
 
 def _apply_pending_t2d_strip_pick() -> None:
