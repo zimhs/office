@@ -6691,13 +6691,13 @@ def _render_month_calendar(selected: date, saved: set[str]) -> date | None:
         )
 
     st.caption("• = 저장됨 · 보기 전용 · 날짜를 누르면 그 날을 엽니다")
-    weeks = ["월", "화", "수", "목", "금", "토", "일"]
+    weeks = ["일", "월", "화", "수", "목", "금", "토"]
     head = st.columns(7, gap="small")
     for i, w in enumerate(weeks):
-        color = "#DC2626" if i == 6 else ("#2563EB" if i == 5 else "#64748B")
+        color = "#DC2626" if i == 0 else ("#2563EB" if i == 6 else "#64748B")
         head[i].markdown(f"<div style='text-align:center;font-size:13px;font-weight:700;color:{color};line-height:1;padding:2px 0 4px 0;'>{w}</div>", unsafe_allow_html=True)
 
-    cal = calendar.Calendar(firstweekday=0)
+    cal = calendar.Calendar(firstweekday=calendar.SUNDAY)
     clicked = None
     for week in cal.monthdayscalendar(month_anchor.year, month_anchor.month):
         cols = st.columns(7, gap="small")
