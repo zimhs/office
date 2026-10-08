@@ -514,6 +514,9 @@ class VisitCalendarTest(unittest.TestCase):
     def test_t2d_cloud_font_css_matches_local_strip_size(self):
         """Cloud 거래처분석 납품줄만 탭 본문 15px를 깨고 로컬 10px로 맞춘다."""
         css = self.vc._t2d_cloud_font_css()
+        self.assertTrue(css.startswith("<style>"))
+        self.assertFalse(css.startswith("\n") or css.startswith(" "))
+        self.assertNotIn("\n    <style>", "\n" + css)
         self.assertIn("t2d-cloud-font-v1", css)
         self.assertIn("st-key-t2d_strip_", css)
         self.assertIn("font-size: 10px !important", css)
