@@ -1089,6 +1089,13 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("방문 2026-10-08", msg)
         self.assertIn("라콜", msg)
 
+    def test_note_script_does_not_set_notes_plaintext_property(self):
+        src = Path(self.vc.__file__).read_text(encoding="utf-8")
+        block = src[src.index("def _apply_visit_note_line") : src.index("def sync_visit_date_to_note")]
+        self.assertNotIn("set plain", block)
+        self.assertIn("grabText", block)
+        self.assertIn("sync_saved_visits_to_notes()", src)
+
 
 if __name__ == "__main__":
     unittest.main()
