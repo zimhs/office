@@ -824,7 +824,23 @@ end run
 
 
 def _apply_visit_note_line(match: dict, line: str, *, mode: str) -> str:
+    # Notes 용어와 겹치는 변수명은 본문 속성으로 해석되어 기록이 거절된다.
     script = """
+on grabText(theNote)
+    tell application "Notes"
+        return plaintext of theNote
+    end tell
+end grabText
+on grabHtml(theNote)
+    tell application "Notes"
+        return body of theNote
+    end tell
+end grabHtml
+on putHtml(theNote, htmlBody)
+    tell application "Notes"
+        set body of theNote to htmlBody
+    end tell
+end putHtml
 on replaceAll(theText, searchStr, replaceStr)
     set AppleScript's text item delimiters to searchStr
     set parts to text items of theText
@@ -833,55 +849,49 @@ on replaceAll(theText, searchStr, replaceStr)
     set AppleScript's text item delimiters to ""
     return theText
 end replaceAll
-on run argv
-    set targetMode to item 1 of argv
-    set noteName to item 2 of argv
-    set parentName to item 3 of argv
-    set lineText to item 4 of argv
+on findNote(noteName, parentName)
     tell application "Notes"
         repeat with acc in accounts
             try
                 if exists folder "거래처" of acc then
                     set parentFolder to folder "거래처" of acc
-                    set oneNote to missing value
                     if parentName is "" then
                         repeat with n in (notes of parentFolder)
-                            if name of n is noteName then
-                                set oneNote to n
-                                exit repeat
-                            end if
+                            if name of n is noteName then return n
                         end repeat
                     else if exists folder parentName of parentFolder then
                         set sf to folder parentName of parentFolder
                         repeat with n in (notes of sf)
-                            if name of n is noteName then
-                                set oneNote to n
-                                exit repeat
-                            end if
+                            if name of n is noteName then return n
                         end repeat
-                    end if
-                    if oneNote is not missing value then
-                        set plain to plaintext of oneNote
-                        if targetMode is "append" then
-                            if plain contains lineText then return "exists"
-                            set body of oneNote to (body of oneNote) & "<div>" & lineText & "</div>"
-                            return "appended"
-                        else if plain does not contain lineText then
-                            return "absent"
-                        else
-                            set htmlBody to body of oneNote
-                            set htmlBody to my replaceAll(htmlBody, "<div>" & lineText & "</div>", "")
-                            set htmlBody to my replaceAll(htmlBody, lineText & return, "")
-                            set htmlBody to my replaceAll(htmlBody, lineText, "")
-                            set body of oneNote to htmlBody
-                            return "removed"
-                        end if
                     end if
                 end if
             end try
         end repeat
     end tell
-    return "missing"
+    return missing value
+end findNote
+on run argv
+    set targetMode to item 1 of argv
+    set noteName to item 2 of argv
+    set parentName to item 3 of argv
+    set lineText to item 4 of argv
+    set targetNote to findNote(noteName, parentName)
+    if targetNote is missing value then return "missing"
+    set noteText to grabText(targetNote)
+    if targetMode is "append" then
+        if noteText contains lineText then return "exists"
+        set htmlBody to grabHtml(targetNote) & "<div>" & lineText & "</div>"
+        putHtml(targetNote, htmlBody)
+        return "appended"
+    end if
+    if noteText does not contain lineText then return "absent"
+    set htmlBody to grabHtml(targetNote)
+    set htmlBody to replaceAll(htmlBody, "<div>" & lineText & "</div>", "")
+    set htmlBody to replaceAll(htmlBody, lineText & return, "")
+    set htmlBody to replaceAll(htmlBody, lineText, "")
+    putHtml(targetNote, htmlBody)
+    return "removed"
 end run
 """
     result = _run_osascript(
@@ -930,6 +940,24 @@ def sync_visit_date_to_note(client: str, day: date | str, *, present: bool) -> s
     if result == "missing":
         return f"메모「거래처」에서 '{label}' 노트를 찾지 못했습니다."
     return f"메모 기록 실패: {result}"
+
+
+def sync_saved_visits_to_notes() -> None:
+    """이미 체크된 기방문을 메모에 한 번 맞춘다. 기능 추가 전에 저장된 방문도 남긴다."""
+    if not _vc_is_darwin_local():
+        return
+    if st.session_state.get("_vc_notes_backfill"):
+        return
+    st.session_state["_vc_notes_backfill"] = True
+    msgs: list[str] = []
+    for row in load_store().get("visits") or []:
+        if not isinstance(row, dict) or not _visit_was_done(row):
+            continue
+        msg = sync_visit_date_to_note(_s(row.get("client")), row.get("date"), present=True)
+        if msg:
+            msgs.append(msg)
+    if msgs:
+        st.session_state["_vc_note_msg"] = msgs[-1]
 
 
 def _remember_visit_note_msg(client: str, day: date | str, *, present: bool) -> None:
@@ -2269,6 +2297,7 @@ def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
     if "_vc_selected" not in st.session_state:
         st.session_state["_vc_selected"] = today
 
+    sync_saved_visits_to_notes()
     store0 = load_store()
     staffs = _staff_from_store(store0)
     default_staff = "김혁수" if "김혁수" in staffs else (staffs[0] if staffs else "")
