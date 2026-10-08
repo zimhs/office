@@ -515,8 +515,8 @@ class VisitCalendarTest(unittest.TestCase):
         """Cloud 거래처분석 납품줄만 탭 본문 15px를 깨고 로컬 10px로 맞춘다."""
         css = self.vc._t2d_cloud_font_css()
         self.assertTrue(css.startswith("<style>"))
-        self.assertFalse(css.startswith("\n") or css.startswith(" "))
-        self.assertNotIn("\n    <style>", "\n" + css)
+        self.assertTrue(css.endswith("</style>"))
+        self.assertNotIn("\n", css)
         self.assertIn("t2d-cloud-font-v1", css)
         self.assertIn("st-key-t2d_strip_", css)
         self.assertIn("font-size: 10px !important", css)
@@ -531,7 +531,9 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("if _vc_is_streamlit_cloud()", body)
         # 로컬 Darwin 경로는 cloud font CSS를 넣지 않는다
         strip = src[src.index("def _render_t2d_day_strip") : src.index("def render_tab2_delivery_status")]
-        self.assertIn('_t2d_cloud_font_css() if _vc_is_streamlit_cloud()', strip)
+        self.assertNotIn("_t2d_cloud_font_css() if _vc_is_streamlit_cloud()", strip)
+        self.assertIn("if _vc_is_streamlit_cloud():", strip)
+        self.assertIn("st.markdown(_t2d_cloud_font_css(), unsafe_allow_html=True)", strip)
 
     def test_purge_drops_day_button_keys(self):
         class _SS(dict):

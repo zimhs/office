@@ -3762,10 +3762,10 @@ def _t2d_css() -> str:
 def _t2d_cloud_font_css() -> str:
     """Cloud만: 탭 본문 p 15px 규칙이 납품줄·이동 버튼 글자를 키우지 않게 로컬 v2와 맞춘다.
 
-    앞 공백이 있으면 Streamlit markdown이 style을 코드블록으로 그려 달력이 깨진다.
+    한 줄 <style>로만 넣는다. 줄바꿈이 있으면 markdown이 class*= 뒤를 글자로 그린다.
     """
     panel = '[data-testid="stTabs"] [role="tabpanel"]:not([hidden])'
-    return textwrap.dedent(
+    raw = textwrap.dedent(
         f"""\
         <style>
         /* t2d-cloud-font-v1 — 로컬 strip 10px / 오늘 12px / ‹› 15px */
@@ -3817,6 +3817,7 @@ def _t2d_cloud_font_css() -> str:
         </style>
         """
     ).strip()
+    return "".join(line.strip() for line in raw.splitlines())
 
 
 def _apply_pending_t2d_strip_pick() -> None:
@@ -3939,9 +3940,14 @@ def _render_t2d_day_strip(
         _render_strip_buttons(days, "t2d_strip_", _on_t2d_pick_day)
         return
     # Cloud·아이패드: HTML 칸은 그림이라 눌리지 않는다. 방문탭과 같은 버튼 줄로 고른다.
+    # style은 각각 문자열 맨 앞에서 시작한다. 앞 </style>에 붙이면 markdown이
+    # class*= 뒤를 글자로 그려 배차달력 위에 CSS가 그대로 나온다.
     st.markdown(
-        _strip_button_theme_css(days).replace("st-key-vc_strip_", "st-key-t2d_strip_")
-        + "<style>"
+        _strip_button_theme_css(days).replace("st-key-vc_strip_", "st-key-t2d_strip_"),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<style>"
         'div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-t2d_strip_"]){gap:3px!important;}'
         'div[class*="st-key-t2d_strip_"] button{min-width:0!important;}'
         'div[class*="st-key-t2d_strip_"] button p{white-space:pre-line!important;'
@@ -3950,10 +3956,11 @@ def _render_t2d_day_strip(
         ".vc-strip-html .vc-strip-wd{display:flex;gap:3px;width:100%;margin-bottom:2px;}"
         ".vc-strip-html .vc-strip-wd span{flex:1;min-width:0;text-align:center;"
         "font-size:10px;font-weight:700;line-height:1.1;}"
-        "</style>"
-        + (_t2d_cloud_font_css() if _vc_is_streamlit_cloud() else ""),
+        "</style>",
         unsafe_allow_html=True,
     )
+    if _vc_is_streamlit_cloud():
+        st.markdown(_t2d_cloud_font_css(), unsafe_allow_html=True)
     _render_strip_wd_row(days)
     _render_strip_buttons(days, "t2d_strip_", _on_t2d_pick_day)
 
