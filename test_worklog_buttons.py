@@ -228,6 +228,8 @@ class WorklogButtonRestoreTest(unittest.TestCase):
         cal = src[src.index("def _render_month_calendar") : src.index("def _worklog_summary_html_body")]
         self.assertIn("on_click=_on_wl_cal_prev_month", cal)
         self.assertIn("on_click=_on_wl_cal_next_month", cal)
+        self.assertIn('weeks = ["일", "월", "화", "수", "목", "금", "토"]', cal)
+        self.assertIn("firstweekday=calendar.SUNDAY", cal)
         self.assertNotIn('_wl_rerun()', cal)
         self.assertIn("def _on_wl_cal_prev_month", src)
         self.assertIn("def _on_wl_cal_next_month", src)
