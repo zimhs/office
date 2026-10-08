@@ -1042,6 +1042,53 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertIn("이엔에이치", clients)
         self.assertNotIn("다른곳", clients)
 
+    def test_match_visit_client_note_uses_same_name_sheet(self):
+        items = [
+            {"kind": "FOLDER", "name": "라콜", "parent": ""},
+            {"kind": "SUBNOTE", "name": "라콜", "parent": "기타"},
+            {"kind": "NOTE", "name": "라콜", "parent": ""},
+        ]
+        hit = self.vc.match_visit_client_note("라콜", items)
+        self.assertEqual(hit["kind"], "NOTE")
+        self.assertEqual(hit["name"], "라콜")
+        folded = self.vc.match_visit_client_note(
+            "라콜 주식회사",
+            [{"kind": "NOTE", "name": "라콜", "parent": ""}],
+        )
+        self.assertEqual(folded["name"], "라콜")
+        self.assertIsNone(self.vc.match_visit_client_note("없는업체", items))
+
+    def test_done_visit_records_note_date_planned_does_not(self):
+        class _SS(dict):
+            pass
+
+        ss = _SS()
+        client = "라콜"
+        with patch.object(self.vc.st, "session_state", ss), patch.object(
+            self.vc, "sync_visit_date_to_note", return_value="기록했습니다"
+        ) as sync:
+            self.vc._on_toggle_visit(date(2026, 10, 9), "김혁수", client, "planned")
+            sync.assert_not_called()
+            self.vc._on_toggle_visit(date(2026, 10, 8), "김혁수", client, "done")
+        sync.assert_called_once_with(client, date(2026, 10, 8), present=True)
+        self.assertEqual(ss.get("_vc_note_msg"), "기록했습니다")
+        with patch.object(self.vc.st, "session_state", ss), patch.object(
+            self.vc, "sync_visit_date_to_note", return_value="뺐습니다"
+        ) as sync_off:
+            self.vc._on_toggle_visit(date(2026, 10, 8), "김혁수", client, "done")
+        sync_off.assert_called_once_with(client, date(2026, 10, 8), present=False)
+        self.assertIsNone(self.vc._direct_visit_on(self.vc.load_store(), date(2026, 10, 8), client))
+
+    def test_sync_appends_visit_line_on_matched_note(self):
+        items = [{"kind": "NOTE", "name": "라콜", "parent": ""}]
+        with patch.object(self.vc, "_vc_is_darwin_local", return_value=True), patch.object(
+            self.vc, "_list_client_notes", return_value=(items, "")
+        ), patch.object(self.vc, "_apply_visit_note_line", return_value="appended") as apply:
+            msg = self.vc.sync_visit_date_to_note("라콜", date(2026, 10, 8), present=True)
+        apply.assert_called_once_with(items[0], "방문 2026-10-08", mode="append")
+        self.assertIn("방문 2026-10-08", msg)
+        self.assertIn("라콜", msg)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,9 @@ import html
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import textwrap
 import unicodedata
 import uuid
@@ -700,6 +702,243 @@ def clear_day_visit(day: date | str, client: str) -> bool:
     if not hit:
         return False
     return delete_visit(str(hit.get("id") or ""))
+
+
+def _visit_note_line(day: date | str) -> str:
+    iso = _iso(day)
+    return f"방문 {iso}" if iso else ""
+
+
+def _visit_was_done(row: dict | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    return (_s(row.get("status")) or "done") != "planned"
+
+
+def match_visit_client_note(client: str, items: list[dict]) -> dict | None:
+    """메모「거래처」노트 중 거래처명과 같은 시트를 고른다. 폴더 이름만 같은 경우는 제외."""
+    raw = _s(client)
+    key = _company_key(raw)
+    if not raw or not key:
+        return None
+    notes = [it for it in items if str(it.get("kind") or "") in {"NOTE", "SUBNOTE"}]
+
+    def _rank(it: dict) -> tuple:
+        return (0 if it.get("kind") == "NOTE" else 1, len(_s(it.get("name"))))
+
+    exact = [it for it in notes if _s(it.get("name")) == raw]
+    if exact:
+        exact.sort(key=_rank)
+        return exact[0]
+    keyed = [it for it in notes if _company_key(it.get("name") or "") == key and key]
+    if keyed:
+        keyed.sort(key=_rank)
+        return keyed[0]
+    return None
+
+
+def _run_osascript(script_text: str, args: list[str], timeout: int = 25) -> subprocess.CompletedProcess:
+    script_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".applescript",
+            prefix="vc_notes_",
+            delete=False,
+            encoding="utf-8",
+        ) as script_file:
+            script_file.write(script_text.strip())
+            script_path = script_file.name
+        return subprocess.run(
+            ["osascript", script_path, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    finally:
+        if script_path:
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
+
+
+def _list_client_notes(*, force: bool = False) -> tuple[list[dict], str]:
+    """메모「거래처」의 노트 이름. 방문 클릭마다 전체 목록을 다시 읽지 않는다."""
+    if not _vc_is_darwin_local():
+        return [], ""
+    now = datetime.now().timestamp()
+    cache = st.session_state.get("_vc_notes_index")
+    if (
+        not force
+        and isinstance(cache, dict)
+        and now - float(cache.get("ts") or 0) < 300
+        and isinstance(cache.get("items"), list)
+    ):
+        return list(cache["items"]), ""
+    script = """
+on run
+    set outLines to {}
+    tell application "Notes"
+        repeat with acc in accounts
+            try
+                if exists folder "거래처" of acc then
+                    set parentFolder to folder "거래처" of acc
+                    repeat with n in (notes of parentFolder)
+                        set end of outLines to "NOTE\t" & (name of n)
+                    end repeat
+                    try
+                        repeat with f in (folders of parentFolder)
+                            set fName to name of f
+                            repeat with n in (notes of f)
+                                set end of outLines to "SUBNOTE\t" & fName & "\t" & (name of n)
+                            end repeat
+                        end repeat
+                    end try
+                end if
+            end try
+        end repeat
+    end tell
+    set AppleScript's text item delimiters to linefeed
+    return outLines as text
+end run
+"""
+    try:
+        result = _run_osascript(script, [], timeout=30)
+    except subprocess.TimeoutExpired:
+        return [], "메모 앱 응답 시간 초과."
+    except Exception as e:
+        return [], str(e)
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        return [], err or "메모 목록 조회 실패"
+    items: list[dict] = []
+    for line in (result.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0].strip() == "NOTE":
+            items.append({"kind": "NOTE", "name": parts[1].strip(), "parent": ""})
+        elif len(parts) >= 3 and parts[0].strip() == "SUBNOTE":
+            items.append({"kind": "SUBNOTE", "parent": parts[1].strip(), "name": parts[2].strip()})
+    st.session_state["_vc_notes_index"] = {"ts": now, "items": items}
+    return items, ""
+
+
+def _apply_visit_note_line(match: dict, line: str, *, mode: str) -> str:
+    script = """
+on replaceAll(theText, searchStr, replaceStr)
+    set AppleScript's text item delimiters to searchStr
+    set parts to text items of theText
+    set AppleScript's text item delimiters to replaceStr
+    set theText to parts as text
+    set AppleScript's text item delimiters to ""
+    return theText
+end replaceAll
+on run argv
+    set targetMode to item 1 of argv
+    set noteName to item 2 of argv
+    set parentName to item 3 of argv
+    set lineText to item 4 of argv
+    tell application "Notes"
+        repeat with acc in accounts
+            try
+                if exists folder "거래처" of acc then
+                    set parentFolder to folder "거래처" of acc
+                    set oneNote to missing value
+                    if parentName is "" then
+                        repeat with n in (notes of parentFolder)
+                            if name of n is noteName then
+                                set oneNote to n
+                                exit repeat
+                            end if
+                        end repeat
+                    else if exists folder parentName of parentFolder then
+                        set sf to folder parentName of parentFolder
+                        repeat with n in (notes of sf)
+                            if name of n is noteName then
+                                set oneNote to n
+                                exit repeat
+                            end if
+                        end repeat
+                    end if
+                    if oneNote is not missing value then
+                        set plain to plaintext of oneNote
+                        if targetMode is "append" then
+                            if plain contains lineText then return "exists"
+                            set body of oneNote to (body of oneNote) & "<div>" & lineText & "</div>"
+                            return "appended"
+                        else if plain does not contain lineText then
+                            return "absent"
+                        else
+                            set htmlBody to body of oneNote
+                            set htmlBody to my replaceAll(htmlBody, "<div>" & lineText & "</div>", "")
+                            set htmlBody to my replaceAll(htmlBody, lineText & return, "")
+                            set htmlBody to my replaceAll(htmlBody, lineText, "")
+                            set body of oneNote to htmlBody
+                            return "removed"
+                        end if
+                    end if
+                end if
+            end try
+        end repeat
+    end tell
+    return "missing"
+end run
+"""
+    result = _run_osascript(
+        script,
+        [mode, _s(match.get("name")), _s(match.get("parent")), line],
+        timeout=25,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        return err or "failed"
+    return (result.stdout or "").strip() or "failed"
+
+
+def sync_visit_date_to_note(client: str, day: date | str, *, present: bool) -> str:
+    """방문(완료)만 메모「거래처」의 같은 이름 노트에 날짜를 넣거나 뺀다."""
+    if not _vc_is_darwin_local():
+        return ""
+    line = _visit_note_line(day)
+    name = _s(client)
+    if not line or len(name) < 2:
+        return ""
+    items, err = _list_client_notes()
+    match = match_visit_client_note(name, items)
+    if match is None and not err:
+        items, err = _list_client_notes(force=True)
+        match = match_visit_client_note(name, items)
+    if err and not items:
+        return f"메모 목록을 읽지 못했습니다. {err}"
+    if not match:
+        return f"메모「거래처」에 '{name}' 노트가 없어 방문일자를 남기지 못했습니다."
+    try:
+        result = _apply_visit_note_line(match, line, mode="append" if present else "remove")
+    except subprocess.TimeoutExpired:
+        return "메모 앱 응답 시간 초과."
+    except Exception as e:
+        return f"메모 기록 실패: {e}"
+    label = _s(match.get("name")) or name
+    if result == "appended":
+        return f"메모「거래처」'{label}'에 {line}을 기록했습니다."
+    if result == "exists":
+        return f"메모「거래처」'{label}'에 {line}이 이미 있습니다."
+    if result == "removed":
+        return f"메모「거래처」'{label}'에서 {line}을 뺐습니다."
+    if result == "absent":
+        return ""
+    if result == "missing":
+        return f"메모「거래처」에서 '{label}' 노트를 찾지 못했습니다."
+    return f"메모 기록 실패: {result}"
+
+
+def _remember_visit_note_msg(client: str, day: date | str, *, present: bool) -> None:
+    try:
+        msg = sync_visit_date_to_note(client, day, present=present)
+    except Exception as e:
+        msg = f"메모 기록 실패: {e}"
+    if msg:
+        st.session_state["_vc_note_msg"] = msg
 
 
 _SKIP_STAFF = {"", "미지정", "전체", "전체 담당자"}
@@ -1917,10 +2156,12 @@ def _on_toggle_visit(d: date, staff: str, client: str, status: str = "done") -> 
     if status not in {"done", "planned"}:
         status = "done"
     hit = _direct_visit_on(load_store(), d, client)
+    was_done = _visit_was_done(hit)
     if hit:
         cur = _s(hit.get("status")) or "done"
         if cur == status:
             delete_visit(str(hit.get("id") or ""))
+            now_done = False
         else:
             store = load_store()
             for v in store.get("visits") or []:
@@ -1928,18 +2169,33 @@ def _on_toggle_visit(d: date, staff: str, client: str, status: str = "done") -> 
                     v["status"] = status
                     save_store(store)
                     break
+            now_done = status == "done"
     else:
         add_visit({"date": d, "staff": staff, "client": client, "status": status})
+        now_done = status == "done"
+    if now_done or was_done:
+        _remember_visit_note_msg(client, d, present=now_done)
     st.session_state.pop("_vc_hist_cache", None)
 
 
 def _on_delete_day_visit(d: date, client: str) -> None:
+    hit = _direct_visit_on(load_store(), d, client)
+    was_done = _visit_was_done(hit)
     clear_day_visit(d, client)
+    if was_done:
+        _remember_visit_note_msg(client, d, present=False)
     st.session_state.pop("_vc_hist_cache", None)
 
 
 def _on_delete_visit_id(visit_id: str) -> None:
+    store = load_store()
+    hit = next(
+        (v for v in store.get("visits") or [] if str(v.get("id")) == str(visit_id)),
+        None,
+    )
     delete_visit(str(visit_id))
+    if _visit_was_done(hit):
+        _remember_visit_note_msg(_s(hit.get("client")), hit.get("date"), present=False)
     st.session_state.pop("_vc_hist_cache", None)
 
 
@@ -3282,7 +3538,7 @@ def _render_day_agenda(selected: date, store: dict, staff: str, client: str) -> 
             disabled=off,
             on_click=_on_toggle_visit,
             args=(selected, staff, client, "done"),
-            help="실제 방문. 달력에 초록 업체명.",
+            help="실제 방문. 달력에 초록 업체명. 맥에서는 메모「거래처」의 같은 이름 노트에 방문일자를 남깁니다.",
         )
     with b2:
         st.button(
@@ -3317,6 +3573,9 @@ def _render_day_agenda(selected: date, store: dict, staff: str, client: str) -> 
         )
     if on_css:
         st.markdown(f"<style>{''.join(on_css)}</style>", unsafe_allow_html=True)
+    note_msg = _s(st.session_state.get("_vc_note_msg"))
+    if note_msg:
+        st.caption(note_msg)
 
 
 def _render_visit_log(store: dict, staff: str, client: str) -> None:
