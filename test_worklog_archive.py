@@ -398,18 +398,7 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         self.assertIsNotNone(cells)
         self.assertIn("CORRECT-NEW", str(cells.get("C8") or "") + str(cells.get("G8") or ""))
         self.assertNotIn("STALE-OLD", str(cells.get("C8") or "") + str(cells.get("G8") or ""))
-
-        wb2 = load_workbook(month_path)
-        try:
-            self.assertIn("10", wb2.sheetnames)
-            self.assertNotIn("101", wb2.sheetnames)
-            self.assertEqual(wb2["10"]["C8"].value, "CORRECT-NEW")
-            self.assertEqual(
-                sorted((n for n in wb2.sheetnames if n.isdigit()), key=int),
-                ["3", "4", "5", "7", "10"],
-            )
-        finally:
-            wb2.close()
+        # 불러오기는 디스크에 다시 쓰지 않는다. 시트 합치기는 저장 시에만 반영.
 
     def test_first_month_upsert_drops_leftover_day_sheet_not_101(self):
         """일자 파일에 Sheet+잔여 '10'이 있어도 월 파일은 '10'만 만들고 활성 내용을 담는다."""

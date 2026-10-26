@@ -3619,11 +3619,7 @@ def read_worklog_cells_from_archive(d: date) -> dict | None:
     try:
         wb = _load_archive_workbook(month_path, data_only=False)
         try:
-            if _normalize_archive_month_day_sheets(wb, year=d.year, month=d.month):
-                try:
-                    _atomic_save_workbook(wb, month_path)
-                except Exception:
-                    pass
+            _normalize_archive_month_day_sheets(wb, year=d.year, month=d.month)
             name = _resolve_archive_sheet_name(wb.sheetnames, d)
             if not name:
                 return None
@@ -3824,10 +3820,6 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
             st.session_state["wl_last_archive_path"] = archive
             st.session_state["wl_last_archive_sheet"] = worklog_archive_sheet_title(d)
             st.session_state["wl_last_archive_target"] = describe_worklog_archive_target(d)
-            try:
-                backfill_month_archive_from_local(d.year, d.month)
-            except Exception:
-                pass
     except Exception as e:
         st.session_state["wl_last_archive_err"] = str(e)
     try:
