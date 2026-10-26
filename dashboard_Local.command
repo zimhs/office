@@ -14,6 +14,13 @@ if [ "$HERE" != "$CANON" ] && [ -x "${CANON}/dashboard_Local.command" ]; then
   exec "${CANON}/dashboard_Local.command"
 fi
 
+# Finder .command 창은 자식 없이 바로 끝낸다. 닫기 확인창이 나오지 않게 이 창에서는 Chrome/Python을 돌리지 않는다.
+if [ -z "${DASH_LOCAL_BG:-}" ] && [ "${TERM_PROGRAM:-}" = "Apple_Terminal" ]; then
+  osascript -e "do shell script \"export DASH_LOCAL_BG=1; /bin/bash '${CANON}/dashboard_Local.command' >/dev/null 2>&1 &\"" >/dev/null 2>&1 || \
+    nohup env DASH_LOCAL_BG=1 /bin/bash "${CANON}/dashboard_Local.command" >/dev/null 2>&1 &
+  exit 0
+fi
+
 MAIN="${ROOT}/app.py"
 URL1="http://127.0.0.1:8501"
 STAMP="${HOME}/.dashboard_browser_opened"
@@ -43,16 +50,17 @@ except subprocess.TimeoutExpired:
 ' 2>/dev/null || true
 }
 
-# 로컬 바로가기만 눌렀을 때 Terminal Resume이 Cloud.command 창을 다시 띄우지 않게 한다
-_close_cloud_terminal() {
-  pkill -f "/Desktop/dashboard/dashboard_Cloud.command" 2>/dev/null || true
+# 실행이 끝난 바로가기 창만 닫는다. 돌아가는 창을 닫으면 「종료할까요?」가 뜬다.
+_close_idle_shortcut_windows() {
   _osa <<'APPLESCRIPT'
 tell application "Terminal"
   repeat with w in (get windows)
     try
       set n to name of w as text
-      if n contains "dashboard_Cloud" then
-        close w saving no
+      if (busy of w) is false then
+        if n contains "dashboard_Local" or n contains "dashboard_Cloud" then
+          close w
+        end if
       end if
     end try
   end repeat
@@ -186,27 +194,13 @@ APPLESCRIPT
   open -a "Google Chrome" "$URL1" >/dev/null 2>&1 || true
 }
 
-# Finder .command는 Terminal 창을 남긴다. 백그라운드로 넘긴 뒤 로컬·Cloud 창을 닫는다.
-if [ -z "${DASH_LOCAL_BG:-}" ] && [ "${TERM_PROGRAM:-}" = "Apple_Terminal" ]; then
-  export DASH_LOCAL_BG=1
-  /bin/bash "$0" >/dev/null 2>&1 &
-  _close_cloud_terminal
-  _osa <<'APPLESCRIPT'
-tell application "Terminal"
-  try
-    close front window saving no
-  end try
-end tell
-APPLESCRIPT
-  exit 0
-fi
-
-_close_cloud_terminal
+( sleep 1; _close_idle_shortcut_windows ) &
 
 if ! mkdir "$LAUNCH_LOCK" 2>/dev/null; then
   if _up 8501; then
     _chrome_ensure_tab
     osascript -e 'display notification "8501 대시보드로 이동" with title "영업 대시보드"' >/dev/null 2>&1 || true
+    _close_idle_shortcut_windows
     exit 0
   fi
   # 죽은 락(90초 초과)만 지운다. 살아 있으면 서버 기동 중으로 보고 탭만 연다.
@@ -217,6 +211,7 @@ if ! mkdir "$LAUNCH_LOCK" 2>/dev/null; then
     mkdir "$LAUNCH_LOCK" 2>/dev/null || true
   else
     open -a "Google Chrome" "$URL1" >/dev/null 2>&1 || true
+    _close_idle_shortcut_windows
     exit 0
   fi
 fi
@@ -230,6 +225,7 @@ if _up 8501; then
     _chrome_ensure_tab
     touch "$STAMP"
     osascript -e 'display notification "8501 대시보드로 이동 (통합 12탭)" with title "영업 대시보드"'
+    _close_idle_shortcut_windows
     exit 0
   fi
 else
@@ -279,5 +275,5 @@ _run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패"'; exi
 _chrome_load_dashboard
 touch "$STAMP"
 _save_code_stamp
-_close_cloud_terminal
+_close_idle_shortcut_windows
 osascript -e 'display notification "Chrome · 8501 통합 대시보드 (업무일지·공문 포함)" with title "영업 대시보드"'
