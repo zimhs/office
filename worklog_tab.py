@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import zipfile
 from datetime import date
 from functools import lru_cache
 from typing import Any
@@ -2238,11 +2239,9 @@ def _iter_google_drive_roots() -> list[str]:
 
 
 def _archive_root_mtime(p: str) -> float:
+    """폴더 mtime만 본다. Drive 전체를 walk하면 첫 로딩이 멈춘다."""
     try:
-        return max(
-            (os.path.getmtime(os.path.join(dp, f)) for dp, _, fs in os.walk(p) for f in fs),
-            default=os.path.getmtime(p),
-        )
+        return os.path.getmtime(p)
     except OSError:
         return 0.0
 
@@ -3380,15 +3379,26 @@ def delete_worklog_archive_sheet(d: date) -> str | None:
 
 def worklog_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"{d.isoformat()}.xlsx")
 
+
+def _xlsx_workbook_sheet_names(path: str) -> list[str]:
+    """openpyxl 없이 시트명만 읽는다. Drive 월 파일을 전부 로드하지 않기 위함."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            xml = zf.read("xl/workbook.xml").decode("utf-8", "ignore")
+    except Exception:
+        return []
+    block = re.search(r"<sheets\b[^>]*>(.*?)</sheets>", xml, re.I | re.S)
+    if not block:
+        return []
+    return re.findall(r'<sheet\b[^>]*\bname="([^"]+)"', block.group(1), re.I)
+
+
 def _list_archive_saved_dates() -> set[str]:
     """맥 경로 …/일지/YYYY/N월.xlsx 시트(일) → 달력 • 표시용.
 
-    시트명만 있고 칸이 비어 있으면 • 를 넣지 않는다.
-    0채움 시트(03)는 정규화한 뒤 실제 내용이 있을 때만 포함한다.
+    첫 로딩이 Drive 월 파일을 openpyxl로 전부 열지 않도록 시트명만 본다.
     """
     out: set[str] = set()
-    if load_workbook is None:
-        return out
     root = resolve_worklog_archive_root()
     if not root or not os.path.isdir(root):
         return out
@@ -3416,43 +3426,21 @@ def _list_archive_saved_dates() -> set[str]:
                 continue
             path = os.path.join(year_dir, fname)
             try:
-                wb = _load_archive_workbook(path, data_only=False)
-                try:
-                    # 달력 조회 중에는 정규화만 반영. purge는 저장/복구 시에만 해서
-                    # 열람만으로 일자 시트가 지워지지 않게 한다.
-                    changed = _normalize_archive_month_day_sheets(wb, year=year, month=month)
-                    if changed:
-                        try:
-                            remaining = [n for n in wb.sheetnames if n and not n.startswith("_")]
-                            if remaining:
-                                _atomic_save_workbook(wb, path)
-                        except Exception:
-                            pass
-                    for name in list(wb.sheetnames):
-                        if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
-                            continue
-                        day = _archive_sheet_day_number(
-                            name, expect_year=year, expect_month=month
-                        )
-                        if day is None:
-                            continue
-                        try:
-                            d = date(year, month, day)
-                        except ValueError:
-                            continue
-                        try:
-                            labeled = _worksheet_labeled_date(wb[name])
-                            if labeled is not None and labeled != d:
-                                continue
-                            cells = _cells_from_worksheet(wb[name], d)
-                        except Exception:
-                            continue
-                        if _worklog_cells_have_draft(cells):
-                            out.add(d.isoformat())
-                finally:
-                    wb.close()
+                names = _xlsx_workbook_sheet_names(path)
             except Exception:
                 continue
+            for name in names:
+                if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
+                    continue
+                day = _archive_sheet_day_number(
+                    name, expect_year=year, expect_month=month
+                )
+                if day is None:
+                    continue
+                try:
+                    out.add(date(year, month, day).isoformat())
+                except ValueError:
+                    continue
     return out
 
 
@@ -7940,41 +7928,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     dev_caption(f"업무일지 빌드 {_WL_UI_BUILD}")
     _filt_changed = _dashboard_filters_changed_this_run()
     _arch_root = resolve_worklog_archive_root()
-    # 유령 일자 시트(빈 칸·C5 불일치)를 월별 파일에서 한 번 정리 → 대시보드•와 엑셀 일치
-    if _arch_root and not st.session_state.get("_wl_archive_purged_v1"):
-        st.session_state["_wl_archive_purged_v1"] = True
-        try:
-            repaired = False
-            for year_name in os.listdir(_arch_root):
-                if not (year_name.isdigit() and len(year_name) == 4):
-                    continue
-                year_dir = os.path.join(_arch_root, year_name)
-                if not os.path.isdir(year_dir):
-                    continue
-                year = int(year_name)
-                for fname in os.listdir(year_dir):
-                    m = re.match(r"^(\d{1,2})월\.xlsx$", _nfc(fname))
-                    if not m:
-                        continue
-                    month = int(m.group(1))
-                    mp = os.path.join(year_dir, fname)
-                    if _repair_month_archive_file(mp, year=year, month=month):
-                        repaired = True
-            if repaired:
-                _invalidate_saved_dates_cache()
-        except Exception:
-            pass
-    if _arch_root and not st.session_state.get("_wl_archive_backfill_v1"):
-        st.session_state["_wl_archive_backfill_v1"] = True
-        try:
-            today = date.today()
-            backfill_month_archive_from_local(today.year, today.month)
-            if today.month == 1:
-                backfill_month_archive_from_local(today.year - 1, 12)
-            else:
-                backfill_month_archive_from_local(today.year, today.month - 1)
-        except Exception:
-            pass
     if is_dev_mode():
         if _arch_root:
             st.caption(f"월별 저장 경로: `{_arch_root}/{{연도}}/{{N}}월.xlsx` (날짜=시트명)")

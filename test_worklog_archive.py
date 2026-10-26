@@ -254,6 +254,7 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         wb.save(month_path)
         wb.close()
 
+        self.wt._repair_month_archive_file(month_path, year=2026, month=10)
         self.ss.pop("wl_saved_dates_cache", None)
         dates = self.wt.list_saved_worklog_dates()
         self.assertIn("2026-10-01", dates)
@@ -343,8 +344,7 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         wb.close()
 
         self.ss.pop("wl_saved_dates_cache", None)
-        dates = self.wt.list_saved_worklog_dates()
-        self.assertNotIn("2026-02-07", dates)
+        # 달력 점은 시트명만 본다(첫 로딩 지연 방지). 불러오기는 C5로 걸러 빈 칸을 안 연다.
         self.assertIsNone(self.wt.read_worklog_cells_from_archive(date(2026, 2, 7)))
 
     def test_save_writes_selected_year_month_sheet(self):
