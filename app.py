@@ -1451,31 +1451,254 @@ def build_unit_price_change_pivot(unit_price_df, years, all_months, item_names=N
     return out
 
 
+def _dash_excel_hex(color) -> str:
+    """openpyxl PatternFill 용 RRGGBB."""
+    s = str(color or "").strip()
+    if not s:
+        return "FFFFFF"
+    low = s.lower()
+    if low.startswith("rgb"):
+        nums = re.findall(r"[\d.]+", s)
+        if len(nums) >= 3:
+            r, g, b = [max(0, min(255, int(float(n)))) for n in nums[:3]]
+            return f"{r:02X}{g:02X}{b:02X}"
+        return "FFFFFF"
+    if s.startswith("#"):
+        s = s[1:]
+    if len(s) == 3:
+        s = "".join(ch * 2 for ch in s)
+    if len(s) >= 6 and all(c in "0123456789abcdefABCDEF" for c in s[:6]):
+        return s[:6].upper()
+    return "FFFFFF"
+
+
+def _dash_excel_flatten_df(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if isinstance(out.columns, pd.MultiIndex):
+        out.columns = [
+            "_".join([str(c) for c in col if str(c) not in ("", "None", "nan")])
+            for col in out.columns
+        ]
+    out.columns = [str(c) for c in out.columns]
+    return out
+
+
+def _dash_excel_heatmap_colors(data_df, cmap_name="Blues", axis=None, skip_last=False):
+    """대시보드 background_gradient 와 같은 셀 배경·글자색."""
+    out = {}
+    if data_df is None or getattr(data_df, "empty", True):
+        return out
+    work = data_df.iloc[:-1] if skip_last and len(data_df.index) else data_df
+    try:
+        num = work.apply(pd.to_numeric, errors="coerce")
+        num_cols = [c for c in num.columns if pd.api.types.is_numeric_dtype(num[c])]
+        if not num_cols:
+            return out
+        num = num[num_cols].fillna(0.0)
+        styler = num.style.background_gradient(cmap=cmap_name, axis=axis)
+        styler._compute()
+        ctx = getattr(styler, "ctx", None) or {}
+        idxs = list(num.index)
+        cols = list(num.columns)
+        for (r, c), props in ctx.items():
+            if r >= len(idxs) or c >= len(cols):
+                continue
+            bg, fg = "#FFFFFF", "#0F172A"
+            for item in props:
+                if not isinstance(item, (list, tuple)) or len(item) < 2:
+                    continue
+                k, v = str(item[0]).lower(), str(item[1]).strip()
+                if "background" in k:
+                    bg = v
+                elif k == "color":
+                    fg = v
+            try:
+                if abs(float(num.iat[r, c])) < 1e-12:
+                    bg, fg = "#FFFFFF", "#0F172A"
+            except Exception:
+                pass
+            out[(idxs[r], cols[c])] = (bg, fg)
+    except Exception:
+        pass
+    return out
+
+
+def _dash_excel_safe_sheet(name: str, used: set[str]) -> str:
+    raw = re.sub(r'[\[\]\*\/\\\?\:]', "_", str(name or "Sheet")).strip() or "Sheet"
+    raw = raw[:31]
+    base, n = raw, 1
+    while raw in used:
+        n += 1
+        suffix = f"_{n}"
+        raw = (base[: 31 - len(suffix)] + suffix)
+    used.add(raw)
+    return raw
+
+
+def convert_dash_excel_sheets(items):
+    """탭·라벨로 고른 표를 대시보드 그라디언트·숫자양식과 같게 xlsx로 만든다.
+    차트·페이지 배치는 엑셀 표로 옮기지 않는다."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    default = wb.active
+    used_names: set[str] = set()
+    header_fill = PatternFill("solid", fgColor="1E3A8A")
+    header_font = Font(name="Malgun Gothic", bold=True, color="FFFFFF", size=10)
+    index_fill = PatternFill("solid", fgColor="F8FAFC")
+    sum_fill = PatternFill("solid", fgColor="E2E8F0")
+    sum_font = Font(name="Malgun Gothic", bold=True, color="0F172A", size=10)
+    body_font = Font(name="Malgun Gothic", color="0F172A", size=10)
+    thin = Border(
+        left=Side(style="thin", color="E2E8F0"),
+        right=Side(style="thin", color="E2E8F0"),
+        top=Side(style="thin", color="E2E8F0"),
+        bottom=Side(style="thin", color="E2E8F0"),
+    )
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center")
+    sheets_written = 0
+    for spec in items or []:
+        df = spec.get("df")
+        if df is None or getattr(df, "empty", True):
+            continue
+        work = _dash_excel_flatten_df(df)
+        scale = spec.get("scale")
+        if scale not in (None, 0, 1) and isinstance(work, pd.DataFrame) and not work.empty:
+            num_cols = work.select_dtypes(include=[np.number]).columns
+            if len(num_cols):
+                work = work.copy()
+                work[num_cols] = work[num_cols] * float(scale)
+        add_sum = bool(spec.get("add_sum"))
+        if add_sum:
+            work = get_display_df_with_sum(work, spec.get("sum_label") or "합계")
+        use_index = bool(spec.get("use_index", True))
+        num_fmt = spec.get("num_fmt") or "#,##0"
+        cmap = spec.get("cmap")
+        cmap_map = spec.get("cmap_map") or {}
+        color_map = {}
+        skip_last = add_sum and len(work.index) > 0
+        if cmap:
+            color_map.update(
+                _dash_excel_heatmap_colors(
+                    work, cmap_name=cmap, axis=spec.get("axis"), skip_last=skip_last
+                )
+            )
+        for cols, cname in cmap_map.items():
+            subset_cols = [c for c in cols if c in work.columns]
+            if not subset_cols:
+                continue
+            color_map.update(
+                _dash_excel_heatmap_colors(
+                    work[subset_cols],
+                    cmap_name=cname,
+                    axis=spec.get("axis"),
+                    skip_last=skip_last,
+                )
+            )
+        ws = wb.create_sheet(_dash_excel_safe_sheet(spec.get("sheet") or "Sheet", used_names))
+        index_names = []
+        if use_index:
+            names = list(work.index.names)
+            if work.index.nlevels == 1:
+                index_names = [names[0] if names and names[0] else "구분"]
+            else:
+                index_names = [
+                    n if n else f"구분{i + 1}" for i, n in enumerate(names)
+                ]
+        headers = index_names + [str(c) for c in work.columns]
+        for c, h in enumerate(headers, 1):
+            cell = ws.cell(1, c, h)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = thin
+        n_idx = len(index_names)
+        last_r = 1 + len(work.index)
+        numeric_cols = set(
+            str(c)
+            for c in work.select_dtypes(include=[np.number]).columns
+        )
+        for r_i, idx in enumerate(work.index):
+            excel_r = r_i + 2
+            is_sum = add_sum and r_i == len(work.index) - 1
+            if n_idx == 1:
+                idx_vals = [idx]
+            elif n_idx > 1:
+                idx_vals = list(idx) if isinstance(idx, tuple) else [idx]
+            else:
+                idx_vals = []
+            for c_i, val in enumerate(idx_vals):
+                cell = ws.cell(excel_r, c_i + 1, "" if val is None else str(val))
+                cell.fill = sum_fill if is_sum else index_fill
+                cell.font = sum_font if is_sum else body_font
+                cell.alignment = left
+                cell.border = thin
+            for c_i, col in enumerate(work.columns):
+                raw = work.iat[r_i, c_i]
+                excel_c = n_idx + c_i + 1
+                is_num = str(col) in numeric_cols
+                if is_num:
+                    try:
+                        if pd.isna(raw):
+                            val = None
+                        else:
+                            val = float(raw)
+                    except (TypeError, ValueError):
+                        val = raw
+                        is_num = False
+                else:
+                    val = "" if raw is None or (isinstance(raw, float) and pd.isna(raw)) else raw
+                cell = ws.cell(excel_r, excel_c, val)
+                cell.border = thin
+                cell.alignment = center if is_num else left
+                if is_sum:
+                    cell.fill = sum_fill
+                    cell.font = sum_font
+                else:
+                    bg_fg = color_map.get((idx, col))
+                    if bg_fg:
+                        bg, fg = bg_fg
+                        cell.fill = PatternFill("solid", fgColor=_dash_excel_hex(bg))
+                        cell.font = Font(
+                            name="Malgun Gothic",
+                            color=_dash_excel_hex(fg),
+                            size=10,
+                        )
+                    else:
+                        cell.font = body_font
+                if is_num and val is not None and not isinstance(val, str):
+                    cell.number_format = num_fmt
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(last_r, 1)}"
+        ws.freeze_panes = "A2"
+        ws.sheet_view.showGridLines = False
+        for c in range(1, len(headers) + 1):
+            maxlen = len(str(headers[c - 1] or ""))
+            for r in range(2, min(last_r, 40) + 1):
+                v = ws.cell(r, c).value
+                if v is not None:
+                    maxlen = max(maxlen, min(len(str(v)), 24))
+            ws.column_dimensions[get_column_letter(c)].width = min(max(maxlen + 3, 9), 22)
+        sheets_written += 1
+    if default is not None:
+        if sheets_written:
+            wb.remove(default)
+        else:
+            default.title = "No Data"
+            default["A1"] = "저장할 데이터가 없습니다."
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 @st.cache_data
 def convert_dfs_to_excel(dfs_dict):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        sheets_written = False
-        for sheet_name, (df, use_index) in dfs_dict.items():
-            if not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df_to_save = df.copy()
-                    df_to_save.columns = [
-                        "_".join([str(c) for c in col if c])
-                        for col in df_to_save.columns
-                    ]
-                    df_to_save.to_excel(
-                        writer, sheet_name=sheet_name, index=use_index
-                    )
-                else:
-                    df.to_excel(writer, sheet_name=sheet_name, index=use_index)
-                sheets_written = True
-        
-        # [핵심] 저장할 데이터가 전혀 없어 시트가 0개일 때 발생하는 크래시 방지
-        if not sheets_written:
-            pd.DataFrame({"알림": ["저장할 데이터가 없습니다."]}).to_excel(writer, sheet_name="No Data", index=False)
-            
-    return output.getvalue()
+    items = []
+    for sheet_name, (df, use_index) in (dfs_dict or {}).items():
+        items.append({"sheet": sheet_name, "df": df, "use_index": use_index})
+    return convert_dash_excel_sheets(items)
 def _ppt_format_value(val):
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
@@ -15725,6 +15948,139 @@ def _dash_filter_and_tabs_fragment() -> None:
         client_addr = str(client_addr_raw)
     st.sidebar.markdown("---")
     st.sidebar.subheader("📥 엑셀 내보내기")
+    _staff_share_cols = [
+        c for c in (staff_pivot.columns if isinstance(staff_pivot, pd.DataFrame) else [])
+        if c in ("전체매출비중", "당해매출비중")
+    ]
+    _staff_total_cols = [
+        c for c in (staff_pivot.columns if isinstance(staff_pivot, pd.DataFrame) else [])
+        if c == "총 매출 합계 (만원)"
+    ]
+    _staff_month_cols = [
+        c
+        for c in (staff_pivot.columns if isinstance(staff_pivot, pd.DataFrame) else [])
+        if c not in _staff_share_cols and c not in _staff_total_cols
+    ]
+    _excel_catalog = [
+        {
+            "tab": "📌 영업 종합 요약",
+            "label": "연도별 월 매출 (만원)",
+            "sheet": "T1_연도별월매출",
+            "df": pivot_m_total,
+            "use_index": True,
+            "add_sum": True,
+            "sum_label": "연간 합계",
+            "cmap": "Blues",
+            "num_fmt": "#,##0",
+        },
+        {
+            "tab": "🏢 거래처 분석",
+            "label": "거래처 품목별 사용량",
+            "sheet": "T2_품목사용량",
+            "df": client_item_qty_pivot,
+            "use_index": True,
+            "add_sum": True,
+            "sum_label": "합계",
+            "cmap": "Blues",
+            "num_fmt": "#,##0.0",
+        },
+        {
+            "tab": "📦 품목 및 단가 분석",
+            "label": "품목별 매출액 (만원)",
+            "sheet": "T3_품목매출",
+            "df": sales_p,
+            "scale": 1.1 / 10000,
+            "use_index": True,
+            "add_sum": True,
+            "sum_label": "합계",
+            "cmap": "Blues",
+            "num_fmt": "#,##0",
+        },
+        {
+            "tab": "📦 품목 및 단가 분석",
+            "label": "품목별 출고량",
+            "sheet": "T3_품목출고량",
+            "df": qty_p,
+            "use_index": True,
+            "add_sum": True,
+            "sum_label": "합계",
+            "cmap": "Greens",
+            "num_fmt": "#,##0.0",
+        },
+        {
+            "tab": "📦 품목 및 단가 분석",
+            "label": "품목별 적용단가",
+            "sheet": "T3_적용단가",
+            "df": unit_price_p,
+            "use_index": True,
+            "add_sum": False,
+            "cmap": None,
+            "num_fmt": "#,##0",
+        },
+        {
+            "tab": "👤 담당자 & 상세내역",
+            "label": "담당자별 매출 (만원)",
+            "sheet": "T4_담당자매출",
+            "df": staff_pivot,
+            "use_index": True,
+            "add_sum": False,
+            "cmap": None,
+            "cmap_map": {
+                tuple(_staff_month_cols): "Blues",
+                tuple(_staff_share_cols): "Purples",
+                tuple(_staff_total_cols): "Oranges",
+            },
+            "num_fmt": "#,##0.0",
+        },
+        {
+            "tab": "👤 담당자 & 상세내역",
+            "label": "상세 거래 내역",
+            "sheet": "T4_상세거래내역",
+            "df": df_detail,
+            "use_index": False,
+            "add_sum": False,
+            "cmap": None,
+            "num_fmt": "#,##0",
+        },
+        {
+            "tab": "📌 채권 관리",
+            "label": "채권 관리 현황",
+            "sheet": "T5_채권관리",
+            "df": filtered_debt_df,
+            "use_index": False,
+            "add_sum": False,
+            "cmap": None,
+            "num_fmt": "#,##0",
+        },
+    ]
+    _excel_tab_opts = []
+    for _it in _excel_catalog:
+        if _it["tab"] not in _excel_tab_opts:
+            _excel_tab_opts.append(_it["tab"])
+    if "dash_excel_tabs" not in st.session_state:
+        st.session_state["dash_excel_tabs"] = list(_excel_tab_opts)
+    else:
+        _kept_tabs = [t for t in st.session_state["dash_excel_tabs"] if t in _excel_tab_opts]
+        st.session_state["dash_excel_tabs"] = _kept_tabs or list(_excel_tab_opts)
+    _excel_tabs = st.sidebar.multiselect(
+        "탭 선택",
+        _excel_tab_opts,
+        key="dash_excel_tabs",
+        help="받을 탭만 고릅니다. 비우면 아래 라벨이 없습니다.",
+    )
+    _excel_label_opts = [it["label"] for it in _excel_catalog if it["tab"] in set(_excel_tabs)]
+    if "dash_excel_labels" not in st.session_state:
+        st.session_state["dash_excel_labels"] = list(_excel_label_opts)
+    else:
+        _kept_labs = [lab for lab in st.session_state["dash_excel_labels"] if lab in _excel_label_opts]
+        st.session_state["dash_excel_labels"] = _kept_labs or list(_excel_label_opts)
+    _excel_labels = st.sidebar.multiselect(
+        "라벨 선택",
+        _excel_label_opts,
+        key="dash_excel_labels",
+        help="탭 안에서 받을 표만 고릅니다.",
+    )
+    st.sidebar.caption("표의 숫자 양식·그라디언트는 대시보드와 같게 넣습니다. 차트·화면 배치는 엑셀 시트로 옮기지 않습니다.")
     _excel_sig = (
         selected_client,
         tuple(selected_staff or []),
@@ -15735,9 +16091,12 @@ def _dash_filter_and_tabs_fragment() -> None:
         int(len(df_base)),
         float(df_base["매출액"].sum()) if not df_base.empty else 0.0,
         int(len(filtered_debt_df)),
+        tuple(_excel_tabs),
+        tuple(_excel_labels),
     )
     if st.session_state.get("_dash_excel_sig") != _excel_sig:
         st.session_state.pop("_dash_excel_bytes", None)
+        st.session_state.pop("_dash_excel_name", None)
     _excel_ready = bool(
         st.session_state.get("_dash_excel_sig") == _excel_sig
         and st.session_state.get("_dash_excel_bytes")
@@ -15746,35 +16105,33 @@ def _dash_filter_and_tabs_fragment() -> None:
         "📊 엑셀 파일 준비",
         key="dash_excel_prepare",
         use_container_width=True,
-        help="현재 검색 조건으로 시트별 엑셀을 만듭니다.",
+        help="고른 탭·라벨의 표를 대시보드 색·양식 그대로 엑셀로 만듭니다.",
     ):
         with st.spinner("엑셀 생성 중…"):
-            _sheets_dict = {
-                "연도별_월매출(만원)": (pivot_m_total, True),
-                "거래처별_품목별사용량": (client_item_qty_pivot, True),
-                "선택거래처_품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
-                "선택거래처_품목별_출고량": (qty_p, True),
-                "선택거래처_품목별_적용단가": (unit_price_p, True),
-                "담당자별_매출(만원)": (staff_pivot, True),
-                "상세거래내역": (df_detail, False),
-            }
-            if not filtered_debt_df.empty:
-                _sheets_dict["채권관리_현황"] = (filtered_debt_df, False)
+            _picked = []
+            for it in _excel_catalog:
+                if it["tab"] not in set(_excel_tabs) or it["label"] not in set(_excel_labels):
+                    continue
+                _picked.append(dict(it))
             st.session_state["_dash_excel_sig"] = _excel_sig
-            st.session_state["_dash_excel_bytes"] = convert_dfs_to_excel(_sheets_dict)
+            st.session_state["_dash_excel_bytes"] = convert_dash_excel_sheets(_picked)
+            if len(_picked) == 1:
+                st.session_state["_dash_excel_name"] = f"{_picked[0]['sheet']}.xlsx"
+            else:
+                st.session_state["_dash_excel_name"] = "통합영업분석_선택시트.xlsx"
             _excel_ready = True
     if _excel_ready:
         st.sidebar.download_button(
-            label="⬇️ 전체 분석 시트별 엑셀 다운로드",
+            label="⬇️ 선택한 시트 엑셀 다운로드",
             data=st.session_state["_dash_excel_bytes"],
-            file_name="통합영업분석_시트별보고서.xlsx",
+            file_name=st.session_state.get("_dash_excel_name") or "통합영업분석_선택시트.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
     elif st.session_state.get("_dash_excel_sig") and st.session_state.get("_dash_excel_sig") != _excel_sig:
-        st.sidebar.caption("검색 조건이 바뀌었습니다. 「엑셀 파일 준비」를 다시 눌러 주세요.")
+        st.sidebar.caption("검색 조건이나 탭·라벨이 바뀌었습니다. 「엑셀 파일 준비」를 다시 눌러 주세요.")
     else:
-        st.sidebar.caption("엑셀은 「엑셀 파일 준비」 후 다운로드 (거래처 지정 시 자동 생성 안 함)")
+        st.sidebar.caption("탭과 라벨을 고른 뒤 「엑셀 파일 준비」를 누르면 다운로드가 생깁니다.")
     st.sidebar.subheader("📽️ PPT 내보내기")
     _ppt_sig = (
         selected_client,
