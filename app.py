@@ -1750,41 +1750,71 @@ def _dash_xlsx_from_styler(styler, sheet="표", hide_index=False) -> bytes:
 
 
 def _dash_xlsx_btn_css() -> None:
-    if st.session_state.get("_dash_xlsx_btn_css_v8"):
+    if st.session_state.get("_dash_xlsx_btn_css_v9"):
         return
-    st.session_state["_dash_xlsx_btn_css_v8"] = True
+    st.session_state["_dash_xlsx_btn_css_v9"] = True
     st.markdown(
         """
         <style>
         .dash-lbl-inline {
-          display: inline-flex !important;
+          display: flex !important;
           align-items: center !important;
+          height: 24px !important;
           width: auto !important;
           margin: 0 !important;
+          padding: 0 !important;
         }
         .dash-lbl-inline > .sub-header,
         .dash-lbl-inline > div {
           margin: 0 !important;
-          display: inline-block !important;
-          width: auto !important;
+          padding-top: 0 !important;
+          padding-bottom: 0 !important;
+          display: inline-flex !important;
+          align-items: center !important;
+          height: 24px !important;
           line-height: 24px !important;
+          width: auto !important;
+        }
+        div[class*="st-key-dash_lbl_"] {
+          margin: 0 0 10px 0 !important;
         }
         div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] {
           justify-content: flex-start !important;
           align-items: center !important;
           gap: 6px !important;
-          flex-wrap: wrap !important;
+          flex-wrap: nowrap !important;
+          min-height: 24px !important;
         }
         div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] > div {
           width: auto !important;
           flex: 0 0 auto !important;
+          display: flex !important;
+          align-items: center !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          min-height: 24px !important;
+          height: 24px !important;
         }
-        div[class*="st-key-dash_lbl_"] [data-testid="stMarkdown"] { width: fit-content !important; }
+        div[class*="st-key-dash_lbl_"] [data-testid="stMarkdown"],
+        div[class*="st-key-dash_lbl_"] [data-testid="stMarkdownContainer"],
+        div[class*="st-key-dash_lbl_"] [data-testid="stVerticalBlock"],
+        div[class*="st-key-dash_lbl_"] [data-testid="element-container"],
         div[class*="st-key-dash_lbl_"] [data-testid="stDownloadButton"],
         div[class*="st-key-dash_xlsx_"] [data-testid="stDownloadButton"],
         div[class*="st-key-dash_png_"] [data-testid="stDownloadButton"] {
+          width: fit-content !important;
+          margin: 0 !important;
+          padding: 0 !important;
           min-height: 0 !important;
-          height: auto !important;
+          height: 24px !important;
+          display: flex !important;
+          align-items: center !important;
+        }
+        div[class*="st-key-dash_lbl_"] [data-testid="stMarkdown"] p {
+          margin: 0 !important;
+          padding: 0 !important;
+          line-height: 24px !important;
+          font-size: inherit !important;
         }
         div[class*="st-key-dash_lbl_"] button,
         div[class*="st-key-dash_xlsx_"] button,
@@ -1809,6 +1839,7 @@ def _dash_xlsx_btn_css() -> None:
           font-weight: 700 !important;
           line-height: 22px !important;
           box-shadow: none !important;
+          margin: 0 !important;
         }
         div[class*="st-key-dash_lbl_"] button p,
         div[class*="st-key-dash_xlsx_"] button p,
