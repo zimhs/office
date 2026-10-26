@@ -52,8 +52,10 @@ class DashExcelExportSourceTest(unittest.TestCase):
 
     def test_graph_download_helper_uses_png_or_html(self):
         src = self._src()
-        self.assertIn('fig.to_image(format="png"', src)
-        self.assertIn("dash_png_go_", src)
+        self.assertIn("fig.to_html(include_plotlyjs", src)
+        self.assertIn('key=f"dash_png_{key}"', src)
+        self.assertNotIn("dash_png_go_", src)
+        self.assertIn('key=f"dash_lbl_{key}"', src)
 
 
 class DashExcelConvertTest(unittest.TestCase):

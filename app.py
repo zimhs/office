@@ -1756,13 +1756,31 @@ def _dash_xlsx_btn_css() -> None:
     st.markdown(
         """
         <style>
+        div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] {
+          justify-content: flex-start !important;
+          align-items: center !important;
+          gap: 8px !important;
+          flex-wrap: wrap !important;
+        }
+        div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] > div {
+          width: auto !important;
+          flex: 0 0 auto !important;
+          min-width: 0 !important;
+        }
+        div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] > div:first-child {
+          flex: 0 1 auto !important;
+        }
+        div[class*="st-key-dash_lbl_"] .sub-header {
+          margin-bottom: 0 !important;
+          display: inline-block;
+        }
         div[class*="st-key-dash_xlsx_"] button,
-        div[class*="st-key-dash_png_"] button,
-        div[class*="st-key-dash_png_go_"] button {
+        div[class*="st-key-dash_png_"] button {
           min-height: 26px !important; height: 26px !important;
-          padding: 0 8px !important; border-radius: 7px !important;
+          padding: 0 10px !important; border-radius: 7px !important;
           font-size: 11px !important; font-weight: 700 !important;
           letter-spacing: -0.2px !important;
+          width: auto !important;
         }
         </style>
         """,
@@ -1771,20 +1789,22 @@ def _dash_xlsx_btn_css() -> None:
 
 
 def _dash_png_from_fig(fig) -> tuple[bytes, str, str] | None:
-    """그래프 PNG. kaleido 없으면 HTML."""
+    """그래프 파일. kaleido PNG, 없으면 HTML. 버튼 한 번에 받게 렌더 시 만든다."""
     if fig is None:
         return None
+    try:
+        html_doc = fig.to_html(include_plotlyjs="cdn", full_html=True)
+        if html_doc:
+            return html_doc.encode("utf-8"), "html", "text/html"
+    except Exception:
+        pass
     try:
         raw = fig.to_image(format="png", scale=2, width=1200, height=700)
         if raw:
             return raw, "png", "image/png"
     except Exception:
-        pass
-    try:
-        html_doc = fig.to_html(include_plotlyjs="cdn", full_html=True)
-        return html_doc.encode("utf-8"), "html", "text/html"
-    except Exception:
         return None
+    return None
 
 
 def _dash_xlsx_from_df(df, sheet="표", hide_index=True) -> bytes:
@@ -1823,51 +1843,46 @@ def _dash_label_with_xlsx(
     except Exception:
         xbytes = None
         has_table = False
-    has_fig = fig is not None
-    n_btn = int(bool(xbytes)) + int(has_fig)
+    packed = _dash_png_from_fig(fig) if fig is not None else None
+    n_btn = int(bool(xbytes)) + int(bool(packed))
     if n_btn <= 0:
         if title_html:
             st.markdown(title_html, unsafe_allow_html=True)
         return
-    if n_btn == 1:
-        left, b1 = st.columns([9.15, 0.85], gap="small", vertical_alignment="center")
-        b2 = None
-    else:
-        left, b1, b2 = st.columns([8.3, 0.85, 0.85], gap="small", vertical_alignment="center")
-    with left:
+    slots = ([] if not title_html else ["title"]) + (["xlsx"] if xbytes else []) + (["fig"] if packed else [])
+    with st.container(key=f"dash_lbl_{key}"):
+        cols = st.columns(len(slots), gap="small", vertical_alignment="center")
+        i = 0
         if title_html:
-            st.markdown(title_html, unsafe_allow_html=True)
-    slot = b1
-    if xbytes:
-        with slot:
-            st.download_button(
-                "엑셀",
-                data=xbytes,
-                file_name=file_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"dash_xlsx_{key}",
-                help="화면에 보이는 표와 그라디언트 그대로 받습니다.",
-            )
-        slot = b2
-    if has_fig and slot is not None:
-        with slot:
-            go = st.button("그래프", key=f"dash_png_go_{key}", help="이 그래프를 PNG로 받습니다.")
-            if go:
-                packed = _dash_png_from_fig(fig)
-                st.session_state[f"_dash_png_{key}"] = packed
-            packed = st.session_state.get(f"_dash_png_{key}")
-            if packed:
-                raw, ext, mime = packed
-                gname = graph_name or (str(file_name).rsplit(".", 1)[0] + f".{ext}")
-                if not str(gname).lower().endswith(f".{ext}"):
-                    gname = str(gname).rsplit(".", 1)[0] + f".{ext}"
+            with cols[i]:
+                st.markdown(title_html, unsafe_allow_html=True)
+            i += 1
+        if xbytes:
+            with cols[i]:
                 st.download_button(
-                    "⬇",
+                    "엑셀",
+                    data=xbytes,
+                    file_name=file_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dash_xlsx_{key}",
+                    help="화면에 보이는 표와 그라디언트 그대로 받습니다.",
+                    width="content",
+                )
+            i += 1
+        if packed:
+            raw, ext, mime = packed
+            gname = graph_name or (str(file_name).rsplit(".", 1)[0] + f".{ext}")
+            if not str(gname).lower().endswith(f".{ext}"):
+                gname = str(gname).rsplit(".", 1)[0] + f".{ext}"
+            with cols[i]:
+                st.download_button(
+                    "그래프",
                     data=raw,
                     file_name=gname,
                     mime=mime,
                     key=f"dash_png_{key}",
-                    help="그래프 파일을 저장합니다.",
+                    help="이 그래프를 바로 받습니다.",
+                    width="content",
                 )
 
 
