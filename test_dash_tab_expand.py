@@ -157,7 +157,8 @@ class CloudClipFixIsolationTest(unittest.TestCase):
     def test_cloud_command_opens_one_tab(self):
         with open("dashboard_Cloud.command", encoding="utf-8") as f:
             src = f.read()
-        self.assertNotIn('open -a "Google Chrome" "$CLOUD"', src)
+        self.assertNotIn("Chrome 탭 열기 실패", src)
+        self.assertNotIn("display alert", src.split("_chrome_ensure_cloud_tab", 1)[-1])
         self.assertIn('open -a "Google Chrome"', src)
         self.assertIn("make new tab at end of tabs of keepWin", src)
         self.assertIn('if seenCloud then', src)
