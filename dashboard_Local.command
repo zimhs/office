@@ -23,7 +23,41 @@ _up() { curl -sf -m 2 "http://127.0.0.1:$1/_stcore/health" >/dev/null 2>&1; }
 
 # Chrome AppleScript가 멈추면 바로가기가 영구 대기하는 것을 막는다
 _osa() {
-  python3 -c 'import subprocess,sys; subprocess.run(["osascript"], input=sys.stdin.read(), text=True, timeout=8)' 2>/dev/null || true
+  python3 -c '
+import subprocess, sys
+p = subprocess.Popen(
+    ["osascript"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    text=True,
+)
+try:
+    p.communicate(sys.stdin.read(), timeout=8)
+except subprocess.TimeoutExpired:
+    p.kill()
+    try:
+        p.communicate(timeout=2)
+    except Exception:
+        pass
+' 2>/dev/null || true
+}
+
+# 로컬 바로가기만 눌렀을 때 Terminal Resume이 Cloud.command 창을 다시 띄우지 않게 한다
+_close_cloud_terminal() {
+  pkill -f "/Desktop/dashboard/dashboard_Cloud.command" 2>/dev/null || true
+  _osa <<'APPLESCRIPT'
+tell application "Terminal"
+  repeat with w in (get windows)
+    try
+      set n to name of w as text
+      if n contains "dashboard_Cloud" then
+        close w saving no
+      end if
+    end try
+  end repeat
+end tell
+APPLESCRIPT
 }
 
 _mtime() {
@@ -97,7 +131,7 @@ tell application "Google Chrome"
   activate
 end tell
 APPLESCRIPT
-  open "$URL1" >/dev/null 2>&1 || true
+  open -a "Google Chrome" "$URL1" >/dev/null 2>&1 || true
 }
 
 # 재시작 전에 8501 탭을 빈 페이지로 — Chrome이 죽은 서버에 커넥트 에러를 띄우지 않게
@@ -149,8 +183,25 @@ tell application "Google Chrome"
   activate
 end tell
 APPLESCRIPT
-  open "$URL1" >/dev/null 2>&1 || true
+  open -a "Google Chrome" "$URL1" >/dev/null 2>&1 || true
 }
+
+# Finder .command는 Terminal 창을 남긴다. 백그라운드로 넘긴 뒤 로컬·Cloud 창을 닫는다.
+if [ -z "${DASH_LOCAL_BG:-}" ] && [ "${TERM_PROGRAM:-}" = "Apple_Terminal" ]; then
+  export DASH_LOCAL_BG=1
+  /bin/bash "$0" >/dev/null 2>&1 &
+  _close_cloud_terminal
+  _osa <<'APPLESCRIPT'
+tell application "Terminal"
+  try
+    close front window saving no
+  end try
+end tell
+APPLESCRIPT
+  exit 0
+fi
+
+_close_cloud_terminal
 
 if ! mkdir "$LAUNCH_LOCK" 2>/dev/null; then
   if _up 8501; then
@@ -165,7 +216,7 @@ if ! mkdir "$LAUNCH_LOCK" 2>/dev/null; then
     rmdir "$LAUNCH_LOCK" 2>/dev/null || rm -rf "$LAUNCH_LOCK"
     mkdir "$LAUNCH_LOCK" 2>/dev/null || true
   else
-    open "$URL1" >/dev/null 2>&1 || true
+    open -a "Google Chrome" "$URL1" >/dev/null 2>&1 || true
     exit 0
   fi
 fi
@@ -228,4 +279,5 @@ _run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패"'; exi
 _chrome_load_dashboard
 touch "$STAMP"
 _save_code_stamp
+_close_cloud_terminal
 osascript -e 'display notification "Chrome · 8501 통합 대시보드 (업무일지·공문 포함)" with title "영업 대시보드"'
