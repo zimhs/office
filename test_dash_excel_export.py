@@ -26,7 +26,7 @@ class DashExcelExportSourceTest(unittest.TestCase):
         self.assertIn("def _dash_xlsx_from_styler", src)
         self.assertIn("def _dash_png_from_fig", src)
         self.assertIn("dash-lbl-inline", src)
-        self.assertIn("dash-lbl-dl", src)
+        self.assertIn('key=f"dash_xlsx_{key}"', src)
         self.assertIn("_dash_label_with_xlsx(", src)
         self.assertIn("xlsx_name", src)
         for key in (
@@ -54,9 +54,8 @@ class DashExcelExportSourceTest(unittest.TestCase):
     def test_graph_download_helper_uses_png(self):
         src = self._src()
         self.assertIn('fig.to_image(format="png"', src)
-        self.assertIn("dash_png", src)
-        self.assertIn("dash-lbl-dl", src)
-        self.assertNotIn('key=f"dash_png_go_{key}"', src)
+        self.assertIn('key=f"dash_png_{key}"', src)
+        self.assertIn('"image/png"', src)
 
 
 class DashExcelConvertTest(unittest.TestCase):

@@ -1750,37 +1750,44 @@ def _dash_xlsx_from_styler(styler, sheet="표", hide_index=False) -> bytes:
 
 
 def _dash_xlsx_btn_css() -> None:
-    if st.session_state.get("_dash_xlsx_btn_css_v6"):
+    if st.session_state.get("_dash_xlsx_btn_css_v7"):
         return
-    st.session_state["_dash_xlsx_btn_css_v6"] = True
+    st.session_state["_dash_xlsx_btn_css_v7"] = True
     st.markdown(
         """
         <style>
         .dash-lbl-inline {
           display: inline-flex !important;
-          flex-direction: row !important;
-          flex-wrap: wrap !important;
           align-items: center !important;
-          justify-content: flex-start !important;
-          gap: 8px !important;
           width: auto !important;
-          max-width: 100%;
-          margin: 0 0 10px 0 !important;
+          margin: 0 !important;
         }
         .dash-lbl-inline > .sub-header,
         .dash-lbl-inline > div {
           margin: 0 !important;
           display: inline-block !important;
           width: auto !important;
-          max-width: 100%;
         }
-        a.dash-lbl-dl {
-          display: inline-flex !important;
+        div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] {
+          justify-content: flex-start !important;
           align-items: center !important;
-          justify-content: center !important;
+          gap: 8px !important;
+          flex-wrap: wrap !important;
+        }
+        div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] > div {
+          width: auto !important;
+          flex: 0 0 auto !important;
+        }
+        div[class*="st-key-dash_lbl_"] [data-testid="stMarkdown"] { width: fit-content !important; }
+        div[class*="st-key-dash_xlsx_"] button,
+        div[class*="st-key-dash_png_"] button,
+        div[class*="st-key-dash_xlsx_"] [data-testid="stBaseButton-secondary"],
+        div[class*="st-key-dash_png_"] [data-testid="stBaseButton-secondary"] {
           box-sizing: border-box !important;
-          height: 26px !important;
           min-height: 26px !important;
+          height: 26px !important;
+          max-height: 26px !important;
+          min-width: 0 !important;
           padding: 0 10px !important;
           border-radius: 7px !important;
           border: 1px solid #CBD5E1 !important;
@@ -1788,45 +1795,18 @@ def _dash_xlsx_btn_css() -> None:
           color: #334155 !important;
           font-size: 11px !important;
           font-weight: 700 !important;
-          letter-spacing: -0.2px !important;
-          text-decoration: none !important;
-          white-space: nowrap !important;
-          line-height: 24px !important;
-          flex: 0 0 auto !important;
+          box-shadow: none !important;
         }
-        a.dash-lbl-dl:hover { background: #EEF2FF !important; border-color: #93C5FD !important; color: #1D4ED8 !important; }
+        div[class*="st-key-dash_xlsx_"] button p,
+        div[class*="st-key-dash_png_"] button p {
+          font-size: 11px !important;
+          font-weight: 700 !important;
+          line-height: 24px !important;
+          margin: 0 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
-    )
-
-
-def _dash_png_href(key: str) -> str:
-    items = []
-    try:
-        for name, val in st.query_params.items():
-            if name == "dash_png":
-                continue
-            if isinstance(val, (list, tuple)):
-                for one in val:
-                    items.append((name, str(one)))
-            elif val is not None:
-                items.append((name, str(val)))
-    except Exception:
-        pass
-    items.append(("dash_png", str(key)))
-    return "?" + urllib.parse.urlencode(items)
-
-
-def _dash_dl_chip(label: str, data: bytes, file_name: str, mime: str) -> str:
-    import base64
-
-    b64 = base64.b64encode(data).decode("ascii")
-    href = f"data:{mime};base64,{b64}"
-    safe_name = html.escape(str(file_name), quote=True)
-    return (
-        f'<a class="dash-lbl-dl" download="{safe_name}" href="{href}">'
-        f"{html.escape(label)}</a>"
     )
 
 
@@ -1885,55 +1865,52 @@ def _dash_label_with_xlsx(
     except Exception:
         xbytes = None
         has_table = False
-    chips = []
-    if xbytes:
-        chips.append(
-            _dash_dl_chip(
-                "엑셀",
-                xbytes,
-                file_name,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-        )
     has_fig = fig is not None
-    if not chips and not has_fig:
+    if not xbytes and not has_fig:
         if title_html:
             st.markdown(title_html, unsafe_allow_html=True)
         return
     gname = graph_name or (str(file_name).rsplit(".", 1)[0] + ".png")
     if not str(gname).lower().endswith(".png"):
         gname = str(gname).rsplit(".", 1)[0] + ".png"
-    go_key = None
-    try:
-        go_key = st.query_params.get("dash_png")
-        if isinstance(go_key, list):
-            go_key = go_key[0] if go_key else None
-    except Exception:
-        go_key = None
-    if has_fig and go_key == key:
-        with st.spinner("PNG 만드는 중..."):
-            packed = _dash_png_from_fig(fig)
-        st.session_state[f"_dash_png_{key}"] = packed
-        try:
-            del st.query_params["dash_png"]
-        except Exception:
-            pass
-        if packed and packed[0]:
-            st.rerun()
-        else:
-            st.caption("PNG로 만들지 못했습니다.")
+    packed = None
     if has_fig:
-        href = html.escape(_dash_png_href(key), quote=True)
-        chips.append(f'<a class="dash-lbl-dl" href="{href}" title="이 그래프를 PNG로 만듭니다.">그래프</a>')
         packed = st.session_state.get(f"_dash_png_{key}")
+        if not packed:
+            packed = _dash_png_from_fig(fig)
+            st.session_state[f"_dash_png_{key}"] = packed
+    label_html = f'<div class="dash-lbl-inline">{title_html or ""}</div>'
+    with st.container(
+        horizontal=True,
+        gap="small",
+        vertical_alignment="center",
+        key=f"dash_lbl_{key}",
+    ):
+        if title_html:
+            st.markdown(label_html, unsafe_allow_html=True)
+        if xbytes:
+            st.download_button(
+                "엑셀",
+                data=xbytes,
+                file_name=file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dash_xlsx_{key}",
+                help="화면에 보이는 표와 그라디언트 그대로 받습니다.",
+                width="content",
+            )
         if packed and packed[0]:
             raw, ext, mime = packed
-            dl_name = gname if ext == "png" else gname.rsplit(".", 1)[0] + f".{ext}"
-            chips.append(_dash_dl_chip("⬇", raw, dl_name, mime))
-    st.markdown(
-        f'<div class="dash-lbl-inline">{title_html or ""}{"".join(chips)}</div>',
-        unsafe_allow_html=True,
-    )
+            st.download_button(
+                "그래프",
+                data=raw,
+                file_name=gname if ext == "png" else gname.rsplit(".", 1)[0] + f".{ext}",
+                mime="image/png" if ext == "png" else mime,
+                key=f"dash_png_{key}",
+                help="그래프 PNG 파일을 저장합니다.",
+                width="content",
+            )
+        elif has_fig:
+            st.caption("PNG로 만들지 못했습니다.")
 
 
 def _ppt_format_value(val):
