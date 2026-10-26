@@ -1750,21 +1750,22 @@ def _dash_xlsx_from_styler(styler, sheet="표", hide_index=False) -> bytes:
 
 
 def _dash_xlsx_btn_css() -> None:
-    if st.session_state.get("_dash_xlsx_btn_css_v3"):
+    if st.session_state.get("_dash_xlsx_btn_css_v4"):
         return
-    st.session_state["_dash_xlsx_btn_css_v3"] = True
+    st.session_state["_dash_xlsx_btn_css_v4"] = True
     st.markdown(
         """
         <style>
         .dash-lbl-inline {
-          display: flex !important;
+          display: inline-flex !important;
           flex-direction: row !important;
           flex-wrap: wrap !important;
           align-items: center !important;
           justify-content: flex-start !important;
           gap: 8px !important;
-          width: 100%;
-          margin: 0 0 10px 0 !important;
+          width: auto !important;
+          max-width: 100%;
+          margin: 0 !important;
         }
         .dash-lbl-inline > .sub-header,
         .dash-lbl-inline > div {
@@ -1792,6 +1793,26 @@ def _dash_xlsx_btn_css() -> None:
           flex: 0 0 auto !important;
         }
         a.dash-lbl-dl:hover { background: #EEF2FF !important; border-color: #93C5FD !important; color: #1D4ED8 !important; }
+        div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] {
+          justify-content: flex-start !important;
+          align-items: center !important;
+          gap: 8px !important;
+          flex-wrap: wrap !important;
+        }
+        div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] > div {
+          width: auto !important;
+          flex: 0 0 auto !important;
+        }
+        div[class*="st-key-dash_lbl_"] [data-testid="stMarkdown"] {
+          width: fit-content !important;
+        }
+        div[class*="st-key-dash_png_"] button,
+        div[class*="st-key-dash_png_go_"] button {
+          min-height: 26px !important; height: 26px !important;
+          padding: 0 10px !important; border-radius: 7px !important;
+          font-size: 11px !important; font-weight: 700 !important;
+          width: auto !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1811,17 +1832,17 @@ def _dash_dl_chip(label: str, data: bytes, file_name: str, mime: str) -> str:
 
 
 def _dash_png_from_fig(fig) -> tuple[bytes, str, str] | None:
-    """그래프 파일. kaleido PNG, 없으면 HTML. 버튼 한 번에 받게 렌더 시 만든다."""
+    """그래프 PNG (kaleido). 클릭 시에만 호출한다."""
     if fig is None:
         return None
     try:
-        html_doc = fig.to_html(include_plotlyjs="cdn", full_html=True)
-        if html_doc:
-            return html_doc.encode("utf-8"), "html", "text/html"
+        raw = fig.to_image(format="png", scale=2, width=1200, height=700)
+        if raw:
+            return raw, "png", "image/png"
     except Exception:
         pass
     try:
-        raw = fig.to_image(format="png", scale=2, width=1200, height=700)
+        raw = fig.to_image(format="png", engine="kaleido")
         if raw:
             return raw, "png", "image/png"
     except Exception:
@@ -1865,7 +1886,6 @@ def _dash_label_with_xlsx(
     except Exception:
         xbytes = None
         has_table = False
-    packed = _dash_png_from_fig(fig) if fig is not None else None
     chips = []
     if xbytes:
         chips.append(
@@ -1876,20 +1896,48 @@ def _dash_label_with_xlsx(
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         )
-    if packed:
-        raw, ext, mime = packed
-        gname = graph_name or (str(file_name).rsplit(".", 1)[0] + f".{ext}")
-        if not str(gname).lower().endswith(f".{ext}"):
-            gname = str(gname).rsplit(".", 1)[0] + f".{ext}"
-        chips.append(_dash_dl_chip("그래프", raw, gname, mime))
-    if not chips:
+    has_fig = fig is not None
+    if not chips and not has_fig:
         if title_html:
             st.markdown(title_html, unsafe_allow_html=True)
         return
-    st.markdown(
-        f'<div class="dash-lbl-inline">{title_html or ""}{"".join(chips)}</div>',
-        unsafe_allow_html=True,
-    )
+    gname = graph_name or (str(file_name).rsplit(".", 1)[0] + ".png")
+    if not str(gname).lower().endswith(".png"):
+        gname = str(gname).rsplit(".", 1)[0] + ".png"
+    label_html = f'<div class="dash-lbl-inline">{title_html or ""}{"".join(chips)}</div>'
+    if not has_fig:
+        st.markdown(label_html, unsafe_allow_html=True)
+        return
+    with st.container(
+        horizontal=True,
+        gap="small",
+        vertical_alignment="center",
+        key=f"dash_lbl_{key}",
+    ):
+        st.markdown(label_html, unsafe_allow_html=True)
+        go = st.button(
+            "그래프",
+            key=f"dash_png_go_{key}",
+            help="이 그래프를 PNG로 만듭니다.",
+            width="content",
+        )
+        if go:
+            packed = _dash_png_from_fig(fig)
+            st.session_state[f"_dash_png_{key}"] = packed
+        packed = st.session_state.get(f"_dash_png_{key}")
+        if packed and packed[0]:
+            raw, ext, mime = packed
+            st.download_button(
+                "⬇",
+                data=raw,
+                file_name=gname if ext == "png" else gname.rsplit(".", 1)[0] + f".{ext}",
+                mime=mime,
+                key=f"dash_png_{key}",
+                help="PNG 파일을 저장합니다.",
+                width="content",
+            )
+        elif go:
+            st.caption("PNG로 만들지 못했습니다.")
 
 
 def _ppt_format_value(val):

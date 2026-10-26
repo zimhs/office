@@ -51,11 +51,11 @@ class DashExcelExportSourceTest(unittest.TestCase):
         ):
             self.assertIn(key, src)
 
-    def test_graph_download_helper_uses_png_or_html(self):
+    def test_graph_download_helper_uses_png(self):
         src = self._src()
-        self.assertIn("fig.to_html(include_plotlyjs", src)
-        self.assertIn("def _dash_dl_chip", src)
-        self.assertNotIn("dash_png_go_", src)
+        self.assertIn('fig.to_image(format="png"', src)
+        self.assertIn("dash_png_go_", src)
+        self.assertIn('key=f"dash_png_{key}"', src)
 
 
 class DashExcelConvertTest(unittest.TestCase):
@@ -106,3 +106,14 @@ class DashExcelConvertTest(unittest.TestCase):
         ws = wb["T1_연도별월매출"]
         self.assertEqual(ws.cell(4, 1).value, "연간 합계")
         self.assertEqual(ws.cell(4, 2).value, 210)
+
+    def test_png_from_fig_is_png(self):
+        import plotly.graph_objects as go
+
+        fig = go.Figure(go.Bar(x=["a", "b"], y=[1, 2]))
+        packed = self.app._dash_png_from_fig(fig)
+        self.assertIsNotNone(packed)
+        raw, ext, mime = packed
+        self.assertEqual(ext, "png")
+        self.assertEqual(mime, "image/png")
+        self.assertTrue(raw.startswith(b"\x89PNG"))
