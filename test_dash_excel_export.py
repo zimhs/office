@@ -28,7 +28,9 @@ class DashExcelExportSourceTest(unittest.TestCase):
         self.assertIn("dash-lbl-inline", src)
         self.assertIn('key=f"dash_xlsx_{key}"', src)
         self.assertIn('key=f"dash_xlsx_go_{key}"', src)
-        self.assertIn("_dash_label_with_xlsx(", src)
+        self.assertIn("@st.fragment", src)
+        self.assertIn("def _dash_label_with_xlsx(", src)
+        self.assertIn("def _dash_build_xlsx_bytes", src)
         self.assertIn("xlsx_name", src)
         for key in (
             'key="t1_kpi"',

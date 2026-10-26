@@ -1708,45 +1708,55 @@ def _dash_xlsx_from_styler(styler, sheet="표", hide_index=False) -> bytes:
 
     if styler is None:
         return convert_dash_excel_sheets([])
+    data = getattr(styler, "data", None)
     sheet = _dash_excel_safe_sheet(sheet, set())
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        styler.to_excel(writer, sheet_name=sheet, index=not hide_index)
-    buf.seek(0)
-    from openpyxl import load_workbook
+    try:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            styler.to_excel(writer, sheet_name=sheet, index=not hide_index)
+        raw = buf.getvalue()
+        shp = getattr(data, "shape", None) or (0, 0)
+        # 큰 표는 두 번째 워크북 패스를 생략해 클릭 응답을 지킨다.
+        if int(shp[0] or 0) * int(shp[1] or 0) > 2500:
+            return raw
+        from openpyxl import load_workbook
 
-    wb = load_workbook(buf)
-    ws = wb[sheet]
-    header_fill = PatternFill("solid", fgColor="1E3A8A")
-    header_font = Font(name="Malgun Gothic", bold=True, color="FFFFFF", size=10)
-    thin = Border(
-        left=Side(style="thin", color="E2E8F0"),
-        right=Side(style="thin", color="E2E8F0"),
-        top=Side(style="thin", color="E2E8F0"),
-        bottom=Side(style="thin", color="E2E8F0"),
-    )
-    max_r, max_c = ws.max_row or 1, ws.max_column or 1
-    for c in range(1, max_c + 1):
-        cell = ws.cell(1, c)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border = thin
-        letter = get_column_letter(c)
-        maxlen = len(str(cell.value or ""))
-        for r in range(2, min(max_r, 50) + 1):
-            body = ws.cell(r, c)
-            body.border = thin
-            v = body.value
-            if v is not None:
-                maxlen = max(maxlen, min(len(str(v)), 24))
-        ws.column_dimensions[letter].width = min(max(maxlen + 3, 9), 22)
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(max_c)}{max_r}"
-    ws.sheet_view.showGridLines = False
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
+        wb = load_workbook(io.BytesIO(raw))
+        ws = wb[sheet]
+        header_fill = PatternFill("solid", fgColor="1E3A8A")
+        header_font = Font(name="Malgun Gothic", bold=True, color="FFFFFF", size=10)
+        thin = Border(
+            left=Side(style="thin", color="E2E8F0"),
+            right=Side(style="thin", color="E2E8F0"),
+            top=Side(style="thin", color="E2E8F0"),
+            bottom=Side(style="thin", color="E2E8F0"),
+        )
+        max_r, max_c = ws.max_row or 1, ws.max_column or 1
+        for c in range(1, max_c + 1):
+            cell = ws.cell(1, c)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = thin
+            letter = get_column_letter(c)
+            maxlen = len(str(cell.value or ""))
+            for r in range(2, min(max_r, 50) + 1):
+                body = ws.cell(r, c)
+                body.border = thin
+                v = body.value
+                if v is not None:
+                    maxlen = max(maxlen, min(len(str(v)), 24))
+            ws.column_dimensions[letter].width = min(max(maxlen + 3, 9), 22)
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:{get_column_letter(max_c)}{max_r}"
+        ws.sheet_view.showGridLines = False
+        out = io.BytesIO()
+        wb.save(out)
+        return out.getvalue()
+    except Exception:
+        if data is not None and not getattr(data, "empty", True):
+            return _dash_xlsx_from_df(data, sheet=sheet, hide_index=hide_index)
+        return convert_dash_excel_sheets([])
 
 
 _DASH_LBL_CSS_EMITTED = False
@@ -1908,6 +1918,7 @@ def _dash_build_xlsx_bytes(styler=None, df=None, *, sheet: str = "표", hide_ind
     return None
 
 
+@st.fragment
 def _dash_label_with_xlsx(
     title_html: str,
     *,
@@ -1920,7 +1931,10 @@ def _dash_label_with_xlsx(
     graph_name: str | None = None,
     df=None,
 ) -> None:
-    """라벨 제목 옆에 작은 엑셀·그래프 버튼. 파일은 버튼 클릭 시에만 만든다."""
+    """라벨 제목 옆에 작은 엑셀·그래프 버튼.
+
+    파일은 클릭 시에만 만들고, fragment라서 앱 전체를 다시 돌리지 않는다.
+    """
     _dash_xlsx_btn_css()
     has_table = False
     if styler is not None:

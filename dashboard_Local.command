@@ -19,13 +19,12 @@ URL1="http://127.0.0.1:8501"
 STAMP="${HOME}/.dashboard_browser_opened"
 LAUNCH_LOCK="${HOME}/.dashboard_local_launching"
 
-if ! mkdir "$LAUNCH_LOCK" 2>/dev/null; then
-  osascript -e 'display notification "이미 실행 중" with title "영업 대시보드"'
-  exit 0
-fi
-trap 'rmdir "$LAUNCH_LOCK" 2>/dev/null' EXIT
+_up() { curl -sf -m 2 "http://127.0.0.1:$1/_stcore/health" >/dev/null 2>&1; }
 
-_up() { curl -sf "http://127.0.0.1:$1/_stcore/health" >/dev/null 2>&1; }
+# Chrome AppleScript가 멈추면 바로가기가 영구 대기하는 것을 막는다
+_osa() {
+  python3 -c 'import subprocess,sys; subprocess.run(["osascript"], input=sys.stdin.read(), text=True, timeout=8)' 2>/dev/null || true
+}
 
 _mtime() {
   local f="$1"
@@ -68,7 +67,7 @@ _code_changed_since_start() {
 
 # 이미 떠 있는 8501 탭만 앞으로 — URL은 건드리지 않음
 _chrome_ensure_tab() {
-  osascript <<'APPLESCRIPT' 2>/dev/null
+  _osa <<'APPLESCRIPT'
 tell application "Google Chrome"
   set u1 to "http://127.0.0.1:8501"
   set win1 to missing value
@@ -98,15 +97,12 @@ tell application "Google Chrome"
   activate
 end tell
 APPLESCRIPT
-  if [ $? -ne 0 ]; then
-    osascript -e 'display alert "Chrome 탭 열기 실패" message "Chrome이 실행 중인지, Automation 권한이 허용됐는지 확인하세요."'
-    return 1
-  fi
+  open "$URL1" >/dev/null 2>&1 || true
 }
 
 # 재시작 전에 8501 탭을 빈 페이지로 — Chrome이 죽은 서버에 커넥트 에러를 띄우지 않게
 _chrome_park_dashboard_tabs() {
-  osascript <<'APPLESCRIPT' 2>/dev/null || true
+  _osa <<'APPLESCRIPT'
 tell application "Google Chrome"
   repeat with w in windows
     repeat with t in tabs of w
@@ -122,7 +118,7 @@ APPLESCRIPT
 
 # 서버가 살아난 뒤에만 8501로 복구 (주차 탭 포함)
 _chrome_load_dashboard() {
-  osascript <<'APPLESCRIPT' 2>/dev/null
+  _osa <<'APPLESCRIPT'
 tell application "Google Chrome"
   set u1 to "http://127.0.0.1:8501"
   set win1 to missing value
@@ -153,11 +149,27 @@ tell application "Google Chrome"
   activate
 end tell
 APPLESCRIPT
-  if [ $? -ne 0 ]; then
-    osascript -e 'display alert "Chrome 탭 열기 실패" message "Chrome이 실행 중인지, Automation 권한이 허용됐는지 확인하세요."'
-    return 1
-  fi
+  open "$URL1" >/dev/null 2>&1 || true
 }
+
+if ! mkdir "$LAUNCH_LOCK" 2>/dev/null; then
+  if _up 8501; then
+    _chrome_ensure_tab
+    osascript -e 'display notification "8501 대시보드로 이동" with title "영업 대시보드"' >/dev/null 2>&1 || true
+    exit 0
+  fi
+  # 죽은 락(90초 초과)만 지운다. 살아 있으면 서버 기동 중으로 보고 탭만 연다.
+  lock_age=0
+  lock_age=$(python3 -c 'import os,time,sys; p=sys.argv[1]; print(int(time.time()-os.stat(p).st_mtime) if os.path.exists(p) else 9999)' "$LAUNCH_LOCK" 2>/dev/null || echo 9999)
+  if [ "${lock_age:-0}" -ge 90 ]; then
+    rmdir "$LAUNCH_LOCK" 2>/dev/null || rm -rf "$LAUNCH_LOCK"
+    mkdir "$LAUNCH_LOCK" 2>/dev/null || true
+  else
+    open "$URL1" >/dev/null 2>&1 || true
+    exit 0
+  fi
+fi
+trap 'rmdir "$LAUNCH_LOCK" 2>/dev/null' EXIT
 
 # 서버가 이미 떠 있으면 재시작 없음 — 단, 코드 변경·Update 강제 재시작은 예외
 if _up 8501; then
