@@ -54,8 +54,9 @@ class DashExcelExportSourceTest(unittest.TestCase):
     def test_graph_download_helper_uses_png(self):
         src = self._src()
         self.assertIn('fig.to_image(format="png"', src)
-        self.assertIn("dash_png_go_", src)
+        self.assertIn("dash_png", src)
         self.assertIn("dash-lbl-dl", src)
+        self.assertNotIn('key=f"dash_png_go_{key}"', src)
 
 
 class DashExcelConvertTest(unittest.TestCase):
