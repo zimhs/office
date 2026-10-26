@@ -1750,41 +1750,63 @@ def _dash_xlsx_from_styler(styler, sheet="표", hide_index=False) -> bytes:
 
 
 def _dash_xlsx_btn_css() -> None:
-    if st.session_state.get("_dash_xlsx_btn_css"):
+    if st.session_state.get("_dash_xlsx_btn_css_v3"):
         return
-    st.session_state["_dash_xlsx_btn_css"] = True
+    st.session_state["_dash_xlsx_btn_css_v3"] = True
     st.markdown(
         """
         <style>
-        div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] {
-          justify-content: flex-start !important;
-          align-items: center !important;
-          gap: 8px !important;
+        .dash-lbl-inline {
+          display: flex !important;
+          flex-direction: row !important;
           flex-wrap: wrap !important;
+          align-items: center !important;
+          justify-content: flex-start !important;
+          gap: 8px !important;
+          width: 100%;
+          margin: 0 0 10px 0 !important;
         }
-        div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] > div {
+        .dash-lbl-inline > .sub-header,
+        .dash-lbl-inline > div {
+          margin: 0 !important;
+          display: inline-block !important;
           width: auto !important;
-          flex: 0 0 auto !important;
-          min-width: 0 !important;
+          max-width: 100%;
         }
-        div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] > div:first-child {
-          flex: 0 1 auto !important;
-        }
-        div[class*="st-key-dash_lbl_"] .sub-header {
-          margin-bottom: 0 !important;
-          display: inline-block;
-        }
-        div[class*="st-key-dash_xlsx_"] button,
-        div[class*="st-key-dash_png_"] button {
-          min-height: 26px !important; height: 26px !important;
-          padding: 0 10px !important; border-radius: 7px !important;
-          font-size: 11px !important; font-weight: 700 !important;
+        a.dash-lbl-dl {
+          display: inline-flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+          height: 26px !important;
+          padding: 0 10px !important;
+          border-radius: 7px !important;
+          border: 1px solid #CBD5E1 !important;
+          background: #F8FAFC !important;
+          color: #334155 !important;
+          font-size: 11px !important;
+          font-weight: 700 !important;
           letter-spacing: -0.2px !important;
-          width: auto !important;
+          text-decoration: none !important;
+          white-space: nowrap !important;
+          line-height: 1 !important;
+          flex: 0 0 auto !important;
         }
+        a.dash-lbl-dl:hover { background: #EEF2FF !important; border-color: #93C5FD !important; color: #1D4ED8 !important; }
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def _dash_dl_chip(label: str, data: bytes, file_name: str, mime: str) -> str:
+    import base64
+
+    b64 = base64.b64encode(data).decode("ascii")
+    href = f"data:{mime};base64,{b64}"
+    safe_name = html.escape(str(file_name), quote=True)
+    return (
+        f'<a class="dash-lbl-dl" download="{safe_name}" href="{href}">'
+        f"{html.escape(label)}</a>"
     )
 
 
@@ -1844,46 +1866,30 @@ def _dash_label_with_xlsx(
         xbytes = None
         has_table = False
     packed = _dash_png_from_fig(fig) if fig is not None else None
-    n_btn = int(bool(xbytes)) + int(bool(packed))
-    if n_btn <= 0:
+    chips = []
+    if xbytes:
+        chips.append(
+            _dash_dl_chip(
+                "엑셀",
+                xbytes,
+                file_name,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        )
+    if packed:
+        raw, ext, mime = packed
+        gname = graph_name or (str(file_name).rsplit(".", 1)[0] + f".{ext}")
+        if not str(gname).lower().endswith(f".{ext}"):
+            gname = str(gname).rsplit(".", 1)[0] + f".{ext}"
+        chips.append(_dash_dl_chip("그래프", raw, gname, mime))
+    if not chips:
         if title_html:
             st.markdown(title_html, unsafe_allow_html=True)
         return
-    slots = ([] if not title_html else ["title"]) + (["xlsx"] if xbytes else []) + (["fig"] if packed else [])
-    with st.container(key=f"dash_lbl_{key}"):
-        cols = st.columns(len(slots), gap="small", vertical_alignment="center")
-        i = 0
-        if title_html:
-            with cols[i]:
-                st.markdown(title_html, unsafe_allow_html=True)
-            i += 1
-        if xbytes:
-            with cols[i]:
-                st.download_button(
-                    "엑셀",
-                    data=xbytes,
-                    file_name=file_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"dash_xlsx_{key}",
-                    help="화면에 보이는 표와 그라디언트 그대로 받습니다.",
-                    width="content",
-                )
-            i += 1
-        if packed:
-            raw, ext, mime = packed
-            gname = graph_name or (str(file_name).rsplit(".", 1)[0] + f".{ext}")
-            if not str(gname).lower().endswith(f".{ext}"):
-                gname = str(gname).rsplit(".", 1)[0] + f".{ext}"
-            with cols[i]:
-                st.download_button(
-                    "그래프",
-                    data=raw,
-                    file_name=gname,
-                    mime=mime,
-                    key=f"dash_png_{key}",
-                    help="이 그래프를 바로 받습니다.",
-                    width="content",
-                )
+    st.markdown(
+        f'<div class="dash-lbl-inline">{title_html or ""}{"".join(chips)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _ppt_format_value(val):
