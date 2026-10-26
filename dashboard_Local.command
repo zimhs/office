@@ -16,8 +16,8 @@ fi
 
 # Finder .command 창은 자식 없이 바로 끝낸다. 닫기 확인창이 나오지 않게 이 창에서는 Chrome/Python을 돌리지 않는다.
 if [ -z "${DASH_LOCAL_BG:-}" ] && [ "${TERM_PROGRAM:-}" = "Apple_Terminal" ]; then
-  osascript -e "do shell script \"export DASH_LOCAL_BG=1; /bin/bash '${CANON}/dashboard_Local.command' >/dev/null 2>&1 &\"" >/dev/null 2>&1 || \
-    nohup env DASH_LOCAL_BG=1 /bin/bash "${CANON}/dashboard_Local.command" >/dev/null 2>&1 &
+  nohup env DASH_LOCAL_BG=1 /bin/bash "${CANON}/dashboard_Local.command" >/dev/null 2>&1 &
+  disown
   exit 0
 fi
 
@@ -26,7 +26,7 @@ URL1="http://127.0.0.1:8501"
 STAMP="${HOME}/.dashboard_browser_opened"
 LAUNCH_LOCK="${HOME}/.dashboard_local_launching"
 
-_up() { curl -sf -m 2 "http://127.0.0.1:$1/_stcore/health" >/dev/null 2>&1; }
+_up() { curl -sf -m 1 "http://127.0.0.1:$1/_stcore/health" >/dev/null 2>&1; }
 
 # Chrome AppleScript가 멈추면 바로가기가 영구 대기하는 것을 막는다
 _osa() {
@@ -40,14 +40,16 @@ p = subprocess.Popen(
     text=True,
 )
 try:
-    p.communicate(sys.stdin.read(), timeout=8)
+    p.communicate(sys.stdin.read(), timeout=2)
+    sys.exit(p.returncode or 0)
 except subprocess.TimeoutExpired:
     p.kill()
     try:
-        p.communicate(timeout=2)
+        p.communicate(timeout=1)
     except Exception:
         pass
-' 2>/dev/null || true
+    sys.exit(1)
+' 2>/dev/null
 }
 
 # 실행이 끝난 바로가기 창만 닫는다. 돌아가는 창을 닫으면 「종료할까요?」가 뜬다.
@@ -107,98 +109,41 @@ _code_changed_since_start() {
   [ -n "$saved" ] && [ "$cur" != "$saved" ]
 }
 
-# 이미 떠 있는 8501 탭만 앞으로 — URL은 건드리지 않음
-_chrome_ensure_tab() {
-  _osa <<'APPLESCRIPT'
+# Gemini 등 지금 쓰는 창에 탭을 붙이지 않고, 대시보드 전용 창을 연다.
+_chrome_new_window() {
+  if _osa <<APPLESCRIPT
 tell application "Google Chrome"
   set u1 to "http://127.0.0.1:8501"
-  set win1 to missing value
-  set idx1 to 0
-
   repeat with w in windows
-    set ti to 1
-    repeat with t in tabs of w
-      set theURL to URL of t
-      if theURL starts with u1 then
-        set win1 to w
-        set idx1 to ti
+    try
+      if (URL of active tab of w) starts with u1 then
+        set index of w to 1
+        activate
+        return
       end if
-      set ti to ti + 1
-    end repeat
+    end try
   end repeat
-
-  if win1 is not missing value then
-    set index of win1 to 1
-    set active tab index of win1 to idx1
-    activate
-    return
-  end if
-
   make new window
-  set URL of active tab of window 1 to u1
+  set URL of active tab of front window to u1
+  set index of front window to 1
   activate
 end tell
 APPLESCRIPT
-  open -a "Google Chrome" "$URL1" >/dev/null 2>&1 || true
+  then
+    return 0
+  fi
+  open -na "Google Chrome" --args --new-window "$URL1" >/dev/null 2>&1 || true
 }
 
-# 재시작 전에 8501 탭을 빈 페이지로 — Chrome이 죽은 서버에 커넥트 에러를 띄우지 않게
-_chrome_park_dashboard_tabs() {
-  _osa <<'APPLESCRIPT'
-tell application "Google Chrome"
-  repeat with w in windows
-    repeat with t in tabs of w
-      set theURL to URL of t
-      if (theURL starts with "http://127.0.0.1:8501") or (theURL starts with "http://localhost:8501") then
-        set URL of t to "about:blank#office-dashboard-park"
-      end if
-    end repeat
-  end repeat
-end tell
-APPLESCRIPT
-}
+_chrome_ensure_tab() { _chrome_new_window; }
+_chrome_load_dashboard() { _chrome_new_window; }
 
-# 서버가 살아난 뒤에만 8501로 복구 (주차 탭 포함)
-_chrome_load_dashboard() {
-  _osa <<'APPLESCRIPT'
-tell application "Google Chrome"
-  set u1 to "http://127.0.0.1:8501"
-  set win1 to missing value
-  set idx1 to 0
-
-  repeat with w in windows
-    set ti to 1
-    repeat with t in tabs of w
-      set theURL to URL of t
-      if (theURL starts with u1) or (theURL contains "localhost:8501") or (theURL contains "office-dashboard-park") then
-        set win1 to w
-        set idx1 to ti
-      end if
-      set ti to ti + 1
-    end repeat
-  end repeat
-
-  if win1 is not missing value then
-    set index of win1 to 1
-    set active tab index of win1 to idx1
-    set URL of tab idx1 of win1 to u1
-    activate
-    return
-  end if
-
-  make new window
-  set URL of active tab of window 1 to u1
-  activate
-end tell
-APPLESCRIPT
-  open -a "Google Chrome" "$URL1" >/dev/null 2>&1 || true
-}
-
-( sleep 1; _close_idle_shortcut_windows ) &
+# 서버 재시작을 기다리지 않고 전용 창부터 연다.
+_chrome_new_window
+(_close_idle_shortcut_windows) &
 
 if ! mkdir "$LAUNCH_LOCK" 2>/dev/null; then
   if _up 8501; then
-    _chrome_ensure_tab
     osascript -e 'display notification "8501 대시보드로 이동" with title "영업 대시보드"' >/dev/null 2>&1 || true
     _close_idle_shortcut_windows
     exit 0
@@ -210,7 +155,6 @@ if ! mkdir "$LAUNCH_LOCK" 2>/dev/null; then
     rmdir "$LAUNCH_LOCK" 2>/dev/null || rm -rf "$LAUNCH_LOCK"
     mkdir "$LAUNCH_LOCK" 2>/dev/null || true
   else
-    open -a "Google Chrome" "$URL1" >/dev/null 2>&1 || true
     _close_idle_shortcut_windows
     exit 0
   fi
@@ -222,7 +166,6 @@ if _up 8501; then
   if _code_changed_since_start; then
     osascript -e 'display notification "코드 변경 감지 — 서버 재시작합니다" with title "영업 대시보드"'
   else
-    _chrome_ensure_tab
     touch "$STAMP"
     osascript -e 'display notification "8501 대시보드로 이동 (통합 12탭)" with title "영업 대시보드"'
     _close_idle_shortcut_windows
@@ -237,7 +180,7 @@ _kill_ports() {
   lsof -ti:8502 2>/dev/null | xargs kill -9 2>/dev/null || true
   pkill -f "streamlit run.*8501" 2>/dev/null || true
   pkill -f "streamlit run.*8502" 2>/dev/null || true
-  sleep 2
+  sleep 0.4
 }
 
 _run_bg() {
@@ -268,11 +211,9 @@ _run_bg() {
   return 1
 }
 
-_chrome_park_dashboard_tabs
 _kill_ports
 _run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패"'; exit 1; }
 
-_chrome_load_dashboard
 touch "$STAMP"
 _save_code_stamp
 _close_idle_shortcut_windows
