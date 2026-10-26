@@ -56,7 +56,8 @@ class DashExcelExportSourceTest(unittest.TestCase):
         self.assertIn('fig.to_image(format="png"', src)
         self.assertIn('key=f"dash_png_{key}"', src)
         self.assertIn('"image/png"', src)
-        self.assertIn('type="tertiary"', src)
+        self.assertIn('type="secondary"', src)
+        self.assertIn('on_click="ignore"', src)
 
 
 class DashExcelConvertTest(unittest.TestCase):

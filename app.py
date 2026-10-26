@@ -1749,17 +1749,21 @@ def _dash_xlsx_from_styler(styler, sheet="표", hide_index=False) -> bytes:
     return out.getvalue()
 
 
+_DASH_LBL_CSS_EMITTED = False
+
+
 def _dash_xlsx_btn_css() -> None:
-    if st.session_state.get("_dash_xlsx_btn_css_v9"):
+    global _DASH_LBL_CSS_EMITTED
+    if _DASH_LBL_CSS_EMITTED:
         return
-    st.session_state["_dash_xlsx_btn_css_v9"] = True
+    _DASH_LBL_CSS_EMITTED = True
     st.markdown(
         """
         <style>
         .dash-lbl-inline {
           display: flex !important;
           align-items: center !important;
-          height: 24px !important;
+          min-height: 24px !important;
           width: auto !important;
           margin: 0 !important;
           padding: 0 !important;
@@ -1771,7 +1775,7 @@ def _dash_xlsx_btn_css() -> None:
           padding-bottom: 0 !important;
           display: inline-flex !important;
           align-items: center !important;
-          height: 24px !important;
+          min-height: 24px !important;
           line-height: 24px !important;
           width: auto !important;
         }
@@ -1783,7 +1787,6 @@ def _dash_xlsx_btn_css() -> None:
           align-items: center !important;
           gap: 6px !important;
           flex-wrap: nowrap !important;
-          min-height: 24px !important;
         }
         div[class*="st-key-dash_lbl_"] div[data-testid="stHorizontalBlock"] > div {
           width: auto !important;
@@ -1792,12 +1795,9 @@ def _dash_xlsx_btn_css() -> None:
           align-items: center !important;
           margin: 0 !important;
           padding: 0 !important;
-          min-height: 24px !important;
-          height: 24px !important;
         }
         div[class*="st-key-dash_lbl_"] [data-testid="stMarkdown"],
         div[class*="st-key-dash_lbl_"] [data-testid="stMarkdownContainer"],
-        div[class*="st-key-dash_lbl_"] [data-testid="stVerticalBlock"],
         div[class*="st-key-dash_lbl_"] [data-testid="element-container"],
         div[class*="st-key-dash_lbl_"] [data-testid="stDownloadButton"],
         div[class*="st-key-dash_xlsx_"] [data-testid="stDownloadButton"],
@@ -1805,8 +1805,7 @@ def _dash_xlsx_btn_css() -> None:
           width: fit-content !important;
           margin: 0 !important;
           padding: 0 !important;
-          min-height: 0 !important;
-          height: 24px !important;
+          overflow: visible !important;
           display: flex !important;
           align-items: center !important;
         }
@@ -1819,12 +1818,15 @@ def _dash_xlsx_btn_css() -> None:
         div[class*="st-key-dash_lbl_"] button,
         div[class*="st-key-dash_xlsx_"] button,
         div[class*="st-key-dash_png_"] button,
-        div[class*="st-key-dash_lbl_"] [data-testid="stBaseButton-tertiary"],
-        div[class*="st-key-dash_xlsx_"] [data-testid="stBaseButton-tertiary"],
-        div[class*="st-key-dash_png_"] [data-testid="stBaseButton-tertiary"],
-        div[class*="st-key-dash_lbl_"] [data-testid="stBaseButton-secondary"],
-        div[class*="st-key-dash_xlsx_"] [data-testid="stBaseButton-secondary"],
-        div[class*="st-key-dash_png_"] [data-testid="stBaseButton-secondary"] {
+        div[class*="st-key-dash_lbl_"] button:hover,
+        div[class*="st-key-dash_xlsx_"] button:hover,
+        div[class*="st-key-dash_png_"] button:hover,
+        div[class*="st-key-dash_lbl_"] button:focus,
+        div[class*="st-key-dash_xlsx_"] button:focus,
+        div[class*="st-key-dash_png_"] button:focus,
+        div[class*="st-key-dash_lbl_"] button:active,
+        div[class*="st-key-dash_xlsx_"] button:active,
+        div[class*="st-key-dash_png_"] button:active {
           box-sizing: border-box !important;
           min-height: 24px !important;
           height: 24px !important;
@@ -1941,7 +1943,8 @@ def _dash_label_with_xlsx(
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key=f"dash_xlsx_{key}",
                 help="화면에 보이는 표와 그라디언트 그대로 받습니다.",
-                type="tertiary",
+                type="secondary",
+                on_click="ignore",
                 width="content",
             )
         if packed and packed[0]:
@@ -1953,7 +1956,8 @@ def _dash_label_with_xlsx(
                 mime="image/png" if ext == "png" else mime,
                 key=f"dash_png_{key}",
                 help="그래프 PNG 파일을 저장합니다.",
-                type="tertiary",
+                type="secondary",
+                on_click="ignore",
                 width="content",
             )
         elif has_fig:
