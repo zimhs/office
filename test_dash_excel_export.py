@@ -24,9 +24,36 @@ class DashExcelExportSourceTest(unittest.TestCase):
         src = self._src()
         self.assertIn("def _dash_label_with_xlsx", src)
         self.assertIn("def _dash_xlsx_from_styler", src)
+        self.assertIn("def _dash_png_from_fig", src)
         self.assertIn('key=f"dash_xlsx_{key}"', src)
         self.assertIn("_dash_label_with_xlsx(", src)
         self.assertIn("xlsx_name", src)
+        for key in (
+            'key="t1_kpi"',
+            'key="t1_month"',
+            'key="t1_bulk4"',
+            'key="t1_ind"',
+            'key="t1_top30"',
+            'key="t1_mom"',
+            'key="t2_kpi"',
+            'key="t2_month"',
+            'key="t2_item"',
+            'key="t2_sales_cmp"',
+            'key="t4_staff"',
+            'key="t4_rank"',
+            'key="t4_item_sales"',
+            'key="t5_debt"',
+            'key="t6_map"',
+            'key="t7_tank"',
+            'key="t7_vap"',
+            'key="t8_detail"',
+        ):
+            self.assertIn(key, src)
+
+    def test_graph_download_helper_uses_png_or_html(self):
+        src = self._src()
+        self.assertIn('fig.to_image(format="png"', src)
+        self.assertIn("dash_png_go_", src)
 
 
 class DashExcelConvertTest(unittest.TestCase):
