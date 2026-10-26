@@ -1884,6 +1884,30 @@ def _dash_xlsx_from_df(df, sheet="표", hide_index=True) -> bytes:
     )
 
 
+def _dash_table_shape_sig(styler=None, df=None):
+    src = None
+    if styler is not None and hasattr(styler, "data"):
+        src = styler.data
+    elif df is not None:
+        src = df
+    if src is None:
+        return None
+    shp = getattr(src, "shape", None)
+    if not shp or len(shp) < 2:
+        return None
+    return (int(shp[0]), int(shp[1]))
+
+
+def _dash_build_xlsx_bytes(styler=None, df=None, *, sheet: str = "표", hide_index: bool = False):
+    if styler is not None:
+        empty = hasattr(styler, "data") and getattr(styler.data, "empty", False)
+        if not empty:
+            return _dash_xlsx_from_styler(styler, sheet=sheet, hide_index=hide_index)
+    elif df is not None and not getattr(df, "empty", True):
+        return _dash_xlsx_from_df(df, sheet=sheet, hide_index=hide_index)
+    return None
+
+
 def _dash_label_with_xlsx(
     title_html: str,
     *,
@@ -1896,36 +1920,31 @@ def _dash_label_with_xlsx(
     graph_name: str | None = None,
     df=None,
 ) -> None:
-    """라벨 제목 옆에 작은 엑셀·그래프 버튼."""
+    """라벨 제목 옆에 작은 엑셀·그래프 버튼. 파일은 버튼 클릭 시에만 만든다."""
     _dash_xlsx_btn_css()
     has_table = False
-    xbytes = None
-    try:
-        if styler is not None:
-            empty = hasattr(styler, "data") and getattr(styler.data, "empty", False)
-            if not empty:
-                xbytes = _dash_xlsx_from_styler(styler, sheet=sheet, hide_index=hide_index)
-                has_table = True
-        elif df is not None and not getattr(df, "empty", True):
-            xbytes = _dash_xlsx_from_df(df, sheet=sheet, hide_index=hide_index)
-            has_table = True
-    except Exception:
-        xbytes = None
-        has_table = False
+    if styler is not None:
+        has_table = not (hasattr(styler, "data") and getattr(styler.data, "empty", False))
+    elif df is not None and not getattr(df, "empty", True):
+        has_table = True
     has_fig = fig is not None
-    if not xbytes and not has_fig:
+    if not has_table and not has_fig:
         if title_html:
             st.markdown(title_html, unsafe_allow_html=True)
         return
     gname = graph_name or (str(file_name).rsplit(".", 1)[0] + ".png")
     if not str(gname).lower().endswith(".png"):
         gname = str(gname).rsplit(".", 1)[0] + ".png"
-    packed = None
-    if has_fig:
-        packed = st.session_state.get(f"_dash_png_{key}")
-        if not packed:
-            packed = _dash_png_from_fig(fig)
-            st.session_state[f"_dash_png_{key}"] = packed
+    x_sig = _dash_table_shape_sig(styler, df)
+    x_key = f"_dash_xlsx_bytes_{key}"
+    x_sig_key = f"_dash_xlsx_sig_{key}"
+    xbytes = st.session_state.get(x_key)
+    if xbytes is not None and st.session_state.get(x_sig_key) != x_sig:
+        xbytes = None
+        st.session_state.pop(x_key, None)
+        st.session_state.pop(x_sig_key, None)
+    p_key = f"_dash_png_{key}"
+    packed = st.session_state.get(p_key) if has_fig else None
     label_html = f'<div class="dash-lbl-inline">{title_html or ""}</div>'
     with st.container(
         horizontal=True,
@@ -1935,33 +1954,62 @@ def _dash_label_with_xlsx(
     ):
         if title_html:
             st.markdown(label_html, unsafe_allow_html=True)
-        if xbytes:
-            st.download_button(
-                "엑셀",
-                data=xbytes,
-                file_name=file_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"dash_xlsx_{key}",
-                help="화면에 보이는 표와 그라디언트 그대로 받습니다.",
-                type="secondary",
-                on_click="ignore",
-                width="content",
-            )
-        if packed and packed[0]:
-            raw, ext, mime = packed
-            st.download_button(
-                "그래프",
-                data=raw,
-                file_name=gname if ext == "png" else gname.rsplit(".", 1)[0] + f".{ext}",
-                mime="image/png" if ext == "png" else mime,
-                key=f"dash_png_{key}",
-                help="그래프 PNG 파일을 저장합니다.",
-                type="secondary",
-                on_click="ignore",
-                width="content",
-            )
-        elif has_fig:
-            st.caption("PNG로 만들지 못했습니다.")
+        if has_table:
+            if xbytes is None:
+                if st.button(
+                    "엑셀",
+                    key=f"dash_xlsx_go_{key}",
+                    help="화면에 보이는 표와 그라디언트 그대로 받습니다.",
+                    type="secondary",
+                    width="content",
+                ):
+                    try:
+                        xbytes = _dash_build_xlsx_bytes(
+                            styler, df, sheet=sheet, hide_index=hide_index
+                        )
+                    except Exception:
+                        xbytes = None
+                    if xbytes:
+                        st.session_state[x_key] = xbytes
+                        st.session_state[x_sig_key] = x_sig
+            if xbytes:
+                st.download_button(
+                    "엑셀",
+                    data=xbytes,
+                    file_name=file_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dash_xlsx_{key}",
+                    help="화면에 보이는 표와 그라디언트 그대로 받습니다.",
+                    type="secondary",
+                    on_click="ignore",
+                    width="content",
+                )
+        if has_fig:
+            if not packed:
+                if st.button(
+                    "그래프",
+                    key=f"dash_png_go_{key}",
+                    help="그래프 PNG 파일을 저장합니다.",
+                    type="secondary",
+                    width="content",
+                ):
+                    packed = _dash_png_from_fig(fig)
+                    st.session_state[p_key] = packed
+            if packed and packed[0]:
+                raw, ext, mime = packed
+                st.download_button(
+                    "그래프",
+                    data=raw,
+                    file_name=gname if ext == "png" else gname.rsplit(".", 1)[0] + f".{ext}",
+                    mime="image/png" if ext == "png" else mime,
+                    key=f"dash_png_{key}",
+                    help="그래프 PNG 파일을 저장합니다.",
+                    type="secondary",
+                    on_click="ignore",
+                    width="content",
+                )
+            elif packed:
+                st.caption("PNG로 만들지 못했습니다.")
 
 
 def _ppt_format_value(val):
