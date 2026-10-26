@@ -1750,9 +1750,9 @@ def _dash_xlsx_from_styler(styler, sheet="표", hide_index=False) -> bytes:
 
 
 def _dash_xlsx_btn_css() -> None:
-    if st.session_state.get("_dash_xlsx_btn_css_v4"):
+    if st.session_state.get("_dash_xlsx_btn_css_v5"):
         return
-    st.session_state["_dash_xlsx_btn_css_v4"] = True
+    st.session_state["_dash_xlsx_btn_css_v5"] = True
     st.markdown(
         """
         <style>
@@ -1778,7 +1778,9 @@ def _dash_xlsx_btn_css() -> None:
           display: inline-flex !important;
           align-items: center !important;
           justify-content: center !important;
+          box-sizing: border-box !important;
           height: 26px !important;
+          min-height: 26px !important;
           padding: 0 10px !important;
           border-radius: 7px !important;
           border: 1px solid #CBD5E1 !important;
@@ -1789,7 +1791,7 @@ def _dash_xlsx_btn_css() -> None:
           letter-spacing: -0.2px !important;
           text-decoration: none !important;
           white-space: nowrap !important;
-          line-height: 1 !important;
+          line-height: 24px !important;
           flex: 0 0 auto !important;
         }
         a.dash-lbl-dl:hover { background: #EEF2FF !important; border-color: #93C5FD !important; color: #1D4ED8 !important; }
@@ -1806,12 +1808,33 @@ def _dash_xlsx_btn_css() -> None:
         div[class*="st-key-dash_lbl_"] [data-testid="stMarkdown"] {
           width: fit-content !important;
         }
-        div[class*="st-key-dash_png_"] button,
-        div[class*="st-key-dash_png_go_"] button {
-          min-height: 26px !important; height: 26px !important;
-          padding: 0 10px !important; border-radius: 7px !important;
-          font-size: 11px !important; font-weight: 700 !important;
-          width: auto !important;
+        div[class*="st-key-dash_lbl_"] [data-testid="stButton"] button,
+        div[class*="st-key-dash_png_go_"] button,
+        div[class*="st-key-dash_png_go_"] [data-testid="stBaseButton-secondary"] {
+          box-sizing: border-box !important;
+          min-height: 26px !important;
+          height: 26px !important;
+          max-height: 26px !important;
+          min-width: 0 !important;
+          padding: 0 10px !important;
+          border-radius: 7px !important;
+          border: 1px solid #CBD5E1 !important;
+          background-color: #F8FAFC !important;
+          background-image: none !important;
+          color: #334155 !important;
+          font-size: 11px !important;
+          font-weight: 700 !important;
+          letter-spacing: -0.2px !important;
+          line-height: 24px !important;
+          box-shadow: none !important;
+        }
+        div[class*="st-key-dash_lbl_"] [data-testid="stButton"] button p,
+        div[class*="st-key-dash_png_go_"] button p,
+        div[class*="st-key-dash_png_go_"] button span {
+          font-size: 11px !important;
+          font-weight: 700 !important;
+          line-height: 24px !important;
+          margin: 0 !important;
         }
         </style>
         """,
@@ -1904,6 +1927,11 @@ def _dash_label_with_xlsx(
     gname = graph_name or (str(file_name).rsplit(".", 1)[0] + ".png")
     if not str(gname).lower().endswith(".png"):
         gname = str(gname).rsplit(".", 1)[0] + ".png"
+    packed = st.session_state.get(f"_dash_png_{key}") if has_fig else None
+    if packed and packed[0]:
+        raw, ext, mime = packed
+        dl_name = gname if ext == "png" else gname.rsplit(".", 1)[0] + f".{ext}"
+        chips.append(_dash_dl_chip("⬇", raw, dl_name, mime))
     label_html = f'<div class="dash-lbl-inline">{title_html or ""}{"".join(chips)}</div>'
     if not has_fig:
         st.markdown(label_html, unsafe_allow_html=True)
@@ -1924,20 +1952,10 @@ def _dash_label_with_xlsx(
         if go:
             packed = _dash_png_from_fig(fig)
             st.session_state[f"_dash_png_{key}"] = packed
-        packed = st.session_state.get(f"_dash_png_{key}")
-        if packed and packed[0]:
-            raw, ext, mime = packed
-            st.download_button(
-                "⬇",
-                data=raw,
-                file_name=gname if ext == "png" else gname.rsplit(".", 1)[0] + f".{ext}",
-                mime=mime,
-                key=f"dash_png_{key}",
-                help="PNG 파일을 저장합니다.",
-                width="content",
-            )
-        elif go:
-            st.caption("PNG로 만들지 못했습니다.")
+            if not packed or not packed[0]:
+                st.caption("PNG로 만들지 못했습니다.")
+            else:
+                st.rerun()
 
 
 def _ppt_format_value(val):
