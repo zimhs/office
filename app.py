@@ -1699,6 +1699,111 @@ def convert_dfs_to_excel(dfs_dict):
     for sheet_name, (df, use_index) in (dfs_dict or {}).items():
         items.append({"sheet": sheet_name, "df": df, "use_index": use_index})
     return convert_dash_excel_sheets(items)
+
+
+def _dash_xlsx_from_styler(styler, sheet="표", hide_index=False) -> bytes:
+    """st.dataframe 에 넘긴 Styler 그대로(그라디언트·숫자양식) 엑셀로."""
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    if styler is None:
+        return convert_dash_excel_sheets([])
+    sheet = _dash_excel_safe_sheet(sheet, set())
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        styler.to_excel(writer, sheet_name=sheet, index=not hide_index)
+    buf.seek(0)
+    from openpyxl import load_workbook
+
+    wb = load_workbook(buf)
+    ws = wb[sheet]
+    header_fill = PatternFill("solid", fgColor="1E3A8A")
+    header_font = Font(name="Malgun Gothic", bold=True, color="FFFFFF", size=10)
+    thin = Border(
+        left=Side(style="thin", color="E2E8F0"),
+        right=Side(style="thin", color="E2E8F0"),
+        top=Side(style="thin", color="E2E8F0"),
+        bottom=Side(style="thin", color="E2E8F0"),
+    )
+    max_r, max_c = ws.max_row or 1, ws.max_column or 1
+    for c in range(1, max_c + 1):
+        cell = ws.cell(1, c)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = thin
+        letter = get_column_letter(c)
+        maxlen = len(str(cell.value or ""))
+        for r in range(2, min(max_r, 50) + 1):
+            body = ws.cell(r, c)
+            body.border = thin
+            v = body.value
+            if v is not None:
+                maxlen = max(maxlen, min(len(str(v)), 24))
+        ws.column_dimensions[letter].width = min(max(maxlen + 3, 9), 22)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(max_c)}{max_r}"
+    ws.sheet_view.showGridLines = False
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def _dash_xlsx_btn_css() -> None:
+    if st.session_state.get("_dash_xlsx_btn_css"):
+        return
+    st.session_state["_dash_xlsx_btn_css"] = True
+    st.markdown(
+        """
+        <style>
+        div[class*="st-key-dash_xlsx_"] button {
+          min-height: 26px !important; height: 26px !important;
+          padding: 0 9px !important; border-radius: 7px !important;
+          font-size: 11px !important; font-weight: 700 !important;
+          letter-spacing: -0.2px !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _dash_label_with_xlsx(
+    title_html: str,
+    *,
+    key: str,
+    styler,
+    file_name: str,
+    hide_index: bool = False,
+    sheet: str = "표",
+) -> None:
+    """라벨 제목 옆에 작은 엑셀 버튼. 표·그라디언트는 화면 Styler 그대로."""
+    _dash_xlsx_btn_css()
+    left, right = st.columns([9.15, 0.85], gap="small", vertical_alignment="center")
+    with left:
+        if title_html:
+            st.markdown(title_html, unsafe_allow_html=True)
+    with right:
+        data = None
+        try:
+            empty = styler is None
+            if not empty and hasattr(styler, "data"):
+                empty = getattr(styler.data, "empty", False)
+            if not empty:
+                data = _dash_xlsx_from_styler(styler, sheet=sheet, hide_index=hide_index)
+        except Exception:
+            data = None
+        if data:
+            st.download_button(
+                "엑셀",
+                data=data,
+                file_name=file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dash_xlsx_{key}",
+                help="화면에 보이는 표와 그라디언트 그대로 받습니다.",
+            )
+
+
 def _ppt_format_value(val):
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
@@ -10557,7 +10662,8 @@ def render_interactive_html_table(
     """
     components.html(page_html, height=height, scrolling=True)
 def render_tab3_dataframe_table(
-    df, fmt, target_col, key_prefix="tab3", table_kind="sales", sort_order=None
+    df, fmt, target_col, key_prefix="tab3", table_kind="sales", sort_order=None,
+    label_html=None, xlsx_name=None,
 ):
     """Tab3 표 — 연한 파스텔 그라디언트 + 선택 행 복사.
     sort_order: 단가표용 품목명 순서(매출액 내림차순 인덱스).
@@ -10645,6 +10751,15 @@ def render_tab3_dataframe_table(
                 else [""] * len(col)
             ),
             axis=0,
+        )
+    if label_html or xlsx_name:
+        _dash_label_with_xlsx(
+            label_html or "",
+            key=f"{key_prefix}_xlsx",
+            styler=styled,
+            file_name=xlsx_name or f"{key_prefix}.xlsx",
+            hide_index=True,
+            sheet=str(key_prefix)[:31],
         )
     event = st.dataframe(
         styled,
@@ -15948,139 +16063,6 @@ def _dash_filter_and_tabs_fragment() -> None:
         client_addr = str(client_addr_raw)
     st.sidebar.markdown("---")
     st.sidebar.subheader("📥 엑셀 내보내기")
-    _staff_share_cols = [
-        c for c in (staff_pivot.columns if isinstance(staff_pivot, pd.DataFrame) else [])
-        if c in ("전체매출비중", "당해매출비중")
-    ]
-    _staff_total_cols = [
-        c for c in (staff_pivot.columns if isinstance(staff_pivot, pd.DataFrame) else [])
-        if c == "총 매출 합계 (만원)"
-    ]
-    _staff_month_cols = [
-        c
-        for c in (staff_pivot.columns if isinstance(staff_pivot, pd.DataFrame) else [])
-        if c not in _staff_share_cols and c not in _staff_total_cols
-    ]
-    _excel_catalog = [
-        {
-            "tab": "📌 영업 종합 요약",
-            "label": "연도별 월 매출 (만원)",
-            "sheet": "T1_연도별월매출",
-            "df": pivot_m_total,
-            "use_index": True,
-            "add_sum": True,
-            "sum_label": "연간 합계",
-            "cmap": "Blues",
-            "num_fmt": "#,##0",
-        },
-        {
-            "tab": "🏢 거래처 분석",
-            "label": "거래처 품목별 사용량",
-            "sheet": "T2_품목사용량",
-            "df": client_item_qty_pivot,
-            "use_index": True,
-            "add_sum": True,
-            "sum_label": "합계",
-            "cmap": "Blues",
-            "num_fmt": "#,##0.0",
-        },
-        {
-            "tab": "📦 품목 및 단가 분석",
-            "label": "품목별 매출액 (만원)",
-            "sheet": "T3_품목매출",
-            "df": sales_p,
-            "scale": 1.1 / 10000,
-            "use_index": True,
-            "add_sum": True,
-            "sum_label": "합계",
-            "cmap": "Blues",
-            "num_fmt": "#,##0",
-        },
-        {
-            "tab": "📦 품목 및 단가 분석",
-            "label": "품목별 출고량",
-            "sheet": "T3_품목출고량",
-            "df": qty_p,
-            "use_index": True,
-            "add_sum": True,
-            "sum_label": "합계",
-            "cmap": "Greens",
-            "num_fmt": "#,##0.0",
-        },
-        {
-            "tab": "📦 품목 및 단가 분석",
-            "label": "품목별 적용단가",
-            "sheet": "T3_적용단가",
-            "df": unit_price_p,
-            "use_index": True,
-            "add_sum": False,
-            "cmap": None,
-            "num_fmt": "#,##0",
-        },
-        {
-            "tab": "👤 담당자 & 상세내역",
-            "label": "담당자별 매출 (만원)",
-            "sheet": "T4_담당자매출",
-            "df": staff_pivot,
-            "use_index": True,
-            "add_sum": False,
-            "cmap": None,
-            "cmap_map": {
-                tuple(_staff_month_cols): "Blues",
-                tuple(_staff_share_cols): "Purples",
-                tuple(_staff_total_cols): "Oranges",
-            },
-            "num_fmt": "#,##0.0",
-        },
-        {
-            "tab": "👤 담당자 & 상세내역",
-            "label": "상세 거래 내역",
-            "sheet": "T4_상세거래내역",
-            "df": df_detail,
-            "use_index": False,
-            "add_sum": False,
-            "cmap": None,
-            "num_fmt": "#,##0",
-        },
-        {
-            "tab": "📌 채권 관리",
-            "label": "채권 관리 현황",
-            "sheet": "T5_채권관리",
-            "df": filtered_debt_df,
-            "use_index": False,
-            "add_sum": False,
-            "cmap": None,
-            "num_fmt": "#,##0",
-        },
-    ]
-    _excel_tab_opts = []
-    for _it in _excel_catalog:
-        if _it["tab"] not in _excel_tab_opts:
-            _excel_tab_opts.append(_it["tab"])
-    if "dash_excel_tabs" not in st.session_state:
-        st.session_state["dash_excel_tabs"] = list(_excel_tab_opts)
-    else:
-        _kept_tabs = [t for t in st.session_state["dash_excel_tabs"] if t in _excel_tab_opts]
-        st.session_state["dash_excel_tabs"] = _kept_tabs or list(_excel_tab_opts)
-    _excel_tabs = st.sidebar.multiselect(
-        "탭 선택",
-        _excel_tab_opts,
-        key="dash_excel_tabs",
-        help="받을 탭만 고릅니다. 비우면 아래 라벨이 없습니다.",
-    )
-    _excel_label_opts = [it["label"] for it in _excel_catalog if it["tab"] in set(_excel_tabs)]
-    if "dash_excel_labels" not in st.session_state:
-        st.session_state["dash_excel_labels"] = list(_excel_label_opts)
-    else:
-        _kept_labs = [lab for lab in st.session_state["dash_excel_labels"] if lab in _excel_label_opts]
-        st.session_state["dash_excel_labels"] = _kept_labs or list(_excel_label_opts)
-    _excel_labels = st.sidebar.multiselect(
-        "라벨 선택",
-        _excel_label_opts,
-        key="dash_excel_labels",
-        help="탭 안에서 받을 표만 고릅니다.",
-    )
-    st.sidebar.caption("표의 숫자 양식·그라디언트는 대시보드와 같게 넣습니다. 차트·화면 배치는 엑셀 시트로 옮기지 않습니다.")
     _excel_sig = (
         selected_client,
         tuple(selected_staff or []),
@@ -16091,12 +16073,9 @@ def _dash_filter_and_tabs_fragment() -> None:
         int(len(df_base)),
         float(df_base["매출액"].sum()) if not df_base.empty else 0.0,
         int(len(filtered_debt_df)),
-        tuple(_excel_tabs),
-        tuple(_excel_labels),
     )
     if st.session_state.get("_dash_excel_sig") != _excel_sig:
         st.session_state.pop("_dash_excel_bytes", None)
-        st.session_state.pop("_dash_excel_name", None)
     _excel_ready = bool(
         st.session_state.get("_dash_excel_sig") == _excel_sig
         and st.session_state.get("_dash_excel_bytes")
@@ -16105,33 +16084,35 @@ def _dash_filter_and_tabs_fragment() -> None:
         "📊 엑셀 파일 준비",
         key="dash_excel_prepare",
         use_container_width=True,
-        help="고른 탭·라벨의 표를 대시보드 색·양식 그대로 엑셀로 만듭니다.",
+        help="현재 검색 조건으로 시트별 엑셀을 만듭니다.",
     ):
         with st.spinner("엑셀 생성 중…"):
-            _picked = []
-            for it in _excel_catalog:
-                if it["tab"] not in set(_excel_tabs) or it["label"] not in set(_excel_labels):
-                    continue
-                _picked.append(dict(it))
+            _sheets_dict = {
+                "연도별_월매출(만원)": (pivot_m_total, True),
+                "거래처별_품목별사용량": (client_item_qty_pivot, True),
+                "선택거래처_품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
+                "선택거래처_품목별_출고량": (qty_p, True),
+                "선택거래처_품목별_적용단가": (unit_price_p, True),
+                "담당자별_매출(만원)": (staff_pivot, True),
+                "상세거래내역": (df_detail, False),
+            }
+            if not filtered_debt_df.empty:
+                _sheets_dict["채권관리_현황"] = (filtered_debt_df, False)
             st.session_state["_dash_excel_sig"] = _excel_sig
-            st.session_state["_dash_excel_bytes"] = convert_dash_excel_sheets(_picked)
-            if len(_picked) == 1:
-                st.session_state["_dash_excel_name"] = f"{_picked[0]['sheet']}.xlsx"
-            else:
-                st.session_state["_dash_excel_name"] = "통합영업분석_선택시트.xlsx"
+            st.session_state["_dash_excel_bytes"] = convert_dfs_to_excel(_sheets_dict)
             _excel_ready = True
     if _excel_ready:
         st.sidebar.download_button(
-            label="⬇️ 선택한 시트 엑셀 다운로드",
+            label="⬇️ 전체 분석 시트별 엑셀 다운로드",
             data=st.session_state["_dash_excel_bytes"],
-            file_name=st.session_state.get("_dash_excel_name") or "통합영업분석_선택시트.xlsx",
+            file_name="통합영업분석_시트별보고서.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
     elif st.session_state.get("_dash_excel_sig") and st.session_state.get("_dash_excel_sig") != _excel_sig:
-        st.sidebar.caption("검색 조건이나 탭·라벨이 바뀌었습니다. 「엑셀 파일 준비」를 다시 눌러 주세요.")
+        st.sidebar.caption("검색 조건이 바뀌었습니다. 「엑셀 파일 준비」를 다시 눌러 주세요.")
     else:
-        st.sidebar.caption("탭과 라벨을 고른 뒤 「엑셀 파일 준비」를 누르면 다운로드가 생깁니다.")
+        st.sidebar.caption("엑셀은 「엑셀 파일 준비」 후 다운로드 (거래처 지정 시 자동 생성 안 함)")
     st.sidebar.subheader("📽️ PPT 내보내기")
     _ppt_sig = (
         selected_client,
@@ -16251,12 +16232,19 @@ def _dash_filter_and_tabs_fragment() -> None:
         m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_total})</div><div class='metric-value'>{cur_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
         m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_total < 0 else '#2563EB'};'>{mom_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
         m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_total < 0 else '#2563EB'};'>{avg_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
-        st.markdown("<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 연도별 월 매출 추이</div>", unsafe_allow_html=True)
+        pivot_m_total_disp = get_display_df_with_sum(pivot_m_total, "연간 합계")
+        _t1_month_styled = style_with_sum(pivot_m_total_disp, "{:,.0f}", "Blues", axis=None)
+        _dash_label_with_xlsx(
+            "<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 연도별 월 매출 추이</div>",
+            key="t1_month",
+            styler=_t1_month_styled,
+            file_name="연도별_월매출.xlsx",
+            sheet="연도별월매출",
+        )
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
-            pivot_m_total_disp = get_display_df_with_sum(pivot_m_total, "연간 합계")
-            st.dataframe(style_with_sum(pivot_m_total_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
+            st.dataframe(_t1_month_styled, use_container_width=True, height=460)
         with col_right:
             render_plotly_chart(
                 create_stacked_bar_chart(pivot_m_total, title_text=""),
@@ -17262,14 +17250,18 @@ def _dash_filter_and_tabs_fragment() -> None:
                 pivot_m_client = _yearly_monthly_pivot(
                     df_client_filtered, all_months, years
                 )
-            st.markdown(
+            pivot_m_client_disp = get_display_df_with_sum(pivot_m_client, "연간 합계")
+            _t2_month_styled = style_with_sum(pivot_m_client_disp, "{:,.0f}", "Blues", axis=None)
+            _dash_label_with_xlsx(
                 f"<div class='sub-header dashboard-tab-panel-head'>📊 [{selected_client}] 연도별 월 매출 추이</div>",
-                unsafe_allow_html=True,
+                key="t2_month",
+                styler=_t2_month_styled,
+                file_name=f"{selected_client}_연도별월매출.xlsx",
+                sheet="연도별월매출",
             )
             cl, cr = st.columns([1, 1])
             with cl:
-                pivot_m_client_disp = get_display_df_with_sum(pivot_m_client, "연간 합계")
-                st.dataframe(style_with_sum(pivot_m_client_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
+                st.dataframe(_t2_month_styled, use_container_width=True, height=460)
             with cr:
                 render_plotly_chart(
                     create_stacked_bar_chart(pivot_m_client, title_text=""),
@@ -17333,7 +17325,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     client_item_pivot_disp = get_display_df_with_sum(client_item_pivot, "연간 합계")
                     # tab2 표 색상 통일: Blues 그라데이션
                     if "비중" in selected_metric_c:
-                        st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.1f}%", "Blues", axis=None), use_container_width=True, height=460)
+                        _t2_item_styled = style_with_sum(client_item_pivot_disp, "{:,.1f}%", "Blues", axis=None)
                         y_suf_c, y_fmt_c = "%", ",.1f"
                     elif "출고량" in selected_metric_c:
                         if selected_target_item_c in target_items:
@@ -17342,10 +17334,19 @@ def _dash_filter_and_tabs_fragment() -> None:
                             y_suf_c, y_fmt_c = " kg", ",.0f"
                         else:
                             y_suf_c, y_fmt_c = " 개(병)", ",.0f"
-                        st.dataframe(style_with_sum(client_item_pivot_disp, f"{{:{y_fmt_c}}}", "Blues", axis=None), use_container_width=True, height=460)
+                        _t2_item_styled = style_with_sum(client_item_pivot_disp, f"{{:{y_fmt_c}}}", "Blues", axis=None)
                     else:
-                        st.dataframe(style_with_sum(client_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=460)
+                        _t2_item_styled = style_with_sum(client_item_pivot_disp, "{:,.0f}", "Blues", axis=None)
                         y_suf_c, y_fmt_c = " 만원", ",.0f"
+                    _dash_label_with_xlsx(
+                        f"<div style='font-size:14px;font-weight:700;color:#334155;margin:0 0 6px'>"
+                        f"{html.escape(str(selected_target_item_c))} · {html.escape(str(selected_metric_c))}</div>",
+                        key="t2_item",
+                        styler=_t2_item_styled,
+                        file_name=f"{selected_client}_품목별상세.xlsx",
+                        sheet="품목별상세",
+                    )
+                    st.dataframe(_t2_item_styled, use_container_width=True, height=460)
 
                 with i_col_right_c:
                     render_plotly_chart(
@@ -17519,9 +17520,10 @@ def _dash_filter_and_tabs_fragment() -> None:
                 tuple(all_months),
             ),
         )
-        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>", unsafe_allow_html=True)
         render_tab3_dataframe_table(
-            sales_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_sales", table_kind="sales"
+            sales_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_sales", table_kind="sales",
+            label_html="<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 4px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>",
+            xlsx_name="T3_품목매출.xlsx",
         )
         # 상단 담당자·품목 선택 시 → 품목별 거래처 매출 상세 (클릭 펼침)
         if selected_staff and selected_item:
@@ -17536,9 +17538,10 @@ def _dash_filter_and_tabs_fragment() -> None:
         elif selected_item and not selected_staff:
             st.caption("💡 거래처별 상세를 보려면 상단 고정바에서 담당자를 먼저 선택한 뒤 품목을 선택하세요.")
     
-        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>2️⃣ 출고량</div>", unsafe_allow_html=True)
         render_tab3_dataframe_table(
-            qty_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_qty", table_kind="qty"
+            qty_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_qty", table_kind="qty",
+            label_html="<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 4px;'>2️⃣ 출고량</div>",
+            xlsx_name="T3_품목출고량.xlsx",
         )
         if selected_staff and selected_item:
             render_tab3_item_client_expanders(
@@ -17550,7 +17553,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                 selected_detail_years,
             )
     
-        st.markdown("<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 10px;'>3️⃣ 적용 단가 (실제 원본 단가) - 전체 기간 월별 고정 표시</div>", unsafe_allow_html=True)
         _price_sort_order = list(sales_p.index) if not sales_p.empty else None
         _price_items = []
         if not unit_price_p.empty:
@@ -17574,6 +17576,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                 key_prefix="tab3_price",
                 table_kind="price",
                 sort_order=_price_sort_order,
+                label_html="<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 4px;'>3️⃣ 적용 단가 (실제 원본 단가) - 전체 기간 월별 고정 표시</div>",
+                xlsx_name="T3_적용단가.xlsx",
             )
         else:
             st.caption(
@@ -17587,8 +17591,16 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.info("이 품목의 단가 변동(또는 최초 적용) 이력이 없습니다.")
             else:
                 _chg_fmt = {c: "{:,.0f}" for c in _chg.columns}
+                _chg_styled = _chg.style.format(_chg_fmt, na_rep="")
+                _dash_label_with_xlsx(
+                    f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 4px;'>3️⃣ 적용 단가 · {html.escape(str(_price_view))}</div>",
+                    key="tab3_price_chg",
+                    styler=_chg_styled,
+                    file_name=f"T3_적용단가_{_price_view}.xlsx",
+                    sheet="적용단가",
+                )
                 st.dataframe(
-                    _chg.style.format(_chg_fmt, na_rep=""),
+                    _chg_styled,
                     use_container_width=True,
                     height=120,
                 )
@@ -17842,10 +17854,7 @@ def _dash_filter_and_tabs_fragment() -> None:
 
     # Tab 4: 👤 담당자 & 상세내역
     with tab4:
-        t4_c1, t4_c2 = st.columns([4, 1])
-        t4_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>👤 담당자별 월 매출 실적 (만원)</div>", unsafe_allow_html=True)
-        t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-
+        styled_staff = None
         if not staff_pivot.empty:
             format_dict = {
                 col: "{:,.0f}"
@@ -17854,19 +17863,28 @@ def _dash_filter_and_tabs_fragment() -> None:
             }
             format_dict["전체매출비중"] = "{:,.1f}%"
             format_dict["당해매출비중"] = "{:,.1f}%"
-    
             monthly_cols = [
                 c
                 for c in staff_pivot.columns
                 if c not in ["전체매출비중", "당해매출비중", "총 매출 합계 (만원)"]
             ]
-    
             styled_staff = (
                 staff_pivot.style.format(format_dict)
                 .background_gradient(cmap="Purples", subset=["전체매출비중", "당해매출비중"])
                 .background_gradient(cmap="Oranges", subset=["총 매출 합계 (만원)"])
                 .background_gradient(cmap="Blues", subset=monthly_cols)
             )
+        t4_c1, t4_c2 = st.columns([4, 1])
+        with t4_c1:
+            _dash_label_with_xlsx(
+                "<div class='sub-header dashboard-tab-panel-head'>👤 담당자별 월 매출 실적 (만원)</div>",
+                key="t4_staff",
+                styler=styled_staff,
+                file_name="T4_담당자매출.xlsx",
+                sheet="담당자매출",
+            )
+        t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+        if styled_staff is not None:
             st.dataframe(styled_staff, use_container_width=True, height=350)
         st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
         if not df_base.empty:
@@ -18091,10 +18109,9 @@ def _dash_filter_and_tabs_fragment() -> None:
                             load_uploaded_files_from_bytes.clear()
                             load_uploaded_files_from_meta.clear()
                             st.rerun()
-        st.markdown("<div class='sub-header dashboard-tab-panel-head'>📋 거래 상세 내역 (최신순 800건)</div>", unsafe_allow_html=True)
+        styled_detail = None
         if not df_detail.empty:
             view_detail_df = df_detail.sort_values(by="매출일_dt", ascending=False).head(800)
-    
             styled_detail = (
                 view_detail_df
                 .style.format({
@@ -18105,6 +18122,15 @@ def _dash_filter_and_tabs_fragment() -> None:
                 })
                 .background_gradient(subset=["매출액"], cmap="Blues")
             )
+        _dash_label_with_xlsx(
+            "<div class='sub-header dashboard-tab-panel-head'>📋 거래 상세 내역 (최신순 800건)</div>",
+            key="t4_detail",
+            styler=styled_detail,
+            file_name="T4_상세거래내역.xlsx",
+            hide_index=True,
+            sheet="상세거래내역",
+        )
+        if styled_detail is not None:
             st.dataframe(styled_detail, use_container_width=True, height=600, hide_index=True)
     # Tab 5: 📌 채권 관리
     with tab5:
@@ -18122,8 +18148,27 @@ def _dash_filter_and_tabs_fragment() -> None:
 
         debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
 
+        styled_debt = None
+        if not filtered_debt_df.empty:
+            _debt_nums = [
+                c for c in filtered_debt_df.columns if c not in ("거래처", "구분")
+            ]
+            styled_debt = filtered_debt_df.style
+            if _debt_nums:
+                styled_debt = styled_debt.format("{:,.0f}", subset=_debt_nums)
+                styled_debt = styled_debt.background_gradient(
+                    cmap="Reds", subset=_debt_nums, axis=None
+                )
         t5_c1, t5_c2 = st.columns([4, 1])
-        t5_c1.markdown("<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>", unsafe_allow_html=True)
+        with t5_c1:
+            _dash_label_with_xlsx(
+                "<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>",
+                key="t5_debt",
+                styler=styled_debt,
+                file_name="T5_채권관리.xlsx",
+                hide_index=True,
+                sheet="채권관리",
+            )
         t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
 
         _debt_chip = (
