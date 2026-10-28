@@ -2170,7 +2170,7 @@ def convert_dashboard_to_ppt(
     _ppt_tab_slide(
         prs, "📌 Tab1 · 영업 종합 요약", "주요 실적 지표", pivot_m_total,
         bullets=[
-            f"총 누적 매출(VAT포함): {tot_sales_val:,.0f} 만원",
+            f"총 누적 매출(부가세 별도): {tot_sales_val:,.0f} 만원",
             f"최근 월 매출 ({latest_month_str_total}): {cur_sales_val:,.0f} 만원",
             f"전월 대비(MoM): {mom_rate_total:+.0f}%",
             f"월평균 대비 증감: {avg_rate_total:+.0f}%",
@@ -2195,8 +2195,8 @@ def convert_dashboard_to_ppt(
     _ppt_tab_slide(prs, tab2_title, "연도별 월 매출 (표)", pivot_m_client)
     _ppt_tab_slide(prs, tab2_title, "거래처별 품목 사용량", client_item_qty_pivot)
     # Tab3
-    sales_view = sales_p * 1.1 / 10000 if not sales_p.empty else sales_p
-    _ppt_tab_slide(prs, "📦 Tab3 · 품목 및 단가 분석", "품목별 매출액 (만원, VAT포함)", sales_view)
+    sales_view = sales_p / 10000 if not sales_p.empty else sales_p
+    _ppt_tab_slide(prs, "📦 Tab3 · 품목 및 단가 분석", "품목별 매출액 (만원, 부가세 별도)", sales_view)
     _ppt_tab_slide(prs, "📦 Tab3 · 품목 및 단가 분석", "품목별 출고량", qty_p)
     # Tab4
     _ppt_tab_slide(prs, "👤 Tab4 · 담당자 & 상세내역", "담당자별 월 매출 (만원)", staff_pivot)
@@ -5439,7 +5439,7 @@ def cached_client_item_qty_pivot_two_years(df_client_filtered, col_keys_tuple):
 
 
 def _client_item_sales_pivot_two_years_compute(df_client_filtered, col_keys_tuple):
-    """거래처 품목×년월 매출(만원, VAT포함) — col_keys 순서 (당월→과거 역순). tab2 전용."""
+    """거래처 품목×년월 매출(만원, 부가세 별도) — col_keys 순서 (당월→과거 역순). tab2 전용."""
     if df_client_filtered is None or df_client_filtered.empty:
         return pd.DataFrame()
     cols = [str(c) for c in (col_keys_tuple or ()) if c]
@@ -5450,7 +5450,7 @@ def _client_item_sales_pivot_two_years_compute(df_client_filtered, col_keys_tupl
     ).fillna(0)
     data = {key: (raw[key] if key in raw.columns else 0) for key in cols}
     out = pd.DataFrame(data, index=raw.index)
-    out = out.reindex(columns=cols, fill_value=0) * 1.1 / 10000
+    out = out.reindex(columns=cols, fill_value=0) / 10000
     out = out.loc[(out.fillna(0) != 0).any(axis=1)]
     return out
 
@@ -6348,6 +6348,20 @@ def _tab6_extra_map_rows(parent_staff: dict, selected_clients, visible_parents=N
                 continue
             rows.append({"거래처": name, "담당자": staff, "주소": addr, "parent": parent})
     return rows
+
+
+def _debt_apply_vat_mode(df, mode: str):
+    """채권 숫자열 표시. exclusive=원본(부가세 별도), inclusive=×1.1(부가세 포함)."""
+    if df is None or getattr(df, "empty", True):
+        return df
+    out = df.copy()
+    nums = [c for c in out.columns if c not in ("거래처", "구분")]
+    if not nums:
+        return out
+    if str(mode) == "inclusive":
+        for c in nums:
+            out[c] = pd.to_numeric(out[c], errors="coerce") * 1.1
+    return out
 
 
 def _drop_debt_noise_rows(df):
@@ -8287,9 +8301,9 @@ def _dash_compute_base_pivot_bundle(df_base, full_df, all_months):
     ].sum()
     if not df_total_monthly.empty:
         latest_period_total = df_total_monthly.index.max()
-        cur_month_sales_total = df_total_monthly.loc[latest_period_total] * 1.1
+        cur_month_sales_total = df_total_monthly.loc[latest_period_total]
         prev_period_total = latest_period_total - 1
-        prev_month_sales_total = df_total_monthly.get(prev_period_total, 0.0) * 1.1
+        prev_month_sales_total = df_total_monthly.get(prev_period_total, 0.0)
         mom_rate_total = (
             (cur_month_sales_total - prev_month_sales_total)
             / prev_month_sales_total
@@ -8297,7 +8311,7 @@ def _dash_compute_base_pivot_bundle(df_base, full_df, all_months):
             if prev_month_sales_total > 0
             else 0.0
         )
-        avg_monthly_sales_total = df_total_monthly.mean() * 1.1
+        avg_monthly_sales_total = df_total_monthly.mean()
         avg_rate_total = (
             (cur_month_sales_total - avg_monthly_sales_total)
             / avg_monthly_sales_total
@@ -8351,7 +8365,6 @@ def _dash_compute_client_pivot_bundle(df_client_filtered, df_f, years, all_month
             df_client_filtered.groupby(
                 df_client_filtered["매출일_dt"].dt.to_period("M")
             )["매출액"].sum()
-            * 1.1
         )
         latest_period_client = df_client_monthly.index.max()
         cur_month_sales_client = df_client_monthly.loc[latest_period_client]
@@ -8415,7 +8428,7 @@ def _yearly_monthly_pivot(data_df, all_months, years):
         return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
     pvt = data_df.pivot_table(
         index="월", columns="연도", values="매출액", aggfunc="sum"
-    ).fillna(0) * 1.1 / 10000
+    ).fillna(0) / 10000
     pvt = pvt.reindex(index=all_months, fill_value=0)
     all_yrs = [str(y) for y in years]
     pvt = pvt.reindex(columns=all_yrs, fill_value=0)
@@ -8439,7 +8452,7 @@ def _item_pivot_compute(data_df, item_name, metric, all_months, years):
         return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
         
     if metric == "매출액 (만원)":
-        pvt = df_item.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+        pvt = df_item.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
     elif "출고량" in metric:
         pvt = df_item.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0)
         target_bulks = ["CO2 (kg, Bulk)", "N2 (kg, Bulk)", "O2 (kg, Bulk)", "AR (kg, Bulk)"]
@@ -8496,7 +8509,6 @@ def cached_get_item_week_pivot(data_df, item_name, metric, year, all_months):
         pvt = (
             df.pivot_table(index="월", columns="주차", values="매출액", aggfunc="sum")
             .fillna(0)
-            * 1.1
             / 10000
         )
     elif "출고량" in str(metric):
@@ -8558,7 +8570,6 @@ def cached_get_item_month_week_year(data_df, item_name, metric, all_months, year
                 index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum"
             )
             .fillna(0)
-            * 1.1
             / 10000
         )
     elif "출고량" in str(metric):
@@ -8937,8 +8948,8 @@ def _tab1_bulk4_one(sub, item, metric, tot_m, tot_w, all_months, years):
     if d.empty:
         return empty_m, empty_w
     if metric == "매출액 (만원)":
-        m = d.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
-        w = d.pivot_table(index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+        m = d.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
+        w = d.pivot_table(index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
     elif "출고량" in str(metric):
         m = d.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
         w = d.pivot_table(index=["월", "주차"], columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
@@ -9095,7 +9106,7 @@ def _industry_pivot_compute(data_df, industry_name, metric, all_months, years):
         return pd.DataFrame(0, index=all_months, columns=[str(y) for y in years])
         
     if metric == "매출액 (만원)":
-        pvt = df_ind.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+        pvt = df_ind.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
     elif metric == "출고량":
         pvt = df_ind.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
     elif metric == "총매출 대비 비중 (%)":
@@ -9679,13 +9690,13 @@ def cached_filter_tab3_year_columns(sales_p, qty_p, selected_detail_years, avail
             if tot in df.columns:
                 cols.append(tot)
         return df[[c for c in cols if c in df.columns]]
-    sales_vat = sales_p * 1.1 / 10000
+    sales_vat = sales_p / 10000
     return _filter_year_columns(sales_vat), _filter_year_columns(qty_p)
 @st.cache_data
 def cached_tab3_item_client_detail(
     df, item_name, metric, years, all_months, selected_years_short
 ):
-    """품목 1개 → 거래처×월 상세 피벗 (sales=만원 VAT포함 / qty=출고량)."""
+    """품목 1개 → 거래처×월 상세 피벗 (sales=만원 부가세 별도 / qty=출고량)."""
     if df is None or df.empty or not item_name:
         return pd.DataFrame()
     d = df[df["품목명"] == item_name]
@@ -9695,7 +9706,6 @@ def cached_tab3_item_client_detail(
         raw = (
             d.pivot_table(index="거래처", columns="연도월_정렬", values="매출액", aggfunc="sum")
             .fillna(0)
-            * 1.1
             / 10000
         )
     else:
@@ -9831,7 +9841,6 @@ def cached_tab4_item_client_triple_pivot(
     sales_raw = (
         d.pivot_table(index="거래처", columns="연도월_정렬", values="매출액", aggfunc="sum")
         .fillna(0)
-        * 1.1
         / 10000
     )
     qty_raw = d.pivot_table(
@@ -9943,7 +9952,7 @@ def render_tab4_item_client_section(
     _t4_price_st = style_with_sum(price_disp, "{:,.0f}", cmap=None, axis=None)
     _dash_label_with_xlsx(
         "<div style='font-size:14px;font-weight:600;color:#334155;margin:12px 0 6px;'>"
-        "1️⃣ 매출액 (VAT 포함, 만원)</div>",
+        "1️⃣ 매출액 (부가세 별도, 만원)</div>",
         key="t4_item_sales",
         styler=_t4_sales_st,
         file_name=f"T4_{item_name}_매출.xlsx",
@@ -11486,7 +11495,7 @@ def render_debt_month_rank_panel(
 def cached_staff_pivot(df_base, desired_order):
     if df_base.empty:
         return pd.DataFrame()
-    staff_raw = (df_base.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000)
+    staff_raw = (df_base.pivot_table(index="담당자", columns="연도월_정렬", values="매출액", aggfunc="sum").fillna(0) / 10000)
     staff_cols = [c for c in desired_order if c in staff_raw.columns]
     
     df_p = staff_raw.reindex(columns=staff_cols, fill_value=0)
@@ -11526,7 +11535,7 @@ def _ranking_pivot_compute(df_base, current_year, sel_staff, all_months):
     if df_ranking.empty:
         return pd.DataFrame()
     
-    ranking_pivot = (df_ranking.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000)
+    ranking_pivot = (df_ranking.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) / 10000)
     ranking_pivot = ranking_pivot.reindex(columns=all_months, fill_value=0)
     ranking_pivot["당해 누적 (만원)"] = ranking_pivot.sum(axis=1)
     ranking_pivot = ranking_pivot.sort_values(by="당해 누적 (만원)", ascending=False)
@@ -16320,7 +16329,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             _sheets_dict = {
                 "연도별_월매출(만원)": (pivot_m_total, True),
                 "거래처별_품목별사용량": (client_item_qty_pivot, True),
-                "선택거래처_품목별_매출액(만원)": (sales_p * 1.1 / 10000, True),
+                "선택거래처_품목별_매출액(만원)": (sales_p / 10000, True),
                 "선택거래처_품목별_출고량": (qty_p, True),
                 "선택거래처_품목별_적용단가": (unit_price_p, True),
                 "담당자별_매출(만원)": (staff_pivot, True),
@@ -16355,7 +16364,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     try:
         if st.sidebar.button("📽️ PPT 생성", key="gen_dashboard_ppt", use_container_width=True):
             with st.spinner("PPT 파일 생성 중..."):
-                tot_sales_val_export = df_base["매출액"].sum() * 1.1 / 10000 if not df_base.empty else 0.0
+                tot_sales_val_export = df_base["매출액"].sum() / 10000 if not df_base.empty else 0.0
                 cur_sales_val_export = cur_month_sales_total / 10000
                 pivot_m_client_export = (
                     pivot_m_client
@@ -16607,7 +16616,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     df_ind_detail = df_base[df_base["업종"] == selected_industry]
             
                     if not df_ind_detail.empty:
-                        ind_client_pivot = df_ind_detail.pivot_table(index="거래처", columns="연도", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+                        ind_client_pivot = df_ind_detail.pivot_table(index="거래처", columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
                 
                         avail_years_ind = sorted([y for y in ind_client_pivot.columns if str(y).isdigit()])
                         ind_client_pivot = ind_client_pivot.reindex(columns=avail_years_ind, fill_value=0)
@@ -16696,7 +16705,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     with p_col1:
                         st.markdown(
                             f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
-                            f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (VAT포함, 만원)"
+                            f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (부가세 별도, 만원)"
                             f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
                             f"{'← 월 선택 또는 표 헤더 클릭' if is_touch_ui() else '← 월 버튼 또는 표 헤더 클릭'}"
                             f"</span></div>",
@@ -16741,7 +16750,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                         rank_m = st.session_state["top30_month"]
                         rank_month_label = f"{current_year_str}년 {rank_m}"
                 
-                        pvt_curr = df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) * 1.1 / 10000
+                        pvt_curr = df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) / 10000
                         pvt_curr = pvt_curr.reindex(columns=all_months, fill_value=0)
                 
                         if rank_m in pvt_curr.columns:
@@ -16861,7 +16870,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             df_diff = pd.merge(df_prev, df_curr, on="거래처", how="outer").fillna(0)
             df_diff["매출 증감액"] = df_diff[f"{curr_m_label} 매출"] - df_diff[f"{prev_m_label} 매출"]
     
-            df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] = (df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] * 1.1) / 10000
+            df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] = (df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]]) / 10000
             top_gains = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff["매출 증감액"] > 0)].sort_values(by="매출 증감액", ascending=False).head(10)
             top_drops = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] > 0) & (df_diff["매출 증감액"] < 0)].sort_values(by="매출 증감액", ascending=True).head(10)
             new_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] == 0) & (df_diff[f"{curr_m_label} 매출"] > 0)].sort_values(by=f"{curr_m_label} 매출", ascending=False)
@@ -16889,7 +16898,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     hide_index=True,
                     sheet="전월대비",
                 )
-                st.markdown(f"**🔥 기존 거래처 중 매출이 가장 많이 [상승]한 10곳 (단위: 만원, VAT 포함)**")
+                st.markdown(f"**🔥 기존 거래처 중 매출이 가장 많이 [상승]한 10곳 (단위: 만원, 부가세 별도)**")
                 if top_gains.empty:
                     st.info("해당 조건에 맞는 상승 거래처가 없습니다.")
                 else:
@@ -16912,7 +16921,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     hide_index=True,
                     sheet="전월대비",
                 )
-                st.markdown(f"**📉 기존 거래처 중 매출이 가장 많이 [하락]한 10곳 (단위: 만원, VAT 포함)**")
+                st.markdown(f"**📉 기존 거래처 중 매출이 가장 많이 [하락]한 10곳 (단위: 만원, 부가세 별도)**")
                 if top_drops.empty:
                     st.info("해당 조건에 맞는 하락 거래처가 없습니다.")
                 else:
@@ -16934,7 +16943,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     hide_index=True,
                     sheet="전월대비",
                 )
-                st.markdown(f"**🎉 {prev_m_label}엔 거래가 없었으나 {curr_m_label}에 새롭게 매출이 발생한 곳 (총 {len(new_clients)}곳, 단위: 만원, VAT 포함)**")
+                st.markdown(f"**🎉 {prev_m_label}엔 거래가 없었으나 {curr_m_label}에 새롭게 매출이 발생한 곳 (총 {len(new_clients)}곳, 단위: 만원, 부가세 별도)**")
                 if new_clients.empty:
                     st.info("신규/재개 거래처가 없습니다.")
                 else:
@@ -16956,7 +16965,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     hide_index=True,
                     sheet="전월대비",
                 )
-                st.markdown(f"**⚠️ {prev_m_label}엔 매출이 있었으나 {curr_m_label}엔 거래가 없는 곳 (총 {len(lost_clients)}곳, 단위: 만원, VAT 포함)**")
+                st.markdown(f"**⚠️ {prev_m_label}엔 매출이 있었으나 {curr_m_label}엔 거래가 없는 곳 (총 {len(lost_clients)}곳, 단위: 만원, 부가세 별도)**")
                 if lost_clients.empty:
                     st.info("미거래/이탈 의심 거래처가 없습니다.")
                 else:
@@ -17766,7 +17775,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             # 오른쪽 월 그래프: 당월→01월 역순만 (미도래 월 제외)
             _months_back = list(reversed(all_months[: _mi + 1]))
             st.caption(
-                f"왼쪽: 품목별 매출(만원·VAT포함) · 같은 달 당해년도·전년도 "
+                f"왼쪽: 품목별 매출(만원·부가세 별도) · 같은 달 당해년도·전년도 "
                 f"(매출 많은 순) · 오른쪽: 월별 매출 비교 그래프 · 하단: 당해 년평균 매출 비중"
             )
             _tab2_sig = (
@@ -17922,7 +17931,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         )
         render_tab3_dataframe_table(
             sales_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_sales", table_kind="sales",
-            label_html="<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 4px;'>1️⃣ 매출액 (VAT 포함, 만원)</div>",
+            label_html="<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 4px;'>1️⃣ 매출액 (부가세 별도, 만원)</div>",
             xlsx_name="T3_품목매출.xlsx",
         )
         # 상단 담당자·품목 선택 시 → 품목별 거래처 매출 상세 (클릭 펼침)
@@ -18396,7 +18405,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 if not unassigned_df.empty:
                     unassigned_summary = unassigned_df.groupby("거래처").agg(
                         최근매출일=("매출일_dt", "max"),
-                        총매출액_만원=("매출액", lambda x: sum(x) * 1.1 / 10000)
+                        총매출액_만원=("매출액", lambda x: sum(x) / 10000)
                     ).reset_index()
             
                     unassigned_summary = unassigned_summary.sort_values(by="총매출액_만원", ascending=False)
@@ -18560,18 +18569,23 @@ def _dash_filter_and_tabs_fragment() -> None:
 
         debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
 
+        if st.session_state.get("t5_debt_vat_mode") not in ("exclusive", "inclusive"):
+            st.session_state["t5_debt_vat_mode"] = "exclusive"
+        _vat_mode = st.session_state["t5_debt_vat_mode"]
+        debt_view = _debt_apply_vat_mode(filtered_debt_df, _vat_mode)
+
         styled_debt = None
-        if not filtered_debt_df.empty:
+        if not debt_view.empty:
             _debt_nums = [
-                c for c in filtered_debt_df.columns if c not in ("거래처", "구분")
+                c for c in debt_view.columns if c not in ("거래처", "구분")
             ]
-            styled_debt = filtered_debt_df.style
+            styled_debt = debt_view.style
             if _debt_nums:
                 styled_debt = styled_debt.format("{:,.0f}", subset=_debt_nums)
                 styled_debt = styled_debt.background_gradient(
                     cmap="Reds", subset=_debt_nums, axis=None
                 )
-        t5_c1, t5_c2 = st.columns([4, 1])
+        t5_c1, t5_vat, t5_c2 = st.columns([3.2, 1.7, 1.2])
         with t5_c1:
             _dash_label_with_xlsx(
                 "<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>",
@@ -18581,6 +18595,24 @@ def _dash_filter_and_tabs_fragment() -> None:
                 hide_index=True,
                 sheet="채권관리",
             )
+        with t5_vat:
+            _v1, _v2 = st.columns(2)
+            with _v1:
+                if st.button(
+                    "부가세 별도",
+                    key="t5_vat_ex",
+                    type="primary" if _vat_mode == "exclusive" else "secondary",
+                    width="stretch",
+                ):
+                    st.session_state["t5_debt_vat_mode"] = "exclusive"
+            with _v2:
+                if st.button(
+                    "부가세 포함",
+                    key="t5_vat_in",
+                    type="primary" if _vat_mode == "inclusive" else "secondary",
+                    width="stretch",
+                ):
+                    st.session_state["t5_debt_vat_mode"] = "inclusive"
         t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
 
         _debt_chip = (
@@ -18591,22 +18623,25 @@ def _dash_filter_and_tabs_fragment() -> None:
             if selected_client != "전체 거래처"
             else " · 거래처 전체"
         )
+        _debt_chip += (
+            " · 부가세 별도" if _vat_mode == "exclusive" else " · 부가세 포함"
+        )
         st.markdown(
             f"<div class='dashboard-debt-filter-chip'>현재 필터: {_debt_chip}</div>",
             unsafe_allow_html=True,
         )
 
         if not debt_df.empty:
-            if not filtered_debt_df.empty:
-                numeric_cols = [c for c in filtered_debt_df.columns if c not in ["거래처", "구분"]]
+            if not debt_view.empty:
+                numeric_cols = [c for c in debt_view.columns if c not in ["거래처", "구분"]]
 
                 total_outstanding = 0
                 warning_count = 0
 
                 if latest_month:
                     # 거래처별 집계 — 반복 loc 대신 groupby로 원복/지정 시 부하 완화
-                    _bal = filtered_debt_df[filtered_debt_df["구분"] == "잔액"]
-                    _sal = filtered_debt_df[filtered_debt_df["구분"] == "매출"]
+                    _bal = debt_view[debt_view["구분"] == "잔액"]
+                    _sal = debt_view[debt_view["구분"] == "매출"]
                     if latest_month in _bal.columns and not _bal.empty:
                         bal_by = _bal.groupby("거래처", sort=False)[latest_month].sum()
                         sal_by = (
@@ -18636,8 +18671,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
                 summary_rows = []
                 for gubun in ["이월", "익월", "매출", "수금", "잔액", "합계"]:
-                    if gubun in filtered_debt_df["구분"].values:
-                        sum_vals = filtered_debt_df[filtered_debt_df["구분"] == gubun][numeric_cols].sum()
+                    if gubun in debt_view["구분"].values:
+                        sum_vals = debt_view[debt_view["구분"] == gubun][numeric_cols].sum()
                         row_data = {"거래처": "📌 [전체 합계]", "구분": gubun}
                         for col in numeric_cols:
                             row_data[col] = sum_vals[col]
@@ -18705,7 +18740,7 @@ def _dash_filter_and_tabs_fragment() -> None:
 <div class="debt-sum-card">
   <div class="debt-sum-head">
     <div class="debt-sum-title">월별 전체 합계</div>
-    <div class="debt-sum-note">현재 필터 기준 · 단위 원</div>
+    <div class="debt-sum-note">현재 필터 기준 · 단위 원 · {"부가세 별도" if _vat_mode == "exclusive" else "부가세 포함"}</div>
   </div>
   <div class="debt-sum-wrap">
     <table class="debt-sum-table">
@@ -18752,7 +18787,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                         height=_iframe_h,
                         scrolling=False,
                     )
-                disp_debt = filtered_debt_df.copy()
+                disp_debt = debt_view.copy()
 
                 gubun_order = {"이월": 1, "매출": 2, "수금": 3, "잔액": 4, "합계": 5}
                 disp_debt["구분순위"] = disp_debt["구분"].map(gubun_order).fillna(99)
@@ -18790,7 +18825,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     _staff_months = [c for c in _staff_num if staff_debt_df[c].abs().sum() > 0]
                     _rank_months = [c for c in show_cols if c in _staff_months] or _staff_months
                     render_debt_month_rank_panel(
-                        staff_debt_df,
+                        _debt_apply_vat_mode(staff_debt_df, _vat_mode),
                         _rank_months,
                         payment_terms_map=payment_terms_map,
                         height=480,
@@ -18798,7 +18833,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     )
                 else:
                     render_debt_month_rank_panel(
-                        filtered_debt_df,
+                        debt_view,
                         show_cols,
                         payment_terms_map=payment_terms_map,
                         height=480,
