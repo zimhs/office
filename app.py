@@ -7253,6 +7253,7 @@ def _dash_pivot_cache_key(
     manual_token,
 ):
     return (
+        "vat_ex_v1",
         selected_client,
         tuple(selected_staff or ()),
         tuple(selected_item or ()),
@@ -7265,7 +7266,7 @@ def _dash_pivot_cache_key(
 
 def _dash_base_pivot_cache_key(start_date, end_date, sales_meta, manual_token):
     """날짜·원본데이터만 바뀌는 공통 피벗 키 (담당자/거래처/품목 변경과 무관)."""
-    return ("base", str(start_date), str(end_date), sales_meta, manual_token)
+    return ("base", "vat_ex_v1", str(start_date), str(end_date), sales_meta, manual_token)
 
 
 def _dash_memo(store_name, sig, factory, *, limit=24):
