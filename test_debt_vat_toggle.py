@@ -32,6 +32,13 @@ class DebtVatModeTest(unittest.TestCase):
         exc = self.app._debt_apply_vat_mode(df, "exclusive")
         self.assertAlmostEqual(float(exc.loc[0, "10월"]), 1_802_398_596.3636, places=2)
 
+    def test_set_vat_mode_callback(self):
+        with patch.object(self.app.st, "session_state", {}):
+            self.app._set_dash_vat_mode("inclusive")
+            self.assertEqual(self.app.st.session_state["dash_vat_mode"], "inclusive")
+            self.app._set_dash_vat_mode("exclusive")
+            self.assertEqual(self.app.st.session_state["dash_vat_mode"], "exclusive")
+
     def test_sales_scale_only_when_inclusive(self):
         with patch.object(self.app.st, "session_state", {"dash_vat_mode": "exclusive"}):
             self.assertEqual(self.app._sales_vat_mult(), 1.0)
@@ -46,7 +53,9 @@ class DebtVatModeTest(unittest.TestCase):
         for prefix in ("t1", "t2", "t3", "t4", "t5"):
             self.assertIn(f'_render_vat_chips(latest_update_str, "{prefix}")' if prefix != "t5" else '_render_vat_chips(debt_update_str, "t5")', src)
         self.assertIn("def _tab1_vat_main", src)
-        self.assertIn("@st.fragment", src[src.rfind("@st.fragment", 0, src.index("def _tab1_vat_main")): src.index("def _tab1_vat_main")])
+        self.assertIn("on_click=_set_dash_vat_mode", src)
+        self.assertIn('args=("exclusive",)', src)
+        self.assertIn('args=("inclusive",)', src)
         self.assertIn("font-size: 12px", src)
         self.assertIn('key=f"{prefix}_vat_ex"', src)
         self.assertNotIn("pd.to_numeric(out[c], errors=\"coerce\") * 1.1", src)

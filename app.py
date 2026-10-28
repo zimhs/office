@@ -6366,6 +6366,12 @@ def _dash_vat_lbl() -> str:
     return "부가세 포함" if _dash_vat_mode() == "inclusive" else "부가세 별도"
 
 
+def _set_dash_vat_mode(mode: str) -> None:
+    """버튼 on_click. 위젯 그리기 전에 모드를 바꿔야 같은 턴에 금액이 바뀐다."""
+    if mode in ("exclusive", "inclusive"):
+        st.session_state["dash_vat_mode"] = mode
+
+
 def _sales_vat_mult() -> float:
     """매출 탭(매출액=별도). 포함일 때만 1.1."""
     return _DASH_VAT_INCL if _dash_vat_mode() == "inclusive" else 1.0
@@ -6497,7 +6503,7 @@ def _dash_vat_chip_css() -> None:
 
 
 def _render_vat_chips(update_str, prefix: str) -> str:
-    """부가세 별도/포함 + 업데이트 칩. 같은 fragment 안에서 호출해야 클릭 시 그 블록만 다시 그린다."""
+    """부가세 별도/포함 + 업데이트 칩. on_click으로 모드를 먼저 저장한다."""
     _dash_vat_chip_css()
     mode = _dash_vat_mode()
     with st.container(key=f"{prefix}_vat_col"):
@@ -6507,20 +6513,22 @@ def _render_vat_chips(update_str, prefix: str) -> str:
             vertical_alignment="center",
             key=f"{prefix}_vat_row",
         ):
-            if st.button(
+            st.button(
                 "부가세 별도",
                 key=f"{prefix}_vat_ex",
                 type="primary" if mode == "exclusive" else "secondary",
                 width="content",
-            ):
-                st.session_state["dash_vat_mode"] = "exclusive"
-            if st.button(
+                on_click=_set_dash_vat_mode,
+                args=("exclusive",),
+            )
+            st.button(
                 "부가세 포함",
                 key=f"{prefix}_vat_in",
                 type="primary" if mode == "inclusive" else "secondary",
                 width="content",
-            ):
-                st.session_state["dash_vat_mode"] = "inclusive"
+                on_click=_set_dash_vat_mode,
+                args=("inclusive",),
+            )
             st.button(
                 f"⏱️ 데이터 업데이트: {update_str}",
                 key=f"{prefix}_vat_upd",
@@ -16633,9 +16641,8 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.session_state["_dash_cloud_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
     # Tab 1: 📌 영업 종합 요약
     with tab1:
-        @st.fragment
         def _tab1_vat_main() -> None:
-            """부가세 칩+지표+월매출표만 다시 그림. 파일/필터 로딩 없음."""
+            """부가세 칩+매출 금액. 필터 fragment 안에서 그려 클릭 시 탭 금액이 같이 바뀐다."""
             _cur_year_total = str(years[0]) if years else ""
             if not df_base.empty and _cur_year_total and "연도" in df_base.columns:
                 _cur_year_sales_total = df_base.loc[df_base["연도"].astype(str) == _cur_year_total, "매출액"].sum()
@@ -17203,9 +17210,8 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.session_state.show_corp_info = False
         st.session_state.last_opened_client = selected_client
 
-        @st.fragment
         def _tab2_vat_main() -> None:
-            """부가세 칩+거래처 KPI만 다시 그림."""
+            """부가세 칩+거래처 KPI."""
             _cur_year_c = str(years[0]) if years else ""
             if (
                 not df_client_filtered.empty
@@ -18166,7 +18172,6 @@ def _dash_filter_and_tabs_fragment() -> None:
             ),
         )
 
-        @st.fragment
         def _tab3_vat_main() -> None:
             t3_c1, t3_c2 = st.columns([1.2, 1.8], vertical_alignment="center")
             with t3_c1:
@@ -18524,7 +18529,6 @@ def _dash_filter_and_tabs_fragment() -> None:
 
     # Tab 4: 👤 담당자 & 상세내역
     with tab4:
-        @st.fragment
         def _tab4_vat_main() -> None:
             styled_staff = None
             _staff_show = _scale_sales_money(
@@ -18847,7 +18851,6 @@ def _dash_filter_and_tabs_fragment() -> None:
 
         debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
 
-        @st.fragment
         def _tab5_vat_main() -> None:
             _vat_mode = _dash_vat_mode()
             debt_view = _debt_apply_vat_mode(filtered_debt_df, _vat_mode)
