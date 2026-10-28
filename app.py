@@ -18607,7 +18607,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 styled_debt = styled_debt.background_gradient(
                     cmap="Reds", subset=_debt_nums, axis=None
                 )
-        t5_c1, t5_c2 = st.columns([4, 1.6])
+        t5_c1, t5_c2 = st.columns([3.6, 2.4], vertical_alignment="center")
         with t5_c1:
             _dash_label_with_xlsx(
                 "<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>",
@@ -18621,24 +18621,72 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.markdown(
                 """
                 <style>
+                div[class*="st-key-t5_vat_row"] div[data-testid="stHorizontalBlock"] {
+                  justify-content: flex-end !important;
+                  align-items: center !important;
+                  gap: 6px !important;
+                  flex-wrap: nowrap !important;
+                }
+                div[class*="st-key-t5_vat_row"] div[data-testid="stHorizontalBlock"] > div {
+                  width: auto !important;
+                  flex: 0 0 auto !important;
+                  display: flex !important;
+                  align-items: center !important;
+                  margin: 0 !important;
+                  padding: 0 !important;
+                }
+                div[class*="st-key-t5_vat_row"] [data-testid="stMarkdown"],
+                div[class*="st-key-t5_vat_row"] [data-testid="stMarkdownContainer"],
+                div[class*="st-key-t5_vat_row"] [data-testid="element-container"] {
+                  width: auto !important;
+                  margin: 0 !important;
+                  padding: 0 !important;
+                }
                 div[class*="st-key-t5_vat_"] button {
                   box-sizing: border-box !important;
-                  min-height: 22px !important;
-                  height: 22px !important;
-                  max-height: 22px !important;
+                  min-height: 32px !important;
+                  height: 32px !important;
+                  max-height: 32px !important;
                   min-width: 0 !important;
-                  padding: 0 7px !important;
-                  border-radius: 6px !important;
-                  font-size: 11px !important;
-                  font-weight: 700 !important;
-                  line-height: 20px !important;
+                  padding: 0 12px !important;
+                  border-radius: 8px !important;
+                  border: 1px solid #CBD5E1 !important;
+                  box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+                  font-size: 13px !important;
+                  font-weight: 600 !important;
+                  line-height: 30px !important;
                   margin: 0 !important;
                 }
                 div[class*="st-key-t5_vat_"] button p {
-                  font-size: 11px !important;
-                  font-weight: 700 !important;
-                  line-height: 20px !important;
+                  font-size: 13px !important;
+                  font-weight: 600 !important;
+                  line-height: 30px !important;
                   margin: 0 !important;
+                }
+                div[class*="st-key-t5_vat_"] [data-testid="stBaseButton-secondary"] {
+                  background: #FFFFFF !important;
+                  color: #475569 !important;
+                }
+                div[class*="st-key-t5_vat_"] [data-testid="stBaseButton-primary"] {
+                  background: #334155 !important;
+                  color: #FFFFFF !important;
+                  border-color: #334155 !important;
+                }
+                span.t5-upd-chip {
+                  display: inline-flex !important;
+                  align-items: center !important;
+                  box-sizing: border-box !important;
+                  height: 32px !important;
+                  padding: 0 12px !important;
+                  border-radius: 8px !important;
+                  border: 1px solid #CBD5E1 !important;
+                  background: #FFFFFF !important;
+                  color: #475569 !important;
+                  font-size: 13px !important;
+                  font-weight: 600 !important;
+                  line-height: 30px !important;
+                  box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+                  white-space: nowrap !important;
                 }
                 </style>
                 """,
@@ -18664,7 +18712,10 @@ def _dash_filter_and_tabs_fragment() -> None:
                     width="content",
                 ):
                     st.session_state["t5_debt_vat_mode"] = "inclusive"
-                st.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
+                st.markdown(
+                    f"<span class='t5-upd-chip'>⏱️ 데이터 업데이트: {html.escape(str(debt_update_str))}</span>",
+                    unsafe_allow_html=True,
+                )
 
         _debt_chip = (
             f"담당자 {', '.join(selected_staff)}" if selected_staff else "담당자 전체"
