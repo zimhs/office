@@ -13,15 +13,24 @@ class DebtVatModeTest(unittest.TestCase):
 
         cls.app = dash_app
 
-    def test_exclusive_keeps_raw_inclusive_multiplies(self):
+    def test_inclusive_keeps_raw_exclusive_divides(self):
         df = pd.DataFrame(
             {"거래처": ["A"], "구분": ["잔액"], "10월": [11000.0], "11월": [22000.0]}
         )
-        raw = self.app._debt_apply_vat_mode(df, "exclusive")
-        self.assertEqual(raw.loc[0, "10월"], 11000.0)
         inc = self.app._debt_apply_vat_mode(df, "inclusive")
-        self.assertAlmostEqual(float(inc.loc[0, "10월"]), 12100.0)
-        self.assertAlmostEqual(float(inc.loc[0, "11월"]), 24200.0)
+        self.assertEqual(inc.loc[0, "10월"], 11000.0)
+        exc = self.app._debt_apply_vat_mode(df, "exclusive")
+        self.assertAlmostEqual(float(exc.loc[0, "10월"]), 10000.0)
+        self.assertAlmostEqual(float(exc.loc[0, "11월"]), 20000.0)
+
+    def test_october_matches_erp_sales_and_total(self):
+        # 202610.csv 총합계: 매출액 1,802,398,597 · 합계액 1,982,638,456
+        inc_oct = 1_982_638_456.0
+        df = pd.DataFrame({"거래처": ["합"], "구분": ["매출"], "10월": [inc_oct]})
+        inc = self.app._debt_apply_vat_mode(df, "inclusive")
+        self.assertAlmostEqual(float(inc.loc[0, "10월"]), inc_oct)
+        exc = self.app._debt_apply_vat_mode(df, "exclusive")
+        self.assertAlmostEqual(float(exc.loc[0, "10월"]), 1_802_398_596.3636, places=2)
 
     def test_tab_labels_say_vat_exclusive(self):
         with open("app.py", encoding="utf-8") as f:
@@ -44,9 +53,10 @@ class DebtVatModeTest(unittest.TestCase):
         self.assertNotIn("만원·VAT포함", src)
         self.assertIn("매출액 (부가세 별도, 만원)", src)
         self.assertIn("품목별 매출(만원·부가세 별도)", src)
-        vat_mult = [ln for ln in src.splitlines() if "* 1.1" in ln]
-        self.assertEqual(len(vat_mult), 1)
-        self.assertIn("pd.to_numeric(out[c], errors=\"coerce\") * 1.1", src)
+        vat_div = [ln for ln in src.splitlines() if "/ 1.1" in ln]
+        self.assertEqual(len(vat_div), 1)
+        self.assertIn("pd.to_numeric(out[c], errors=\"coerce\") / 1.1", src)
+        self.assertNotIn("pd.to_numeric(out[c], errors=\"coerce\") * 1.1", src)
 
     def test_yearly_monthly_pivot_is_exclusive_manwon(self):
         df = pd.DataFrame(

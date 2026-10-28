@@ -6351,16 +6351,19 @@ def _tab6_extra_map_rows(parent_staff: dict, selected_clients, visible_parents=N
 
 
 def _debt_apply_vat_mode(df, mode: str):
-    """채권 숫자열 표시. exclusive=원본(부가세 별도), inclusive=×1.1(부가세 포함)."""
+    """채권.csv 숫자는 ERP 합계액(부가세 포함).
+
+    exclusive(부가세 별도)=÷1.1 → 매출액, inclusive(부가세 포함)=원본 → 합계액.
+    """
     if df is None or getattr(df, "empty", True):
         return df
     out = df.copy()
     nums = [c for c in out.columns if c not in ("거래처", "구분")]
     if not nums:
         return out
-    if str(mode) == "inclusive":
+    if str(mode) != "inclusive":
         for c in nums:
-            out[c] = pd.to_numeric(out[c], errors="coerce") * 1.1
+            out[c] = pd.to_numeric(out[c], errors="coerce") / 1.1
     return out
 
 
