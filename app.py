@@ -6362,6 +6362,10 @@ def _dash_vat_mode() -> str:
     return m
 
 
+def _dash_vat_lbl() -> str:
+    return "부가세 포함" if _dash_vat_mode() == "inclusive" else "부가세 별도"
+
+
 def _sales_vat_mult() -> float:
     """매출 탭(매출액=별도). 포함일 때만 1.1."""
     return _DASH_VAT_INCL if _dash_vat_mode() == "inclusive" else 1.0
@@ -6376,7 +6380,7 @@ def _scale_sales_money(val, skip_cols=()):
     if isinstance(val, pd.DataFrame):
         out = val.copy()
         for c in out.columns:
-            if c in skip or c in ("거래처", "구분", "품목명", "담당자", "업종"):
+            if c in skip or c in ("거래처", "구분", "품목명", "담당자", "업종", "순번", "최근매출일", "담당자지정"):
                 continue
             if pd.api.types.is_numeric_dtype(out[c]):
                 out[c] = out[c] * m
@@ -9227,12 +9231,19 @@ def render_tab1_bulk4_item_panel():
         y_suf, y_fmt, _fmt_kind, _cmap = " 천kg", ",.1f", "qty", "Greens"
     else:
         y_suf, y_fmt, _fmt_kind, _cmap = " 만원", ",.0f", "amt", "Blues"
+    if _fmt_kind == "amt":
+        item_pivot = _scale_sales_money(item_pivot)
+        week_year_pivot = _scale_sales_money(week_year_pivot)
+        htmls = {}
+    _b4_metric_lbl = (
+        f"{selected_metric} · {_dash_vat_lbl()}" if _fmt_kind == "amt" else selected_metric
+    )
     _b4_disp = get_display_df_with_sum(item_pivot, "연간 합계")
     _b4_fmt = "{:,.1f}%" if _fmt_kind == "pct" else ("{:,.1f}" if _fmt_kind == "qty" else "{:,.0f}")
     _b4_styled = style_with_sum(_b4_disp, _b4_fmt, _cmap, axis=None)
     _b4_fig = create_stacked_bar_chart(item_pivot, title_text="", y_suffix=y_suf, y_format=y_fmt)
     _dash_label_with_xlsx(
-        f"<div style='font-size:14px;font-weight:700;color:#334155;margin:0 0 6px'>{html.escape(str(selected_target_item))} · {html.escape(str(selected_metric))}</div>",
+        f"<div style='font-size:14px;font-weight:700;color:#334155;margin:0 0 6px'>{html.escape(str(selected_target_item))} · {html.escape(str(_b4_metric_lbl))}</div>",
         key="t1_bulk4",
         styler=_b4_styled,
         file_name="T1_4대품목상세.xlsx",
@@ -9920,7 +9931,9 @@ def render_tab3_item_client_expanders(df_src, items, metric, years, all_months, 
     """상단에서 선택한 품목의 거래처별 상세 — 클릭 펼침 (매출/출고 각각)."""
     if not items:
         return
-    label_metric = "매출" if metric == "sales" else "출고량"
+    label_metric = (
+        f"매출 ({_dash_vat_lbl()})" if metric == "sales" else "출고량"
+    )
     cmap = "Blues" if metric == "sales" else "Greens"
     bulk = ("CO2 (kg, Bulk)", "N2 (kg, Bulk)", "O2 (kg, Bulk)", "AR (kg, Bulk)")
     for item in items:
@@ -9939,6 +9952,8 @@ def render_tab3_item_client_expanders(df_src, items, metric, years, all_months, 
             if pvt is None or pvt.empty:
                 st.info(f"선택한 조건에서 [{item}] 거래처 상세 데이터가 없습니다.")
                 continue
+            if metric == "sales":
+                pvt = _scale_sales_money(pvt)
             pvt_disp = get_display_df_with_sum(pvt, "합계")
             fmt = "{:,.1f}" if metric == "qty" and item in bulk else "{:,.0f}"
             st.dataframe(
@@ -10104,7 +10119,9 @@ def render_tab4_item_client_section(
         st.info(f"선택한 조건에서 [{item_name}] 거래처 데이터가 없습니다.")
         return
 
-    sales_disp = get_display_df_with_sum(triple["sales"], "합계", text_cols=["순번"])
+    sales_disp = get_display_df_with_sum(
+        _scale_sales_money(triple["sales"]), "합계", text_cols=["순번"]
+    )
     qty_disp = get_display_df_with_sum(triple["qty"], "합계", text_cols=["순번"])
     price_disp = get_display_df_with_sum(triple["price"], "합계", text_cols=["순번"])
 
@@ -10116,7 +10133,7 @@ def render_tab4_item_client_section(
     _t4_price_st = style_with_sum(price_disp, "{:,.0f}", cmap=None, axis=None)
     _dash_label_with_xlsx(
         "<div style='font-size:14px;font-weight:600;color:#334155;margin:12px 0 6px;'>"
-        "1️⃣ 매출액 (부가세 별도, 만원)</div>",
+        f"1️⃣ 매출액 ({_dash_vat_lbl()}, 만원)</div>",
         key="t4_item_sales",
         styler=_t4_sales_st,
         file_name=f"T4_{item_name}_매출.xlsx",
@@ -16670,7 +16687,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             _t1_month_styled = style_with_sum(pivot_m_total_disp, "{:,.0f}", "Blues", axis=None)
             _t1_month_fig = create_stacked_bar_chart(_pvt_show, title_text="")
             _dash_label_with_xlsx(
-                "<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 연도별 월 매출 추이</div>",
+                f"<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 연도별 월 매출 추이 ({_vat_lbl}, 만원)</div>",
                 key="t1_month",
                 styler=_t1_month_styled,
                 file_name="연도별_월매출.xlsx",
@@ -16687,466 +16704,486 @@ def _dash_filter_and_tabs_fragment() -> None:
                     use_container_width=True, key="tab1_total_chart"
                 )
 
-        _tab1_vat_main()
     
-        st.markdown("---")
-        _tab1_bulk4_ensure_pack(
-            df_base,
-            target_items,
-            all_months,
-            years,
-            latest_update_str,
-        )
-        render_tab1_bulk4_item_panel()
+            st.markdown("---")
+            _tab1_bulk4_ensure_pack(
+                df_base,
+                target_items,
+                all_months,
+                years,
+                latest_update_str,
+            )
+            render_tab1_bulk4_item_panel()
 
-        st.markdown("---")
-        st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏭 업종별(분류별) 상세 분석</div>", unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown(
+                f"<div class='sub-header dashboard-tab-panel-head'>🏭 업종별(분류별) 상세 분석 ({_vat_lbl})</div>",
+                unsafe_allow_html=True,
+            )
 
-        if "업종" in df_base.columns:
-            available_industries = sorted(list(df_base["업종"].unique()))
+            if "업종" in df_base.columns:
+                available_industries = sorted(list(df_base["업종"].unique()))
     
-            if len(available_industries) == 1 and available_industries[0] == "미분류":
-                st.info("💡 현재 모든 거래처가 '미분류' 상태입니다. 왼쪽 사이드바에서 '🏢 거래처 업종 분류 (CSV)' 파일을 업로드하시면 정확한 업종별 상세 분석이 가능합니다.")
+                if len(available_industries) == 1 and available_industries[0] == "미분류":
+                    st.info("💡 현재 모든 거래처가 '미분류' 상태입니다. 왼쪽 사이드바에서 '🏢 거래처 업종 분류 (CSV)' 파일을 업로드하시면 정확한 업종별 상세 분석이 가능합니다.")
         
-            if available_industries:
-                ind_col1, ind_col2 = st.columns([1, 1])
-                with ind_col1:
-                    selected_industry = st.selectbox("🔍 분석할 업종(분류) 선택", available_industries, key="industry_selectbox")
-                with ind_col2:
-                    selected_ind_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="industry_metric_radio")
+                if available_industries:
+                    ind_col1, ind_col2 = st.columns([1, 1])
+                    with ind_col1:
+                        selected_industry = st.selectbox("🔍 분석할 업종(분류) 선택", available_industries, key="industry_selectbox")
+                    with ind_col2:
+                        selected_ind_metric = st.radio("📊 분석 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="industry_metric_radio")
         
-                ind_pivot = _dash_memo(
-                    "_dash_ind_pivot",
-                    (
-                        selected_industry,
-                        selected_ind_metric,
-                        tuple(all_months),
-                        tuple(str(y) for y in years),
-                        str(start_date),
-                        str(end_date),
-                        sales_file_meta,
-                        int(len(df_base)),
-                    ),
-                    lambda: _industry_pivot_compute(
-                        df_base,
-                        selected_industry,
-                        selected_ind_metric,
-                        all_months,
-                        years,
-                    ),
-                )
-            
-                ind_pivot_disp = get_display_df_with_sum(ind_pivot, "연간 합계")
-                if "비중" in selected_ind_metric:
-                    _ind_styled = style_with_sum(ind_pivot_disp, "{:,.1f}%", "Purples", axis=None)
-                    y_suf_i, y_fmt_i = "%", ",.1f"
-                    _ind_tbl_key = "ind_table_pct"
-                elif "출고량" in selected_ind_metric:
-                    _ind_styled = style_with_sum(ind_pivot_disp, "{:,.1f}", "Greens", axis=None)
-                    y_suf_i, y_fmt_i = " 천", ",.1f"
-                    _ind_tbl_key = "ind_table_qty"
-                else:
-                    _ind_styled = style_with_sum(ind_pivot_disp, "{:,.0f}", "Blues", axis=None)
-                    y_suf_i, y_fmt_i = " 만원", ",.0f"
-                    _ind_tbl_key = "ind_table_amt"
-                _ind_fig = create_stacked_bar_chart(
-                    ind_pivot, title_text="", y_suffix=y_suf_i, y_format=y_fmt_i
-                )
-                _dash_label_with_xlsx(
-                    f"<div style='font-size:14px;font-weight:700;color:#334155;margin:0 0 6px'>"
-                    f"{html.escape(str(selected_industry))} · {html.escape(str(selected_ind_metric))}</div>",
-                    key="t1_ind",
-                    styler=_ind_styled,
-                    file_name="T1_업종별상세.xlsx",
-                    sheet="업종별",
-                    fig=_ind_fig,
-                    graph_name="T1_업종별상세.png",
-                )
-                i_col_left2, i_col_right2 = st.columns([1, 1])
-                with i_col_left2:
-                    st.caption("💡 표의 행(월)을 클릭하면 아래 '업종별 매출 비중' 도넛 차트의 기준 월이 변경됩니다.")
-                    ind_ev = st.dataframe(_ind_styled, use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key=_ind_tbl_key)
-                    
-                    # 행(월) 클릭 시 도넛 차트 월(top30_month) 강제 업데이트
-                    if ind_ev and ind_ev.selection.rows:
-                        sel_idx = ind_ev.selection.rows[0]
-                        sel_month = ind_pivot_disp.index[sel_idx]
-                    
-                        if sel_month in all_months and st.session_state.get("top30_month") != sel_month:
-                            st.session_state["top30_month"] = sel_month
-                            try:
-                                st.query_params["top30_month"] = sel_month
-                            except Exception:
-                                pass
-                            st.rerun()
-                        
-                with i_col_right2:
-                    render_plotly_chart(
-                        _ind_fig,
-                        use_container_width=True, key="tab1_industry_chart"
+                    ind_pivot = _dash_memo(
+                        "_dash_ind_pivot",
+                        (
+                            selected_industry,
+                            selected_ind_metric,
+                            tuple(all_months),
+                            tuple(str(y) for y in years),
+                            str(start_date),
+                            str(end_date),
+                            sales_file_meta,
+                            int(len(df_base)),
+                        ),
+                        lambda: _industry_pivot_compute(
+                            df_base,
+                            selected_industry,
+                            selected_ind_metric,
+                            all_months,
+                            years,
+                        ),
                     )
-                st.markdown("<br>", unsafe_allow_html=True)
-                with st.expander(f"📂 [{selected_industry}] 소속 거래처 상세 데이터 파보기 (클릭하여 펼치기)", expanded=False):
-                    df_ind_detail = df_base[df_base["업종"] == selected_industry]
             
-                    if not df_ind_detail.empty:
-                        ind_client_pivot = df_ind_detail.pivot_table(index="거래처", columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
-                
-                        avail_years_ind = sorted([y for y in ind_client_pivot.columns if str(y).isdigit()])
-                        ind_client_pivot = ind_client_pivot.reindex(columns=avail_years_ind, fill_value=0)
-                        ind_client_pivot["총 누적매출"] = ind_client_pivot.sum(axis=1)
-                        ind_client_pivot = ind_client_pivot.sort_values(by="총 누적매출", ascending=False)
-                
-                        ind_client_pivot_disp = get_display_df_with_sum(ind_client_pivot, "합계")
-                        st.dataframe(style_with_sum(ind_client_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=280)
-                
-                        st.markdown("<hr style='margin: 15px 0px; border-top: 1px dashed #E2E8F0;'>", unsafe_allow_html=True)
-                
-                        ind_clients = sorted(df_ind_detail["거래처"].unique())
-                
-                        c1, c2, c3 = st.columns([1, 1, 1])
-                        with c1:
-                            sel_ind_client = st.selectbox(f"🏢 [{selected_industry}] 거래처 선택", ind_clients, key="ind_client_sel")
-                        with c2:
-                            client_items = sorted(df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]["품목명"].unique())
-                            sel_ind_item = st.selectbox("📦 품목 선택", client_items if client_items else ["없음"], key="ind_item_sel")
-                        with c3:
-                            sel_ind_sub_metric = st.radio("📊 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="ind_sub_metric")
-                
-                        if client_items:
-                            df_target_client = df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]
-                            sub_item_pivot = cached_get_item_pivot(df_target_client, sel_ind_item, sel_ind_sub_metric, all_months, years)
+                    if "매출액" in selected_ind_metric:
+                        ind_pivot = _scale_sales_money(ind_pivot)
+                    ind_pivot_disp = get_display_df_with_sum(ind_pivot, "연간 합계")
+                    if "비중" in selected_ind_metric:
+                        _ind_styled = style_with_sum(ind_pivot_disp, "{:,.1f}%", "Purples", axis=None)
+                        y_suf_i, y_fmt_i = "%", ",.1f"
+                        _ind_tbl_key = "ind_table_pct"
+                    elif "출고량" in selected_ind_metric:
+                        _ind_styled = style_with_sum(ind_pivot_disp, "{:,.1f}", "Greens", axis=None)
+                        y_suf_i, y_fmt_i = " 천", ",.1f"
+                        _ind_tbl_key = "ind_table_qty"
+                    else:
+                        _ind_styled = style_with_sum(ind_pivot_disp, "{:,.0f}", "Blues", axis=None)
+                        y_suf_i, y_fmt_i = " 만원", ",.0f"
+                        _ind_tbl_key = "ind_table_amt"
+                    _ind_fig = create_stacked_bar_chart(
+                        ind_pivot, title_text="", y_suffix=y_suf_i, y_format=y_fmt_i
+                    )
+                    _ind_metric_lbl = selected_ind_metric
+                    if "매출액" in str(selected_ind_metric):
+                        _ind_metric_lbl = f"{selected_ind_metric} · {_vat_lbl}"
+                    _dash_label_with_xlsx(
+                        f"<div style='font-size:14px;font-weight:700;color:#334155;margin:0 0 6px'>"
+                        f"{html.escape(str(selected_industry))} · {html.escape(str(_ind_metric_lbl))}</div>",
+                        key="t1_ind",
+                        styler=_ind_styled,
+                        file_name="T1_업종별상세.xlsx",
+                        sheet="업종별",
+                        fig=_ind_fig,
+                        graph_name="T1_업종별상세.png",
+                    )
+                    i_col_left2, i_col_right2 = st.columns([1, 1])
+                    with i_col_left2:
+                        st.caption("💡 표의 행(월)을 클릭하면 아래 '업종별 매출 비중' 도넛 차트의 기준 월이 변경됩니다.")
+                        ind_ev = st.dataframe(_ind_styled, use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key=_ind_tbl_key)
                     
-                            sc1, sc2 = st.columns([1, 1])
-                            with sc1:
-                                sub_item_pivot_disp = get_display_df_with_sum(sub_item_pivot, "연간 합계")
-                                if "비중" in sel_ind_sub_metric:
-                                    st.dataframe(style_with_sum(sub_item_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=410)
-                                    y_suf_sub, y_fmt_sub = "%", ",.1f"
-                                elif "출고량" in sel_ind_sub_metric:
-                                    if sel_ind_item in target_items:
-                                        y_suf_sub, y_fmt_sub = " 천kg", ",.1f"
-                                    elif "LPG" in str(sel_ind_item).upper():
-                                        y_suf_sub, y_fmt_sub = " kg", ",.0f"
+                        # 행(월) 클릭 시 도넛 차트 월(top30_month) 강제 업데이트
+                        if ind_ev and ind_ev.selection.rows:
+                            sel_idx = ind_ev.selection.rows[0]
+                            sel_month = ind_pivot_disp.index[sel_idx]
+                    
+                            if sel_month in all_months and st.session_state.get("top30_month") != sel_month:
+                                st.session_state["top30_month"] = sel_month
+                                try:
+                                    st.query_params["top30_month"] = sel_month
+                                except Exception:
+                                    pass
+                                st.rerun()
+                        
+                    with i_col_right2:
+                        render_plotly_chart(
+                            _ind_fig,
+                            use_container_width=True, key="tab1_industry_chart"
+                        )
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    with st.expander(f"📂 [{selected_industry}] 소속 거래처 상세 데이터 파보기 (클릭하여 펼치기)", expanded=False):
+                        df_ind_detail = df_base[df_base["업종"] == selected_industry]
+            
+                        if not df_ind_detail.empty:
+                            ind_client_pivot = _scale_sales_money(
+                            df_ind_detail.pivot_table(index="거래처", columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
+                        )
+                
+                            avail_years_ind = sorted([y for y in ind_client_pivot.columns if str(y).isdigit()])
+                            ind_client_pivot = ind_client_pivot.reindex(columns=avail_years_ind, fill_value=0)
+                            ind_client_pivot["총 누적매출"] = ind_client_pivot.sum(axis=1)
+                            ind_client_pivot = ind_client_pivot.sort_values(by="총 누적매출", ascending=False)
+                
+                            ind_client_pivot_disp = get_display_df_with_sum(ind_client_pivot, "합계")
+                            st.dataframe(style_with_sum(ind_client_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=280)
+                
+                            st.markdown("<hr style='margin: 15px 0px; border-top: 1px dashed #E2E8F0;'>", unsafe_allow_html=True)
+                
+                            ind_clients = sorted(df_ind_detail["거래처"].unique())
+                
+                            c1, c2, c3 = st.columns([1, 1, 1])
+                            with c1:
+                                sel_ind_client = st.selectbox(f"🏢 [{selected_industry}] 거래처 선택", ind_clients, key="ind_client_sel")
+                            with c2:
+                                client_items = sorted(df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]["품목명"].unique())
+                                sel_ind_item = st.selectbox("📦 품목 선택", client_items if client_items else ["없음"], key="ind_item_sel")
+                            with c3:
+                                sel_ind_sub_metric = st.radio("📊 지표 선택", ["매출액 (만원)", "출고량", "총매출 대비 비중 (%)"], horizontal=True, key="ind_sub_metric")
+                
+                            if client_items:
+                                df_target_client = df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]
+                                sub_item_pivot = cached_get_item_pivot(df_target_client, sel_ind_item, sel_ind_sub_metric, all_months, years)
+                            if "매출액" in sel_ind_sub_metric:
+                                sub_item_pivot = _scale_sales_money(sub_item_pivot)
+                    
+                                sc1, sc2 = st.columns([1, 1])
+                                with sc1:
+                                    sub_item_pivot_disp = get_display_df_with_sum(sub_item_pivot, "연간 합계")
+                                    if "비중" in sel_ind_sub_metric:
+                                        st.dataframe(style_with_sum(sub_item_pivot_disp, "{:,.1f}%", "Purples", axis=None), use_container_width=True, height=410)
+                                        y_suf_sub, y_fmt_sub = "%", ",.1f"
+                                    elif "출고량" in sel_ind_sub_metric:
+                                        if sel_ind_item in target_items:
+                                            y_suf_sub, y_fmt_sub = " 천kg", ",.1f"
+                                        elif "LPG" in str(sel_ind_item).upper():
+                                            y_suf_sub, y_fmt_sub = " kg", ",.0f"
+                                        else:
+                                            y_suf_sub, y_fmt_sub = " 개(병)", ",.0f"
+                                        st.dataframe(style_with_sum(sub_item_pivot_disp, f"{{:{y_fmt_sub}}}", "Greens", axis=None), use_container_width=True, height=410)
                                     else:
-                                        y_suf_sub, y_fmt_sub = " 개(병)", ",.0f"
-                                    st.dataframe(style_with_sum(sub_item_pivot_disp, f"{{:{y_fmt_sub}}}", "Greens", axis=None), use_container_width=True, height=410)
-                                else:
-                                    st.dataframe(style_with_sum(sub_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=410)
-                                    y_suf_sub, y_fmt_sub = " 만원", ",.0f"
+                                        st.dataframe(style_with_sum(sub_item_pivot_disp, "{:,.0f}", "Blues", axis=None), use_container_width=True, height=410)
+                                        y_suf_sub, y_fmt_sub = " 만원", ",.0f"
                             
-                            with sc2:
-                                render_plotly_chart(
-                                    create_stacked_bar_chart(sub_item_pivot, title_text="", y_suffix=y_suf_sub, y_format=y_fmt_sub),
-                                    use_container_width=True, key="ind_client_sub_chart"
-                                )
-        st.markdown("---")
-        st.markdown(
-            "<div class='sub-header dashboard-tab-panel-head'>🏆 당해년도 상위 30위 거래처 실적 (1월~12월) 및 업종 비중 · 월 헤더 클릭</div>",
-            unsafe_allow_html=True,
-        )
+                                with sc2:
+                                    render_plotly_chart(
+                                        create_stacked_bar_chart(sub_item_pivot, title_text="", y_suffix=y_suf_sub, y_format=y_fmt_sub),
+                                        use_container_width=True, key="ind_client_sub_chart"
+                                    )
+            st.markdown("---")
+            st.markdown(
+                "<div class='sub-header dashboard-tab-panel-head'>🏆 당해년도 상위 30위 거래처 실적 (1월~12월) 및 업종 비중 · 월 헤더 클릭</div>",
+                unsafe_allow_html=True,
+            )
 
-        if not df_base.empty:
-            current_year_str = str(df_base["연도"].max())
-            df_curr_year = df_base[df_base["연도"] == current_year_str]
-            if not df_curr_year.empty:
-                latest_dt = df_curr_year["매출일_dt"].max()
-                latest_m = latest_dt.strftime("%m월")
-                # 월 선택 → 해당 월 순위·도넛만 변경 (집계 로직 무손실)
-                inject_top30_month_bridge()
-                if "top30_month" not in st.session_state:
-                    st.session_state["top30_month"] = latest_m
-                try:
-                    qp_m = st.query_params.get("top30_month", None)
-                    if isinstance(qp_m, list):
-                        qp_m = qp_m[0] if qp_m else None
-                    if qp_m is not None:
-                        qp_m = urllib.parse.unquote(str(qp_m))
-                        if qp_m in all_months:
-                            st.session_state["top30_month"] = qp_m
-                except Exception:
-                    pass
-                if st.session_state.get("top30_month") not in all_months:
-                    st.session_state["top30_month"] = latest_m
-                rank_m = st.session_state["top30_month"]
-                rank_month_label = f"{current_year_str}년 {rank_m}"
-                # top30-section-flag: iPad CSS 스택용 마커 (맥 레이아웃/데이터 무손실)
-                # 상단 연도별 월매출 표·그래프와 동일: 1:1 열, 높이 460
-                _TOP30_H = 460
-                with st.container():
-                    st.markdown("<div class='top30-section-flag' style='display:none'></div>", unsafe_allow_html=True)
-                    p_col1, p_col2 = st.columns([1, 1])
-                    with p_col1:
-                        st.markdown(
-                            f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
-                            f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 (부가세 별도, 만원)"
-                            f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
-                            f"{'← 월 선택 또는 표 헤더 클릭' if is_touch_ui() else '← 월 버튼 또는 표 헤더 클릭'}"
-                            f"</span></div>",
-                            unsafe_allow_html=True,
-                        )
-                        # 맥: 이전 가로 월버튼 / iPad(touch_ui=1): 현재 selectbox
-                        if is_touch_ui():
-                            _m_idx = all_months.index(rank_m) if rank_m in all_months else 0
-                            picked_m = st.selectbox(
-                                "기준 월",
-                                all_months,
-                                index=_m_idx,
-                                key="top30_month_select",
-                                label_visibility="collapsed",
+            if not df_base.empty:
+                current_year_str = str(df_base["연도"].max())
+                df_curr_year = df_base[df_base["연도"] == current_year_str]
+                if not df_curr_year.empty:
+                    latest_dt = df_curr_year["매출일_dt"].max()
+                    latest_m = latest_dt.strftime("%m월")
+                    # 월 선택 → 해당 월 순위·도넛만 변경 (집계 로직 무손실)
+                    inject_top30_month_bridge()
+                    if "top30_month" not in st.session_state:
+                        st.session_state["top30_month"] = latest_m
+                    try:
+                        qp_m = st.query_params.get("top30_month", None)
+                        if isinstance(qp_m, list):
+                            qp_m = qp_m[0] if qp_m else None
+                        if qp_m is not None:
+                            qp_m = urllib.parse.unquote(str(qp_m))
+                            if qp_m in all_months:
+                                st.session_state["top30_month"] = qp_m
+                    except Exception:
+                        pass
+                    if st.session_state.get("top30_month") not in all_months:
+                        st.session_state["top30_month"] = latest_m
+                    rank_m = st.session_state["top30_month"]
+                    rank_month_label = f"{current_year_str}년 {rank_m}"
+                    # top30-section-flag: iPad CSS 스택용 마커 (맥 레이아웃/데이터 무손실)
+                    # 상단 연도별 월매출 표·그래프와 동일: 1:1 열, 높이 460
+                    _TOP30_H = 460
+                    with st.container():
+                        st.markdown("<div class='top30-section-flag' style='display:none'></div>", unsafe_allow_html=True)
+                        p_col1, p_col2 = st.columns([1, 1])
+                        with p_col1:
+                            st.markdown(
+                                f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
+                                f"🥇 [{rank_month_label} 기준] 상위 30위 거래처 월별 실적 ({_vat_lbl}, 만원)"
+                                f"<span style='font-size:12px;font-weight:500;color:#64748B;margin-left:8px;'>"
+                                f"{'← 월 선택 또는 표 헤더 클릭' if is_touch_ui() else '← 월 버튼 또는 표 헤더 클릭'}"
+                                f"</span></div>",
+                                unsafe_allow_html=True,
                             )
-                            if picked_m != st.session_state.get("top30_month"):
-                                st.session_state["top30_month"] = picked_m
-                                try:
-                                    st.query_params["top30_month"] = picked_m
-                                except Exception:
-                                    pass
-                                st.rerun()
-                        else:
-                            m_cols = st.columns(12, gap="small")
-                            _clicked_m = None
-                            for _i, _m in enumerate(all_months):
-                                with m_cols[_i]:
-                                    if st.button(
-                                        _m,
-                                        key=f"top30_month_btn_{_m}",
-                                        type="primary" if _m == rank_m else "secondary",
-                                        width="stretch",
-                                    ):
-                                        _clicked_m = _m
-                            if _clicked_m:
-                                st.session_state["top30_month"] = _clicked_m
-                                try:
-                                    st.query_params["top30_month"] = _clicked_m
-                                except Exception:
-                                    pass
-                                st.rerun()
-                        rank_m = st.session_state["top30_month"]
-                        rank_month_label = f"{current_year_str}년 {rank_m}"
+                            # 맥: 이전 가로 월버튼 / iPad(touch_ui=1): 현재 selectbox
+                            if is_touch_ui():
+                                _m_idx = all_months.index(rank_m) if rank_m in all_months else 0
+                                picked_m = st.selectbox(
+                                    "기준 월",
+                                    all_months,
+                                    index=_m_idx,
+                                    key="top30_month_select",
+                                    label_visibility="collapsed",
+                                )
+                                if picked_m != st.session_state.get("top30_month"):
+                                    st.session_state["top30_month"] = picked_m
+                                    try:
+                                        st.query_params["top30_month"] = picked_m
+                                    except Exception:
+                                        pass
+                                    st.rerun()
+                            else:
+                                m_cols = st.columns(12, gap="small")
+                                _clicked_m = None
+                                for _i, _m in enumerate(all_months):
+                                    with m_cols[_i]:
+                                        if st.button(
+                                            _m,
+                                            key=f"top30_month_btn_{_m}",
+                                            type="primary" if _m == rank_m else "secondary",
+                                            width="stretch",
+                                        ):
+                                            _clicked_m = _m
+                                if _clicked_m:
+                                    st.session_state["top30_month"] = _clicked_m
+                                    try:
+                                        st.query_params["top30_month"] = _clicked_m
+                                    except Exception:
+                                        pass
+                                    st.rerun()
+                            rank_m = st.session_state["top30_month"]
+                            rank_month_label = f"{current_year_str}년 {rank_m}"
                 
-                        pvt_curr = df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) / 10000
-                        pvt_curr = pvt_curr.reindex(columns=all_months, fill_value=0)
+                            pvt_curr = _scale_sales_money(
+                            df_curr_year.pivot_table(index="거래처", columns="월", values="매출액", aggfunc="sum").fillna(0) / 10000
+                        )
+                            pvt_curr = pvt_curr.reindex(columns=all_months, fill_value=0)
                 
-                        if rank_m in pvt_curr.columns:
-                            pvt_curr = pvt_curr.sort_values(by=rank_m, ascending=False)
-                        top30_pvt = pvt_curr.head(30).reset_index()
+                            if rank_m in pvt_curr.columns:
+                                pvt_curr = pvt_curr.sort_values(by=rank_m, ascending=False)
+                            top30_pvt = pvt_curr.head(30).reset_index()
                 
-                        top30_pvt.index = range(1, len(top30_pvt) + 1)
+                            top30_pvt.index = range(1, len(top30_pvt) + 1)
                 
-                        top30_pvt_disp = get_display_df_with_sum(top30_pvt, sum_label="합계", text_cols=["거래처"])
+                            top30_pvt_disp = get_display_df_with_sum(top30_pvt, sum_label="합계", text_cols=["거래처"])
                 
-                        fmt_dict = {m: "{:,.0f}" for m in all_months}
-                        styled_top30 = style_with_sum(top30_pvt_disp, fmt_dict, "Blues", subset_cols=all_months, axis=0)
+                            fmt_dict = {m: "{:,.0f}" for m in all_months}
+                            styled_top30 = style_with_sum(top30_pvt_disp, fmt_dict, "Blues", subset_cols=all_months, axis=0)
                 
-                        if rank_m in all_months:
-                            styled_top30 = styled_top30.apply(
-                                lambda s: ['color: #B91C1C; font-weight: bold; background-color: #DBEAFE;'] * len(s),
-                                subset=[rank_m],
-                                axis=0
+                            if rank_m in all_months:
+                                styled_top30 = styled_top30.apply(
+                                    lambda s: ['color: #B91C1C; font-weight: bold; background-color: #DBEAFE;'] * len(s),
+                                    subset=[rank_m],
+                                    axis=0
+                                )
+                            _dash_label_with_xlsx(
+                                f"<div style='font-size:14px;font-weight:700;color:#334155;margin:0 0 6px'>"
+                                f"🥇 [{html.escape(rank_month_label)} 기준] 상위 30위 거래처 월별 실적</div>",
+                                key="t1_top30",
+                                styler=styled_top30,
+                                file_name="T1_상위30거래처.xlsx",
+                                sheet="상위30",
                             )
-                        _dash_label_with_xlsx(
-                            f"<div style='font-size:14px;font-weight:700;color:#334155;margin:0 0 6px'>"
-                            f"🥇 [{html.escape(rank_month_label)} 기준] 상위 30위 거래처 월별 실적</div>",
-                            key="t1_top30",
-                            styler=styled_top30,
-                            file_name="T1_상위30거래처.xlsx",
-                            sheet="상위30",
-                        )
-                        render_frozen_styler_html(
-                            styled_top30,
-                            height=_TOP30_H,
-                            freeze_left_n=2,
-                            freeze_widths=[44, 160],
-                            clickable_cols=all_months,
-                            query_param="top30_month",
-                            active_col=rank_m,
-                        )
-                    with p_col2:
-                        st.markdown(
-                            f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
-                            f"🍩 [{rank_month_label}] 업종별 매출 비중</div>",
-                            unsafe_allow_html=True,
-                        )
-                        # 왼쪽 월 선택 줄과 높이를 맞춰 표·그래프 상단 정렬
-                        _ctrl_h = 42 if is_touch_ui() else 40
-                        st.markdown(
-                            f"<div style='height:{_ctrl_h}px;margin:0 0 8px;' aria-hidden='true'></div>",
-                            unsafe_allow_html=True,
-                        )
+                            render_frozen_styler_html(
+                                styled_top30,
+                                height=_TOP30_H,
+                                freeze_left_n=2,
+                                freeze_widths=[44, 160],
+                                clickable_cols=all_months,
+                                query_param="top30_month",
+                                active_col=rank_m,
+                            )
+                        with p_col2:
+                            st.markdown(
+                                f"<div style='font-size: 14px; font-weight: 600; color: #334155; margin: 0 0 8px; min-height: 22px; line-height: 1.4;'>"
+                                f"🍩 [{rank_month_label}] 업종별 매출 비중</div>",
+                                unsafe_allow_html=True,
+                            )
+                            # 왼쪽 월 선택 줄과 높이를 맞춰 표·그래프 상단 정렬
+                            _ctrl_h = 42 if is_touch_ui() else 40
+                            st.markdown(
+                                f"<div style='height:{_ctrl_h}px;margin:0 0 8px;' aria-hidden='true'></div>",
+                                unsafe_allow_html=True,
+                            )
                 
                         df_rank_month = df_curr_year[df_curr_year["월"] == rank_m]
                         ind_sales = df_rank_month.groupby("업종")["매출액"].sum().reset_index()
                         ind_sales = ind_sales[ind_sales["매출액"] > 0]
+                        if not ind_sales.empty:
+                            ind_sales = ind_sales.copy()
+                            ind_sales["매출액"] = _scale_sales_money(ind_sales["매출액"])
                 
-                        if ind_sales.empty:
-                            st.info(f"{rank_month_label} 업종별 매출 데이터가 없습니다.")
-                        else:
-                            fig_donut = px.pie(
-                                ind_sales, 
-                                values='매출액', 
-                                names='업종', 
-                                hole=0.4,
-                                color_discrete_sequence=px.colors.qualitative.Pastel
-                            )
-                            fig_donut.update_traces(
-                                textposition='inside',
-                                textinfo='percent+label',
-                                textfont_size=12,
-                            )
-                            fig_donut.update_layout(
-                                showlegend=True,
-                                legend=dict(
-                                    orientation="h",
-                                    yanchor="top",
-                                    y=-0.02,
-                                    xanchor="center",
-                                    x=0.5,
-                                    font=dict(size=11),
-                                ),
-                                margin=dict(l=8, r=8, t=8, b=72),
-                                height=_TOP30_H,
-                                autosize=True,
-                                paper_bgcolor="rgba(0,0,0,0)",
-                                plot_bgcolor="rgba(0,0,0,0)",
-                            )
-                            _dash_label_with_xlsx(
-                                "",
-                                key="t1_donut",
-                                df=ind_sales,
-                                hide_index=True,
-                                sheet="업종비중",
-                                file_name="T1_업종비중.xlsx",
-                                fig=fig_donut,
-                                graph_name="T1_업종비중.png",
-                            )
-                            render_plotly_chart(
-                                fig_donut,
-                                key=f"top30_donut_{rank_m}",
-                                height=_TOP30_H,
-                            )
-            else:
-                st.info("당해년도 매출 데이터가 없습니다.")
-        st.markdown("---")
-        if not df_base.empty and '매출일_dt' in df_base.columns:
-            latest_period = df_base["매출일_dt"].dt.to_period("M").max()
-            prev_period = latest_period - 1
+                            if ind_sales.empty:
+                                st.info(f"{rank_month_label} 업종별 매출 데이터가 없습니다.")
+                            else:
+                                fig_donut = px.pie(
+                                    ind_sales, 
+                                    values='매출액', 
+                                    names='업종', 
+                                    hole=0.4,
+                                    color_discrete_sequence=px.colors.qualitative.Pastel
+                                )
+                                fig_donut.update_traces(
+                                    textposition='inside',
+                                    textinfo='percent+label',
+                                    textfont_size=12,
+                                )
+                                fig_donut.update_layout(
+                                    showlegend=True,
+                                    legend=dict(
+                                        orientation="h",
+                                        yanchor="top",
+                                        y=-0.02,
+                                        xanchor="center",
+                                        x=0.5,
+                                        font=dict(size=11),
+                                    ),
+                                    margin=dict(l=8, r=8, t=8, b=72),
+                                    height=_TOP30_H,
+                                    autosize=True,
+                                    paper_bgcolor="rgba(0,0,0,0)",
+                                    plot_bgcolor="rgba(0,0,0,0)",
+                                )
+                                _dash_label_with_xlsx(
+                                    "",
+                                    key="t1_donut",
+                                    df=ind_sales,
+                                    hide_index=True,
+                                    sheet="업종비중",
+                                    file_name="T1_업종비중.xlsx",
+                                    fig=fig_donut,
+                                    graph_name="T1_업종비중.png",
+                                )
+                                render_plotly_chart(
+                                    fig_donut,
+                                    key=f"top30_donut_{rank_m}",
+                                    height=_TOP30_H,
+                                )
+                else:
+                    st.info("당해년도 매출 데이터가 없습니다.")
+            st.markdown("---")
+            if not df_base.empty and '매출일_dt' in df_base.columns:
+                latest_period = df_base["매출일_dt"].dt.to_period("M").max()
+                prev_period = latest_period - 1
     
-            curr_m_label = latest_period.strftime("%m월")
-            prev_m_label = prev_period.strftime("%m월")
+                curr_m_label = latest_period.strftime("%m월")
+                prev_m_label = prev_period.strftime("%m월")
     
-            _t1_mom_title = (
-                f"<div class='sub-header dashboard-tab-panel-head'>📊 전월 대비 실적 증감 및 신규/이탈 분석 "
-                f"({html.escape(prev_m_label)} vs {html.escape(curr_m_label)})</div>"
+                _t1_mom_title = (
+                    f"<div class='sub-header dashboard-tab-panel-head'>📊 전월 대비 실적 증감 및 신규/이탈 분석 "
+                    f"({html.escape(prev_m_label)} vs {html.escape(curr_m_label)})</div>"
+                )
+    
+                df_prev = df_base[df_base["매출일_dt"].dt.to_period("M") == prev_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{prev_m_label} 매출"})
+                df_curr = df_base[df_base["매출일_dt"].dt.to_period("M") == latest_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{curr_m_label} 매출"})
+                df_diff = pd.merge(df_prev, df_curr, on="거래처", how="outer").fillna(0)
+                df_diff["매출 증감액"] = df_diff[f"{curr_m_label} 매출"] - df_diff[f"{prev_m_label} 매출"]
+    
+                df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] = _scale_sales_money(
+                (df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]]) / 10000
             )
-    
-            df_prev = df_base[df_base["매출일_dt"].dt.to_period("M") == prev_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{prev_m_label} 매출"})
-            df_curr = df_base[df_base["매출일_dt"].dt.to_period("M") == latest_period].groupby("거래처")["매출액"].sum().reset_index().rename(columns={"매출액": f"{curr_m_label} 매출"})
-            df_diff = pd.merge(df_prev, df_curr, on="거래처", how="outer").fillna(0)
-            df_diff["매출 증감액"] = df_diff[f"{curr_m_label} 매출"] - df_diff[f"{prev_m_label} 매출"]
-    
-            df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]] = (df_diff[[f"{prev_m_label} 매출", f"{curr_m_label} 매출", "매출 증감액"]]) / 10000
-            top_gains = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff["매출 증감액"] > 0)].sort_values(by="매출 증감액", ascending=False).head(10)
-            top_drops = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] > 0) & (df_diff["매출 증감액"] < 0)].sort_values(by="매출 증감액", ascending=True).head(10)
-            new_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] == 0) & (df_diff[f"{curr_m_label} 매출"] > 0)].sort_values(by=f"{curr_m_label} 매출", ascending=False)
-            lost_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] == 0)].sort_values(by=f"{prev_m_label} 매출", ascending=False)
-            st.markdown(_t1_mom_title, unsafe_allow_html=True)
-            mom_view = st.radio(
-                "전월 대비 분석 보기",
-                ["🚀 상승 Top 10", "📉 하락 Top 10", "🎉 신규/재개 거래처", "⚠️ 미거래/이탈 의심"],
-                horizontal=True,
-                key="tab1_mom_view",
-                label_visibility="collapsed",
-            )
-            if mom_view == "🚀 상승 Top 10":
-                _mom_styler = None
-                if not top_gains.empty:
+                top_gains = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff["매출 증감액"] > 0)].sort_values(by="매출 증감액", ascending=False).head(10)
+                top_drops = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] > 0) & (df_diff["매출 증감액"] < 0)].sort_values(by="매출 증감액", ascending=True).head(10)
+                new_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] == 0) & (df_diff[f"{curr_m_label} 매출"] > 0)].sort_values(by=f"{curr_m_label} 매출", ascending=False)
+                lost_clients = df_diff[(df_diff[f"{prev_m_label} 매출"] > 0) & (df_diff[f"{curr_m_label} 매출"] == 0)].sort_values(by=f"{prev_m_label} 매출", ascending=False)
+                st.markdown(_t1_mom_title, unsafe_allow_html=True)
+                mom_view = st.radio(
+                    "전월 대비 분석 보기",
+                    ["🚀 상승 Top 10", "📉 하락 Top 10", "🎉 신규/재개 거래처", "⚠️ 미거래/이탈 의심"],
+                    horizontal=True,
+                    key="tab1_mom_view",
+                    label_visibility="collapsed",
+                )
+                if mom_view == "🚀 상승 Top 10":
+                    _mom_styler = None
+                    if not top_gains.empty:
+                        _mom_styler = (
+                            top_gains.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
+                            .apply(lambda s: ['color: #2563EB; font-weight: bold;' if v > 0 else '' for v in s], subset=['매출 증감액'])
+                        )
+                    _dash_label_with_xlsx(
+                        "",
+                        key="t1_mom",
+                        styler=_mom_styler,
+                        file_name="T1_전월대비상승.xlsx",
+                        hide_index=True,
+                        sheet="전월대비",
+                    )
+                    st.markdown(f"**🔥 기존 거래처 중 매출이 가장 많이 [상승]한 10곳 (단위: 만원, {_vat_lbl})**")
+                    if top_gains.empty:
+                        st.info("해당 조건에 맞는 상승 거래처가 없습니다.")
+                    else:
+                        st.dataframe(
+                            _mom_styler,
+                            use_container_width=True, hide_index=True, height=min(420, 38 + len(top_gains) * 35)
+                        )
+                elif mom_view == "📉 하락 Top 10":
+                    _mom_styler = None
+                    if not top_drops.empty:
+                        _mom_styler = (
+                            top_drops.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
+                            .apply(lambda s: ['color: #B91C1C; font-weight: bold;' if v < 0 else '' for v in s], subset=['매출 증감액'])
+                        )
+                    _dash_label_with_xlsx(
+                        "",
+                        key="t1_mom",
+                        styler=_mom_styler,
+                        file_name="T1_전월대비하락.xlsx",
+                        hide_index=True,
+                        sheet="전월대비",
+                    )
+                    st.markdown(f"**📉 기존 거래처 중 매출이 가장 많이 [하락]한 10곳 (단위: 만원, {_vat_lbl})**")
+                    if top_drops.empty:
+                        st.info("해당 조건에 맞는 하락 거래처가 없습니다.")
+                    else:
+                        st.dataframe(
+                            _mom_styler,
+                            use_container_width=True, hide_index=True, height=min(420, 38 + len(top_drops) * 35)
+                        )
+                elif mom_view == "🎉 신규/재개 거래처":
+                    _mom_view_df = new_clients[["거래처", f"{curr_m_label} 매출"]] if not new_clients.empty else None
                     _mom_styler = (
-                        top_gains.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
-                        .apply(lambda s: ['color: #2563EB; font-weight: bold;' if v > 0 else '' for v in s], subset=['매출 증감액'])
+                        _mom_view_df.style.format({f"{curr_m_label} 매출": "{:,.0f}"})
+                        if _mom_view_df is not None else None
                     )
-                _dash_label_with_xlsx(
-                    "",
-                    key="t1_mom",
-                    styler=_mom_styler,
-                    file_name="T1_전월대비상승.xlsx",
-                    hide_index=True,
-                    sheet="전월대비",
-                )
-                st.markdown(f"**🔥 기존 거래처 중 매출이 가장 많이 [상승]한 10곳 (단위: 만원, 부가세 별도)**")
-                if top_gains.empty:
-                    st.info("해당 조건에 맞는 상승 거래처가 없습니다.")
+                    _dash_label_with_xlsx(
+                        "",
+                        key="t1_mom",
+                        styler=_mom_styler,
+                        file_name="T1_전월대비신규.xlsx",
+                        hide_index=True,
+                        sheet="전월대비",
+                    )
+                    st.markdown(f"**🎉 {prev_m_label}엔 거래가 없었으나 {curr_m_label}에 새롭게 매출이 발생한 곳 (총 {len(new_clients)}곳, 단위: 만원, {_vat_lbl})**")
+                    if new_clients.empty:
+                        st.info("신규/재개 거래처가 없습니다.")
+                    else:
+                        st.dataframe(
+                            _mom_styler,
+                            use_container_width=True, hide_index=True, height=min(480, 38 + len(new_clients) * 35)
+                        )
                 else:
-                    st.dataframe(
-                        _mom_styler,
-                        use_container_width=True, hide_index=True, height=min(420, 38 + len(top_gains) * 35)
-                    )
-            elif mom_view == "📉 하락 Top 10":
-                _mom_styler = None
-                if not top_drops.empty:
+                    _mom_view_df = lost_clients[["거래처", f"{prev_m_label} 매출"]] if not lost_clients.empty else None
                     _mom_styler = (
-                        top_drops.style.format({f"{prev_m_label} 매출": "{:,.0f}", f"{curr_m_label} 매출": "{:,.0f}", "매출 증감액": "{:,.0f}"})
-                        .apply(lambda s: ['color: #B91C1C; font-weight: bold;' if v < 0 else '' for v in s], subset=['매출 증감액'])
+                        _mom_view_df.style.format({f"{prev_m_label} 매출": "{:,.0f}"})
+                        if _mom_view_df is not None else None
                     )
-                _dash_label_with_xlsx(
-                    "",
-                    key="t1_mom",
-                    styler=_mom_styler,
-                    file_name="T1_전월대비하락.xlsx",
-                    hide_index=True,
-                    sheet="전월대비",
-                )
-                st.markdown(f"**📉 기존 거래처 중 매출이 가장 많이 [하락]한 10곳 (단위: 만원, 부가세 별도)**")
-                if top_drops.empty:
-                    st.info("해당 조건에 맞는 하락 거래처가 없습니다.")
-                else:
-                    st.dataframe(
-                        _mom_styler,
-                        use_container_width=True, hide_index=True, height=min(420, 38 + len(top_drops) * 35)
+                    _dash_label_with_xlsx(
+                        "",
+                        key="t1_mom",
+                        styler=_mom_styler,
+                        file_name="T1_전월대비이탈.xlsx",
+                        hide_index=True,
+                        sheet="전월대비",
                     )
-            elif mom_view == "🎉 신규/재개 거래처":
-                _mom_view_df = new_clients[["거래처", f"{curr_m_label} 매출"]] if not new_clients.empty else None
-                _mom_styler = (
-                    _mom_view_df.style.format({f"{curr_m_label} 매출": "{:,.0f}"})
-                    if _mom_view_df is not None else None
-                )
-                _dash_label_with_xlsx(
-                    "",
-                    key="t1_mom",
-                    styler=_mom_styler,
-                    file_name="T1_전월대비신규.xlsx",
-                    hide_index=True,
-                    sheet="전월대비",
-                )
-                st.markdown(f"**🎉 {prev_m_label}엔 거래가 없었으나 {curr_m_label}에 새롭게 매출이 발생한 곳 (총 {len(new_clients)}곳, 단위: 만원, 부가세 별도)**")
-                if new_clients.empty:
-                    st.info("신규/재개 거래처가 없습니다.")
-                else:
-                    st.dataframe(
-                        _mom_styler,
-                        use_container_width=True, hide_index=True, height=min(480, 38 + len(new_clients) * 35)
-                    )
-            else:
-                _mom_view_df = lost_clients[["거래처", f"{prev_m_label} 매출"]] if not lost_clients.empty else None
-                _mom_styler = (
-                    _mom_view_df.style.format({f"{prev_m_label} 매출": "{:,.0f}"})
-                    if _mom_view_df is not None else None
-                )
-                _dash_label_with_xlsx(
-                    "",
-                    key="t1_mom",
-                    styler=_mom_styler,
-                    file_name="T1_전월대비이탈.xlsx",
-                    hide_index=True,
-                    sheet="전월대비",
-                )
-                st.markdown(f"**⚠️ {prev_m_label}엔 매출이 있었으나 {curr_m_label}엔 거래가 없는 곳 (총 {len(lost_clients)}곳, 단위: 만원, 부가세 별도)**")
-                if lost_clients.empty:
-                    st.info("미거래/이탈 의심 거래처가 없습니다.")
-                else:
-                    st.dataframe(
-                        _mom_styler,
-                        use_container_width=True, hide_index=True, height=min(480, 38 + len(lost_clients) * 35)
-                    )
+                    st.markdown(f"**⚠️ {prev_m_label}엔 매출이 있었으나 {curr_m_label}엔 거래가 없는 곳 (총 {len(lost_clients)}곳, 단위: 만원, {_vat_lbl})**")
+                    if lost_clients.empty:
+                        st.info("미거래/이탈 의심 거래처가 없습니다.")
+                    else:
+                        st.dataframe(
+                            _mom_styler,
+                            use_container_width=True, hide_index=True, height=min(480, 38 + len(lost_clients) * 35)
+                        )
+
+        _tab1_vat_main()
 
     # Tab 2: 🏢 거래처 분석
     with tab2:
@@ -17822,11 +17859,12 @@ def _dash_filter_and_tabs_fragment() -> None:
                 pivot_m_client = _yearly_monthly_pivot(
                     df_client_filtered, all_months, years
                 )
-            pivot_m_client_disp = get_display_df_with_sum(pivot_m_client, "연간 합계")
+            _pvt_c_show = _scale_sales_money(pivot_m_client)
+            pivot_m_client_disp = get_display_df_with_sum(_pvt_c_show, "연간 합계")
             _t2_month_styled = style_with_sum(pivot_m_client_disp, "{:,.0f}", "Blues", axis=None)
-            _t2_month_fig = create_stacked_bar_chart(pivot_m_client, title_text="")
+            _t2_month_fig = create_stacked_bar_chart(_pvt_c_show, title_text="")
             _dash_label_with_xlsx(
-                f"<div class='sub-header dashboard-tab-panel-head'>📊 [{html.escape(str(selected_client))}] 연도별 월 매출 추이</div>",
+                f"<div class='sub-header dashboard-tab-panel-head'>📊 [{html.escape(str(selected_client))}] 연도별 월 매출 추이 ({html.escape(_dash_vat_lbl())}, 만원)</div>",
                 key="t2_month",
                 styler=_t2_month_styled,
                 file_name=f"{selected_client}_연도별월매출.xlsx",
@@ -17895,6 +17933,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                     ),
                 )
 
+                if "매출액" in selected_metric_c:
+                    client_item_pivot = _scale_sales_money(client_item_pivot)
                 client_item_pivot_disp = get_display_df_with_sum(client_item_pivot, "연간 합계")
                 # tab2 표 색상 통일: Blues 그라데이션
                 if "비중" in selected_metric_c:
@@ -17917,9 +17957,12 @@ def _dash_filter_and_tabs_fragment() -> None:
                     y_suffix=y_suf_c,
                     y_format=y_fmt_c,
                 )
+                _t2_item_metric_lbl = selected_metric_c
+                if "매출액" in str(selected_metric_c):
+                    _t2_item_metric_lbl = f"{selected_metric_c} · {_dash_vat_lbl()}"
                 _dash_label_with_xlsx(
                     f"<div style='font-size:14px;font-weight:700;color:#334155;margin:0 0 6px'>"
-                    f"{html.escape(str(selected_target_item_c))} · {html.escape(str(selected_metric_c))}</div>",
+                    f"{html.escape(str(selected_target_item_c))} · {html.escape(str(_t2_item_metric_lbl))}</div>",
                     key="t2_item",
                     styler=_t2_item_styled,
                     file_name=f"{selected_client}_품목별상세.xlsx",
@@ -17978,7 +18021,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             # 오른쪽 월 그래프: 당월→01월 역순만 (미도래 월 제외)
             _months_back = list(reversed(all_months[: _mi + 1]))
             st.caption(
-                f"왼쪽: 품목별 매출(만원·부가세 별도) · 같은 달 당해년도·전년도 "
+                f"왼쪽: 품목별 매출(만원·{_dash_vat_lbl()}) · 같은 달 당해년도·전년도 "
                 f"(매출 많은 순) · 오른쪽: 월별 매출 비교 그래프 · 하단: 당해 년평균 매출 비중"
             )
             _tab2_sig = (
@@ -18004,6 +18047,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                 sales_month_two_y = _yearly_monthly_pivot(
                     df_client_filtered, _months_back, _yoy_cols
                 )
+            sales_two_y = _scale_sales_money(sales_two_y)
+            sales_month_two_y = _scale_sales_money(sales_month_two_y)
             _t2_cmp_styled = None
             if not sales_two_y.empty:
                 sales_two_y = sales_two_y.loc[
@@ -18018,13 +18063,13 @@ def _dash_filter_and_tabs_fragment() -> None:
             ):
                 _fig_sales_cmp = create_grouped_bar_chart(
                     sales_month_two_y,
-                    title_text=f"월별 매출 비교 ({_yr_label}, 만원)",
+                    title_text=f"월별 매출 비교 ({_yr_label}, {_dash_vat_lbl()}, 만원)",
                     y_suffix="만원",
                     y_format=",.0f",
                 )
             _dash_label_with_xlsx(
                 f"<div class='sub-header dashboard-tab-panel-head'>"
-                f"📊 [{html.escape(str(selected_client))}] 매출 비교 (당해년도·전년도, {html.escape(str(_cur_month))}→과거)</div>",
+                f"📊 [{html.escape(str(selected_client))}] 매출 비교 (당해년도·전년도, {html.escape(str(_cur_month))}→과거, {html.escape(_dash_vat_lbl())})</div>",
                 key="t2_sales_cmp",
                 styler=_t2_cmp_styled,
                 file_name=f"{selected_client}_매출비교.xlsx",
@@ -18507,7 +18552,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             t4_c1, t4_c2 = st.columns([1.2, 1.8], vertical_alignment="center")
             with t4_c1:
                 _dash_label_with_xlsx(
-                    "<div class='sub-header dashboard-tab-panel-head'>👤 담당자별 월 매출 실적 (만원)</div>",
+                    f"<div class='sub-header dashboard-tab-panel-head'>👤 담당자별 월 매출 실적 ({_dash_vat_lbl()}, 만원)</div>",
                     key="t4_staff",
                     styler=styled_staff,
                     file_name="T4_담당자매출.xlsx",
@@ -18519,7 +18564,10 @@ def _dash_filter_and_tabs_fragment() -> None:
                 st.dataframe(styled_staff, use_container_width=True, height=350)
 
         _tab4_vat_main()
-        st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='sub-header dashboard-tab-panel-head'>🏆 담당자별 거래처 매출 순위 (당해년도, {_dash_vat_lbl()}, 만원)</div>",
+            unsafe_allow_html=True,
+        )
         if not df_base.empty:
             current_year = str(df_base["연도"].max())
             all_staffs = sorted(df_base["담당자"].unique())
@@ -18542,6 +18590,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             )
     
             if not ranking_pivot.empty:
+                ranking_pivot = _scale_sales_money(ranking_pivot)
                 _rank_styled = (
                     ranking_pivot.style.format("{:,.0f}")
                     .background_gradient(cmap="Blues", subset=all_months)
@@ -18633,6 +18682,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     ).reset_index()
             
                     unassigned_summary = unassigned_summary.sort_values(by="총매출액_만원", ascending=False)
+                    unassigned_summary["총매출액_만원"] = _scale_sales_money(unassigned_summary["총매출액_만원"])
                     unassigned_summary["최근매출일"] = unassigned_summary["최근매출일"].dt.strftime("%Y-%m-%d")
                     unassigned_summary["담당자지정"] = "미지정"
             
@@ -18643,7 +18693,9 @@ def _dash_filter_and_tabs_fragment() -> None:
                         column_config={
                             "거래처": st.column_config.TextColumn("거래처", disabled=True),
                             "최근매출일": st.column_config.TextColumn("최근매출일", disabled=True),
-                            "총매출액_만원": st.column_config.NumberColumn("총매출액(만원)", disabled=True, format="%d"),
+                            "총매출액_만원": st.column_config.NumberColumn(
+                                f"총매출액(만원, {_dash_vat_lbl()})", disabled=True, format="%d"
+                            ),
                             "담당자지정": st.column_config.SelectboxColumn(
                                 "👤 담당자 지정 (클릭하여 변경)",
                                 help="이 거래처의 담당자를 선택하세요.",
@@ -18756,7 +18808,9 @@ def _dash_filter_and_tabs_fragment() -> None:
                             st.rerun()
         styled_detail = None
         if not df_detail.empty:
-            view_detail_df = df_detail.sort_values(by="매출일_dt", ascending=False).head(800)
+            view_detail_df = df_detail.sort_values(by="매출일_dt", ascending=False).head(800).copy()
+            if "매출액" in view_detail_df.columns:
+                view_detail_df["매출액"] = _scale_sales_money(view_detail_df["매출액"])
             styled_detail = (
                 view_detail_df
                 .style.format({
@@ -18768,7 +18822,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 .background_gradient(subset=["매출액"], cmap="Blues")
             )
         _dash_label_with_xlsx(
-            "<div class='sub-header dashboard-tab-panel-head'>📋 거래 상세 내역 (최신순 800건)</div>",
+            f"<div class='sub-header dashboard-tab-panel-head'>📋 거래 상세 내역 (최신순 800건, {_dash_vat_lbl()})</div>",
             key="t4_detail",
             styler=styled_detail,
             file_name="T4_상세거래내역.xlsx",

@@ -66,6 +66,25 @@ class DebtVatModeTest(unittest.TestCase):
         self.assertIn('df_client_filtered["연도"].astype(str) == _cur_year_c', t2)
         self.assertIn("_tot_label_c", t2)
 
+    def test_scale_skips_seq_and_scales_sales(self):
+        df = pd.DataFrame({"순번": [1, 2], "1월": [100.0, 200.0]})
+        with patch.object(self.app.st, "session_state", {"dash_vat_mode": "inclusive"}):
+            out = self.app._scale_sales_money(df)
+        self.assertEqual(int(out.loc[0, "순번"]), 1)
+        self.assertAlmostEqual(float(out.loc[0, "1월"]), 110.0)
+
+    def test_sales_money_labels_follow_vat_mode(self):
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        self.assertNotIn("1️⃣ 매출액 (부가세 별도, 만원)", src)
+        self.assertIn("_scale_sales_money(pivot_m_client)", src)
+        self.assertIn("_scale_sales_money(ranking_pivot)", src)
+        self.assertIn("if metric == \"sales\":\n                pvt = _scale_sales_money(pvt)", src)
+        self.assertIn("_scale_sales_money(triple[\"sales\"])", src)
+        self.assertIn('view_detail_df["매출액"] = _scale_sales_money(view_detail_df["매출액"])', src)
+        self.assertIn('unassigned_summary["총매출액_만원"] = _scale_sales_money(unassigned_summary["총매출액_만원"])', src)
+        self.assertIn("def _dash_vat_lbl", src)
+
 
 if __name__ == "__main__":
     unittest.main()
