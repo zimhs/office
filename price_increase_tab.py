@@ -2332,9 +2332,9 @@ def _items_df_for_editor(items: list[dict]) -> pd.DataFrame:
             {
                 "선택": bool(it.get("선택", True)),
                 "제품명": str(it.get("품목명") or ""),
-                "기존단가": old,
+                "기존단가": int(round(old)),
                 "직전6개월 월평균사용량": avg_u,
-                "인상단가": new,
+                "인상단가": int(round(new)),
                 "비고": str(it.get("비고") or ""),
             }
         )
@@ -3863,7 +3863,7 @@ def _render_items_table(
             ),
             "제품명": st.column_config.TextColumn("제품명", width="medium"),
             "기존단가": st.column_config.NumberColumn(
-                "기존단가", min_value=0.0, format="%.1f", width="small"
+                "기존단가", min_value=0, format="%d", step=1, width="small"
             ),
             "직전6개월 월평균사용량": st.column_config.NumberColumn(
                 "직전6개월 월평균사용량",
@@ -3872,7 +3872,7 @@ def _render_items_table(
                 disabled=True,
             ),
             "인상단가": st.column_config.NumberColumn(
-                "인상단가", min_value=0.0, format="%.1f", width="small"
+                "인상단가", min_value=0, format="%d", step=1, width="small"
             ),
             "비고": st.column_config.TextColumn("비고", width="small"),
         },

@@ -5,6 +5,7 @@ import pandas as pd
 from price_increase_tab import (
     _apply_amount_to_items,
     _apply_pct_to_items,
+    _items_df_for_editor,
     _increase_mode_is_pct,
     default_increase_price,
     _BODY_CELL_ORDER,
@@ -316,3 +317,13 @@ def test_keep_mail_compose_when_letter_reattached():
     )
     assert title3 == ""
     assert body3 == ""
+
+
+def test_editor_old_new_price_no_decimals():
+    df = _items_df_for_editor(
+        [{"품목명": "N2 (kg, Bulk)", "기존단가": 170.0, "인상적용단가": 200.0}]
+    )
+    assert int(df.loc[0, "기존단가"]) == 170
+    assert int(df.loc[0, "인상단가"]) == 200
+    src = open("price_increase_tab.py", encoding="utf-8").read()
+    assert src.count('format="%d"') >= 2
