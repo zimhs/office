@@ -18585,7 +18585,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 styled_debt = styled_debt.background_gradient(
                     cmap="Reds", subset=_debt_nums, axis=None
                 )
-        t5_c1, t5_vat, t5_c2 = st.columns([3.2, 1.7, 1.2])
+        t5_c1, t5_c2 = st.columns([4, 1.6])
         with t5_c1:
             _dash_label_with_xlsx(
                 "<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>",
@@ -18595,25 +18595,54 @@ def _dash_filter_and_tabs_fragment() -> None:
                 hide_index=True,
                 sheet="채권관리",
             )
-        with t5_vat:
-            _v1, _v2 = st.columns(2)
-            with _v1:
+        with t5_c2:
+            st.markdown(
+                """
+                <style>
+                div[class*="st-key-t5_vat_"] button {
+                  box-sizing: border-box !important;
+                  min-height: 22px !important;
+                  height: 22px !important;
+                  max-height: 22px !important;
+                  min-width: 0 !important;
+                  padding: 0 7px !important;
+                  border-radius: 6px !important;
+                  font-size: 11px !important;
+                  font-weight: 700 !important;
+                  line-height: 20px !important;
+                  margin: 0 !important;
+                }
+                div[class*="st-key-t5_vat_"] button p {
+                  font-size: 11px !important;
+                  font-weight: 700 !important;
+                  line-height: 20px !important;
+                  margin: 0 !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            with st.container(
+                horizontal=True,
+                gap="small",
+                vertical_alignment="center",
+                key="t5_vat_row",
+            ):
                 if st.button(
                     "부가세 별도",
                     key="t5_vat_ex",
                     type="primary" if _vat_mode == "exclusive" else "secondary",
-                    width="stretch",
+                    width="content",
                 ):
                     st.session_state["t5_debt_vat_mode"] = "exclusive"
-            with _v2:
                 if st.button(
                     "부가세 포함",
                     key="t5_vat_in",
                     type="primary" if _vat_mode == "inclusive" else "secondary",
-                    width="stretch",
+                    width="content",
                 ):
                     st.session_state["t5_debt_vat_mode"] = "inclusive"
-        t5_c2.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
+                st.markdown(render_update_badge(debt_update_str), unsafe_allow_html=True)
 
         _debt_chip = (
             f"담당자 {', '.join(selected_staff)}" if selected_staff else "담당자 전체"
