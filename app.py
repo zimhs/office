@@ -18607,7 +18607,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 styled_debt = styled_debt.background_gradient(
                     cmap="Reds", subset=_debt_nums, axis=None
                 )
-        t5_c1, t5_c2 = st.columns([3.6, 2.4], vertical_alignment="center")
+        t5_c1, t5_c2 = st.columns([1.15, 1.85], vertical_alignment="center")
         with t5_c1:
             _dash_label_with_xlsx(
                 "<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>",
@@ -18621,32 +18621,47 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.markdown(
                 """
                 <style>
-                div[class*="st-key-t5_vat_row"] div[data-testid="stHorizontalBlock"] {
+                div[class*="st-key-t5_vat_col"] [data-testid="stVerticalBlock"] {
+                  gap: 0 !important;
+                }
+                div[class*="st-key-t5_vat_row"] {
+                  display: flex !important;
+                  justify-content: flex-end !important;
+                  width: 100% !important;
+                }
+                div[class*="st-key-t5_vat_row"] [data-testid="stHorizontalBlock"] {
                   justify-content: flex-end !important;
                   align-items: center !important;
-                  gap: 6px !important;
+                  gap: 8px !important;
                   flex-wrap: nowrap !important;
+                  width: 100% !important;
                 }
-                div[class*="st-key-t5_vat_row"] div[data-testid="stHorizontalBlock"] > div {
+                div[class*="st-key-t5_vat_row"] [data-testid="stHorizontalBlock"] > div,
+                div[class*="st-key-t5_vat_row"] [data-testid="column"],
+                div[class*="st-key-t5_vat_row"] [data-testid="stElementContainer"],
+                div[class*="st-key-t5_vat_row"] [data-testid="element-container"],
+                div[class*="st-key-t5_vat_row"] [data-testid="stButton"],
+                div[class*="st-key-t5_vat_row"] [data-testid="stMarkdown"],
+                div[class*="st-key-t5_vat_row"] [data-testid="stMarkdownContainer"] {
                   width: auto !important;
                   flex: 0 0 auto !important;
                   display: flex !important;
                   align-items: center !important;
+                  justify-content: center !important;
                   margin: 0 !important;
                   padding: 0 !important;
+                  min-height: 0 !important;
                 }
-                div[class*="st-key-t5_vat_row"] [data-testid="stMarkdown"],
-                div[class*="st-key-t5_vat_row"] [data-testid="stMarkdownContainer"],
-                div[class*="st-key-t5_vat_row"] [data-testid="element-container"] {
-                  width: auto !important;
-                  margin: 0 !important;
-                  padding: 0 !important;
-                }
-                div[class*="st-key-t5_vat_"] button {
+                div[class*="st-key-t5_vat_ex"] button,
+                div[class*="st-key-t5_vat_in"] button,
+                div[class*="st-key-t5_vat_upd"] button,
+                div[class*="st-key-t5_vat_ex"] button[kind],
+                div[class*="st-key-t5_vat_in"] button[kind],
+                div[class*="st-key-t5_vat_upd"] button[kind] {
                   box-sizing: border-box !important;
-                  min-height: 32px !important;
-                  height: 32px !important;
-                  max-height: 32px !important;
+                  min-height: 30px !important;
+                  height: 30px !important;
+                  max-height: 30px !important;
                   min-width: 0 !important;
                   padding: 0 12px !important;
                   border-radius: 8px !important;
@@ -18656,66 +18671,70 @@ def _dash_filter_and_tabs_fragment() -> None:
                   font-weight: 600 !important;
                   line-height: 30px !important;
                   margin: 0 !important;
-                }
-                div[class*="st-key-t5_vat_"] button p {
-                  font-size: 13px !important;
-                  font-weight: 600 !important;
-                  line-height: 30px !important;
-                  margin: 0 !important;
-                }
-                div[class*="st-key-t5_vat_"] [data-testid="stBaseButton-secondary"] {
-                  background: #FFFFFF !important;
-                  color: #475569 !important;
-                }
-                div[class*="st-key-t5_vat_"] [data-testid="stBaseButton-primary"] {
-                  background: #334155 !important;
-                  color: #FFFFFF !important;
-                  border-color: #334155 !important;
-                }
-                span.t5-upd-chip {
                   display: inline-flex !important;
                   align-items: center !important;
-                  box-sizing: border-box !important;
-                  height: 32px !important;
-                  padding: 0 12px !important;
-                  border-radius: 8px !important;
-                  border: 1px solid #CBD5E1 !important;
-                  background: #FFFFFF !important;
-                  color: #475569 !important;
+                }
+                div[class*="st-key-t5_vat_ex"] button p,
+                div[class*="st-key-t5_vat_in"] button p,
+                div[class*="st-key-t5_vat_upd"] button p,
+                div[class*="st-key-t5_vat_ex"] button span,
+                div[class*="st-key-t5_vat_in"] button span,
+                div[class*="st-key-t5_vat_upd"] button span {
                   font-size: 13px !important;
                   font-weight: 600 !important;
-                  line-height: 30px !important;
-                  box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
-                  white-space: nowrap !important;
+                  line-height: 1 !important;
+                  margin: 0 !important;
+                }
+                div[class*="st-key-t5_vat_ex"] [data-testid="stBaseButton-secondary"],
+                div[class*="st-key-t5_vat_in"] [data-testid="stBaseButton-secondary"] {
+                  background: #FFFFFF !important;
+                  color: #475569 !important;
+                }
+                div[class*="st-key-t5_vat_upd"] button {
+                  background: #FFFFFF !important;
+                  color: #475569 !important;
+                  opacity: 1 !important;
+                  cursor: default !important;
+                  pointer-events: none !important;
+                }
+                div[class*="st-key-t5_vat_ex"] [data-testid="stBaseButton-primary"],
+                div[class*="st-key-t5_vat_in"] [data-testid="stBaseButton-primary"] {
+                  background: #E11D48 !important;
+                  color: #FFFFFF !important;
+                  border-color: #E11D48 !important;
                 }
                 </style>
                 """,
                 unsafe_allow_html=True,
             )
-            with st.container(
-                horizontal=True,
-                gap="small",
-                vertical_alignment="center",
-                key="t5_vat_row",
-            ):
-                if st.button(
-                    "부가세 별도",
-                    key="t5_vat_ex",
-                    type="primary" if _vat_mode == "exclusive" else "secondary",
-                    width="content",
+            with st.container(key="t5_vat_col"):
+                with st.container(
+                    horizontal=True,
+                    gap="small",
+                    vertical_alignment="center",
+                    key="t5_vat_row",
                 ):
-                    st.session_state["t5_debt_vat_mode"] = "exclusive"
-                if st.button(
-                    "부가세 포함",
-                    key="t5_vat_in",
-                    type="primary" if _vat_mode == "inclusive" else "secondary",
-                    width="content",
-                ):
-                    st.session_state["t5_debt_vat_mode"] = "inclusive"
-                st.markdown(
-                    f"<span class='t5-upd-chip'>⏱️ 데이터 업데이트: {html.escape(str(debt_update_str))}</span>",
-                    unsafe_allow_html=True,
-                )
+                    if st.button(
+                        "부가세 별도",
+                        key="t5_vat_ex",
+                        type="primary" if _vat_mode == "exclusive" else "secondary",
+                        width="content",
+                    ):
+                        st.session_state["t5_debt_vat_mode"] = "exclusive"
+                    if st.button(
+                        "부가세 포함",
+                        key="t5_vat_in",
+                        type="primary" if _vat_mode == "inclusive" else "secondary",
+                        width="content",
+                    ):
+                        st.session_state["t5_debt_vat_mode"] = "inclusive"
+                    st.button(
+                        f"⏱️ 데이터 업데이트: {debt_update_str}",
+                        key="t5_vat_upd",
+                        type="secondary",
+                        disabled=True,
+                        width="content",
+                    )
 
         _debt_chip = (
             f"담당자 {', '.join(selected_staff)}" if selected_staff else "담당자 전체"
