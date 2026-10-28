@@ -6350,6 +6350,47 @@ def _tab6_extra_map_rows(parent_staff: dict, selected_clients, visible_parents=N
     return rows
 
 
+_DASH_VAT_INCL = 1.1
+
+
+def _dash_vat_mode() -> str:
+    """전 탭 공통. exclusive=부가세 별도, inclusive=부가세 포함."""
+    m = st.session_state.get("dash_vat_mode")
+    if m not in ("exclusive", "inclusive"):
+        st.session_state["dash_vat_mode"] = "exclusive"
+        return "exclusive"
+    return m
+
+
+def _sales_vat_mult() -> float:
+    """매출 탭(매출액=별도). 포함일 때만 1.1."""
+    return _DASH_VAT_INCL if _dash_vat_mode() == "inclusive" else 1.0
+
+
+def _scale_sales_money(val, skip_cols=()):
+    """이미 계산된 별도 금액(원/만원)에 포함 배수만 곱한다. 피벗 재계산 없음."""
+    m = _sales_vat_mult()
+    if m == 1.0 or val is None:
+        return val
+    skip = set(skip_cols or ())
+    if isinstance(val, pd.DataFrame):
+        out = val.copy()
+        for c in out.columns:
+            if c in skip or c in ("거래처", "구분", "품목명", "담당자", "업종"):
+                continue
+            if pd.api.types.is_numeric_dtype(out[c]):
+                out[c] = out[c] * m
+        return out
+    if isinstance(val, pd.Series):
+        if pd.api.types.is_numeric_dtype(val):
+            return val * m
+        return val
+    try:
+        return float(val) * m
+    except (TypeError, ValueError):
+        return val
+
+
 def _debt_apply_vat_mode(df, mode: str):
     """채권.csv 숫자는 ERP 합계액(부가세 포함).
 
@@ -6365,6 +6406,125 @@ def _debt_apply_vat_mode(df, mode: str):
         for c in nums:
             out[c] = pd.to_numeric(out[c], errors="coerce") / 1.1
     return out
+
+
+def _dash_vat_chip_css() -> None:
+    st.markdown(
+        """
+        <style>
+        div[class*="_vat_col"] [data-testid="stVerticalBlock"] { gap: 0 !important; }
+        div[class*="_vat_row"] {
+          display: flex !important;
+          justify-content: flex-end !important;
+          width: 100% !important;
+        }
+        div[class*="_vat_row"] [data-testid="stHorizontalBlock"] {
+          justify-content: flex-end !important;
+          align-items: center !important;
+          gap: 6px !important;
+          flex-wrap: nowrap !important;
+          width: 100% !important;
+        }
+        div[class*="_vat_row"] [data-testid="stHorizontalBlock"] > div,
+        div[class*="_vat_row"] [data-testid="column"],
+        div[class*="_vat_row"] [data-testid="stElementContainer"],
+        div[class*="_vat_row"] [data-testid="element-container"],
+        div[class*="_vat_row"] [data-testid="stButton"] {
+          width: auto !important;
+          flex: 0 0 auto !important;
+          display: flex !important;
+          align-items: center !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          min-height: 0 !important;
+        }
+        div[class*="_vat_ex"] button,
+        div[class*="_vat_in"] button,
+        div[class*="_vat_upd"] button,
+        div[class*="_vat_ex"] button[kind],
+        div[class*="_vat_in"] button[kind],
+        div[class*="_vat_upd"] button[kind] {
+          box-sizing: border-box !important;
+          min-height: 0 !important;
+          height: auto !important;
+          min-width: 0 !important;
+          padding: 4px 10px !important;
+          border-radius: 8px !important;
+          border: 1px solid #CBD5E1 !important;
+          box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+          font-size: 12px !important;
+          font-weight: 600 !important;
+          line-height: 1.25 !important;
+          margin: 0 !important;
+        }
+        div[class*="_vat_ex"] button p,
+        div[class*="_vat_in"] button p,
+        div[class*="_vat_upd"] button p,
+        div[class*="_vat_ex"] button span,
+        div[class*="_vat_in"] button span,
+        div[class*="_vat_upd"] button span {
+          font-size: 12px !important;
+          font-weight: 600 !important;
+          line-height: 1.25 !important;
+          margin: 0 !important;
+        }
+        div[class*="_vat_ex"] [data-testid="stBaseButton-secondary"],
+        div[class*="_vat_in"] [data-testid="stBaseButton-secondary"] {
+          background: #FFFFFF !important;
+          color: #475569 !important;
+        }
+        div[class*="_vat_upd"] button {
+          background: #FFFFFF !important;
+          color: #475569 !important;
+          opacity: 1 !important;
+          cursor: default !important;
+          pointer-events: none !important;
+        }
+        div[class*="_vat_ex"] [data-testid="stBaseButton-primary"],
+        div[class*="_vat_in"] [data-testid="stBaseButton-primary"] {
+          background: #E11D48 !important;
+          color: #FFFFFF !important;
+          border-color: #E11D48 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_vat_chips(update_str, prefix: str) -> str:
+    """부가세 별도/포함 + 업데이트 칩. 같은 fragment 안에서 호출해야 클릭 시 그 블록만 다시 그린다."""
+    _dash_vat_chip_css()
+    mode = _dash_vat_mode()
+    with st.container(key=f"{prefix}_vat_col"):
+        with st.container(
+            horizontal=True,
+            gap="small",
+            vertical_alignment="center",
+            key=f"{prefix}_vat_row",
+        ):
+            if st.button(
+                "부가세 별도",
+                key=f"{prefix}_vat_ex",
+                type="primary" if mode == "exclusive" else "secondary",
+                width="content",
+            ):
+                st.session_state["dash_vat_mode"] = "exclusive"
+            if st.button(
+                "부가세 포함",
+                key=f"{prefix}_vat_in",
+                type="primary" if mode == "inclusive" else "secondary",
+                width="content",
+            ):
+                st.session_state["dash_vat_mode"] = "inclusive"
+            st.button(
+                f"⏱️ 데이터 업데이트: {update_str}",
+                key=f"{prefix}_vat_upd",
+                type="secondary",
+                disabled=True,
+                width="content",
+            )
+    return _dash_vat_mode()
 
 
 def _drop_debt_noise_rows(df):
@@ -16456,68 +16616,78 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.session_state["_dash_cloud_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
     # Tab 1: 📌 영업 종합 요약
     with tab1:
-        # 당해년도(데이터 최신 연도) 누적 매출 · 부가세 별도(VAT 제외)
-        _cur_year_total = str(years[0]) if years else ""
-        if not df_base.empty and _cur_year_total and "연도" in df_base.columns:
-            _cur_year_sales_total = df_base.loc[df_base["연도"].astype(str) == _cur_year_total, "매출액"].sum()
-        else:
-            _cur_year_sales_total = 0.0
-        tot_sales_val = _cur_year_sales_total / 10000
-        _tot_label_total = f"{_cur_year_total}년 누적 매출 (부가세 별도)" if _cur_year_total else "당해년도 누적 매출 (부가세 별도)"
-        cur_sales_val = cur_month_sales_total / 10000
-        t1_c1, t1_c2 = st.columns([4, 1])
-        with t1_c1:
+        @st.fragment
+        def _tab1_vat_main() -> None:
+            """부가세 칩+지표+월매출표만 다시 그림. 파일/필터 로딩 없음."""
+            _cur_year_total = str(years[0]) if years else ""
+            if not df_base.empty and _cur_year_total and "연도" in df_base.columns:
+                _cur_year_sales_total = df_base.loc[df_base["연도"].astype(str) == _cur_year_total, "매출액"].sum()
+            else:
+                _cur_year_sales_total = 0.0
+            _vat_lbl = "부가세 포함" if _dash_vat_mode() == "inclusive" else "부가세 별도"
+            tot_sales_val = _scale_sales_money(_cur_year_sales_total / 10000)
+            _tot_label_total = (
+                f"{_cur_year_total}년 누적 매출 ({_vat_lbl})"
+                if _cur_year_total
+                else f"당해년도 누적 매출 ({_vat_lbl})"
+            )
+            cur_sales_val = _scale_sales_money(cur_month_sales_total / 10000)
+            t1_c1, t1_c2 = st.columns([1.2, 1.8], vertical_alignment="center")
+            with t1_c1:
+                _dash_label_with_xlsx(
+                    "<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 주요 실적 지표</div>",
+                    key="t1_kpi",
+                    df=pd.DataFrame(
+                        {
+                            "지표": [
+                                _tot_label_total,
+                                f"최근 월 매출 ({latest_month_str_total})",
+                                "전월 대비 (MoM)",
+                                "월평균 대비 증감",
+                            ],
+                            "값": [
+                                f"{tot_sales_val:,.0f} 만원",
+                                f"{cur_sales_val:,.0f} 만원",
+                                f"{mom_rate_total:+.0f}%",
+                                f"{avg_rate_total:+.0f}%",
+                            ],
+                        }
+                    ),
+                    file_name="T1_주요실적지표.xlsx",
+                    hide_index=True,
+                    sheet="주요실적",
+                )
+            with t1_c2:
+                _render_vat_chips(latest_update_str, "t1")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.markdown(f"<div class='metric-box'><div class='metric-label'>{_tot_label_total}</div><div class='metric-value'>{tot_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
+            m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_total})</div><div class='metric-value'>{cur_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
+            m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_total < 0 else '#2563EB'};'>{mom_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
+            m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_total < 0 else '#2563EB'};'>{avg_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
+            _pvt_show = _scale_sales_money(pivot_m_total)
+            pivot_m_total_disp = get_display_df_with_sum(_pvt_show, "연간 합계")
+            _t1_month_styled = style_with_sum(pivot_m_total_disp, "{:,.0f}", "Blues", axis=None)
+            _t1_month_fig = create_stacked_bar_chart(_pvt_show, title_text="")
             _dash_label_with_xlsx(
-                "<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 주요 실적 지표</div>",
-                key="t1_kpi",
-                df=pd.DataFrame(
-                    {
-                        "지표": [
-                            _tot_label_total,
-                            f"최근 월 매출 ({latest_month_str_total})",
-                            "전월 대비 (MoM)",
-                            "월평균 대비 증감",
-                        ],
-                        "값": [
-                            f"{tot_sales_val:,.0f} 만원",
-                            f"{cur_sales_val:,.0f} 만원",
-                            f"{mom_rate_total:+.0f}%",
-                            f"{avg_rate_total:+.0f}%",
-                        ],
-                    }
-                ),
-                file_name="T1_주요실적지표.xlsx",
-                hide_index=True,
-                sheet="주요실적",
+                "<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 연도별 월 매출 추이</div>",
+                key="t1_month",
+                styler=_t1_month_styled,
+                file_name="연도별_월매출.xlsx",
+                sheet="연도별월매출",
+                fig=_t1_month_fig,
+                graph_name="연도별_월매출.png",
             )
-        t1_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
+            col_left, col_right = st.columns([1, 1])
+            with col_left:
+                st.dataframe(_t1_month_styled, use_container_width=True, height=460)
+            with col_right:
+                render_plotly_chart(
+                    _t1_month_fig,
+                    use_container_width=True, key="tab1_total_chart"
+                )
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.markdown(f"<div class='metric-box'><div class='metric-label'>{_tot_label_total}</div><div class='metric-value'>{tot_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
-        m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_total})</div><div class='metric-value'>{cur_sales_val:,.0f} 만원</div></div>", unsafe_allow_html=True)
-        m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_total < 0 else '#2563EB'};'>{mom_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
-        m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_total < 0 else '#2563EB'};'>{avg_rate_total:+.0f}%</div></div>", unsafe_allow_html=True)
-        pivot_m_total_disp = get_display_df_with_sum(pivot_m_total, "연간 합계")
-        _t1_month_styled = style_with_sum(pivot_m_total_disp, "{:,.0f}", "Blues", axis=None)
-        _t1_month_fig = create_stacked_bar_chart(pivot_m_total, title_text="")
-        _dash_label_with_xlsx(
-            "<div class='sub-header dashboard-tab-panel-head'>📊 전체 영업 연도별 월 매출 추이</div>",
-            key="t1_month",
-            styler=_t1_month_styled,
-            file_name="연도별_월매출.xlsx",
-            sheet="연도별월매출",
-            fig=_t1_month_fig,
-            graph_name="연도별_월매출.png",
-        )
-        col_left, col_right = st.columns([1, 1])
-
-        with col_left:
-            st.dataframe(_t1_month_styled, use_container_width=True, height=460)
-        with col_right:
-            render_plotly_chart(
-                _t1_month_fig,
-                use_container_width=True, key="tab1_total_chart"
-            )
+        _tab1_vat_main()
     
         st.markdown("---")
         _tab1_bulk4_ensure_pack(
@@ -16996,62 +17166,69 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.session_state.show_corp_info = False
         st.session_state.last_opened_client = selected_client
 
-        t2_c1, t2_c2 = st.columns([4, 1])
-        # 당해년도 누적 매출 · 부가세 별도 (영업종합요약과 동일 기준. 예전엔 전년도까지 합산)
-        _cur_year_c = str(years[0]) if years else ""
-        if (
-            not df_client_filtered.empty
-            and _cur_year_c
-            and "연도" in df_client_filtered.columns
-        ):
-            tot_sales_c = (
-                df_client_filtered.loc[
-                    df_client_filtered["연도"].astype(str) == _cur_year_c, "매출액"
-                ].sum()
-                / 10000
+        @st.fragment
+        def _tab2_vat_main() -> None:
+            """부가세 칩+거래처 KPI만 다시 그림."""
+            _cur_year_c = str(years[0]) if years else ""
+            if (
+                not df_client_filtered.empty
+                and _cur_year_c
+                and "연도" in df_client_filtered.columns
+            ):
+                tot_sales_c = (
+                    df_client_filtered.loc[
+                        df_client_filtered["연도"].astype(str) == _cur_year_c, "매출액"
+                    ].sum()
+                    / 10000
+                )
+            else:
+                tot_sales_c = (
+                    df_client_filtered["매출액"].sum() / 10000
+                    if not df_client_filtered.empty
+                    else 0.0
+                )
+            tot_sales_c = _scale_sales_money(tot_sales_c)
+            _vat_lbl_c = "부가세 포함" if _dash_vat_mode() == "inclusive" else "부가세 별도"
+            _tot_label_c = (
+                f"{_cur_year_c}년 누적 매출 ({_vat_lbl_c})"
+                if _cur_year_c
+                else f"당해년도 누적 매출 ({_vat_lbl_c})"
             )
-        else:
-            tot_sales_c = (
-                df_client_filtered["매출액"].sum() / 10000
-                if not df_client_filtered.empty
-                else 0.0
-            )
-        _tot_label_c = (
-            f"{_cur_year_c}년 누적 매출 (부가세 별도)"
-            if _cur_year_c
-            else "당해년도 누적 매출 (부가세 별도)"
-        )
-        cur_sales_c = cur_month_sales_client / 10000
-        with t2_c1:
-            _dash_label_with_xlsx(
-                f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{html.escape(str(selected_client))}] 영업 실적 및 요약</div>",
-                key="t2_kpi",
-                df=pd.DataFrame(
-                    {
-                        "지표": [
-                            _tot_label_c,
-                            f"최근 월 매출 ({latest_month_str_client})",
-                            "전월 대비 (MoM)",
-                            "월평균 대비 증감",
-                        ],
-                        "값": [
-                            f"{tot_sales_c:,.0f} 만원",
-                            f"{cur_sales_c:,.0f} 만원",
-                            f"{mom_rate_client:+.0f}%",
-                            f"{avg_rate_client:+.0f}%",
-                        ],
-                    }
-                ),
-                file_name=f"{selected_client}_영업실적요약.xlsx",
-                hide_index=True,
-                sheet="영업실적요약",
-            )
-        t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-        m1, m2, m3, m4 = st.columns(4)
-        m1.markdown(f"<div class='metric-box'><div class='metric-label'>{_tot_label_c}</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
-        m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_client})</div><div class='metric-value'>{cur_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
-        m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_client < 0 else '#2563EB'};'>{mom_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
-        m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
+            cur_sales_c = _scale_sales_money(cur_month_sales_client / 10000)
+            t2_c1, t2_c2 = st.columns([1.2, 1.8], vertical_alignment="center")
+            with t2_c1:
+                _dash_label_with_xlsx(
+                    f"<div class='sub-header dashboard-tab-panel-head'>🏢 [{html.escape(str(selected_client))}] 영업 실적 및 요약</div>",
+                    key="t2_kpi",
+                    df=pd.DataFrame(
+                        {
+                            "지표": [
+                                _tot_label_c,
+                                f"최근 월 매출 ({latest_month_str_client})",
+                                "전월 대비 (MoM)",
+                                "월평균 대비 증감",
+                            ],
+                            "값": [
+                                f"{tot_sales_c:,.0f} 만원",
+                                f"{cur_sales_c:,.0f} 만원",
+                                f"{mom_rate_client:+.0f}%",
+                                f"{avg_rate_client:+.0f}%",
+                            ],
+                        }
+                    ),
+                    file_name=f"{selected_client}_영업실적요약.xlsx",
+                    hide_index=True,
+                    sheet="영업실적요약",
+                )
+            with t2_c2:
+                _render_vat_chips(latest_update_str, "t2")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.markdown(f"<div class='metric-box'><div class='metric-label'>{_tot_label_c}</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
+            m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_client})</div><div class='metric-value'>{cur_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
+            m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_client < 0 else '#2563EB'};'>{mom_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
+            m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
+
+        _tab2_vat_main()
 
         try:
             import visit_calendar_tab as _t2_vc
@@ -17910,18 +18087,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                         )
     # Tab 3: 📦 품목 및 단가 분석
     with tab3:
-        t3_c1, t3_c2 = st.columns([4, 1])
-        with t3_c1:
-            _dash_label_with_xlsx(
-                f"<div class='sub-header dashboard-tab-panel-head'>📦 [{html.escape(str(selected_client))}] 품목별 실적 분석</div>",
-                key="t3_head",
-                df=sales_p.reset_index() if isinstance(sales_p, pd.DataFrame) and not sales_p.empty else None,
-                file_name="T3_품목별실적분석.xlsx",
-                hide_index=True,
-                sheet="품목실적",
-            )
-        t3_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-
         latest_dt_overall = df_base["매출일_dt"].max() if not df_base.empty else None
         target_month_col = latest_dt_overall.strftime("%y년 %m월") if pd.notnull(latest_dt_overall) else None
         avail_years_short = [y[2:] for y in years]
@@ -17934,7 +18099,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             format_func=lambda x: f"20{x}년",
             key="tab3_detail_years",
         )
-    
+
         sales_p_filtered, qty_p_filtered = _dash_memo(
             "_dash_tab3_year_cols",
             (
@@ -17955,11 +18120,36 @@ def _dash_filter_and_tabs_fragment() -> None:
                 tuple(all_months),
             ),
         )
-        render_tab3_dataframe_table(
-            sales_p_filtered, "{:,.0f}", target_month_col, key_prefix="tab3_sales", table_kind="sales",
-            label_html="<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 4px;'>1️⃣ 매출액 (부가세 별도, 만원)</div>",
-            xlsx_name="T3_품목매출.xlsx",
-        )
+
+        @st.fragment
+        def _tab3_vat_main() -> None:
+            t3_c1, t3_c2 = st.columns([1.2, 1.8], vertical_alignment="center")
+            with t3_c1:
+                _dash_label_with_xlsx(
+                    f"<div class='sub-header dashboard-tab-panel-head'>📦 [{html.escape(str(selected_client))}] 품목별 실적 분석</div>",
+                    key="t3_head",
+                    df=sales_p.reset_index() if isinstance(sales_p, pd.DataFrame) and not sales_p.empty else None,
+                    file_name="T3_품목별실적분석.xlsx",
+                    hide_index=True,
+                    sheet="품목실적",
+                )
+            with t3_c2:
+                _render_vat_chips(latest_update_str, "t3")
+            _vat_lbl_3 = "부가세 포함" if _dash_vat_mode() == "inclusive" else "부가세 별도"
+            render_tab3_dataframe_table(
+                _scale_sales_money(sales_p_filtered),
+                "{:,.0f}",
+                target_month_col,
+                key_prefix="tab3_sales",
+                table_kind="sales",
+                label_html=(
+                    "<div style='font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 4px;'>"
+                    f"1️⃣ 매출액 ({_vat_lbl_3}, 만원)</div>"
+                ),
+                xlsx_name="T3_품목매출.xlsx",
+            )
+
+        _tab3_vat_main()
         # 상단 담당자·품목 선택 시 → 품목별 거래처 매출 상세 (클릭 펼침)
         if selected_staff and selected_item:
             render_tab3_item_client_expanders(
@@ -18289,38 +18479,46 @@ def _dash_filter_and_tabs_fragment() -> None:
 
     # Tab 4: 👤 담당자 & 상세내역
     with tab4:
-        styled_staff = None
-        if not staff_pivot.empty:
-            format_dict = {
-                col: "{:,.0f}"
-                for col in staff_pivot.columns
-                if col not in ("전체매출비중", "당해매출비중")
-            }
-            format_dict["전체매출비중"] = "{:,.1f}%"
-            format_dict["당해매출비중"] = "{:,.1f}%"
-            monthly_cols = [
-                c
-                for c in staff_pivot.columns
-                if c not in ["전체매출비중", "당해매출비중", "총 매출 합계 (만원)"]
-            ]
-            styled_staff = (
-                staff_pivot.style.format(format_dict)
-                .background_gradient(cmap="Purples", subset=["전체매출비중", "당해매출비중"])
-                .background_gradient(cmap="Oranges", subset=["총 매출 합계 (만원)"])
-                .background_gradient(cmap="Blues", subset=monthly_cols)
+        @st.fragment
+        def _tab4_vat_main() -> None:
+            styled_staff = None
+            _staff_show = _scale_sales_money(
+                staff_pivot, skip_cols=("전체매출비중", "당해매출비중")
             )
-        t4_c1, t4_c2 = st.columns([4, 1])
-        with t4_c1:
-            _dash_label_with_xlsx(
-                "<div class='sub-header dashboard-tab-panel-head'>👤 담당자별 월 매출 실적 (만원)</div>",
-                key="t4_staff",
-                styler=styled_staff,
-                file_name="T4_담당자매출.xlsx",
-                sheet="담당자매출",
-            )
-        t4_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
-        if styled_staff is not None:
-            st.dataframe(styled_staff, use_container_width=True, height=350)
+            if not _staff_show.empty:
+                format_dict = {
+                    col: "{:,.0f}"
+                    for col in _staff_show.columns
+                    if col not in ("전체매출비중", "당해매출비중")
+                }
+                format_dict["전체매출비중"] = "{:,.1f}%"
+                format_dict["당해매출비중"] = "{:,.1f}%"
+                monthly_cols = [
+                    c
+                    for c in _staff_show.columns
+                    if c not in ["전체매출비중", "당해매출비중", "총 매출 합계 (만원)"]
+                ]
+                styled_staff = (
+                    _staff_show.style.format(format_dict)
+                    .background_gradient(cmap="Purples", subset=["전체매출비중", "당해매출비중"])
+                    .background_gradient(cmap="Oranges", subset=["총 매출 합계 (만원)"])
+                    .background_gradient(cmap="Blues", subset=monthly_cols)
+                )
+            t4_c1, t4_c2 = st.columns([1.2, 1.8], vertical_alignment="center")
+            with t4_c1:
+                _dash_label_with_xlsx(
+                    "<div class='sub-header dashboard-tab-panel-head'>👤 담당자별 월 매출 실적 (만원)</div>",
+                    key="t4_staff",
+                    styler=styled_staff,
+                    file_name="T4_담당자매출.xlsx",
+                    sheet="담당자매출",
+                )
+            with t4_c2:
+                _render_vat_chips(latest_update_str, "t4")
+            if styled_staff is not None:
+                st.dataframe(styled_staff, use_container_width=True, height=350)
+
+        _tab4_vat_main()
         st.markdown("<div class='sub-header dashboard-tab-panel-head'>🏆 담당자별 거래처 매출 순위 (당해년도)</div>", unsafe_allow_html=True)
         if not df_base.empty:
             current_year = str(df_base["연도"].max())
@@ -18595,150 +18793,41 @@ def _dash_filter_and_tabs_fragment() -> None:
 
         debt_update_str = f"{latest_month} 기준" if latest_month else "데이터 없음"
 
-        if st.session_state.get("t5_debt_vat_mode") not in ("exclusive", "inclusive"):
-            st.session_state["t5_debt_vat_mode"] = "exclusive"
-        _vat_mode = st.session_state["t5_debt_vat_mode"]
-        debt_view = _debt_apply_vat_mode(filtered_debt_df, _vat_mode)
-
-        styled_debt = None
-        if not debt_view.empty:
-            _debt_nums = [
-                c for c in debt_view.columns if c not in ("거래처", "구분")
-            ]
-            styled_debt = debt_view.style
-            if _debt_nums:
-                styled_debt = styled_debt.format("{:,.0f}", subset=_debt_nums)
-                styled_debt = styled_debt.background_gradient(
-                    cmap="Reds", subset=_debt_nums, axis=None
-                )
-        t5_c1, t5_c2 = st.columns([1.15, 1.85], vertical_alignment="center")
-        with t5_c1:
-            _dash_label_with_xlsx(
-                "<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>",
-                key="t5_debt",
-                styler=styled_debt,
-                file_name="T5_채권관리.xlsx",
-                hide_index=True,
-                sheet="채권관리",
-            )
-        with t5_c2:
-            st.markdown(
-                """
-                <style>
-                div[class*="st-key-t5_vat_col"] [data-testid="stVerticalBlock"] {
-                  gap: 0 !important;
-                }
-                div[class*="st-key-t5_vat_row"] {
-                  display: flex !important;
-                  justify-content: flex-end !important;
-                  width: 100% !important;
-                }
-                div[class*="st-key-t5_vat_row"] [data-testid="stHorizontalBlock"] {
-                  justify-content: flex-end !important;
-                  align-items: center !important;
-                  gap: 8px !important;
-                  flex-wrap: nowrap !important;
-                  width: 100% !important;
-                }
-                div[class*="st-key-t5_vat_row"] [data-testid="stHorizontalBlock"] > div,
-                div[class*="st-key-t5_vat_row"] [data-testid="column"],
-                div[class*="st-key-t5_vat_row"] [data-testid="stElementContainer"],
-                div[class*="st-key-t5_vat_row"] [data-testid="element-container"],
-                div[class*="st-key-t5_vat_row"] [data-testid="stButton"],
-                div[class*="st-key-t5_vat_row"] [data-testid="stMarkdown"],
-                div[class*="st-key-t5_vat_row"] [data-testid="stMarkdownContainer"] {
-                  width: auto !important;
-                  flex: 0 0 auto !important;
-                  display: flex !important;
-                  align-items: center !important;
-                  justify-content: center !important;
-                  margin: 0 !important;
-                  padding: 0 !important;
-                  min-height: 0 !important;
-                }
-                div[class*="st-key-t5_vat_ex"] button,
-                div[class*="st-key-t5_vat_in"] button,
-                div[class*="st-key-t5_vat_upd"] button,
-                div[class*="st-key-t5_vat_ex"] button[kind],
-                div[class*="st-key-t5_vat_in"] button[kind],
-                div[class*="st-key-t5_vat_upd"] button[kind] {
-                  box-sizing: border-box !important;
-                  min-height: 30px !important;
-                  height: 30px !important;
-                  max-height: 30px !important;
-                  min-width: 0 !important;
-                  padding: 0 12px !important;
-                  border-radius: 8px !important;
-                  border: 1px solid #CBD5E1 !important;
-                  box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
-                  font-size: 13px !important;
-                  font-weight: 600 !important;
-                  line-height: 30px !important;
-                  margin: 0 !important;
-                  display: inline-flex !important;
-                  align-items: center !important;
-                }
-                div[class*="st-key-t5_vat_ex"] button p,
-                div[class*="st-key-t5_vat_in"] button p,
-                div[class*="st-key-t5_vat_upd"] button p,
-                div[class*="st-key-t5_vat_ex"] button span,
-                div[class*="st-key-t5_vat_in"] button span,
-                div[class*="st-key-t5_vat_upd"] button span {
-                  font-size: 13px !important;
-                  font-weight: 600 !important;
-                  line-height: 1 !important;
-                  margin: 0 !important;
-                }
-                div[class*="st-key-t5_vat_ex"] [data-testid="stBaseButton-secondary"],
-                div[class*="st-key-t5_vat_in"] [data-testid="stBaseButton-secondary"] {
-                  background: #FFFFFF !important;
-                  color: #475569 !important;
-                }
-                div[class*="st-key-t5_vat_upd"] button {
-                  background: #FFFFFF !important;
-                  color: #475569 !important;
-                  opacity: 1 !important;
-                  cursor: default !important;
-                  pointer-events: none !important;
-                }
-                div[class*="st-key-t5_vat_ex"] [data-testid="stBaseButton-primary"],
-                div[class*="st-key-t5_vat_in"] [data-testid="stBaseButton-primary"] {
-                  background: #E11D48 !important;
-                  color: #FFFFFF !important;
-                  border-color: #E11D48 !important;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
-            with st.container(key="t5_vat_col"):
-                with st.container(
-                    horizontal=True,
-                    gap="small",
-                    vertical_alignment="center",
-                    key="t5_vat_row",
-                ):
-                    if st.button(
-                        "부가세 별도",
-                        key="t5_vat_ex",
-                        type="primary" if _vat_mode == "exclusive" else "secondary",
-                        width="content",
-                    ):
-                        st.session_state["t5_debt_vat_mode"] = "exclusive"
-                    if st.button(
-                        "부가세 포함",
-                        key="t5_vat_in",
-                        type="primary" if _vat_mode == "inclusive" else "secondary",
-                        width="content",
-                    ):
-                        st.session_state["t5_debt_vat_mode"] = "inclusive"
-                    st.button(
-                        f"⏱️ 데이터 업데이트: {debt_update_str}",
-                        key="t5_vat_upd",
-                        type="secondary",
-                        disabled=True,
-                        width="content",
+        @st.fragment
+        def _tab5_vat_main() -> None:
+            _vat_mode = _dash_vat_mode()
+            debt_view = _debt_apply_vat_mode(filtered_debt_df, _vat_mode)
+            styled_debt = None
+            if not debt_view.empty:
+                _debt_nums = [
+                    c for c in debt_view.columns if c not in ("거래처", "구분")
+                ]
+                styled_debt = debt_view.style
+                if _debt_nums:
+                    styled_debt = styled_debt.format("{:,.0f}", subset=_debt_nums)
+                    styled_debt = styled_debt.background_gradient(
+                        cmap="Reds", subset=_debt_nums, axis=None
                     )
+            t5_c1, t5_c2 = st.columns([1.15, 1.85], vertical_alignment="center")
+            with t5_c1:
+                _dash_label_with_xlsx(
+                    "<div class='sub-header dashboard-tab-panel-head'>💰 채권(외상대금) 관리 현황 및 연령 분석</div>",
+                    key="t5_debt",
+                    styler=styled_debt,
+                    file_name="T5_채권관리.xlsx",
+                    hide_index=True,
+                    sheet="채권관리",
+                )
+            with t5_c2:
+                _render_vat_chips(debt_update_str, "t5")
+            st.session_state["_t5_vat_mode"] = _vat_mode
+            st.session_state["_t5_debt_view"] = debt_view
+
+        _tab5_vat_main()
+        _vat_mode = st.session_state.get("_t5_vat_mode") or _dash_vat_mode()
+        debt_view = st.session_state.get("_t5_debt_view")
+        if debt_view is None:
+            debt_view = _debt_apply_vat_mode(filtered_debt_df, _vat_mode)
 
         _debt_chip = (
             f"담당자 {', '.join(selected_staff)}" if selected_staff else "담당자 전체"
