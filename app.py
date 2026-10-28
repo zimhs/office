@@ -16993,8 +16993,30 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.session_state.last_opened_client = selected_client
 
         t2_c1, t2_c2 = st.columns([4, 1])
-        # 지정 거래처 총 거래매출 · 부가세 별도(VAT 제외)
-        tot_sales_c = df_client_filtered["매출액"].sum() / 10000 if not df_client_filtered.empty else 0.0
+        # 당해년도 누적 매출 · 부가세 별도 (영업종합요약과 동일 기준. 예전엔 전년도까지 합산)
+        _cur_year_c = str(years[0]) if years else ""
+        if (
+            not df_client_filtered.empty
+            and _cur_year_c
+            and "연도" in df_client_filtered.columns
+        ):
+            tot_sales_c = (
+                df_client_filtered.loc[
+                    df_client_filtered["연도"].astype(str) == _cur_year_c, "매출액"
+                ].sum()
+                / 10000
+            )
+        else:
+            tot_sales_c = (
+                df_client_filtered["매출액"].sum() / 10000
+                if not df_client_filtered.empty
+                else 0.0
+            )
+        _tot_label_c = (
+            f"{_cur_year_c}년 누적 매출 (부가세 별도)"
+            if _cur_year_c
+            else "당해년도 누적 매출 (부가세 별도)"
+        )
         cur_sales_c = cur_month_sales_client / 10000
         with t2_c1:
             _dash_label_with_xlsx(
@@ -17003,7 +17025,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 df=pd.DataFrame(
                     {
                         "지표": [
-                            "총 누적 매출 (부가세 별도)",
+                            _tot_label_c,
                             f"최근 월 매출 ({latest_month_str_client})",
                             "전월 대비 (MoM)",
                             "월평균 대비 증감",
@@ -17022,7 +17044,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             )
         t2_c2.markdown(render_update_badge(latest_update_str), unsafe_allow_html=True)
         m1, m2, m3, m4 = st.columns(4)
-        m1.markdown(f"<div class='metric-box'><div class='metric-label'>총 누적 매출 (부가세 별도)</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
+        m1.markdown(f"<div class='metric-box'><div class='metric-label'>{_tot_label_c}</div><div class='metric-value'>{tot_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
         m2.markdown(f"<div class='metric-box'><div class='metric-label'>최근 월 매출 ({latest_month_str_client})</div><div class='metric-value'>{cur_sales_c:,.0f} 만원</div></div>", unsafe_allow_html=True)
         m3.markdown(f"<div class='metric-box'><div class='metric-label'>전월 대비 (MoM)</div><div class='metric-value' style='color:{'#E11D48' if mom_rate_client < 0 else '#2563EB'};'>{mom_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)
         m4.markdown(f"<div class='metric-box'><div class='metric-label'>월평균 대비 증감</div><div class='metric-value' style='color:{'#E11D48' if avg_rate_client < 0 else '#2563EB'};'>{avg_rate_client:+.0f}%</div></div>", unsafe_allow_html=True)

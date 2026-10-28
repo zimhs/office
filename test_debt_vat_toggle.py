@@ -50,6 +50,13 @@ class DebtVatModeTest(unittest.TestCase):
         pvt = self.app._yearly_monthly_pivot(df, ["1월"], ["2026"])
         self.assertAlmostEqual(float(pvt.loc["1월", "2026"]), 2.0)
 
+    def test_tab2_ytd_uses_current_year_like_tab1(self):
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        t2 = src[src.index("# 당해년도 누적 매출 · 부가세 별도 (영업종합요약과 동일 기준"):]
+        self.assertIn('df_client_filtered["연도"].astype(str) == _cur_year_c', t2)
+        self.assertIn("_tot_label_c", t2)
+
 
 if __name__ == "__main__":
     unittest.main()
