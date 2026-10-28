@@ -6431,7 +6431,7 @@ def _dash_vat_chip_css() -> None:
         div[class*="_vat_row"] [data-testid="stHorizontalBlock"] {
           justify-content: flex-end !important;
           align-items: center !important;
-          gap: 6px !important;
+          gap: 4px !important;
           flex-wrap: nowrap !important;
           width: 100% !important;
         }
@@ -6453,18 +6453,24 @@ def _dash_vat_chip_css() -> None:
         div[class*="_vat_upd"] button,
         div[class*="_vat_ex"] button[kind],
         div[class*="_vat_in"] button[kind],
-        div[class*="_vat_upd"] button[kind] {
+        div[class*="_vat_upd"] button[kind],
+        div[class*="_vat_ex"] [data-testid="stBaseButton-primary"],
+        div[class*="_vat_ex"] [data-testid="stBaseButton-secondary"],
+        div[class*="_vat_in"] [data-testid="stBaseButton-primary"],
+        div[class*="_vat_in"] [data-testid="stBaseButton-secondary"],
+        div[class*="_vat_upd"] [data-testid="stBaseButton-secondary"] {
           box-sizing: border-box !important;
-          min-height: 0 !important;
-          height: auto !important;
+          min-height: 22px !important;
+          height: 22px !important;
+          max-height: 22px !important;
           min-width: 0 !important;
-          padding: 4px 10px !important;
-          border-radius: 8px !important;
+          padding: 0 7px !important;
+          border-radius: 6px !important;
           border: 1px solid #CBD5E1 !important;
-          box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
-          font-size: 12px !important;
+          box-shadow: none !important;
+          font-size: 10px !important;
           font-weight: 600 !important;
-          line-height: 1.25 !important;
+          line-height: 20px !important;
           margin: 0 !important;
         }
         div[class*="_vat_ex"] button p,
@@ -6473,9 +6479,9 @@ def _dash_vat_chip_css() -> None:
         div[class*="_vat_ex"] button span,
         div[class*="_vat_in"] button span,
         div[class*="_vat_upd"] button span {
-          font-size: 12px !important;
+          font-size: 10px !important;
           font-weight: 600 !important;
-          line-height: 1.25 !important;
+          line-height: 20px !important;
           margin: 0 !important;
         }
         div[class*="_vat_ex"] [data-testid="stBaseButton-secondary"],
