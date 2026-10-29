@@ -327,3 +327,24 @@ def test_editor_old_new_price_no_decimals():
     assert int(df.loc[0, "인상단가"]) == 200
     src = open("price_increase_tab.py", encoding="utf-8").read()
     assert src.count('format="%d"') >= 2
+
+
+def test_sent_log_shows_latest_client_first():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import price_increase_tab as pit
+
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "sent_log.jsonl"
+        log.write_text(
+            '{"ts":"2026-09-11T12:00:00","date":"2026-09-11","client":"Z가람플랜트","email":"a@b.com","subject":"old","ok":true,"mode":"single","staff":"","items":1,"msg":"ok"}\n'
+            '{"ts":"2026-10-29T09:11:04","date":"2026-10-29","client":"예성이엔지(아산)","email":"yesung@yesung-eng.com","subject":"가스 공급 단가 인상 안내의 건","ok":true,"mode":"single","staff":"","items":10,"msg":"ok"}\n',
+            encoding="utf-8",
+        )
+        with patch.object(pit, "PI_SENT_LOG", str(log)):
+            df = pit.load_sent_log()
+        assert str(df.iloc[0]["client"]) == "예성이엔지(아산)"
+        summary = pit.sent_summary_by_client(df)
+        assert str(summary.iloc[0]["거래처"]) == "예성이엔지(아산)"
