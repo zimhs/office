@@ -109,23 +109,29 @@ _code_changed_since_start() {
   [ -n "$saved" ] && [ "$cur" != "$saved" ]
 }
 
-# Gemini 등 지금 쓰는 창에 탭을 붙이지 않고, 대시보드 전용 창을 연다.
+# 서버가 살아 있을 때만 Chrome을 연다. 먼저 열면 「연결할 수 없습니다」가 깜빡인다.
 _chrome_new_window() {
   if _osa <<APPLESCRIPT
 tell application "Google Chrome"
   set u1 to "http://127.0.0.1:8501"
+  set found to false
   repeat with w in windows
-    try
-      if (URL of active tab of w) starts with u1 then
-        set index of w to 1
-        activate
-        return
-      end if
-    end try
+    repeat with t in tabs of w
+      try
+        set theURL to URL of t
+        if (theURL starts with u1) or (theURL contains "office-dashboard-park") or (theURL starts with "http://localhost:8501") then
+          set URL of t to u1
+          set index of w to 1
+          set found to true
+        end if
+      end try
+    end repeat
   end repeat
-  make new window
-  set URL of active tab of front window to u1
-  set index of front window to 1
+  if found is false then
+    make new window
+    set URL of active tab of front window to u1
+    set index of front window to 1
+  end if
   activate
 end tell
 APPLESCRIPT
@@ -138,12 +144,11 @@ APPLESCRIPT
 _chrome_ensure_tab() { _chrome_new_window; }
 _chrome_load_dashboard() { _chrome_new_window; }
 
-# 서버 재시작을 기다리지 않고 전용 창부터 연다.
-_chrome_new_window
 (_close_idle_shortcut_windows) &
 
 if ! mkdir "$LAUNCH_LOCK" 2>/dev/null; then
   if _up 8501; then
+    _chrome_load_dashboard
     osascript -e 'display notification "8501 대시보드로 이동" with title "영업 대시보드"' >/dev/null 2>&1 || true
     _close_idle_shortcut_windows
     exit 0
@@ -167,6 +172,7 @@ if _up 8501; then
     osascript -e 'display notification "코드 변경 감지 — 서버 재시작합니다" with title "영업 대시보드"'
   else
     touch "$STAMP"
+    _chrome_load_dashboard
     osascript -e 'display notification "8501 대시보드로 이동 (통합 12탭)" with title "영업 대시보드"'
     _close_idle_shortcut_windows
     exit 0
@@ -216,5 +222,6 @@ _run_bg 8501 "$MAIN" || { osascript -e 'display alert "8501 시작 실패"'; exi
 
 touch "$STAMP"
 _save_code_stamp
+_chrome_load_dashboard
 _close_idle_shortcut_windows
 osascript -e 'display notification "Chrome · 8501 통합 대시보드 (업무일지·공문 포함)" with title "영업 대시보드"'
