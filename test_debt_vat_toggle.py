@@ -58,6 +58,8 @@ class DebtVatModeTest(unittest.TestCase):
         self.assertIn('args=("inclusive",)', src)
         self.assertIn("font-size: 13px !important", src[src.index("def _dash_vat_chip_css"): src.index("def _render_vat_chips")])
         self.assertIn("padding: 6px 12px !important", src[src.index("def _dash_vat_chip_css"): src.index("def _render_vat_chips")])
+        self.assertIn("min-height: 32px !important", src[src.index("def _dash_vat_chip_css"): src.index("def _render_vat_chips")])
+        self.assertIn("dash-vat-upd-badge", src)
         self.assertIn('key=f"{prefix}_vat_ex"', src)
         self.assertNotIn("pd.to_numeric(out[c], errors=\"coerce\") * 1.1", src)
         self.assertIn("pd.to_numeric(out[c], errors=\"coerce\") / 1.1", src)

@@ -6419,6 +6419,7 @@ def _debt_apply_vat_mode(df, mode: str):
 
 
 def _dash_vat_chip_css() -> None:
+    """카카오맵 탭 업데이트 배지와 동일: 13px · padding 6px 12px · 높이 32px."""
     st.markdown(
         """
         <style>
@@ -6426,6 +6427,7 @@ def _dash_vat_chip_css() -> None:
         div[class*="_vat_row"] {
           display: flex !important;
           justify-content: flex-end !important;
+          align-items: center !important;
           width: 100% !important;
         }
         div[class*="_vat_row"] [data-testid="stHorizontalBlock"] {
@@ -6446,23 +6448,21 @@ def _dash_vat_chip_css() -> None:
           align-items: center !important;
           margin: 0 !important;
           padding: 0 !important;
-          min-height: 0 !important;
+          min-height: 32px !important;
         }
+        div[class*="st-key-"][class*="_vat_ex"] button,
+        div[class*="st-key-"][class*="_vat_in"] button,
         div[class*="_vat_ex"] button,
         div[class*="_vat_in"] button,
-        div[class*="_vat_upd"] button,
-        div[class*="_vat_ex"] button[kind],
-        div[class*="_vat_in"] button[kind],
-        div[class*="_vat_upd"] button[kind],
         div[class*="_vat_ex"] [data-testid="stBaseButton-primary"],
         div[class*="_vat_ex"] [data-testid="stBaseButton-secondary"],
         div[class*="_vat_in"] [data-testid="stBaseButton-primary"],
-        div[class*="_vat_in"] [data-testid="stBaseButton-secondary"],
-        div[class*="_vat_upd"] [data-testid="stBaseButton-secondary"] {
+        div[class*="_vat_in"] [data-testid="stBaseButton-secondary"] {
           box-sizing: border-box !important;
-          min-height: 0 !important;
-          height: auto !important;
-          max-height: none !important;
+          --min-height: 32px !important;
+          min-height: 32px !important;
+          height: 32px !important;
+          max-height: 32px !important;
           min-width: 0 !important;
           padding: 6px 12px !important;
           border-radius: 8px !important;
@@ -6470,31 +6470,40 @@ def _dash_vat_chip_css() -> None:
           box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
           font-size: 13px !important;
           font-weight: 600 !important;
-          line-height: 1.25 !important;
+          line-height: 18px !important;
           margin: 0 !important;
         }
         div[class*="_vat_ex"] button p,
         div[class*="_vat_in"] button p,
-        div[class*="_vat_upd"] button p,
         div[class*="_vat_ex"] button span,
         div[class*="_vat_in"] button span,
-        div[class*="_vat_upd"] button span {
+        div[class*="_vat_ex"] button div,
+        div[class*="_vat_in"] button div {
           font-size: 13px !important;
           font-weight: 600 !important;
-          line-height: 1.25 !important;
+          line-height: 18px !important;
           margin: 0 !important;
+        }
+        .dash-vat-upd-badge {
+          display: inline-flex !important;
+          align-items: center !important;
+          box-sizing: border-box !important;
+          height: 32px !important;
+          padding: 6px 12px !important;
+          border-radius: 8px !important;
+          border: 1px solid #CBD5E1 !important;
+          background: #FFFFFF !important;
+          color: #475569 !important;
+          font-size: 13px !important;
+          font-weight: 600 !important;
+          line-height: 18px !important;
+          box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+          white-space: nowrap !important;
         }
         div[class*="_vat_ex"] [data-testid="stBaseButton-secondary"],
         div[class*="_vat_in"] [data-testid="stBaseButton-secondary"] {
           background: #FFFFFF !important;
           color: #475569 !important;
-        }
-        div[class*="_vat_upd"] button {
-          background: #FFFFFF !important;
-          color: #475569 !important;
-          opacity: 1 !important;
-          cursor: default !important;
-          pointer-events: none !important;
         }
         div[class*="_vat_ex"] [data-testid="stBaseButton-primary"],
         div[class*="_vat_in"] [data-testid="stBaseButton-primary"] {
@@ -6535,12 +6544,10 @@ def _render_vat_chips(update_str, prefix: str) -> str:
                 on_click=_set_dash_vat_mode,
                 args=("inclusive",),
             )
-            st.button(
-                f"⏱️ 데이터 업데이트: {update_str}",
-                key=f"{prefix}_vat_upd",
-                type="secondary",
-                disabled=True,
-                width="content",
+            st.markdown(
+                "<span class='dash-vat-upd-badge'>"
+                f"⏱️ 데이터 업데이트: {html.escape(str(update_str))}</span>",
+                unsafe_allow_html=True,
             )
     return _dash_vat_mode()
 
@@ -16177,6 +16184,7 @@ years = ["2026"]
 @st.fragment
 def _dash_filter_and_tabs_fragment() -> None:
     """Top filter + tabs; fragment rerun skips file/Drive reload."""
+    _dash_vat_chip_css()
     global latest_update_str, selected_staff, selected_item, selected_client
     global df_base, df_client_filtered, df_f
     global pivot_m_total, client_item_qty_pivot, sales_p, qty_p, unit_price_p
