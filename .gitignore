@@ -90,6 +90,7 @@ uproad/
 .streamlit/secrets.toml
 .streamlit/gc_token.json
 .streamlit/gc_oauth_client.json
+.streamlit/gc_tasks.json
 uploaded_cache/price_increase/smtp_local.toml
 
 # 로컬 실행 상태 (Update/Local)

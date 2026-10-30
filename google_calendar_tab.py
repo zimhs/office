@@ -24,6 +24,9 @@ GC_TOKEN_HOME = os.path.join(_HOME_GC, "google_calendar_token.json")
 GC_OAUTH_HOME = os.path.join(_HOME_GC, "google_oauth_client.json")
 GC_TOKEN_ST = os.path.join(_ST_GC, "gc_token.json")
 GC_OAUTH_ST = os.path.join(_ST_GC, "gc_oauth_client.json")
+GC_TASKS = os.path.join(GC_DIR, "tasks_local.json")
+GC_TASKS_HOME = os.path.join(_HOME_GC, "google_tasks.json")
+GC_TASKS_ST = os.path.join(_ST_GC, "gc_tasks.json")
 GC_KR_HOLIDAY = "ko.south_korea#holiday@group.v.calendar.google.com"
 _TZ = ZoneInfo("Asia/Seoul")
 _SCOPES = (
@@ -595,30 +598,104 @@ def _gc_cached_events(cals: list[dict], year: int, month: int) -> dict[str, list
     return box[key]
 
 
+def _task_store_paths() -> list[str]:
+    return [GC_TASKS_HOME, GC_TASKS_ST, GC_TASKS]
+
+
+def _slim_task(t: dict) -> dict:
+    return {
+        "id": str((t or {}).get("id") or ""),
+        "title": str((t or {}).get("title") or ""),
+        "notes": str((t or {}).get("notes") or ""),
+        "status": str((t or {}).get("status") or "needsAction"),
+        "due": str((t or {}).get("due") or ""),
+        "position": str((t or {}).get("position") or ""),
+        "local_only": bool((t or {}).get("local_only")),
+    }
+
+
+def load_local_task_lists() -> dict:
+    for path in _task_store_paths():
+        data = _read_json(path)
+        if isinstance(data, dict) and isinstance(data.get("lists"), dict):
+            return data
+    return {"lists": {}}
+
+
+def save_local_task_lists(data: dict) -> None:
+    payload = {"lists": dict((data or {}).get("lists") or {})}
+    for path in _task_store_paths():
+        _write_json(path, payload)
+
+
+def load_local_tasks(list_id: str) -> list[dict]:
+    lists = load_local_task_lists().get("lists") or {}
+    items = lists.get(list_id) or []
+    return [_slim_task(t) for t in items if isinstance(t, dict)]
+
+
+def save_local_tasks(list_id: str, tasks: list[dict]) -> None:
+    data = load_local_task_lists()
+    data.setdefault("lists", {})[list_id] = [_slim_task(t) for t in tasks]
+    save_local_task_lists(data)
+    _gc_set_tasks(list_id, data["lists"][list_id])
+
+
+def import_tasks_from_google(list_id: str) -> list[dict]:
+    tasks = [_slim_task(t) for t in (list_tasks(list_id) if list_id else [])]
+    save_local_tasks(list_id, tasks)
+    return tasks
+
+
+def export_tasks_to_google(list_id: str) -> int:
+    sent = 0
+    out: list[dict] = []
+    for t in load_local_tasks(list_id):
+        title = str(t.get("title") or "").strip()
+        notes = str(t.get("notes") or "")
+        tid = str(t.get("id") or "")
+        if not title:
+            continue
+        if t.get("local_only") or not tid or tid.startswith("local-"):
+            created = add_task(list_id, title, notes)
+            out.append(_slim_task(created))
+            sent += 1
+            continue
+        try:
+            patched = patch_task(list_id, tid, {"title": title, "notes": notes})
+            merged = dict(t)
+            merged.update(patched or {})
+            merged["local_only"] = False
+            out.append(_slim_task(merged))
+            sent += 1
+        except Exception:
+            created = add_task(list_id, title, notes)
+            out.append(_slim_task(created))
+            sent += 1
+    save_local_tasks(list_id, out)
+    return sent
+
+
 def _gc_refresh_tasks(list_id: str) -> list[dict]:
-    tasks = list_tasks(list_id) if list_id else []
-    box = _gc_api_box()
-    box[f"tk:{list_id}"] = list(tasks)
-    box[f"tk_at:{list_id}"] = datetime.now(timezone.utc).timestamp()
-    return list(tasks)
+    return import_tasks_from_google(list_id)
 
 
 def _gc_cached_tasks(list_id: str, *, force: bool = False) -> list[dict]:
-    box = _gc_api_box()
-    key = f"tk:{list_id}"
     if not list_id:
         return []
-    now = datetime.now(timezone.utc).timestamp()
-    age = now - float(box.get(f"tk_at:{list_id}") or 0)
-    if force or box.get(key) is None or age > 20:
-        return _gc_refresh_tasks(list_id)
-    return list(box.get(key) or [])
+    if force:
+        return import_tasks_from_google(list_id)
+    lists = load_local_task_lists().get("lists") or {}
+    if list_id in lists:
+        local = [_slim_task(t) for t in (lists.get(list_id) or []) if isinstance(t, dict)]
+        _gc_set_tasks(list_id, local)
+        return local
+    return import_tasks_from_google(list_id)
 
 
 def _gc_set_tasks(list_id: str, tasks: list[dict]) -> None:
     box = _gc_api_box()
     box[f"tk:{list_id}"] = list(tasks)
-    box[f"tk_at:{list_id}"] = datetime.now(timezone.utc).timestamp()
 
 
 def _events_by_day(cals: list[dict], year: int, month: int) -> dict[str, list[dict]]:
@@ -920,39 +997,64 @@ def _gc_work_panel() -> None:
 
     lid = str(st.session_state.get("_gc_lid") or "")
     box = _gc_api_box()
-    if st.session_state.get("_gc_pending_task_sync"):
-        box.pop("tlists", None)
     pending_new = st.session_state.pop("_gc_pending_new", None)
     if pending_new:
         st.session_state["gc_new_task"] = ""
         st.session_state["gc_new_note"] = ""
     if pending_new and lid:
+        if isinstance(pending_new, dict):
+            title_in = str(pending_new.get("title") or "")
+            notes_in = str(pending_new.get("notes") or "")
+        else:
+            title_in, notes_in = str(pending_new), ""
+        created: dict[str, Any]
         try:
-            if isinstance(pending_new, dict):
-                title_in = str(pending_new.get("title") or "")
-                notes_in = str(pending_new.get("notes") or "")
-            else:
-                title_in, notes_in = str(pending_new), ""
-            add_task(lid, title_in, notes_in)
-            _gc_refresh_tasks(lid)
+            created = _slim_task(add_task(lid, title_in, notes_in))
         except Exception as e:
-            st.error(f"추가 실패: {e}")
+            created = {
+                "id": "local-" + secrets.token_hex(8),
+                "title": title_in,
+                "notes": notes_in,
+                "status": "needsAction",
+                "due": "",
+                "position": "",
+                "local_only": True,
+            }
+            st.warning(f"구글 전송은 실패했고 대시보드에만 저장했습니다: {e}")
+        cur = load_local_tasks(lid)
+        cur.append(created)
+        save_local_tasks(lid, cur)
     pending_note = st.session_state.pop("_gc_pending_note", None)
     if isinstance(pending_note, dict) and lid and pending_note.get("id"):
-        try:
-            nid = str(pending_note.get("id") or "")
-            ntxt = str(pending_note.get("notes") or "")
-            patch_task(lid, nid, {"notes": ntxt})
-            _gc_refresh_tasks(lid)
-        except Exception as e:
-            st.error(f"메모 저장 실패: {e}")
+        nid = str(pending_note.get("id") or "")
+        ntxt = str(pending_note.get("notes") or "")
+        cur = []
+        for t in load_local_tasks(lid):
+            if str(t.get("id")) == nid:
+                t = dict(t)
+                t["notes"] = ntxt
+                if not t.get("local_only") and nid and not nid.startswith("local-"):
+                    try:
+                        patch_task(lid, nid, {"notes": ntxt})
+                    except Exception as e:
+                        t["local_only"] = True
+                        st.warning(f"구글 메모 반영 실패, 대시보드에만 저장: {e}")
+            cur.append(t)
+        save_local_tasks(lid, cur)
     pending_done = st.session_state.pop("_gc_pending_done", None)
     if pending_done and lid:
-        try:
-            complete_task(lid, str(pending_done))
-            _gc_refresh_tasks(lid)
-        except Exception as e:
-            st.error(f"완료 처리 실패: {e}")
+        nid = str(pending_done)
+        left = []
+        for t in load_local_tasks(lid):
+            if str(t.get("id")) == nid:
+                if not t.get("local_only") and nid and not nid.startswith("local-"):
+                    try:
+                        complete_task(lid, nid)
+                    except Exception as e:
+                        st.warning(f"구글 완료 반영 실패: {e}")
+                continue
+            left.append(t)
+        save_local_tasks(lid, left)
     pending_ev = st.session_state.pop("_gc_pending_event", None)
     if isinstance(pending_ev, dict):
         try:
@@ -1076,14 +1178,18 @@ div[class*="st-key-gc_ns_"] button {
 """,
             unsafe_allow_html=True,
         )
-        head = st.columns([3.4, 1.1], gap="small")
+        head = st.columns([2.0, 1.2, 1.2], gap="small")
         with head[0]:
             st.markdown("**할 일 목록**")
         with head[1]:
-            if st.button("동기화", key="gc_task_sync", type="tertiary", width="content"):
-                st.session_state["_gc_pending_task_sync"] = True
+            if st.button("불러오기", key="gc_task_import", type="tertiary", width="content"):
+                st.session_state["_gc_pending_task_import"] = True
                 st.rerun(scope="fragment")
-        st.caption("구글 할 일(Tasks)과 같은 목록입니다.")
+        with head[2]:
+            if st.button("내보내기", key="gc_task_export", type="tertiary", width="content"):
+                st.session_state["_gc_pending_task_export"] = True
+                st.rerun(scope="fragment")
+        st.caption("불러오기: 구글 → 대시보드. 내보내기: 대시보드 → 구글. 대시보드 할 일은 따로 보관합니다.")
         if not tlists:
             st.caption("할 일 목록이 없습니다.")
             return
@@ -1096,9 +1202,20 @@ div[class*="st-key-gc_ns_"] button {
         )
         lid = str(tlists[int(li)].get("id") or "")
         st.session_state["_gc_lid"] = lid
-        force_sync = bool(st.session_state.pop("_gc_pending_task_sync", None))
+        if st.session_state.pop("_gc_pending_task_import", None) and lid:
+            try:
+                import_tasks_from_google(lid)
+                st.success("구글 할 일을 대시보드로 불러왔습니다.")
+            except Exception as e:
+                st.error(f"불러오기 실패: {e}")
+        if st.session_state.pop("_gc_pending_task_export", None) and lid:
+            try:
+                n = export_tasks_to_google(lid)
+                st.success(f"대시보드 할 일 {n}건을 구글에 보냈습니다.")
+            except Exception as e:
+                st.error(f"내보내기 실패: {e}")
         try:
-            tasks = _gc_cached_tasks(lid, force=force_sync) if lid else []
+            tasks = _gc_cached_tasks(lid) if lid else []
         except Exception as e:
             st.error(str(e))
             tasks = []
