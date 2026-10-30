@@ -1094,7 +1094,7 @@ def _gc_work_panel() -> None:
         st.error(f"할 일 목록을 불러오지 못했습니다: {e}")
         tlists = []
 
-    top = st.columns([1.1, 1.1, 4, 1.6])
+    top = st.columns([1.1, 1.1, 5.6])
     with top[0]:
         if st.button("오늘", key="gc_today"):
             st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
@@ -1113,11 +1113,6 @@ def _gc_work_panel() -> None:
                 st.rerun(scope="fragment")
     with top[2]:
         st.markdown(f"**{y}년 {m}월**")
-    with top[3]:
-        if st.button("연결 해제", key="gc_logout"):
-            clear_token()
-            st.session_state.pop("_gc_api", None)
-            st.rerun()
 
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
@@ -1189,7 +1184,6 @@ div[class*="st-key-gc_ns_"] button {
             if st.button("내보내기", key="gc_task_export", type="tertiary", width="content"):
                 st.session_state["_gc_pending_task_export"] = True
                 st.rerun(scope="fragment")
-        st.caption("불러오기: 구글 → 대시보드. 내보내기: 대시보드 → 구글. 대시보드 할 일은 따로 보관합니다.")
         if not tlists:
             st.caption("할 일 목록이 없습니다.")
             return
