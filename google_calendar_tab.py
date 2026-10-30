@@ -12,9 +12,8 @@ GC_DIR = os.path.join("uploaded_cache", "google_calendar")
 GC_STORE = os.path.join(GC_DIR, "calendars.json")
 GC_KR_HOLIDAY = "ko.south_korea#holiday@group.v.calendar.google.com"
 GC_CAL_OPEN = "https://calendar.google.com/calendar/u/0/r"
-GC_TASKS_EMBED = (
-    "https://tasks.google.com/embed/?origin=https://calendar.google.com&fullWidth=1"
-)
+GC_CAL_TASKS = "https://calendar.google.com/calendar/u/0/r/tasks"
+GC_TASKS_OPEN = "https://tasks.google.com/"
 _GC_DEFAULT_SRCS = (GC_KR_HOLIDAY,)
 
 
@@ -83,14 +82,22 @@ def render_google_calendar_tab() -> None:
                 st.rerun()
         with c_b:
             st.caption(
-                "할 일과 내 일정은 이 브라우저에서 구글 계정으로 로그인되어 있어야 보입니다. "
-                "구글이 전체 캘린더 화면 iframe을 막아서, 월간 달력 내장 + 할 일 패널로 같은 구성을 넣었습니다."
+                "내 일정은 캘린더 ID를 넣고, 이 브라우저에서 구글 로그인이 되어 있어야 보입니다."
             )
-    st.link_button("구글 캘린더 전체 화면", GC_CAL_OPEN, width="stretch")
-    cal_h = 780
-    cal_url = calendar_embed_url(_gc_load_srcs(), height=cal_h)
-    left, right = st.columns([3.15, 1.12], gap="small")
-    with left:
-        components.iframe(cal_url, height=cal_h, scrolling=True)
-    with right:
-        components.iframe(GC_TASKS_EMBED, height=cal_h, scrolling=True)
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        st.link_button("캘린더 + 할 일 (구글 화면)", GC_CAL_TASKS, width="stretch")
+    with b2:
+        st.link_button("할 일만 열기", GC_TASKS_OPEN, width="stretch")
+    with b3:
+        st.link_button("캘린더만 열기", GC_CAL_OPEN, width="stretch")
+    st.caption(
+        "구글이 할 일(`tasks.google.com`)을 대시보드 안에 넣는 것을 막아서, "
+        "할 일은 위 버튼으로 구글에서 엽니다. 아래는 월간 달력입니다."
+    )
+    cal_h = 820
+    components.iframe(
+        calendar_embed_url(_gc_load_srcs(), height=cal_h),
+        height=cal_h,
+        scrolling=True,
+    )

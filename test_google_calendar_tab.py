@@ -26,7 +26,8 @@ class GoogleCalendarTabTest(unittest.TestCase):
     def test_ui_wired_as_new_tab_only(self):
         with open("google_calendar_tab.py", encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("tasks.google.com/embed", src)
+        self.assertNotIn("tasks.google.com/embed", src)
+        self.assertIn("calendar.google.com/calendar/u/0/r/tasks", src)
         self.assertIn("render_google_calendar_tab", src)
         with open("app.py", encoding="utf-8") as f:
             app = f.read()
