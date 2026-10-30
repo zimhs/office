@@ -591,6 +591,8 @@ def _gc_work_panel() -> None:
     lid = str(st.session_state.get("_gc_lid") or "")
     box = _gc_api_box()
     pending_new = st.session_state.pop("_gc_pending_new", None)
+    if pending_new:
+        st.session_state["gc_new_task"] = ""
     if pending_new and lid:
         try:
             created = add_task(lid, str(pending_new))
@@ -722,7 +724,6 @@ def _gc_work_panel() -> None:
                 st.error("내용을 입력하세요.")
             else:
                 st.session_state["_gc_pending_new"] = title
-                st.session_state["gc_new_task"] = ""
                 st.rerun(scope="fragment")
 
 
