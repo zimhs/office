@@ -88,6 +88,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_oauth_code_used", src)
         self.assertIn("_gc_oauth_redirect", src)
         self.assertIn("redirect_uri_mismatch", src)
+        self.assertIn("_gc_refresh_tasks", src)
+        self.assertIn("gc_task_sync", src)
+        self.assertIn("구글 할 일", src)
 
 
     def test_month_html_x_only_on_writable(self):

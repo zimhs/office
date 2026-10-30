@@ -595,16 +595,30 @@ def _gc_cached_events(cals: list[dict], year: int, month: int) -> dict[str, list
     return box[key]
 
 
-def _gc_cached_tasks(list_id: str) -> list[dict]:
+def _gc_refresh_tasks(list_id: str) -> list[dict]:
+    tasks = list_tasks(list_id) if list_id else []
+    box = _gc_api_box()
+    box[f"tk:{list_id}"] = list(tasks)
+    box[f"tk_at:{list_id}"] = datetime.now(timezone.utc).timestamp()
+    return list(tasks)
+
+
+def _gc_cached_tasks(list_id: str, *, force: bool = False) -> list[dict]:
     box = _gc_api_box()
     key = f"tk:{list_id}"
-    if list_id and key not in box:
-        box[key] = list_tasks(list_id)
+    if not list_id:
+        return []
+    now = datetime.now(timezone.utc).timestamp()
+    age = now - float(box.get(f"tk_at:{list_id}") or 0)
+    if force or box.get(key) is None or age > 20:
+        return _gc_refresh_tasks(list_id)
     return list(box.get(key) or [])
 
 
 def _gc_set_tasks(list_id: str, tasks: list[dict]) -> None:
-    _gc_api_box()[f"tk:{list_id}"] = list(tasks)
+    box = _gc_api_box()
+    box[f"tk:{list_id}"] = list(tasks)
+    box[f"tk_at:{list_id}"] = datetime.now(timezone.utc).timestamp()
 
 
 def _events_by_day(cals: list[dict], year: int, month: int) -> dict[str, list[dict]]:
@@ -906,6 +920,8 @@ def _gc_work_panel() -> None:
 
     lid = str(st.session_state.get("_gc_lid") or "")
     box = _gc_api_box()
+    if st.session_state.get("_gc_pending_task_sync"):
+        box.pop("tlists", None)
     pending_new = st.session_state.pop("_gc_pending_new", None)
     if pending_new:
         st.session_state["gc_new_task"] = ""
@@ -917,10 +933,8 @@ def _gc_work_panel() -> None:
                 notes_in = str(pending_new.get("notes") or "")
             else:
                 title_in, notes_in = str(pending_new), ""
-            created = add_task(lid, title_in, notes_in)
-            cur = list(box.get(f"tk:{lid}") or [])
-            cur.append(created)
-            _gc_set_tasks(lid, cur)
+            add_task(lid, title_in, notes_in)
+            _gc_refresh_tasks(lid)
         except Exception as e:
             st.error(f"추가 실패: {e}")
     pending_note = st.session_state.pop("_gc_pending_note", None)
@@ -928,28 +942,15 @@ def _gc_work_panel() -> None:
         try:
             nid = str(pending_note.get("id") or "")
             ntxt = str(pending_note.get("notes") or "")
-            patched = patch_task(lid, nid, {"notes": ntxt})
-            cur = []
-            for t in box.get(f"tk:{lid}") or []:
-                if str(t.get("id")) == nid:
-                    t = dict(t)
-                    t["notes"] = patched.get("notes", ntxt)
-                cur.append(t)
-            _gc_set_tasks(lid, cur)
+            patch_task(lid, nid, {"notes": ntxt})
+            _gc_refresh_tasks(lid)
         except Exception as e:
             st.error(f"메모 저장 실패: {e}")
     pending_done = st.session_state.pop("_gc_pending_done", None)
     if pending_done and lid:
         try:
             complete_task(lid, str(pending_done))
-            _gc_set_tasks(
-                lid,
-                [
-                    t
-                    for t in (box.get(f"tk:{lid}") or [])
-                    if str(t.get("id")) != str(pending_done)
-                ],
-            )
+            _gc_refresh_tasks(lid)
         except Exception as e:
             st.error(f"완료 처리 실패: {e}")
     pending_ev = st.session_state.pop("_gc_pending_event", None)
@@ -1075,7 +1076,14 @@ div[class*="st-key-gc_ns_"] button {
 """,
             unsafe_allow_html=True,
         )
-        st.markdown("**할 일 목록**")
+        head = st.columns([3.4, 1.1], gap="small")
+        with head[0]:
+            st.markdown("**할 일 목록**")
+        with head[1]:
+            if st.button("동기화", key="gc_task_sync", type="tertiary", width="content"):
+                st.session_state["_gc_pending_task_sync"] = True
+                st.rerun(scope="fragment")
+        st.caption("구글 할 일(Tasks)과 같은 목록입니다.")
         if not tlists:
             st.caption("할 일 목록이 없습니다.")
             return
@@ -1088,8 +1096,9 @@ div[class*="st-key-gc_ns_"] button {
         )
         lid = str(tlists[int(li)].get("id") or "")
         st.session_state["_gc_lid"] = lid
+        force_sync = bool(st.session_state.pop("_gc_pending_task_sync", None))
         try:
-            tasks = _gc_cached_tasks(lid) if lid else []
+            tasks = _gc_cached_tasks(lid, force=force_sync) if lid else []
         except Exception as e:
             st.error(str(e))
             tasks = []
