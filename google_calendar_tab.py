@@ -549,10 +549,10 @@ def render_google_calendar_tab(
         _vc.render_visit_delivery_header(df, latest_update_str)
     except Exception as e:
         st.error(f"납품 달력을 표시하지 못했습니다: {e}")
-    st.divider()
     _consume_oauth_redirect()
-    _setup_expander()
     cid, csec = load_oauth_client()
+    if not (cid and csec):
+        _setup_expander()
     connected = bool(access_token())
 
     top = st.columns([1.1, 1.1, 4, 1.6])
@@ -601,10 +601,6 @@ def render_google_calendar_tab(
             st.caption("위에서 OAuth를 먼저 저장하세요.")
 
     if not connected:
-        st.info(
-            "구글이 할 일 화면을 대시보드 안에 끼워 넣는 것을 막아서, "
-            "연결 후 **달력과 할 일을 이 탭에서 붙여 작업**합니다."
-        )
         return
 
     y = int(st.session_state.get("gc_year") or today.year)

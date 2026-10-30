@@ -2391,19 +2391,10 @@ def render_visit_delivery_header(
             chips = delivery_chips(mon, month_deliveries)
             day_deliveries = delivery_rows_on(deliveries, sel)
             _render_day_strip(mon, sel, chips, today)
-            st.caption("위 줄은 납품(벌크·실린더)만 표시합니다. 벌크·실린더가 있는 날을 누르면 아래에 납품 목록이 나옵니다.")
             kinds = {c.get("kind") for c in (chips.get(sel.isoformat()) or [])}
             has_gas = "bulk" in kinds or "other" in kinds
             if cli and day_deliveries and has_gas:
                 _render_delivery_list(cli, sel, day_deliveries, deliveries)
-            elif cli and has_gas and not day_deliveries:
-                st.caption("이 날 지정 납품이 없습니다.")
-            elif cli:
-                st.caption("벌크·실린더가 표시된 날을 누르면 납품 목록이 아래에 나옵니다.")
-            else:
-                st.caption("담당자와 거래처를 고르면 납품 달력이 표시됩니다.")
-            if latest_update_str:
-                st.caption(f"대시보드 기준 시각: {latest_update_str}")
 
     st.fragment(_delivery_head_block)()
 
