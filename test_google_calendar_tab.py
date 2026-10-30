@@ -50,6 +50,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("render_google_calendar_tab", tab13)
         self.assertIn("min_tabs=13", app)
         self.assertIn("render_visit_delivery_header", src)
+        self.assertIn("@st.fragment", src)
+        self.assertIn("_gc_pending_new", src)
+        self.assertIn('st.rerun(scope="fragment")', src)
 
 
 if __name__ == "__main__":

@@ -379,6 +379,44 @@ def complete_task(list_id: str, task_id: str) -> dict:
     )
 
 
+def _gc_api_box() -> dict:
+    return st.session_state.setdefault("_gc_api", {})
+
+
+def _gc_cached_cals() -> list[dict]:
+    box = _gc_api_box()
+    if box.get("cals") is None:
+        box["cals"] = list_calendars()
+    return list(box["cals"] or [])
+
+
+def _gc_cached_tlists() -> list[dict]:
+    box = _gc_api_box()
+    if box.get("tlists") is None:
+        box["tlists"] = list_tasklists()
+    return list(box["tlists"] or [])
+
+
+def _gc_cached_events(cals: list[dict], year: int, month: int) -> dict[str, list[dict]]:
+    box = _gc_api_box()
+    key = f"ev:{year}-{month:02d}"
+    if box.get(key) is None:
+        box[key] = _events_by_day(cals, year, month) if cals else {}
+    return box[key]
+
+
+def _gc_cached_tasks(list_id: str) -> list[dict]:
+    box = _gc_api_box()
+    key = f"tk:{list_id}"
+    if list_id and key not in box:
+        box[key] = list_tasks(list_id)
+    return list(box.get(key) or [])
+
+
+def _gc_set_tasks(list_id: str, tasks: list[dict]) -> None:
+    _gc_api_box()[f"tk:{list_id}"] = list(tasks)
+
+
 def _events_by_day(cals: list[dict], year: int, month: int) -> dict[str, list[dict]]:
     weeks = month_weeks(year, month)
     start, end = weeks[0][0], weeks[-1][-1]
@@ -539,6 +577,155 @@ def _setup_expander() -> None:
                 st.rerun()
 
 
+@st.fragment
+def _gc_work_panel() -> None:
+    """할 일 추가·완료는 이 조각만 다시 그린다. 엑셀·납품줄·다른 탭은 다시 안 읽는다."""
+    today = datetime.now(_TZ).date()
+    vc_mon = st.session_state.get("_vc_month")
+    if isinstance(vc_mon, date):
+        st.session_state["gc_year"] = vc_mon.year
+        st.session_state["gc_month"] = vc_mon.month
+    y = int(st.session_state.get("gc_year") or today.year)
+    m = int(st.session_state.get("gc_month") or today.month)
+
+    lid = str(st.session_state.get("_gc_lid") or "")
+    box = _gc_api_box()
+    pending_new = st.session_state.pop("_gc_pending_new", None)
+    if pending_new and lid:
+        try:
+            created = add_task(lid, str(pending_new))
+            cur = list(box.get(f"tk:{lid}") or [])
+            cur.append(created)
+            _gc_set_tasks(lid, cur)
+        except Exception as e:
+            st.error(f"추가 실패: {e}")
+    pending_done = st.session_state.pop("_gc_pending_done", None)
+    if pending_done and lid:
+        try:
+            complete_task(lid, str(pending_done))
+            _gc_set_tasks(
+                lid,
+                [
+                    t
+                    for t in (box.get(f"tk:{lid}") or [])
+                    if str(t.get("id")) != str(pending_done)
+                ],
+            )
+        except Exception as e:
+            st.error(f"완료 처리 실패: {e}")
+    pending_ev = st.session_state.pop("_gc_pending_event", None)
+    if isinstance(pending_ev, dict):
+        try:
+            day = pending_ev["day"]
+            insert_event(
+                str(pending_ev.get("cal") or "primary"),
+                str(pending_ev.get("title") or ""),
+                day,
+                True,
+            )
+            box.pop(f"ev:{day.year}-{day.month:02d}", None)
+        except Exception as e:
+            st.error(f"일정 저장 실패: {e}")
+
+    try:
+        cals = _gc_cached_cals()
+    except Exception as e:
+        st.error(f"캘린더를 불러오지 못했습니다: {e}")
+        cals = []
+    try:
+        tlists = _gc_cached_tlists()
+    except Exception as e:
+        st.error(f"할 일 목록을 불러오지 못했습니다: {e}")
+        tlists = []
+
+    top = st.columns([1.1, 1.1, 4, 1.6])
+    with top[0]:
+        if st.button("오늘", key="gc_today"):
+            st.session_state["gc_year"] = today.year
+            st.session_state["gc_month"] = today.month
+            st.rerun(scope="fragment")
+    with top[1]:
+        n1, n2 = st.columns(2)
+        with n1:
+            if st.button("‹", key="gc_prev"):
+                d = date(y, m, 1) - timedelta(days=1)
+                st.session_state["gc_year"] = d.year
+                st.session_state["gc_month"] = d.month
+                st.rerun(scope="fragment")
+        with n2:
+            if st.button("›", key="gc_next"):
+                d = date(y, m, 28) + timedelta(days=8)
+                st.session_state["gc_year"] = d.year
+                st.session_state["gc_month"] = d.month
+                st.rerun(scope="fragment")
+    with top[2]:
+        st.markdown(f"**{y}년 {m}월**")
+    with top[3]:
+        if st.button("연결 해제", key="gc_logout"):
+            clear_token()
+            st.session_state.pop("_gc_api", None)
+            st.rerun()
+
+    y = int(st.session_state.get("gc_year") or today.year)
+    m = int(st.session_state.get("gc_month") or today.month)
+    left, right = st.columns([3.15, 1.12], gap="small")
+    with left:
+        by_day = _gc_cached_events(cals, y, m)
+        st.markdown(_month_html(y, m, by_day, today), unsafe_allow_html=True)
+        with st.expander("일정 추가", expanded=False):
+            et = st.text_input("제목", key="gc_ev_title")
+            ed = st.date_input("날짜", value=today, key="gc_ev_day")
+            cal_opts = {c["summary"]: c["id"] for c in cals} or {"기본": "primary"}
+            pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
+            if st.button("일정 저장", type="primary", key="gc_ev_save"):
+                title = (et or "").strip()
+                if len(title) < 1:
+                    st.error("제목을 입력하세요.")
+                else:
+                    st.session_state["_gc_pending_event"] = {
+                        "cal": cal_opts[pick],
+                        "title": title,
+                        "day": ed,
+                    }
+                    st.rerun(scope="fragment")
+    with right:
+        st.markdown("**할 일 목록**")
+        if not tlists:
+            st.caption("할 일 목록이 없습니다.")
+            return
+        names = [t.get("title") or "할 일" for t in tlists]
+        li = st.selectbox(
+            "목록",
+            options=list(range(len(names))),
+            format_func=lambda i: names[i],
+            key="gc_tlist",
+        )
+        lid = str(tlists[int(li)].get("id") or "")
+        st.session_state["_gc_lid"] = lid
+        try:
+            tasks = _gc_cached_tasks(lid) if lid else []
+        except Exception as e:
+            st.error(str(e))
+            tasks = []
+        for t in tasks:
+            tid = str(t.get("id") or "")
+            title = t.get("title") or "(제목 없음)"
+            due = str((t.get("due") or ""))[:10]
+            label = title if not due else f"{title}  · {due}"
+            if st.checkbox(label, value=False, key=f"gc_td_{tid}"):
+                st.session_state["_gc_pending_done"] = tid
+                st.rerun(scope="fragment")
+        nt = st.text_input("새 할 일", key="gc_new_task", placeholder="할 일 추가")
+        if st.button("추가", key="gc_add_task"):
+            title = (nt or "").strip()
+            if len(title) < 1:
+                st.error("내용을 입력하세요.")
+            else:
+                st.session_state["_gc_pending_new"] = title
+                st.session_state["gc_new_task"] = ""
+                st.rerun(scope="fragment")
+
+
 def render_google_calendar_tab(
     df=None, latest_update_str: str = ""
 ) -> None:
@@ -554,42 +741,8 @@ def render_google_calendar_tab(
     if not (cid and csec):
         _setup_expander()
     connected = bool(access_token())
-
-    top = st.columns([1.1, 1.1, 4, 1.6])
-    today = datetime.now(_TZ).date()
-    vc_mon = st.session_state.get("_vc_month")
-    if isinstance(vc_mon, date):
-        st.session_state["gc_year"] = vc_mon.year
-        st.session_state["gc_month"] = vc_mon.month
-    y = int(st.session_state.get("gc_year") or today.year)
-    m = int(st.session_state.get("gc_month") or today.month)
-    with top[0]:
-        if st.button("오늘", key="gc_today"):
-            st.session_state["gc_year"] = today.year
-            st.session_state["gc_month"] = today.month
-            st.rerun()
-    with top[1]:
-        n1, n2 = st.columns(2)
-        with n1:
-            if st.button("‹", key="gc_prev"):
-                d = date(y, m, 1) - timedelta(days=1)
-                st.session_state["gc_year"] = d.year
-                st.session_state["gc_month"] = d.month
-                st.rerun()
-        with n2:
-            if st.button("›", key="gc_next"):
-                d = date(y, m, 28) + timedelta(days=8)
-                st.session_state["gc_year"] = d.year
-                st.session_state["gc_month"] = d.month
-                st.rerun()
-    with top[2]:
-        st.markdown(f"**{y}년 {m}월**")
-    with top[3]:
-        if connected:
-            if st.button("연결 해제", key="gc_logout"):
-                clear_token()
-                st.rerun()
-        elif cid and csec:
+    if not connected:
+        if cid and csec:
             st.session_state.setdefault("_gc_oauth_state", secrets.token_urlsafe(16))
             st.link_button(
                 "구글 계정 연결",
@@ -597,78 +750,5 @@ def render_google_calendar_tab(
                 type="primary",
                 width="stretch",
             )
-        else:
-            st.caption("위에서 OAuth를 먼저 저장하세요.")
-
-    if not connected:
         return
-
-    y = int(st.session_state.get("gc_year") or today.year)
-    m = int(st.session_state.get("gc_month") or today.month)
-
-    try:
-        cals = list_calendars()
-    except Exception as e:
-        st.error(f"캘린더를 불러오지 못했습니다: {e}")
-        cals = []
-    try:
-        tlists = list_tasklists()
-    except Exception as e:
-        st.error(f"할 일 목록을 불러오지 못했습니다: {e}")
-        tlists = []
-
-    left, right = st.columns([3.15, 1.12], gap="small")
-    with left:
-        by_day = _events_by_day(cals, y, m) if cals else {}
-        st.markdown(_month_html(y, m, by_day, today), unsafe_allow_html=True)
-        with st.expander("일정 추가", expanded=False):
-            et = st.text_input("제목", key="gc_ev_title")
-            ed = st.date_input("날짜", value=today, key="gc_ev_day")
-            cal_opts = {c["summary"]: c["id"] for c in cals} or {"기본": "primary"}
-            pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
-            if st.button("일정 저장", type="primary", key="gc_ev_save"):
-                title = (et or "").strip()
-                if len(title) < 1:
-                    st.error("제목을 입력하세요.")
-                else:
-                    try:
-                        insert_event(cal_opts[pick], title, ed, True)
-                        st.success("일정을 넣었습니다.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"일정 저장 실패: {e}")
-    with right:
-        st.markdown("**할 일 목록**")
-        if not tlists:
-            st.caption("할 일 목록이 없습니다.")
-        else:
-            names = [t.get("title") or "할 일" for t in tlists]
-            li = st.selectbox("목록", options=list(range(len(names))), format_func=lambda i: names[i], key="gc_tlist")
-            lid = str(tlists[int(li)].get("id") or "")
-            try:
-                tasks = list_tasks(lid) if lid else []
-            except Exception as e:
-                st.error(str(e))
-                tasks = []
-            for t in tasks:
-                tid = str(t.get("id") or "")
-                title = t.get("title") or "(제목 없음)"
-                due = str((t.get("due") or ""))[:10]
-                label = title if not due else f"{title}  · {due}"
-                if st.checkbox(label, value=False, key=f"gc_td_{tid}"):
-                    try:
-                        complete_task(lid, tid)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"완료 처리 실패: {e}")
-            nt = st.text_input("새 할 일", key="gc_new_task", placeholder="할 일 추가")
-            if st.button("추가", key="gc_add_task"):
-                title = (nt or "").strip()
-                if len(title) < 1:
-                    st.error("내용을 입력하세요.")
-                else:
-                    try:
-                        add_task(lid, title)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"추가 실패: {e}")
+    _gc_work_panel()
