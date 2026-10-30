@@ -241,10 +241,40 @@ def redirect_uri() -> str:
     return "http://localhost:8501/"
 
 
+def _redirect_candidates(preferred: str = "") -> list[str]:
+    seen: list[str] = []
+    for raw in (
+        preferred,
+        redirect_uri(),
+        "http://127.0.0.1:8501/",
+        "http://localhost:8501/",
+        "http://127.0.0.1:8501",
+        "http://localhost:8501",
+        _CLOUD_REDIRECT,
+    ):
+        u = str(raw or "").strip()
+        if u and u not in seen:
+            seen.append(u)
+        if u.endswith("/"):
+            alt = u[:-1]
+        elif u:
+            alt = u + "/"
+        else:
+            alt = ""
+        if alt and alt not in seen:
+            seen.append(alt)
+    return seen
+
+
 def auth_url(client_id: str, state: str) -> str:
+    ru = redirect_uri()
+    try:
+        st.session_state["_gc_oauth_redirect"] = ru
+    except Exception:
+        pass
     q = {
         "client_id": client_id,
-        "redirect_uri": redirect_uri(),
+        "redirect_uri": ru,
         "response_type": "code",
         "scope": " ".join(_SCOPES),
         "access_type": "offline",
@@ -256,22 +286,70 @@ def auth_url(client_id: str, state: str) -> str:
     return _AUTH + "?" + urllib.parse.urlencode(q)
 
 
+def _token_error_text(r: requests.Response) -> str:
+    err, desc = "", ""
+    try:
+        data = r.json()
+        err = str((data or {}).get("error") or "")
+        desc = str((data or {}).get("error_description") or "")
+    except Exception:
+        pass
+    if err == "redirect_uri_mismatch":
+        return "리다이렉트 주소가 Google Cloud에 등록된 URI와 다릅니다."
+    if err == "invalid_grant":
+        return "인증이 만료됐거나 이미 사용되었습니다. 다시 연결해 주세요."
+    if err == "invalid_client":
+        return "OAuth 클라이언트 ID 또는 비밀번호가 올바르지 않습니다."
+    if desc:
+        return desc
+    if err:
+        return err
+    return f"토큰 요청 실패 ({r.status_code})"
+
+
 def exchange_code(client_id: str, client_secret: str, code: str) -> dict:
-    r = requests.post(
-        _TOKEN,
-        data={
-            "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": redirect_uri(),
-            "grant_type": "authorization_code",
-        },
-        timeout=30,
-    )
-    r.raise_for_status()
-    data = r.json()
-    data["_obtained"] = datetime.now(timezone.utc).isoformat()
-    return data
+    preferred = ""
+    try:
+        preferred = str(st.session_state.get("_gc_oauth_redirect") or "")
+    except Exception:
+        preferred = ""
+    last: requests.Response | None = None
+    last_mismatch = False
+    for ru in _redirect_candidates(preferred):
+        r = requests.post(
+            _TOKEN,
+            data={
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": ru,
+                "grant_type": "authorization_code",
+            },
+            timeout=30,
+        )
+        if r.ok:
+            data = r.json()
+            data["_obtained"] = datetime.now(timezone.utc).isoformat()
+            try:
+                st.session_state["_gc_oauth_redirect"] = ru
+            except Exception:
+                pass
+            return data
+        last = r
+        err = ""
+        try:
+            err = str((r.json() or {}).get("error") or "")
+        except Exception:
+            err = ""
+        if err == "redirect_uri_mismatch":
+            last_mismatch = True
+            continue
+        break
+    if last is not None:
+        raise RuntimeError(_token_error_text(last))
+    if last_mismatch:
+        raise RuntimeError("리다이렉트 주소가 Google Cloud에 등록된 URI와 다릅니다.")
+    raise RuntimeError("구글 토큰을 받지 못했습니다.")
 
 
 def refresh_token(client_id: str, client_secret: str, tok: dict) -> dict:
@@ -734,22 +812,32 @@ def _event_memo_dialog() -> None:
         st.rerun()
 
 
-def _consume_oauth_redirect() -> None:
+def _oauth_query_one(name: str) -> str:
     try:
-        qp = st.query_params
-        err = str(qp.get("error") or "")
-        code = str(qp.get("code") or "")
-        state = str(qp.get("state") or "")
+        v = st.query_params.get(name)
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        return str(v or "").strip()
     except Exception:
-        return
+        return ""
+
+
+def _consume_oauth_redirect() -> None:
+    err = _oauth_query_one("error")
+    code = _oauth_query_one("code")
+    state = _oauth_query_one("state")
     if err:
         st.error("구글 연결이 취소되었습니다.")
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
+        _qp_pop("error", "code", "state", "scope", "prompt", "authuser")
         return
     if not code:
+        return
+    if st.session_state.get("_gc_oauth_code_used") == code:
+        _qp_pop("code", "state", "scope", "prompt", "authuser", "hd", "session_state")
+        return
+    if _usable_token(load_token()):
+        st.session_state["_gc_oauth_code_used"] = code
+        _qp_pop("code", "state", "scope", "prompt", "authuser", "hd", "session_state")
         return
     expect = str(st.session_state.get("_gc_oauth_state") or "")
     if expect and state and state != expect:
@@ -759,17 +847,16 @@ def _consume_oauth_redirect() -> None:
     if not cid or not csec:
         st.error("OAuth 클라이언트 ID/비밀번호가 없습니다.")
         return
+    st.session_state["_gc_oauth_code_used"] = code
     try:
         tok = exchange_code(cid, csec, code)
         save_token(tok)
         st.session_state.pop("_gc_oauth_state", None)
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
+        _qp_pop("code", "state", "scope", "prompt", "authuser", "hd", "session_state")
         st.success("구글 캘린더·할 일이 연결되었습니다.")
         st.rerun()
     except Exception as e:
+        st.session_state.pop("_gc_oauth_code_used", None)
         st.error(f"구글 연결 실패: {e}")
 
 

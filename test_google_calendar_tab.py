@@ -37,6 +37,13 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("accounts.google.com", url)
         self.assertIn("calendar", url)
         self.assertIn("tasks", url)
+        self.assertIn("redirect_uri=", url)
+
+    def test_redirect_candidates_include_local_and_cloud(self):
+        items = gc._redirect_candidates("http://127.0.0.1:8501/")
+        self.assertIn("http://127.0.0.1:8501/", items)
+        self.assertIn("http://localhost:8501/", items)
+        self.assertIn(gc._CLOUD_REDIRECT, items)
 
     def test_ui_wired_as_new_tab_only(self):
         with open("google_calendar_tab.py", encoding="utf-8") as f:
@@ -78,6 +85,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("gc_ev_note", src)
         self.assertIn('body["description"]', src)
         self.assertIn("gc_ovc=", src)
+        self.assertIn("_gc_oauth_code_used", src)
+        self.assertIn("_gc_oauth_redirect", src)
+        self.assertIn("redirect_uri_mismatch", src)
 
 
     def test_month_html_x_only_on_writable(self):
