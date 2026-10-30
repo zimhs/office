@@ -363,11 +363,22 @@ def list_tasks(list_id: str) -> list[dict]:
     return items
 
 
-def add_task(list_id: str, title: str) -> dict:
+def add_task(list_id: str, title: str, notes: str = "") -> dict:
+    body: dict[str, Any] = {"title": title}
+    if str(notes or "").strip():
+        body["notes"] = str(notes).strip()
     return api_json(
         "POST",
         f"{_TASK_API}/lists/{urllib.parse.quote(list_id, safe='')}/tasks",
-        {"title": title},
+        body,
+    )
+
+
+def patch_task(list_id: str, task_id: str, fields: dict) -> dict:
+    return api_json(
+        "PATCH",
+        f"{_TASK_API}/lists/{urllib.parse.quote(list_id, safe='')}/tasks/{urllib.parse.quote(task_id, safe='')}",
+        fields,
     )
 
 
@@ -593,14 +604,35 @@ def _gc_work_panel() -> None:
     pending_new = st.session_state.pop("_gc_pending_new", None)
     if pending_new:
         st.session_state["gc_new_task"] = ""
+        st.session_state["gc_new_note"] = ""
     if pending_new and lid:
         try:
-            created = add_task(lid, str(pending_new))
+            if isinstance(pending_new, dict):
+                title_in = str(pending_new.get("title") or "")
+                notes_in = str(pending_new.get("notes") or "")
+            else:
+                title_in, notes_in = str(pending_new), ""
+            created = add_task(lid, title_in, notes_in)
             cur = list(box.get(f"tk:{lid}") or [])
             cur.append(created)
             _gc_set_tasks(lid, cur)
         except Exception as e:
             st.error(f"추가 실패: {e}")
+    pending_note = st.session_state.pop("_gc_pending_note", None)
+    if isinstance(pending_note, dict) and lid and pending_note.get("id"):
+        try:
+            nid = str(pending_note.get("id") or "")
+            ntxt = str(pending_note.get("notes") or "")
+            patched = patch_task(lid, nid, {"notes": ntxt})
+            cur = []
+            for t in box.get(f"tk:{lid}") or []:
+                if str(t.get("id")) == nid:
+                    t = dict(t)
+                    t["notes"] = patched.get("notes", ntxt)
+                cur.append(t)
+            _gc_set_tasks(lid, cur)
+        except Exception as e:
+            st.error(f"메모 저장 실패: {e}")
     pending_done = st.session_state.pop("_gc_pending_done", None)
     if pending_done and lid:
         try:
@@ -714,16 +746,48 @@ def _gc_work_panel() -> None:
             title = t.get("title") or "(제목 없음)"
             due = str((t.get("due") or ""))[:10]
             label = title if not due else f"{title}  · {due}"
+            note = str(t.get("notes") or "").strip()
             if st.checkbox(label, value=False, key=f"gc_td_{tid}"):
                 st.session_state["_gc_pending_done"] = tid
                 st.rerun(scope="fragment")
-        nt = st.text_input("새 할 일", key="gc_new_task", placeholder="할 일 추가")
+            if note:
+                st.markdown(
+                    "<div style='font-size:12px;color:#5f6368;line-height:1.35;"
+                    "padding:0 4px 4px 1.7rem;white-space:pre-wrap'>"
+                    f"{html.escape(note)}</div>",
+                    unsafe_allow_html=True,
+                )
+            with st.expander("메모", expanded=False):
+                edited = st.text_area(
+                    "메모",
+                    value=note,
+                    key=f"gc_note_{tid}",
+                    height=70,
+                    label_visibility="collapsed",
+                    placeholder="세부 메모 (구글 할 일과 동일)",
+                )
+                if st.button("메모 저장", key=f"gc_ns_{tid}"):
+                    st.session_state["_gc_pending_note"] = {
+                        "id": tid,
+                        "notes": edited or "",
+                    }
+                    st.rerun(scope="fragment")
+        nt = st.text_input("새 할 일", key="gc_new_task", placeholder="할 일 제목")
+        nn = st.text_area(
+            "메모",
+            key="gc_new_note",
+            height=70,
+            placeholder="메모 (예: 20일 미수금정리)",
+        )
         if st.button("추가", key="gc_add_task"):
             title = (nt or "").strip()
             if len(title) < 1:
-                st.error("내용을 입력하세요.")
+                st.error("제목을 입력하세요.")
             else:
-                st.session_state["_gc_pending_new"] = title
+                st.session_state["_gc_pending_new"] = {
+                    "title": title,
+                    "notes": nn or "",
+                }
                 st.rerun(scope="fragment")
 
 
