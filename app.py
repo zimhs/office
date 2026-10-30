@@ -7470,7 +7470,7 @@ def _dash_memo(store_name, sig, factory, *, limit=24):
 
 
 # 상단 필터 rerun 시 무거운 탭 생략용 — 탭 인덱스 = st.tabs 순서
-# 로컬·Cloud 공통: 업무일지·시장조사·공문·방문할일·구글캘린더 포함 14탭 (8502 분리 종료)
+# 로컬·Cloud 공통: 업무일지·시장조사·공문·구글캘린더 포함 13탭 (방문·할일은 구글캘린더 상단으로 합침)
 def _dash_cloud_merged_tabs() -> bool:
     """영업 대시보드에 업무일지·공문 포함(로컬 8501·Cloud 동일)."""
     return True
@@ -16618,7 +16618,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
     _dash_note_filter_change_for_heavy_tabs()
     _DASH_CLOUD_TABS = _dash_cloud_merged_tabs()
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs(
         [
             "📌 영업 종합 요약",
             "🏢 거래처 분석",
@@ -16632,14 +16632,13 @@ def _dash_filter_and_tabs_fragment() -> None:
             "📝 일일업무일지",
             "🔎 시장조사",
             "📨 메일",
-            "📅 방문·할일",
             "📆 구글캘린더",
         ]
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
     _STICKY_INJECT_VER = 100
-    _ACTIVE_TAB_INJECT_VER = 15
+    _ACTIVE_TAB_INJECT_VER = 16
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
@@ -16650,7 +16649,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.session_state["_ipad_sticky_ver"] = 47
     if st.session_state.get("_dash_active_tab_inject_ver") != _ACTIVE_TAB_INJECT_VER:
         inject_dash_active_tab_cookie_script(
-            min_tabs=14, heavy_indices=(9, 10, 11)
+            min_tabs=13, heavy_indices=(9, 10, 11)
         )
         st.session_state["_dash_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
         st.session_state["_dash_cloud_active_tab_inject_ver"] = _ACTIVE_TAB_INJECT_VER
@@ -20566,37 +20565,11 @@ def _dash_filter_and_tabs_fragment() -> None:
 
         with tab13:
             try:
-                # Cloud·아이패드도 가벼운 달력을 처음부터 붙여 둔다.
-                # 탭 클릭 때 stub remount(전체 재실행)를 하면 아이패드에서 빈 화면만 남는다.
-                import visit_calendar_tab as _vc_tab
-
-                # 맥 로컬만 모듈 reload. Cloud·아이패드는 v2 재등록으로 방문탭이 안 끝난다.
-                if not is_touch_ui() and not _is_streamlit_cloud():
-                    _vc_path = getattr(_vc_tab, "__file__", None) or ""
-                    _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
-                    if "_vc_mod_mtime" not in st.session_state:
-                        st.session_state["_vc_mod_mtime"] = _vc_mtime
-                    elif st.session_state.get("_vc_mod_mtime") != _vc_mtime:
-                        _vc_tab = importlib.reload(_vc_tab)
-                        st.session_state["_vc_mod_mtime"] = _vc_mtime
-                        sys.modules["visit_calendar_tab"] = _vc_tab
-                _vc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
-                _vc_tab.render_visit_calendar_tab(_vc_df, latest_update_str=latest_update_str)
-            except ModuleNotFoundError:
-                st.error(
-                    "방문·할일 모듈(`visit_calendar_tab.py`)을 찾을 수 없습니다. "
-                    "배포 파일에 포함되었는지 확인해 주세요."
-                )
-                st.info("다른 탭은 정상 이용 가능합니다.")
-            except Exception as _vc_err:
-                st.error(f"방문·할일 탭 오류: {_vc_err}")
-                st.info("다른 탭은 정상 이용 가능합니다.")
-
-        with tab14:
-            try:
                 import google_calendar_tab as _gc_tab
 
                 if not is_touch_ui() and not _is_streamlit_cloud():
+                    import visit_calendar_tab as _vc_tab
+
                     _gc_path = getattr(_gc_tab, "__file__", None) or ""
                     _gc_mtime = os.path.getmtime(_gc_path) if _gc_path and os.path.exists(_gc_path) else 0
                     if "_gc_mod_mtime" not in st.session_state:
@@ -20605,7 +20578,18 @@ def _dash_filter_and_tabs_fragment() -> None:
                         _gc_tab = importlib.reload(_gc_tab)
                         st.session_state["_gc_mod_mtime"] = _gc_mtime
                         sys.modules["google_calendar_tab"] = _gc_tab
-                _gc_tab.render_google_calendar_tab()
+                    _vc_path = getattr(_vc_tab, "__file__", None) or ""
+                    _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
+                    if "_vc_mod_mtime" not in st.session_state:
+                        st.session_state["_vc_mod_mtime"] = _vc_mtime
+                    elif st.session_state.get("_vc_mod_mtime") != _vc_mtime:
+                        _vc_tab = importlib.reload(_vc_tab)
+                        st.session_state["_vc_mod_mtime"] = _vc_mtime
+                        sys.modules["visit_calendar_tab"] = _vc_tab
+                _gc_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                _gc_tab.render_google_calendar_tab(
+                    _gc_df, latest_update_str=latest_update_str
+                )
             except ModuleNotFoundError:
                 st.error(
                     "구글캘린더 모듈(`google_calendar_tab.py`)을 찾을 수 없습니다. "

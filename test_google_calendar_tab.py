@@ -44,11 +44,12 @@ class GoogleCalendarTabTest(unittest.TestCase):
         with open("app.py", encoding="utf-8") as f:
             app = f.read()
         self.assertIn("📆 구글캘린더", app)
-        self.assertIn("with tab14:", app)
-        tab14 = app[app.index("with tab14:") : app.index("구글캘린더 탭 오류")]
-        self.assertIn("render_google_calendar_tab", tab14)
-        self.assertNotIn("render_visit_calendar_tab", tab14)
-        self.assertIn("min_tabs=14", app)
+        self.assertIn("with tab13:", app)
+        self.assertNotIn("📅 방문·할일", app)
+        tab13 = app[app.index("with tab13:") : app.index("구글캘린더 탭 오류")]
+        self.assertIn("render_google_calendar_tab", tab13)
+        self.assertIn("min_tabs=13", app)
+        self.assertIn("render_visit_delivery_header", src)
 
 
 if __name__ == "__main__":

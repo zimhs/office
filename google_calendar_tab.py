@@ -539,8 +539,17 @@ def _setup_expander() -> None:
                 st.rerun()
 
 
-def render_google_calendar_tab() -> None:
-    """월간 달력(왼쪽) + 할 일(오른쪽). 기존 탭과 상태를 공유하지 않는다."""
+def render_google_calendar_tab(
+    df=None, latest_update_str: str = ""
+) -> None:
+    """상단 담당자·거래처·납품줄 + 구글 월간 달력·할 일."""
+    try:
+        import visit_calendar_tab as _vc
+
+        _vc.render_visit_delivery_header(df, latest_update_str)
+    except Exception as e:
+        st.error(f"납품 달력을 표시하지 못했습니다: {e}")
+    st.divider()
     _consume_oauth_redirect()
     _setup_expander()
     cid, csec = load_oauth_client()
@@ -548,6 +557,10 @@ def render_google_calendar_tab() -> None:
 
     top = st.columns([1.1, 1.1, 4, 1.6])
     today = datetime.now(_TZ).date()
+    vc_mon = st.session_state.get("_vc_month")
+    if isinstance(vc_mon, date):
+        st.session_state["gc_year"] = vc_mon.year
+        st.session_state["gc_month"] = vc_mon.month
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
     with top[0]:

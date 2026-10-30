@@ -764,25 +764,22 @@ class VisitCalendarTest(unittest.TestCase):
         self.assertNotIn('st.session_state["vc_day_', src)
         with open("app.py", encoding="utf-8") as f:
             app = f.read()
-        self.assertIn("📅 방문·할일", app)
+        self.assertNotIn("📅 방문·할일", app)
         self.assertIn("visit_calendar_tab", app)
         self.assertIn("tab13", app)
-        self.assertIn("min_tabs=14", app)
+        self.assertIn("min_tabs=13", app)
         self.assertNotIn("📊 분기 사업분석", app)
         self.assertNotIn("quarterly_analysis_tab", app)
-        self.assertIn("tab14", app)
+        self.assertNotIn("tab14", app)
         self.assertIn("📆 구글캘린더", app)
         self.assertIn("google_calendar_tab", app)
         self.assertIn('_DASH_VC_STATE_PREFIXES = ("_vc_",)', app)
-        tab13 = app[app.index("with tab13:") : app.index("방문·할일 탭 오류")]
-        self.assertIn("render_visit_calendar_tab", tab13)
+        tab13 = app[app.index("with tab13:") : app.index("구글캘린더 탭 오류")]
+        self.assertIn("render_google_calendar_tab", tab13)
         self.assertNotIn("_dash_defer_heavy_stub", tab13)
-        self.assertIn("탭 클릭 때 stub remount", tab13)
         self.assertIn("if not is_touch_ui() and not _is_streamlit_cloud()", tab13)
-        self.assertIn("v2 재등록으로 방문탭이 안 끝난다", tab13)
         self.assertIn("heavy_indices=(9, 10, 11)", app)
         self.assertNotIn("heavy_indices=(9, 10, 11, 12)", app)
-        self.assertIn("v2 재등록으로 방문탭이 안 끝난다", tab13)
         mount = app[app.index("def _dash_should_defer_heavy_tab") : app.index("def _dash_defer_heavy_stub")]
         self.assertNotIn("_DASH_TAB_VISIT", mount)
         body = src[src.index("def _render_visit_body") : src.index("def _render_day_strip")]
