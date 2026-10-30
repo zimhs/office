@@ -92,11 +92,10 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_oauth_redirect", src)
         self.assertIn("redirect_uri_mismatch", src)
         self.assertIn("_gc_refresh_tasks", src)
-        self.assertIn("gc_task_import", src)
-        self.assertIn("gc_task_export", src)
-        self.assertIn("export_tasks_to_google", src)
-        self.assertIn("불러오기", src)
-        self.assertIn("내보내기", src)
+        self.assertIn("merge_tasks_with_google", src)
+        self.assertIn("_merge_event_days", src)
+        self.assertNotIn("gc_task_import", src)
+        self.assertNotIn("gc_task_export", src)
         self.assertNotIn("gc_task_sync", src)
 
 
@@ -186,22 +185,26 @@ class GoogleCalendarTokenPersistTest(unittest.TestCase):
         self.assertTrue(gc._usable_token({"refresh_token": "r"}))
         self.assertFalse(gc._usable_token({}))
 
-    def test_local_tasks_kept_until_import(self):
+    def test_local_tasks_merge_keeps_dashboard_and_google(self):
         with tempfile.TemporaryDirectory() as td:
             home = os.path.join(td, "tasks.json")
             with patch.object(gc, "GC_TASKS_HOME", home), patch.object(
                 gc, "GC_TASKS_ST", os.path.join(td, "st.json")
             ), patch.object(gc, "GC_TASKS", os.path.join(td, "cache.json")), patch.object(
                 gc.st, "session_state", {}
-            ), patch.object(gc, "list_tasks", return_value=[{"id": "g1", "title": "구글만"}]):
+            ), patch.object(
+                gc, "list_tasks", return_value=[{"id": "g1", "title": "구글만"}]
+            ), patch.object(
+                gc, "add_task", side_effect=RuntimeError("offline")
+            ):
                 gc.save_local_tasks(
                     "list-1",
                     [{"id": "local-a", "title": "대시보드", "notes": "남김", "local_only": True}],
                 )
-                shown = gc._gc_cached_tasks("list-1")
-                self.assertEqual(shown[0]["title"], "대시보드")
-                imported = gc._gc_cached_tasks("list-1", force=True)
-                self.assertEqual(imported[0]["title"], "구글만")
+                merged = gc.merge_tasks_with_google("list-1")
+                titles = {t["title"] for t in merged}
+                self.assertIn("대시보드", titles)
+                self.assertIn("구글만", titles)
 
 
 if __name__ == "__main__":

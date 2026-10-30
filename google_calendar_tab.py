@@ -599,17 +599,47 @@ def _ev_key(year: int, month: int) -> str:
     return f"ev:{year}-{month:02d}"
 
 
+def _merge_event_days(
+    cached: dict[str, list[dict]], fresh: dict[str, list[dict]]
+) -> dict[str, list[dict]]:
+    index: dict[tuple[str, str], tuple[str, dict]] = {}
+    extras: dict[str, list[dict]] = {}
+
+    def _ingest(src: dict[str, list[dict]], overwrite: bool) -> None:
+        for day_k, items in (src or {}).items():
+            for ev in items or []:
+                eid = str(ev.get("id") or "")
+                cid = str(ev.get("cal_id") or "")
+                if not eid:
+                    extras.setdefault(day_k, []).append(ev)
+                    continue
+                key = (cid, eid)
+                if overwrite or key not in index:
+                    index[key] = (day_k, ev)
+
+    _ingest(cached, True)
+    _ingest(fresh, True)
+    out = dict(extras)
+    for day_k, ev in index.values():
+        out.setdefault(day_k, []).append(ev)
+    return out
+
+
 def _gc_cached_events(cals: list[dict], year: int, month: int) -> dict[str, list[dict]]:
     box = _gc_api_box()
     key = _ev_key(year, month)
-    if box.get(key) is not None:
-        return box[key]
-    mem = _EV_MEM.get(key)
-    if mem is not None:
-        box[key] = mem
-        return mem
-    data = _events_by_day(cals, year, month) if cals else {}
+    now = datetime.now(timezone.utc).timestamp()
+    cached = box.get(key)
+    if cached is None:
+        cached = _EV_MEM.get(key)
+    at = float(box.get(key + ":at") or 0)
+    if cached is not None and (now - at) < 20:
+        box[key] = cached
+        return cached
+    fresh = _events_by_day(cals, year, month) if cals else {}
+    data = _merge_event_days(cached or {}, fresh) if cached else fresh
     box[key] = data
+    box[key + ":at"] = now
     _EV_MEM[key] = data
     return data
 
@@ -621,6 +651,7 @@ def _gc_cache_add_event(day: date, chip: dict) -> None:
     day_k = day.isoformat()
     by[day_k] = list(by.get(day_k) or []) + [chip]
     box[key] = by
+    box[key + ":at"] = datetime.now(timezone.utc).timestamp()
     _EV_MEM[key] = by
 
 
@@ -645,6 +676,10 @@ def _gc_cache_remove_event(cal_id: str, event_id: str) -> None:
             box[k] = _strip(box[k])
     for k in list(_EV_MEM.keys()):
         _EV_MEM[k] = _strip(_EV_MEM[k])
+    now = datetime.now(timezone.utc).timestamp()
+    for k in list(box.keys()):
+        if str(k).startswith("ev:") and str(k).endswith(":at"):
+            box[k] = now
 
 
 def _task_store_paths() -> list[str]:
@@ -688,17 +723,12 @@ def save_local_tasks(list_id: str, tasks: list[dict]) -> None:
     data.setdefault("lists", {})[list_id] = [_slim_task(t) for t in tasks]
     save_local_task_lists(data)
     _gc_set_tasks(list_id, data["lists"][list_id])
+    _gc_api_box()[f"tk_at:{list_id}"] = datetime.now(timezone.utc).timestamp()
 
 
-def import_tasks_from_google(list_id: str) -> list[dict]:
-    tasks = [_slim_task(t) for t in (list_tasks(list_id) if list_id else [])]
-    save_local_tasks(list_id, tasks)
-    return tasks
-
-
-def export_tasks_to_google(list_id: str) -> int:
-    sent = 0
-    out: list[dict] = []
+def merge_tasks_with_google(list_id: str) -> list[dict]:
+    """대시보드 할 일을 구글에 보내고, 구글에만 있는 할 일은 여기에도 붙인다."""
+    pushed: list[dict] = []
     for t in load_local_tasks(list_id):
         title = str(t.get("title") or "").strip()
         notes = str(t.get("notes") or "")
@@ -706,40 +736,56 @@ def export_tasks_to_google(list_id: str) -> int:
         if not title:
             continue
         if t.get("local_only") or not tid or tid.startswith("local-"):
-            created = add_task(list_id, title, notes)
-            out.append(_slim_task(created))
-            sent += 1
+            try:
+                pushed.append(_slim_task(add_task(list_id, title, notes)))
+            except Exception:
+                pushed.append(_slim_task(t))
             continue
-        try:
-            patched = patch_task(list_id, tid, {"title": title, "notes": notes})
-            merged = dict(t)
-            merged.update(patched or {})
-            merged["local_only"] = False
-            out.append(_slim_task(merged))
-            sent += 1
-        except Exception:
-            created = add_task(list_id, title, notes)
-            out.append(_slim_task(created))
-            sent += 1
+        pushed.append(_slim_task(t))
+    seen = {str(t.get("id") or "") for t in pushed}
+    try:
+        remote = [_slim_task(x) for x in (list_tasks(list_id) if list_id else [])]
+    except Exception:
+        save_local_tasks(list_id, pushed)
+        return pushed
+    remote_ids = {str(x.get("id") or "") for x in remote}
+    out: list[dict] = []
+    for t in pushed:
+        tid = str(t.get("id") or "")
+        if t.get("local_only") or tid.startswith("local-"):
+            out.append(t)
+            continue
+        if tid in remote_ids:
+            out.append(t)
+    for r in remote:
+        rid = str(r.get("id") or "")
+        if rid and rid not in seen:
+            out.append(r)
+            seen.add(rid)
     save_local_tasks(list_id, out)
-    return sent
+    return out
+
+
+def import_tasks_from_google(list_id: str) -> list[dict]:
+    return merge_tasks_with_google(list_id)
 
 
 def _gc_refresh_tasks(list_id: str) -> list[dict]:
-    return import_tasks_from_google(list_id)
+    return merge_tasks_with_google(list_id)
 
 
 def _gc_cached_tasks(list_id: str, *, force: bool = False) -> list[dict]:
     if not list_id:
         return []
-    if force:
-        return import_tasks_from_google(list_id)
+    box = _gc_api_box()
+    now = datetime.now(timezone.utc).timestamp()
+    age = now - float(box.get(f"tk_at:{list_id}") or 0)
     lists = load_local_task_lists().get("lists") or {}
-    if list_id in lists:
+    if not force and list_id in lists and age < 20:
         local = [_slim_task(t) for t in (lists.get(list_id) or []) if isinstance(t, dict)]
         _gc_set_tasks(list_id, local)
         return local
-    return import_tasks_from_google(list_id)
+    return merge_tasks_with_google(list_id)
 
 
 def _gc_set_tasks(list_id: str, tasks: list[dict]) -> None:
@@ -1263,17 +1309,7 @@ div[class*="st-key-gc_ns_"] button {
 """,
         unsafe_allow_html=True,
     )
-    head = st.columns([2.0, 1.2, 1.2], gap="small")
-    with head[0]:
-        st.markdown("**할 일 목록**")
-    with head[1]:
-        if st.button("불러오기", key="gc_task_import", type="tertiary", width="content"):
-            st.session_state["_gc_pending_task_import"] = True
-            st.rerun(scope="fragment")
-    with head[2]:
-        if st.button("내보내기", key="gc_task_export", type="tertiary", width="content"):
-            st.session_state["_gc_pending_task_export"] = True
-            st.rerun(scope="fragment")
+    st.markdown("**할 일 목록**")
     if not tlists:
         st.caption("할 일 목록이 없습니다.")
         return
@@ -1286,18 +1322,6 @@ div[class*="st-key-gc_ns_"] button {
     )
     lid = str(tlists[int(li)].get("id") or "")
     st.session_state["_gc_lid"] = lid
-    if st.session_state.pop("_gc_pending_task_import", None) and lid:
-        try:
-            import_tasks_from_google(lid)
-            st.success("구글 할 일을 대시보드로 불러왔습니다.")
-        except Exception as e:
-            st.error(f"불러오기 실패: {e}")
-    if st.session_state.pop("_gc_pending_task_export", None) and lid:
-        try:
-            n = export_tasks_to_google(lid)
-            st.success(f"대시보드 할 일 {n}건을 구글에 보냈습니다.")
-        except Exception as e:
-            st.error(f"내보내기 실패: {e}")
     try:
         tasks = _gc_cached_tasks(lid) if lid else []
     except Exception as e:
