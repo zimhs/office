@@ -656,10 +656,16 @@ def _setup_expander() -> None:
 def _gc_work_panel() -> None:
     """할 일 추가·완료는 이 조각만 다시 그린다. 엑셀·납품줄·다른 탭은 다시 안 읽는다."""
     today = datetime.now(_TZ).date()
-    vc_mon = st.session_state.get("_vc_month")
-    if isinstance(vc_mon, date):
-        st.session_state["gc_year"] = vc_mon.year
-        st.session_state["gc_month"] = vc_mon.month
+    pending_m = st.session_state.pop("_gc_pending_month", None)
+    if isinstance(pending_m, date):
+        st.session_state["_vc_month"] = date(pending_m.year, pending_m.month, 1)
+        st.session_state["gc_year"] = pending_m.year
+        st.session_state["gc_month"] = pending_m.month
+    else:
+        vc_mon = st.session_state.get("_vc_month")
+        if isinstance(vc_mon, date) and not st.session_state.get("gc_year"):
+            st.session_state["gc_year"] = vc_mon.year
+            st.session_state["gc_month"] = vc_mon.month
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
 
@@ -739,22 +745,19 @@ def _gc_work_panel() -> None:
     top = st.columns([1.1, 1.1, 4, 1.6])
     with top[0]:
         if st.button("오늘", key="gc_today"):
-            st.session_state["gc_year"] = today.year
-            st.session_state["gc_month"] = today.month
+            st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
             st.rerun(scope="fragment")
     with top[1]:
         n1, n2 = st.columns(2)
         with n1:
             if st.button("‹", key="gc_prev"):
                 d = date(y, m, 1) - timedelta(days=1)
-                st.session_state["gc_year"] = d.year
-                st.session_state["gc_month"] = d.month
+                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
                 st.rerun(scope="fragment")
         with n2:
             if st.button("›", key="gc_next"):
                 d = date(y, m, 28) + timedelta(days=8)
-                st.session_state["gc_year"] = d.year
-                st.session_state["gc_month"] = d.month
+                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
                 st.rerun(scope="fragment")
     with top[2]:
         st.markdown(f"**{y}년 {m}월**")
