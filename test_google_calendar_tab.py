@@ -55,6 +55,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn('st.rerun(scope="fragment")', src)
         self.assertIn("gc_new_note", src)
         self.assertIn('body["notes"]', src)
+        self.assertIn("_gc_note_edit", src)
+        self.assertIn("gc_ne_", src)
+        self.assertNotIn('with st.expander("메모"', src)
 
 
 if __name__ == "__main__":

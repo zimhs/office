@@ -741,45 +741,72 @@ def _gc_work_panel() -> None:
         except Exception as e:
             st.error(str(e))
             tasks = []
+        edit_id = str(st.session_state.get("_gc_note_edit") or "")
         for t in tasks:
             tid = str(t.get("id") or "")
             title = t.get("title") or "(제목 없음)"
             due = str((t.get("due") or ""))[:10]
             label = title if not due else f"{title}  · {due}"
             note = str(t.get("notes") or "").strip()
-            if st.checkbox(label, value=False, key=f"gc_td_{tid}"):
-                st.session_state["_gc_pending_done"] = tid
-                st.rerun(scope="fragment")
-            if note:
-                st.markdown(
-                    "<div style='font-size:12px;color:#5f6368;line-height:1.35;"
-                    "padding:0 4px 4px 1.7rem;white-space:pre-wrap'>"
-                    f"{html.escape(note)}</div>",
-                    unsafe_allow_html=True,
-                )
-            with st.expander("메모", expanded=False):
+            row = st.columns([5.4, 1.05], gap="small")
+            with row[0]:
+                if st.checkbox(label, value=False, key=f"gc_td_{tid}"):
+                    st.session_state["_gc_pending_done"] = tid
+                    st.rerun(scope="fragment")
+                if note:
+                    st.markdown(
+                        "<div style='font-size:12px;color:#5f6368;line-height:1.35;"
+                        "margin:-6px 0 6px 1.7rem;white-space:pre-wrap'>"
+                        f"{html.escape(note)}</div>",
+                        unsafe_allow_html=True,
+                    )
+            with row[1]:
+                open_this = edit_id == tid
+                if st.button("메모" if not open_this else "닫기", key=f"gc_ne_{tid}"):
+                    st.session_state["_gc_note_edit"] = "" if open_this else tid
+                    st.rerun(scope="fragment")
+            if edit_id == tid:
                 edited = st.text_area(
-                    "메모",
+                    "메모 입력",
                     value=note,
                     key=f"gc_note_{tid}",
-                    height=70,
+                    height=72,
                     label_visibility="collapsed",
                     placeholder="세부 메모 (구글 할 일과 동일)",
                 )
-                if st.button("메모 저장", key=f"gc_ns_{tid}"):
+                if st.button("저장", key=f"gc_ns_{tid}"):
                     st.session_state["_gc_pending_note"] = {
                         "id": tid,
                         "notes": edited or "",
                     }
+                    st.session_state["_gc_note_edit"] = ""
                     st.rerun(scope="fragment")
-        nt = st.text_input("새 할 일", key="gc_new_task", placeholder="할 일 제목")
-        nn = st.text_area(
-            "메모",
-            key="gc_new_note",
-            height=70,
-            placeholder="메모 (예: 20일 미수금정리)",
-        )
-        if st.button("추가", key="gc_add_task"):
+        add_row = st.columns([4.2, 1.15, 1.15], gap="small")
+        with add_row[0]:
+            nt = st.text_input(
+                "새 할 일",
+                key="gc_new_task",
+                placeholder="할 일 제목",
+                label_visibility="collapsed",
+            )
+        with add_row[1]:
+            if st.button("메모", key="gc_toggle_new_note"):
+                st.session_state["_gc_show_new_note"] = not bool(
+                    st.session_state.get("_gc_show_new_note")
+                )
+                st.rerun(scope="fragment")
+        with add_row[2]:
+            add_clicked = st.button("추가", key="gc_add_task")
+        nn = ""
+        if st.session_state.get("_gc_show_new_note"):
+            nn = st.text_area(
+                "새 메모",
+                key="gc_new_note",
+                height=72,
+                placeholder="메모 (예: 20일 미수금정리)",
+                label_visibility="collapsed",
+            )
+        if add_clicked:
             title = (nt or "").strip()
             if len(title) < 1:
                 st.error("제목을 입력하세요.")
@@ -788,6 +815,7 @@ def _gc_work_panel() -> None:
                     "title": title,
                     "notes": nn or "",
                 }
+                st.session_state["_gc_show_new_note"] = False
                 st.rerun(scope="fragment")
 
 
