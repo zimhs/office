@@ -487,12 +487,8 @@ def list_events(cal_id: str, start: date, end: date, token: str = "") -> list[di
     return list(data.get("items") or [])
 
 
-def insert_event(
-    cal_id: str, title: str, day: date, all_day: bool, notes: str = ""
-) -> dict:
+def insert_event(cal_id: str, title: str, day: date, all_day: bool) -> dict:
     body: dict[str, Any] = {"summary": title}
-    if str(notes or "").strip():
-        body["description"] = str(notes).strip()
     if all_day:
         body["start"] = {"date": day.isoformat()}
         body["end"] = {"date": (day + timedelta(days=1)).isoformat()}
@@ -632,16 +628,16 @@ def _gc_cached_events(cals: list[dict], year: int, month: int) -> dict[str, list
     cached = box.get(key)
     if cached is None:
         cached = _EV_MEM.get(key)
-    at = float(box.get(key + ":at") or 0)
-    if cached is not None and (now - at) < 20:
+    if cached is not None:
         box[key] = cached
+        if key + ":at" not in box:
+            box[key + ":at"] = now
         return cached
     fresh = _events_by_day(cals, year, month) if cals else {}
-    data = _merge_event_days(cached or {}, fresh) if cached else fresh
-    box[key] = data
+    box[key] = fresh
     box[key + ":at"] = now
-    _EV_MEM[key] = data
-    return data
+    _EV_MEM[key] = fresh
+    return fresh
 
 
 def _gc_cache_add_event(day: date, chip: dict) -> None:
@@ -877,12 +873,8 @@ def _month_html(year: int, month: int, by_day: dict[str, list[dict]], today: dat
             for ev in (by_day.get(key) or [])[:4]:
                 label = html.escape((ev.get("hhmm") + " " if ev.get("hhmm") else "") + ev["title"])
                 col = html.escape(str(ev.get("color") or "#c5c9ce"))
-                xbtn = ""
-                if ev.get("writable") and ev.get("id") and ev.get("cal_id"):
-                    xbtn = '<span class="gc-x">×</span>'
                 chips.append(
-                    f'<div class="gc-chip" style="background:{col}22;border-left:3px solid {col}">'
-                    f'<span class="gc-chip-t">{label}</span>{xbtn}</div>'
+                    f'<div class="gc-chip" style="background:{col}22;border-left:3px solid {col}">{label}</div>'
                 )
             more = len(by_day.get(key) or []) - 4
             if more > 0:
@@ -905,172 +897,13 @@ def _month_html(year: int, month: int, by_day: dict[str, list[dict]], today: dat
 .gc-num {{ font-size:12px; font-weight:500; margin-bottom:2px; }}
 .gc-sun, .gc-sun .gc-num {{ color:#d93025; }}
 .gc-sat, .gc-sat .gc-num {{ color:#1a73e8; }}
-.gc-chip {{ font-size:11px; line-height:1.25; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
-  display:flex; align-items:center; gap:2px; overflow:hidden; }}
-.gc-chip-t {{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-  color:inherit; text-decoration:none; }}
-.gc-x {{ flex:0 0 auto; color:#80868b; text-decoration:none; font-size:13px; padding:0 3px; line-height:1; }}
-.gc-x:hover {{ color:#d93025; }}
+.gc-chip {{ font-size:11px; line-height:1.25; padding:1px 4px; margin:1px 0; border-radius:2px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 .gc-more {{ font-size:11px; color:#5f6368; }}
 </style>
 <div class="gc-wrap"><table class="gc-table"><thead><tr><th class="gc-wn"></th>{heads}</tr></thead>
 <tbody>{"".join(rows)}</tbody></table></div>
 """
-
-
-def _gc_set_open_event(ev: dict) -> None:
-    st.session_state["_gc_open_event"] = ev
-
-
-def _gc_set_del_event(cal_id: str, event_id: str) -> None:
-    st.session_state["_gc_pending_del_event"] = {"cal": cal_id, "id": event_id}
-
-
-def _render_month_grid(
-    year: int, month: int, by_day: dict[str, list[dict]], today: date
-) -> None:
-    """표 모양 달력. 클릭은 주소 이동 없이 이 조각만 다시 그린다."""
-    st.markdown(
-        """
-<style>
-div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"],
-div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] {
-  gap: 0 !important;
-  margin-bottom: 0 !important;
-}
-div[class*="st-key-gc_calhead"] [data-testid="stColumn"] {
-  padding: 6px 4px !important;
-  text-align: center;
-}
-div[class*="st-key-gc_calgrid"] [data-testid="stColumn"] {
-  border: 1px solid #e8eaed;
-  min-height: 92px;
-  padding: 4px 3px !important;
-  background: #fff;
-}
-div[class*="st-key-gc_calgrid"] [data-testid="stVerticalBlock"] {
-  gap: 2px !important;
-}
-div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"] p,
-div[class*="st-key-gc_calgrid"] [data-testid="stMarkdownContainer"] p {
-  margin: 0 !important;
-}
-div[class*="st-key-gc_ov_"] button {
-  min-height: 1.2rem !important;
-  height: 1.2rem !important;
-  padding: 0 4px !important;
-  font-size: 11px !important;
-  line-height: 1.2 !important;
-  text-align: left !important;
-  justify-content: flex-start !important;
-  white-space: nowrap !important;
-  overflow: hidden !important;
-  border: none !important;
-  border-left: 3px solid #1a73e8 !important;
-  border-radius: 2px !important;
-  background: #1a73e818 !important;
-  color: #3c4043 !important;
-  font-weight: 400 !important;
-}
-div[class*="st-key-gc_xd_"] button {
-  min-height: 1.2rem !important;
-  height: 1.2rem !important;
-  min-width: 1.1rem !important;
-  padding: 0 3px !important;
-  font-size: 13px !important;
-  color: #80868b !important;
-  border: none !important;
-  background: transparent !important;
-}
-div[class*="st-key-gc_chiprow_"] [data-testid="stHorizontalBlock"] {
-  gap: 2px !important;
-}
-</style>
-""",
-        unsafe_allow_html=True,
-    )
-    with st.container(key="gc_calhead"):
-        head = st.columns([0.38] + [1] * 7, gap=None)
-        with head[0]:
-            st.markdown('<div class="gc-wn"></div>', unsafe_allow_html=True)
-        for i, name in enumerate(("일", "월", "화", "수", "목", "금", "토")):
-            color = "#d93025" if i == 0 else "#1a73e8" if i == 6 else "#70757a"
-            with head[i + 1]:
-                st.markdown(
-                    f'<div style="font-size:12px;font-weight:500;color:{color};'
-                    f'text-align:center">{name}</div>',
-                    unsafe_allow_html=True,
-                )
-    with st.container(key="gc_calgrid"):
-        for week in month_weeks(year, month):
-            cols = st.columns([0.38] + [1] * 7, gap=None, vertical_alignment="top")
-            with cols[0]:
-                st.markdown(
-                    f'<div class="gc-wn" style="color:#80868b;font-size:11px;'
-                    f'text-align:center;padding-top:4px">{iso_week_label(week)}</div>',
-                    unsafe_allow_html=True,
-                )
-            for i, d in enumerate(week):
-                with cols[i + 1]:
-                    outside = d.month != month
-                    if d == today:
-                        num = (
-                            '<div class="gc-num" style="background:#1a73e8;color:#fff;'
-                            "border-radius:50%;width:22px;height:22px;display:inline-flex;"
-                            'align-items:center;justify-content:center;font-size:12px;'
-                            f'font-weight:500">{d.day}</div>'
-                        )
-                    else:
-                        color = "#bdc1c6" if outside else (
-                            "#d93025" if d.weekday() == 6 else "#1a73e8" if d.weekday() == 5 else "#3c4043"
-                        )
-                        num = (
-                            f'<div class="gc-num" style="font-size:12px;font-weight:500;'
-                            f'color:{color}">{d.day}</div>'
-                        )
-                    st.markdown(num, unsafe_allow_html=True)
-                    items = by_day.get(d.isoformat()) or []
-                    for ev in items[:4]:
-                        eid = str(ev.get("id") or "")
-                        cid = str(ev.get("cal_id") or "")
-                        lab = ((str(ev.get("hhmm") or "") + " ") if ev.get("hhmm") else "") + str(
-                            ev.get("title") or ""
-                        )
-                        if len(lab) > 16:
-                            lab = lab[:15] + "…"
-                        k = f"{d.isoformat()}_{eid[-16:] or lab}"
-                        col = str(ev.get("color") or "#1a73e8")
-                        st.markdown(
-                            f"<style>div[class*='st-key-gc_ov_{k}'] button {{"
-                            f"background:{html.escape(col)}22 !important;"
-                            f"border-left:3px solid {html.escape(col)} !important;"
-                            f"}}</style>",
-                            unsafe_allow_html=True,
-                        )
-                        with st.container(horizontal=True, gap="small", key=f"gc_chiprow_{k}"):
-                            st.button(
-                                lab or "(일정)",
-                                key=f"gc_ov_{k}",
-                                type="tertiary",
-                                width="stretch",
-                                on_click=_gc_set_open_event,
-                                args=(ev,),
-                            )
-                            if ev.get("writable") and eid and cid:
-                                st.button(
-                                    "×",
-                                    key=f"gc_xd_{k}",
-                                    type="tertiary",
-                                    width="content",
-                                    on_click=_gc_set_del_event,
-                                    args=(cid, eid),
-                                )
-                    more = len(items) - 4
-                    if more > 0:
-                        st.markdown(
-                            f'<div class="gc-more" style="font-size:11px;color:#5f6368">+{more}</div>',
-                            unsafe_allow_html=True,
-                        )
 
 
 def _qp_pop(*names: str) -> None:
@@ -1083,27 +916,6 @@ def _qp_pop(*names: str) -> None:
                 pass
     except Exception:
         pass
-
-
-@st.dialog("일정 메모")
-def _event_memo_dialog() -> None:
-    ev = st.session_state.get("_gc_open_event") or {}
-    title = str(ev.get("title") or "일정")
-    when = str(ev.get("hhmm") or "")
-    day = str(ev.get("day") or "")
-    cal = str(ev.get("cal") or "")
-    note = str(ev.get("description") or "").strip()
-    st.markdown(f"**{html.escape(title)}**")
-    bits = [x for x in (day, when or "종일", cal) if x]
-    if bits:
-        st.caption(" · ".join(bits))
-    if note:
-        st.text(note)
-    else:
-        st.caption("메모 없음")
-    if st.button("닫기", key="gc_ov_close"):
-        st.session_state.pop("_gc_open_event", None)
-        st.rerun(scope="fragment")
 
 
 def _oauth_query_one(name: str) -> str:
@@ -1187,12 +999,11 @@ def _gc_cal_panel() -> None:
     today = datetime.now(_TZ).date()
     pending_m = st.session_state.pop("_gc_pending_month", None)
     if isinstance(pending_m, date):
-        st.session_state["_vc_month"] = date(pending_m.year, pending_m.month, 1)
         st.session_state["gc_year"] = pending_m.year
         st.session_state["gc_month"] = pending_m.month
-    else:
+    elif not st.session_state.get("gc_year"):
         vc_mon = st.session_state.get("_vc_month")
-        if isinstance(vc_mon, date) and not st.session_state.get("gc_year"):
+        if isinstance(vc_mon, date):
             st.session_state["gc_year"] = vc_mon.year
             st.session_state["gc_month"] = vc_mon.month
     y = int(st.session_state.get("gc_year") or today.year)
@@ -1200,46 +1011,33 @@ def _gc_cal_panel() -> None:
 
     pending_ev = st.session_state.pop("_gc_pending_event", None)
     if isinstance(pending_ev, dict):
+        day = pending_ev["day"]
+        cal_id = str(pending_ev.get("cal") or "primary")
+        cal_meta = {"id": cal_id, "summary": "", "color": "#1a73e8", "writable": True}
+        for c in (_gc_api_box().get("cals") or []):
+            if str(c.get("id")) == cal_id:
+                cal_meta = c
+                break
+        chip = {
+            "title": str(pending_ev.get("title") or ""),
+            "color": cal_meta.get("color") or "#1a73e8",
+            "cal": cal_meta.get("summary") or "",
+            "hhmm": "",
+            "day": day.isoformat(),
+            "id": "local-" + secrets.token_hex(4),
+            "cal_id": cal_id,
+            "writable": True,
+        }
+        _gc_cache_add_event(day, chip)
+        st.session_state.pop("gc_ev_title", None)
         try:
-            day = pending_ev["day"]
-            cal_id = str(pending_ev.get("cal") or "primary")
-            created = insert_event(
-                cal_id,
-                str(pending_ev.get("title") or ""),
-                day,
-                True,
-                str(pending_ev.get("notes") or ""),
-            )
-            cal_meta = {"id": cal_id, "summary": "", "color": "#1a73e8", "writable": True}
-            for c in (_gc_api_box().get("cals") or []):
-                if str(c.get("id")) == cal_id:
-                    cal_meta = c
-                    break
-            chip = _event_chip(created, cal_meta) or {
-                "title": str(pending_ev.get("title") or ""),
-                "color": cal_meta.get("color") or "#1a73e8",
-                "cal": cal_meta.get("summary") or "",
-                "hhmm": "",
-                "day": day.isoformat(),
-                "description": str(pending_ev.get("notes") or ""),
-                "id": str(created.get("id") or ""),
-                "cal_id": cal_id,
-                "writable": True,
-            }
-            _gc_cache_add_event(day, chip)
-            st.session_state.pop("gc_ev_title", None)
-            st.session_state.pop("gc_ev_note", None)
+            created = insert_event(cal_id, str(pending_ev.get("title") or ""), day, True)
+            real = _event_chip(created, cal_meta)
+            if real:
+                _gc_cache_remove_event(str(chip.get("cal_id")), str(chip.get("id")))
+                _gc_cache_add_event(day, real)
         except Exception as e:
             st.error(f"일정 저장 실패: {e}")
-    pending_del = st.session_state.pop("_gc_pending_del_event", None)
-    if isinstance(pending_del, dict) and pending_del.get("id"):
-        try:
-            cid = str(pending_del.get("cal") or "primary")
-            eid = str(pending_del.get("id") or "")
-            delete_event(cid, eid)
-            _gc_cache_remove_event(cid, eid)
-        except Exception as e:
-            st.error(f"일정 삭제 실패: {e}")
 
     try:
         cals = _gc_cached_cals()
@@ -1270,18 +1068,10 @@ def _gc_cal_panel() -> None:
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
     by_day = _gc_cached_events(cals, y, m)
-    _render_month_grid(y, m, by_day, today)
-    if st.session_state.get("_gc_open_event"):
-        _event_memo_dialog()
+    st.markdown(_month_html(y, m, by_day, today), unsafe_allow_html=True)
     with st.expander("일정 추가", expanded=False):
         et = st.text_input("제목", key="gc_ev_title")
         ed = st.date_input("날짜", value=today, key="gc_ev_day")
-        en = st.text_area(
-            "메모",
-            key="gc_ev_note",
-            height=70,
-            placeholder="일정 메모 (클릭하면 팝업으로 보입니다)",
-        )
         cal_opts = {c["summary"]: c["id"] for c in cals} or {"기본": "primary"}
         pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
         if st.button("일정 저장", type="primary", key="gc_ev_save"):
@@ -1293,7 +1083,6 @@ def _gc_cal_panel() -> None:
                     "cal": cal_opts[pick],
                     "title": title,
                     "day": ed,
-                    "notes": en or "",
                 }
                 st.rerun(scope="fragment")
 

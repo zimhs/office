@@ -80,18 +80,14 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn('type="tertiary"', src)
         self.assertNotIn('help="메모"', src)
         self.assertNotIn("st.popover", src)
-        self.assertIn("@st.dialog", src)
-        self.assertIn("delete_event", src)
-        self.assertIn("gc_xd_", src)
-        self.assertIn("_gc_pending_del_event", src)
-        self.assertIn("_gc_set_open_event", src)
-        self.assertIn("일정 저장", src)
-        self.assertIn("gc_ev_note", src)
-        self.assertIn('body["description"]', src)
-        self.assertIn("_render_month_grid", src)
-        self.assertIn("gc_ov_", src)
+        self.assertNotIn("@st.dialog", src)
+        self.assertNotIn("gc_ev_note", src)
+        self.assertNotIn("_render_month_grid", src)
         self.assertNotIn("gc_ovc=", src)
-        self.assertNotIn("st.html(", src)
+        self.assertIn("일정 저장", src)
+        self.assertIn("st.markdown(_month_html", src)
+        self.assertIn('st.rerun(scope="fragment")', src)
+        self.assertNotIn('st.session_state["_vc_month"] = date(pending_m', src)
         self.assertIn("_gc_oauth_code_used", src)
         self.assertIn("_gc_oauth_redirect", src)
         self.assertIn("redirect_uri_mismatch", src)
@@ -123,9 +119,11 @@ class GoogleCalendarTabTest(unittest.TestCase):
             d(2026, 10, 5),
         )
         self.assertIn("미팅", html)
+        self.assertIn("gc-chip", html)
+        self.assertIn("gc-table", html)
         self.assertNotIn("gc_ovc=", html)
         self.assertNotIn("<a ", html)
-        self.assertIn("class=\"gc-x\"", html)
+        self.assertNotIn("class=\"gc-x\"", html)
         html_ro = gc._month_html(
             2026,
             10,
@@ -147,6 +145,16 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertNotIn("<a ", html_ro)
         self.assertNotIn("class=\"gc-x\"", html_ro)
         self.assertIn("한글날", html_ro)
+
+    def test_month_cache_skips_google_fetch(self):
+        cached = {"2026-10-05": [{"title": "미팅", "id": "e1"}]}
+        box = {"ev:2026-10": cached}
+        with patch.object(gc, "_gc_api_box", return_value=box), patch.object(
+            gc, "_events_by_day"
+        ) as fetch:
+            out = gc._gc_cached_events([{"id": "c1"}], 2026, 10)
+        self.assertIs(out, cached)
+        fetch.assert_not_called()
 
 
 class GoogleCalendarTokenPersistTest(unittest.TestCase):
