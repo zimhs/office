@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -38,6 +39,7 @@ _TOKEN = "https://oauth2.googleapis.com/token"
 _CAL_API = "https://www.googleapis.com/calendar/v3"
 _TASK_API = "https://tasks.googleapis.com/tasks/v1"
 _CLOUD_REDIRECT = "https://office-g8ryabkapprkpjmfwa5aypw.streamlit.app/"
+_EV_MEM: dict[str, dict[str, list[dict]]] = {}
 
 
 def calendar_embed_url(srcs: list[str] | None = None, *, height: int = 780) -> str:
@@ -220,6 +222,7 @@ def save_token(tok: dict) -> None:
 
 def clear_token() -> None:
     st.session_state.pop("_gc_token", None)
+    _EV_MEM.clear()
     for path in _token_paths():
         try:
             if os.path.exists(path):
@@ -405,8 +408,8 @@ def access_token() -> str:
     return at
 
 
-def api_get(url: str, params: dict | None = None) -> dict:
-    tok = access_token()
+def api_get(url: str, params: dict | None = None, token: str = "") -> dict:
+    tok = token or access_token()
     if not tok:
         raise RuntimeError("구글 연결이 필요합니다.")
     r = requests.get(
@@ -466,7 +469,7 @@ def list_calendars() -> list[dict]:
     return out
 
 
-def list_events(cal_id: str, start: date, end: date) -> list[dict]:
+def list_events(cal_id: str, start: date, end: date, token: str = "") -> list[dict]:
     tmin = datetime.combine(start, time.min, tzinfo=_TZ).isoformat()
     tmax = datetime.combine(end, time.max, tzinfo=_TZ).isoformat()
     data = api_get(
@@ -477,7 +480,9 @@ def list_events(cal_id: str, start: date, end: date) -> list[dict]:
             "singleEvents": "true",
             "orderBy": "startTime",
             "maxResults": "250",
+            "fields": "items(id,summary,description,start,end)",
         },
+        token=token,
     )
     return list(data.get("items") or [])
 
@@ -590,12 +595,56 @@ def _gc_cached_tlists() -> list[dict]:
     return list(box["tlists"] or [])
 
 
+def _ev_key(year: int, month: int) -> str:
+    return f"ev:{year}-{month:02d}"
+
+
 def _gc_cached_events(cals: list[dict], year: int, month: int) -> dict[str, list[dict]]:
     box = _gc_api_box()
-    key = f"ev:{year}-{month:02d}"
-    if box.get(key) is None:
-        box[key] = _events_by_day(cals, year, month) if cals else {}
-    return box[key]
+    key = _ev_key(year, month)
+    if box.get(key) is not None:
+        return box[key]
+    mem = _EV_MEM.get(key)
+    if mem is not None:
+        box[key] = mem
+        return mem
+    data = _events_by_day(cals, year, month) if cals else {}
+    box[key] = data
+    _EV_MEM[key] = data
+    return data
+
+
+def _gc_cache_add_event(day: date, chip: dict) -> None:
+    key = _ev_key(day.year, day.month)
+    box = _gc_api_box()
+    by = dict(box.get(key) or _EV_MEM.get(key) or {})
+    day_k = day.isoformat()
+    by[day_k] = list(by.get(day_k) or []) + [chip]
+    box[key] = by
+    _EV_MEM[key] = by
+
+
+def _gc_cache_remove_event(cal_id: str, event_id: str) -> None:
+    cid, eid = str(cal_id), str(event_id)
+
+    def _strip(by: dict) -> dict:
+        out: dict[str, list[dict]] = {}
+        for day_k, items in (by or {}).items():
+            kept = [
+                e
+                for e in (items or [])
+                if not (str(e.get("id")) == eid and str(e.get("cal_id")) == cid)
+            ]
+            if kept:
+                out[day_k] = kept
+        return out
+
+    box = _gc_api_box()
+    for k in list(box.keys()):
+        if str(k).startswith("ev:") and isinstance(box.get(k), dict):
+            box[k] = _strip(box[k])
+    for k in list(_EV_MEM.keys()):
+        _EV_MEM[k] = _strip(_EV_MEM[k])
 
 
 def _task_store_paths() -> list[str]:
@@ -698,43 +747,60 @@ def _gc_set_tasks(list_id: str, tasks: list[dict]) -> None:
     box[f"tk:{list_id}"] = list(tasks)
 
 
+def _event_chip(it: dict, cal: dict) -> dict | None:
+    key = event_day_key(it)
+    if not key:
+        return None
+    stt = (it.get("start") or {}).get("dateTime") or ""
+    hhmm = ""
+    if "T" in stt:
+        try:
+            dt = datetime.fromisoformat(stt.replace("Z", "+00:00")).astimezone(_TZ)
+            hhmm = dt.strftime("%H:%M")
+        except Exception:
+            hhmm = ""
+    return {
+        "title": it.get("summary") or "(제목 없음)",
+        "color": cal.get("color") or "#7b8794",
+        "cal": cal.get("summary") or "",
+        "hhmm": hhmm,
+        "day": key,
+        "description": str(it.get("description") or ""),
+        "id": str(it.get("id") or ""),
+        "cal_id": str(cal.get("id") or ""),
+        "writable": bool(cal.get("writable"))
+        and str(cal.get("id") or "") != GC_KR_HOLIDAY,
+    }
+
+
 def _events_by_day(cals: list[dict], year: int, month: int) -> dict[str, list[dict]]:
     weeks = month_weeks(year, month)
     start, end = weeks[0][0], weeks[-1][-1]
-    by: dict[str, list[dict]] = {}
-    for cal in cals:
+    tok = access_token()
+
+    def _one(cal: dict) -> list[tuple[str, dict]]:
         try:
-            items = list_events(cal["id"], start, end)
+            items = list_events(cal["id"], start, end, token=tok) if tok else []
         except Exception:
-            continue
-        color = cal.get("color") or "#7b8794"
-        name = cal.get("summary") or ""
+            return []
+        out: list[tuple[str, dict]] = []
         for it in items:
-            key = event_day_key(it)
-            if not key:
+            chip = _event_chip(it, cal)
+            if chip:
+                out.append((str(chip.get("day")), chip))
+        return out
+
+    by: dict[str, list[dict]] = {}
+    workers = min(8, max(1, len(cals)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(_one, cal) for cal in cals]
+        for fut in as_completed(futs):
+            try:
+                rows = fut.result()
+            except Exception:
                 continue
-            stt = (it.get("start") or {}).get("dateTime") or ""
-            hhmm = ""
-            if "T" in stt:
-                try:
-                    dt = datetime.fromisoformat(stt.replace("Z", "+00:00")).astimezone(_TZ)
-                    hhmm = dt.strftime("%H:%M")
-                except Exception:
-                    hhmm = ""
-            by.setdefault(key, []).append(
-                {
-                    "title": it.get("summary") or "(제목 없음)",
-                    "color": color,
-                    "cal": name,
-                    "hhmm": hhmm,
-                    "day": key,
-                    "description": str(it.get("description") or ""),
-                    "id": str(it.get("id") or ""),
-                    "cal_id": str(cal.get("id") or ""),
-                    "writable": bool(cal.get("writable"))
-                    and str(cal.get("id") or "") != GC_KR_HOLIDAY,
-                }
-            )
+            for key, chip in rows:
+                by.setdefault(key, []).append(chip)
     return by
 
 
@@ -867,18 +933,24 @@ def _take_event_open_query() -> dict | None:
 
 
 def _find_cached_event(cal_id: str, event_id: str) -> dict | None:
-    box = _gc_api_box()
-    for by in box.values():
-        if not isinstance(by, dict):
-            continue
-        for items in by.values():
-            if not isinstance(items, list):
+    stores: list[dict] = []
+    try:
+        stores.append(_gc_api_box())
+    except Exception:
+        pass
+    stores.append(_EV_MEM)
+    for box in stores:
+        for by in box.values():
+            if not isinstance(by, dict):
                 continue
-            for ev in items:
-                if not isinstance(ev, dict):
+            for items in by.values():
+                if not isinstance(items, list):
                     continue
-                if str(ev.get("cal_id")) == cal_id and str(ev.get("id")) == event_id:
-                    return ev
+                for ev in items:
+                    if not isinstance(ev, dict):
+                        continue
+                    if str(ev.get("cal_id")) == cal_id and str(ev.get("id")) == event_id:
+                        return ev
     return None
 
 
@@ -979,8 +1051,8 @@ def _setup_expander() -> None:
 
 
 @st.fragment
-def _gc_work_panel() -> None:
-    """할 일 추가·완료는 이 조각만 다시 그린다. 엑셀·납품줄·다른 탭은 다시 안 읽는다."""
+def _gc_cal_panel() -> None:
+    """달력 월 이동·일정 저장만 이 조각을 다시 그린다."""
     today = datetime.now(_TZ).date()
     pending_m = st.session_state.pop("_gc_pending_month", None)
     if isinstance(pending_m, date):
@@ -995,8 +1067,120 @@ def _gc_work_panel() -> None:
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
 
+    pending_ev = st.session_state.pop("_gc_pending_event", None)
+    if isinstance(pending_ev, dict):
+        try:
+            day = pending_ev["day"]
+            cal_id = str(pending_ev.get("cal") or "primary")
+            created = insert_event(
+                cal_id,
+                str(pending_ev.get("title") or ""),
+                day,
+                True,
+                str(pending_ev.get("notes") or ""),
+            )
+            cal_meta = {"id": cal_id, "summary": "", "color": "#1a73e8", "writable": True}
+            for c in (_gc_api_box().get("cals") or []):
+                if str(c.get("id")) == cal_id:
+                    cal_meta = c
+                    break
+            chip = _event_chip(created, cal_meta) or {
+                "title": str(pending_ev.get("title") or ""),
+                "color": cal_meta.get("color") or "#1a73e8",
+                "cal": cal_meta.get("summary") or "",
+                "hhmm": "",
+                "day": day.isoformat(),
+                "description": str(pending_ev.get("notes") or ""),
+                "id": str(created.get("id") or ""),
+                "cal_id": cal_id,
+                "writable": True,
+            }
+            _gc_cache_add_event(day, chip)
+            st.session_state.pop("gc_ev_title", None)
+            st.session_state.pop("gc_ev_note", None)
+        except Exception as e:
+            st.error(f"일정 저장 실패: {e}")
+    pending_del = st.session_state.pop("_gc_pending_del_event", None)
+    if not isinstance(pending_del, dict):
+        pending_del = _take_event_x_query()
+    if isinstance(pending_del, dict) and pending_del.get("id"):
+        try:
+            cid = str(pending_del.get("cal") or "primary")
+            eid = str(pending_del.get("id") or "")
+            delete_event(cid, eid)
+            _gc_cache_remove_event(cid, eid)
+        except Exception as e:
+            st.error(f"일정 삭제 실패: {e}")
+
+    try:
+        cals = _gc_cached_cals()
+    except Exception as e:
+        st.error(f"캘린더를 불러오지 못했습니다: {e}")
+        cals = []
+
+    top = st.columns([1.1, 1.1, 5.6])
+    with top[0]:
+        if st.button("오늘", key="gc_today"):
+            st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
+            st.rerun(scope="fragment")
+    with top[1]:
+        n1, n2 = st.columns(2)
+        with n1:
+            if st.button("‹", key="gc_prev"):
+                d = date(y, m, 1) - timedelta(days=1)
+                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
+                st.rerun(scope="fragment")
+        with n2:
+            if st.button("›", key="gc_next"):
+                d = date(y, m, 28) + timedelta(days=8)
+                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
+                st.rerun(scope="fragment")
+    with top[2]:
+        st.markdown(f"**{y}년 {m}월**")
+
+    y = int(st.session_state.get("gc_year") or today.year)
+    m = int(st.session_state.get("gc_month") or today.month)
+    by_day = _gc_cached_events(cals, y, m)
+    st.markdown(_month_html(y, m, by_day, today), unsafe_allow_html=True)
+    opened = _take_event_open_query()
+    if opened:
+        found = _find_cached_event(opened["cal"], opened["id"])
+        st.session_state["_gc_open_event"] = found or {
+            "title": "일정",
+            "cal_id": opened["cal"],
+            "id": opened["id"],
+        }
+    if st.session_state.get("_gc_open_event"):
+        _event_memo_dialog()
+    with st.expander("일정 추가", expanded=False):
+        et = st.text_input("제목", key="gc_ev_title")
+        ed = st.date_input("날짜", value=today, key="gc_ev_day")
+        en = st.text_area(
+            "메모",
+            key="gc_ev_note",
+            height=70,
+            placeholder="일정 메모 (클릭하면 팝업으로 보입니다)",
+        )
+        cal_opts = {c["summary"]: c["id"] for c in cals} or {"기본": "primary"}
+        pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
+        if st.button("일정 저장", type="primary", key="gc_ev_save"):
+            title = (et or "").strip()
+            if len(title) < 1:
+                st.error("제목을 입력하세요.")
+            else:
+                st.session_state["_gc_pending_event"] = {
+                    "cal": cal_opts[pick],
+                    "title": title,
+                    "day": ed,
+                    "notes": en or "",
+                }
+                st.rerun(scope="fragment")
+
+
+@st.fragment
+def _gc_task_panel() -> None:
+    """할 일만 이 조각을 다시 그린다."""
     lid = str(st.session_state.get("_gc_lid") or "")
-    box = _gc_api_box()
     pending_new = st.session_state.pop("_gc_pending_new", None)
     if pending_new:
         st.session_state["gc_new_task"] = ""
@@ -1055,107 +1239,13 @@ def _gc_work_panel() -> None:
                 continue
             left.append(t)
         save_local_tasks(lid, left)
-    pending_ev = st.session_state.pop("_gc_pending_event", None)
-    if isinstance(pending_ev, dict):
-        try:
-            day = pending_ev["day"]
-            insert_event(
-                str(pending_ev.get("cal") or "primary"),
-                str(pending_ev.get("title") or ""),
-                day,
-                True,
-                str(pending_ev.get("notes") or ""),
-            )
-            box.pop(f"ev:{day.year}-{day.month:02d}", None)
-            st.session_state.pop("gc_ev_title", None)
-            st.session_state.pop("gc_ev_note", None)
-        except Exception as e:
-            st.error(f"일정 저장 실패: {e}")
-    pending_del = st.session_state.pop("_gc_pending_del_event", None)
-    if not isinstance(pending_del, dict):
-        pending_del = _take_event_x_query()
-    if isinstance(pending_del, dict) and pending_del.get("id"):
-        try:
-            delete_event(str(pending_del.get("cal") or "primary"), str(pending_del.get("id") or ""))
-            for k in list(box.keys()):
-                if str(k).startswith("ev:"):
-                    box.pop(k, None)
-        except Exception as e:
-            st.error(f"일정 삭제 실패: {e}")
-
-    try:
-        cals = _gc_cached_cals()
-    except Exception as e:
-        st.error(f"캘린더를 불러오지 못했습니다: {e}")
-        cals = []
     try:
         tlists = _gc_cached_tlists()
     except Exception as e:
         st.error(f"할 일 목록을 불러오지 못했습니다: {e}")
         tlists = []
-
-    top = st.columns([1.1, 1.1, 5.6])
-    with top[0]:
-        if st.button("오늘", key="gc_today"):
-            st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
-            st.rerun(scope="fragment")
-    with top[1]:
-        n1, n2 = st.columns(2)
-        with n1:
-            if st.button("‹", key="gc_prev"):
-                d = date(y, m, 1) - timedelta(days=1)
-                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                st.rerun(scope="fragment")
-        with n2:
-            if st.button("›", key="gc_next"):
-                d = date(y, m, 28) + timedelta(days=8)
-                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                st.rerun(scope="fragment")
-    with top[2]:
-        st.markdown(f"**{y}년 {m}월**")
-
-    y = int(st.session_state.get("gc_year") or today.year)
-    m = int(st.session_state.get("gc_month") or today.month)
-    left, right = st.columns([3.15, 1.12], gap="small")
-    with left:
-        by_day = _gc_cached_events(cals, y, m)
-        st.markdown(_month_html(y, m, by_day, today), unsafe_allow_html=True)
-        opened = _take_event_open_query()
-        if opened:
-            found = _find_cached_event(opened["cal"], opened["id"])
-            st.session_state["_gc_open_event"] = found or {
-                "title": "일정",
-                "cal_id": opened["cal"],
-                "id": opened["id"],
-            }
-        if st.session_state.get("_gc_open_event"):
-            _event_memo_dialog()
-        with st.expander("일정 추가", expanded=False):
-            et = st.text_input("제목", key="gc_ev_title")
-            ed = st.date_input("날짜", value=today, key="gc_ev_day")
-            en = st.text_area(
-                "메모",
-                key="gc_ev_note",
-                height=70,
-                placeholder="일정 메모 (클릭하면 팝업으로 보입니다)",
-            )
-            cal_opts = {c["summary"]: c["id"] for c in cals} or {"기본": "primary"}
-            pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
-            if st.button("일정 저장", type="primary", key="gc_ev_save"):
-                title = (et or "").strip()
-                if len(title) < 1:
-                    st.error("제목을 입력하세요.")
-                else:
-                    st.session_state["_gc_pending_event"] = {
-                        "cal": cal_opts[pick],
-                        "title": title,
-                        "day": ed,
-                        "notes": en or "",
-                    }
-                    st.rerun(scope="fragment")
-    with right:
-        st.markdown(
-            """
+    st.markdown(
+        """
 <style>
 div[class*="st-key-gc_ne_"] button,
 div[class*="st-key-gc_toggle_new_note"] button,
@@ -1171,132 +1261,140 @@ div[class*="st-key-gc_ns_"] button {
 }
 </style>
 """,
-            unsafe_allow_html=True,
-        )
-        head = st.columns([2.0, 1.2, 1.2], gap="small")
-        with head[0]:
-            st.markdown("**할 일 목록**")
-        with head[1]:
-            if st.button("불러오기", key="gc_task_import", type="tertiary", width="content"):
-                st.session_state["_gc_pending_task_import"] = True
-                st.rerun(scope="fragment")
-        with head[2]:
-            if st.button("내보내기", key="gc_task_export", type="tertiary", width="content"):
-                st.session_state["_gc_pending_task_export"] = True
-                st.rerun(scope="fragment")
-        if not tlists:
-            st.caption("할 일 목록이 없습니다.")
-            return
-        names = [t.get("title") or "할 일" for t in tlists]
-        li = st.selectbox(
-            "목록",
-            options=list(range(len(names))),
-            format_func=lambda i: names[i],
-            key="gc_tlist",
-        )
-        lid = str(tlists[int(li)].get("id") or "")
-        st.session_state["_gc_lid"] = lid
-        if st.session_state.pop("_gc_pending_task_import", None) and lid:
-            try:
-                import_tasks_from_google(lid)
-                st.success("구글 할 일을 대시보드로 불러왔습니다.")
-            except Exception as e:
-                st.error(f"불러오기 실패: {e}")
-        if st.session_state.pop("_gc_pending_task_export", None) and lid:
-            try:
-                n = export_tasks_to_google(lid)
-                st.success(f"대시보드 할 일 {n}건을 구글에 보냈습니다.")
-            except Exception as e:
-                st.error(f"내보내기 실패: {e}")
+        unsafe_allow_html=True,
+    )
+    head = st.columns([2.0, 1.2, 1.2], gap="small")
+    with head[0]:
+        st.markdown("**할 일 목록**")
+    with head[1]:
+        if st.button("불러오기", key="gc_task_import", type="tertiary", width="content"):
+            st.session_state["_gc_pending_task_import"] = True
+            st.rerun(scope="fragment")
+    with head[2]:
+        if st.button("내보내기", key="gc_task_export", type="tertiary", width="content"):
+            st.session_state["_gc_pending_task_export"] = True
+            st.rerun(scope="fragment")
+    if not tlists:
+        st.caption("할 일 목록이 없습니다.")
+        return
+    names = [t.get("title") or "할 일" for t in tlists]
+    li = st.selectbox(
+        "목록",
+        options=list(range(len(names))),
+        format_func=lambda i: names[i],
+        key="gc_tlist",
+    )
+    lid = str(tlists[int(li)].get("id") or "")
+    st.session_state["_gc_lid"] = lid
+    if st.session_state.pop("_gc_pending_task_import", None) and lid:
         try:
-            tasks = _gc_cached_tasks(lid) if lid else []
+            import_tasks_from_google(lid)
+            st.success("구글 할 일을 대시보드로 불러왔습니다.")
         except Exception as e:
-            st.error(str(e))
-            tasks = []
-        edit_id = str(st.session_state.get("_gc_note_edit") or "")
-        for t in tasks:
-            tid = str(t.get("id") or "")
-            title = t.get("title") or "(제목 없음)"
-            due = str((t.get("due") or ""))[:10]
-            label = title if not due else f"{title}  · {due}"
-            note = str(t.get("notes") or "").strip()
-            row = st.columns([8.2, 1.15], gap="small", vertical_alignment="top")
-            open_this = edit_id == tid
-            with row[0]:
-                if st.checkbox(label, value=False, key=f"gc_td_{tid}"):
-                    st.session_state["_gc_pending_done"] = tid
-                    st.rerun(scope="fragment")
-                if note and not open_this:
-                    st.markdown(
-                        "<div style='font-size:12px;color:#5f6368;line-height:1.35;"
-                        "margin:-6px 0 6px 1.7rem;white-space:pre-wrap'>"
-                        f"{html.escape(note)}</div>",
-                        unsafe_allow_html=True,
-                    )
-                if open_this:
-                    st.text_input(
-                        "메모 입력",
-                        value=note,
-                        key=f"gc_note_{tid}",
-                        label_visibility="collapsed",
-                        placeholder="할 일 아래 메모",
-                    )
-            with row[1]:
-                if st.button(
-                    "닫기" if open_this else "메모",
-                    key=f"gc_ne_{tid}",
-                    type="tertiary",
-                    width="content",
-                ):
-                    if open_this:
-                        st.session_state["_gc_pending_note"] = {
-                            "id": tid,
-                            "notes": st.session_state.get(f"gc_note_{tid}") or "",
-                        }
-                        st.session_state["_gc_note_edit"] = ""
-                    else:
-                        st.session_state["_gc_note_edit"] = tid
-                    st.rerun(scope="fragment")
-        add_row = st.columns([6.4, 1.1, 1.15], gap="small", vertical_alignment="bottom")
-        with add_row[0]:
-            nt = st.text_input(
-                "새 할 일",
-                key="gc_new_task",
-                placeholder="할 일 제목",
-                label_visibility="collapsed",
-            )
-        with add_row[1]:
+            st.error(f"불러오기 실패: {e}")
+    if st.session_state.pop("_gc_pending_task_export", None) and lid:
+        try:
+            n = export_tasks_to_google(lid)
+            st.success(f"대시보드 할 일 {n}건을 구글에 보냈습니다.")
+        except Exception as e:
+            st.error(f"내보내기 실패: {e}")
+    try:
+        tasks = _gc_cached_tasks(lid) if lid else []
+    except Exception as e:
+        st.error(str(e))
+        tasks = []
+    edit_id = str(st.session_state.get("_gc_note_edit") or "")
+    for t in tasks:
+        tid = str(t.get("id") or "")
+        title = t.get("title") or "(제목 없음)"
+        due = str((t.get("due") or ""))[:10]
+        label = title if not due else f"{title}  · {due}"
+        note = str(t.get("notes") or "").strip()
+        row = st.columns([8.2, 1.15], gap="small", vertical_alignment="top")
+        open_this = edit_id == tid
+        with row[0]:
+            if st.checkbox(label, value=False, key=f"gc_td_{tid}"):
+                st.session_state["_gc_pending_done"] = tid
+                st.rerun(scope="fragment")
+            if note and not open_this:
+                st.markdown(
+                    "<div style='font-size:12px;color:#5f6368;line-height:1.35;"
+                    "margin:-6px 0 6px 1.7rem;white-space:pre-wrap'>"
+                    f"{html.escape(note)}</div>",
+                    unsafe_allow_html=True,
+                )
+            if open_this:
+                st.text_input(
+                    "메모 입력",
+                    value=note,
+                    key=f"gc_note_{tid}",
+                    label_visibility="collapsed",
+                    placeholder="할 일 아래 메모",
+                )
+        with row[1]:
             if st.button(
-                "메모",
-                key="gc_toggle_new_note",
+                "닫기" if open_this else "메모",
+                key=f"gc_ne_{tid}",
                 type="tertiary",
                 width="content",
             ):
-                st.session_state["_gc_show_new_note"] = not bool(
-                    st.session_state.get("_gc_show_new_note")
-                )
+                if open_this:
+                    st.session_state["_gc_pending_note"] = {
+                        "id": tid,
+                        "notes": st.session_state.get(f"gc_note_{tid}") or "",
+                    }
+                    st.session_state["_gc_note_edit"] = ""
+                else:
+                    st.session_state["_gc_note_edit"] = tid
                 st.rerun(scope="fragment")
-        with add_row[2]:
-            add_clicked = st.button("추가", key="gc_add_task", width="content")
-        nn = ""
-        if st.session_state.get("_gc_show_new_note"):
-            nn = st.text_input(
-                "새 메모",
-                key="gc_new_note",
-                placeholder="할 일 아래 메모",
-                label_visibility="collapsed",
+    add_row = st.columns([6.4, 1.1, 1.15], gap="small", vertical_alignment="bottom")
+    with add_row[0]:
+        nt = st.text_input(
+            "새 할 일",
+            key="gc_new_task",
+            placeholder="할 일 제목",
+            label_visibility="collapsed",
+        )
+    with add_row[1]:
+        if st.button(
+            "메모",
+            key="gc_toggle_new_note",
+            type="tertiary",
+            width="content",
+        ):
+            st.session_state["_gc_show_new_note"] = not bool(
+                st.session_state.get("_gc_show_new_note")
             )
-        if add_clicked:
-            title = (nt or "").strip()
-            if len(title) < 1:
-                st.error("제목을 입력하세요.")
-            else:
-                st.session_state["_gc_pending_new"] = {
-                    "title": title,
-                    "notes": nn or "",
-                }
-                st.session_state["_gc_show_new_note"] = False
-                st.rerun(scope="fragment")
+            st.rerun(scope="fragment")
+    with add_row[2]:
+        add_clicked = st.button("추가", key="gc_add_task", width="content")
+    nn = ""
+    if st.session_state.get("_gc_show_new_note"):
+        nn = st.text_input(
+            "새 메모",
+            key="gc_new_note",
+            placeholder="할 일 아래 메모",
+            label_visibility="collapsed",
+        )
+    if add_clicked:
+        title = (nt or "").strip()
+        if len(title) < 1:
+            st.error("제목을 입력하세요.")
+        else:
+            st.session_state["_gc_pending_new"] = {
+                "title": title,
+                "notes": nn or "",
+            }
+            st.session_state["_gc_show_new_note"] = False
+            st.rerun(scope="fragment")
+
+
+def _gc_work_panel() -> None:
+    left, right = st.columns([3.15, 1.12], gap="small")
+    with left:
+        _gc_cal_panel()
+    with right:
+        _gc_task_panel()
 
 
 def render_google_calendar_tab(
