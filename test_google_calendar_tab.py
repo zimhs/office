@@ -66,6 +66,8 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("refresh_token", src)
         self.assertIn("_gc_pending_month", src)
         self.assertIn('key="gc_next"', src)
+        self.assertIn("st-key-gc_ne_", src)
+        self.assertIn('type="tertiary"', src)
 
 
 class GoogleCalendarTokenPersistTest(unittest.TestCase):

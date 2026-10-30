@@ -790,6 +790,25 @@ def _gc_work_panel() -> None:
                     }
                     st.rerun(scope="fragment")
     with right:
+        st.markdown(
+            """
+<style>
+div[class*="st-key-gc_ne_"] button,
+div[class*="st-key-gc_toggle_new_note"] button,
+div[class*="st-key-gc_ns_"] button {
+  min-height: 1.55rem !important;
+  height: 1.55rem !important;
+  min-width: 0 !important;
+  padding: 0 0.4rem !important;
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  border-radius: 6px !important;
+}
+</style>
+""",
+            unsafe_allow_html=True,
+        )
         st.markdown("**할 일 목록**")
         if not tlists:
             st.caption("할 일 목록이 없습니다.")
@@ -815,7 +834,7 @@ def _gc_work_panel() -> None:
             due = str((t.get("due") or ""))[:10]
             label = title if not due else f"{title}  · {due}"
             note = str(t.get("notes") or "").strip()
-            row = st.columns([5.4, 1.05], gap="small")
+            row = st.columns([8.2, 1.15], gap="small", vertical_alignment="top")
             with row[0]:
                 if st.checkbox(label, value=False, key=f"gc_td_{tid}"):
                     st.session_state["_gc_pending_done"] = tid
@@ -829,7 +848,13 @@ def _gc_work_panel() -> None:
                     )
             with row[1]:
                 open_this = edit_id == tid
-                if st.button("메모" if not open_this else "닫기", key=f"gc_ne_{tid}"):
+                if st.button(
+                    "닫기" if open_this else "메모",
+                    key=f"gc_ne_{tid}",
+                    type="tertiary",
+                    width="content",
+                    help="메모",
+                ):
                     st.session_state["_gc_note_edit"] = "" if open_this else tid
                     st.rerun(scope="fragment")
             if edit_id == tid:
@@ -848,7 +873,7 @@ def _gc_work_panel() -> None:
                     }
                     st.session_state["_gc_note_edit"] = ""
                     st.rerun(scope="fragment")
-        add_row = st.columns([4.2, 1.15, 1.15], gap="small")
+        add_row = st.columns([6.4, 1.1, 1.15], gap="small", vertical_alignment="bottom")
         with add_row[0]:
             nt = st.text_input(
                 "새 할 일",
@@ -857,13 +882,19 @@ def _gc_work_panel() -> None:
                 label_visibility="collapsed",
             )
         with add_row[1]:
-            if st.button("메모", key="gc_toggle_new_note"):
+            if st.button(
+                "메모",
+                key="gc_toggle_new_note",
+                type="tertiary",
+                width="content",
+                help="메모",
+            ):
                 st.session_state["_gc_show_new_note"] = not bool(
                     st.session_state.get("_gc_show_new_note")
                 )
                 st.rerun(scope="fragment")
         with add_row[2]:
-            add_clicked = st.button("추가", key="gc_add_task")
+            add_clicked = st.button("추가", key="gc_add_task", width="content")
         nn = ""
         if st.session_state.get("_gc_show_new_note"):
             nn = st.text_area(
