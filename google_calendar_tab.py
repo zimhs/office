@@ -14,9 +14,16 @@ from zoneinfo import ZoneInfo
 import requests
 import streamlit as st
 
-GC_DIR = os.path.join("uploaded_cache", "google_calendar")
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+_HOME_GC = os.path.join(os.path.expanduser("~"), ".office-dashboard")
+_ST_GC = os.path.join(_ROOT, ".streamlit")
+GC_DIR = os.path.join(_ROOT, "uploaded_cache", "google_calendar")
 GC_TOKEN = os.path.join(GC_DIR, "token.json")
 GC_OAUTH = os.path.join(GC_DIR, "oauth_client.json")
+GC_TOKEN_HOME = os.path.join(_HOME_GC, "google_calendar_token.json")
+GC_OAUTH_HOME = os.path.join(_HOME_GC, "google_oauth_client.json")
+GC_TOKEN_ST = os.path.join(_ST_GC, "gc_token.json")
+GC_OAUTH_ST = os.path.join(_ST_GC, "gc_oauth_client.json")
 GC_KR_HOLIDAY = "ko.south_korea#holiday@group.v.calendar.google.com"
 _TZ = ZoneInfo("Asia/Seoul")
 _SCOPES = (
@@ -68,7 +75,47 @@ def event_day_key(item: dict) -> str:
 
 
 def _mkdir() -> None:
-    os.makedirs(GC_DIR, exist_ok=True)
+    for d in (GC_DIR, _HOME_GC, _ST_GC):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+
+
+def _token_paths() -> list[str]:
+    return [GC_TOKEN_HOME, GC_TOKEN_ST, GC_TOKEN]
+
+
+def _oauth_paths() -> list[str]:
+    return [GC_OAUTH_HOME, GC_OAUTH_ST, GC_OAUTH]
+
+
+def _read_json(path: str) -> dict:
+    try:
+        if not path or not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_json(path: str, data: dict) -> None:
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _usable_token(data: dict) -> bool:
+    return bool(data.get("refresh_token") or data.get("access_token"))
 
 
 def _secret(name: str) -> str:
@@ -102,66 +149,80 @@ def _secret(name: str) -> str:
 def load_oauth_client() -> tuple[str, str]:
     cid = _secret("google_oauth_client_id") or _secret("client_id")
     csec = _secret("google_oauth_client_secret") or _secret("client_secret")
-    if os.path.exists(GC_OAUTH):
-        try:
-            with open(GC_OAUTH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            installed = data.get("web") or data.get("installed") or data
-            cid = cid or str(installed.get("client_id") or "").strip()
-            csec = csec or str(installed.get("client_secret") or "").strip()
-        except Exception:
-            pass
+    data: dict = {}
+    for path in _oauth_paths():
+        data = _read_json(path)
+        if data:
+            break
+    if data:
+        for path in _oauth_paths():
+            if not os.path.exists(path):
+                _write_json(path, data)
+    installed = data.get("web") or data.get("installed") or data
+    if isinstance(installed, dict):
+        cid = cid or str(installed.get("client_id") or "").strip()
+        csec = csec or str(installed.get("client_secret") or "").strip()
     return cid, csec
 
 
 def save_oauth_client(client_id: str, client_secret: str) -> None:
-    _mkdir()
-    with open(GC_OAUTH, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "web": {
-                    "client_id": client_id.strip(),
-                    "client_secret": client_secret.strip(),
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": _TOKEN,
-                }
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
+    payload = {
+        "web": {
+            "client_id": client_id.strip(),
+            "client_secret": client_secret.strip(),
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": _TOKEN,
+        }
+    }
+    for path in _oauth_paths():
+        _write_json(path, payload)
 
 
 def load_token() -> dict:
-    if os.path.exists(GC_TOKEN):
-        try:
-            with open(GC_TOKEN, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict) and data.get("access_token"):
-                return data
-        except Exception:
-            return {}
     tok = st.session_state.get("_gc_token")
-    return tok if isinstance(tok, dict) else {}
+    if isinstance(tok, dict) and _usable_token(tok):
+        return tok
+    best: dict = {}
+    for path in _token_paths():
+        data = _read_json(path)
+        if _usable_token(data):
+            best = data
+            break
+    if best:
+        st.session_state["_gc_token"] = best
+        for path in _token_paths():
+            if not os.path.exists(path):
+                _write_json(path, best)
+    return best
 
 
 def save_token(tok: dict) -> None:
-    _mkdir()
-    try:
-        with open(GC_TOKEN, "w", encoding="utf-8") as f:
-            json.dump(tok, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    if not isinstance(tok, dict):
+        return
+    tok = dict(tok)
+    if not tok.get("refresh_token"):
+        prev = st.session_state.get("_gc_token")
+        if not (isinstance(prev, dict) and prev.get("refresh_token")):
+            prev = {}
+            for path in _token_paths():
+                prev = _read_json(path)
+                if prev.get("refresh_token"):
+                    break
+        if isinstance(prev, dict) and prev.get("refresh_token"):
+            tok["refresh_token"] = prev["refresh_token"]
+    for path in _token_paths():
+        _write_json(path, tok)
     st.session_state["_gc_token"] = tok
 
 
 def clear_token() -> None:
     st.session_state.pop("_gc_token", None)
-    try:
-        if os.path.exists(GC_TOKEN):
-            os.remove(GC_TOKEN)
-    except Exception:
-        pass
+    for path in _token_paths():
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
 
 
 def redirect_uri() -> str:
@@ -251,13 +312,16 @@ def access_token() -> str:
     tok = load_token()
     if not tok:
         return ""
-    if _expired(tok) and cid and csec:
+    at = str(tok.get("access_token") or "")
+    need = (not at) or _expired(tok)
+    if need and cid and csec and tok.get("refresh_token"):
         try:
             tok = refresh_token(cid, csec, tok)
             save_token(tok)
+            at = str(tok.get("access_token") or "")
         except Exception:
-            return str(tok.get("access_token") or "")
-    return str(tok.get("access_token") or "")
+            pass
+    return at
 
 
 def api_get(url: str, params: dict | None = None) -> dict:

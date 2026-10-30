@@ -88,6 +88,8 @@ uproad/
 
 # 로컬 전용 비밀
 .streamlit/secrets.toml
+.streamlit/gc_token.json
+.streamlit/gc_oauth_client.json
 uploaded_cache/price_increase/smtp_local.toml
 
 # 로컬 실행 상태 (Update/Local)

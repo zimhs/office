@@ -1,7 +1,11 @@
 """구글 캘린더 탭 — 내장 URL·탭 연결."""
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import google_calendar_tab as gc
@@ -58,6 +62,52 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_note_edit", src)
         self.assertIn("gc_ne_", src)
         self.assertNotIn('with st.expander("메모"', src)
+        self.assertIn("GC_TOKEN_HOME", src)
+        self.assertIn("refresh_token", src)
+
+
+class GoogleCalendarTokenPersistTest(unittest.TestCase):
+    def test_load_token_from_home_when_cache_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = os.path.join(td, "home.json")
+            cache = os.path.join(td, "cache.json")
+            payload = {
+                "refresh_token": "rt-1",
+                "access_token": "at-1",
+                "expires_in": 3599,
+            }
+            with open(home, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            with patch.object(gc, "GC_TOKEN_HOME", home), patch.object(
+                gc, "GC_TOKEN_ST", os.path.join(td, "st.json")
+            ), patch.object(gc, "GC_TOKEN", cache), patch.object(
+                gc.st, "session_state", {}
+            ):
+                tok = gc.load_token()
+            self.assertEqual(tok.get("refresh_token"), "rt-1")
+            self.assertTrue(os.path.exists(cache))
+
+    def test_save_keeps_refresh_token(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = os.path.join(td, "home.json")
+            cache = os.path.join(td, "cache.json")
+            stpath = os.path.join(td, "st.json")
+            with patch.object(gc, "GC_TOKEN_HOME", home), patch.object(
+                gc, "GC_TOKEN_ST", stpath
+            ), patch.object(gc, "GC_TOKEN", cache), patch.object(
+                gc.st,
+                "session_state",
+                {"_gc_token": {"refresh_token": "keep-me", "access_token": "old"}},
+            ):
+                gc.save_token({"access_token": "new"})
+            with open(home, encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertEqual(saved.get("refresh_token"), "keep-me")
+            self.assertEqual(saved.get("access_token"), "new")
+
+    def test_usable_without_access_token(self):
+        self.assertTrue(gc._usable_token({"refresh_token": "r"}))
+        self.assertFalse(gc._usable_token({}))
 
 
 if __name__ == "__main__":
