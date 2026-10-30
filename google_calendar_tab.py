@@ -873,8 +873,12 @@ def _month_html(year: int, month: int, by_day: dict[str, list[dict]], today: dat
             for ev in (by_day.get(key) or [])[:4]:
                 label = html.escape((ev.get("hhmm") + " " if ev.get("hhmm") else "") + ev["title"])
                 col = html.escape(str(ev.get("color") or "#c5c9ce"))
+                xbtn = ""
+                if ev.get("writable") and ev.get("id") and ev.get("cal_id"):
+                    xbtn = '<span class="gc-x">×</span>'
                 chips.append(
-                    f'<div class="gc-chip" style="background:{col}22;border-left:3px solid {col}">{label}</div>'
+                    f'<div class="gc-chip" style="background:{col}22;border-left:3px solid {col}">'
+                    f'<span class="gc-chip-t">{label}</span>{xbtn}</div>'
                 )
             more = len(by_day.get(key) or []) - 4
             if more > 0:
@@ -897,13 +901,141 @@ def _month_html(year: int, month: int, by_day: dict[str, list[dict]], today: dat
 .gc-num {{ font-size:12px; font-weight:500; margin-bottom:2px; }}
 .gc-sun, .gc-sun .gc-num {{ color:#d93025; }}
 .gc-sat, .gc-sat .gc-num {{ color:#1a73e8; }}
-.gc-chip {{ font-size:11px; line-height:1.25; padding:1px 4px; margin:1px 0; border-radius:2px;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+.gc-chip {{ font-size:11px; line-height:1.25; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
+  display:flex; align-items:center; gap:2px; overflow:hidden; }}
+.gc-chip-t {{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+.gc-x {{ flex:0 0 auto; color:#80868b; font-size:13px; padding:0 3px; line-height:1; cursor:pointer; }}
 .gc-more {{ font-size:11px; color:#5f6368; }}
 </style>
 <div class="gc-wrap"><table class="gc-table"><thead><tr><th class="gc-wn"></th>{heads}</tr></thead>
 <tbody>{"".join(rows)}</tbody></table></div>
 """
+
+
+def _gc_set_del_event(cal_id: str, event_id: str) -> None:
+    st.session_state["_gc_pending_del_event"] = {"cal": cal_id, "id": event_id}
+
+
+def _render_month_grid(
+    year: int, month: int, by_day: dict[str, list[dict]], today: date
+) -> None:
+    """표 달력. 제목은 클릭하지 않고, 쓸 수 있는 일정만 ×로 지운다."""
+    st.markdown(
+        """
+<style>
+div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"],
+div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] {
+  gap: 0 !important;
+  margin-bottom: 0 !important;
+}
+div[class*="st-key-gc_calhead"] [data-testid="stColumn"] {
+  padding: 6px 4px !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"] {
+  border: 1px solid #e8eaed;
+  min-height: 92px;
+  padding: 4px 3px !important;
+  background: #fff;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stVerticalBlock"] {
+  gap: 2px !important;
+}
+div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"] p,
+div[class*="st-key-gc_calgrid"] [data-testid="stMarkdownContainer"] p {
+  margin: 0 !important;
+}
+div[class*="st-key-gc_xd_"] button {
+  min-height: 1.15rem !important;
+  height: 1.15rem !important;
+  min-width: 1.1rem !important;
+  padding: 0 3px !important;
+  font-size: 13px !important;
+  color: #80868b !important;
+  border: none !important;
+  background: transparent !important;
+}
+div[class*="st-key-gc_chiprow_"] [data-testid="stHorizontalBlock"] {
+  gap: 2px !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    with st.container(key="gc_calhead"):
+        head = st.columns([0.38] + [1] * 7, gap=None)
+        with head[0]:
+            st.markdown('<div class="gc-wn"></div>', unsafe_allow_html=True)
+        for i, name in enumerate(("일", "월", "화", "수", "목", "금", "토")):
+            color = "#d93025" if i == 0 else "#1a73e8" if i == 6 else "#70757a"
+            with head[i + 1]:
+                st.markdown(
+                    f'<div style="font-size:12px;font-weight:500;color:{color};'
+                    f'text-align:center">{name}</div>',
+                    unsafe_allow_html=True,
+                )
+    with st.container(key="gc_calgrid"):
+        for week in month_weeks(year, month):
+            cols = st.columns([0.38] + [1] * 7, gap=None, vertical_alignment="top")
+            with cols[0]:
+                st.markdown(
+                    f'<div style="color:#80868b;font-size:11px;text-align:center;'
+                    f'padding-top:4px">{iso_week_label(week)}</div>',
+                    unsafe_allow_html=True,
+                )
+            for i, d in enumerate(week):
+                with cols[i + 1]:
+                    outside = d.month != month
+                    if d == today:
+                        num = (
+                            '<div style="background:#1a73e8;color:#fff;border-radius:50%;'
+                            "width:22px;height:22px;display:inline-flex;align-items:center;"
+                            'justify-content:center;font-size:12px;font-weight:500">'
+                            f"{d.day}</div>"
+                        )
+                    else:
+                        color = "#bdc1c6" if outside else (
+                            "#d93025" if d.weekday() == 6 else "#1a73e8" if d.weekday() == 5 else "#3c4043"
+                        )
+                        num = (
+                            f'<div style="font-size:12px;font-weight:500;color:{color}">'
+                            f"{d.day}</div>"
+                        )
+                    st.markdown(num, unsafe_allow_html=True)
+                    items = by_day.get(d.isoformat()) or []
+                    for ev in items[:4]:
+                        eid = str(ev.get("id") or "")
+                        cid = str(ev.get("cal_id") or "")
+                        lab = html.escape(
+                            ((str(ev.get("hhmm") or "") + " ") if ev.get("hhmm") else "")
+                            + str(ev.get("title") or "")
+                        )
+                        col = html.escape(str(ev.get("color") or "#c5c9ce"))
+                        k = f"{d.isoformat()}_{eid[-16:] or lab}"
+                        chip = (
+                            f'<div class="gc-chip" style="background:{col}22;border-left:3px solid {col};'
+                            "font-size:11px;line-height:1.25;padding:1px 4px;border-radius:2px;"
+                            'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+                            f"{lab}</div>"
+                        )
+                        if ev.get("writable") and eid and cid:
+                            with st.container(horizontal=True, gap="small", key=f"gc_chiprow_{k}"):
+                                st.markdown(chip, unsafe_allow_html=True)
+                                st.button(
+                                    "×",
+                                    key=f"gc_xd_{k}",
+                                    type="tertiary",
+                                    width="content",
+                                    on_click=_gc_set_del_event,
+                                    args=(cid, eid),
+                                )
+                        else:
+                            st.markdown(chip, unsafe_allow_html=True)
+                    more = len(items) - 4
+                    if more > 0:
+                        st.markdown(
+                            f'<div style="font-size:11px;color:#5f6368">+{more}</div>',
+                            unsafe_allow_html=True,
+                        )
 
 
 def _qp_pop(*names: str) -> None:
@@ -1038,6 +1170,16 @@ def _gc_cal_panel() -> None:
                 _gc_cache_add_event(day, real)
         except Exception as e:
             st.error(f"일정 저장 실패: {e}")
+    pending_del = st.session_state.pop("_gc_pending_del_event", None)
+    if isinstance(pending_del, dict) and pending_del.get("id"):
+        cid = str(pending_del.get("cal") or "primary")
+        eid = str(pending_del.get("id") or "")
+        _gc_cache_remove_event(cid, eid)
+        if eid and not eid.startswith("local-"):
+            try:
+                delete_event(cid, eid)
+            except Exception as e:
+                st.error(f"일정 삭제 실패: {e}")
 
     try:
         cals = _gc_cached_cals()
@@ -1068,7 +1210,7 @@ def _gc_cal_panel() -> None:
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
     by_day = _gc_cached_events(cals, y, m)
-    st.markdown(_month_html(y, m, by_day, today), unsafe_allow_html=True)
+    _render_month_grid(y, m, by_day, today)
     with st.expander("일정 추가", expanded=False):
         et = st.text_input("제목", key="gc_ev_title")
         ed = st.date_input("날짜", value=today, key="gc_ev_day")

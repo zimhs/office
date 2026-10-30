@@ -82,10 +82,11 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertNotIn("st.popover", src)
         self.assertNotIn("@st.dialog", src)
         self.assertNotIn("gc_ev_note", src)
-        self.assertNotIn("_render_month_grid", src)
+        self.assertIn("_render_month_grid", src)
+        self.assertIn("gc_xd_", src)
+        self.assertIn("_gc_pending_del_event", src)
         self.assertNotIn("gc_ovc=", src)
         self.assertIn("일정 저장", src)
-        self.assertIn("st.markdown(_month_html", src)
         self.assertIn('st.rerun(scope="fragment")', src)
         self.assertNotIn('st.session_state["_vc_month"] = date(pending_m', src)
         self.assertIn("_gc_oauth_code_used", src)
@@ -123,7 +124,7 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("gc-table", html)
         self.assertNotIn("gc_ovc=", html)
         self.assertNotIn("<a ", html)
-        self.assertNotIn("class=\"gc-x\"", html)
+        self.assertIn("class=\"gc-x\"", html)
         html_ro = gc._month_html(
             2026,
             10,
