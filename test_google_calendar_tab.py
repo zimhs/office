@@ -82,13 +82,16 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertNotIn("st.popover", src)
         self.assertIn("@st.dialog", src)
         self.assertIn("delete_event", src)
-        self.assertIn("gc_xd_", src)
-        self.assertIn("_gc_pending_del_event", src)
+        self.assertIn("gc-x", src)
+        self.assertIn("_take_event_x_query", src)
+        self.assertIn("_take_event_open_query", src)
         self.assertIn("일정 저장", src)
         self.assertIn("gc_ev_note", src)
         self.assertIn('body["description"]', src)
-        self.assertIn("_render_month_grid", src)
-        self.assertNotIn("gc_ovc=", src)
+        self.assertIn("st.html", src)
+        self.assertIn("_month_html", src)
+        self.assertIn("gc_ovc=", src)
+        self.assertNotIn("_render_month_grid", src)
         self.assertIn("_gc_oauth_code_used", src)
         self.assertIn("_gc_oauth_redirect", src)
         self.assertIn("redirect_uri_mismatch", src)
@@ -120,8 +123,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
             d(2026, 10, 5),
         )
         self.assertIn("미팅", html)
-        self.assertNotIn("gc_ovc=", html)
-        self.assertNotIn("<a ", html)
+        self.assertIn("gc_ovc=", html)
+        self.assertIn("gc_xc=", html)
+        self.assertIn("class=\"gc-x\"", html)
         html_ro = gc._month_html(
             2026,
             10,
@@ -139,7 +143,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
             },
             d(2026, 10, 5),
         )
-        self.assertNotIn("gc_ovc=", html_ro)
+        self.assertIn("gc_ovc=", html_ro)
+        self.assertNotIn("gc_xc=", html_ro)
+        self.assertNotIn("class=\"gc-x\"", html_ro)
         self.assertIn("한글날", html_ro)
 
 
