@@ -68,6 +68,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn('key="gc_next"', src)
         self.assertIn("st-key-gc_ne_", src)
         self.assertIn('type="tertiary"', src)
+        self.assertNotIn('help="메모"', src)
+        self.assertNotIn("st.popover", src)
+        self.assertNotIn("st.dialog", src)
 
 
 class GoogleCalendarTokenPersistTest(unittest.TestCase):

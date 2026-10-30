@@ -835,43 +835,41 @@ div[class*="st-key-gc_ns_"] button {
             label = title if not due else f"{title}  · {due}"
             note = str(t.get("notes") or "").strip()
             row = st.columns([8.2, 1.15], gap="small", vertical_alignment="top")
+            open_this = edit_id == tid
             with row[0]:
                 if st.checkbox(label, value=False, key=f"gc_td_{tid}"):
                     st.session_state["_gc_pending_done"] = tid
                     st.rerun(scope="fragment")
-                if note:
+                if note and not open_this:
                     st.markdown(
                         "<div style='font-size:12px;color:#5f6368;line-height:1.35;"
                         "margin:-6px 0 6px 1.7rem;white-space:pre-wrap'>"
                         f"{html.escape(note)}</div>",
                         unsafe_allow_html=True,
                     )
+                if open_this:
+                    st.text_input(
+                        "메모 입력",
+                        value=note,
+                        key=f"gc_note_{tid}",
+                        label_visibility="collapsed",
+                        placeholder="할 일 아래 메모",
+                    )
             with row[1]:
-                open_this = edit_id == tid
                 if st.button(
                     "닫기" if open_this else "메모",
                     key=f"gc_ne_{tid}",
                     type="tertiary",
                     width="content",
-                    help="메모",
                 ):
-                    st.session_state["_gc_note_edit"] = "" if open_this else tid
-                    st.rerun(scope="fragment")
-            if edit_id == tid:
-                edited = st.text_area(
-                    "메모 입력",
-                    value=note,
-                    key=f"gc_note_{tid}",
-                    height=72,
-                    label_visibility="collapsed",
-                    placeholder="세부 메모 (구글 할 일과 동일)",
-                )
-                if st.button("저장", key=f"gc_ns_{tid}"):
-                    st.session_state["_gc_pending_note"] = {
-                        "id": tid,
-                        "notes": edited or "",
-                    }
-                    st.session_state["_gc_note_edit"] = ""
+                    if open_this:
+                        st.session_state["_gc_pending_note"] = {
+                            "id": tid,
+                            "notes": st.session_state.get(f"gc_note_{tid}") or "",
+                        }
+                        st.session_state["_gc_note_edit"] = ""
+                    else:
+                        st.session_state["_gc_note_edit"] = tid
                     st.rerun(scope="fragment")
         add_row = st.columns([6.4, 1.1, 1.15], gap="small", vertical_alignment="bottom")
         with add_row[0]:
@@ -887,7 +885,6 @@ div[class*="st-key-gc_ns_"] button {
                 key="gc_toggle_new_note",
                 type="tertiary",
                 width="content",
-                help="메모",
             ):
                 st.session_state["_gc_show_new_note"] = not bool(
                     st.session_state.get("_gc_show_new_note")
@@ -897,11 +894,10 @@ div[class*="st-key-gc_ns_"] button {
             add_clicked = st.button("추가", key="gc_add_task", width="content")
         nn = ""
         if st.session_state.get("_gc_show_new_note"):
-            nn = st.text_area(
+            nn = st.text_input(
                 "새 메모",
                 key="gc_new_note",
-                height=72,
-                placeholder="메모 (예: 20일 미수금정리)",
+                placeholder="할 일 아래 메모",
                 label_visibility="collapsed",
             )
         if add_clicked:
