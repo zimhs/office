@@ -372,12 +372,14 @@ def list_calendars() -> list[dict]:
     for it in items:
         if str(it.get("selected", True)).lower() in ("false", "0"):
             continue
+        role = str(it.get("accessRole") or "")
         out.append(
             {
                 "id": it.get("id") or "",
                 "summary": it.get("summary") or it.get("id") or "",
                 "color": it.get("backgroundColor") or "#7b8794",
                 "primary": bool(it.get("primary")),
+                "writable": role in ("owner", "writer"),
             }
         )
     return out
@@ -399,8 +401,12 @@ def list_events(cal_id: str, start: date, end: date) -> list[dict]:
     return list(data.get("items") or [])
 
 
-def insert_event(cal_id: str, title: str, day: date, all_day: bool) -> dict:
+def insert_event(
+    cal_id: str, title: str, day: date, all_day: bool, notes: str = ""
+) -> dict:
     body: dict[str, Any] = {"summary": title}
+    if str(notes or "").strip():
+        body["description"] = str(notes).strip()
     if all_day:
         body["start"] = {"date": day.isoformat()}
         body["end"] = {"date": (day + timedelta(days=1)).isoformat()}
@@ -410,6 +416,37 @@ def insert_event(cal_id: str, title: str, day: date, all_day: bool) -> dict:
         body["start"] = {"dateTime": s.isoformat(), "timeZone": "Asia/Seoul"}
         body["end"] = {"dateTime": e.isoformat(), "timeZone": "Asia/Seoul"}
     return api_json("POST", f"{_CAL_API}/calendars/{urllib.parse.quote(cal_id, safe='')}/events", body)
+
+
+def api_delete(url: str) -> None:
+    tok = access_token()
+    if not tok:
+        raise RuntimeError("구글 연결이 필요합니다.")
+    r = requests.delete(url, headers={"Authorization": f"Bearer {tok}"}, timeout=30)
+    if r.status_code == 401:
+        cid, csec = load_oauth_client()
+        tok_d = load_token()
+        if cid and csec and tok_d.get("refresh_token"):
+            tok_d = refresh_token(cid, csec, tok_d)
+            save_token(tok_d)
+            r = requests.delete(
+                url,
+                headers={"Authorization": f"Bearer {tok_d.get('access_token')}"},
+                timeout=30,
+            )
+    if r.status_code in (404, 410):
+        return
+    r.raise_for_status()
+
+
+def delete_event(cal_id: str, event_id: str) -> None:
+    cid = str(cal_id or "").strip()
+    eid = str(event_id or "").strip()
+    if not cid or not eid or cid == GC_KR_HOLIDAY:
+        return
+    api_delete(
+        f"{_CAL_API}/calendars/{urllib.parse.quote(cid, safe='')}/events/{urllib.parse.quote(eid, safe='')}"
+    )
 
 
 def list_tasklists() -> list[dict]:
@@ -521,6 +558,12 @@ def _events_by_day(cals: list[dict], year: int, month: int) -> dict[str, list[di
                     "color": color,
                     "cal": name,
                     "hhmm": hhmm,
+                    "day": key,
+                    "description": str(it.get("description") or ""),
+                    "id": str(it.get("id") or ""),
+                    "cal_id": str(cal.get("id") or ""),
+                    "writable": bool(cal.get("writable"))
+                    and str(cal.get("id") or "") != GC_KR_HOLIDAY,
                 }
             )
     return by
@@ -553,8 +596,31 @@ def _month_html(year: int, month: int, by_day: dict[str, list[dict]], today: dat
             for ev in (by_day.get(key) or [])[:4]:
                 label = html.escape((ev.get("hhmm") + " " if ev.get("hhmm") else "") + ev["title"])
                 col = html.escape(str(ev.get("color") or "#c5c9ce"))
+                xbtn = ""
+                title_html = f'<span class="gc-chip-t">{label}</span>'
+                if ev.get("id") and ev.get("cal_id"):
+                    ohref = html.escape(
+                        "?gc_ovc="
+                        + urllib.parse.quote(str(ev.get("cal_id")), safe="")
+                        + "&gc_ove="
+                        + urllib.parse.quote(str(ev.get("id")), safe=""),
+                        quote=True,
+                    )
+                    title_html = (
+                        f'<a class="gc-chip-t" href="{ohref}" title="메모 보기">{label}</a>'
+                    )
+                if ev.get("writable") and ev.get("id") and ev.get("cal_id"):
+                    href = html.escape(
+                        "?gc_xc="
+                        + urllib.parse.quote(str(ev.get("cal_id")), safe="")
+                        + "&gc_xe="
+                        + urllib.parse.quote(str(ev.get("id")), safe=""),
+                        quote=True,
+                    )
+                    xbtn = f'<a class="gc-x" href="{href}" title="삭제">×</a>'
                 chips.append(
-                    f'<div class="gc-chip" style="background:{col}22;border-left:3px solid {col}">{label}</div>'
+                    f'<div class="gc-chip" style="background:{col}22;border-left:3px solid {col}">'
+                    f"{title_html}{xbtn}</div>"
                 )
             more = len(by_day.get(key) or []) - 4
             if more > 0:
@@ -577,13 +643,95 @@ def _month_html(year: int, month: int, by_day: dict[str, list[dict]], today: dat
 .gc-num {{ font-size:12px; font-weight:500; margin-bottom:2px; }}
 .gc-sun, .gc-sun .gc-num {{ color:#d93025; }}
 .gc-sat, .gc-sat .gc-num {{ color:#1a73e8; }}
-.gc-chip {{ font-size:11px; line-height:1.25; padding:1px 4px; margin:1px 0; border-radius:2px;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+.gc-chip {{ font-size:11px; line-height:1.25; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
+  display:flex; align-items:center; gap:2px; overflow:hidden; }}
+.gc-chip-t {{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  color:inherit; text-decoration:none; cursor:pointer; }}
+.gc-chip-t:hover {{ text-decoration:underline; }}
+.gc-x {{ flex:0 0 auto; color:#80868b; text-decoration:none; font-size:13px; line-height:1;
+  padding:0 3px; border-radius:2px; }}
+.gc-x:hover {{ color:#d93025; background:#fce8e6; }}
 .gc-more {{ font-size:11px; color:#5f6368; }}
 </style>
 <div class="gc-wrap"><table class="gc-table"><thead><tr><th class="gc-wn"></th>{heads}</tr></thead>
 <tbody>{"".join(rows)}</tbody></table></div>
 """
+
+
+def _qp_one(name: str) -> str:
+    try:
+        qp = st.query_params
+        v = qp.get(name)
+        if isinstance(v, list):
+            v = v[0] if v else ""
+        return urllib.parse.unquote(str(v or "").strip())
+    except Exception:
+        return ""
+
+
+def _qp_pop(*names: str) -> None:
+    try:
+        qp = st.query_params
+        for name in names:
+            try:
+                del qp[name]
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _take_event_x_query() -> dict | None:
+    cal, eid = _qp_one("gc_xc"), _qp_one("gc_xe")
+    if not cal or not eid:
+        return None
+    _qp_pop("gc_xc", "gc_xe")
+    return {"cal": cal, "id": eid}
+
+
+def _take_event_open_query() -> dict | None:
+    cal, eid = _qp_one("gc_ovc"), _qp_one("gc_ove")
+    if not cal or not eid:
+        return None
+    _qp_pop("gc_ovc", "gc_ove")
+    return {"cal": cal, "id": eid}
+
+
+def _find_cached_event(cal_id: str, event_id: str) -> dict | None:
+    box = _gc_api_box()
+    for by in box.values():
+        if not isinstance(by, dict):
+            continue
+        for items in by.values():
+            if not isinstance(items, list):
+                continue
+            for ev in items:
+                if not isinstance(ev, dict):
+                    continue
+                if str(ev.get("cal_id")) == cal_id and str(ev.get("id")) == event_id:
+                    return ev
+    return None
+
+
+@st.dialog("일정 메모")
+def _event_memo_dialog() -> None:
+    ev = st.session_state.get("_gc_open_event") or {}
+    title = str(ev.get("title") or "일정")
+    when = str(ev.get("hhmm") or "")
+    day = str(ev.get("day") or "")
+    cal = str(ev.get("cal") or "")
+    note = str(ev.get("description") or "").strip()
+    st.markdown(f"**{html.escape(title)}**")
+    bits = [x for x in (day, when or "종일", cal) if x]
+    if bits:
+        st.caption(" · ".join(bits))
+    if note:
+        st.text(note)
+    else:
+        st.caption("메모 없음")
+    if st.button("닫기", key="gc_ov_close"):
+        st.session_state.pop("_gc_open_event", None)
+        st.rerun()
 
 
 def _consume_oauth_redirect() -> None:
@@ -726,10 +874,24 @@ def _gc_work_panel() -> None:
                 str(pending_ev.get("title") or ""),
                 day,
                 True,
+                str(pending_ev.get("notes") or ""),
             )
             box.pop(f"ev:{day.year}-{day.month:02d}", None)
+            st.session_state.pop("gc_ev_title", None)
+            st.session_state.pop("gc_ev_note", None)
         except Exception as e:
             st.error(f"일정 저장 실패: {e}")
+    pending_del = st.session_state.pop("_gc_pending_del_event", None)
+    if not isinstance(pending_del, dict):
+        pending_del = _take_event_x_query()
+    if isinstance(pending_del, dict) and pending_del.get("id"):
+        try:
+            delete_event(str(pending_del.get("cal") or "primary"), str(pending_del.get("id") or ""))
+            for k in list(box.keys()):
+                if str(k).startswith("ev:"):
+                    box.pop(k, None)
+        except Exception as e:
+            st.error(f"일정 삭제 실패: {e}")
 
     try:
         cals = _gc_cached_cals()
@@ -773,9 +935,25 @@ def _gc_work_panel() -> None:
     with left:
         by_day = _gc_cached_events(cals, y, m)
         st.markdown(_month_html(y, m, by_day, today), unsafe_allow_html=True)
+        opened = _take_event_open_query()
+        if opened:
+            found = _find_cached_event(opened["cal"], opened["id"])
+            st.session_state["_gc_open_event"] = found or {
+                "title": "일정",
+                "cal_id": opened["cal"],
+                "id": opened["id"],
+            }
+        if st.session_state.get("_gc_open_event"):
+            _event_memo_dialog()
         with st.expander("일정 추가", expanded=False):
             et = st.text_input("제목", key="gc_ev_title")
             ed = st.date_input("날짜", value=today, key="gc_ev_day")
+            en = st.text_area(
+                "메모",
+                key="gc_ev_note",
+                height=70,
+                placeholder="일정 메모 (클릭하면 팝업으로 보입니다)",
+            )
             cal_opts = {c["summary"]: c["id"] for c in cals} or {"기본": "primary"}
             pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
             if st.button("일정 저장", type="primary", key="gc_ev_save"):
@@ -787,6 +965,7 @@ def _gc_work_panel() -> None:
                         "cal": cal_opts[pick],
                         "title": title,
                         "day": ed,
+                        "notes": en or "",
                     }
                     st.rerun(scope="fragment")
     with right:

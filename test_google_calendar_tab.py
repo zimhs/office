@@ -70,7 +70,57 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn('type="tertiary"', src)
         self.assertNotIn('help="메모"', src)
         self.assertNotIn("st.popover", src)
-        self.assertNotIn("st.dialog", src)
+        self.assertIn("@st.dialog", src)
+        self.assertIn("delete_event", src)
+        self.assertIn("gc-x", src)
+        self.assertIn("_gc_pending_del_event", src)
+        self.assertIn("일정 저장", src)
+        self.assertIn("gc_ev_note", src)
+        self.assertIn('body["description"]', src)
+        self.assertIn("gc_ovc=", src)
+
+
+    def test_month_html_x_only_on_writable(self):
+        from datetime import date as d
+        html = gc._month_html(
+            2026,
+            10,
+            {
+                "2026-10-05": [
+                    {
+                        "title": "미팅",
+                        "color": "#1a73e8",
+                        "hhmm": "09:00",
+                        "id": "evt1",
+                        "cal_id": "user@gmail.com",
+                        "writable": True,
+                    }
+                ]
+            },
+            d(2026, 10, 5),
+        )
+        self.assertIn("gc-x", html)
+        self.assertIn("gc_xc=", html)
+        self.assertIn("×", html)
+        html_ro = gc._month_html(
+            2026,
+            10,
+            {
+                "2026-10-05": [
+                    {
+                        "title": "한글날",
+                        "color": "#d93025",
+                        "hhmm": "",
+                        "id": "hol1",
+                        "cal_id": gc.GC_KR_HOLIDAY,
+                        "writable": False,
+                    }
+                ]
+            },
+            d(2026, 10, 5),
+        )
+        self.assertNotIn('class="gc-x"', html_ro)
+        self.assertIn("gc_ovc=", html)
 
 
 class GoogleCalendarTokenPersistTest(unittest.TestCase):
