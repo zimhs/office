@@ -906,7 +906,7 @@ def _month_html(
 .gc-out {{ color:#bdc1c6; background:#fcfcfd; }}
 .gc-today .gc-num {{ background:#1a73e8; color:#fff; border-radius:50%; width:22px; height:22px;
   display:inline-flex; align-items:center; justify-content:center; }}
-.gc-sel {{ background:#e8f0fe; box-shadow:inset 0 0 0 2px #1a73e8; }}
+.gc-sel {{ background:#e8f0fe; }}
 .gc-sel:not(.gc-today) .gc-num {{ background:#d2e3fc; color:#174ea6; border-radius:50%; width:22px;
   height:22px; display:inline-flex; align-items:center; justify-content:center; }}
 .gc-num {{ font-size:12px; font-weight:500; margin-bottom:2px; }}
@@ -959,7 +959,7 @@ div[class*="st-key-gc_calgrid"] [data-testid="stColumn"] {
 }
 div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]) {
   background: #e8f0fe !important;
-  box-shadow: inset 0 0 0 2px #1a73e8 !important;
+  box-shadow: none !important;
 }
 div[class*="st-key-gc_calgrid"] [data-testid="stVerticalBlock"] {
   gap: 2px !important;
@@ -988,7 +988,8 @@ div[class*="st-key-gc_day_"] button {
   padding: 4px 4px 6px !important;
   font-size: 12px !important;
   font-weight: 500 !important;
-  border: 1px solid transparent !important;
+  border: none !important;
+  outline: none !important;
   background: transparent !important;
   color: inherit !important;
   box-shadow: none !important;
@@ -998,10 +999,17 @@ div[class*="st-key-gc_day_"] button {
   line-height: 1.25 !important;
   text-align: left !important;
 }
+div[class*="st-key-gc_day_"] button:focus,
+div[class*="st-key-gc_day_"] button:focus-visible,
+div[class*="st-key-gc_day_"] button:hover {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
 div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]),
 div[class*="st-key-gc_cellsel"] {
   background: #e8f0fe !important;
-  box-shadow: inset 0 0 0 2px #1a73e8 !important;
+  box-shadow: none !important;
 }
 </style>
 """,
@@ -1053,24 +1061,19 @@ div[class*="st-key-gc_cellsel"] {
                     rules = [
                         f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;}}"
                     ]
-                    if d == today and not is_sel:
-                        rules.append(
-                            f"div[class*='st-key-gc_day_{stamp}'] button{{"
-                            "box-shadow:inset 0 0 0 1.5px #1a73e8!important;}"
-                        )
                     if is_sel:
                         rules.append(
                             f"div[class*='st-key-gc_day_{stamp}'] button,"
                             f"div[class*='st-key-gc_cellsel_{stamp}']{{"
                             "background:#e8f0fe!important;color:#174ea6!important;"
-                            "box-shadow:inset 0 0 0 2px #1a73e8!important;}"
+                            "border:none!important;outline:none!important;box-shadow:none!important;}"
                         )
                     st.markdown("<style>" + "".join(rules) + "</style>", unsafe_allow_html=True)
                     with st.container(key=cell_key):
                         st.button(
                             "\n".join(lines),
                             key=f"gc_day_{stamp}",
-                            type="primary" if is_sel else "tertiary",
+                            type="tertiary",
                             width="stretch",
                             on_click=_gc_set_sel_day,
                             args=(d,),
