@@ -85,6 +85,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_render_month_grid", src)
         self.assertIn("gc_xd_", src)
         self.assertIn("_gc_pending_del_event", src)
+        self.assertIn("gc_day_", src)
+        self.assertIn("_gc_sel_day", src)
+        self.assertIn("gc-sel", src)
         self.assertNotIn("gc_ovc=", src)
         self.assertIn("일정 저장", src)
         self.assertIn('st.rerun(scope="fragment")', src)
@@ -146,6 +149,14 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertNotIn("<a ", html_ro)
         self.assertNotIn("class=\"gc-x\"", html_ro)
         self.assertIn("한글날", html_ro)
+        html_sel = gc._month_html(
+            2026,
+            10,
+            {},
+            d(2026, 10, 5),
+            selected=d(2026, 10, 12),
+        )
+        self.assertIn("gc-sel", html_sel)
 
     def test_month_cache_skips_google_fetch(self):
         cached = {"2026-10-05": [{"title": "미팅", "id": "e1"}]}
