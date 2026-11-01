@@ -952,23 +952,40 @@ def _render_month_grid(
         """
 <style>
 div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"],
-div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] {
+div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"],
+div[class*="st-key-gc_calhead"] .stHorizontalBlock,
+div[class*="st-key-gc_calgrid"] .stHorizontalBlock {
+  display: flex !important;
+  flex-wrap: nowrap !important;
   gap: 6px !important;
   margin-bottom: 6px !important;
+  overflow: hidden !important;
 }
-div[class*="st-key-gc_calhead"] [data-testid="stColumn"] {
+div[class*="st-key-gc_calhead"] [data-testid="stColumn"],
+div[class*="st-key-gc_calhead"] .stColumn {
   padding: 4px 2px !important;
   background: transparent !important;
   border: none !important;
+  min-width: 0 !important;
+  flex: 1 1 0 !important;
 }
-div[class*="st-key-gc_calgrid"] [data-testid="stColumn"] {
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"],
+div[class*="st-key-gc_calgrid"] .stColumn {
   border: 1px solid #eceff3;
   border-radius: 10px;
   min-height: 72px;
+  min-width: 0 !important;
+  flex: 1 1 0 !important;
   padding: 4px 2px !important;
   background: #fff;
 }
-div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] > div:first-child {
+div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"] > div:first-child,
+div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] > div:first-child,
+div[class*="st-key-gc_calhead"] .stHorizontalBlock > div:first-child,
+div[class*="st-key-gc_calgrid"] .stHorizontalBlock > div:first-child {
+  flex: 0 0 28px !important;
+  width: 28px !important;
+  max-width: 28px !important;
   background: transparent !important;
   border: none !important;
   border-radius: 0 !important;
