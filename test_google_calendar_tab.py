@@ -90,6 +90,10 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_set_sel_day", src)
         self.assertIn('st.session_state["gc_ev_day"] = day', src)
         self.assertIn("gc-sel", src)
+        self.assertIn("gc_cellpink", src)
+        self.assertIn("gc_celltoday", src)
+        self.assertIn("#fdecea", src)
+        self.assertIn("#e8f4ff", src)
         self.assertNotIn("gc_ovc=", src)
         self.assertIn("일정 저장", src)
         self.assertIn('st.rerun(scope="fragment")', src)
@@ -159,6 +163,27 @@ class GoogleCalendarTabTest(unittest.TestCase):
             selected=d(2026, 10, 12),
         )
         self.assertIn("gc-sel", html_sel)
+        self.assertIn("gc-today", html)
+        html_sun = gc._month_html(2026, 10, {}, d(2026, 10, 5))
+        self.assertIn("gc-sun", html_sun)
+        self.assertIn("#fdecea", html_sun)
+        html_hol = gc._month_html(
+            2026,
+            10,
+            {
+                "2026-10-09": [
+                    {
+                        "title": "한글날",
+                        "cal_id": gc.GC_KR_HOLIDAY,
+                        "writable": False,
+                    }
+                ]
+            },
+            d(2026, 10, 5),
+        )
+        self.assertIn("gc-hol", html_hol)
+        self.assertTrue(gc._gc_is_holiday_day([{"cal_id": gc.GC_KR_HOLIDAY}]))
+        self.assertFalse(gc._gc_is_holiday_day([{"cal_id": "user@gmail.com"}]))
 
     def test_month_cache_skips_google_fetch(self):
         cached = {"2026-10-05": [{"title": "미팅", "id": "e1"}]}

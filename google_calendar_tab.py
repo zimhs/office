@@ -73,6 +73,10 @@ def iso_week_label(week: list[date]) -> int:
     return int(week[3].isocalendar()[1])
 
 
+def _gc_is_holiday_day(items: list[dict] | None) -> bool:
+    return any(str((ev or {}).get("cal_id") or "") == GC_KR_HOLIDAY for ev in (items or []))
+
+
 def event_day_key(item: dict) -> str:
     start = (item or {}).get("start") or {}
     raw = str(start.get("date") or start.get("dateTime") or "")
@@ -877,6 +881,8 @@ def _month_html(
                 cls.append("gc-sun")
             if d.weekday() == 5:
                 cls.append("gc-sat")
+            if _gc_is_holiday_day(by_day.get(key)):
+                cls.append("gc-hol")
             chips = []
             for ev in (by_day.get(key) or [])[:4]:
                 label = html.escape((ev.get("hhmm") + " " if ev.get("hhmm") else "") + ev["title"])
@@ -903,15 +909,17 @@ def _month_html(
 .gc-table th {{ font-weight:500; font-size:12px; padding:8px 6px; text-align:center; color:#70757a; }}
 .gc-wn {{ width:36px; color:#80868b; font-size:11px; text-align:center; background:#fafafa; }}
 .gc-cell {{ height:92px; vertical-align:top; border:1px solid #e8eaed; padding:4px; }}
-.gc-out {{ color:#bdc1c6; background:#fcfcfd; }}
+.gc-out {{ color:#bdc1c6; }}
+.gc-today {{ background:#e8f4ff; }}
 .gc-today .gc-num {{ background:#1a73e8; color:#fff; border-radius:50%; width:22px; height:22px;
   display:inline-flex; align-items:center; justify-content:center; }}
 .gc-sel {{ background:#e8f0fe; }}
-.gc-sel:not(.gc-today) .gc-num {{ background:#d2e3fc; color:#174ea6; border-radius:50%; width:22px;
-  height:22px; display:inline-flex; align-items:center; justify-content:center; }}
+.gc-sun, .gc-sat, .gc-hol {{ background:#fdecea; }}
+.gc-today.gc-sun, .gc-today.gc-sat, .gc-today.gc-hol {{ background:#e8f4ff; }}
+.gc-sel.gc-sun, .gc-sel.gc-sat, .gc-sel.gc-hol {{ background:#e8f0fe; }}
 .gc-num {{ font-size:12px; font-weight:500; margin-bottom:2px; }}
-.gc-sun, .gc-sun .gc-num {{ color:#d93025; }}
-.gc-sat, .gc-sat .gc-num {{ color:#1a73e8; }}
+.gc-sun, .gc-sun .gc-num, .gc-hol, .gc-hol .gc-num {{ color:#d93025; }}
+.gc-sat, .gc-sat .gc-num {{ color:#c62828; }}
 .gc-chip {{ font-size:11px; line-height:1.25; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
   display:flex; align-items:center; gap:2px; overflow:hidden; }}
 .gc-chip-t {{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
@@ -960,6 +968,12 @@ div[class*="st-key-gc_calgrid"] [data-testid="stColumn"] {
 div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]) {
   background: #e8f0fe !important;
   box-shadow: none !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_celltoday"]) {
+  background: #e8f4ff !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellpink"]) {
+  background: #fdecea !important;
 }
 div[class*="st-key-gc_calgrid"] [data-testid="stVerticalBlock"] {
   gap: 2px !important;
@@ -1011,6 +1025,12 @@ div[class*="st-key-gc_cellsel"] {
   background: #e8f0fe !important;
   box-shadow: none !important;
 }
+div[class*="st-key-gc_celltoday"] {
+  background: #e8f4ff !important;
+}
+div[class*="st-key-gc_cellpink"] {
+  background: #fdecea !important;
+}
 </style>
 """,
         unsafe_allow_html=True,
@@ -1042,8 +1062,19 @@ div[class*="st-key-gc_cellsel"] {
                     iso = d.isoformat()
                     stamp = d.strftime("%Y%m%d")
                     is_sel = selected is not None and d == selected
-                    cell_key = f"gc_cellsel_{stamp}" if is_sel else f"gc_cell_{stamp}"
                     items = by_day.get(iso) or []
+                    is_hol = _gc_is_holiday_day(items)
+                    is_pink = (not is_sel) and (not (d == today)) and (
+                        d.weekday() >= 5 or is_hol
+                    )
+                    if is_sel:
+                        cell_key = f"gc_cellsel_{stamp}"
+                    elif d == today:
+                        cell_key = f"gc_celltoday_{stamp}"
+                    elif is_pink:
+                        cell_key = f"gc_cellpink_{stamp}"
+                    else:
+                        cell_key = f"gc_cell_{stamp}"
                     lines = [str(d.day)]
                     for ev in items[:4]:
                         lab = ((str(ev.get("hhmm") or "") + " ") if ev.get("hhmm") else "") + str(
@@ -1055,9 +1086,16 @@ div[class*="st-key-gc_cellsel"] {
                     more = len(items) - 4
                     if more > 0:
                         lines.append(f"+{more}")
-                    color = "#bdc1c6" if outside else (
-                        "#d93025" if d.weekday() == 6 else "#1a73e8" if d.weekday() == 5 else "#3c4043"
-                    )
+                    if outside:
+                        color = "#bdc1c6"
+                    elif d == today:
+                        color = "#174ea6"
+                    elif d.weekday() == 6 or is_hol:
+                        color = "#d93025"
+                    elif d.weekday() == 5:
+                        color = "#c62828"
+                    else:
+                        color = "#3c4043"
                     rules = [
                         f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;}}"
                     ]
@@ -1065,8 +1103,20 @@ div[class*="st-key-gc_cellsel"] {
                         rules.append(
                             f"div[class*='st-key-gc_day_{stamp}'] button,"
                             f"div[class*='st-key-gc_cellsel_{stamp}']{{"
-                            "background:#e8f0fe!important;color:#174ea6!important;"
+                            "background:#e8f0fe!important;"
                             "border:none!important;outline:none!important;box-shadow:none!important;}"
+                        )
+                    elif d == today:
+                        rules.append(
+                            f"div[class*='st-key-gc_day_{stamp}'] button,"
+                            f"div[class*='st-key-gc_celltoday_{stamp}']{{"
+                            "background:#e8f4ff!important;}"
+                        )
+                    elif is_pink:
+                        rules.append(
+                            f"div[class*='st-key-gc_day_{stamp}'] button,"
+                            f"div[class*='st-key-gc_cellpink_{stamp}']{{"
+                            "background:#fdecea!important;}"
                         )
                     st.markdown("<style>" + "".join(rules) + "</style>", unsafe_allow_html=True)
                     with st.container(key=cell_key):
