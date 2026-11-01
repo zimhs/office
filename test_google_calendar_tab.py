@@ -87,6 +87,8 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_pending_del_event", src)
         self.assertIn("gc_day_", src)
         self.assertIn("_gc_sel_day", src)
+        self.assertIn("_gc_set_sel_day", src)
+        self.assertIn('st.session_state["gc_ev_day"] = day', src)
         self.assertIn("gc-sel", src)
         self.assertNotIn("gc_ovc=", src)
         self.assertIn("일정 저장", src)

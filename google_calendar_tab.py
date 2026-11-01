@@ -928,10 +928,8 @@ def _gc_set_del_event(cal_id: str, event_id: str) -> None:
 
 
 def _gc_set_sel_day(day: date) -> None:
-    if st.session_state.get("_gc_sel_day") == day:
-        st.session_state["_gc_pending_sel_day"] = ""
-    else:
-        st.session_state["_gc_pending_sel_day"] = day
+    st.session_state["_gc_sel_day"] = day
+    st.session_state["gc_ev_day"] = day
 
 
 def _render_month_grid(
@@ -959,6 +957,10 @@ div[class*="st-key-gc_calgrid"] [data-testid="stColumn"] {
   padding: 4px 3px !important;
   background: #fff;
 }
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]) {
+  background: #e8f0fe !important;
+  box-shadow: inset 0 0 0 2px #1a73e8 !important;
+}
 div[class*="st-key-gc_calgrid"] [data-testid="stVerticalBlock"] {
   gap: 2px !important;
 }
@@ -980,21 +982,26 @@ div[class*="st-key-gc_chiprow_"] [data-testid="stHorizontalBlock"] {
   gap: 2px !important;
 }
 div[class*="st-key-gc_day_"] button {
-  min-height: 22px !important;
-  height: 22px !important;
-  min-width: 22px !important;
-  padding: 0 5px !important;
+  min-height: 88px !important;
+  height: 100% !important;
+  width: 100% !important;
+  padding: 4px 4px 6px !important;
   font-size: 12px !important;
   font-weight: 500 !important;
-  border: none !important;
+  border: 1px solid transparent !important;
   background: transparent !important;
   color: inherit !important;
   box-shadow: none !important;
+  justify-content: flex-start !important;
+  align-items: flex-start !important;
+  white-space: pre-line !important;
+  line-height: 1.25 !important;
+  text-align: left !important;
 }
-div[class*="st-key-gc_cellsel_"] {
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]),
+div[class*="st-key-gc_cellsel"] {
   background: #e8f0fe !important;
-  box-shadow: inset 0 0 0 2px #1a73e8;
-  border-radius: 2px;
+  box-shadow: inset 0 0 0 2px #1a73e8 !important;
 }
 </style>
 """,
@@ -1025,75 +1032,61 @@ div[class*="st-key-gc_cellsel_"] {
                 with cols[i + 1]:
                     outside = d.month != month
                     iso = d.isoformat()
+                    stamp = d.strftime("%Y%m%d")
                     is_sel = selected is not None and d == selected
-                    cell_key = f"gc_cellsel_{iso}" if is_sel else f"gc_cell_{iso}"
-                    with st.container(key=cell_key):
-                        color = "#bdc1c6" if outside else (
-                            "#d93025" if d.weekday() == 6 else "#1a73e8" if d.weekday() == 5 else "#3c4043"
+                    cell_key = f"gc_cellsel_{stamp}" if is_sel else f"gc_cell_{stamp}"
+                    items = by_day.get(iso) or []
+                    lines = [str(d.day)]
+                    for ev in items[:4]:
+                        lab = ((str(ev.get("hhmm") or "") + " ") if ev.get("hhmm") else "") + str(
+                            ev.get("title") or ""
                         )
-                        if d == today:
-                            st.markdown(
-                                f"<style>div[class*='st-key-gc_day_{iso}'] button {{"
-                                "background:#1a73e8 !important;color:#fff !important;"
-                                "border-radius:50% !important;}}</style>",
-                                unsafe_allow_html=True,
-                            )
-                        elif is_sel:
-                            st.markdown(
-                                f"<style>div[class*='st-key-gc_day_{iso}'] button {{"
-                                "background:#d2e3fc !important;color:#174ea6 !important;"
-                                "border-radius:50% !important;}}</style>",
-                                unsafe_allow_html=True,
-                            )
-                        else:
-                            st.markdown(
-                                f"<style>div[class*='st-key-gc_day_{iso}'] button {{"
-                                f"color:{color} !important;}}</style>",
-                                unsafe_allow_html=True,
-                            )
+                        if len(lab) > 16:
+                            lab = lab[:15] + "…"
+                        lines.append(lab or "(일정)")
+                    more = len(items) - 4
+                    if more > 0:
+                        lines.append(f"+{more}")
+                    color = "#bdc1c6" if outside else (
+                        "#d93025" if d.weekday() == 6 else "#1a73e8" if d.weekday() == 5 else "#3c4043"
+                    )
+                    rules = [
+                        f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;}}"
+                    ]
+                    if d == today and not is_sel:
+                        rules.append(
+                            f"div[class*='st-key-gc_day_{stamp}'] button{{"
+                            "box-shadow:inset 0 0 0 1.5px #1a73e8!important;}"
+                        )
+                    if is_sel:
+                        rules.append(
+                            f"div[class*='st-key-gc_day_{stamp}'] button,"
+                            f"div[class*='st-key-gc_cellsel_{stamp}']{{"
+                            "background:#e8f0fe!important;color:#174ea6!important;"
+                            "box-shadow:inset 0 0 0 2px #1a73e8!important;}"
+                        )
+                    st.markdown("<style>" + "".join(rules) + "</style>", unsafe_allow_html=True)
+                    with st.container(key=cell_key):
                         st.button(
-                            str(d.day),
-                            key=f"gc_day_{iso}",
-                            type="tertiary",
-                            width="content",
+                            "\n".join(lines),
+                            key=f"gc_day_{stamp}",
+                            type="primary" if is_sel else "tertiary",
+                            width="stretch",
                             on_click=_gc_set_sel_day,
                             args=(d,),
                         )
-                        items = by_day.get(iso) or []
                         for ev in items[:4]:
                             eid = str(ev.get("id") or "")
                             cid = str(ev.get("cal_id") or "")
-                            lab = html.escape(
-                                ((str(ev.get("hhmm") or "") + " ") if ev.get("hhmm") else "")
-                                + str(ev.get("title") or "")
-                            )
-                            col = html.escape(str(ev.get("color") or "#c5c9ce"))
-                            k = f"{iso}_{eid[-16:] or lab}"
-                            chip = (
-                                f'<div class="gc-chip" style="background:{col}22;border-left:3px solid {col};'
-                                "font-size:11px;line-height:1.25;padding:1px 4px;border-radius:2px;"
-                                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
-                                f"{lab}</div>"
-                            )
                             if ev.get("writable") and eid and cid:
-                                with st.container(horizontal=True, gap="small", key=f"gc_chiprow_{k}"):
-                                    st.markdown(chip, unsafe_allow_html=True)
-                                    st.button(
-                                        "×",
-                                        key=f"gc_xd_{k}",
-                                        type="tertiary",
-                                        width="content",
-                                        on_click=_gc_set_del_event,
-                                        args=(cid, eid),
-                                    )
-                            else:
-                                st.markdown(chip, unsafe_allow_html=True)
-                        more = len(items) - 4
-                        if more > 0:
-                            st.markdown(
-                                f'<div style="font-size:11px;color:#5f6368">+{more}</div>',
-                                unsafe_allow_html=True,
-                            )
+                                st.button(
+                                    "×",
+                                    key=f"gc_xd_{stamp}_{eid[-16:]}",
+                                    type="tertiary",
+                                    width="content",
+                                    on_click=_gc_set_del_event,
+                                    args=(cid, eid),
+                                )
 
 
 def _qp_pop(*names: str) -> None:
@@ -1199,12 +1192,8 @@ def _gc_cal_panel() -> None:
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
 
-    pending_sel = st.session_state.pop("_gc_pending_sel_day", None)
-    if pending_sel == "":
-        st.session_state.pop("_gc_sel_day", None)
-    elif isinstance(pending_sel, date):
-        st.session_state["_gc_sel_day"] = pending_sel
-        st.session_state["gc_ev_day"] = pending_sel
+    if "gc_ev_day" not in st.session_state:
+        st.session_state["gc_ev_day"] = today
 
     pending_ev = st.session_state.pop("_gc_pending_event", None)
     if isinstance(pending_ev, dict):
@@ -1281,7 +1270,7 @@ def _gc_cal_panel() -> None:
     )
     with st.expander("일정 추가", expanded=False):
         et = st.text_input("제목", key="gc_ev_title")
-        ed = st.date_input("날짜", value=today, key="gc_ev_day")
+        ed = st.date_input("날짜", key="gc_ev_day")
         cal_opts = {c["summary"]: c["id"] for c in cals} or {"기본": "primary"}
         pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
         if st.button("일정 저장", type="primary", key="gc_ev_save"):
