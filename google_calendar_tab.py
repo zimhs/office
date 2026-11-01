@@ -905,10 +905,10 @@ def _month_html(
     return f"""
 <style>
 .gc-wrap {{ font-family: "Google Sans", "Noto Sans KR", system-ui, sans-serif; color:#3c4043; }}
-.gc-table {{ width:100%; border-collapse:collapse; table-layout:fixed; background:#fff; }}
+.gc-table {{ width:100%; border-collapse:separate; border-spacing:6px; table-layout:fixed; background:transparent; }}
 .gc-table th {{ font-weight:500; font-size:12px; padding:8px 6px; text-align:center; color:#70757a; }}
-.gc-wn {{ width:36px; color:#80868b; font-size:11px; text-align:center; background:#fafafa; }}
-.gc-cell {{ height:92px; vertical-align:top; border:1px solid #e8eaed; padding:4px; }}
+.gc-wn {{ width:36px; color:#80868b; font-size:11px; text-align:center; background:transparent; border:none; }}
+.gc-cell {{ height:72px; vertical-align:top; border:1px solid #eceff3; border-radius:10px; padding:8px 4px; background:#fff; }}
 .gc-out {{ color:#bdc1c6; }}
 .gc-today {{ background:#e8f4ff; }}
 .gc-today .gc-num {{ background:#1a73e8; color:#fff; border-radius:50%; width:22px; height:22px;
@@ -953,17 +953,27 @@ def _render_month_grid(
 <style>
 div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"],
 div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] {
-  gap: 0 !important;
-  margin-bottom: 0 !important;
+  gap: 6px !important;
+  margin-bottom: 6px !important;
 }
 div[class*="st-key-gc_calhead"] [data-testid="stColumn"] {
-  padding: 6px 4px !important;
+  padding: 4px 2px !important;
+  background: transparent !important;
+  border: none !important;
 }
 div[class*="st-key-gc_calgrid"] [data-testid="stColumn"] {
-  border: 1px solid #e8eaed;
-  min-height: 92px;
-  padding: 4px 3px !important;
+  border: 1px solid #eceff3;
+  border-radius: 10px;
+  min-height: 72px;
+  padding: 4px 2px !important;
   background: #fff;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] > div:first-child {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  min-height: 0 !important;
 }
 div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]) {
   background: #e8f0fe !important;
@@ -996,22 +1006,23 @@ div[class*="st-key-gc_chiprow_"] [data-testid="stHorizontalBlock"] {
   gap: 2px !important;
 }
 div[class*="st-key-gc_day_"] button {
-  min-height: 88px !important;
+  min-height: 64px !important;
   height: 100% !important;
   width: 100% !important;
-  padding: 4px 4px 6px !important;
-  font-size: 12px !important;
+  padding: 8px 4px 6px !important;
+  font-size: 13px !important;
   font-weight: 500 !important;
   border: none !important;
   outline: none !important;
+  border-radius: 10px !important;
   background: transparent !important;
   color: inherit !important;
   box-shadow: none !important;
   justify-content: flex-start !important;
-  align-items: flex-start !important;
+  align-items: center !important;
   white-space: pre-line !important;
   line-height: 1.25 !important;
-  text-align: left !important;
+  text-align: center !important;
 }
 div[class*="st-key-gc_day_"] button:focus,
 div[class*="st-key-gc_day_"] button:focus-visible,
