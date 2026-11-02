@@ -491,8 +491,12 @@ def list_events(cal_id: str, start: date, end: date, token: str = "") -> list[di
     return list(data.get("items") or [])
 
 
-def insert_event(cal_id: str, title: str, day: date, all_day: bool) -> dict:
+def insert_event(
+    cal_id: str, title: str, day: date, all_day: bool, notes: str = ""
+) -> dict:
     body: dict[str, Any] = {"summary": title}
+    if str(notes or "").strip():
+        body["description"] = str(notes).strip()
     if all_day:
         body["start"] = {"date": day.isoformat()}
         body["end"] = {"date": (day + timedelta(days=1)).isoformat()}
@@ -625,23 +629,91 @@ def _merge_event_days(
     return out
 
 
-def _gc_cached_events(cals: list[dict], year: int, month: int) -> dict[str, list[dict]]:
+def _gc_cached_events(
+    cals: list[dict], year: int, month: int, *, force: bool = False
+) -> dict[str, list[dict]]:
     box = _gc_api_box()
     key = _ev_key(year, month)
     now = datetime.now(timezone.utc).timestamp()
     cached = box.get(key)
     if cached is None:
         cached = _EV_MEM.get(key)
-    if cached is not None:
+    if cached is not None and not force:
         box[key] = cached
         if key + ":at" not in box:
             box[key + ":at"] = now
         return cached
     fresh = _events_by_day(cals, year, month) if cals else {}
-    box[key] = fresh
+    data = _merge_event_days(cached or {}, fresh) if cached else fresh
+    box[key] = data
     box[key + ":at"] = now
-    _EV_MEM[key] = fresh
-    return fresh
+    _EV_MEM[key] = data
+    return data
+
+
+def _gc_sync_google(year: int, month: int) -> tuple[int, int]:
+    """대시보드↔구글 캘린더·할 일을 한 번에 맞춘다. (일정 수, 할 일 수)"""
+    box = _gc_api_box()
+    try:
+        box["cals"] = list_calendars()
+    except Exception:
+        pass
+    cals = list(box.get("cals") or [])
+    key = _ev_key(year, month)
+    cached = dict(box.get(key) or _EV_MEM.get(key) or {})
+    pushed: dict[str, list[dict]] = {}
+    for day_k, items in cached.items():
+        row: list[dict] = []
+        for ev in items or []:
+            eid = str(ev.get("id") or "")
+            writable = bool(ev.get("writable"))
+            local = eid.startswith("local-") or bool(ev.get("local_only"))
+            if writable and local:
+                try:
+                    day = date.fromisoformat(str(ev.get("day") or day_k)[:10])
+                    created = insert_event(
+                        str(ev.get("cal_id") or "primary"),
+                        str(ev.get("title") or ""),
+                        day,
+                        True,
+                        str(ev.get("description") or ""),
+                    )
+                    meta = {
+                        "id": ev.get("cal_id"),
+                        "color": ev.get("color"),
+                        "summary": ev.get("cal"),
+                        "writable": True,
+                    }
+                    for c in cals:
+                        if str(c.get("id")) == str(ev.get("cal_id")):
+                            meta = c
+                            break
+                    row.append(_event_chip(created, meta) or ev)
+                except Exception:
+                    row.append(ev)
+            else:
+                row.append(ev)
+        pushed[day_k] = row
+    fresh = _events_by_day(cals, year, month) if cals else {}
+    merged = _merge_event_days(pushed, fresh)
+    now = datetime.now(timezone.utc).timestamp()
+    box[key] = merged
+    box[key + ":at"] = now
+    _EV_MEM[key] = merged
+    try:
+        box["tlists"] = list_tasklists()
+    except Exception:
+        pass
+    tlists = list(box.get("tlists") or [])
+    lid = str(st.session_state.get("_gc_lid") or "")
+    if not lid and tlists:
+        lid = str(tlists[0].get("id") or "")
+        st.session_state["_gc_lid"] = lid
+    n_tasks = 0
+    if lid:
+        n_tasks = len(merge_tasks_with_google(lid))
+    n_ev = sum(len(v or []) for v in merged.values())
+    return n_ev, n_tasks
 
 
 def _gc_cache_add_event(day: date, chip: dict) -> None:
@@ -1303,20 +1375,25 @@ def _gc_cal_panel() -> None:
             if str(c.get("id")) == cal_id:
                 cal_meta = c
                 break
+        notes = str(pending_ev.get("notes") or "")
         chip = {
             "title": str(pending_ev.get("title") or ""),
             "color": cal_meta.get("color") or "#1a73e8",
             "cal": cal_meta.get("summary") or "",
             "hhmm": "",
             "day": day.isoformat(),
+            "description": notes,
             "id": "local-" + secrets.token_hex(4),
             "cal_id": cal_id,
             "writable": True,
         }
         _gc_cache_add_event(day, chip)
         st.session_state.pop("gc_ev_title", None)
+        st.session_state.pop("gc_ev_note", None)
         try:
-            created = insert_event(cal_id, str(pending_ev.get("title") or ""), day, True)
+            created = insert_event(
+                cal_id, str(pending_ev.get("title") or ""), day, True, notes
+            )
             real = _event_chip(created, cal_meta)
             if real:
                 _gc_cache_remove_event(str(chip.get("cal_id")), str(chip.get("id")))
@@ -1370,6 +1447,7 @@ def _gc_cal_panel() -> None:
     with st.expander("일정 추가", expanded=False):
         et = st.text_input("제목", key="gc_ev_title")
         ed = st.date_input("날짜", key="gc_ev_day")
+        en = st.text_area("메모", key="gc_ev_note", height=70, placeholder="일정 메모")
         cal_opts = {c["summary"]: c["id"] for c in cals} or {"기본": "primary"}
         pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
         if st.button("일정 저장", type="primary", key="gc_ev_save"):
@@ -1381,6 +1459,7 @@ def _gc_cal_panel() -> None:
                     "cal": cal_opts[pick],
                     "title": title,
                     "day": ed,
+                    "notes": en or "",
                 }
                 st.rerun(scope="fragment")
 
@@ -1576,6 +1655,24 @@ div[class*="st-key-gc_ns_"] button {
 
 
 def _gc_work_panel() -> None:
+    today = datetime.now(_TZ).date()
+    y = int(st.session_state.get("gc_year") or today.year)
+    m = int(st.session_state.get("gc_month") or today.month)
+    bar = st.columns([1.35, 6.2])
+    with bar[0]:
+        if st.button("연동실행", type="primary", key="gc_sync_run"):
+            try:
+                n_ev, n_tk = _gc_sync_google(y, m)
+                st.session_state["_gc_sync_msg"] = (
+                    f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
+                )
+            except Exception as e:
+                st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
+            st.rerun()
+    with bar[1]:
+        msg = st.session_state.pop("_gc_sync_msg", None)
+        if msg:
+            st.caption(msg)
     left, right = st.columns([3.15, 1.12], gap="small")
     with left:
         _gc_cal_panel()
