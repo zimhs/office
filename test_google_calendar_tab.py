@@ -96,6 +96,7 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("#e8f4ff", src)
         self.assertIn("border-radius: 10px", src)
         self.assertIn("flex-wrap: nowrap", src)
+        self.assertIn("gc-dow-lab", src)
         self.assertNotIn("gc_ovc=", src)
         self.assertIn("일정 저장", src)
         self.assertIn('st.rerun(scope="fragment")', src)

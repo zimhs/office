@@ -952,8 +952,14 @@ def _render_month_grid(
         """
 <style>
 div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"],
+div[class*="st-key-gc_calhead"] .stHorizontalBlock {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 6px !important;
+  margin-bottom: 4px !important;
+  overflow: visible !important;
+}
 div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"],
-div[class*="st-key-gc_calhead"] .stHorizontalBlock,
 div[class*="st-key-gc_calgrid"] .stHorizontalBlock {
   display: flex !important;
   flex-wrap: nowrap !important;
@@ -963,11 +969,24 @@ div[class*="st-key-gc_calgrid"] .stHorizontalBlock {
 }
 div[class*="st-key-gc_calhead"] [data-testid="stColumn"],
 div[class*="st-key-gc_calhead"] .stColumn {
-  padding: 4px 2px !important;
+  padding: 2px 2px 6px !important;
   background: transparent !important;
   border: none !important;
   min-width: 0 !important;
+  min-height: 1.6rem !important;
   flex: 1 1 0 !important;
+  overflow: visible !important;
+}
+div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"],
+div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"] p,
+div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"] div,
+div[class*="st-key-gc_calhead"] .gc-dow-lab {
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  line-height: 1.4 !important;
+  text-align: center !important;
+  overflow: visible !important;
+  margin: 0 !important;
 }
 div[class*="st-key-gc_calgrid"] [data-testid="stColumn"],
 div[class*="st-key-gc_calgrid"] .stColumn {
@@ -1071,8 +1090,7 @@ div[class*="st-key-gc_cellpink"] {
             color = "#d93025" if i == 0 else "#1a73e8" if i == 6 else "#70757a"
             with head[i + 1]:
                 st.markdown(
-                    f'<div style="font-size:12px;font-weight:500;color:{color};'
-                    f'text-align:center">{name}</div>',
+                    f'<div class="gc-dow-lab" style="color:{color}">{name}</div>',
                     unsafe_allow_html=True,
                 )
     with st.container(key="gc_calgrid"):
