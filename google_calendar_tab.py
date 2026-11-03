@@ -1012,6 +1012,12 @@ def _gc_set_sel_day(day: date) -> None:
     st.session_state["gc_ev_day"] = day
 
 
+def _gc_set_sel_event(day: date, event_id: str) -> None:
+    st.session_state["_gc_sel_day"] = day
+    st.session_state["gc_ev_day"] = day
+    st.session_state["_gc_sel_event"] = str(event_id or "")
+
+
 def _render_month_grid(
     year: int,
     month: int,
@@ -1064,7 +1070,7 @@ div[class*="st-key-gc_calgrid"] [data-testid="stColumn"],
 div[class*="st-key-gc_calgrid"] .stColumn {
   border: 1px solid #eceff3;
   border-radius: 10px;
-  min-height: 72px;
+  min-height: 88px;
   min-width: 0 !important;
   flex: 1 1 0 !important;
   padding: 4px 2px !important;
@@ -1100,36 +1106,83 @@ div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"] p,
 div[class*="st-key-gc_calgrid"] [data-testid="stMarkdownContainer"] p {
   margin: 0 !important;
 }
+div[class*="st-key-gc_chiprow_"],
+div[class*="st-key-gc_evsel_"] {
+  position: relative !important;
+}
+div[class*="st-key-gc_xd_"] {
+  position: absolute !important;
+  top: 0 !important;
+  right: 1px !important;
+  z-index: 3 !important;
+  width: 1.2rem !important;
+}
 div[class*="st-key-gc_xd_"] button {
-  min-height: 1.15rem !important;
-  height: 1.15rem !important;
-  min-width: 1.1rem !important;
-  padding: 0 3px !important;
+  min-height: 1.3rem !important;
+  height: 1.3rem !important;
+  min-width: 1.15rem !important;
+  width: 1.15rem !important;
+  padding: 0 !important;
   font-size: 13px !important;
-  color: #80868b !important;
+  line-height: 1 !important;
+  color: #5f6368 !important;
   border: none !important;
   background: transparent !important;
 }
-div[class*="st-key-gc_chiprow_"] [data-testid="stHorizontalBlock"] {
-  gap: 2px !important;
+div[class*="st-key-gc_chiprow_"] [data-testid="stHorizontalBlock"],
+div[class*="st-key-gc_evsel_"] [data-testid="stHorizontalBlock"] {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 0 !important;
+  align-items: center !important;
 }
-div[class*="st-key-gc_day_"] button {
-  min-height: 64px !important;
-  height: 100% !important;
+div[class*="st-key-gc_evlist_"] {
+  max-height: 96px !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding: 0 2px 4px !important;
+}
+div[class*="st-key-gc_chiprow_"] div[class*="st-key-gc_evpick_"] button,
+div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
+  padding-right: 16px !important;
+}
+div[class*="st-key-gc_evpick_"] button {
+  min-height: 1.3rem !important;
+  height: 1.3rem !important;
   width: 100% !important;
-  padding: 8px 4px 6px !important;
-  font-size: 13px !important;
+  padding: 0 4px !important;
+  font-size: 11px !important;
   font-weight: 500 !important;
   border: none !important;
   outline: none !important;
-  border-radius: 10px !important;
+  border-radius: 6px !important;
+  background: #e8f0fe !important;
+  color: #174ea6 !important;
+  box-shadow: none !important;
+  justify-content: flex-start !important;
+  text-align: left !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+}
+div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
+  background: #d2e3fc !important;
+}
+div[class*="st-key-gc_day_"] button {
+  min-height: 1.45rem !important;
+  height: 1.45rem !important;
+  width: 100% !important;
+  padding: 0 2px !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  border: none !important;
+  outline: none !important;
+  border-radius: 8px !important;
   background: transparent !important;
   color: inherit !important;
   box-shadow: none !important;
-  justify-content: flex-start !important;
+  justify-content: center !important;
   align-items: center !important;
-  white-space: pre-line !important;
-  line-height: 1.25 !important;
+  line-height: 1.2 !important;
   text-align: center !important;
 }
 div[class*="st-key-gc_day_"] button:focus,
@@ -1193,17 +1246,6 @@ div[class*="st-key-gc_cellpink"] {
                         cell_key = f"gc_cellpink_{stamp}"
                     else:
                         cell_key = f"gc_cell_{stamp}"
-                    lines = [str(d.day)]
-                    for ev in items[:4]:
-                        lab = ((str(ev.get("hhmm") or "") + " ") if ev.get("hhmm") else "") + str(
-                            ev.get("title") or ""
-                        )
-                        if len(lab) > 16:
-                            lab = lab[:15] + "…"
-                        lines.append(lab or "(일정)")
-                    more = len(items) - 4
-                    if more > 0:
-                        lines.append(f"+{more}")
                     if outside:
                         color = "#bdc1c6"
                     elif d == today:
@@ -1239,25 +1281,50 @@ div[class*="st-key-gc_cellpink"] {
                     st.markdown("<style>" + "".join(rules) + "</style>", unsafe_allow_html=True)
                     with st.container(key=cell_key):
                         st.button(
-                            "\n".join(lines),
+                            str(d.day),
                             key=f"gc_day_{stamp}",
                             type="tertiary",
                             width="stretch",
                             on_click=_gc_set_sel_day,
                             args=(d,),
                         )
-                        for ev in items[:4]:
-                            eid = str(ev.get("id") or "")
-                            cid = str(ev.get("cal_id") or "")
-                            if ev.get("writable") and eid and cid:
-                                st.button(
-                                    "×",
-                                    key=f"gc_xd_{stamp}_{eid[-16:]}",
-                                    type="tertiary",
-                                    width="content",
-                                    on_click=_gc_set_del_event,
-                                    args=(cid, eid),
-                                )
+                        if items:
+                            sel_eid = str(st.session_state.get("_gc_sel_event") or "")
+                            with st.container(key=f"gc_evlist_{stamp}"):
+                                for idx, ev in enumerate(items):
+                                    eid = str(ev.get("id") or "")
+                                    cid = str(ev.get("cal_id") or "")
+                                    lab = (
+                                        (str(ev.get("hhmm") or "") + " ")
+                                        if ev.get("hhmm")
+                                        else ""
+                                    ) + str(ev.get("title") or "")
+                                    if len(lab) > 14:
+                                        lab = lab[:13] + "…"
+                                    lab = lab or "(일정)"
+                                    chip_key = (
+                                        f"gc_evsel_{stamp}_{idx}"
+                                        if eid and eid == sel_eid
+                                        else f"gc_chiprow_{stamp}_{idx}"
+                                    )
+                                    with st.container(key=chip_key):
+                                        st.button(
+                                            lab,
+                                            key=f"gc_evpick_{stamp}_{idx}",
+                                            type="tertiary",
+                                            width="stretch",
+                                            on_click=_gc_set_sel_event,
+                                            args=(d, eid or iso),
+                                        )
+                                        if ev.get("writable") and eid and cid:
+                                            st.button(
+                                                "×",
+                                                key=f"gc_xd_{stamp}_{idx}",
+                                                type="tertiary",
+                                                width="content",
+                                                on_click=_gc_set_del_event,
+                                                args=(cid, eid),
+                                            )
 
 
 def _qp_pop(*names: str) -> None:
