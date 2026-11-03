@@ -1225,12 +1225,18 @@ div[class*="st-key-gc_chiprow_"] div[class*="st-key-gc_evpick_"] button,
 div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   padding-right: 16px !important;
 }
+div[class*="st-key-gc_evpick_"] button,
+div[class*="st-key-gc_evpick_"] button p,
+div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],
+div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p {
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+}
 div[class*="st-key-gc_evpick_"] button {
   min-height: 1.2rem !important;
   height: 1.2rem !important;
   width: 100% !important;
   padding: 0 4px !important;
-  font-size: 11px !important;
   font-weight: 400 !important;
   border: none !important;
   outline: none !important;
@@ -1796,6 +1802,13 @@ div[class*="st-key-gc_ns_"] button {
   line-height: 1.2 !important;
   white-space: nowrap !important;
   border-radius: 6px !important;
+}
+div[class*="st-key-gc_td_"] p,
+div[class*="st-key-gc_td_"] label,
+div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"],
+div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
+  font-size: 11px !important;
+  line-height: 1.2 !important;
 }
 </style>
 """,
