@@ -1284,8 +1284,47 @@ div[class*="st-key-gc_cellpink"] {
                     f'<div class="gc-dow-lab" style="color:{color}">{name}</div>',
                     unsafe_allow_html=True,
                 )
+    weeks = month_weeks(year, month)
+    day_rules: list[str] = []
+    planned: list[list[tuple]] = []
+    for week in weeks:
+        row = []
+        for d in week:
+            iso = d.isoformat()
+            stamp = d.strftime("%Y%m%d")
+            is_sel = selected is not None and d == selected
+            items = by_day.get(iso) or []
+            is_hol = _gc_is_holiday_day(items)
+            is_pink = (not is_sel) and (d != today) and (d.weekday() >= 5 or is_hol)
+            if is_sel:
+                bg = "#e8f0fe"
+            elif d == today:
+                bg = "#e8f4ff"
+            elif is_pink:
+                bg = "#fdecea"
+            else:
+                bg = "#fff"
+            if d.month != month:
+                color = "#bdc1c6"
+            elif d == today:
+                color = "#174ea6"
+            elif d.weekday() == 6 or is_hol:
+                color = "#d93025"
+            elif d.weekday() == 5:
+                color = "#c62828"
+            else:
+                color = "#3c4043"
+            day_rules.append(
+                f"div[class*='st-key-gc_cell_{stamp}']{{background:{bg}!important;}}"
+                f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;"
+                "border:none!important;outline:none!important;box-shadow:none!important;}}"
+            )
+            row.append((d, stamp, items, iso))
+        planned.append(row)
+    if day_rules:
+        st.markdown("<style>" + "".join(day_rules) + "</style>", unsafe_allow_html=True)
     with st.container(key="gc_calgrid"):
-        for week in month_weeks(year, month):
+        for week, row in zip(weeks, planned):
             cols = st.columns([0.38] + [1] * 7, gap=None, vertical_alignment="top")
             with cols[0]:
                 st.markdown(
@@ -1293,59 +1332,9 @@ div[class*="st-key-gc_cellpink"] {
                     f'padding-top:4px">{iso_week_label(week)}</div>',
                     unsafe_allow_html=True,
                 )
-            for i, d in enumerate(week):
+            for i, (d, stamp, items, iso) in enumerate(row):
                 with cols[i + 1]:
-                    outside = d.month != month
-                    iso = d.isoformat()
-                    stamp = d.strftime("%Y%m%d")
-                    is_sel = selected is not None and d == selected
-                    items = by_day.get(iso) or []
-                    is_hol = _gc_is_holiday_day(items)
-                    is_pink = (not is_sel) and (not (d == today)) and (
-                        d.weekday() >= 5 or is_hol
-                    )
-                    if is_sel:
-                        cell_key = f"gc_cellsel_{stamp}"
-                    elif d == today:
-                        cell_key = f"gc_celltoday_{stamp}"
-                    elif is_pink:
-                        cell_key = f"gc_cellpink_{stamp}"
-                    else:
-                        cell_key = f"gc_cell_{stamp}"
-                    if outside:
-                        color = "#bdc1c6"
-                    elif d == today:
-                        color = "#174ea6"
-                    elif d.weekday() == 6 or is_hol:
-                        color = "#d93025"
-                    elif d.weekday() == 5:
-                        color = "#c62828"
-                    else:
-                        color = "#3c4043"
-                    rules = [
-                        f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;}}"
-                    ]
-                    if is_sel:
-                        rules.append(
-                            f"div[class*='st-key-gc_day_{stamp}'] button,"
-                            f"div[class*='st-key-gc_cellsel_{stamp}']{{"
-                            "background:#e8f0fe!important;"
-                            "border:none!important;outline:none!important;box-shadow:none!important;}"
-                        )
-                    elif d == today:
-                        rules.append(
-                            f"div[class*='st-key-gc_day_{stamp}'] button,"
-                            f"div[class*='st-key-gc_celltoday_{stamp}']{{"
-                            "background:#e8f4ff!important;}"
-                        )
-                    elif is_pink:
-                        rules.append(
-                            f"div[class*='st-key-gc_day_{stamp}'] button,"
-                            f"div[class*='st-key-gc_cellpink_{stamp}']{{"
-                            "background:#fdecea!important;}"
-                        )
-                    st.markdown("<style>" + "".join(rules) + "</style>", unsafe_allow_html=True)
-                    with st.container(key=cell_key):
+                    with st.container(key=f"gc_cell_{stamp}"):
                         st.button(
                             str(d.day),
                             key=f"gc_day_{stamp}",
@@ -1355,7 +1344,6 @@ div[class*="st-key-gc_cellpink"] {
                             args=(d,),
                         )
                         if items:
-                            sel_eid = str(st.session_state.get("_gc_sel_event") or "")
                             with st.container(key=f"gc_evlist_{stamp}"):
                                 for idx, ev in enumerate(items):
                                     eid = str(ev.get("id") or "")
@@ -1368,12 +1356,7 @@ div[class*="st-key-gc_cellpink"] {
                                     if len(lab) > 14:
                                         lab = lab[:13] + "…"
                                     lab = lab or "(일정)"
-                                    chip_key = (
-                                        f"gc_evsel_{stamp}_{idx}"
-                                        if eid and eid == sel_eid
-                                        else f"gc_chiprow_{stamp}_{idx}"
-                                    )
-                                    with st.container(key=chip_key):
+                                    with st.container(key=f"gc_chiprow_{stamp}_{idx}"):
                                         st.button(
                                             lab,
                                             key=f"gc_evpick_{stamp}_{idx}",
