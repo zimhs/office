@@ -153,8 +153,9 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertNotIn("주요 4대 품목 상세 분석", src)
         self.assertIn('_TAB1_CYLINDER_LABEL = "실린더"', src)
         self.assertIn("def _tab1_is_cylinder_item", src)
+        self.assertIn("def _tab1_is_cylinder_sales_item", src)
+        self.assertIn("def _tab1_is_cylinder_qty_item", src)
         self.assertIn("개(병)", src)
-        self.assertIn("_TAB1_CYLINDER_SKIP_RE", src)
         self.assertNotIn("cached_get_yearly_monthly_pivot(df_client_filtered", tab2)
         self.assertIn("_dash_tab2_item_pivot", tab2)
         self.assertIn("pivot_m_client.reindex", tab2)
@@ -353,39 +354,46 @@ class Tab3GasYearMonthTest(unittest.TestCase):
 
 
 class Tab1CylinderItemTest(unittest.TestCase):
-    def _fn(self):
+    def _ns(self):
         import re as _re
 
         with open("app.py", encoding="utf-8") as f:
             src = f.read()
-        start = src.find("def _tab1_is_cylinder_item")
+        start = src.find("_TAB1_CYLINDER_LABEL")
         end = src.find("\ndef _tab1_week_labels")
-        ns = {
-            "re": _re,
-            "_TAB1_AR_TOKEN_RE": _re.compile(r"(^|[^A-Z])AR"),
-            "_TAB1_CYLINDER_SKIP_RE": _re.compile(
-                r"운송|운반|입금|이월|단가차액|잔액|기화기|공사|작업비|임대|회수|보증|수수료|운임|MIX|혼합"
-            ),
-        }
+        ns = {"re": _re}
         exec(src[start:end], ns)
-        return ns["_tab1_is_cylinder_item"]
+        return ns
 
     def test_four_non_bulk_match_cylinder(self):
-        fn = self._fn()
-        self.assertTrue(fn("CO2 40kg"))
-        self.assertTrue(fn("질소"))
-        self.assertTrue(fn("산소 7m3"))
-        self.assertTrue(fn("AR 47L"))
-        self.assertTrue(fn("Ar (일반)"))
-        self.assertTrue(fn("CO2 (공업용, 40kg)"))
-        self.assertFalse(fn("CO2 (kg, Bulk)"))
-        self.assertFalse(fn("N2 (kg, Bulk)"))
-        self.assertFalse(fn("O2 (kg, Bulk)"))
-        self.assertFalse(fn("AR (kg, Bulk)"))
-        self.assertFalse(fn("아세틸렌"))
-        self.assertFalse(fn("운송비 (운반비 CO2)"))
-        self.assertFalse(fn("Mix (O2 2% + Ar Bal)"))
-        self.assertFalse(fn("LPG (20kg)"))
+        ns = self._ns()
+        qty = ns["_tab1_is_cylinder_qty_item"]
+        self.assertTrue(qty("CO2 40kg"))
+        self.assertTrue(qty("질소"))
+        self.assertTrue(qty("산소 7m3"))
+        self.assertTrue(qty("AR 47L"))
+        self.assertTrue(qty("Ar (일반)"))
+        self.assertTrue(qty("CO2 (공업용, 40kg)"))
+        self.assertFalse(qty("CO2 (kg, Bulk)"))
+        self.assertFalse(qty("N2 (kg, Bulk)"))
+        self.assertFalse(qty("O2 (kg, Bulk)"))
+        self.assertFalse(qty("AR (kg, Bulk)"))
+        self.assertFalse(qty("아세틸렌"))
+        self.assertFalse(qty("운송비 (운반비 CO2)"))
+        self.assertFalse(qty("Mix (O2 2% + Ar Bal)"))
+        self.assertFalse(qty("LPG (20kg)"))
+
+    def test_cylinder_sales_is_all_non_bulk4(self):
+        ns = self._ns()
+        sales = ns["_tab1_is_cylinder_sales_item"]
+        self.assertTrue(sales("운송비 (운반비 CO2)"))
+        self.assertTrue(sales("Mix (O2 2% + Ar Bal)"))
+        self.assertTrue(sales("LPG (20kg)"))
+        self.assertTrue(sales("H2 (일반, 용기)"))
+        self.assertTrue(sales("CO2 (공업용, 40kg)"))
+        self.assertFalse(sales("CO2 (kg, Bulk)"))
+        self.assertFalse(sales("N2 (kg, Bulk)"))
+        self.assertFalse(sales("입금 (가스매출)"))
 
 
 if __name__ == "__main__":

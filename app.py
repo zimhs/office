@@ -9096,18 +9096,48 @@ def render_month_expandable_week_table(
 _TAB1_BULK4_METRICS = ("매출액 (만원)", "출고량", "총매출 대비 비중 (%)")
 _TAB1_BULK4_WEEKS = ("1주", "2주", "3주", "4주")
 _TAB1_CYLINDER_LABEL = "실린더"
-_TAB1_AR_TOKEN_RE = re.compile(r"(^|[^A-Z])AR")
-_TAB1_CYLINDER_SKIP_RE = re.compile(
+_TAB1_BULK4_NAMES = {
+    "CO2 (kg, Bulk)",
+    "N2 (kg, Bulk)",
+    "O2 (kg, Bulk)",
+    "AR (kg, Bulk)",
+}
+_TAB1_SALES_NOISE_RE = re.compile(r"입금|이월|합계|\[이월")
+_TAB1_CYLINDER_QTY_SKIP_RE = re.compile(
     r"운송|운반|입금|이월|단가차액|잔액|기화기|공사|작업비|임대|회수|보증|수수료|운임|MIX|혼합"
 )
 
 
-def _tab1_is_cylinder_item(name) -> bool:
-    """CO2·N2·O2·AR 용기(병). 벌크·운반비·혼합가스는 빼 실린더 출고량만 합친다."""
+def _tab1_is_four_bulk_item(name) -> bool:
+    s = str(name or "").strip()
+    if s in _TAB1_BULK4_NAMES:
+        return True
+    u = re.sub(r"\s+", "", s.upper())
+    return u in {
+        "CO2(KG,BULK)",
+        "N2(KG,BULK)",
+        "O2(KG,BULK)",
+        "AR(KG,BULK)",
+        "N2(LITER,BULK)",
+    }
+
+
+def _tab1_is_cylinder_sales_item(name) -> bool:
+    """매출·비중: 4대 벌크가 아닌 실매출. 4벌크+이 합 = 월 총매출."""
     s = str(name or "").strip()
     if not s or s.lower() in ("nan", "none", "-"):
         return False
-    if _TAB1_CYLINDER_SKIP_RE.search(s.upper()) or _TAB1_CYLINDER_SKIP_RE.search(s):
+    if _TAB1_SALES_NOISE_RE.search(s):
+        return False
+    return not _tab1_is_four_bulk_item(s)
+
+
+def _tab1_is_cylinder_qty_item(name) -> bool:
+    """출고량: CO2·N2·O2·AR 용기 병 수. 운반비·혼합가스·벌크 kg는 제외."""
+    s = str(name or "").strip()
+    if not s or s.lower() in ("nan", "none", "-"):
+        return False
+    if _TAB1_CYLINDER_QTY_SKIP_RE.search(s.upper()) or _TAB1_CYLINDER_QTY_SKIP_RE.search(s):
         return False
     u = re.sub(r"\s+", "", s.upper())
     if "BULK" in u or "벌크" in s:
@@ -9121,6 +9151,10 @@ def _tab1_is_cylinder_item(name) -> bool:
     if u.startswith("AR") or s.startswith("아르곤") or s.startswith("아르"):
         return True
     return False
+
+
+def _tab1_is_cylinder_item(name) -> bool:
+    return _tab1_is_cylinder_qty_item(name)
 
 
 def _tab1_week_labels(dt_series):
@@ -9160,7 +9194,10 @@ def _tab1_bulk4_one(sub, item, metric, tot_m, tot_w, all_months, years):
     if sub is None or sub.empty:
         return empty_m, empty_w
     if item == _TAB1_CYLINDER_LABEL:
-        d = sub[sub["품목명"].map(_tab1_is_cylinder_item)]
+        if "출고량" in str(metric):
+            d = sub[sub["품목명"].map(_tab1_is_cylinder_qty_item)]
+        else:
+            d = sub[sub["품목명"].map(_tab1_is_cylinder_sales_item)]
     else:
         d = sub[sub["품목명"] == item]
     if d.empty:
@@ -9212,9 +9249,7 @@ def _tab1_bulk4_ensure_pack(
         st.session_state["_tab1_bulk4_pack"] = {"sig": sig, "items": items, "views": views}
         return
     cols = [c for c in ("품목명", "월", "연도", "매출액", "출고량", "매출일_dt") if c in df_base.columns]
-    bulk_names = [it for it in items if it != _TAB1_CYLINDER_LABEL]
-    pick = df_base["품목명"].isin(bulk_names) | df_base["품목명"].map(_tab1_is_cylinder_item)
-    sub = df_base.loc[pick, cols]
+    sub = df_base.loc[:, cols]
     if sub.empty or "매출일_dt" not in sub.columns:
         st.session_state["_tab1_bulk4_pack"] = {"sig": sig, "items": items, "views": views}
         return
