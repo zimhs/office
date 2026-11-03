@@ -106,7 +106,7 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("gc_day_", src)
         self.assertIn("_gc_sel_day", src)
         self.assertIn("_gc_set_sel_day", src)
-        self.assertIn('st.session_state["_gc_sel_day"] = d', src)
+        self.assertIn('st.session_state["_gc_sel_day"] = day', src)
         self.assertIn("선택", src)
         self.assertIn('st.session_state["gc_ev_day"] = day', src)
         self.assertIn("gc-sel", src)
