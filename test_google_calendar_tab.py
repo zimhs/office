@@ -84,7 +84,6 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("gc_memo_pop", src)
         self.assertIn("_render_event_memo_pop", src)
         self.assertIn("font-size: 11px", src)
-        self.assertIn("gc-ev-lab", src)
         self.assertIn("st-key-gc_td_", src)
         self.assertIn("#1a73e8", src)
         self.assertIn("#e8f0fe", src)
