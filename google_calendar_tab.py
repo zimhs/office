@@ -1226,9 +1226,8 @@ div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   padding-right: 16px !important;
 }
 div[class*="st-key-gc_evpick_"] button,
-div[class*="st-key-gc_evpick_"] button p,
-div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],
-div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p {
+div[class*="st-key-gc_evpick_"] button * {
+  font: 400 11px/1.2 sans-serif !important;
   font-size: 11px !important;
   line-height: 1.2 !important;
 }
@@ -1305,6 +1304,18 @@ div[class*="st-key-gc_cellpink"] {
 </style>
 """,
         unsafe_allow_html=True,
+    )
+    st.html(
+        """
+<style>
+div[class*="st-key-gc_evpick_"] button,
+div[class*="st-key-gc_evpick_"] button * {
+  font: 400 11px/1.2 sans-serif !important;
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+}
+</style>
+"""
     )
     with st.container(key="gc_calhead"):
         head = st.columns([0.38] + [1] * 7, gap=None)
