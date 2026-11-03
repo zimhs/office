@@ -1200,11 +1200,11 @@ div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   padding-right: 16px !important;
 }
 div[class*="st-key-gc_evpick_"] button {
-  min-height: 1.6rem !important;
-  height: 1.6rem !important;
+  min-height: 1.35rem !important;
+  height: 1.35rem !important;
   width: 100% !important;
   padding: 0 4px !important;
-  font-size: 16px !important;
+  font-size: 12px !important;
   font-weight: 400 !important;
   border: none !important;
   outline: none !important;
@@ -1234,12 +1234,12 @@ div[class*="st-key-gc_memo_pop"] {
   padding: 14px 16px 12px !important;
 }
 div[class*="st-key-gc_day_"] button {
-  min-height: 1.6rem !important;
-  height: 1.6rem !important;
+  min-height: 1.35rem !important;
+  height: 1.35rem !important;
   width: 100% !important;
   padding: 0 2px !important;
-  font-size: 16px !important;
-  font-weight: 400 !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
   border: none !important;
   outline: none !important;
   border-radius: 8px !important;
@@ -1414,7 +1414,7 @@ def _render_event_memo_pop(ev: dict) -> None:
                 )
         else:
             st.markdown(
-                "<div style='font-size:16px;color:#31333F;white-space:pre-wrap;"
+                "<div style='font-size:12px;color:#31333F;white-space:pre-wrap;"
                 f"line-height:1.4'>{html.escape(note) if note else '메모 없음'}</div>",
                 unsafe_allow_html=True,
             )
