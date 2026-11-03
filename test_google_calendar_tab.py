@@ -82,6 +82,8 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertNotIn("@st.dialog", src)
         self.assertNotIn("gc_ovc=", src)
         self.assertIn("gc_memo_pop", src)
+        self.assertIn("_gc_place_memo_pop", src)
+        self.assertIn("_gc_sel_chip", src)
         self.assertIn("_render_event_memo_pop", src)
         self.assertIn("font-size: 11px", src)
         self.assertIn("st-key-gc_td_", src)

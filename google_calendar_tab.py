@@ -1073,14 +1073,16 @@ def _gc_set_sel_day(day: date) -> None:
     st.session_state["_gc_sel_day"] = day
 
 
-def _gc_set_sel_event(day: date, event_id: str) -> None:
+def _gc_set_sel_event(day: date, event_id: str, chip: str = "") -> None:
     st.session_state["_gc_sel_day"] = day
     st.session_state["_gc_sel_event"] = str(event_id or "")
+    st.session_state["_gc_sel_chip"] = str(chip or "")
     st.session_state["_gc_memo_open"] = True
 
 
 def _gc_close_memo_pop() -> None:
     st.session_state["_gc_memo_open"] = False
+    st.session_state.pop("_gc_sel_chip", None)
 
 
 def _gc_open_add_pop() -> None:
@@ -1246,7 +1248,6 @@ div[class*="st-key-gc_evpick_"] button {
 div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   background: #d2e3fc !important;
 }
-div[class*="st-key-gc_memo_pop"],
 div[class*="st-key-gc_add_pop"] {
   position: fixed !important;
   top: 18% !important;
@@ -1254,6 +1255,19 @@ div[class*="st-key-gc_add_pop"] {
   transform: translateX(-50%) !important;
   z-index: 10050 !important;
   width: min(520px, 92vw) !important;
+  background: #fff !important;
+  border: 1px solid #e0e3e8 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 12px 40px rgba(32, 33, 36, 0.22) !important;
+  padding: 14px 16px 12px !important;
+}
+div[class*="st-key-gc_memo_pop"] {
+  position: fixed !important;
+  top: 18% !important;
+  left: 50% !important;
+  transform: none !important;
+  z-index: 10050 !important;
+  width: min(340px, 92vw) !important;
   background: #fff !important;
   border: 1px solid #e0e3e8 !important;
   border-radius: 12px !important;
@@ -1402,7 +1416,7 @@ div[class*="st-key-gc_cellpink"] {
                                             type="tertiary",
                                             width="stretch",
                                             on_click=_gc_set_sel_event,
-                                            args=(d, eid or iso),
+                                            args=(d, eid or iso, f"{stamp}_{idx}"),
                                         )
                                         if ev.get("writable") and eid and cid:
                                             st.button(
@@ -1463,6 +1477,46 @@ def _render_event_memo_pop(ev: dict) -> None:
                 type="tertiary",
                 on_click=_gc_close_memo_pop,
             )
+
+
+def _gc_place_memo_pop(chip: str) -> None:
+    """메모 팝업을 클릭한 일정 제목 바로 아래로 붙인다. 날짜 버튼 키는 바꾸지 않는다."""
+    key = "gc_evpick_" + str(chip or "").replace("\\", "").replace('"', "")
+    st.html(
+        f"""
+<script>
+(function () {{
+  var key = {json.dumps(key)};
+  function place() {{
+    var pop = window.parent.document.querySelector('[class*="st-key-gc_memo_pop"]')
+      || document.querySelector('[class*="st-key-gc_memo_pop"]');
+    var doc = pop ? pop.ownerDocument : document;
+    var win = doc.defaultView || window;
+    var anchor = doc.querySelector('[class*="st-key-' + key + '"] button')
+      || doc.querySelector('[class*="st-key-' + key + '"]');
+    if (!pop || !anchor) return;
+    var r = anchor.getBoundingClientRect();
+    var pw = Math.min(340, win.innerWidth - 16);
+    var ph = pop.getBoundingClientRect().height || 240;
+    var left = Math.min(Math.max(8, r.left), win.innerWidth - pw - 8);
+    var top = r.bottom + 6;
+    if (top + ph > win.innerHeight - 8) {{
+      top = Math.max(8, r.top - ph - 6);
+    }}
+    pop.style.setProperty("position", "fixed", "important");
+    pop.style.setProperty("top", top + "px", "important");
+    pop.style.setProperty("left", left + "px", "important");
+    pop.style.setProperty("transform", "none", "important");
+    pop.style.setProperty("width", pw + "px", "important");
+  }}
+  place();
+  setTimeout(place, 50);
+  setTimeout(place, 200);
+}})();
+</script>
+""",
+        unsafe_allow_javascript=True,
+    )
 
 
 def _render_add_event_pop(cals: list[dict]) -> None:
@@ -1743,6 +1797,7 @@ div[class*="st-key-gc_head_acts"] button {
         )
         if pop_ev:
             _render_event_memo_pop(pop_ev)
+            _gc_place_memo_pop(str(st.session_state.get("_gc_sel_chip") or ""))
         else:
             st.session_state["_gc_memo_open"] = False
     if st.session_state.get("_gc_add_pop"):
