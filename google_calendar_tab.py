@@ -539,6 +539,19 @@ def delete_event(cal_id: str, event_id: str) -> None:
     )
 
 
+def patch_event(cal_id: str, event_id: str, fields: dict) -> dict:
+    cid = str(cal_id or "").strip()
+    eid = str(event_id or "").strip()
+    if not cid or not eid or cid == GC_KR_HOLIDAY:
+        return {}
+    return api_json(
+        "PATCH",
+        f"{_CAL_API}/calendars/{urllib.parse.quote(cid, safe='')}/events/"
+        f"{urllib.parse.quote(eid, safe='')}",
+        fields,
+    )
+
+
 def list_tasklists() -> list[dict]:
     data = api_get(f"{_TASK_API}/users/@me/lists")
     return list(data.get("items") or [])
@@ -725,6 +738,41 @@ def _gc_cache_add_event(day: date, chip: dict) -> None:
     box[key] = by
     box[key + ":at"] = datetime.now(timezone.utc).timestamp()
     _EV_MEM[key] = by
+
+
+def _gc_cache_patch_event(cal_id: str, event_id: str, fields: dict) -> None:
+    cid, eid = str(cal_id), str(event_id)
+
+    def _up(by: dict) -> dict:
+        out: dict[str, list[dict]] = {}
+        for day_k, items in (by or {}).items():
+            nxt = []
+            for e in items or []:
+                if str(e.get("id")) == eid and str(e.get("cal_id")) == cid:
+                    e = dict(e)
+                    e.update(fields)
+                nxt.append(e)
+            if nxt:
+                out[day_k] = nxt
+        return out
+
+    box = _gc_api_box()
+    for k in list(box.keys()):
+        if str(k).startswith("ev:") and isinstance(box.get(k), dict):
+            box[k] = _up(box[k])
+    for k in list(_EV_MEM.keys()):
+        _EV_MEM[k] = _up(_EV_MEM[k])
+
+
+def _gc_find_event(by_day: dict[str, list[dict]], event_id: str) -> dict | None:
+    eid = str(event_id or "")
+    if not eid:
+        return None
+    for items in (by_day or {}).values():
+        for ev in items or []:
+            if str(ev.get("id") or "") == eid:
+                return ev
+    return None
 
 
 def _gc_cache_remove_event(cal_id: str, event_id: str) -> None:
@@ -1016,6 +1064,11 @@ def _gc_set_sel_event(day: date, event_id: str) -> None:
     st.session_state["_gc_sel_day"] = day
     st.session_state["gc_ev_day"] = day
     st.session_state["_gc_sel_event"] = str(event_id or "")
+    st.session_state["_gc_memo_open"] = True
+
+
+def _gc_close_memo_pop() -> None:
+    st.session_state["_gc_memo_open"] = False
 
 
 def _render_month_grid(
@@ -1147,12 +1200,12 @@ div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   padding-right: 16px !important;
 }
 div[class*="st-key-gc_evpick_"] button {
-  min-height: 1.3rem !important;
-  height: 1.3rem !important;
+  min-height: 1.6rem !important;
+  height: 1.6rem !important;
   width: 100% !important;
   padding: 0 4px !important;
-  font-size: 11px !important;
-  font-weight: 500 !important;
+  font-size: 16px !important;
+  font-weight: 400 !important;
   border: none !important;
   outline: none !important;
   border-radius: 6px !important;
@@ -1167,13 +1220,26 @@ div[class*="st-key-gc_evpick_"] button {
 div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   background: #d2e3fc !important;
 }
+div[class*="st-key-gc_memo_pop"] {
+  position: fixed !important;
+  top: 22% !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 10050 !important;
+  width: min(420px, 92vw) !important;
+  background: #fff !important;
+  border: 1px solid #e0e3e8 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 12px 40px rgba(32, 33, 36, 0.22) !important;
+  padding: 14px 16px 12px !important;
+}
 div[class*="st-key-gc_day_"] button {
-  min-height: 1.45rem !important;
-  height: 1.45rem !important;
+  min-height: 1.6rem !important;
+  height: 1.6rem !important;
   width: 100% !important;
   padding: 0 2px !important;
-  font-size: 13px !important;
-  font-weight: 600 !important;
+  font-size: 16px !important;
+  font-weight: 400 !important;
   border: none !important;
   outline: none !important;
   border-radius: 8px !important;
@@ -1327,6 +1393,56 @@ div[class*="st-key-gc_cellpink"] {
                                             )
 
 
+def _render_event_memo_pop(ev: dict) -> None:
+    """일정 클릭 메모. 대화상자 대신 조각 안 팝업이라 대시보드를 다시 켜지 않는다."""
+    title = str(ev.get("title") or "(제목 없음)")
+    eid = str(ev.get("id") or "")
+    cid = str(ev.get("cal_id") or "")
+    note = str(ev.get("description") or "")
+    writable = bool(ev.get("writable"))
+    nk = "gc_pop_note_" + (eid[-24:] if eid else "x")
+    if nk not in st.session_state:
+        st.session_state[nk] = note
+    with st.container(key="gc_memo_pop"):
+        st.markdown(f"**{html.escape(title)}**")
+        meta = " · ".join(
+            p for p in (str(ev.get("day") or ""), str(ev.get("cal") or "")) if p
+        )
+        if meta:
+            st.caption(meta)
+        if writable:
+            st.text_area("메모", key=nk, height=90, placeholder="일정 메모")
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("메모 저장", type="primary", key="gc_pop_save"):
+                    st.session_state["_gc_pending_ev_note"] = {
+                        "cal": cid,
+                        "id": eid,
+                        "notes": st.session_state.get(nk) or "",
+                    }
+                    st.session_state["_gc_memo_open"] = False
+                    st.rerun(scope="fragment")
+            with b2:
+                st.button(
+                    "닫기",
+                    key="gc_pop_close",
+                    type="tertiary",
+                    on_click=_gc_close_memo_pop,
+                )
+        else:
+            st.markdown(
+                "<div style='font-size:16px;color:#31333F;white-space:pre-wrap;"
+                f"line-height:1.4'>{html.escape(note) if note else '메모 없음'}</div>",
+                unsafe_allow_html=True,
+            )
+            st.button(
+                "닫기",
+                key="gc_pop_close_ro",
+                type="tertiary",
+                on_click=_gc_close_memo_pop,
+            )
+
+
 def _qp_pop(*names: str) -> None:
     try:
         qp = st.query_params
@@ -1467,6 +1583,17 @@ def _gc_cal_panel() -> None:
                 _gc_cache_add_event(day, real)
         except Exception as e:
             st.error(f"일정 저장 실패: {e}")
+    pending_note = st.session_state.pop("_gc_pending_ev_note", None)
+    if isinstance(pending_note, dict) and pending_note.get("id"):
+        cid = str(pending_note.get("cal") or "")
+        eid = str(pending_note.get("id") or "")
+        notes = str(pending_note.get("notes") or "")
+        _gc_cache_patch_event(cid, eid, {"description": notes})
+        if eid and not eid.startswith("local-") and cid:
+            try:
+                patch_event(cid, eid, {"description": notes})
+            except Exception as e:
+                st.error(f"메모 저장 실패: {e}")
     pending_del = st.session_state.pop("_gc_pending_del_event", None)
     if isinstance(pending_del, dict) and pending_del.get("id"):
         cid = str(pending_del.get("cal") or "primary")
@@ -1511,6 +1638,14 @@ def _gc_cal_panel() -> None:
     _render_month_grid(
         y, m, by_day, today, selected=sel_day if isinstance(sel_day, date) else None
     )
+    if st.session_state.get("_gc_memo_open"):
+        pop_ev = _gc_find_event(
+            by_day, str(st.session_state.get("_gc_sel_event") or "")
+        )
+        if pop_ev:
+            _render_event_memo_pop(pop_ev)
+        else:
+            st.session_state["_gc_memo_open"] = False
     with st.expander("일정 추가", expanded=False):
         et = st.text_input("제목", key="gc_ev_title")
         ed = st.date_input("날짜", key="gc_ev_day")
