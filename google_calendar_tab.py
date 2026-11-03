@@ -14,7 +14,6 @@ from zoneinfo import ZoneInfo
 
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _HOME_GC = os.path.join(os.path.expanduser("~"), ".office-dashboard")
@@ -38,10 +37,6 @@ _SCOPES = (
 _AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN = "https://oauth2.googleapis.com/token"
 _CAL_API = "https://www.googleapis.com/calendar/v3"
-_GC_PICKER = components.declare_component(
-    "gc_cal_picker",
-    path=os.path.join(_ROOT, "gc_cal_picker"),
-)
 _TASK_API = "https://tasks.googleapis.com/tasks/v1"
 _CLOUD_REDIRECT = "https://office-g8ryabkapprkpjmfwa5aypw.streamlit.app/"
 _EV_MEM: dict[str, dict[str, list[dict]]] = {}
@@ -496,23 +491,9 @@ def list_events(cal_id: str, start: date, end: date, token: str = "") -> list[di
     return list(data.get("items") or [])
 
 
-def _writable_calendars(cals: list[dict]) -> list[dict]:
-    out = []
-    for c in cals or []:
-        cid = str(c.get("id") or "")
-        if not cid or cid == GC_KR_HOLIDAY or not c.get("writable"):
-            continue
-        out.append(c)
-    out.sort(key=lambda c: (not bool(c.get("primary")), str(c.get("summary") or "")))
-    return out
-
-
 def insert_event(
     cal_id: str, title: str, day: date, all_day: bool, notes: str = ""
 ) -> dict:
-    cid = str(cal_id or "").strip() or "primary"
-    if cid == GC_KR_HOLIDAY:
-        raise RuntimeError("공휴일 캘린더에는 일정을 넣을 수 없습니다. 업무 캘린더를 고르세요.")
     body: dict[str, Any] = {"summary": title}
     if str(notes or "").strip():
         body["description"] = str(notes).strip()
@@ -524,7 +505,7 @@ def insert_event(
         e = s + timedelta(hours=1)
         body["start"] = {"dateTime": s.isoformat(), "timeZone": "Asia/Seoul"}
         body["end"] = {"dateTime": e.isoformat(), "timeZone": "Asia/Seoul"}
-    return api_json("POST", f"{_CAL_API}/calendars/{urllib.parse.quote(cid, safe='')}/events", body)
+    return api_json("POST", f"{_CAL_API}/calendars/{urllib.parse.quote(cal_id, safe='')}/events", body)
 
 
 def api_delete(url: str) -> None:
@@ -1023,27 +1004,22 @@ def _month_html(
             if _gc_is_holiday_day(by_day.get(key)):
                 cls.append("gc-hol")
             chips = []
-            for ev in by_day.get(key) or []:
-                label = html.escape(
-                    (ev.get("hhmm") + " " if ev.get("hhmm") else "") + str(ev.get("title") or "")
-                )
+            for ev in (by_day.get(key) or [])[:4]:
+                label = html.escape((ev.get("hhmm") + " " if ev.get("hhmm") else "") + ev["title"])
                 col = html.escape(str(ev.get("color") or "#c5c9ce"))
-                eid = html.escape(str(ev.get("id") or ""))
-                cid = html.escape(str(ev.get("cal_id") or ""))
                 xbtn = ""
                 if ev.get("writable") and ev.get("id") and ev.get("cal_id"):
-                    xbtn = (
-                        f'<span class="gc-x" data-gc-xd="{eid}" data-gc-cal="{cid}">×</span>'
-                    )
+                    xbtn = '<span class="gc-x">×</span>'
                 chips.append(
-                    f'<div class="gc-chip" data-gc-ev="{eid}" data-gc-day="{key}" '
-                    f'style="background:{col}22;border-left:3px solid {col}">'
+                    f'<div class="gc-chip" style="background:{col}22;border-left:3px solid {col}">'
                     f'<span class="gc-chip-t">{label}</span>{xbtn}</div>'
                 )
+            more = len(by_day.get(key) or []) - 4
+            if more > 0:
+                chips.append(f'<div class="gc-more">+{more}</div>')
             cells.append(
-                f'<td class="{" ".join(cls)}" data-gc-day="{key}">'
-                f'<div class="gc-num">{d.day}</div>'
-                f'<div class="gc-evlist">{"".join(chips)}</div></td>'
+                f'<td class="{" ".join(cls)}"><div class="gc-num">{d.day}</div>'
+                f'{"".join(chips)}</td>'
             )
         rows.append("<tr>" + "".join(cells) + "</tr>")
     return f"""
@@ -1052,8 +1028,7 @@ def _month_html(
 .gc-table {{ width:100%; border-collapse:separate; border-spacing:6px; table-layout:fixed; background:transparent; }}
 .gc-table th {{ font-weight:500; font-size:12px; padding:8px 6px; text-align:center; color:#70757a; }}
 .gc-wn {{ width:36px; color:#80868b; font-size:11px; text-align:center; background:transparent; border:none; }}
-.gc-cell {{ min-height:88px; max-height:140px; vertical-align:top; border:1px solid #eceff3;
-  border-radius:10px; padding:6px 4px; background:#fff; cursor:pointer; }}
+.gc-cell {{ height:72px; vertical-align:top; border:1px solid #eceff3; border-radius:10px; padding:8px 4px; background:#fff; }}
 .gc-out {{ color:#bdc1c6; }}
 .gc-today {{ background:#e8f4ff; }}
 .gc-today .gc-num {{ background:#1a73e8; color:#fff; border-radius:50%; width:22px; height:22px;
@@ -1062,14 +1037,14 @@ def _month_html(
 .gc-sun, .gc-sat, .gc-hol {{ background:#fdecea; }}
 .gc-today.gc-sun, .gc-today.gc-sat, .gc-today.gc-hol {{ background:#e8f4ff; }}
 .gc-sel.gc-sun, .gc-sel.gc-sat, .gc-sel.gc-hol {{ background:#e8f0fe; }}
-.gc-num {{ font-size:16px; font-weight:600; margin-bottom:4px; line-height:1.2; }}
+.gc-num {{ font-size:12px; font-weight:500; margin-bottom:2px; }}
 .gc-sun, .gc-sun .gc-num, .gc-hol, .gc-hol .gc-num {{ color:#d93025; }}
 .gc-sat, .gc-sat .gc-num {{ color:#c62828; }}
-.gc-evlist {{ max-height:96px; overflow-y:auto; overflow-x:hidden; }}
-.gc-chip {{ font-size:16px; line-height:1.3; padding:2px 4px 2px 6px; margin:2px 0; border-radius:6px;
-  display:flex; align-items:center; gap:2px; overflow:hidden; cursor:pointer; background:#e8f0fe; }}
-.gc-chip-t {{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#174ea6; }}
-.gc-x {{ flex:0 0 auto; color:#80868b; font-size:16px; padding:0 4px; line-height:1; cursor:pointer; }}
+.gc-chip {{ font-size:11px; line-height:1.25; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
+  display:flex; align-items:center; gap:2px; overflow:hidden; }}
+.gc-chip-t {{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+.gc-x {{ flex:0 0 auto; color:#80868b; font-size:13px; padding:0 3px; line-height:1; cursor:pointer; }}
+.gc-more {{ font-size:11px; color:#5f6368; }}
 </style>
 <div class="gc-wrap"><table class="gc-table"><thead><tr><th class="gc-wn"></th>{heads}</tr></thead>
 <tbody>{"".join(rows)}</tbody></table></div>
@@ -1082,69 +1057,18 @@ def _gc_set_del_event(cal_id: str, event_id: str) -> None:
 
 def _gc_set_sel_day(day: date) -> None:
     st.session_state["_gc_sel_day"] = day
-    st.session_state["_gc_add_need_day"] = False
+    st.session_state["gc_ev_day"] = day
 
 
 def _gc_set_sel_event(day: date, event_id: str) -> None:
     st.session_state["_gc_sel_day"] = day
-    st.session_state["_gc_add_need_day"] = False
+    st.session_state["gc_ev_day"] = day
     st.session_state["_gc_sel_event"] = str(event_id or "")
     st.session_state["_gc_memo_open"] = True
-    st.session_state["_gc_add_open"] = False
 
 
 def _gc_close_memo_pop() -> None:
     st.session_state["_gc_memo_open"] = False
-
-
-def _gc_open_add_pop() -> None:
-    day = st.session_state.get("_gc_sel_day")
-    if not isinstance(day, date):
-        st.session_state["_gc_add_need_day"] = True
-        st.session_state["_gc_add_open"] = False
-        return
-    st.session_state["gc_ev_day"] = day
-    st.session_state["gc_ev_title"] = ""
-    st.session_state["gc_ev_note"] = ""
-    st.session_state["_gc_add_open"] = True
-    st.session_state["_gc_add_need_day"] = False
-    st.session_state["_gc_memo_open"] = False
-
-
-def _gc_close_add_pop() -> None:
-    st.session_state["_gc_add_open"] = False
-
-
-def _gc_apply_cal_pick(val: Any) -> bool:
-    if not isinstance(val, dict):
-        return False
-    n = val.get("n")
-    if n is None or n == st.session_state.get("_gc_pick_n"):
-        return False
-    st.session_state["_gc_pick_n"] = n
-    kind = str(val.get("t") or "")
-    if kind == "d":
-        try:
-            day = date.fromisoformat(str(val.get("iso") or "")[:10])
-        except ValueError:
-            return False
-        _gc_set_sel_day(day)
-        st.session_state["_gc_memo_open"] = False
-        return True
-    if kind == "e":
-        try:
-            day = date.fromisoformat(str(val.get("iso") or "")[:10])
-        except ValueError:
-            day = st.session_state.get("_gc_sel_day")
-        eid = str(val.get("id") or "")
-        if isinstance(day, date) and eid:
-            _gc_set_sel_event(day, eid)
-            return True
-        return False
-    if kind == "x":
-        _gc_set_del_event(str(val.get("cal") or ""), str(val.get("id") or ""))
-        return True
-    return False
 
 
 def _render_month_grid(
@@ -1154,11 +1078,319 @@ def _render_month_grid(
     today: date,
     selected: date | None = None,
 ) -> None:
-    """HTML 달력 한 덩어리. 날짜·일정 클릭은 컴포넌트가 넘긴다."""
-    markup = _month_html(year, month, by_day, today, selected=selected)
-    picked = _GC_PICKER(html=markup, key="gc_cal_picker", default=None)
-    if _gc_apply_cal_pick(picked):
-        st.rerun(scope="fragment")
+    """표 달력. 제목은 클릭하지 않고, 쓸 수 있는 일정만 ×로 지운다."""
+    st.markdown(
+        """
+<style>
+div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"],
+div[class*="st-key-gc_calhead"] .stHorizontalBlock {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 6px !important;
+  margin-bottom: 4px !important;
+  overflow: visible !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"],
+div[class*="st-key-gc_calgrid"] .stHorizontalBlock {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 6px !important;
+  margin-bottom: 6px !important;
+  overflow: hidden !important;
+}
+div[class*="st-key-gc_calhead"] [data-testid="stColumn"],
+div[class*="st-key-gc_calhead"] .stColumn {
+  padding: 2px 2px 6px !important;
+  background: transparent !important;
+  border: none !important;
+  min-width: 0 !important;
+  min-height: 1.6rem !important;
+  flex: 1 1 0 !important;
+  overflow: visible !important;
+}
+div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"],
+div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"] p,
+div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"] div,
+div[class*="st-key-gc_calhead"] .gc-dow-lab {
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  line-height: 1.4 !important;
+  text-align: center !important;
+  overflow: visible !important;
+  margin: 0 !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"],
+div[class*="st-key-gc_calgrid"] .stColumn {
+  border: 1px solid #eceff3;
+  border-radius: 10px;
+  min-height: 88px;
+  min-width: 0 !important;
+  flex: 1 1 0 !important;
+  padding: 4px 2px !important;
+  background: #fff;
+}
+div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"] > div:first-child,
+div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] > div:first-child,
+div[class*="st-key-gc_calhead"] .stHorizontalBlock > div:first-child,
+div[class*="st-key-gc_calgrid"] .stHorizontalBlock > div:first-child {
+  flex: 0 0 28px !important;
+  width: 28px !important;
+  max-width: 28px !important;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  min-height: 0 !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]) {
+  background: #e8f0fe !important;
+  box-shadow: none !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_celltoday"]) {
+  background: #e8f4ff !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellpink"]) {
+  background: #fdecea !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stVerticalBlock"] {
+  gap: 2px !important;
+}
+div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"] p,
+div[class*="st-key-gc_calgrid"] [data-testid="stMarkdownContainer"] p {
+  margin: 0 !important;
+}
+div[class*="st-key-gc_chiprow_"],
+div[class*="st-key-gc_evsel_"] {
+  position: relative !important;
+}
+div[class*="st-key-gc_xd_"] {
+  position: absolute !important;
+  top: 0 !important;
+  right: 1px !important;
+  z-index: 3 !important;
+  width: 1.2rem !important;
+}
+div[class*="st-key-gc_xd_"] button {
+  min-height: 1.3rem !important;
+  height: 1.3rem !important;
+  min-width: 1.15rem !important;
+  width: 1.15rem !important;
+  padding: 0 !important;
+  font-size: 13px !important;
+  line-height: 1 !important;
+  color: #5f6368 !important;
+  border: none !important;
+  background: transparent !important;
+}
+div[class*="st-key-gc_chiprow_"] [data-testid="stHorizontalBlock"],
+div[class*="st-key-gc_evsel_"] [data-testid="stHorizontalBlock"] {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 0 !important;
+  align-items: center !important;
+}
+div[class*="st-key-gc_evlist_"] {
+  max-height: 96px !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding: 0 2px 4px !important;
+}
+div[class*="st-key-gc_chiprow_"] div[class*="st-key-gc_evpick_"] button,
+div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
+  padding-right: 16px !important;
+}
+div[class*="st-key-gc_evpick_"] button {
+  min-height: 1.6rem !important;
+  height: 1.6rem !important;
+  width: 100% !important;
+  padding: 0 4px !important;
+  font-size: 16px !important;
+  font-weight: 400 !important;
+  border: none !important;
+  outline: none !important;
+  border-radius: 6px !important;
+  background: #e8f0fe !important;
+  color: #174ea6 !important;
+  box-shadow: none !important;
+  justify-content: flex-start !important;
+  text-align: left !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+}
+div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
+  background: #d2e3fc !important;
+}
+div[class*="st-key-gc_memo_pop"] {
+  position: fixed !important;
+  top: 22% !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 10050 !important;
+  width: min(420px, 92vw) !important;
+  background: #fff !important;
+  border: 1px solid #e0e3e8 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 12px 40px rgba(32, 33, 36, 0.22) !important;
+  padding: 14px 16px 12px !important;
+}
+div[class*="st-key-gc_day_"] button {
+  min-height: 1.6rem !important;
+  height: 1.6rem !important;
+  width: 100% !important;
+  padding: 0 2px !important;
+  font-size: 16px !important;
+  font-weight: 400 !important;
+  border: none !important;
+  outline: none !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: inherit !important;
+  box-shadow: none !important;
+  justify-content: center !important;
+  align-items: center !important;
+  line-height: 1.2 !important;
+  text-align: center !important;
+}
+div[class*="st-key-gc_day_"] button:focus,
+div[class*="st-key-gc_day_"] button:focus-visible,
+div[class*="st-key-gc_day_"] button:hover {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]),
+div[class*="st-key-gc_cellsel"] {
+  background: #e8f0fe !important;
+  box-shadow: none !important;
+}
+div[class*="st-key-gc_celltoday"] {
+  background: #e8f4ff !important;
+}
+div[class*="st-key-gc_cellpink"] {
+  background: #fdecea !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    with st.container(key="gc_calhead"):
+        head = st.columns([0.38] + [1] * 7, gap=None)
+        with head[0]:
+            st.markdown('<div class="gc-wn"></div>', unsafe_allow_html=True)
+        for i, name in enumerate(("일", "월", "화", "수", "목", "금", "토")):
+            color = "#d93025" if i == 0 else "#1a73e8" if i == 6 else "#70757a"
+            with head[i + 1]:
+                st.markdown(
+                    f'<div class="gc-dow-lab" style="color:{color}">{name}</div>',
+                    unsafe_allow_html=True,
+                )
+    with st.container(key="gc_calgrid"):
+        for week in month_weeks(year, month):
+            cols = st.columns([0.38] + [1] * 7, gap=None, vertical_alignment="top")
+            with cols[0]:
+                st.markdown(
+                    f'<div style="color:#80868b;font-size:11px;text-align:center;'
+                    f'padding-top:4px">{iso_week_label(week)}</div>',
+                    unsafe_allow_html=True,
+                )
+            for i, d in enumerate(week):
+                with cols[i + 1]:
+                    outside = d.month != month
+                    iso = d.isoformat()
+                    stamp = d.strftime("%Y%m%d")
+                    is_sel = selected is not None and d == selected
+                    items = by_day.get(iso) or []
+                    is_hol = _gc_is_holiday_day(items)
+                    is_pink = (not is_sel) and (not (d == today)) and (
+                        d.weekday() >= 5 or is_hol
+                    )
+                    if is_sel:
+                        cell_key = f"gc_cellsel_{stamp}"
+                    elif d == today:
+                        cell_key = f"gc_celltoday_{stamp}"
+                    elif is_pink:
+                        cell_key = f"gc_cellpink_{stamp}"
+                    else:
+                        cell_key = f"gc_cell_{stamp}"
+                    if outside:
+                        color = "#bdc1c6"
+                    elif d == today:
+                        color = "#174ea6"
+                    elif d.weekday() == 6 or is_hol:
+                        color = "#d93025"
+                    elif d.weekday() == 5:
+                        color = "#c62828"
+                    else:
+                        color = "#3c4043"
+                    rules = [
+                        f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;}}"
+                    ]
+                    if is_sel:
+                        rules.append(
+                            f"div[class*='st-key-gc_day_{stamp}'] button,"
+                            f"div[class*='st-key-gc_cellsel_{stamp}']{{"
+                            "background:#e8f0fe!important;"
+                            "border:none!important;outline:none!important;box-shadow:none!important;}"
+                        )
+                    elif d == today:
+                        rules.append(
+                            f"div[class*='st-key-gc_day_{stamp}'] button,"
+                            f"div[class*='st-key-gc_celltoday_{stamp}']{{"
+                            "background:#e8f4ff!important;}"
+                        )
+                    elif is_pink:
+                        rules.append(
+                            f"div[class*='st-key-gc_day_{stamp}'] button,"
+                            f"div[class*='st-key-gc_cellpink_{stamp}']{{"
+                            "background:#fdecea!important;}"
+                        )
+                    st.markdown("<style>" + "".join(rules) + "</style>", unsafe_allow_html=True)
+                    with st.container(key=cell_key):
+                        st.button(
+                            str(d.day),
+                            key=f"gc_day_{stamp}",
+                            type="tertiary",
+                            width="stretch",
+                            on_click=_gc_set_sel_day,
+                            args=(d,),
+                        )
+                        if items:
+                            sel_eid = str(st.session_state.get("_gc_sel_event") or "")
+                            with st.container(key=f"gc_evlist_{stamp}"):
+                                for idx, ev in enumerate(items):
+                                    eid = str(ev.get("id") or "")
+                                    cid = str(ev.get("cal_id") or "")
+                                    lab = (
+                                        (str(ev.get("hhmm") or "") + " ")
+                                        if ev.get("hhmm")
+                                        else ""
+                                    ) + str(ev.get("title") or "")
+                                    if len(lab) > 14:
+                                        lab = lab[:13] + "…"
+                                    lab = lab or "(일정)"
+                                    chip_key = (
+                                        f"gc_evsel_{stamp}_{idx}"
+                                        if eid and eid == sel_eid
+                                        else f"gc_chiprow_{stamp}_{idx}"
+                                    )
+                                    with st.container(key=chip_key):
+                                        st.button(
+                                            lab,
+                                            key=f"gc_evpick_{stamp}_{idx}",
+                                            type="tertiary",
+                                            width="stretch",
+                                            on_click=_gc_set_sel_event,
+                                            args=(d, eid or iso),
+                                        )
+                                        if ev.get("writable") and eid and cid:
+                                            st.button(
+                                                "×",
+                                                key=f"gc_xd_{stamp}_{idx}",
+                                                type="tertiary",
+                                                width="content",
+                                                on_click=_gc_set_del_event,
+                                                args=(cid, eid),
+                                            )
 
 
 def _render_event_memo_pop(ev: dict) -> None:
@@ -1208,40 +1440,6 @@ def _render_event_memo_pop(ev: dict) -> None:
                 key="gc_pop_close_ro",
                 type="tertiary",
                 on_click=_gc_close_memo_pop,
-            )
-
-
-def _render_add_event_pop(cals: list[dict]) -> None:
-    """날짜를 고른 뒤 일정추가로 여는 작성칸. 하단 expander 대신 팝업."""
-    with st.container(key="gc_add_pop"):
-        st.markdown("**일정 추가**")
-        et = st.text_input("제목", key="gc_ev_title")
-        ed = st.date_input("날짜", key="gc_ev_day")
-        en = st.text_area("메모", key="gc_ev_note", height=70, placeholder="일정 메모")
-        writable = _writable_calendars(cals)
-        cal_opts = {c["summary"]: c["id"] for c in writable} or {"기본": "primary"}
-        pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
-        b1, b2 = st.columns([1, 1])
-        with b1:
-            if st.button("일정 저장", type="primary", key="gc_ev_save"):
-                title = (et or "").strip()
-                if len(title) < 1:
-                    st.error("제목을 입력하세요.")
-                else:
-                    st.session_state["_gc_pending_event"] = {
-                        "cal": cal_opts[pick],
-                        "title": title,
-                        "day": ed,
-                        "notes": en or "",
-                    }
-                    st.session_state["_gc_add_open"] = False
-                    st.rerun(scope="fragment")
-        with b2:
-            st.button(
-                "닫기",
-                key="gc_add_close",
-                type="tertiary",
-                on_click=_gc_close_add_pop,
             )
 
 
@@ -1406,31 +1604,14 @@ def _gc_cal_panel() -> None:
                 delete_event(cid, eid)
             except Exception as e:
                 st.error(f"일정 삭제 실패: {e}")
+
     try:
         cals = _gc_cached_cals()
     except Exception as e:
         st.error(f"캘린더를 불러오지 못했습니다: {e}")
         cals = []
 
-    st.markdown(
-        """
-<style>
-div[class*="st-key-gc_add_open_btn"] button,
-div[class*="st-key-gc_sync_run"] button {
-  min-height: 1.65rem !important;
-  height: 1.65rem !important;
-  min-width: 0 !important;
-  padding: 0 0.55rem !important;
-  font-size: 13px !important;
-  line-height: 1.2 !important;
-  white-space: nowrap !important;
-  border-radius: 6px !important;
-}
-</style>
-""",
-        unsafe_allow_html=True,
-    )
-    top = st.columns([0.9, 0.9, 2.4, 1.2, 1.2])
+    top = st.columns([1.1, 1.1, 5.6])
     with top[0]:
         if st.button("오늘", key="gc_today"):
             st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
@@ -1449,37 +1630,11 @@ div[class*="st-key-gc_sync_run"] button {
                 st.rerun(scope="fragment")
     with top[2]:
         st.markdown(f"**{y}년 {m}월**")
-    with top[3]:
-        st.button(
-            "일정추가",
-            key="gc_add_open_btn",
-            type="primary",
-            on_click=_gc_open_add_pop,
-        )
-    with top[4]:
-        if st.button("연동실행", type="primary", key="gc_sync_run"):
-            try:
-                n_ev, n_tk = _gc_sync_google(y, m)
-                st.session_state["_gc_sync_msg"] = (
-                    f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
-                )
-            except Exception as e:
-                st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
-            st.rerun()
-    if st.session_state.get("_gc_add_need_day"):
-        st.caption("날짜를 먼저 클릭한 뒤 일정추가를 누르세요.")
-    msg = st.session_state.pop("_gc_sync_msg", None)
-    if msg:
-        st.caption(msg)
 
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
     by_day = _gc_cached_events(cals, y, m)
     sel_day = st.session_state.get("_gc_sel_day")
-    if isinstance(sel_day, date):
-        st.caption(
-            f"선택 {sel_day.month}월 {sel_day.day}일 · 일정추가로 그날에 일정을 더 넣을 수 있습니다."
-        )
     _render_month_grid(
         y, m, by_day, today, selected=sel_day if isinstance(sel_day, date) else None
     )
@@ -1491,8 +1646,24 @@ div[class*="st-key-gc_sync_run"] button {
             _render_event_memo_pop(pop_ev)
         else:
             st.session_state["_gc_memo_open"] = False
-    if st.session_state.get("_gc_add_open"):
-        _render_add_event_pop(cals)
+    with st.expander("일정 추가", expanded=False):
+        et = st.text_input("제목", key="gc_ev_title")
+        ed = st.date_input("날짜", key="gc_ev_day")
+        en = st.text_area("메모", key="gc_ev_note", height=70, placeholder="일정 메모")
+        cal_opts = {c["summary"]: c["id"] for c in cals} or {"기본": "primary"}
+        pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
+        if st.button("일정 저장", type="primary", key="gc_ev_save"):
+            title = (et or "").strip()
+            if len(title) < 1:
+                st.error("제목을 입력하세요.")
+            else:
+                st.session_state["_gc_pending_event"] = {
+                    "cal": cal_opts[pick],
+                    "title": title,
+                    "day": ed,
+                    "notes": en or "",
+                }
+                st.rerun(scope="fragment")
 
 
 @st.fragment
@@ -1686,6 +1857,24 @@ div[class*="st-key-gc_ns_"] button {
 
 
 def _gc_work_panel() -> None:
+    today = datetime.now(_TZ).date()
+    y = int(st.session_state.get("gc_year") or today.year)
+    m = int(st.session_state.get("gc_month") or today.month)
+    bar = st.columns([1.35, 6.2])
+    with bar[0]:
+        if st.button("연동실행", type="primary", key="gc_sync_run"):
+            try:
+                n_ev, n_tk = _gc_sync_google(y, m)
+                st.session_state["_gc_sync_msg"] = (
+                    f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
+                )
+            except Exception as e:
+                st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
+            st.rerun()
+    with bar[1]:
+        msg = st.session_state.pop("_gc_sync_msg", None)
+        if msg:
+            st.caption(msg)
     left, right = st.columns([3.15, 1.12], gap="small")
     with left:
         _gc_cal_panel()
