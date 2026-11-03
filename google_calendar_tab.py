@@ -1057,7 +1057,10 @@ def _gc_set_del_event(cal_id: str, event_id: str) -> None:
 
 def _gc_set_sel_day(day: date) -> None:
     st.session_state["_gc_sel_day"] = day
-    st.session_state["gc_ev_day"] = day
+    try:
+        st.session_state["gc_ev_day"] = day
+    except Exception:
+        pass
 
 
 def _gc_set_sel_event(day: date, event_id: str) -> None:
@@ -1314,21 +1317,16 @@ div[class*="st-key-gc_cellpink"] {
                 color = "#3c4043"
             btn_extra = (
                 "border:none!important;outline:none!important;box-shadow:none!important;"
+                "width:100%!important;max-width:none!important;min-width:0!important;"
+                "cursor:pointer!important;pointer-events:auto!important;"
             )
             if d == today and d.month == month:
-                color = "#fff"
-                btn_extra += (
-                    "background:#1a73e8!important;border-radius:50%!important;"
-                    "width:22px!important;min-width:22px!important;max-width:22px!important;"
-                    "height:22px!important;min-height:22px!important;margin:0 auto!important;"
-                )
+                color = "#1a73e8"
+                btn_extra += "font-weight:700!important;"
             elif is_sel:
                 color = "#174ea6"
                 btn_extra += (
-                    "background:#d2e3fc!important;border-radius:50%!important;"
-                    "width:22px!important;min-width:22px!important;max-width:22px!important;"
-                    "height:22px!important;min-height:22px!important;margin:0 auto!important;"
-                    "font-weight:700!important;"
+                    "background:#d2e3fc!important;font-weight:700!important;"
                 )
             day_rules.append(
                 f"div[class*='st-key-gc_calgrid'] [data-testid='stColumn']"
@@ -1546,7 +1544,10 @@ def _gc_cal_panel() -> None:
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
 
-    if "gc_ev_day" not in st.session_state:
+    sel_sync = st.session_state.get("_gc_sel_day")
+    if isinstance(sel_sync, date):
+        st.session_state["gc_ev_day"] = sel_sync
+    elif "gc_ev_day" not in st.session_state:
         st.session_state["gc_ev_day"] = today
 
     pending_ev = st.session_state.pop("_gc_pending_event", None)
