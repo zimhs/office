@@ -1154,7 +1154,7 @@ div[class*="st-key-gc_cellsel_"],
 div[class*="st-key-gc_celltoday_"],
 div[class*="st-key-gc_cellpink_"] {
   position: relative !important;
-  min-height: 80px !important;
+  min-height: 72px !important;
 }
 div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"] > div:first-child,
 div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] > div:first-child,
@@ -1218,8 +1218,8 @@ div[class*="st-key-gc_evsel_"] [data-testid="stHorizontalBlock"] {
 }
 div[class*="st-key-gc_evlist_"] {
   position: relative !important;
-  z-index: 2 !important;
-  margin-top: 26px !important;
+  z-index: 1 !important;
+  margin-top: 0 !important;
   max-height: 96px !important;
   overflow-y: auto !important;
   overflow-x: hidden !important;
@@ -1265,15 +1265,14 @@ div[class*="st-key-gc_add_pop"] {
   padding: 14px 16px 12px !important;
 }
 div[class*="st-key-gc_day_"] {
-  position: absolute !important;
-  inset: 0 !important;
-  z-index: 1 !important;
+  position: relative !important;
+  z-index: 2 !important;
 }
 div[class*="st-key-gc_day_"] button {
-  min-height: 80px !important;
-  height: 100% !important;
+  min-height: 1.6rem !important;
+  height: 1.6rem !important;
   width: 100% !important;
-  padding: 4px 2px 0 !important;
+  padding: 0 2px !important;
   font-size: 16px !important;
   font-weight: 400 !important;
   border: none !important;
@@ -1282,7 +1281,7 @@ div[class*="st-key-gc_day_"] button {
   background: transparent !important;
   color: inherit !important;
   box-shadow: none !important;
-  justify-content: flex-start !important;
+  justify-content: center !important;
   align-items: center !important;
   line-height: 1.2 !important;
   text-align: center !important;
