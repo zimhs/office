@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; background: transparent; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      const Streamlit = {
+        setComponentReady: function () {
+          window.parent.postMessage(
+            { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+            "*"
+          );
+        },
+        setFrameHeight: function (h) {
+          window.parent.postMessage(
+            { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: h },
+            "*"
+          );
+        },
+        setComponentValue: function (value) {
+          window.parent.postMessage(
+            { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: value },
+            "*"
+          );
+        },
+      };
+      let seq = 0;
+      function bind(root) {
+        root.querySelectorAll("[data-gc-day]").forEach(function (el) {
+          el.addEventListener("click", function (e) {
+            if (e.target.closest("[data-gc-ev], [data-gc-xd]")) return;
+            seq += 1;
+            Streamlit.setComponentValue({
+              t: "d",
+              iso: el.getAttribute("data-gc-day"),
+              n: seq,
+            });
+          });
+        });
+        root.querySelectorAll("[data-gc-ev]").forEach(function (el) {
+          el.addEventListener("click", function (e) {
+            e.stopPropagation();
+            seq += 1;
+            Streamlit.setComponentValue({
+              t: "e",
+              iso: el.getAttribute("data-gc-day") || "",
+              id: el.getAttribute("data-gc-ev") || "",
+              n: seq,
+            });
+          });
+        });
+        root.querySelectorAll("[data-gc-xd]").forEach(function (el) {
+          el.addEventListener("click", function (e) {
+            e.stopPropagation();
+            seq += 1;
+            Streamlit.setComponentValue({
+              t: "x",
+              cal: el.getAttribute("data-gc-cal") || "",
+              id: el.getAttribute("data-gc-xd") || "",
+              n: seq,
+            });
+          });
+        });
+        Streamlit.setFrameHeight(Math.max(120, root.scrollHeight + 12));
+      }
+      window.addEventListener("message", function (event) {
+        var data = event.data;
+        if (!data || data.type !== "streamlit:render") return;
+        var html = (data.args && data.args.html) || "";
+        var root = document.getElementById("root");
+        root.innerHTML = html;
+        bind(root);
+      });
+      Streamlit.setComponentReady();
+      Streamlit.setFrameHeight(80);
+    </script>
+  </body>
+</html>
