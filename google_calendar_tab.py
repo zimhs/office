@@ -1221,32 +1221,31 @@ div[class*="st-key-gc_evlist_"] {
   overflow-x: hidden !important;
   padding: 0 2px 4px !important;
 }
-div[class*="st-key-gc_chiprow_"] div[class*="st-key-gc_evpick_"] button,
-div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
-  padding-right: 16px !important;
-}
-div[class*="st-key-gc_evpick_"] button,
-div[class*="st-key-gc_evpick_"] button * {
-  font: 400 11px/1.2 sans-serif !important;
+.gc-ev-lab {
   font-size: 11px !important;
-  line-height: 1.2 !important;
+  font-weight: 400 !important;
+  line-height: 1.25 !important;
+  color: #174ea6 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  padding: 1px 16px 1px 4px !important;
+}
+div[class*="st-key-gc_evpick_"] {
+  position: absolute !important;
+  inset: 0 !important;
+  opacity: 0 !important;
+  z-index: 2 !important;
 }
 div[class*="st-key-gc_evpick_"] button {
   min-height: 1.2rem !important;
-  height: 1.2rem !important;
+  height: 100% !important;
   width: 100% !important;
   padding: 0 4px !important;
-  font-weight: 400 !important;
   border: none !important;
   outline: none !important;
-  border-radius: 6px !important;
-  background: #e8f0fe !important;
-  color: #174ea6 !important;
+  background: transparent !important;
   box-shadow: none !important;
-  justify-content: flex-start !important;
-  text-align: left !important;
-  white-space: nowrap !important;
-  overflow: hidden !important;
 }
 div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   background: #d2e3fc !important;
@@ -1304,18 +1303,6 @@ div[class*="st-key-gc_cellpink"] {
 </style>
 """,
         unsafe_allow_html=True,
-    )
-    st.html(
-        """
-<style>
-div[class*="st-key-gc_evpick_"] button,
-div[class*="st-key-gc_evpick_"] button * {
-  font: 400 11px/1.2 sans-serif !important;
-  font-size: 11px !important;
-  line-height: 1.2 !important;
-}
-</style>
-"""
     )
     with st.container(key="gc_calhead"):
         head = st.columns([0.38] + [1] * 7, gap=None)
@@ -1413,6 +1400,14 @@ div[class*="st-key-gc_evpick_"] button * {
                                         lab = lab[:13] + "…"
                                     lab = lab or "(일정)"
                                     with st.container(key=f"gc_chiprow_{stamp}_{idx}"):
+                                        st.markdown(
+                                            '<div class="gc-ev-lab" style="font-size:11px;'
+                                            "font-weight:400;line-height:1.25;color:#174ea6;"
+                                            "white-space:nowrap;overflow:hidden;"
+                                            "text-overflow:ellipsis;padding:1px 16px 1px 4px\">"
+                                            f"{html.escape(lab)}</div>",
+                                            unsafe_allow_html=True,
+                                        )
                                         st.button(
                                             lab,
                                             key=f"gc_evpick_{stamp}_{idx}",
