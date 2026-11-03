@@ -149,6 +149,14 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         )[0]
         self.assertNotIn("selected_client", bulk4)
         self.assertNotIn("selected_staff", bulk4)
+        self.assertIn("품목별 상세분석", src)
+        self.assertNotIn("주요 4대 품목 상세 분석", src)
+        self.assertIn('_TAB1_CYLINDER_LABEL = "실린더"', src)
+        self.assertIn("def _tab1_is_cylinder_item", src)
+        self.assertIn("def _tab1_is_cylinder_sales_item", src)
+        self.assertIn("def _tab1_is_cylinder_qty_item", src)
+        self.assertIn("개(병)", src)
+        self.assertIn("_TAB1_BULK4_PACK_VER", src)
         self.assertNotIn("cached_get_yearly_monthly_pivot(df_client_filtered", tab2)
         self.assertIn("_dash_tab2_item_pivot", tab2)
         self.assertIn("pivot_m_client.reindex", tab2)
@@ -344,6 +352,49 @@ class Tab3GasYearMonthTest(unittest.TestCase):
             months_tuple=("07월", "08월", "09월"),
         )
         self.assertEqual([(2026, 9), (2026, 8), (2026, 7)], [(y, m) for y, m, _ in rng])
+
+
+class Tab1CylinderItemTest(unittest.TestCase):
+    def _ns(self):
+        import re as _re
+
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        start = src.find("_TAB1_CYLINDER_LABEL")
+        end = src.find("\ndef _tab1_week_labels")
+        ns = {"re": _re}
+        exec(src[start:end], ns)
+        return ns
+
+    def test_four_non_bulk_match_cylinder(self):
+        ns = self._ns()
+        qty = ns["_tab1_is_cylinder_qty_item"]
+        self.assertTrue(qty("CO2 40kg"))
+        self.assertTrue(qty("질소"))
+        self.assertTrue(qty("산소 7m3"))
+        self.assertTrue(qty("AR 47L"))
+        self.assertTrue(qty("Ar (일반)"))
+        self.assertTrue(qty("CO2 (공업용, 40kg)"))
+        self.assertFalse(qty("CO2 (kg, Bulk)"))
+        self.assertFalse(qty("N2 (kg, Bulk)"))
+        self.assertFalse(qty("O2 (kg, Bulk)"))
+        self.assertFalse(qty("AR (kg, Bulk)"))
+        self.assertFalse(qty("아세틸렌"))
+        self.assertFalse(qty("운송비 (운반비 CO2)"))
+        self.assertFalse(qty("Mix (O2 2% + Ar Bal)"))
+        self.assertFalse(qty("LPG (20kg)"))
+
+    def test_cylinder_sales_is_all_non_bulk4(self):
+        ns = self._ns()
+        sales = ns["_tab1_is_cylinder_sales_item"]
+        self.assertTrue(sales("운송비 (운반비 CO2)"))
+        self.assertTrue(sales("Mix (O2 2% + Ar Bal)"))
+        self.assertTrue(sales("LPG (20kg)"))
+        self.assertTrue(sales("H2 (일반, 용기)"))
+        self.assertTrue(sales("CO2 (공업용, 40kg)"))
+        self.assertFalse(sales("CO2 (kg, Bulk)"))
+        self.assertFalse(sales("N2 (kg, Bulk)"))
+        self.assertFalse(sales("입금 (가스매출)"))
 
 
 if __name__ == "__main__":

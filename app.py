@@ -9095,6 +9095,67 @@ def render_month_expandable_week_table(
 
 _TAB1_BULK4_METRICS = ("매출액 (만원)", "출고량", "총매출 대비 비중 (%)")
 _TAB1_BULK4_WEEKS = ("1주", "2주", "3주", "4주")
+_TAB1_CYLINDER_LABEL = "실린더"
+_TAB1_BULK4_PACK_VER = 3
+_TAB1_BULK4_NAMES = {
+    "CO2 (kg, Bulk)",
+    "N2 (kg, Bulk)",
+    "O2 (kg, Bulk)",
+    "AR (kg, Bulk)",
+}
+_TAB1_SALES_NOISE_RE = re.compile(r"입금|이월|합계|\[이월")
+_TAB1_CYLINDER_QTY_SKIP_RE = re.compile(
+    r"운송|운반|입금|이월|단가차액|잔액|기화기|공사|작업비|임대|회수|보증|수수료|운임|MIX|혼합"
+)
+
+
+def _tab1_is_four_bulk_item(name) -> bool:
+    s = str(name or "").strip()
+    if s in _TAB1_BULK4_NAMES:
+        return True
+    u = re.sub(r"\s+", "", s.upper())
+    return u in {
+        "CO2(KG,BULK)",
+        "N2(KG,BULK)",
+        "O2(KG,BULK)",
+        "AR(KG,BULK)",
+        "N2(LITER,BULK)",
+    }
+
+
+def _tab1_is_cylinder_sales_item(name) -> bool:
+    """매출·비중: 4대 벌크가 아닌 실매출. 4벌크+이 합 = 월 총매출."""
+    s = str(name or "").strip()
+    if not s or s.lower() in ("nan", "none", "-"):
+        return False
+    if _TAB1_SALES_NOISE_RE.search(s):
+        return False
+    return not _tab1_is_four_bulk_item(s)
+
+
+def _tab1_is_cylinder_qty_item(name) -> bool:
+    """출고량: CO2·N2·O2·AR 용기 병 수. 운반비·혼합가스·벌크 kg는 제외."""
+    s = str(name or "").strip()
+    if not s or s.lower() in ("nan", "none", "-"):
+        return False
+    if _TAB1_CYLINDER_QTY_SKIP_RE.search(s.upper()) or _TAB1_CYLINDER_QTY_SKIP_RE.search(s):
+        return False
+    u = re.sub(r"\s+", "", s.upper())
+    if "BULK" in u or "벌크" in s:
+        return False
+    if u.startswith("CO2") or s.startswith("탄산"):
+        return True
+    if u.startswith("N2") or s.startswith("질소"):
+        return True
+    if u.startswith("O2") or s.startswith("산소"):
+        return True
+    if u.startswith("AR") or s.startswith("아르곤") or s.startswith("아르"):
+        return True
+    return False
+
+
+def _tab1_is_cylinder_item(name) -> bool:
+    return _tab1_is_cylinder_qty_item(name)
 
 
 def _tab1_week_labels(dt_series):
@@ -9133,15 +9194,24 @@ def _tab1_bulk4_one(sub, item, metric, tot_m, tot_w, all_months, years):
     )
     if sub is None or sub.empty:
         return empty_m, empty_w
-    d = sub[sub["품목명"] == item]
+    if item == _TAB1_CYLINDER_LABEL:
+        if "출고량" in str(metric):
+            d = sub[sub["품목명"].map(_tab1_is_cylinder_qty_item)]
+        else:
+            d = sub[sub["품목명"].map(_tab1_is_cylinder_sales_item)]
+    else:
+        d = sub[sub["품목명"] == item]
     if d.empty:
         return empty_m, empty_w
     if metric == "매출액 (만원)":
         m = d.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
         w = d.pivot_table(index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
     elif "출고량" in str(metric):
-        m = d.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
-        w = d.pivot_table(index=["월", "주차"], columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
+        m = d.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0)
+        w = d.pivot_table(index=["월", "주차"], columns="연도", values="출고량", aggfunc="sum").fillna(0)
+        if item != _TAB1_CYLINDER_LABEL:
+            m = m / 1000
+            w = w / 1000
     else:
         mi = d.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
         wi = d.pivot_table(index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum").fillna(0)
@@ -9157,11 +9227,14 @@ def _tab1_bulk4_ensure_pack(
     years,
     latest_update_str="",
 ):
-    """날짜·원본만 바뀔 때 4대 품목 12뷰를 계산. 거래처/담당자/품목 필터와 무관."""
+    """날짜·원본만 바뀔 때 벌크 4종+실린더 합산 뷰를 계산. 거래처/담당자/품목 필터와 무관."""
     items = list(target_items or [])
+    if _TAB1_CYLINDER_LABEL not in items:
+        items = items + [_TAB1_CYLINDER_LABEL]
     months = list(all_months or [])
     yrs = [str(y) for y in (years or ())]
     sig = (
+        _TAB1_BULK4_PACK_VER,
         str(latest_update_str or ""),
         tuple(items),
         tuple(months),
@@ -9178,7 +9251,7 @@ def _tab1_bulk4_ensure_pack(
         st.session_state["_tab1_bulk4_pack"] = {"sig": sig, "items": items, "views": views}
         return
     cols = [c for c in ("품목명", "월", "연도", "매출액", "출고량", "매출일_dt") if c in df_base.columns]
-    sub = df_base.loc[df_base["품목명"].isin(items), cols]
+    sub = df_base.loc[:, cols]
     if sub.empty or "매출일_dt" not in sub.columns:
         st.session_state["_tab1_bulk4_pack"] = {"sig": sig, "items": items, "views": views}
         return
@@ -9219,7 +9292,7 @@ def render_tab1_bulk4_item_panel():
     pack = st.session_state.get("_tab1_bulk4_pack") or {}
     items = pack.get("items") or list(target_items)
     st.markdown(
-        "<div class='sub-header dashboard-tab-panel-head'>📦 주요 4대 품목 상세 분석</div>",
+        "<div class='sub-header dashboard-tab-panel-head'>📦 품목별 상세분석</div>",
         unsafe_allow_html=True,
     )
     sel_col1, sel_col2 = st.columns([1, 1])
@@ -9249,16 +9322,21 @@ def render_tab1_bulk4_item_panel():
     if "비중" in selected_metric:
         y_suf, y_fmt, _fmt_kind, _cmap = "%", ",.1f", "pct", "Purples"
     elif "출고량" in selected_metric:
-        y_suf, y_fmt, _fmt_kind, _cmap = " 천kg", ",.1f", "qty", "Greens"
+        if selected_target_item == _TAB1_CYLINDER_LABEL:
+            y_suf, y_fmt, _fmt_kind, _cmap = " 개(병)", ",.0f", "qty", "Greens"
+        else:
+            y_suf, y_fmt, _fmt_kind, _cmap = " 천kg", ",.1f", "qty", "Greens"
     else:
         y_suf, y_fmt, _fmt_kind, _cmap = " 만원", ",.0f", "amt", "Blues"
     if _fmt_kind == "amt":
         item_pivot = _scale_sales_money(item_pivot)
         week_year_pivot = _scale_sales_money(week_year_pivot)
         htmls = {}
-    _b4_metric_lbl = (
-        f"{selected_metric} · {_dash_vat_lbl()}" if _fmt_kind == "amt" else selected_metric
-    )
+        _b4_metric_lbl = f"{selected_metric} · {_dash_vat_lbl()}"
+    elif selected_target_item == _TAB1_CYLINDER_LABEL and "출고량" in selected_metric:
+        _b4_metric_lbl = "출고량 · 개(병)"
+    else:
+        _b4_metric_lbl = selected_metric
     _b4_disp = get_display_df_with_sum(item_pivot, "연간 합계")
     _b4_fmt = "{:,.1f}%" if _fmt_kind == "pct" else ("{:,.1f}" if _fmt_kind == "qty" else "{:,.0f}")
     _b4_styled = style_with_sum(_b4_disp, _b4_fmt, _cmap, axis=None)
@@ -9267,10 +9345,10 @@ def render_tab1_bulk4_item_panel():
         f"<div style='font-size:14px;font-weight:700;color:#334155;margin:0 0 6px'>{html.escape(str(selected_target_item))} · {html.escape(str(_b4_metric_lbl))}</div>",
         key="t1_bulk4",
         styler=_b4_styled,
-        file_name="T1_4대품목상세.xlsx",
-        sheet="4대품목",
+        file_name="T1_품목별상세.xlsx",
+        sheet="품목별",
         fig=_b4_fig,
-        graph_name="T1_4대품목상세.png",
+        graph_name="T1_품목별상세.png",
     )
     i_col_left, i_col_right = st.columns([1, 1])
     with i_col_left:
