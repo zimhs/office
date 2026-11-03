@@ -1216,14 +1216,23 @@ div[class*="st-key-gc_evsel_"] [data-testid="stHorizontalBlock"] {
   gap: 0 !important;
   align-items: center !important;
 }
-div[class*="st-key-gc_evlist_"] {
-  position: relative !important;
-  z-index: 1 !important;
-  margin-top: 0 !important;
-  max-height: 96px !important;
-  overflow-y: auto !important;
-  overflow-x: hidden !important;
-  padding: 0 2px 4px !important;
+.gc-evlist {
+  max-height: 96px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 2px 4px;
+}
+.gc-inl-chip {
+  font-size: 16px;
+  line-height: 1.3;
+  color: #174ea6;
+  background: #e8f0fe;
+  border-radius: 6px;
+  padding: 1px 6px;
+  margin: 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 div[class*="st-key-gc_chiprow_"] div[class*="st-key-gc_evpick_"] button,
 div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
@@ -1345,14 +1354,15 @@ div[class*="st-key-gc_cellpink"] {
             items = by_day.get(iso) or []
             is_hol = _gc_is_holiday_day(items)
             is_pink = (not is_sel) and (d != today) and (d.weekday() >= 5 or is_hol)
+            cell_key = f"gc_cell_{stamp}"
             if is_sel:
-                cell_key = f"gc_cellsel_{stamp}"
+                bg = "#e8f0fe"
             elif d == today:
-                cell_key = f"gc_celltoday_{stamp}"
+                bg = "#e8f4ff"
             elif is_pink:
-                cell_key = f"gc_cellpink_{stamp}"
+                bg = "#fdecea"
             else:
-                cell_key = f"gc_cell_{stamp}"
+                bg = "#fff"
             if d.month != month:
                 color = "#bdc1c6"
             elif d == today:
@@ -1364,6 +1374,7 @@ div[class*="st-key-gc_cellpink"] {
             else:
                 color = "#3c4043"
             day_rules.append(
+                f"div[class*='st-key-gc_cell_{stamp}']{{background:{bg}!important;}}"
                 f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;}}"
             )
             row.append((d, stamp, cell_key, items, iso))
@@ -1391,42 +1402,56 @@ div[class*="st-key-gc_cellpink"] {
                             args=(d,),
                         )
                         if items:
-                            sel_eid = str(st.session_state.get("_gc_sel_event") or "")
-                            with st.container(key=f"gc_evlist_{stamp}"):
-                                for idx, ev in enumerate(items):
-                                    eid = str(ev.get("id") or "")
-                                    cid = str(ev.get("cal_id") or "")
-                                    lab = (
-                                        (str(ev.get("hhmm") or "") + " ")
-                                        if ev.get("hhmm")
-                                        else ""
-                                    ) + str(ev.get("title") or "")
-                                    if len(lab) > 14:
-                                        lab = lab[:13] + "…"
-                                    lab = lab or "(일정)"
-                                    chip_key = (
-                                        f"gc_evsel_{stamp}_{idx}"
-                                        if eid and eid == sel_eid
-                                        else f"gc_chiprow_{stamp}_{idx}"
-                                    )
-                                    with st.container(key=chip_key):
-                                        st.button(
-                                            lab,
-                                            key=f"gc_evpick_{stamp}_{idx}",
-                                            type="tertiary",
-                                            width="stretch",
-                                            on_click=_gc_set_sel_event,
-                                            args=(d, eid or iso),
-                                        )
-                                        if ev.get("writable") and eid and cid:
-                                            st.button(
-                                                "×",
-                                                key=f"gc_xd_{stamp}_{idx}",
-                                                type="tertiary",
-                                                width="content",
-                                                on_click=_gc_set_del_event,
-                                                args=(cid, eid),
-                                            )
+                            bits = []
+                            for ev in items:
+                                lab = (
+                                    (str(ev.get("hhmm") or "") + " ")
+                                    if ev.get("hhmm")
+                                    else ""
+                                ) + str(ev.get("title") or "(일정)")
+                                bits.append(
+                                    "<div class='gc-inl-chip'>"
+                                    f"{html.escape(lab)}</div>"
+                                )
+                            st.markdown(
+                                "<div class='gc-evlist'>" + "".join(bits) + "</div>",
+                                unsafe_allow_html=True,
+                            )
+
+
+def _render_sel_day_events(items: list[dict], day: date) -> None:
+    """고른 날의 일정만 위젯으로 다룬다. 칸 안에는 HTML만 그려 클릭이 늦지 않게 한다."""
+    if not items:
+        return
+    stamp = day.strftime("%Y%m%d")
+    st.caption("이날 일정 · 제목을 누르면 메모, ×로 삭제")
+    with st.container(key=f"gc_evlist_{stamp}"):
+        for idx, ev in enumerate(items):
+            eid = str(ev.get("id") or "")
+            cid = str(ev.get("cal_id") or "")
+            lab = (
+                (str(ev.get("hhmm") or "") + " ") if ev.get("hhmm") else ""
+            ) + str(ev.get("title") or "(일정)")
+            r1, r2 = st.columns([6.4, 0.7], gap="small")
+            with r1:
+                st.button(
+                    lab,
+                    key=f"gc_evpick_{stamp}_{idx}",
+                    type="tertiary",
+                    width="stretch",
+                    on_click=_gc_set_sel_event,
+                    args=(day, eid or day.isoformat()),
+                )
+            with r2:
+                if ev.get("writable") and eid and cid:
+                    st.button(
+                        "×",
+                        key=f"gc_xd_{stamp}_{idx}",
+                        type="tertiary",
+                        width="content",
+                        on_click=_gc_set_del_event,
+                        args=(cid, eid),
+                    )
 
 
 def _render_event_memo_pop(ev: dict) -> None:
@@ -1652,28 +1677,6 @@ def _gc_cal_panel() -> None:
                 _gc_cache_add_event(day, real)
         except Exception as e:
             st.error(f"일정 저장 실패: {e}")
-    pending_note = st.session_state.pop("_gc_pending_ev_note", None)
-    if isinstance(pending_note, dict) and pending_note.get("id"):
-        cid = str(pending_note.get("cal") or "")
-        eid = str(pending_note.get("id") or "")
-        notes = str(pending_note.get("notes") or "")
-        _gc_cache_patch_event(cid, eid, {"description": notes})
-        if eid and not eid.startswith("local-") and cid:
-            try:
-                patch_event(cid, eid, {"description": notes})
-            except Exception as e:
-                st.error(f"메모 저장 실패: {e}")
-    pending_del = st.session_state.pop("_gc_pending_del_event", None)
-    if isinstance(pending_del, dict) and pending_del.get("id"):
-        cid = str(pending_del.get("cal") or "primary")
-        eid = str(pending_del.get("id") or "")
-        _gc_cache_remove_event(cid, eid)
-        if eid and not eid.startswith("local-"):
-            try:
-                delete_event(cid, eid)
-            except Exception as e:
-                st.error(f"일정 삭제 실패: {e}")
-
     try:
         cals = _gc_cached_cals()
     except Exception as e:
@@ -1740,15 +1743,50 @@ div[class*="st-key-gc_sync_run"] button {
     if msg:
         st.caption(msg)
 
+    if st.session_state.get("_gc_add_open"):
+        _render_add_event_pop(cals)
+    _gc_cal_grid_panel()
+
+
+@st.fragment
+def _gc_cal_grid_panel() -> None:
+    """날짜 클릭은 이 조각만 다시 그린다."""
+    today = datetime.now(_TZ).date()
+    pending_note = st.session_state.pop("_gc_pending_ev_note", None)
+    if isinstance(pending_note, dict) and pending_note.get("id"):
+        cid = str(pending_note.get("cal") or "")
+        eid = str(pending_note.get("id") or "")
+        notes = str(pending_note.get("notes") or "")
+        _gc_cache_patch_event(cid, eid, {"description": notes})
+        if eid and not eid.startswith("local-") and cid:
+            try:
+                patch_event(cid, eid, {"description": notes})
+            except Exception as e:
+                st.error(f"메모 저장 실패: {e}")
+    pending_del = st.session_state.pop("_gc_pending_del_event", None)
+    if isinstance(pending_del, dict) and pending_del.get("id"):
+        cid = str(pending_del.get("cal") or "primary")
+        eid = str(pending_del.get("id") or "")
+        _gc_cache_remove_event(cid, eid)
+        if eid and not eid.startswith("local-"):
+            try:
+                delete_event(cid, eid)
+            except Exception as e:
+                st.error(f"일정 삭제 실패: {e}")
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
+    cals = list(_gc_api_box().get("cals") or [])
     by_day = _gc_cached_events(cals, y, m)
     sel_day = st.session_state.get("_gc_sel_day")
     if isinstance(sel_day, date):
-        st.caption(f"선택 {sel_day.month}월 {sel_day.day}일 · 일정추가로 그날에 일정을 더 넣을 수 있습니다.")
+        st.caption(
+            f"선택 {sel_day.month}월 {sel_day.day}일 · 일정추가로 그날에 일정을 더 넣을 수 있습니다."
+        )
     _render_month_grid(
         y, m, by_day, today, selected=sel_day if isinstance(sel_day, date) else None
     )
+    if isinstance(sel_day, date):
+        _render_sel_day_events(by_day.get(sel_day.isoformat()) or [], sel_day)
     if st.session_state.get("_gc_memo_open"):
         pop_ev = _gc_find_event(
             by_day, str(st.session_state.get("_gc_sel_event") or "")
@@ -1757,8 +1795,6 @@ div[class*="st-key-gc_sync_run"] button {
             _render_event_memo_pop(pop_ev)
         else:
             st.session_state["_gc_memo_open"] = False
-    if st.session_state.get("_gc_add_open"):
-        _render_add_event_pop(cals)
 
 
 @st.fragment

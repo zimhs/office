@@ -97,6 +97,8 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn('key="gc_sync_run"', src)
         self.assertIn("_gc_sync_google", src)
         self.assertIn("_render_month_grid", src)
+        self.assertIn("_gc_cal_grid_panel", src)
+        self.assertIn("_render_sel_day_events", src)
         self.assertIn("gc_xd_", src)
         self.assertIn("_gc_pending_del_event", src)
         self.assertIn("gc_evlist_", src)
