@@ -1200,11 +1200,11 @@ div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   padding-right: 16px !important;
 }
 div[class*="st-key-gc_evpick_"] button {
-  min-height: 1.35rem !important;
-  height: 1.35rem !important;
+  min-height: 1.2rem !important;
+  height: 1.2rem !important;
   width: 100% !important;
   padding: 0 4px !important;
-  font-size: 12px !important;
+  font-size: 11px !important;
   font-weight: 400 !important;
   border: none !important;
   outline: none !important;
@@ -1296,28 +1296,45 @@ div[class*="st-key-gc_cellpink"] {
             items = by_day.get(iso) or []
             is_hol = _gc_is_holiday_day(items)
             is_pink = (not is_sel) and (d != today) and (d.weekday() >= 5 or is_hol)
-            if is_sel:
-                bg = "#e8f0fe"
-            elif d == today:
+            if d == today:
                 bg = "#e8f4ff"
-            elif is_pink:
+            elif d.weekday() >= 5 or is_hol:
                 bg = "#fdecea"
             else:
                 bg = "#fff"
+            if is_sel and d != today:
+                bg = "#e8f0fe"
             if d.month != month:
                 color = "#bdc1c6"
-            elif d == today:
-                color = "#174ea6"
             elif d.weekday() == 6 or is_hol:
                 color = "#d93025"
             elif d.weekday() == 5:
                 color = "#c62828"
             else:
                 color = "#3c4043"
+            btn_extra = (
+                "border:none!important;outline:none!important;box-shadow:none!important;"
+            )
+            if d == today and d.month == month:
+                color = "#fff"
+                btn_extra += (
+                    "background:#1a73e8!important;border-radius:50%!important;"
+                    "width:22px!important;min-width:22px!important;max-width:22px!important;"
+                    "height:22px!important;min-height:22px!important;margin:0 auto!important;"
+                )
+            elif is_sel:
+                color = "#174ea6"
+                btn_extra += (
+                    "background:#d2e3fc!important;border-radius:50%!important;"
+                    "width:22px!important;min-width:22px!important;max-width:22px!important;"
+                    "height:22px!important;min-height:22px!important;margin:0 auto!important;"
+                    "font-weight:700!important;"
+                )
             day_rules.append(
+                f"div[class*='st-key-gc_calgrid'] [data-testid='stColumn']"
+                f":has([class*='st-key-gc_cell_{stamp}']),"
                 f"div[class*='st-key-gc_cell_{stamp}']{{background:{bg}!important;}}"
-                f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;"
-                "border:none!important;outline:none!important;box-shadow:none!important;}}"
+                f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;{btn_extra}}}"
             )
             row.append((d, stamp, items, iso))
         planned.append(row)
