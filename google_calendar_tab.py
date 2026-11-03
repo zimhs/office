@@ -1062,7 +1062,7 @@ def _gc_set_sel_day(day: date) -> None:
 
 def _gc_set_sel_event(day: date, event_id: str) -> None:
     st.session_state["_gc_sel_day"] = day
-    st.session_state["gc_ev_day"] = day
+    st.session_state["_gc_add_need_day"] = False
     st.session_state["_gc_sel_event"] = str(event_id or "")
     st.session_state["_gc_memo_open"] = True
     st.session_state["_gc_add_open"] = False
@@ -1266,15 +1266,16 @@ div[class*="st-key-gc_add_pop"] {
 }
 div[class*="st-key-gc_day_"] {
   position: relative !important;
-  z-index: 2 !important;
+  z-index: 4 !important;
+  margin-bottom: 2px !important;
 }
 div[class*="st-key-gc_day_"] button {
-  min-height: 1.6rem !important;
-  height: 1.6rem !important;
+  min-height: 2rem !important;
+  height: 2rem !important;
   width: 100% !important;
   padding: 0 2px !important;
   font-size: 16px !important;
-  font-weight: 400 !important;
+  font-weight: 600 !important;
   border: none !important;
   outline: none !important;
   border-radius: 8px !important;
@@ -1286,6 +1287,7 @@ div[class*="st-key-gc_day_"] button {
   line-height: 1.2 !important;
   text-align: center !important;
   cursor: pointer !important;
+  pointer-events: auto !important;
 }
 div[class*="st-key-gc_day_"] button:focus,
 div[class*="st-key-gc_day_"] button:focus-visible,
@@ -1396,10 +1398,8 @@ div[class*="st-key-gc_cellpink"] {
                         if st.button(
                             str(d.day),
                             key=f"gc_day_{stamp}",
-                            type="tertiary",
+                            type="secondary",
                             width="stretch",
-                            on_click=_gc_set_sel_day,
-                            args=(d,),
                         ):
                             st.session_state["_gc_sel_day"] = d
                             st.session_state["_gc_add_need_day"] = False
@@ -1629,10 +1629,7 @@ def _gc_cal_panel() -> None:
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
 
-    sel_sync = st.session_state.get("_gc_sel_day")
-    if isinstance(sel_sync, date):
-        st.session_state["gc_ev_day"] = sel_sync
-    elif "gc_ev_day" not in st.session_state:
+    if "gc_ev_day" not in st.session_state:
         st.session_state["gc_ev_day"] = today
 
     pending_ev = st.session_state.pop("_gc_pending_event", None)
@@ -1761,6 +1758,8 @@ div[class*="st-key-gc_sync_run"] button {
     m = int(st.session_state.get("gc_month") or today.month)
     by_day = _gc_cached_events(cals, y, m)
     sel_day = st.session_state.get("_gc_sel_day")
+    if isinstance(sel_day, date):
+        st.caption(f"선택 {sel_day.month}월 {sel_day.day}일 · 일정추가로 그날에 일정을 더 넣을 수 있습니다.")
     _render_month_grid(
         y, m, by_day, today, selected=sel_day if isinstance(sel_day, date) else None
     )
