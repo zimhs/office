@@ -1071,21 +1071,30 @@ def _gc_set_del_event(cal_id: str, event_id: str) -> None:
 
 def _gc_set_sel_day(day: date) -> None:
     st.session_state["_gc_sel_day"] = day
-    try:
-        st.session_state["gc_ev_day"] = day
-    except Exception:
-        pass
 
 
 def _gc_set_sel_event(day: date, event_id: str) -> None:
     st.session_state["_gc_sel_day"] = day
-    st.session_state["gc_ev_day"] = day
     st.session_state["_gc_sel_event"] = str(event_id or "")
     st.session_state["_gc_memo_open"] = True
 
 
 def _gc_close_memo_pop() -> None:
     st.session_state["_gc_memo_open"] = False
+
+
+def _gc_open_add_pop() -> None:
+    day = st.session_state.get("_gc_sel_day")
+    if not isinstance(day, date):
+        day = datetime.now(_TZ).date()
+    st.session_state["_gc_add_pop"] = True
+    st.session_state["gc_ev_day"] = day
+    st.session_state.pop("gc_ev_title", None)
+    st.session_state.pop("gc_ev_note", None)
+
+
+def _gc_close_add_pop() -> None:
+    st.session_state["_gc_add_pop"] = False
 
 
 def _render_month_grid(
@@ -1237,13 +1246,14 @@ div[class*="st-key-gc_evpick_"] button {
 div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   background: #d2e3fc !important;
 }
-div[class*="st-key-gc_memo_pop"] {
+div[class*="st-key-gc_memo_pop"],
+div[class*="st-key-gc_add_pop"] {
   position: fixed !important;
-  top: 22% !important;
+  top: 18% !important;
   left: 50% !important;
   transform: translateX(-50%) !important;
   z-index: 10050 !important;
-  width: min(420px, 92vw) !important;
+  width: min(520px, 92vw) !important;
   background: #fff !important;
   border: 1px solid #e0e3e8 !important;
   border-radius: 12px !important;
@@ -1455,6 +1465,42 @@ def _render_event_memo_pop(ev: dict) -> None:
             )
 
 
+def _render_add_event_pop(cals: list[dict]) -> None:
+    """일자 선택 후 일정 추가. 대화상자 대신 조각 안 팝업이라 날짜 버튼을 건드리지 않는다."""
+    with st.container(key="gc_add_pop"):
+        h1, h2 = st.columns([6, 1])
+        with h1:
+            st.markdown("**일정 추가**")
+        with h2:
+            st.button(
+                "닫기",
+                key="gc_add_close",
+                type="tertiary",
+                on_click=_gc_close_add_pop,
+            )
+        et = st.text_input("제목", key="gc_ev_title")
+        ed = st.date_input("날짜", key="gc_ev_day")
+        en = st.text_area("메모", key="gc_ev_note", height=70, placeholder="일정 메모")
+        writable = _writable_calendars(cals)
+        cal_opts = {c["summary"]: c["id"] for c in writable} or {"기본": "primary"}
+        if st.session_state.get("gc_ev_cal") not in cal_opts:
+            st.session_state["gc_ev_cal"] = next(iter(cal_opts))
+        pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
+        if st.button("일정 저장", type="primary", key="gc_ev_save"):
+            title = (et or "").strip()
+            if len(title) < 1:
+                st.error("제목을 입력하세요.")
+            else:
+                st.session_state["_gc_pending_event"] = {
+                    "cal": cal_opts[pick],
+                    "title": title,
+                    "day": ed,
+                    "notes": en or "",
+                }
+                st.session_state["_gc_add_pop"] = False
+                st.rerun(scope="fragment")
+
+
 def _qp_pop(*names: str) -> None:
     try:
         qp = st.query_params
@@ -1558,12 +1604,6 @@ def _gc_cal_panel() -> None:
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
 
-    sel_sync = st.session_state.get("_gc_sel_day")
-    if isinstance(sel_sync, date):
-        st.session_state["gc_ev_day"] = sel_sync
-    elif "gc_ev_day" not in st.session_state:
-        st.session_state["gc_ev_day"] = today
-
     pending_ev = st.session_state.pop("_gc_pending_event", None)
     if isinstance(pending_ev, dict):
         day = pending_ev["day"]
@@ -1629,7 +1669,7 @@ def _gc_cal_panel() -> None:
         st.error(f"캘린더를 불러오지 못했습니다: {e}")
         cals = []
 
-    top = st.columns([1.1, 1.1, 5.6])
+    top = st.columns([1.1, 1.1, 4.2, 1.6])
     with top[0]:
         if st.button("오늘", key="gc_today"):
             st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
@@ -1648,6 +1688,13 @@ def _gc_cal_panel() -> None:
                 st.rerun(scope="fragment")
     with top[2]:
         st.markdown(f"**{y}년 {m}월**")
+    with top[3]:
+        st.button(
+            "일정 추가",
+            type="primary",
+            key="gc_add_open",
+            on_click=_gc_open_add_pop,
+        )
 
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
@@ -1664,27 +1711,8 @@ def _gc_cal_panel() -> None:
             _render_event_memo_pop(pop_ev)
         else:
             st.session_state["_gc_memo_open"] = False
-    with st.expander("일정 추가", expanded=False):
-        et = st.text_input("제목", key="gc_ev_title")
-        ed = st.date_input("날짜", key="gc_ev_day")
-        en = st.text_area("메모", key="gc_ev_note", height=70, placeholder="일정 메모")
-        writable = _writable_calendars(cals)
-        cal_opts = {c["summary"]: c["id"] for c in writable} or {"기본": "primary"}
-        if st.session_state.get("gc_ev_cal") not in cal_opts:
-            st.session_state["gc_ev_cal"] = next(iter(cal_opts))
-        pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
-        if st.button("일정 저장", type="primary", key="gc_ev_save"):
-            title = (et or "").strip()
-            if len(title) < 1:
-                st.error("제목을 입력하세요.")
-            else:
-                st.session_state["_gc_pending_event"] = {
-                    "cal": cal_opts[pick],
-                    "title": title,
-                    "day": ed,
-                    "notes": en or "",
-                }
-                st.rerun(scope="fragment")
+    if st.session_state.get("_gc_add_pop"):
+        _render_add_event_pop(cals)
 
 
 @st.fragment
