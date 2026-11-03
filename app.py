@@ -9096,6 +9096,7 @@ def render_month_expandable_week_table(
 _TAB1_BULK4_METRICS = ("매출액 (만원)", "출고량", "총매출 대비 비중 (%)")
 _TAB1_BULK4_WEEKS = ("1주", "2주", "3주", "4주")
 _TAB1_CYLINDER_LABEL = "실린더"
+_TAB1_BULK4_PACK_VER = 3
 _TAB1_BULK4_NAMES = {
     "CO2 (kg, Bulk)",
     "N2 (kg, Bulk)",
@@ -9233,6 +9234,7 @@ def _tab1_bulk4_ensure_pack(
     months = list(all_months or [])
     yrs = [str(y) for y in (years or ())]
     sig = (
+        _TAB1_BULK4_PACK_VER,
         str(latest_update_str or ""),
         tuple(items),
         tuple(months),
@@ -9330,9 +9332,11 @@ def render_tab1_bulk4_item_panel():
         item_pivot = _scale_sales_money(item_pivot)
         week_year_pivot = _scale_sales_money(week_year_pivot)
         htmls = {}
-    _b4_metric_lbl = (
-        f"{selected_metric} · {_dash_vat_lbl()}" if _fmt_kind == "amt" else selected_metric
-    )
+        _b4_metric_lbl = f"{selected_metric} · {_dash_vat_lbl()}"
+    elif selected_target_item == _TAB1_CYLINDER_LABEL and "출고량" in selected_metric:
+        _b4_metric_lbl = "출고량 · 개(병)"
+    else:
+        _b4_metric_lbl = selected_metric
     _b4_disp = get_display_df_with_sum(item_pivot, "연간 합계")
     _b4_fmt = "{:,.1f}%" if _fmt_kind == "pct" else ("{:,.1f}" if _fmt_kind == "qty" else "{:,.0f}")
     _b4_styled = style_with_sum(_b4_disp, _b4_fmt, _cmap, axis=None)

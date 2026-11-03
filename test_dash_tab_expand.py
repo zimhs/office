@@ -156,6 +156,7 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("def _tab1_is_cylinder_sales_item", src)
         self.assertIn("def _tab1_is_cylinder_qty_item", src)
         self.assertIn("개(병)", src)
+        self.assertIn("_TAB1_BULK4_PACK_VER", src)
         self.assertNotIn("cached_get_yearly_monthly_pivot(df_client_filtered", tab2)
         self.assertIn("_dash_tab2_item_pivot", tab2)
         self.assertIn("pivot_m_client.reindex", tab2)
