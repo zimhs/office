@@ -1669,7 +1669,25 @@ def _gc_cal_panel() -> None:
         st.error(f"캘린더를 불러오지 못했습니다: {e}")
         cals = []
 
-    top = st.columns([1.1, 1.1, 4.2, 1.6])
+    st.markdown(
+        """
+<style>
+div[class*="st-key-gc_head_acts"] [data-testid="stHorizontalBlock"] {
+  gap: 4px !important;
+  flex-wrap: nowrap !important;
+  justify-content: flex-end !important;
+}
+div[class*="st-key-gc_head_acts"] button {
+  min-height: 2rem !important;
+  padding-left: 0.65rem !important;
+  padding-right: 0.65rem !important;
+  white-space: nowrap !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    top = st.columns([1.05, 1.05, 3.15, 2.55], vertical_alignment="center")
     with top[0]:
         if st.button("오늘", key="gc_today"):
             st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
@@ -1689,12 +1707,28 @@ def _gc_cal_panel() -> None:
     with top[2]:
         st.markdown(f"**{y}년 {m}월**")
     with top[3]:
-        st.button(
-            "일정 추가",
-            type="primary",
-            key="gc_add_open",
-            on_click=_gc_open_add_pop,
-        )
+        with st.container(key="gc_head_acts"):
+            a1, a2 = st.columns(2, gap="small")
+            with a1:
+                st.button(
+                    "일정 추가",
+                    type="primary",
+                    key="gc_add_open",
+                    on_click=_gc_open_add_pop,
+                )
+            with a2:
+                if st.button("연동실행", type="primary", key="gc_sync_run"):
+                    try:
+                        n_ev, n_tk = _gc_sync_google(y, m)
+                        st.session_state["_gc_sync_msg"] = (
+                            f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
+                        )
+                    except Exception as e:
+                        st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
+                    st.rerun()
+    msg = st.session_state.pop("_gc_sync_msg", None)
+    if msg:
+        st.caption(msg)
 
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
@@ -1913,24 +1947,6 @@ div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
 
 
 def _gc_work_panel() -> None:
-    today = datetime.now(_TZ).date()
-    y = int(st.session_state.get("gc_year") or today.year)
-    m = int(st.session_state.get("gc_month") or today.month)
-    bar = st.columns([1.35, 6.2])
-    with bar[0]:
-        if st.button("연동실행", type="primary", key="gc_sync_run"):
-            try:
-                n_ev, n_tk = _gc_sync_google(y, m)
-                st.session_state["_gc_sync_msg"] = (
-                    f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
-                )
-            except Exception as e:
-                st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
-            st.rerun()
-    with bar[1]:
-        msg = st.session_state.pop("_gc_sync_msg", None)
-        if msg:
-            st.caption(msg)
     left, right = st.columns([3.15, 1.12], gap="small")
     with left:
         _gc_cal_panel()
