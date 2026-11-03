@@ -496,9 +496,23 @@ def list_events(cal_id: str, start: date, end: date, token: str = "") -> list[di
     return list(data.get("items") or [])
 
 
+def _writable_calendars(cals: list[dict]) -> list[dict]:
+    out = []
+    for c in cals or []:
+        cid = str(c.get("id") or "")
+        if not cid or cid == GC_KR_HOLIDAY or not c.get("writable"):
+            continue
+        out.append(c)
+    out.sort(key=lambda c: (not bool(c.get("primary")), str(c.get("summary") or "")))
+    return out
+
+
 def insert_event(
     cal_id: str, title: str, day: date, all_day: bool, notes: str = ""
 ) -> dict:
+    cid = str(cal_id or "").strip() or "primary"
+    if cid == GC_KR_HOLIDAY:
+        raise RuntimeError("공휴일 캘린더에는 일정을 넣을 수 없습니다. 업무 캘린더를 고르세요.")
     body: dict[str, Any] = {"summary": title}
     if str(notes or "").strip():
         body["description"] = str(notes).strip()
@@ -510,7 +524,7 @@ def insert_event(
         e = s + timedelta(hours=1)
         body["start"] = {"dateTime": s.isoformat(), "timeZone": "Asia/Seoul"}
         body["end"] = {"dateTime": e.isoformat(), "timeZone": "Asia/Seoul"}
-    return api_json("POST", f"{_CAL_API}/calendars/{urllib.parse.quote(cal_id, safe='')}/events", body)
+    return api_json("POST", f"{_CAL_API}/calendars/{urllib.parse.quote(cid, safe='')}/events", body)
 
 
 def api_delete(url: str) -> None:
@@ -1204,7 +1218,8 @@ def _render_add_event_pop(cals: list[dict]) -> None:
         et = st.text_input("제목", key="gc_ev_title")
         ed = st.date_input("날짜", key="gc_ev_day")
         en = st.text_area("메모", key="gc_ev_note", height=70, placeholder="일정 메모")
-        cal_opts = {c["summary"]: c["id"] for c in cals} or {"기본": "primary"}
+        writable = _writable_calendars(cals)
+        cal_opts = {c["summary"]: c["id"] for c in writable} or {"기본": "primary"}
         pick = st.selectbox("캘린더", options=list(cal_opts.keys()), key="gc_ev_cal")
         b1, b2 = st.columns([1, 1])
         with b1:

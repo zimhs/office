@@ -87,6 +87,8 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("patch_event", src)
         self.assertIn("_gc_memo_open", src)
         self.assertIn("gc_ev_note", src)
+        self.assertIn("_writable_calendars", src)
+        self.assertIn("공휴일 캘린더에는 일정을 넣을 수 없습니다", src)
         self.assertIn("_gc_open_add_pop", src)
         self.assertIn('key="gc_add_open_btn"', src)
         self.assertIn("gc_add_pop", src)
@@ -259,6 +261,27 @@ class GoogleCalendarTokenPersistTest(unittest.TestCase):
                 saved = json.load(f)
             self.assertEqual(saved.get("refresh_token"), "keep-me")
             self.assertEqual(saved.get("access_token"), "new")
+
+    def test_writable_calendars_skip_holiday(self):
+        items = gc._writable_calendars(
+            [
+                {
+                    "id": gc.GC_KR_HOLIDAY,
+                    "summary": "대한민국 공휴일",
+                    "writable": False,
+                },
+                {
+                    "id": "user@gmail.com",
+                    "summary": "업무",
+                    "writable": True,
+                    "primary": True,
+                },
+                {"id": "ro", "summary": "읽기전용", "writable": False},
+            ]
+        )
+        self.assertEqual([c["summary"] for c in items], ["업무"])
+        with self.assertRaises(RuntimeError):
+            gc.insert_event(gc.GC_KR_HOLIDAY, "제목", __import__("datetime").date(2026, 11, 11), True)
 
     def test_usable_without_access_token(self):
         self.assertTrue(gc._usable_token({"refresh_token": "r"}))
