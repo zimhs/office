@@ -9097,21 +9097,30 @@ _TAB1_BULK4_METRICS = ("매출액 (만원)", "출고량", "총매출 대비 비�
 _TAB1_BULK4_WEEKS = ("1주", "2주", "3주", "4주")
 _TAB1_CYLINDER_LABEL = "실린더"
 _TAB1_AR_TOKEN_RE = re.compile(r"(^|[^A-Z])AR")
+_TAB1_CYLINDER_SKIP_RE = re.compile(
+    r"운송|운반|입금|이월|단가차액|잔액|기화기|공사|작업비|임대|회수|보증|수수료|운임|MIX|혼합"
+)
 
 
 def _tab1_is_cylinder_item(name) -> bool:
-    """4대 벌크(CO2·N2·O2·AR)의 벌크가 아닌 품목. 라디오 '실린더' 합산용."""
+    """CO2·N2·O2·AR 용기(병). 벌크·운반비·혼합가스는 빼 실린더 출고량만 합친다."""
     s = str(name or "").strip()
     if not s or s.lower() in ("nan", "none", "-"):
+        return False
+    if _TAB1_CYLINDER_SKIP_RE.search(s.upper()) or _TAB1_CYLINDER_SKIP_RE.search(s):
         return False
     u = re.sub(r"\s+", "", s.upper())
     if "BULK" in u or "벌크" in s:
         return False
-    is_co2 = "CO2" in u or "탄산" in s
-    is_n2 = "N2" in u or "질소" in s
-    is_o2 = (not is_co2) and ("O2" in u or "산소" in s)
-    is_ar = bool(_TAB1_AR_TOKEN_RE.search(u)) or ("아르곤" in s) or ("아르" in s)
-    return bool(is_co2 or is_n2 or is_o2 or is_ar)
+    if u.startswith("CO2") or s.startswith("탄산"):
+        return True
+    if u.startswith("N2") or s.startswith("질소"):
+        return True
+    if u.startswith("O2") or s.startswith("산소"):
+        return True
+    if u.startswith("AR") or s.startswith("아르곤") or s.startswith("아르"):
+        return True
+    return False
 
 
 def _tab1_week_labels(dt_series):
@@ -9160,8 +9169,11 @@ def _tab1_bulk4_one(sub, item, metric, tot_m, tot_w, all_months, years):
         m = d.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
         w = d.pivot_table(index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum").fillna(0) / 10000
     elif "출고량" in str(metric):
-        m = d.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
-        w = d.pivot_table(index=["월", "주차"], columns="연도", values="출고량", aggfunc="sum").fillna(0) / 1000
+        m = d.pivot_table(index="월", columns="연도", values="출고량", aggfunc="sum").fillna(0)
+        w = d.pivot_table(index=["월", "주차"], columns="연도", values="출고량", aggfunc="sum").fillna(0)
+        if item != _TAB1_CYLINDER_LABEL:
+            m = m / 1000
+            w = w / 1000
     else:
         mi = d.pivot_table(index="월", columns="연도", values="매출액", aggfunc="sum").fillna(0)
         wi = d.pivot_table(index=["월", "주차"], columns="연도", values="매출액", aggfunc="sum").fillna(0)
@@ -9273,7 +9285,10 @@ def render_tab1_bulk4_item_panel():
     if "비중" in selected_metric:
         y_suf, y_fmt, _fmt_kind, _cmap = "%", ",.1f", "pct", "Purples"
     elif "출고량" in selected_metric:
-        y_suf, y_fmt, _fmt_kind, _cmap = " 천kg", ",.1f", "qty", "Greens"
+        if selected_target_item == _TAB1_CYLINDER_LABEL:
+            y_suf, y_fmt, _fmt_kind, _cmap = " 개(병)", ",.0f", "qty", "Greens"
+        else:
+            y_suf, y_fmt, _fmt_kind, _cmap = " 천kg", ",.1f", "qty", "Greens"
     else:
         y_suf, y_fmt, _fmt_kind, _cmap = " 만원", ",.0f", "amt", "Blues"
     if _fmt_kind == "amt":

@@ -153,6 +153,8 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertNotIn("주요 4대 품목 상세 분석", src)
         self.assertIn('_TAB1_CYLINDER_LABEL = "실린더"', src)
         self.assertIn("def _tab1_is_cylinder_item", src)
+        self.assertIn("개(병)", src)
+        self.assertIn("_TAB1_CYLINDER_SKIP_RE", src)
         self.assertNotIn("cached_get_yearly_monthly_pivot(df_client_filtered", tab2)
         self.assertIn("_dash_tab2_item_pivot", tab2)
         self.assertIn("pivot_m_client.reindex", tab2)
@@ -361,6 +363,9 @@ class Tab1CylinderItemTest(unittest.TestCase):
         ns = {
             "re": _re,
             "_TAB1_AR_TOKEN_RE": _re.compile(r"(^|[^A-Z])AR"),
+            "_TAB1_CYLINDER_SKIP_RE": _re.compile(
+                r"운송|운반|입금|이월|단가차액|잔액|기화기|공사|작업비|임대|회수|보증|수수료|운임|MIX|혼합"
+            ),
         }
         exec(src[start:end], ns)
         return ns["_tab1_is_cylinder_item"]
@@ -371,11 +376,16 @@ class Tab1CylinderItemTest(unittest.TestCase):
         self.assertTrue(fn("질소"))
         self.assertTrue(fn("산소 7m3"))
         self.assertTrue(fn("AR 47L"))
+        self.assertTrue(fn("Ar (일반)"))
+        self.assertTrue(fn("CO2 (공업용, 40kg)"))
         self.assertFalse(fn("CO2 (kg, Bulk)"))
         self.assertFalse(fn("N2 (kg, Bulk)"))
         self.assertFalse(fn("O2 (kg, Bulk)"))
         self.assertFalse(fn("AR (kg, Bulk)"))
         self.assertFalse(fn("아세틸렌"))
+        self.assertFalse(fn("운송비 (운반비 CO2)"))
+        self.assertFalse(fn("Mix (O2 2% + Ar Bal)"))
+        self.assertFalse(fn("LPG (20kg)"))
 
 
 if __name__ == "__main__":
