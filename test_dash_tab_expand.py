@@ -149,6 +149,10 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         )[0]
         self.assertNotIn("selected_client", bulk4)
         self.assertNotIn("selected_staff", bulk4)
+        self.assertIn("품목별 상세분석", src)
+        self.assertNotIn("주요 4대 품목 상세 분석", src)
+        self.assertIn('_TAB1_CYLINDER_LABEL = "실린더"', src)
+        self.assertIn("def _tab1_is_cylinder_item", src)
         self.assertNotIn("cached_get_yearly_monthly_pivot(df_client_filtered", tab2)
         self.assertIn("_dash_tab2_item_pivot", tab2)
         self.assertIn("pivot_m_client.reindex", tab2)
@@ -344,6 +348,34 @@ class Tab3GasYearMonthTest(unittest.TestCase):
             months_tuple=("07월", "08월", "09월"),
         )
         self.assertEqual([(2026, 9), (2026, 8), (2026, 7)], [(y, m) for y, m, _ in rng])
+
+
+class Tab1CylinderItemTest(unittest.TestCase):
+    def _fn(self):
+        import re as _re
+
+        with open("app.py", encoding="utf-8") as f:
+            src = f.read()
+        start = src.find("def _tab1_is_cylinder_item")
+        end = src.find("\ndef _tab1_week_labels")
+        ns = {
+            "re": _re,
+            "_TAB1_AR_TOKEN_RE": _re.compile(r"(^|[^A-Z])AR"),
+        }
+        exec(src[start:end], ns)
+        return ns["_tab1_is_cylinder_item"]
+
+    def test_four_non_bulk_match_cylinder(self):
+        fn = self._fn()
+        self.assertTrue(fn("CO2 40kg"))
+        self.assertTrue(fn("질소"))
+        self.assertTrue(fn("산소 7m3"))
+        self.assertTrue(fn("AR 47L"))
+        self.assertFalse(fn("CO2 (kg, Bulk)"))
+        self.assertFalse(fn("N2 (kg, Bulk)"))
+        self.assertFalse(fn("O2 (kg, Bulk)"))
+        self.assertFalse(fn("AR (kg, Bulk)"))
+        self.assertFalse(fn("아세틸렌"))
 
 
 if __name__ == "__main__":

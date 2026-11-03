@@ -9095,6 +9095,23 @@ def render_month_expandable_week_table(
 
 _TAB1_BULK4_METRICS = ("매출액 (만원)", "출고량", "총매출 대비 비중 (%)")
 _TAB1_BULK4_WEEKS = ("1주", "2주", "3주", "4주")
+_TAB1_CYLINDER_LABEL = "실린더"
+_TAB1_AR_TOKEN_RE = re.compile(r"(^|[^A-Z])AR")
+
+
+def _tab1_is_cylinder_item(name) -> bool:
+    """4대 벌크(CO2·N2·O2·AR)의 벌크가 아닌 품목. 라디오 '실린더' 합산용."""
+    s = str(name or "").strip()
+    if not s or s.lower() in ("nan", "none", "-"):
+        return False
+    u = re.sub(r"\s+", "", s.upper())
+    if "BULK" in u or "벌크" in s:
+        return False
+    is_co2 = "CO2" in u or "탄산" in s
+    is_n2 = "N2" in u or "질소" in s
+    is_o2 = (not is_co2) and ("O2" in u or "산소" in s)
+    is_ar = bool(_TAB1_AR_TOKEN_RE.search(u)) or ("아르곤" in s) or ("아르" in s)
+    return bool(is_co2 or is_n2 or is_o2 or is_ar)
 
 
 def _tab1_week_labels(dt_series):
@@ -9133,7 +9150,10 @@ def _tab1_bulk4_one(sub, item, metric, tot_m, tot_w, all_months, years):
     )
     if sub is None or sub.empty:
         return empty_m, empty_w
-    d = sub[sub["품목명"] == item]
+    if item == _TAB1_CYLINDER_LABEL:
+        d = sub[sub["품목명"].map(_tab1_is_cylinder_item)]
+    else:
+        d = sub[sub["품목명"] == item]
     if d.empty:
         return empty_m, empty_w
     if metric == "매출액 (만원)":
@@ -9157,8 +9177,10 @@ def _tab1_bulk4_ensure_pack(
     years,
     latest_update_str="",
 ):
-    """날짜·원본만 바뀔 때 4대 품목 12뷰를 계산. 거래처/담당자/품목 필터와 무관."""
+    """날짜·원본만 바뀔 때 벌크 4종+실린더 합산 뷰를 계산. 거래처/담당자/품목 필터와 무관."""
     items = list(target_items or [])
+    if _TAB1_CYLINDER_LABEL not in items:
+        items = items + [_TAB1_CYLINDER_LABEL]
     months = list(all_months or [])
     yrs = [str(y) for y in (years or ())]
     sig = (
@@ -9178,7 +9200,9 @@ def _tab1_bulk4_ensure_pack(
         st.session_state["_tab1_bulk4_pack"] = {"sig": sig, "items": items, "views": views}
         return
     cols = [c for c in ("품목명", "월", "연도", "매출액", "출고량", "매출일_dt") if c in df_base.columns]
-    sub = df_base.loc[df_base["품목명"].isin(items), cols]
+    bulk_names = [it for it in items if it != _TAB1_CYLINDER_LABEL]
+    pick = df_base["품목명"].isin(bulk_names) | df_base["품목명"].map(_tab1_is_cylinder_item)
+    sub = df_base.loc[pick, cols]
     if sub.empty or "매출일_dt" not in sub.columns:
         st.session_state["_tab1_bulk4_pack"] = {"sig": sig, "items": items, "views": views}
         return
@@ -9219,7 +9243,7 @@ def render_tab1_bulk4_item_panel():
     pack = st.session_state.get("_tab1_bulk4_pack") or {}
     items = pack.get("items") or list(target_items)
     st.markdown(
-        "<div class='sub-header dashboard-tab-panel-head'>📦 주요 4대 품목 상세 분석</div>",
+        "<div class='sub-header dashboard-tab-panel-head'>📦 품목별 상세분석</div>",
         unsafe_allow_html=True,
     )
     sel_col1, sel_col2 = st.columns([1, 1])
@@ -9267,10 +9291,10 @@ def render_tab1_bulk4_item_panel():
         f"<div style='font-size:14px;font-weight:700;color:#334155;margin:0 0 6px'>{html.escape(str(selected_target_item))} · {html.escape(str(_b4_metric_lbl))}</div>",
         key="t1_bulk4",
         styler=_b4_styled,
-        file_name="T1_4대품목상세.xlsx",
-        sheet="4대품목",
+        file_name="T1_품목별상세.xlsx",
+        sheet="품목별",
         fig=_b4_fig,
-        graph_name="T1_4대품목상세.png",
+        graph_name="T1_품목별상세.png",
     )
     i_col_left, i_col_right = st.columns([1, 1])
     with i_col_left:
