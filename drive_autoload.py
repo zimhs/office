@@ -1149,11 +1149,15 @@ def _copy_worklog_tree(src_root: str, dst_root: str, *, force: bool = False) -> 
         copied.extend(
             _copy_tree_filtered(arch, os.path.join(dst_root, "일지"), force=force, label="worklog/일지")
         )
-    # 월별 xlsx가 Drive에서 통째로 오면 삭제 시트까지 되살아남 → 즉시 재제거
-    if deleted_isos:
-        copied.extend(
-            _purge_deleted_worklog_days_local(dst_root, deleted_isos=deleted_isos)
-        )
+    # 삭제된 일자 파일만 캐시에서 뺀다. 월별 xlsx는 업무일지 「저장」에서만 쓴다.
+    for iso in deleted_isos:
+        leftover = os.path.join(dst_root, f"{iso}.xlsx")
+        if os.path.isfile(leftover):
+            try:
+                os.remove(leftover)
+                copied.append(f"-worklog/{iso}.xlsx")
+            except OSError:
+                pass
     return copied
 
 
@@ -1280,11 +1284,6 @@ def sync_worklog_bidirectional(
         elif os.path.isfile(drv_t) and not os.path.isfile(loc_t):
             if _atomic_copy(drv_t, loc_t):
                 copied.append("←Drive:template.xlsx")
-        # 삭제 목록 날짜가 일자/월별시트로 되살아난 경우 정리
-        try:
-            copied.extend(_purge_deleted_worklog_days_local(local_dir))
-        except Exception:
-            pass
         _WL_SYNC_DONE = True
         return {
             "ok": True,

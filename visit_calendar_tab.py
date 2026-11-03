@@ -2290,6 +2290,115 @@ def render_visit_calendar_tab(df: pd.DataFrame | None = None, latest_update_str:
     _render_visit_body(df, latest_update_str)
 
 
+def render_visit_delivery_header(
+    df: pd.DataFrame | None = None, latest_update_str: str = ""
+) -> None:
+    """담당자·거래처·납품 달력줄. 벌크·실린더가 있는 날을 고르면 아래에 납품 목록."""
+    _apply_query_day_pick()
+    _vc_clear_strip_hosts_if_unused()
+    _apply_pending_month_nav()
+    _apply_pending_strip_pick()
+    _purge_vc_button_keys()
+    today = date.today()
+    if "_vc_month" not in st.session_state:
+        st.session_state["_vc_month"] = date(today.year, today.month, 1)
+    if "_vc_selected" not in st.session_state:
+        st.session_state["_vc_selected"] = today
+    store0 = load_store()
+    staffs = _staff_from_store(store0)
+    default_staff = "김혁수" if "김혁수" in staffs else (staffs[0] if staffs else "")
+    if "vc_staff" not in st.session_state:
+        st.session_state["vc_staff"] = st.session_state.get("_vc_staff") or default_staff
+    if "vc_client" not in st.session_state:
+        prev = _s(st.session_state.get("_vc_client"))
+        st.session_state["vc_client"] = prev
+    if _vc_is_darwin_local() and not _vc_is_touch_ui():
+        sel0 = st.session_state.get("_vc_selected") or today
+        iso0 = sel0.isoformat() if isinstance(sel0, date) else today.isoformat()
+        st.session_state.setdefault("vc_strip_host", {"iso": iso0})
+    month = st.session_state.get("_vc_month") or date(today.year, today.month, 1)
+    st.markdown(_vc_css(), unsafe_allow_html=True)
+
+    def _delivery_head_block() -> None:
+        _apply_pending_month_nav()
+        _apply_pending_strip_pick()
+        _apply_v2_calendar_picks()
+        with st.container(key="gc_vc_delivery_head"):
+            st.markdown(_vc_css(), unsafe_allow_html=True)
+            sel: date = st.session_state.get("_vc_selected") or today
+            mon = st.session_state.get("_vc_month") or month
+            f1, f2 = st.columns([1, 1])
+            with f1:
+                staff = st.selectbox("담당자", options=staffs or [""], key="vc_staff")
+            clients = _staff_clients(df, staff, store0)
+            with f2:
+                if _vc_is_darwin_local() and not _vc_is_touch_ui():
+                    client = (
+                        st.selectbox(
+                            "거래처",
+                            options=clients or [""],
+                            index=None,
+                            placeholder="거래처명 입력",
+                            key="vc_client",
+                            accept_new_options=True,
+                            help="이 담당자의 매출 거래처가 모두 나옵니다. 고르면 납품 달력에 연동됩니다.",
+                        )
+                        or ""
+                    )
+                else:
+                    q = st.text_input(
+                        "거래처 검색",
+                        key="vc_client_q",
+                        placeholder="거래처명 입력",
+                    )
+                    qq = _s(q).casefold()
+                    cur = _s(st.session_state.get("vc_client"))
+                    opts = [c for c in (clients or []) if qq and qq in c.casefold()][:40]
+                    if not qq:
+                        opts = [cur] if cur else [""]
+                    if cur and cur not in opts:
+                        opts = [cur] + [x for x in opts if x != cur]
+                    client = (
+                        st.selectbox(
+                            "거래처",
+                            options=opts or [""],
+                            key="vc_client",
+                            help="검색어를 넣으면 담당자 매출 거래처가 나옵니다.",
+                        )
+                        or ""
+                    )
+            st.session_state["_vc_staff"] = staff
+            st.session_state["_vc_client"] = client
+            stf = str(staff or "")
+            cli = str(client or "")
+            head_l, head_r = st.columns([2.35, 1.05])
+            with head_l:
+                st.markdown(
+                    f"<div class='vc-toolbar'><span class='vc-title'>{mon.year}년 {mon.month}월</span></div>",
+                    unsafe_allow_html=True,
+                )
+            with head_r:
+                n1, n2, n3 = st.columns([1.15, 0.42, 0.42], gap="small")
+                with n1:
+                    st.button("오늘", key="vc_jump_today", width="content")
+                with n2:
+                    st.button("‹", key="vc_prev_month", width="content")
+                with n3:
+                    st.button("›", key="vc_next_month", width="content")
+            store, deliveries, _history = _vc_day_payload(df, stf, cli, mon)
+            prefix = f"{mon.year:04d}-{mon.month:02d}-"
+            month_deliveries = [r for r in deliveries if str(r.get("date") or "").startswith(prefix)]
+            chips = delivery_chips(mon, month_deliveries)
+            day_deliveries = delivery_rows_on(deliveries, sel)
+            _render_day_strip(mon, sel, chips, today)
+            kinds = {c.get("kind") for c in (chips.get(sel.isoformat()) or [])}
+            has_gas = "bulk" in kinds or "other" in kinds
+            if cli and day_deliveries and has_gas:
+                _render_delivery_list(cli, sel, day_deliveries, deliveries)
+
+    st.fragment(_delivery_head_block)()
+
+
 def _render_visit_body(df: pd.DataFrame | None, latest_update_str: str) -> None:
     today = date.today()
     if "_vc_month" not in st.session_state:

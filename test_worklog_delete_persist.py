@@ -26,7 +26,9 @@ class WorklogDeletePersistTest(unittest.TestCase):
             with open(os.path.join(dst, "_worklog_deleted.json"), "w", encoding="utf-8") as f:
                 json.dump({"2026-10-01": 1.0}, f)
 
-            copied = da._copy_worklog_tree(src, dst, force=True)
+            with mock.patch("worklog_tab.delete_worklog_archive_sheet_at") as purge_month:
+                copied = da._copy_worklog_tree(src, dst, force=True)
+            purge_month.assert_not_called()
             self.assertFalse(os.path.isfile(os.path.join(dst, day)))
             self.assertTrue(os.path.isfile(os.path.join(dst, "template.xlsx")))
             self.assertTrue(any("template" in c for c in copied) or os.path.isfile(os.path.join(dst, "template.xlsx")))

@@ -28,7 +28,30 @@ trap 'rmdir "$LAUNCH_LOCK" 2>/dev/null' EXIT
 
 [ -f "${ROOT}/app.py" ] || { osascript -e 'display alert "dashboard 폴더 없음"'; exit 1; }
 
-# Chrome만 기동. URL을 여기서 열면 AppleScript와 겹쳐 탭이 2개 생김.
+# Chrome AppleScript가 실패해도 알림창을 띄우지 않는다. URL은 실패 시에만 연다.
+_osa() {
+  python3 -c '
+import subprocess, sys
+p = subprocess.Popen(
+    ["osascript"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    text=True,
+)
+try:
+    p.communicate(sys.stdin.read(), timeout=8)
+    sys.exit(p.returncode or 0)
+except subprocess.TimeoutExpired:
+    p.kill()
+    try:
+        p.communicate(timeout=2)
+    except Exception:
+        pass
+    sys.exit(1)
+'
+}
+
 if ! pgrep -qx "Google Chrome" 2>/dev/null; then
   open -a "Google Chrome" 2>/dev/null || true
   sleep 1.2
@@ -36,7 +59,7 @@ fi
 
 # Chrome CLI --new-window 는 세션 복원으로 네이버·캘린더 창이 따로 뜨는 경우가 있어 AppleScript 로만 탭 제어
 _chrome_ensure_cloud_tab() {
-  osascript <<APPLESCRIPT 2>/dev/null
+  if _osa <<APPLESCRIPT
 tell application "Google Chrome"
   set uCloud to "$CLOUD"
   set uLocal to "http://127.0.0.1:8502"
@@ -103,15 +126,13 @@ tell application "Google Chrome"
   activate
 end tell
 APPLESCRIPT
-  if [ $? -ne 0 ]; then
-    osascript -e 'display alert "Chrome 탭 열기 실패" message "Chrome이 실행 중인지, Automation 권한이 허용됐는지 확인하세요."'
-    return 1
+  then
+    return 0
   fi
+  open -a "Google Chrome" -- "$CLOUD" >/dev/null 2>&1 || true
+  return 0
 }
 
-# 세션 복원이 늦게 붙는 두 번째 streamlit 탭을 한 번 더 접음
-_chrome_ensure_cloud_tab
-sleep 1.2
 _chrome_ensure_cloud_tab
 touch "$STAMP"
-osascript -e 'display notification "Chrome · Cloud 영업일보 탭 1개" with title "영업 대시보드"'
+osascript -e 'display notification "Chrome · Cloud 영업일보 탭 1개" with title "영업 대시보드"' >/dev/null 2>&1 || true

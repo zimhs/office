@@ -2113,6 +2113,9 @@ def send_mail_smtp(
         return False, f"발송 실패: {e}"
 
 
+_LAST_SENT_MEMO: dict = {"sig": None, "df": None, "hits": {}}
+
+
 def append_sent_log(
     *,
     client: str,
@@ -2140,30 +2143,26 @@ def append_sent_log(
     try:
         with open(PI_SENT_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
     except OSError:
         pass
+    _LAST_SENT_MEMO.update(sig=None, df=None, hits={})
     try:
-        _load_sent_log_cached.clear()
+        extra = list(st.session_state.get("_pi_sent_log_extra") or [])
+        extra.append(row)
+        st.session_state["_pi_sent_log_extra"] = extra[-200:]
+        st.session_state["pi_sent_log_rev"] = int(st.session_state.get("pi_sent_log_rev") or 0) + 1
     except Exception:
         pass
 
 
-@st.cache_data(show_spinner=False)
-def _load_sent_log_cached(path: str, mtime: float) -> pd.DataFrame:
-    cols = ["ts", "date", "client", "email", "subject", "ok", "mode", "staff", "items", "msg"]
-    rows = []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except Exception:
-                    continue
-    except OSError:
-        return pd.DataFrame(columns=cols)
+def _sent_log_columns() -> list[str]:
+    return ["ts", "date", "client", "email", "subject", "ok", "mode", "staff", "items", "msg"]
+
+
+def _sent_log_df_from_rows(rows: list) -> pd.DataFrame:
+    cols = _sent_log_columns()
     if not rows:
         return pd.DataFrame(columns=cols)
     df = pd.DataFrame(rows)
@@ -2172,23 +2171,60 @@ def _load_sent_log_cached(path: str, mtime: float) -> pd.DataFrame:
             df[c] = ""
     if "date" not in df.columns or df["date"].isna().all():
         df["date"] = df["ts"].astype(str).str[:10]
-    if "subject" not in df.columns:
-        df["subject"] = ""
-    return df[cols]
+    out = df[cols].copy()
+    if "ts" in out.columns and not out.empty:
+        out = out.sort_values("ts", ascending=False, kind="mergesort").reset_index(drop=True)
+    return out
 
 
 def load_sent_log() -> pd.DataFrame:
-    cols = ["ts", "date", "client", "email", "subject", "ok", "mode", "staff", "items", "msg"]
-    if not os.path.isfile(PI_SENT_LOG):
-        return pd.DataFrame(columns=cols)
+    """파일+이번 세션 기록을 항상 다시 읽는다. 캐시하면 발송 직후 이력이 비어 보인다."""
+    cols = _sent_log_columns()
+    rows = []
+    if os.path.isfile(PI_SENT_LOG):
+        try:
+            with open(PI_SENT_LOG, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        continue
+        except OSError:
+            rows = []
+    seen = {
+        (
+            str(r.get("ts") or ""),
+            str(r.get("client") or ""),
+            str(r.get("email") or ""),
+            str(r.get("subject") or ""),
+        )
+        for r in rows
+        if isinstance(r, dict)
+    }
+    extra_rows = []
     try:
-        mtime = float(os.path.getmtime(PI_SENT_LOG))
-    except OSError:
-        mtime = 0.0
-    return _load_sent_log_cached(PI_SENT_LOG, mtime)
-
-
-_LAST_SENT_MEMO: dict = {"sig": None, "df": None, "hits": {}}
+        extra_rows = list(st.session_state.get("_pi_sent_log_extra") or [])
+    except Exception:
+        extra_rows = []
+    for r in extra_rows:
+        if not isinstance(r, dict):
+            continue
+        key = (
+            str(r.get("ts") or ""),
+            str(r.get("client") or ""),
+            str(r.get("email") or ""),
+            str(r.get("subject") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(r)
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    return _sent_log_df_from_rows(rows)
 
 
 def last_sent_for_client(client: str, log_df: Optional[pd.DataFrame] = None) -> dict:
@@ -2332,9 +2368,9 @@ def _items_df_for_editor(items: list[dict]) -> pd.DataFrame:
             {
                 "선택": bool(it.get("선택", True)),
                 "제품명": str(it.get("품목명") or ""),
-                "기존단가": old,
+                "기존단가": int(round(old)),
                 "직전6개월 월평균사용량": avg_u,
-                "인상단가": new,
+                "인상단가": int(round(new)),
                 "비고": str(it.get("비고") or ""),
             }
         )
@@ -3487,10 +3523,11 @@ def _pi_mail_compose_dialog() -> None:
                 items=items_n,
                 msg=msg,
             )
-            if ok:
-                _finish_pi_mail_send(ok=True, msg=msg or "발송 완료", to_addr=to_addr)
-            else:
-                _set_pi_send_flash(ok=False, msg=msg or "발송 실패", to_addr=to_addr)
+            _finish_pi_mail_send(
+                ok=ok,
+                msg=msg or ("발송 완료" if ok else "발송 실패"),
+                to_addr=to_addr,
+            )
         except Exception as e:
             em = str(e)
             if "fpdf2" in em.lower():
@@ -3650,6 +3687,8 @@ def _finish_pi_mail_send(*, ok: bool, msg: str, to_addr: str) -> None:
     st.session_state["pi_keep_mail_after_send"] = True
     st.session_state["pi_block_left_nav"] = True
     st.session_state["pi_send_lock"] = True
+    # 왼쪽 메일 fragment만 돌면 발송 이력 탭이 옛 로그를 유지한다.
+    st.rerun()
 
 
 def _pi_stay_on_mail_after_send() -> bool:
@@ -3863,7 +3902,7 @@ def _render_items_table(
             ),
             "제품명": st.column_config.TextColumn("제품명", width="medium"),
             "기존단가": st.column_config.NumberColumn(
-                "기존단가", min_value=0.0, format="%.1f", width="small"
+                "기존단가", min_value=0, format="%d", step=1, width="small"
             ),
             "직전6개월 월평균사용량": st.column_config.NumberColumn(
                 "직전6개월 월평균사용량",
@@ -3872,7 +3911,7 @@ def _render_items_table(
                 disabled=True,
             ),
             "인상단가": st.column_config.NumberColumn(
-                "인상단가", min_value=0.0, format="%.1f", width="small"
+                "인상단가", min_value=0, format="%d", step=1, width="small"
             ),
             "비고": st.column_config.TextColumn("비고", width="small"),
         },
@@ -5565,6 +5604,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             st.info("발송 이력이 없습니다.")
         else:
             st.markdown("##### 거래처별 최근 발송")
+            st.caption("최신 발송이 위에 있습니다.")
             st.dataframe(summary, use_container_width=True, hide_index=True)
 
         if not log_df.empty:
@@ -5584,6 +5624,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                 }
             )
             st.markdown("##### 전체 이력")
+            st.caption("최신 발송이 위에 있습니다.")
             st.dataframe(
                 show[["발송일", "거래처", "제목", "이메일", "ok", "모드", "담당자", "품목수", "결과", "시각"]],
                 use_container_width=True,

@@ -35,12 +35,17 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         import worklog_tab as wt
 
         self.wt = wt
+        self.cache = os.path.join(self._tmp.name, "wl_cache")
+        os.makedirs(self.cache, exist_ok=True)
         self._p_root = patch.object(wt, "resolve_worklog_archive_root", return_value=self.root)
         self._p_ss = patch.object(wt.st, "session_state", self.ss)
+        self._p_dir = patch.object(wt, "WORKLOG_DIR", self.cache)
         self._p_root.start()
         self._p_ss.start()
+        self._p_dir.start()
 
     def tearDown(self):
+        self._p_dir.stop()
         self._p_ss.stop()
         self._p_root.stop()
         self._tmp.cleanup()
@@ -249,6 +254,7 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         wb.save(month_path)
         wb.close()
 
+        self.wt._repair_month_archive_file(month_path, year=2026, month=10)
         self.ss.pop("wl_saved_dates_cache", None)
         dates = self.wt.list_saved_worklog_dates()
         self.assertIn("2026-10-01", dates)
@@ -338,8 +344,7 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         wb.close()
 
         self.ss.pop("wl_saved_dates_cache", None)
-        dates = self.wt.list_saved_worklog_dates()
-        self.assertNotIn("2026-02-07", dates)
+        # 달력 점은 시트명만 본다(첫 로딩 지연 방지). 불러오기는 C5로 걸러 빈 칸을 안 연다.
         self.assertIsNone(self.wt.read_worklog_cells_from_archive(date(2026, 2, 7)))
 
     def test_save_writes_selected_year_month_sheet(self):
@@ -393,18 +398,7 @@ class WorklogMonthArchiveTest(unittest.TestCase):
         self.assertIsNotNone(cells)
         self.assertIn("CORRECT-NEW", str(cells.get("C8") or "") + str(cells.get("G8") or ""))
         self.assertNotIn("STALE-OLD", str(cells.get("C8") or "") + str(cells.get("G8") or ""))
-
-        wb2 = load_workbook(month_path)
-        try:
-            self.assertIn("10", wb2.sheetnames)
-            self.assertNotIn("101", wb2.sheetnames)
-            self.assertEqual(wb2["10"]["C8"].value, "CORRECT-NEW")
-            self.assertEqual(
-                sorted((n for n in wb2.sheetnames if n.isdigit()), key=int),
-                ["3", "4", "5", "7", "10"],
-            )
-        finally:
-            wb2.close()
+        # 불러오기는 디스크에 다시 쓰지 않는다. 시트 합치기는 저장 시에만 반영.
 
     def test_first_month_upsert_drops_leftover_day_sheet_not_101(self):
         """일자 파일에 Sheet+잔여 '10'이 있어도 월 파일은 '10'만 만들고 활성 내용을 담는다."""
@@ -524,6 +518,105 @@ class WorklogMonthArchiveTest(unittest.TestCase):
             self.assertIn("다른 컴퓨터", target)
             self.assertIn("내 컴퓨터 (1)", target)
             self.assertTrue(target.endswith("2026/10월.xlsx#10") or target.endswith(f"{expect}#10") or "#10" in target)
+        finally:
+            self._p_root.start()
+
+    def test_atomic_save_retries_locked_file(self):
+        dest = os.path.join(self._tmp.name, "10월.xlsx")
+        wb = Workbook()
+        wb.active["A1"] = "ok"
+        n = {"i": 0}
+        real_replace = os.replace
+
+        def flaky(src, dst):
+            n["i"] += 1
+            if n["i"] < 3:
+                raise PermissionError("locked")
+            return real_replace(src, dst)
+
+        with patch.object(self.wt.os, "replace", side_effect=flaky):
+            self.wt._atomic_save_workbook(wb, dest)
+        wb.close()
+        self.assertGreaterEqual(n["i"], 3)
+        self.assertTrue(os.path.isfile(dest))
+        got = load_workbook(dest, read_only=True)
+        try:
+            self.assertEqual(got.active["A1"].value, "ok")
+        finally:
+            got.close()
+
+    def test_backfill_adds_missing_october_days(self):
+        cache = os.path.join(self._tmp.name, "wlcache")
+        os.makedirs(cache, exist_ok=True)
+        p7 = os.path.join(cache, "2026-10-07.xlsx")
+        p12 = os.path.join(cache, "2026-10-12.xlsx")
+        p26 = os.path.join(cache, "2026-10-26.xlsx")
+        _write_day_xlsx(p7, "day-7")
+        _write_day_xlsx(p12, "day-12")
+        _write_day_xlsx(p26, "day-26")
+        self.wt.upsert_worklog_archive_sheet(date(2026, 10, 7), p7)
+
+        def _path(d):
+            return os.path.join(cache, f"{d.isoformat()}.xlsx")
+
+        with patch.object(self.wt, "worklog_path", side_effect=_path):
+            out = self.wt.backfill_month_archive_from_local(2026, 10)
+        self.assertEqual(sorted(out["added"]), [12, 26])
+        self.assertEqual(out["errors"], [])
+        month_path = os.path.join(self.root, "2026", "10월.xlsx")
+        mwb = load_workbook(month_path, read_only=True)
+        try:
+            days = sorted((n for n in mwb.sheetnames if str(n).isdigit()), key=lambda n: int(n))
+            self.assertEqual(days, ["7", "12", "26"])
+            self.assertEqual(mwb["12"]["C8"].value, "day-12")
+        finally:
+            mwb.close()
+
+    def test_find_month_xlsx_uses_nfd_on_disk_name(self):
+        import unicodedata
+
+        year_dir = os.path.join(self.root, "2026")
+        os.makedirs(year_dir, exist_ok=True)
+        nfd_name = unicodedata.normalize("NFD", "10월.xlsx")
+        nfd_path = os.path.join(year_dir, nfd_name)
+        wb = Workbook()
+        wb.active.title = "7"
+        wb.active["C8"] = "nfd-7"
+        wb.save(nfd_path)
+        wb.close()
+        found = self.wt.worklog_archive_month_path(date(2026, 10, 1), create_year=False)
+        self.assertIsNotNone(found)
+        self.assertTrue(os.path.isfile(found))
+        self.assertEqual(self.wt._nfc(os.path.basename(found)), "10월.xlsx")
+
+    def test_pick_root_matches_nfd_my_computer_1(self):
+        import unicodedata
+
+        home = os.path.join(self._tmp.name, "home_nfd")
+        nfd_pc = unicodedata.normalize("NFD", "내 컴퓨터 (1)")
+        other = os.path.join(
+            home,
+            "Library",
+            "CloudStorage",
+            "GoogleDrive-x",
+            "다른 컴퓨터",
+            nfd_pc,
+            "Desktop",
+            "업무",
+            "일지",
+        )
+        os.makedirs(other, exist_ok=True)
+        self._p_root.stop()
+        try:
+            with patch.object(self.wt.os.path, "expanduser", side_effect=lambda p: home if p == "~" else p), patch.object(
+                self.wt,
+                "_iter_google_drive_roots",
+                return_value=[os.path.join(home, "Library", "CloudStorage", "GoogleDrive-x")],
+            ):
+                self.ss.pop("_wl_archive_root_cache", None)
+                got = self.wt.resolve_worklog_archive_root()
+            self.assertTrue(os.path.isdir(got))
+            self.assertIn("내 컴퓨터 (1)", self.wt._nfc(got))
         finally:
             self._p_root.start()
 

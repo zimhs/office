@@ -10,8 +10,11 @@ import platform
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
+import unicodedata
+import zipfile
 from datetime import date
 from functools import lru_cache
 from typing import Any
@@ -2236,11 +2239,9 @@ def _iter_google_drive_roots() -> list[str]:
 
 
 def _archive_root_mtime(p: str) -> float:
+    """폴더 mtime만 본다. Drive 전체를 walk하면 첫 로딩이 멈춘다."""
     try:
-        return max(
-            (os.path.getmtime(os.path.join(dp, f)) for dp, _, fs in os.walk(p) for f in fs),
-            default=os.path.getmtime(p),
-        )
+        return os.path.getmtime(p)
     except OSError:
         return 0.0
 
@@ -2262,6 +2263,135 @@ def _drive_other_computer_archive_candidates() -> list[str]:
     return out
 
 
+def _nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", str(s or ""))
+
+
+def _month_xlsx_name(month: int) -> str:
+    return f"{int(month)}월.xlsx"
+
+
+def _find_month_xlsx_in_dir(year_dir: str, month: int) -> str | None:
+    """디스크에 있는 N월.xlsx (NFC/NFD 파일명 모두). Drive File Stream 대비."""
+    if not year_dir or not os.path.isdir(year_dir):
+        return None
+    want = _nfc(_month_xlsx_name(month))
+    hits: list[str] = []
+    try:
+        for fname in os.listdir(year_dir):
+            if _nfc(fname) == want:
+                hits.append(os.path.join(year_dir, fname))
+    except OSError:
+        return None
+    if not hits:
+        return None
+    hits.sort(key=lambda p: os.path.getsize(p) if os.path.isfile(p) else 0, reverse=True)
+    return hits[0]
+
+
+def _replace_file_retry(src: str, dest: str, *, attempts: int = 8) -> None:
+    """Drive·엑셀이 파일을 잡고 있어도 몇 번 재시도한 뒤 복사로 저장한다."""
+    last: Exception | None = None
+    for i in range(max(1, attempts)):
+        try:
+            os.replace(src, dest)
+            return
+        except OSError as e:
+            last = e
+            if i + 1 < attempts:
+                time.sleep(0.15 * (i + 1))
+    try:
+        shutil.copy2(src, dest)
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+        return
+    except OSError as e:
+        last = e
+    raise OSError(
+        f"월별 일지 저장 실패: {dest} ({last}). 엑셀에서 해당 파일을 닫은 뒤 다시 저장하세요."
+    ) from last
+
+
+def _atomic_save_workbook(wb, path: str) -> None:
+    """월별 xlsx를 임시파일에 쓴 뒤 교체한다. Drive 직접 save 실패를 줄인다."""
+    if wb is None or not path:
+        raise ValueError("workbook/path 없음")
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix=".xlsx", prefix=".wl_tmp_", dir=directory)
+    os.close(fd)
+    try:
+        wb.save(tmp)
+        _replace_file_retry(tmp, path)
+        tmp = None
+    finally:
+        if tmp and os.path.isfile(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+_WL_XLSX_LOAD_LOCK = threading.Lock()
+
+
+def _load_archive_workbook(path: str, *, data_only: bool = False, read_only: bool = False):
+    """월별 xlsx 로드. Excel/Drive가 깨진 행 스타일 인덱스를 건너뛴다."""
+    if load_workbook is None:
+        raise RuntimeError("openpyxl 이 필요합니다.")
+    if read_only:
+        try:
+            return load_workbook(path, data_only=data_only, read_only=True)
+        except Exception:
+            pass
+    from openpyxl.worksheet._reader import WorksheetReader
+    from openpyxl.worksheet.dimensions import ColumnDimension, RowDimension
+
+    orig_row = WorksheetReader.bind_row_dimensions
+    orig_col = WorksheetReader.bind_col_dimensions
+
+    def bind_row(self):
+        styles = self.ws.parent._cell_styles
+        for row, rd in self.parser.row_dimensions.items():
+            if "s" in rd:
+                try:
+                    key = int(rd["s"])
+                except (TypeError, ValueError):
+                    rd.pop("s", None)
+                else:
+                    if 0 <= key < len(styles):
+                        rd["s"] = styles[key]
+                    else:
+                        rd.pop("s", None)
+            self.ws.row_dimensions[int(row)] = RowDimension(self.ws, **rd)
+
+    def bind_col(self):
+        styles = self.ws.parent._cell_styles
+        for col, cd in self.parser.column_dimensions.items():
+            if "style" in cd:
+                try:
+                    key = int(cd["style"])
+                except (TypeError, ValueError):
+                    cd.pop("style", None)
+                else:
+                    if 0 <= key < len(styles):
+                        cd["style"] = styles[key]
+                    else:
+                        cd.pop("style", None)
+            self.ws.column_dimensions[col] = ColumnDimension(self.ws, **cd)
+
+    with _WL_XLSX_LOAD_LOCK:
+        WorksheetReader.bind_row_dimensions = bind_row
+        WorksheetReader.bind_col_dimensions = bind_col
+        try:
+            return load_workbook(path, data_only=data_only)
+        finally:
+            WorksheetReader.bind_row_dimensions = orig_row
+            WorksheetReader.bind_col_dimensions = orig_col
+
+
 def _pick_drive_other_computer_archive_root() -> str | None:
     """기존 Drive「다른 컴퓨터」일지 폴더 중 저장 대상으로 쓸 경로.
 
@@ -2271,10 +2401,11 @@ def _pick_drive_other_computer_archive_root() -> str | None:
     existing = [p for p in candidates if os.path.isdir(p)]
     if existing:
         def _score(p: str) -> tuple:
+            n = _nfc(p)
             prefer = 0
-            if "내 컴퓨터 (1)" in p or "My Mac (1)" in p or "My Computer (1)" in p:
+            if "내 컴퓨터 (1)" in n or "My Mac (1)" in n or "My Computer (1)" in n:
                 prefer = 3
-            elif "내 컴퓨터" in p or "My Mac" in p or "My Computer" in p:
+            elif "내 컴퓨터" in n or "My Mac" in n or "My Computer" in n:
                 prefer = 2
             return (prefer, _archive_root_mtime(p))
 
@@ -2353,7 +2484,10 @@ def worklog_archive_month_path(d: date, *, create_year: bool = True) -> str | No
     year_dir = worklog_archive_year_dir(d, create=create_year)
     if not year_dir:
         return None
-    return os.path.join(year_dir, f"{d.month}월.xlsx")
+    existing = _find_month_xlsx_in_dir(year_dir, d.month)
+    if existing:
+        return existing
+    return os.path.join(year_dir, _month_xlsx_name(d.month))
 
 
 def _cleanup_legacy_day_archive_files(d: date, month_path: str | None) -> None:
@@ -2661,7 +2795,7 @@ def _repair_month_archive_file(month_path: str, *, year: int, month: int) -> boo
     if load_workbook is None or not month_path or not os.path.isfile(month_path):
         return False
     try:
-        wb = load_workbook(month_path)
+        wb = _load_archive_workbook(month_path)
     except Exception:
         return False
     try:
@@ -2676,7 +2810,7 @@ def _repair_month_archive_file(month_path: str, *, year: int, month: int) -> boo
                 pass
             return True
         if changed:
-            wb.save(month_path)
+            _atomic_save_workbook(wb, month_path)
         return changed
     finally:
         try:
@@ -2723,7 +2857,7 @@ def worklog_date_exists_in_archive(d: date) -> bool:
     month_path = worklog_archive_month_path(d, create_year=False)
     if month_path and os.path.exists(month_path) and load_workbook is not None:
         try:
-            wb = load_workbook(month_path, read_only=True)
+            wb = _load_archive_workbook(month_path, read_only=True)
             try:
                 if _resolve_archive_sheet_name(wb.sheetnames, d):
                     found = True
@@ -3071,7 +3205,7 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
     # 첫 월 파일: 일지 xlsx를 그대로 복사 → 인쇄 미리보기·열 너비 100% 유지
     if not os.path.exists(month_path):
         shutil.copy2(day_xlsx_path, month_path)
-        month_wb = load_workbook(month_path)
+        month_wb = _load_archive_workbook(month_path)
         try:
             ws = month_wb.active
             # 일자 파일에 남아 있던 동명·충돌 시트(10, 101)를 먼저 제거해야
@@ -3101,7 +3235,7 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
             _purge_unsaved_archive_day_sheets(
                 month_wb, year=d.year, month=d.month, keep_days=_keep
             )
-            month_wb.save(month_path)
+            _atomic_save_workbook(month_wb, month_path)
         finally:
             month_wb.close()
         _cleanup_legacy_day_archive_files(d, month_path)
@@ -3110,7 +3244,7 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
     day_wb = load_workbook(day_xlsx_path)
     try:
         src_ws = day_wb.active
-        month_wb = load_workbook(month_path)
+        month_wb = _load_archive_workbook(month_path)
         try:
             # 0채움(03)·같은 연월 ISO 시트 → 정규 일(3)로 합친 뒤 저장본을 덮는다
             _normalize_archive_month_day_sheets(month_wb, year=d.year, month=d.month)
@@ -3139,7 +3273,7 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
             _purge_unsaved_archive_day_sheets(
                 month_wb, year=d.year, month=d.month, keep_days=_keep
             )
-            month_wb.save(month_path)
+            _atomic_save_workbook(month_wb, month_path)
         finally:
             month_wb.close()
     finally:
@@ -3150,13 +3284,65 @@ def upsert_worklog_archive_sheet(d: date, day_xlsx_path: str, *, allow_overwrite
     return month_path
 
 
+def _month_archive_existing_days(month_path: str, *, year: int, month: int) -> set[int]:
+    found: set[int] = set()
+    if not month_path or not os.path.isfile(month_path) or load_workbook is None:
+        return found
+    try:
+        wb = _load_archive_workbook(month_path, read_only=True)
+        try:
+            for name in wb.sheetnames:
+                day = _archive_sheet_day_number(name, expect_year=year, expect_month=month)
+                if day:
+                    found.add(day)
+        finally:
+            wb.close()
+    except Exception:
+        return found
+    return found
+
+
+def backfill_month_archive_from_local(year: int, month: int) -> dict:
+    """로컬 캐시에 있는 일자 파일을 월별 xlsx에 없는 날만 채워 넣는다."""
+    added: list[int] = []
+    errors: list[str] = []
+    try:
+        d0 = date(int(year), int(month), 1)
+    except ValueError:
+        return {"added": added, "errors": errors}
+    month_path = worklog_archive_month_path(d0, create_year=True)
+    existing = _month_archive_existing_days(month_path, year=d0.year, month=d0.month) if month_path else set()
+    for day in range(1, 32):
+        try:
+            d = date(d0.year, d0.month, day)
+        except ValueError:
+            continue
+        if day in existing:
+            continue
+        if _worklog_day_marked_deleted(d):
+            continue
+        src = worklog_path(d)
+        if not os.path.isfile(src):
+            continue
+        try:
+            got = upsert_worklog_archive_sheet(d, src, allow_overwrite=True)
+            if got:
+                added.append(day)
+                existing.add(day)
+        except Exception as e:
+            errors.append(f"{d.isoformat()}: {e}")
+    if added:
+        _invalidate_saved_dates_cache()
+    return {"added": added, "errors": errors}
+
+
 def delete_worklog_archive_sheet_at(month_path: str, d: date) -> str | None:
     """지정한 월별 xlsx에서 해당 날짜 시트 삭제. 남은 시트가 없으면 파일 삭제."""
     if load_workbook is None or not month_path or not os.path.exists(month_path):
         return None
     removed = None
     try:
-        wb = load_workbook(month_path)
+        wb = _load_archive_workbook(month_path)
         try:
             for sheet_title in list(wb.sheetnames):
                 if sheet_title in _worklog_archive_sheet_titles_for_lookup(d) or _is_archive_extra_sheet_name(sheet_title, d):
@@ -3171,7 +3357,7 @@ def delete_worklog_archive_sheet_at(month_path: str, d: date) -> str | None:
                     pass
                 return month_path
             if removed:
-                wb.save(month_path)
+                _atomic_save_workbook(wb, month_path)
         finally:
             try:
                 wb.close()
@@ -3193,15 +3379,26 @@ def delete_worklog_archive_sheet(d: date) -> str | None:
 
 def worklog_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"{d.isoformat()}.xlsx")
 
+
+def _xlsx_workbook_sheet_names(path: str) -> list[str]:
+    """openpyxl 없이 시트명만 읽는다. Drive 월 파일을 전부 로드하지 않기 위함."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            xml = zf.read("xl/workbook.xml").decode("utf-8", "ignore")
+    except Exception:
+        return []
+    block = re.search(r"<sheets\b[^>]*>(.*?)</sheets>", xml, re.I | re.S)
+    if not block:
+        return []
+    return re.findall(r'<sheet\b[^>]*\bname="([^"]+)"', block.group(1), re.I)
+
+
 def _list_archive_saved_dates() -> set[str]:
     """맥 경로 …/일지/YYYY/N월.xlsx 시트(일) → 달력 • 표시용.
 
-    시트명만 있고 칸이 비어 있으면 • 를 넣지 않는다.
-    0채움 시트(03)는 정규화한 뒤 실제 내용이 있을 때만 포함한다.
+    첫 로딩이 Drive 월 파일을 openpyxl로 전부 열지 않도록 시트명만 본다.
     """
     out: set[str] = set()
-    if load_workbook is None:
-        return out
     root = resolve_worklog_archive_root()
     if not root or not os.path.isdir(root):
         return out
@@ -3221,7 +3418,7 @@ def _list_archive_saved_dates() -> set[str]:
         except OSError:
             continue
         for fname in files:
-            m = re.match(r"^(\d{1,2})월\.xlsx$", fname)
+            m = re.match(r"^(\d{1,2})월\.xlsx$", _nfc(fname))
             if not m:
                 continue
             month = int(m.group(1))
@@ -3229,47 +3426,21 @@ def _list_archive_saved_dates() -> set[str]:
                 continue
             path = os.path.join(year_dir, fname)
             try:
-                wb = load_workbook(path, data_only=False)
-                try:
-                    changed = _normalize_archive_month_day_sheets(wb, year=year, month=month)
-                    changed = _purge_unsaved_archive_day_sheets(wb, year=year, month=month) or changed
-                    if changed:
-                        try:
-                            remaining = [n for n in wb.sheetnames if n and not n.startswith("_")]
-                            if not remaining:
-                                try:
-                                    os.remove(path)
-                                except OSError:
-                                    pass
-                                continue
-                            wb.save(path)
-                        except Exception:
-                            pass
-                    for name in list(wb.sheetnames):
-                        if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
-                            continue
-                        day = _archive_sheet_day_number(
-                            name, expect_year=year, expect_month=month
-                        )
-                        if day is None:
-                            continue
-                        try:
-                            d = date(year, month, day)
-                        except ValueError:
-                            continue
-                        try:
-                            labeled = _worksheet_labeled_date(wb[name])
-                            if labeled is not None and labeled != d:
-                                continue
-                            cells = _cells_from_worksheet(wb[name], d)
-                        except Exception:
-                            continue
-                        if _worklog_cells_have_draft(cells):
-                            out.add(d.isoformat())
-                finally:
-                    wb.close()
+                names = _xlsx_workbook_sheet_names(path)
             except Exception:
                 continue
+            for name in names:
+                if _is_archive_extra_sheet_name(name) or _is_day_extra_sheet_name(name):
+                    continue
+                day = _archive_sheet_day_number(
+                    name, expect_year=year, expect_month=month
+                )
+                if day is None:
+                    continue
+                try:
+                    out.add(date(year, month, day).isoformat())
+                except ValueError:
+                    continue
     return out
 
 
@@ -3446,13 +3617,9 @@ def read_worklog_cells_from_archive(d: date) -> dict | None:
     if not month_path or not os.path.exists(month_path):
         return None
     try:
-        wb = load_workbook(month_path, data_only=False)
+        wb = _load_archive_workbook(month_path, data_only=False)
         try:
-            if _normalize_archive_month_day_sheets(wb, year=d.year, month=d.month):
-                try:
-                    wb.save(month_path)
-                except Exception:
-                    pass
+            _normalize_archive_month_day_sheets(wb, year=d.year, month=d.month)
             name = _resolve_archive_sheet_name(wb.sheetnames, d)
             if not name:
                 return None
@@ -3588,7 +3755,7 @@ def _read_extra_pages_from_archive(d: date) -> list[dict]:
     if not month_path or not os.path.exists(month_path):
         return []
     try:
-        wb = load_workbook(month_path, data_only=False)
+        wb = _load_archive_workbook(month_path, data_only=False)
         try:
             return _extra_page_cells_from_workbook(wb, d)
         finally:
@@ -7507,13 +7674,16 @@ def _render_worklog_input_panel(selected: date) -> None:
                         st.session_state[_notes_key(d)] = notes_txt
                         arch = (st.session_state.get("wl_last_archive_path") or "")
                         arch_target = st.session_state.get("wl_last_archive_target") or describe_worklog_archive_target(d)
+                        arch_err = st.session_state.get("wl_last_archive_err") or ""
                         drv = st.session_state.get("wl_last_drive_path") or ""
                         mdrv = st.session_state.get("wl_last_drive_month_path") or ""
                         gist = st.session_state.get("wl_last_cloud_gist") or ""
                         cerr = st.session_state.get("wl_last_cloud_err") or ""
                         drv_cf = st.session_state.get("wl_last_drive_conflict") or ""
                         msg = f"저장 완료: {os.path.basename(path)}"
-                        if arch_target and not _wl_quiet_ui():
+                        if arch_err:
+                            msg += f" · 월별엑셀 실패: {arch_err}"
+                        elif arch_target and not _wl_quiet_ui():
                             msg += f" · {arch_target}"
                         elif arch and not _wl_quiet_ui():
                             _sh = st.session_state.get("wl_last_archive_sheet") or worklog_archive_sheet_title(d)
@@ -7750,30 +7920,6 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     dev_caption(f"업무일지 빌드 {_WL_UI_BUILD}")
     _filt_changed = _dashboard_filters_changed_this_run()
     _arch_root = resolve_worklog_archive_root()
-    # 유령 일자 시트(빈 칸·C5 불일치)를 월별 파일에서 한 번 정리 → 대시보드•와 엑셀 일치
-    if _arch_root and not st.session_state.get("_wl_archive_purged_v1"):
-        st.session_state["_wl_archive_purged_v1"] = True
-        try:
-            repaired = False
-            for year_name in os.listdir(_arch_root):
-                if not (year_name.isdigit() and len(year_name) == 4):
-                    continue
-                year_dir = os.path.join(_arch_root, year_name)
-                if not os.path.isdir(year_dir):
-                    continue
-                year = int(year_name)
-                for fname in os.listdir(year_dir):
-                    m = re.match(r"^(\d{1,2})월\.xlsx$", fname)
-                    if not m:
-                        continue
-                    month = int(m.group(1))
-                    mp = os.path.join(year_dir, fname)
-                    if _repair_month_archive_file(mp, year=year, month=month):
-                        repaired = True
-            if repaired:
-                _invalidate_saved_dates_cache()
-        except Exception:
-            pass
     if is_dev_mode():
         if _arch_root:
             st.caption(f"월별 저장 경로: `{_arch_root}/{{연도}}/{{N}}월.xlsx` (날짜=시트명)")
