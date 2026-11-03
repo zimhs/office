@@ -1057,7 +1057,6 @@ def _gc_set_del_event(cal_id: str, event_id: str) -> None:
 
 def _gc_set_sel_day(day: date) -> None:
     st.session_state["_gc_sel_day"] = day
-    st.session_state["gc_ev_day"] = day
     st.session_state["_gc_add_need_day"] = False
 
 
@@ -1148,6 +1147,14 @@ div[class*="st-key-gc_calgrid"] .stColumn {
   flex: 1 1 0 !important;
   padding: 4px 2px !important;
   background: #fff;
+  position: relative !important;
+}
+div[class*="st-key-gc_cell_"],
+div[class*="st-key-gc_cellsel_"],
+div[class*="st-key-gc_celltoday_"],
+div[class*="st-key-gc_cellpink_"] {
+  position: relative !important;
+  min-height: 80px !important;
 }
 div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"] > div:first-child,
 div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] > div:first-child,
@@ -1210,6 +1217,9 @@ div[class*="st-key-gc_evsel_"] [data-testid="stHorizontalBlock"] {
   align-items: center !important;
 }
 div[class*="st-key-gc_evlist_"] {
+  position: relative !important;
+  z-index: 2 !important;
+  margin-top: 26px !important;
   max-height: 96px !important;
   overflow-y: auto !important;
   overflow-x: hidden !important;
@@ -1254,11 +1264,16 @@ div[class*="st-key-gc_add_pop"] {
   box-shadow: 0 12px 40px rgba(32, 33, 36, 0.22) !important;
   padding: 14px 16px 12px !important;
 }
+div[class*="st-key-gc_day_"] {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 1 !important;
+}
 div[class*="st-key-gc_day_"] button {
-  min-height: 1.6rem !important;
-  height: 1.6rem !important;
+  min-height: 80px !important;
+  height: 100% !important;
   width: 100% !important;
-  padding: 0 2px !important;
+  padding: 4px 2px 0 !important;
   font-size: 16px !important;
   font-weight: 400 !important;
   border: none !important;
@@ -1267,10 +1282,11 @@ div[class*="st-key-gc_day_"] button {
   background: transparent !important;
   color: inherit !important;
   box-shadow: none !important;
-  justify-content: center !important;
+  justify-content: flex-start !important;
   align-items: center !important;
   line-height: 1.2 !important;
   text-align: center !important;
+  cursor: pointer !important;
 }
 div[class*="st-key-gc_day_"] button:focus,
 div[class*="st-key-gc_day_"] button:focus-visible,
@@ -1278,6 +1294,17 @@ div[class*="st-key-gc_day_"] button:hover {
   border: none !important;
   outline: none !important;
   box-shadow: none !important;
+}
+div[class*="st-key-gc_add_open_btn"] button,
+div[class*="st-key-gc_sync_run"] button {
+  min-height: 1.65rem !important;
+  height: 1.65rem !important;
+  min-width: 0 !important;
+  padding: 0 0.55rem !important;
+  font-size: 13px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  border-radius: 6px !important;
 }
 div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]),
 div[class*="st-key-gc_cellsel"] {
@@ -1367,14 +1394,17 @@ div[class*="st-key-gc_cellpink"] {
                         )
                     st.markdown("<style>" + "".join(rules) + "</style>", unsafe_allow_html=True)
                     with st.container(key=cell_key):
-                        st.button(
+                        if st.button(
                             str(d.day),
                             key=f"gc_day_{stamp}",
                             type="tertiary",
                             width="stretch",
                             on_click=_gc_set_sel_day,
                             args=(d,),
-                        )
+                        ):
+                            st.session_state["_gc_sel_day"] = d
+                            st.session_state["_gc_add_need_day"] = False
+                            st.rerun(scope="fragment")
                         if items:
                             sel_eid = str(st.session_state.get("_gc_sel_event") or "")
                             with st.container(key=f"gc_evlist_{stamp}"):
@@ -1600,7 +1630,10 @@ def _gc_cal_panel() -> None:
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
 
-    if "gc_ev_day" not in st.session_state:
+    sel_sync = st.session_state.get("_gc_sel_day")
+    if isinstance(sel_sync, date):
+        st.session_state["gc_ev_day"] = sel_sync
+    elif "gc_ev_day" not in st.session_state:
         st.session_state["gc_ev_day"] = today
 
     pending_ev = st.session_state.pop("_gc_pending_event", None)
@@ -1665,7 +1698,25 @@ def _gc_cal_panel() -> None:
         st.error(f"캘린더를 불러오지 못했습니다: {e}")
         cals = []
 
-    top = st.columns([1.1, 1.1, 4.0, 1.6])
+    st.markdown(
+        """
+<style>
+div[class*="st-key-gc_add_open_btn"] button,
+div[class*="st-key-gc_sync_run"] button {
+  min-height: 1.65rem !important;
+  height: 1.65rem !important;
+  min-width: 0 !important;
+  padding: 0 0.55rem !important;
+  font-size: 13px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  border-radius: 6px !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    top = st.columns([0.9, 0.9, 2.4, 1.2, 1.2])
     with top[0]:
         if st.button("오늘", key="gc_today"):
             st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
@@ -1691,8 +1742,21 @@ def _gc_cal_panel() -> None:
             type="primary",
             on_click=_gc_open_add_pop,
         )
+    with top[4]:
+        if st.button("연동실행", type="primary", key="gc_sync_run"):
+            try:
+                n_ev, n_tk = _gc_sync_google(y, m)
+                st.session_state["_gc_sync_msg"] = (
+                    f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
+                )
+            except Exception as e:
+                st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
+            st.rerun()
     if st.session_state.get("_gc_add_need_day"):
         st.caption("날짜를 먼저 클릭한 뒤 일정추가를 누르세요.")
+    msg = st.session_state.pop("_gc_sync_msg", None)
+    if msg:
+        st.caption(msg)
 
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
@@ -1904,24 +1968,6 @@ div[class*="st-key-gc_ns_"] button {
 
 
 def _gc_work_panel() -> None:
-    today = datetime.now(_TZ).date()
-    y = int(st.session_state.get("gc_year") or today.year)
-    m = int(st.session_state.get("gc_month") or today.month)
-    bar = st.columns([1.35, 6.2])
-    with bar[0]:
-        if st.button("연동실행", type="primary", key="gc_sync_run"):
-            try:
-                n_ev, n_tk = _gc_sync_google(y, m)
-                st.session_state["_gc_sync_msg"] = (
-                    f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
-                )
-            except Exception as e:
-                st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
-            st.rerun()
-    with bar[1]:
-        msg = st.session_state.pop("_gc_sync_msg", None)
-        if msg:
-            st.caption(msg)
     left, right = st.columns([3.15, 1.12], gap="small")
     with left:
         _gc_cal_panel()
