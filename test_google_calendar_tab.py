@@ -32,6 +32,12 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertEqual(weeks[0][0].weekday(), 6)
         self.assertEqual(gc.iso_week_label(weeks[0]), 40)
 
+    def test_mini_month_weeks_start_monday(self):
+        weeks = gc.mini_month_weeks(2026, 11)
+        self.assertEqual(weeks[0][0].isoformat(), "2026-10-26")
+        self.assertEqual(weeks[0][0].weekday(), 0)
+        self.assertEqual(weeks[0][6].day, 1)
+
     def test_auth_url_asks_calendar_and_tasks(self):
         url = gc.auth_url("cid.apps.googleusercontent.com", "state-1")
         self.assertIn("accounts.google.com", url)
@@ -102,6 +108,11 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("font-size: 18px", src)
         self.assertIn("_gc_sync_google", src)
         self.assertIn("_render_month_grid", src)
+        self.assertIn("_render_mini_month", src)
+        self.assertIn("gc_mini", src)
+        self.assertIn("gc_md_", src)
+        self.assertIn("mini_month_weeks", src)
+        self.assertIn("[3.55, 1.05]", src)
         self.assertIn("gc_xd_", src)
         self.assertIn("_gc_pending_del_event", src)
         self.assertIn("gc_evlist_", src)
