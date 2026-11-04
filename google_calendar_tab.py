@@ -2261,6 +2261,10 @@ def render_google_calendar_tab(
     df=None, latest_update_str: str = ""
 ) -> None:
     """상단 담당자·거래처·납품줄 + 구글 월간 달력·할 일."""
+    st.html(
+        "<script>try{var w=window.parent||window;if(w.__gcEvpickObs){w.__gcEvpickObs.disconnect();w.__gcEvpickObs=null;}}catch(e){}</script>",
+        unsafe_allow_javascript=True,
+    )
     try:
         import visit_calendar_tab as _vc
 

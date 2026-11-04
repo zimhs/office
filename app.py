@@ -8375,6 +8375,12 @@ def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: t
         <script>
         (function () {{
           var doc = window.parent.document;
+          try {{
+            if (window.parent.__gcEvpickObs) {{
+              window.parent.__gcEvpickObs.disconnect();
+              window.parent.__gcEvpickObs = null;
+            }}
+          }} catch (eObs) {{}}
           var COOKIE = 'dash_active_tab';
           var HEAVY = [{heavy_js}];
           function mainTabList() {{
@@ -16716,7 +16722,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
     _STICKY_INJECT_VER = 100
-    _ACTIVE_TAB_INJECT_VER = 16
+    _ACTIVE_TAB_INJECT_VER = 17
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
