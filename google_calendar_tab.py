@@ -1370,10 +1370,12 @@ div[class*="st-key-gc_evpick_"] button {
   white-space: nowrap !important;
   overflow: hidden !important;
 }
+div[class*="st-key-gc_evpick_"] *,
 div[class*="st-key-gc_evpick_"] button p,
 div[class*="st-key-gc_evpick_"] button span,
 div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],
-div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p {
+div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p,
+div[class*="st-key-gc_evpick_"] [data-testid^="stBaseButton"] p {
   font-size: 13px !important;
   line-height: 1.2 !important;
   font-weight: 400 !important;
@@ -1565,15 +1567,20 @@ div[class*="st-key-gc_cellpink"] {
 
 def _gc_shrink_event_titles() -> None:
     """일정 제목 버튼 안쪽 글자만 13px. 날짜·×·칸 레이아웃은 그대로."""
+    st.markdown(
+        "<style>div[class*='st-key-gc_evpick_'] *,div[class*='st-key-gc_evpick_'] button,"
+        "div[class*='st-key-gc_evpick_'] p{font-size:13px!important;line-height:1.2!important;"
+        "font-weight:400!important}</style>",
+        unsafe_allow_html=True,
+    )
     st.html(
         """
 <script>
 (function () {
-  var css = 'div[class*="st-key-gc_evpick_"] button,' +
-    'div[class*="st-key-gc_evpick_"] button p,' +
-    'div[class*="st-key-gc_evpick_"] button span,' +
-    'div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],' +
-    'div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
+  var css = 'div[class*="st-key-gc_evpick_"] *,' +
+    'div[class*="st-key-gc_evpick_"] button,' +
+    'div[class*="st-key-gc_evpick_"] p,' +
+    'div[class*="st-key-gc_evpick_"] span' +
     '{font-size:13px!important;line-height:1.2!important;font-weight:400!important;}';
   function apply(doc) {
     if (!doc) return;
@@ -1582,15 +1589,19 @@ def _gc_shrink_event_titles() -> None:
     if (!s) {
       s = doc.createElement("style");
       s.id = id;
-      (doc.head || doc.documentElement).appendChild(s);
+      (doc.body || doc.head || doc.documentElement).appendChild(s);
+    } else if (s.parentNode && s.parentNode.lastChild !== s) {
+      s.parentNode.appendChild(s);
     }
     s.textContent = css;
-    var nodes = doc.querySelectorAll(
-      '[class*="st-key-gc_evpick_"] button, [class*="st-key-gc_evpick_"] button p, [class*="st-key-gc_evpick_"] button span'
-    );
-    for (var i = 0; i < nodes.length; i++) {
-      nodes[i].style.setProperty("font-size", "13px", "important");
-      nodes[i].style.setProperty("line-height", "1.2", "important");
+    var roots = doc.querySelectorAll('[class*="st-key-gc_evpick_"]');
+    for (var r = 0; r < roots.length; r++) {
+      roots[r].style.setProperty("font-size", "13px", "important");
+      var nodes = roots[r].querySelectorAll("*");
+      for (var i = 0; i < nodes.length; i++) {
+        nodes[i].style.setProperty("font-size", "13px", "important");
+        nodes[i].style.setProperty("line-height", "1.2", "important");
+      }
     }
   }
   function run() {
@@ -1598,8 +1609,14 @@ def _gc_shrink_event_titles() -> None:
     try { apply(window.parent.document); } catch (e) {}
   }
   run();
-  setTimeout(run, 50);
-  setTimeout(run, 250);
+  [50, 120, 250, 500, 900].forEach(function (ms) { setTimeout(run, ms); });
+  try {
+    var target = (window.parent && window.parent.document) ? window.parent.document.body : document.body;
+    if (target && !window.__gcEvpickObs) {
+      window.__gcEvpickObs = new MutationObserver(run);
+      window.__gcEvpickObs.observe(target, { childList: true, subtree: true });
+    }
+  } catch (e) {}
 })();
 </script>
 """,
