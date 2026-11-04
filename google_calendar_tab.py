@@ -1232,7 +1232,7 @@ div[class*="st-key-gc_evpick_"] button {
   height: 1.2rem !important;
   width: 100% !important;
   padding: 0 4px !important;
-  font-size: 11px !important;
+  font-size: 13px !important;
   font-weight: 400 !important;
   border: none !important;
   outline: none !important;
@@ -1249,7 +1249,7 @@ div[class*="st-key-gc_evpick_"] button p,
 div[class*="st-key-gc_evpick_"] button span,
 div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],
 div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p {
-  font-size: 11px !important;
+  font-size: 13px !important;
   line-height: 1.2 !important;
   font-weight: 400 !important;
 }
@@ -1439,7 +1439,7 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """일정 제목 버튼 안쪽 글자만 할 일과 같은 11px. 날짜·×·칸 레이아웃은 그대로."""
+    """일정 제목 버튼 안쪽 글자만 13px. 날짜·×·칸 레이아웃은 그대로."""
     st.html(
         """
 <script>
@@ -1449,7 +1449,7 @@ def _gc_shrink_event_titles() -> None:
     'div[class*="st-key-gc_evpick_"] button span,' +
     'div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],' +
     'div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
-    '{font-size:11px!important;line-height:1.2!important;font-weight:400!important;}';
+    '{font-size:13px!important;line-height:1.2!important;font-weight:400!important;}';
   function apply(doc) {
     if (!doc) return;
     var id = "gc-evpick-fs";
@@ -1464,7 +1464,7 @@ def _gc_shrink_event_titles() -> None:
       '[class*="st-key-gc_evpick_"] button, [class*="st-key-gc_evpick_"] button p, [class*="st-key-gc_evpick_"] button span'
     );
     for (var i = 0; i < nodes.length; i++) {
-      nodes[i].style.setProperty("font-size", "11px", "important");
+      nodes[i].style.setProperty("font-size", "13px", "important");
       nodes[i].style.setProperty("line-height", "1.2", "important");
     }
   }
