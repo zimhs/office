@@ -1245,6 +1245,14 @@ div[class*="st-key-gc_evpick_"] button {
   white-space: nowrap !important;
   overflow: hidden !important;
 }
+div[class*="st-key-gc_evpick_"] button p,
+div[class*="st-key-gc_evpick_"] button span,
+div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],
+div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p {
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+  font-weight: 400 !important;
+}
 div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   background: #d2e3fc !important;
 }
@@ -1427,6 +1435,51 @@ div[class*="st-key-gc_cellpink"] {
                                                 on_click=_gc_set_del_event,
                                                 args=(cid, eid),
                                             )
+    _gc_shrink_event_titles()
+
+
+def _gc_shrink_event_titles() -> None:
+    """일정 제목 버튼 안쪽 글자만 할 일과 같은 11px. 날짜·×·칸 레이아웃은 그대로."""
+    st.html(
+        """
+<script>
+(function () {
+  var css = 'div[class*="st-key-gc_evpick_"] button,' +
+    'div[class*="st-key-gc_evpick_"] button p,' +
+    'div[class*="st-key-gc_evpick_"] button span,' +
+    'div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],' +
+    'div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
+    '{font-size:11px!important;line-height:1.2!important;font-weight:400!important;}';
+  function apply(doc) {
+    if (!doc) return;
+    var id = "gc-evpick-fs";
+    var s = doc.getElementById(id);
+    if (!s) {
+      s = doc.createElement("style");
+      s.id = id;
+      (doc.head || doc.documentElement).appendChild(s);
+    }
+    s.textContent = css;
+    var nodes = doc.querySelectorAll(
+      '[class*="st-key-gc_evpick_"] button, [class*="st-key-gc_evpick_"] button p, [class*="st-key-gc_evpick_"] button span'
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].style.setProperty("font-size", "11px", "important");
+      nodes[i].style.setProperty("line-height", "1.2", "important");
+    }
+  }
+  function run() {
+    apply(document);
+    try { apply(window.parent.document); } catch (e) {}
+  }
+  run();
+  setTimeout(run, 50);
+  setTimeout(run, 250);
+})();
+</script>
+""",
+        unsafe_allow_javascript=True,
+    )
 
 
 def _render_event_memo_pop(ev: dict) -> None:
