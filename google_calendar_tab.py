@@ -40,6 +40,8 @@ _CAL_API = "https://www.googleapis.com/calendar/v3"
 _TASK_API = "https://tasks.googleapis.com/tasks/v1"
 _CLOUD_REDIRECT = "https://office-g8ryabkapprkpjmfwa5aypw.streamlit.app/"
 _EV_MEM: dict[str, dict[str, list[dict]]] = {}
+_EV_BG = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gc-ev")
+_EV_BG_FUTS: dict[str, Any] = {}
 
 
 def calendar_embed_url(srcs: list[str] | None = None, *, height: int = 780) -> str:
@@ -663,6 +665,39 @@ def _ev_key(year: int, month: int) -> str:
     return f"ev:{year}-{month:02d}"
 
 
+def _gc_shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    m0 = year * 12 + (month - 1) + int(delta)
+    return m0 // 12, m0 % 12 + 1
+
+
+def _gc_prefetch_one(cals: list[dict], year: int, month: int) -> Any:
+    """옆달 일정을 백그라운드에서 받아, ‹ › 클릭 때 API 대기를 없앤다."""
+    key = _ev_key(year, month)
+    if key in _EV_MEM:
+        return None
+    fut = _EV_BG_FUTS.get(key)
+    if fut is not None and not fut.done():
+        return fut
+    snap = list(cals or [])
+
+    def _job() -> dict[str, list[dict]]:
+        data = _events_by_day(snap, year, month) if snap else {}
+        _EV_MEM[key] = data
+        return data
+
+    fut = _EV_BG.submit(_job)
+    _EV_BG_FUTS[key] = fut
+    return fut
+
+
+def _gc_schedule_prefetch(cals: list[dict], year: int, month: int) -> None:
+    if not cals:
+        return
+    for delta in (-1, 1):
+        yy, mm = _gc_shift_month(year, month, delta)
+        _gc_prefetch_one(cals, yy, mm)
+
+
 def _merge_event_days(
     cached: dict[str, list[dict]], fresh: dict[str, list[dict]]
 ) -> dict[str, list[dict]]:
@@ -703,7 +738,15 @@ def _gc_cached_events(
         if key + ":at" not in box:
             box[key + ":at"] = now
         return cached
-    fresh = _events_by_day(cals, year, month) if cals else {}
+    fresh: dict[str, list[dict]] = {}
+    fut = _EV_BG_FUTS.get(key)
+    if fut is not None:
+        try:
+            fresh = fut.result(timeout=25) or {}
+        except Exception:
+            fresh = _events_by_day(cals, year, month) if cals else {}
+    else:
+        fresh = _events_by_day(cals, year, month) if cals else {}
     data = _merge_event_days(cached or {}, fresh) if cached else fresh
     box[key] = data
     box[key + ":at"] = now
@@ -1115,7 +1158,10 @@ def _gc_mini_set_month(day: date) -> None:
 
 
 def _gc_set_view_month(day: date) -> None:
-    st.session_state["_gc_pending_month"] = date(day.year, day.month, 1)
+    first = date(day.year, day.month, 1)
+    st.session_state["gc_year"] = first.year
+    st.session_state["gc_month"] = first.month
+    st.session_state["_gc_pending_month"] = first
 
 
 def _gc_set_sel_event(day: date, event_id: str, chip: str = "") -> None:
@@ -1620,7 +1666,7 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """일정 제목만 13px. 문서 head에 한 번만 넣고, 감시·노드 수정은 하지 않는다."""
+    """일정 제목만 13px. 월 이동마다 스크립트를 넣지 않는다."""
     st.markdown(
         "<style>html body div[class*='st-key-gc_evpick_'] button,"
         "html body div[class*='st-key-gc_evpick_'] button p,"
@@ -1629,34 +1675,6 @@ def _gc_shrink_event_titles() -> None:
         "html body div[class*='st-key-gc_evpick_'] [data-testid='stMarkdownContainer'] p"
         "{font-size:13px!important;line-height:1.2!important;font-weight:400!important}</style>",
         unsafe_allow_html=True,
-    )
-    st.html(
-        """
-<script>
-(function () {
-  var id = "gc-evpick-fs";
-  var css = 'html body div[class*="st-key-gc_evpick_"] button,' +
-    'html body div[class*="st-key-gc_evpick_"] button p,' +
-    'html body div[class*="st-key-gc_evpick_"] button span,' +
-    'html body div[class*="st-key-gc_evpick_"] button div,' +
-    'html body div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
-    '{font-size:13px!important;line-height:1.2!important;font-weight:400!important;}';
-  function put(doc) {
-    if (!doc) return;
-    var s = doc.getElementById(id);
-    if (!s) {
-      s = doc.createElement("style");
-      s.id = id;
-      (doc.head || doc.documentElement).appendChild(s);
-    }
-    s.textContent = css;
-  }
-  put(document);
-  try { put(window.parent.document); } catch (e) {}
-})();
-</script>
-""",
-        unsafe_allow_javascript=True,
     )
 
 
@@ -2061,6 +2079,7 @@ div[class*="st-key-gc_head_acts"] button {
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
     by_day = _gc_cached_events(cals, y, m)
+    _gc_schedule_prefetch(cals, y, m)
     sel_day = st.session_state.get("_gc_sel_day")
     _render_month_grid(
         y, m, by_day, today, selected=sel_day if isinstance(sel_day, date) else None
@@ -2361,7 +2380,35 @@ def render_google_calendar_tab(
 ) -> None:
     """상단 담당자·거래처·납품줄 + 구글 월간 달력·할 일."""
     st.html(
-        "<script>try{var w=window.parent||window;if(w.__gcEvpickObs){w.__gcEvpickObs.disconnect();w.__gcEvpickObs=null;}}catch(e){}</script>",
+        """
+<script>
+(function () {
+  try {
+    var w = window.parent || window;
+    if (w.__gcEvpickObs) { w.__gcEvpickObs.disconnect(); w.__gcEvpickObs = null; }
+  } catch (e) {}
+  var id = "gc-evpick-fs";
+  var css = 'html body div[class*="st-key-gc_evpick_"] button,' +
+    'html body div[class*="st-key-gc_evpick_"] button p,' +
+    'html body div[class*="st-key-gc_evpick_"] button span,' +
+    'html body div[class*="st-key-gc_evpick_"] button div,' +
+    'html body div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
+    '{font-size:13px!important;line-height:1.2!important;font-weight:400!important;}';
+  function put(doc) {
+    if (!doc) return;
+    var s = doc.getElementById(id);
+    if (!s) {
+      s = doc.createElement("style");
+      s.id = id;
+      (doc.head || doc.documentElement).appendChild(s);
+    }
+    s.textContent = css;
+  }
+  put(document);
+  try { put(window.parent.document); } catch (e) {}
+})();
+</script>
+""",
         unsafe_allow_javascript=True,
     )
     try:

@@ -131,6 +131,10 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("gc-evpick-fs", src)
         self.assertIn("__gcEvpickObs.disconnect", src)
         self.assertNotIn("MutationObserver", src)
+        self.assertIn("_gc_schedule_prefetch", src)
+        shrink = src.split("def _gc_shrink_event_titles", 1)[1].split("def ", 1)[0]
+        self.assertNotIn("st.html", shrink)
+        self.assertNotIn("unsafe_allow_javascript", shrink)
         self.assertIn("font-size: 13px", src)
         self.assertIn("overflow-y: auto", src)
         self.assertIn("_gc_set_sel_event", src)
@@ -257,6 +261,32 @@ class GoogleCalendarTabTest(unittest.TestCase):
             out = gc._gc_cached_events([{"id": "c1"}], 2026, 10)
         self.assertIs(out, cached)
         fetch.assert_not_called()
+
+    def test_mem_cache_skips_google_on_month_move(self):
+        gc._EV_MEM["ev:2026-11"] = {"2026-11-01": [{"title": "미리", "id": "p1"}]}
+        box: dict = {}
+        try:
+            with patch.object(gc, "_gc_api_box", return_value=box), patch.object(
+                gc, "_events_by_day"
+            ) as fetch:
+                out = gc._gc_cached_events([{"id": "c1"}], 2026, 11)
+            self.assertEqual(out["2026-11-01"][0]["title"], "미리")
+            fetch.assert_not_called()
+        finally:
+            gc._EV_MEM.pop("ev:2026-11", None)
+
+    def test_shift_month_and_prefetch_skips_cached(self):
+        self.assertEqual(gc._gc_shift_month(2026, 1, -1), (2025, 12))
+        self.assertEqual(gc._gc_shift_month(2026, 12, 1), (2027, 1))
+        gc._EV_MEM["ev:2026-09"] = {}
+        gc._EV_MEM["ev:2026-11"] = {}
+        try:
+            with patch.object(gc, "_events_by_day") as fetch:
+                gc._gc_schedule_prefetch([{"id": "c1"}], 2026, 10)
+            fetch.assert_not_called()
+        finally:
+            gc._EV_MEM.pop("ev:2026-09", None)
+            gc._EV_MEM.pop("ev:2026-11", None)
 
 
 class GoogleCalendarTokenPersistTest(unittest.TestCase):
