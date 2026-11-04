@@ -82,6 +82,20 @@ def _gc_is_holiday_day(items: list[dict] | None) -> bool:
     return any(str((ev or {}).get("cal_id") or "") == GC_KR_HOLIDAY for ev in (items or []))
 
 
+def _gc_cached_holiday_keys(year: int, month: int) -> set[str]:
+    """이미 불러온 일정만 본다. 작은 달력 월 이동에서 API를 다시 치지 않는다."""
+    weeks = mini_month_weeks(year, month)
+    months = {(d.year, d.month) for week in weeks for d in week}
+    box = _gc_api_box()
+    out: set[str] = set()
+    for yy, mm in months:
+        cached = box.get(_ev_key(yy, mm)) or _EV_MEM.get(_ev_key(yy, mm)) or {}
+        for key, items in cached.items():
+            if _gc_is_holiday_day(items):
+                out.add(str(key))
+    return out
+
+
 def event_day_key(item: dict) -> str:
     start = (item or {}).get("start") or {}
     raw = str(start.get("date") or start.get("dateTime") or "")
@@ -1118,9 +1132,11 @@ def _render_mini_month(
     month: int,
     today: date,
     selected: date | None = None,
+    holidays: set[str] | None = None,
 ) -> None:
     """구글 왼쪽 작은 달력. 날짜 칸 키(gc_day_/gc_cell_)는 바꾸지 않는다."""
     weeks = mini_month_weeks(year, month)
+    hols = holidays or set()
     st.markdown(
         """
 <style>
@@ -1141,6 +1157,7 @@ div[class*="st-key-gc_mini"] .gc-mini-wn {
   font-size: 10px !important; color: #70757a !important;
   text-align: center !important; margin: 0 !important; line-height: 1.6 !important;
 }
+div[class*="st-key-gc_mini"] .gc-mini-dow-pink { color: #d93025 !important; }
 div[class*="st-key-gc_mini"] .gc-mini-wn { color: #9aa0a6 !important; }
 div[class*="st-key-gc_mini"] div[class*="st-key-gc_mp"],
 div[class*="st-key-gc_mini"] div[class*="st-key-gc_mn"] { width: 1.4rem !important; }
@@ -1154,6 +1171,12 @@ div[class*="st-key-gc_mini"] button {
 }
 div[class*="st-key-gc_mdt_"] button {
   background: #1a73e8 !important; color: #fff !important; font-weight: 500 !important;
+}
+div[class*="st-key-gc_mdp_"] button {
+  background: #fdecea !important; color: #d93025 !important;
+}
+div[class*="st-key-gc_mdq_"] button {
+  background: #fdecea !important; color: #e8a0a0 !important;
 }
 div[class*="st-key-gc_mdo_"] button { color: #bdc1c6 !important; }
 div[class*="st-key-gc_mds_"] button { background: #e8f0fe !important; color: #174ea6 !important; }
@@ -1193,8 +1216,9 @@ div[class*="st-key-gc_mp"] button, div[class*="st-key-gc_mn"] button {
             st.markdown('<div class="gc-mini-wn"></div>', unsafe_allow_html=True)
         for i, lab in enumerate(("월", "화", "수", "목", "금", "토", "일")):
             with labs[i + 1]:
+                cls = "gc-mini-dow gc-mini-dow-pink" if i >= 5 else "gc-mini-dow"
                 st.markdown(
-                    f'<div class="gc-mini-dow">{lab}</div>', unsafe_allow_html=True
+                    f'<div class="{cls}">{lab}</div>', unsafe_allow_html=True
                 )
         for week in weeks:
             row = st.columns([0.72] + [1] * 7, gap=None)
@@ -1205,10 +1229,15 @@ div[class*="st-key-gc_mp"] button, div[class*="st-key-gc_mn"] button {
                 )
             for i, d in enumerate(week):
                 stamp = d.isoformat()
+                is_pink = d.weekday() >= 5 or stamp in hols
                 if d == today:
                     wrap = f"gc_mdt_{stamp}"
                 elif selected is not None and d == selected:
                     wrap = f"gc_mds_{stamp}"
+                elif is_pink and d.month != month:
+                    wrap = f"gc_mdq_{stamp}"
+                elif is_pink:
+                    wrap = f"gc_mdp_{stamp}"
                 elif d.month != month:
                     wrap = f"gc_mdo_{stamp}"
                 else:
@@ -2257,7 +2286,13 @@ def _gc_mini_panel() -> None:
     y = int(st.session_state.get("gc_mini_year") or today.year)
     m = int(st.session_state.get("gc_mini_month") or today.month)
     sel = st.session_state.get("_gc_sel_day")
-    _render_mini_month(y, m, today, sel if isinstance(sel, date) else None)
+    _render_mini_month(
+        y,
+        m,
+        today,
+        sel if isinstance(sel, date) else None,
+        holidays=_gc_cached_holiday_keys(y, m),
+    )
 
 
 def _gc_work_panel() -> None:
