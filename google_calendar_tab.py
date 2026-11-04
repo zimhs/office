@@ -1603,61 +1603,12 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """일정 제목 버튼 안쪽 글자만 13px. 날짜·×·칸 레이아웃은 그대로."""
+    """일정 제목 안쪽 글자만 13px. 감시 스크립트는 재시작 멈춤을 일으키므로 쓰지 않는다."""
     st.markdown(
         "<style>div[class*='st-key-gc_evpick_'] *,div[class*='st-key-gc_evpick_'] button,"
         "div[class*='st-key-gc_evpick_'] p{font-size:13px!important;line-height:1.2!important;"
         "font-weight:400!important}</style>",
         unsafe_allow_html=True,
-    )
-    st.html(
-        """
-<script>
-(function () {
-  var css = 'div[class*="st-key-gc_evpick_"] *,' +
-    'div[class*="st-key-gc_evpick_"] button,' +
-    'div[class*="st-key-gc_evpick_"] p,' +
-    'div[class*="st-key-gc_evpick_"] span' +
-    '{font-size:13px!important;line-height:1.2!important;font-weight:400!important;}';
-  function apply(doc) {
-    if (!doc) return;
-    var id = "gc-evpick-fs";
-    var s = doc.getElementById(id);
-    if (!s) {
-      s = doc.createElement("style");
-      s.id = id;
-      (doc.body || doc.head || doc.documentElement).appendChild(s);
-    } else if (s.parentNode && s.parentNode.lastChild !== s) {
-      s.parentNode.appendChild(s);
-    }
-    s.textContent = css;
-    var roots = doc.querySelectorAll('[class*="st-key-gc_evpick_"]');
-    for (var r = 0; r < roots.length; r++) {
-      roots[r].style.setProperty("font-size", "13px", "important");
-      var nodes = roots[r].querySelectorAll("*");
-      for (var i = 0; i < nodes.length; i++) {
-        nodes[i].style.setProperty("font-size", "13px", "important");
-        nodes[i].style.setProperty("line-height", "1.2", "important");
-      }
-    }
-  }
-  function run() {
-    apply(document);
-    try { apply(window.parent.document); } catch (e) {}
-  }
-  run();
-  [50, 120, 250, 500, 900].forEach(function (ms) { setTimeout(run, ms); });
-  try {
-    var target = (window.parent && window.parent.document) ? window.parent.document.body : document.body;
-    if (target && !window.__gcEvpickObs) {
-      window.__gcEvpickObs = new MutationObserver(run);
-      window.__gcEvpickObs.observe(target, { childList: true, subtree: true });
-    }
-  } catch (e) {}
-})();
-</script>
-""",
-        unsafe_allow_javascript=True,
     )
 
 
