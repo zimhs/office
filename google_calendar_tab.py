@@ -1779,6 +1779,36 @@ def _gc_cal_panel() -> None:
     st.markdown(
         """
 <style>
+div[class*="st-key-gc_cal_top"] {
+  position: relative !important;
+}
+div[class*="st-key-gc_cal_top"] > div[data-testid="stVerticalBlock"] {
+  gap: 0 !important;
+  position: relative !important;
+}
+div[class*="st-key-gc_ym"] {
+  height: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  pointer-events: none !important;
+}
+div[class*="st-key-gc_ym"] p,
+div[class*="st-key-gc_ym"] .gc-ym {
+  position: absolute !important;
+  left: 50% !important;
+  top: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  line-height: 1.2 !important;
+  margin: 0 !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  z-index: 2 !important;
+  pointer-events: none !important;
+}
 div[class*="st-key-gc_head_acts"] [data-testid="stHorizontalBlock"] {
   gap: 4px !important;
   flex-wrap: nowrap !important;
@@ -1794,45 +1824,51 @@ div[class*="st-key-gc_head_acts"] button {
 """,
         unsafe_allow_html=True,
     )
-    top = st.columns([1.05, 1.05, 3.15, 2.55], vertical_alignment="center")
-    with top[0]:
-        if st.button("오늘", key="gc_today"):
-            st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
-            st.rerun(scope="fragment")
-    with top[1]:
-        n1, n2 = st.columns(2)
-        with n1:
-            if st.button("‹", key="gc_prev"):
-                d = date(y, m, 1) - timedelta(days=1)
-                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
+    with st.container(key="gc_cal_top"):
+        with st.container(key="gc_ym"):
+            st.markdown(
+                f'<div class="gc-ym">{html.escape(f"{y}년 {m}월")}</div>',
+                unsafe_allow_html=True,
+            )
+        top = st.columns([1.05, 1.05, 3.15, 2.55], vertical_alignment="center")
+        with top[0]:
+            if st.button("오늘", key="gc_today"):
+                st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
                 st.rerun(scope="fragment")
-        with n2:
-            if st.button("›", key="gc_next"):
-                d = date(y, m, 28) + timedelta(days=8)
-                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                st.rerun(scope="fragment")
-    with top[2]:
-        st.markdown(f"**{y}년 {m}월**")
-    with top[3]:
-        with st.container(key="gc_head_acts"):
-            a1, a2 = st.columns(2, gap="small")
-            with a1:
-                st.button(
-                    "일정 추가",
-                    type="primary",
-                    key="gc_add_open",
-                    on_click=_gc_open_add_pop,
-                )
-            with a2:
-                if st.button("연동실행", type="primary", key="gc_sync_run"):
-                    try:
-                        n_ev, n_tk = _gc_sync_google(y, m)
-                        st.session_state["_gc_sync_msg"] = (
-                            f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
-                        )
-                    except Exception as e:
-                        st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
-                    st.rerun()
+        with top[1]:
+            n1, n2 = st.columns(2)
+            with n1:
+                if st.button("‹", key="gc_prev"):
+                    d = date(y, m, 1) - timedelta(days=1)
+                    st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
+                    st.rerun(scope="fragment")
+            with n2:
+                if st.button("›", key="gc_next"):
+                    d = date(y, m, 28) + timedelta(days=8)
+                    st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
+                    st.rerun(scope="fragment")
+        with top[2]:
+            pass
+        with top[3]:
+            with st.container(key="gc_head_acts"):
+                a1, a2 = st.columns(2, gap="small")
+                with a1:
+                    st.button(
+                        "일정 추가",
+                        type="primary",
+                        key="gc_add_open",
+                        on_click=_gc_open_add_pop,
+                    )
+                with a2:
+                    if st.button("연동실행", type="primary", key="gc_sync_run"):
+                        try:
+                            n_ev, n_tk = _gc_sync_google(y, m)
+                            st.session_state["_gc_sync_msg"] = (
+                                f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
+                            )
+                        except Exception as e:
+                            st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
+                        st.rerun()
     msg = st.session_state.pop("_gc_sync_msg", None)
     if msg:
         st.caption(msg)
