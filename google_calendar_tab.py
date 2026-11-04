@@ -1318,19 +1318,27 @@ div[class*="st-key-gc_evsel_"] {
 }
 div[class*="st-key-gc_xd_"] {
   position: absolute !important;
-  top: 0 !important;
+  top: 50% !important;
   right: 1px !important;
+  transform: translateY(-50%) !important;
   z-index: 3 !important;
   width: 1.2rem !important;
+  height: 1.2rem !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
 }
 div[class*="st-key-gc_xd_"] button {
-  min-height: 1.3rem !important;
-  height: 1.3rem !important;
-  min-width: 1.15rem !important;
-  width: 1.15rem !important;
+  min-height: 1.2rem !important;
+  height: 1.2rem !important;
+  min-width: 1.2rem !important;
+  width: 1.2rem !important;
   padding: 0 !important;
   font-size: 13px !important;
-  line-height: 1 !important;
+  line-height: 1.2rem !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
   color: #5f6368 !important;
   border: none !important;
   background: transparent !important;
