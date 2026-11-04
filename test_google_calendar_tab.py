@@ -110,6 +110,8 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_render_month_grid", src)
         self.assertIn("_render_mini_month", src)
         self.assertIn("gc_mini", src)
+        self.assertIn("gc_mdp_", src)
+        self.assertIn("_gc_cached_holiday_keys", src)
         self.assertIn("gc_md_", src)
         self.assertIn("mini_month_weeks", src)
         self.assertIn("[0.82, 2.70, 1.05]", src)
