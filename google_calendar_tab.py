@@ -69,6 +69,11 @@ def month_weeks(year: int, month: int) -> list[list[date]]:
     return calendar.Calendar(firstweekday=6).monthdatescalendar(year, month)
 
 
+def mini_month_weeks(year: int, month: int) -> list[list[date]]:
+    """월요일 시작 주. 구글 왼쪽 작은 달력과 같다."""
+    return calendar.Calendar(firstweekday=0).monthdatescalendar(year, month)
+
+
 def iso_week_label(week: list[date]) -> int:
     return int(week[3].isocalendar()[1])
 
@@ -1099,6 +1104,111 @@ def _gc_close_add_pop() -> None:
     st.session_state["_gc_add_pop"] = False
 
 
+def _render_mini_month(
+    year: int,
+    month: int,
+    today: date,
+    selected: date | None = None,
+) -> None:
+    """구글 왼쪽 작은 달력. 날짜 칸 키(gc_day_/gc_cell_)는 바꾸지 않는다."""
+    weeks = mini_month_weeks(year, month)
+    st.markdown(
+        """
+<style>
+div[class*="st-key-gc_mini"] { max-width: 248px !important; }
+div[class*="st-key-gc_mini"] [data-testid="stVerticalBlock"] { gap: 2px !important; }
+div[class*="st-key-gc_mini"] [data-testid="stHorizontalBlock"] {
+  gap: 0 !important; margin: 0 !important; flex-wrap: nowrap !important;
+}
+div[class*="st-key-gc_mini"] [data-testid="stColumn"] {
+  padding: 0 !important; min-width: 0 !important;
+}
+div[class*="st-key-gc_mini"] .gc-mini-ym {
+  font-size: 13px !important; font-weight: 600 !important;
+  color: #3c4043 !important; margin: 0 !important; padding: 4px 2px 6px;
+}
+div[class*="st-key-gc_mini"] .gc-mini-dow,
+div[class*="st-key-gc_mini"] .gc-mini-wn {
+  font-size: 10px !important; color: #70757a !important;
+  text-align: center !important; margin: 0 !important; line-height: 1.6 !important;
+}
+div[class*="st-key-gc_mini"] .gc-mini-wn { color: #9aa0a6 !important; }
+div[class*="st-key-gc_mini"] div[class*="st-key-gc_mp"],
+div[class*="st-key-gc_mini"] div[class*="st-key-gc_mn"] { width: 1.4rem !important; }
+div[class*="st-key-gc_mini"] button {
+  min-height: 22px !important; height: 22px !important;
+  width: 22px !important; min-width: 22px !important;
+  padding: 0 !important; font-size: 11px !important; font-weight: 400 !important;
+  border: none !important; border-radius: 50% !important;
+  background: transparent !important; box-shadow: none !important;
+  color: #3c4043 !important; line-height: 22px !important;
+}
+div[class*="st-key-gc_mdt_"] button {
+  background: #1a73e8 !important; color: #fff !important; font-weight: 500 !important;
+}
+div[class*="st-key-gc_mdo_"] button { color: #bdc1c6 !important; }
+div[class*="st-key-gc_mds_"] button { background: #e8f0fe !important; color: #174ea6 !important; }
+div[class*="st-key-gc_mp"] button, div[class*="st-key-gc_mn"] button {
+  min-height: 1.4rem !important; height: 1.4rem !important;
+  width: 1.4rem !important; color: #5f6368 !important; font-size: 14px !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    with st.container(key="gc_mini"):
+        hd = st.columns([3.4, 0.7, 0.7], vertical_alignment="center")
+        with hd[0]:
+            st.markdown(
+                f'<div class="gc-mini-ym">{html.escape(f"{year}년 {month}월")}</div>',
+                unsafe_allow_html=True,
+            )
+        with hd[1]:
+            if st.button("‹", key="gc_mp", type="tertiary"):
+                d = date(year, month, 1) - timedelta(days=1)
+                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
+                st.rerun()
+        with hd[2]:
+            if st.button("›", key="gc_mn", type="tertiary"):
+                d = date(year, month, 28) + timedelta(days=8)
+                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
+                st.rerun()
+        labs = st.columns([0.72] + [1] * 7, gap=None)
+        with labs[0]:
+            st.markdown('<div class="gc-mini-wn"></div>', unsafe_allow_html=True)
+        for i, lab in enumerate(("월", "화", "수", "목", "금", "토", "일")):
+            with labs[i + 1]:
+                st.markdown(
+                    f'<div class="gc-mini-dow">{lab}</div>', unsafe_allow_html=True
+                )
+        for week in weeks:
+            row = st.columns([0.72] + [1] * 7, gap=None)
+            with row[0]:
+                st.markdown(
+                    f'<div class="gc-mini-wn">{int(week[3].isocalendar()[1])}</div>',
+                    unsafe_allow_html=True,
+                )
+            for i, d in enumerate(week):
+                stamp = d.isoformat()
+                if d == today:
+                    wrap = f"gc_mdt_{stamp}"
+                elif selected is not None and d == selected:
+                    wrap = f"gc_mds_{stamp}"
+                elif d.month != month:
+                    wrap = f"gc_mdo_{stamp}"
+                else:
+                    wrap = f"gc_mdi_{stamp}"
+                with row[i + 1]:
+                    with st.container(key=wrap):
+                        st.button(
+                            str(d.day),
+                            key=f"gc_md_{stamp}",
+                            type="tertiary",
+                            on_click=_gc_set_sel_day,
+                            args=(d,),
+                        )
+
+
 def _render_month_grid(
     year: int,
     month: int,
@@ -1779,6 +1889,36 @@ def _gc_cal_panel() -> None:
     st.markdown(
         """
 <style>
+div[class*="st-key-gc_cal_top"] {
+  position: relative !important;
+}
+div[class*="st-key-gc_cal_top"] > div[data-testid="stVerticalBlock"] {
+  gap: 0 !important;
+  position: relative !important;
+}
+div[class*="st-key-gc_ym"] {
+  height: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  pointer-events: none !important;
+}
+div[class*="st-key-gc_ym"] p,
+div[class*="st-key-gc_ym"] .gc-ym {
+  position: absolute !important;
+  left: 50% !important;
+  top: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  line-height: 1.2 !important;
+  margin: 0 !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  z-index: 2 !important;
+  pointer-events: none !important;
+}
 div[class*="st-key-gc_head_acts"] [data-testid="stHorizontalBlock"] {
   gap: 4px !important;
   flex-wrap: nowrap !important;
@@ -1794,45 +1934,51 @@ div[class*="st-key-gc_head_acts"] button {
 """,
         unsafe_allow_html=True,
     )
-    top = st.columns([1.05, 1.05, 3.15, 2.55], vertical_alignment="center")
-    with top[0]:
-        if st.button("오늘", key="gc_today"):
-            st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
-            st.rerun(scope="fragment")
-    with top[1]:
-        n1, n2 = st.columns(2)
-        with n1:
-            if st.button("‹", key="gc_prev"):
-                d = date(y, m, 1) - timedelta(days=1)
-                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                st.rerun(scope="fragment")
-        with n2:
-            if st.button("›", key="gc_next"):
-                d = date(y, m, 28) + timedelta(days=8)
-                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                st.rerun(scope="fragment")
-    with top[2]:
-        st.markdown(f"**{y}년 {m}월**")
-    with top[3]:
-        with st.container(key="gc_head_acts"):
-            a1, a2 = st.columns(2, gap="small")
-            with a1:
-                st.button(
-                    "일정 추가",
-                    type="primary",
-                    key="gc_add_open",
-                    on_click=_gc_open_add_pop,
-                )
-            with a2:
-                if st.button("연동실행", type="primary", key="gc_sync_run"):
-                    try:
-                        n_ev, n_tk = _gc_sync_google(y, m)
-                        st.session_state["_gc_sync_msg"] = (
-                            f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
-                        )
-                    except Exception as e:
-                        st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
+    with st.container(key="gc_cal_top"):
+        with st.container(key="gc_ym"):
+            st.markdown(
+                f'<div class="gc-ym">{html.escape(f"{y}년 {m}월")}</div>',
+                unsafe_allow_html=True,
+            )
+        top = st.columns([1.05, 1.05, 3.15, 2.55], vertical_alignment="center")
+        with top[0]:
+            if st.button("오늘", key="gc_today"):
+                st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
+                st.rerun()
+        with top[1]:
+            n1, n2 = st.columns(2)
+            with n1:
+                if st.button("‹", key="gc_prev"):
+                    d = date(y, m, 1) - timedelta(days=1)
+                    st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
                     st.rerun()
+            with n2:
+                if st.button("›", key="gc_next"):
+                    d = date(y, m, 28) + timedelta(days=8)
+                    st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
+                    st.rerun()
+        with top[2]:
+            pass
+        with top[3]:
+            with st.container(key="gc_head_acts"):
+                a1, a2 = st.columns(2, gap="small")
+                with a1:
+                    st.button(
+                        "일정 추가",
+                        type="primary",
+                        key="gc_add_open",
+                        on_click=_gc_open_add_pop,
+                    )
+                with a2:
+                    if st.button("연동실행", type="primary", key="gc_sync_run"):
+                        try:
+                            n_ev, n_tk = _gc_sync_google(y, m)
+                            st.session_state["_gc_sync_msg"] = (
+                                f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
+                            )
+                        except Exception as e:
+                            st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
+                        st.rerun()
     msg = st.session_state.pop("_gc_sync_msg", None)
     if msg:
         st.caption(msg)
@@ -2054,11 +2200,34 @@ div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
             st.rerun(scope="fragment")
 
 
+def _gc_sync_view_month(today: date) -> tuple[int, int]:
+    pending_m = st.session_state.pop("_gc_pending_month", None)
+    if isinstance(pending_m, date):
+        st.session_state["gc_year"] = pending_m.year
+        st.session_state["gc_month"] = pending_m.month
+    elif not st.session_state.get("gc_year"):
+        vc_mon = st.session_state.get("_vc_month")
+        if isinstance(vc_mon, date):
+            st.session_state["gc_year"] = vc_mon.year
+            st.session_state["gc_month"] = vc_mon.month
+    y = int(st.session_state.get("gc_year") or today.year)
+    m = int(st.session_state.get("gc_month") or today.month)
+    return y, m
+
+
 def _gc_work_panel() -> None:
-    left, right = st.columns([3.15, 1.12], gap="small")
-    with left:
+    """상단 가로 달력 아래: 왼쪽 작은 달력 · 가운데 월간 · 오른쪽 할 일."""
+    today = datetime.now(_TZ).date()
+    y, m = _gc_sync_view_month(today)
+    sel = st.session_state.get("_gc_sel_day")
+    mini, cal, tasks = st.columns([0.82, 2.70, 1.05], gap="small")
+    with mini:
+        _render_mini_month(
+            y, m, today, sel if isinstance(sel, date) else None
+        )
+    with cal:
         _gc_cal_panel()
-    with right:
+    with tasks:
         _gc_task_panel()
 
 
