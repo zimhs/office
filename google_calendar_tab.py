@@ -1078,6 +1078,11 @@ def _gc_set_sel_day(day: date) -> None:
     st.session_state["_gc_sel_day"] = day
 
 
+def _gc_mini_set_month(day: date) -> None:
+    st.session_state["gc_mini_year"] = day.year
+    st.session_state["gc_mini_month"] = day.month
+
+
 def _gc_set_sel_event(day: date, event_id: str, chip: str = "") -> None:
     st.session_state["_gc_sel_day"] = day
     st.session_state["_gc_sel_event"] = str(event_id or "")
@@ -1164,15 +1169,21 @@ div[class*="st-key-gc_mp"] button, div[class*="st-key-gc_mn"] button {
                 unsafe_allow_html=True,
             )
         with hd[1]:
-            if st.button("‹", key="gc_mp", type="tertiary"):
-                d = date(year, month, 1) - timedelta(days=1)
-                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                st.rerun()
+            st.button(
+                "‹",
+                key="gc_mp",
+                type="tertiary",
+                on_click=_gc_mini_set_month,
+                args=(date(year, month, 1) - timedelta(days=1),),
+            )
         with hd[2]:
-            if st.button("›", key="gc_mn", type="tertiary"):
-                d = date(year, month, 28) + timedelta(days=8)
-                st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                st.rerun()
+            st.button(
+                "›",
+                key="gc_mn",
+                type="tertiary",
+                on_click=_gc_mini_set_month,
+                args=(date(year, month, 28) + timedelta(days=8),),
+            )
         labs = st.columns([0.72] + [1] * 7, gap=None)
         with labs[0]:
             st.markdown('<div class="gc-mini-wn"></div>', unsafe_allow_html=True)
@@ -2200,31 +2211,24 @@ div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
             st.rerun(scope="fragment")
 
 
-def _gc_sync_view_month(today: date) -> tuple[int, int]:
-    pending_m = st.session_state.pop("_gc_pending_month", None)
-    if isinstance(pending_m, date):
-        st.session_state["gc_year"] = pending_m.year
-        st.session_state["gc_month"] = pending_m.month
-    elif not st.session_state.get("gc_year"):
-        vc_mon = st.session_state.get("_vc_month")
-        if isinstance(vc_mon, date):
-            st.session_state["gc_year"] = vc_mon.year
-            st.session_state["gc_month"] = vc_mon.month
-    y = int(st.session_state.get("gc_year") or today.year)
-    m = int(st.session_state.get("gc_month") or today.month)
-    return y, m
+@st.fragment
+def _gc_mini_panel() -> None:
+    """작은 달력만 월을 바꾸고, 화면 전체를 다시 켜지 않는다."""
+    today = datetime.now(_TZ).date()
+    if not st.session_state.get("gc_mini_year"):
+        st.session_state["gc_mini_year"] = today.year
+        st.session_state["gc_mini_month"] = today.month
+    y = int(st.session_state.get("gc_mini_year") or today.year)
+    m = int(st.session_state.get("gc_mini_month") or today.month)
+    sel = st.session_state.get("_gc_sel_day")
+    _render_mini_month(y, m, today, sel if isinstance(sel, date) else None)
 
 
 def _gc_work_panel() -> None:
     """상단 가로 달력 아래: 왼쪽 작은 달력 · 가운데 월간 · 오른쪽 할 일."""
-    today = datetime.now(_TZ).date()
-    y, m = _gc_sync_view_month(today)
-    sel = st.session_state.get("_gc_sel_day")
     mini, cal, tasks = st.columns([0.82, 2.70, 1.05], gap="small")
     with mini:
-        _render_mini_month(
-            y, m, today, sel if isinstance(sel, date) else None
-        )
+        _gc_mini_panel()
     with cal:
         _gc_cal_panel()
     with tasks:
