@@ -1167,12 +1167,12 @@ div[class*="st-key-gc_mp"] button, div[class*="st-key-gc_mn"] button {
             if st.button("‹", key="gc_mp", type="tertiary"):
                 d = date(year, month, 1) - timedelta(days=1)
                 st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                st.rerun(scope="fragment")
+                st.rerun()
         with hd[2]:
             if st.button("›", key="gc_mn", type="tertiary"):
                 d = date(year, month, 28) + timedelta(days=8)
                 st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                st.rerun(scope="fragment")
+                st.rerun()
         labs = st.columns([0.72] + [1] * 7, gap=None)
         with labs[0]:
             st.markdown('<div class="gc-mini-wn"></div>', unsafe_allow_html=True)
@@ -1886,14 +1886,8 @@ def _gc_cal_panel() -> None:
         st.error(f"캘린더를 불러오지 못했습니다: {e}")
         cals = []
 
-    sel_day = st.session_state.get("_gc_sel_day")
-    sel = sel_day if isinstance(sel_day, date) else None
-    side, main = st.columns([0.98, 3.22], gap="small")
-    with side:
-        _render_mini_month(y, m, today, sel)
-    with main:
-        st.markdown(
-            """
+    st.markdown(
+        """
 <style>
 div[class*="st-key-gc_cal_top"] {
   position: relative !important;
@@ -1938,75 +1932,75 @@ div[class*="st-key-gc_head_acts"] button {
 }
 </style>
 """,
-            unsafe_allow_html=True,
-        )
-        with st.container(key="gc_cal_top"):
-            with st.container(key="gc_ym"):
-                st.markdown(
-                    f'<div class="gc-ym">{html.escape(f"{y}년 {m}월")}</div>',
-                    unsafe_allow_html=True,
-                )
-            top = st.columns([1.05, 1.05, 3.15, 2.55], vertical_alignment="center")
-            with top[0]:
-                if st.button("오늘", key="gc_today"):
-                    st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
-                    st.rerun(scope="fragment")
-            with top[1]:
-                n1, n2 = st.columns(2)
-                with n1:
-                    if st.button("‹", key="gc_prev"):
-                        d = date(y, m, 1) - timedelta(days=1)
-                        st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                        st.rerun(scope="fragment")
-                with n2:
-                    if st.button("›", key="gc_next"):
-                        d = date(y, m, 28) + timedelta(days=8)
-                        st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                        st.rerun(scope="fragment")
-            with top[2]:
-                pass
-            with top[3]:
-                with st.container(key="gc_head_acts"):
-                    a1, a2 = st.columns(2, gap="small")
-                    with a1:
-                        st.button(
-                            "일정 추가",
-                            type="primary",
-                            key="gc_add_open",
-                            on_click=_gc_open_add_pop,
-                        )
-                    with a2:
-                        if st.button("연동실행", type="primary", key="gc_sync_run"):
-                            try:
-                                n_ev, n_tk = _gc_sync_google(y, m)
-                                st.session_state["_gc_sync_msg"] = (
-                                    f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
-                                )
-                            except Exception as e:
-                                st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
-                            st.rerun()
-        msg = st.session_state.pop("_gc_sync_msg", None)
-        if msg:
-            st.caption(msg)
-
-        y = int(st.session_state.get("gc_year") or today.year)
-        m = int(st.session_state.get("gc_month") or today.month)
-        by_day = _gc_cached_events(cals, y, m)
-        sel_day = st.session_state.get("_gc_sel_day")
-        _render_month_grid(
-            y, m, by_day, today, selected=sel_day if isinstance(sel_day, date) else None
-        )
-        if st.session_state.get("_gc_memo_open"):
-            pop_ev = _gc_find_event(
-                by_day, str(st.session_state.get("_gc_sel_event") or "")
+        unsafe_allow_html=True,
+    )
+    with st.container(key="gc_cal_top"):
+        with st.container(key="gc_ym"):
+            st.markdown(
+                f'<div class="gc-ym">{html.escape(f"{y}년 {m}월")}</div>',
+                unsafe_allow_html=True,
             )
-            if pop_ev:
-                _render_event_memo_pop(pop_ev)
-                _gc_place_memo_pop(str(st.session_state.get("_gc_sel_chip") or ""))
-            else:
-                st.session_state["_gc_memo_open"] = False
-        if st.session_state.get("_gc_add_pop"):
-            _render_add_event_pop(cals)
+        top = st.columns([1.05, 1.05, 3.15, 2.55], vertical_alignment="center")
+        with top[0]:
+            if st.button("오늘", key="gc_today"):
+                st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
+                st.rerun()
+        with top[1]:
+            n1, n2 = st.columns(2)
+            with n1:
+                if st.button("‹", key="gc_prev"):
+                    d = date(y, m, 1) - timedelta(days=1)
+                    st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
+                    st.rerun()
+            with n2:
+                if st.button("›", key="gc_next"):
+                    d = date(y, m, 28) + timedelta(days=8)
+                    st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
+                    st.rerun()
+        with top[2]:
+            pass
+        with top[3]:
+            with st.container(key="gc_head_acts"):
+                a1, a2 = st.columns(2, gap="small")
+                with a1:
+                    st.button(
+                        "일정 추가",
+                        type="primary",
+                        key="gc_add_open",
+                        on_click=_gc_open_add_pop,
+                    )
+                with a2:
+                    if st.button("연동실행", type="primary", key="gc_sync_run"):
+                        try:
+                            n_ev, n_tk = _gc_sync_google(y, m)
+                            st.session_state["_gc_sync_msg"] = (
+                                f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
+                            )
+                        except Exception as e:
+                            st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
+                        st.rerun()
+    msg = st.session_state.pop("_gc_sync_msg", None)
+    if msg:
+        st.caption(msg)
+
+    y = int(st.session_state.get("gc_year") or today.year)
+    m = int(st.session_state.get("gc_month") or today.month)
+    by_day = _gc_cached_events(cals, y, m)
+    sel_day = st.session_state.get("_gc_sel_day")
+    _render_month_grid(
+        y, m, by_day, today, selected=sel_day if isinstance(sel_day, date) else None
+    )
+    if st.session_state.get("_gc_memo_open"):
+        pop_ev = _gc_find_event(
+            by_day, str(st.session_state.get("_gc_sel_event") or "")
+        )
+        if pop_ev:
+            _render_event_memo_pop(pop_ev)
+            _gc_place_memo_pop(str(st.session_state.get("_gc_sel_chip") or ""))
+        else:
+            st.session_state["_gc_memo_open"] = False
+    if st.session_state.get("_gc_add_pop"):
+        _render_add_event_pop(cals)
 
 
 @st.fragment
@@ -2206,11 +2200,34 @@ div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
             st.rerun(scope="fragment")
 
 
+def _gc_sync_view_month(today: date) -> tuple[int, int]:
+    pending_m = st.session_state.pop("_gc_pending_month", None)
+    if isinstance(pending_m, date):
+        st.session_state["gc_year"] = pending_m.year
+        st.session_state["gc_month"] = pending_m.month
+    elif not st.session_state.get("gc_year"):
+        vc_mon = st.session_state.get("_vc_month")
+        if isinstance(vc_mon, date):
+            st.session_state["gc_year"] = vc_mon.year
+            st.session_state["gc_month"] = vc_mon.month
+    y = int(st.session_state.get("gc_year") or today.year)
+    m = int(st.session_state.get("gc_month") or today.month)
+    return y, m
+
+
 def _gc_work_panel() -> None:
-    left, right = st.columns([3.55, 1.05], gap="small")
-    with left:
+    """상단 가로 달력 아래: 왼쪽 작은 달력 · 가운데 월간 · 오른쪽 할 일."""
+    today = datetime.now(_TZ).date()
+    y, m = _gc_sync_view_month(today)
+    sel = st.session_state.get("_gc_sel_day")
+    mini, cal, tasks = st.columns([0.82, 2.70, 1.05], gap="small")
+    with mini:
+        _render_mini_month(
+            y, m, today, sel if isinstance(sel, date) else None
+        )
+    with cal:
         _gc_cal_panel()
-    with right:
+    with tasks:
         _gc_task_panel()
 
 
