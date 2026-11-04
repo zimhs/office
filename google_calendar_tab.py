@@ -1620,12 +1620,43 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """일정 제목 안쪽 글자만 13px. 감시 스크립트는 재시작 멈춤을 일으키므로 쓰지 않는다."""
+    """일정 제목만 13px. 문서 head에 한 번만 넣고, 감시·노드 수정은 하지 않는다."""
     st.markdown(
-        "<style>div[class*='st-key-gc_evpick_'] *,div[class*='st-key-gc_evpick_'] button,"
-        "div[class*='st-key-gc_evpick_'] p{font-size:13px!important;line-height:1.2!important;"
-        "font-weight:400!important}</style>",
+        "<style>html body div[class*='st-key-gc_evpick_'] button,"
+        "html body div[class*='st-key-gc_evpick_'] button p,"
+        "html body div[class*='st-key-gc_evpick_'] button span,"
+        "html body div[class*='st-key-gc_evpick_'] button div,"
+        "html body div[class*='st-key-gc_evpick_'] [data-testid='stMarkdownContainer'] p"
+        "{font-size:13px!important;line-height:1.2!important;font-weight:400!important}</style>",
         unsafe_allow_html=True,
+    )
+    st.html(
+        """
+<script>
+(function () {
+  var id = "gc-evpick-fs";
+  var css = 'html body div[class*="st-key-gc_evpick_"] button,' +
+    'html body div[class*="st-key-gc_evpick_"] button p,' +
+    'html body div[class*="st-key-gc_evpick_"] button span,' +
+    'html body div[class*="st-key-gc_evpick_"] button div,' +
+    'html body div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
+    '{font-size:13px!important;line-height:1.2!important;font-weight:400!important;}';
+  function put(doc) {
+    if (!doc) return;
+    var s = doc.getElementById(id);
+    if (!s) {
+      s = doc.createElement("style");
+      s.id = id;
+      (doc.head || doc.documentElement).appendChild(s);
+    }
+    s.textContent = css;
+  }
+  put(document);
+  try { put(window.parent.document); } catch (e) {}
+})();
+</script>
+""",
+        unsafe_allow_javascript=True,
     )
 
 

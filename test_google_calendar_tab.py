@@ -128,6 +128,7 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("gc_evpick_", src)
         self.assertIn("_gc_shrink_event_titles", src)
         self.assertIn('st-key-gc_evpick_"] button p', src)
+        self.assertIn("gc-evpick-fs", src)
         self.assertIn("__gcEvpickObs.disconnect", src)
         self.assertNotIn("MutationObserver", src)
         self.assertIn("font-size: 13px", src)
