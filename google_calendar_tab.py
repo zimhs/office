@@ -1083,6 +1083,10 @@ def _gc_mini_set_month(day: date) -> None:
     st.session_state["gc_mini_month"] = day.month
 
 
+def _gc_set_view_month(day: date) -> None:
+    st.session_state["_gc_pending_month"] = date(day.year, day.month, 1)
+
+
 def _gc_set_sel_event(day: date, event_id: str, chip: str = "") -> None:
     st.session_state["_gc_sel_day"] = day
     st.session_state["_gc_sel_event"] = str(event_id or "")
@@ -1953,21 +1957,28 @@ div[class*="st-key-gc_head_acts"] button {
             )
         top = st.columns([1.05, 1.05, 3.15, 2.55], vertical_alignment="center")
         with top[0]:
-            if st.button("오늘", key="gc_today"):
-                st.session_state["_gc_pending_month"] = date(today.year, today.month, 1)
-                st.rerun()
+            st.button(
+                "오늘",
+                key="gc_today",
+                on_click=_gc_set_view_month,
+                args=(date(today.year, today.month, 1),),
+            )
         with top[1]:
             n1, n2 = st.columns(2)
             with n1:
-                if st.button("‹", key="gc_prev"):
-                    d = date(y, m, 1) - timedelta(days=1)
-                    st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                    st.rerun()
+                st.button(
+                    "‹",
+                    key="gc_prev",
+                    on_click=_gc_set_view_month,
+                    args=(date(y, m, 1) - timedelta(days=1),),
+                )
             with n2:
-                if st.button("›", key="gc_next"):
-                    d = date(y, m, 28) + timedelta(days=8)
-                    st.session_state["_gc_pending_month"] = date(d.year, d.month, 1)
-                    st.rerun()
+                st.button(
+                    "›",
+                    key="gc_next",
+                    on_click=_gc_set_view_month,
+                    args=(date(y, m, 28) + timedelta(days=8),),
+                )
         with top[2]:
             pass
         with top[3]:
