@@ -119,6 +119,8 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("gc_mini_year", src)
         self.assertNotIn("_gc_sync_view_month", src)
         self.assertIn("gc_xd_", src)
+        self.assertIn("st-key-gc_xd_", src)
+        self.assertIn("translateY(-50%)", src)
         self.assertIn("_gc_pending_del_event", src)
         self.assertIn("gc_evlist_", src)
         self.assertIn("gc_evpick_", src)
