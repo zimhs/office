@@ -590,12 +590,18 @@ def list_tasklists() -> list[dict]:
     return list(data.get("items") or [])
 
 
-def list_tasks(list_id: str) -> list[dict]:
+def list_tasks(list_id: str, *, include_completed: bool = False) -> list[dict]:
     data = api_get(
         f"{_TASK_API}/lists/{urllib.parse.quote(list_id, safe='')}/tasks",
-        {"showCompleted": "false", "showHidden": "false", "maxResults": "100"},
+        {
+            "showCompleted": "true" if include_completed else "false",
+            "showHidden": "true" if include_completed else "false",
+            "maxResults": "100",
+        },
     )
-    items = [t for t in (data.get("items") or []) if t.get("status") != "completed"]
+    items = list(data.get("items") or [])
+    if not include_completed:
+        items = [t for t in items if t.get("status") != "completed"]
     items.sort(key=lambda t: (t.get("position") or "", t.get("title") or ""))
     return items
 
@@ -624,6 +630,14 @@ def complete_task(list_id: str, task_id: str) -> dict:
         "PATCH",
         f"{_TASK_API}/lists/{urllib.parse.quote(list_id, safe='')}/tasks/{urllib.parse.quote(task_id, safe='')}",
         {"status": "completed"},
+    )
+
+
+def uncomplete_task(list_id: str, task_id: str) -> dict:
+    return api_json(
+        "PATCH",
+        f"{_TASK_API}/lists/{urllib.parse.quote(list_id, safe='')}/tasks/{urllib.parse.quote(task_id, safe='')}",
+        {"status": "needsAction"},
     )
 
 
@@ -897,7 +911,10 @@ def merge_tasks_with_google(list_id: str) -> list[dict]:
         pushed.append(_slim_task(t))
     seen = {str(t.get("id") or "") for t in pushed}
     try:
-        remote = [_slim_task(x) for x in (list_tasks(list_id) if list_id else [])]
+        remote = [
+            _slim_task(x)
+            for x in (list_tasks(list_id, include_completed=True) if list_id else [])
+        ]
     except Exception:
         save_local_tasks(list_id, pushed)
         return pushed
@@ -2084,12 +2101,28 @@ def _gc_task_panel() -> None:
         left = []
         for t in load_local_tasks(lid):
             if str(t.get("id")) == nid:
+                t = dict(t)
+                t["status"] = "completed"
                 if not t.get("local_only") and nid and not nid.startswith("local-"):
                     try:
                         complete_task(lid, nid)
                     except Exception as e:
                         st.warning(f"구글 완료 반영 실패: {e}")
-                continue
+            left.append(t)
+        save_local_tasks(lid, left)
+    pending_restore = st.session_state.pop("_gc_pending_restore", None)
+    if pending_restore and lid:
+        nid = str(pending_restore)
+        left = []
+        for t in load_local_tasks(lid):
+            if str(t.get("id")) == nid:
+                t = dict(t)
+                t["status"] = "needsAction"
+                if not t.get("local_only") and nid and not nid.startswith("local-"):
+                    try:
+                        uncomplete_task(lid, nid)
+                    except Exception as e:
+                        st.warning(f"구글 복원 반영 실패: {e}")
             left.append(t)
         save_local_tasks(lid, left)
     try:
@@ -2102,7 +2135,8 @@ def _gc_task_panel() -> None:
 <style>
 div[class*="st-key-gc_ne_"] button,
 div[class*="st-key-gc_toggle_new_note"] button,
-div[class*="st-key-gc_ns_"] button {
+div[class*="st-key-gc_ns_"] button,
+div[class*="st-key-gc_tr_"] button {
   min-height: 1.55rem !important;
   height: 1.55rem !important;
   min-width: 0 !important;
@@ -2142,7 +2176,9 @@ div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
         st.error(str(e))
         tasks = []
     edit_id = str(st.session_state.get("_gc_note_edit") or "")
-    for t in tasks:
+    open_tasks = [t for t in tasks if str(t.get("status") or "") != "completed"]
+    done_tasks = [t for t in tasks if str(t.get("status") or "") == "completed"]
+    for t in open_tasks:
         tid = str(t.get("id") or "")
         title = t.get("title") or "(제목 없음)"
         due = str((t.get("due") or ""))[:10]
@@ -2185,6 +2221,38 @@ div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
                 else:
                     st.session_state["_gc_note_edit"] = tid
                 st.rerun(scope="fragment")
+    with st.expander(f"완료된 할 일 ({len(done_tasks)})", expanded=False):
+        if not done_tasks:
+            st.caption("완료된 할 일이 없습니다.")
+        for t in done_tasks:
+            tid = str(t.get("id") or "")
+            title = t.get("title") or "(제목 없음)"
+            due = str((t.get("due") or ""))[:10]
+            label = title if not due else f"{title}  · {due}"
+            note = str(t.get("notes") or "").strip()
+            row = st.columns([8.2, 1.15], gap="small", vertical_alignment="top")
+            with row[0]:
+                st.markdown(
+                    "<div style='font-size:13px;color:#80868b;text-decoration:line-through;"
+                    f"line-height:1.35'>{html.escape(label)}</div>",
+                    unsafe_allow_html=True,
+                )
+                if note:
+                    st.markdown(
+                        "<div style='font-size:12px;color:#9aa0a6;line-height:1.35;"
+                        "margin:0 0 6px 0;white-space:pre-wrap'>"
+                        f"{html.escape(note)}</div>",
+                        unsafe_allow_html=True,
+                    )
+            with row[1]:
+                if st.button(
+                    "복원",
+                    key=f"gc_tr_{tid}",
+                    type="tertiary",
+                    width="content",
+                ):
+                    st.session_state["_gc_pending_restore"] = tid
+                    st.rerun(scope="fragment")
     add_row = st.columns([6.4, 1.1, 1.15], gap="small", vertical_alignment="bottom")
     with add_row[0]:
         nt = st.text_input(
