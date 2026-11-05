@@ -31,6 +31,9 @@ class WorklogCaptureTest(unittest.TestCase):
         self.assertEqual(self.wt._wl_clamp_cap_width(5), 20)
         self.assertEqual(self.wt._wl_clamp_cap_width(140), 100)
         self.assertEqual(self.wt._wl_clamp_cap_width("70"), 70)
+        self.assertEqual(self.wt._wl_clamp_cap_pos(-4, default=0), 0)
+        self.assertEqual(self.wt._wl_clamp_cap_pos(40), 40)
+        self.assertIsNone(self.wt._wl_clamp_cap_pos(None))
         self.assertEqual(
             self.wt._wl_iso_from_worklog_path("/x/_preview_2026-11-06.xlsx"),
             "2026-11-06",
@@ -81,6 +84,10 @@ class WorklogCaptureTest(unittest.TestCase):
             ss["ck"] = {"cap_w": '{"id":"ab12","w_pct":88,"t":1}'}
             self.wt._wl_apply_cap_state(iso, ss["ck"], kind="cap_w")
             self.assertEqual(ss[self.wt._wl_caps_session_key(iso)][0]["w_pct"], 88)
+            ss["ck"] = {"cap_lay": '{"id":"ab12","w_pct":50,"x_pct":12,"y_pct":30,"t":3}'}
+            self.wt._wl_apply_cap_state(iso, ss["ck"], kind="cap_lay")
+            row = ss[self.wt._wl_caps_session_key(iso)][0]
+            self.assertEqual((row["w_pct"], row["x_pct"], row["y_pct"]), (50, 12, 30))
             ss["ck"] = {"cap_del": '{"id":"ab12","t":2}'}
             self.wt._wl_apply_cap_state(iso, ss["ck"], kind="cap_del")
             self.assertEqual(ss[self.wt._wl_caps_session_key(iso)], [])
