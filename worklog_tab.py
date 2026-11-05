@@ -1,11 +1,13 @@
 """일일업무일지 탭 — 엑셀 양식 그대로 표시/편집/날짜별 저장/출력."""
 from __future__ import annotations
 
+import base64
 import calendar
 import html
 import io
 import json
 import os
+import struct
 import platform
 import re
 import shutil
@@ -628,14 +630,18 @@ export default function (component) {
     inst.lines = normalize(next);
     return inst.lines;
   }
-  function focusAt(idx) {
+  function focusAt(idx, caret) {
     requestAnimationFrame(() => {
       const el = root.querySelector('input[data-idx="' + idx + '"]');
       if (!el) return;
       try {
         el.focus({ preventScroll: true });
         const n = (el.value || "").length;
-        el.setSelectionRange(n, n);
+        let pos = n;
+        if (typeof caret === "number" && Number.isFinite(caret)) {
+          pos = Math.max(0, Math.min(n, Math.floor(caret)));
+        }
+        el.setSelectionRange(pos, pos);
       } catch (e) {
         try {
           el.focus();
@@ -919,6 +925,12 @@ export default function (component) {
           else localOnly(cur);
           return;
         }
+        const noTrail = String(v || "").replace(/[\s\u00a0\u3000]+$/, "");
+        if (noTrail !== v && !lineOver(noTrail)) {
+          if (mode === "blur" || mode === "force") emit(cur, null);
+          else localOnly(cur);
+          return;
+        }
         while (j0 < cur.length && lineOver(cur[j0] || "")) {
           const ft = fitLine(cur[j0] || "");
           if (!ft.tail || ft.head === (cur[j0] || "")) break;
@@ -946,6 +958,7 @@ export default function (component) {
         commitValue("blur");
       });
       input.addEventListener("keydown", (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
         if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && String(e.key || "").toLowerCase() === "p") {
           const openPrint = (typeof window !== "undefined" && window.wlOpenWorklogPrint)
             || (typeof window !== "undefined" && window.parent && window.parent !== window && window.parent.wlOpenWorklogPrint);
@@ -970,7 +983,8 @@ export default function (component) {
           if (dest >= 0 && dest < n) {
             e.preventDefault();
             e.stopPropagation();
-            focusAt(dest);
+            const pos = typeof input.selectionStart === "number" ? input.selectionStart : 0;
+            focusAt(dest, pos);
           }
           return;
         }
@@ -1029,7 +1043,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v58",
+    "worklog_entry_lines_v59",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -1185,14 +1199,12 @@ export default function (component) {
 
   function findCell(kind, lj, ei) {
     const list = listKindInputs(kind);
-    let fallback = null;
     for (let i = 0; i < list.length; i++) {
       const p = resolveKey(list[i]);
       if (!p || Number(p.lj) !== Number(lj)) continue;
       if (ei == null || !Number.isFinite(Number(ei)) || Number(p.ei) === Number(ei)) return list[i];
-      if (!fallback) fallback = list[i];
     }
-    return fallback;
+    return null;
   }
 
   function findInputForFocusKey(focusKey) {
@@ -1372,8 +1384,11 @@ export default function (component) {
 
   function tryArrowNav(t, info, e) {
     if (!t || !info || !e) return false;
-    const start = typeof t.selectionStart === "number" ? t.selectionStart : 0;
-    const end = typeof t.selectionEnd === "number" ? t.selectionEnd : start;
+    if (e.isComposing || e.keyCode === 229) return false;
+    if (e.key === " " || e.code === "Space") return false;
+    if (typeof t.selectionStart !== "number" || typeof t.selectionEnd !== "number") return false;
+    const start = t.selectionStart;
+    const end = t.selectionEnd;
     const len = String(t.value || "").length;
     const caretAll = start === end;
     if (e.key === "ArrowUp") {
@@ -1381,7 +1396,7 @@ export default function (component) {
       if (!el) return false;
       e.preventDefault();
       e.stopPropagation();
-      focusInput(el, "end");
+      focusInput(el, start);
       return true;
     }
     if (e.key === "ArrowDown") {
@@ -1389,7 +1404,7 @@ export default function (component) {
       if (!el) return false;
       e.preventDefault();
       e.stopPropagation();
-      focusInput(el, "end");
+      focusInput(el, start);
       return true;
     }
     if (e.key === "ArrowLeft" && caretAll && start === 0) {
@@ -1479,8 +1494,64 @@ export default function (component) {
 """
 
 _WL_ENTER_HOOK = st.components.v2.component(
-    "worklog_cell_nav_hook_v33",
+    "worklog_cell_nav_hook_v34",
     js=_WL_ENTER_HOOK_JS,
+)
+
+_WL_CAP_HOOK_JS = r"""
+export default function (component) {
+  const { data, setTriggerValue } = component;
+  const iso = String((data && data.iso) || "");
+  const page = Number((data && data.page) || 0);
+  if (typeof window !== "undefined" && window.__wlCapHookOff) {
+    try { window.__wlCapHookOff(); } catch (eOff) {}
+    window.__wlCapHookOff = null;
+  }
+  const onPaste = (e) => {
+    try {
+      if (!document.querySelector('[class*="st-key-wl_entry_sheet"]')) return;
+    } catch (eQ) { return; }
+    const cd = e.clipboardData;
+    if (!cd) return;
+    let file = null;
+    const items = cd.items || [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i] && String(items[i].type || "").indexOf("image/") === 0) {
+        try { file = items[i].getAsFile(); } catch (eF) { file = null; }
+        if (file) break;
+      }
+    }
+    if (!file && cd.files && cd.files.length) {
+      const f0 = cd.files[0];
+      if (f0 && String(f0.type || "").indexOf("image/") === 0) file = f0;
+    }
+    if (!file) return;
+    try { e.preventDefault(); e.stopPropagation(); } catch (eP) {}
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        setTriggerValue("img", JSON.stringify({
+          iso: iso,
+          page: page,
+          t: Date.now(),
+          data: String(reader.result || ""),
+        }));
+      } catch (eS) {}
+    };
+    try { reader.readAsDataURL(file); } catch (eR) {}
+  };
+  document.addEventListener("paste", onPaste, true);
+  const off = () => {
+    try { document.removeEventListener("paste", onPaste, true); } catch (e1) {}
+  };
+  if (typeof window !== "undefined") window.__wlCapHookOff = off;
+  return off;
+}
+"""
+
+_WL_CAP_HOOK = st.components.v2.component(
+    "worklog_capture_paste_v1",
+    js=_WL_CAP_HOOK_JS,
 )
 
 _WL_SCROLL_LOCK_JS = r"""
@@ -1971,6 +2042,373 @@ def _sheet_entry_from_cells(cells: dict) -> dict:
 
 def _empty_sheet_entry() -> dict:
     return _sheet_entry_from_lines([], [], [])
+
+
+_WL_CAP_MAX = 8
+_WL_CAP_MAX_BYTES = 2_500_000
+_WL_CAP_W_DEFAULT = 70
+
+
+def _wl_capture_dir(iso: str) -> str:
+    return os.path.join(WORKLOG_DIR, "captures", str(iso or ""))
+
+
+def _wl_capture_meta_path(iso: str) -> str:
+    return os.path.join(_wl_capture_dir(iso), "meta.json")
+
+
+def _wl_clamp_cap_width(v) -> int:
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError):
+        n = _WL_CAP_W_DEFAULT
+    return max(20, min(100, n))
+
+
+def _wl_iso_from_worklog_path(path: str) -> str:
+    m = re.search(r"(20\d{2}-\d{2}-\d{2})", os.path.basename(path or ""))
+    return m.group(1) if m else ""
+
+
+def _wl_image_wh(data: bytes) -> tuple[int, int]:
+    raw = data or b""
+    try:
+        from PIL import Image
+
+        im = Image.open(io.BytesIO(raw))
+        w, h = im.size
+        if w > 0 and h > 0:
+            return int(w), int(h)
+    except Exception:
+        pass
+    if len(raw) >= 24 and raw[:8] == b"\x89PNG\r\n\x1a\n":
+        w, h = struct.unpack(">II", raw[16:24])
+        if w > 0 and h > 0:
+            return int(w), int(h)
+    if len(raw) > 20 and raw[:2] == b"\xff\xd8":
+        i = 2
+        while i + 9 < len(raw):
+            if raw[i] != 0xFF:
+                break
+            marker = raw[i + 1]
+            if marker in (0xC0, 0xC1, 0xC2):
+                h, w = struct.unpack(">HH", raw[i + 5 : i + 9])
+                if w > 0 and h > 0:
+                    return int(w), int(h)
+            if marker in (0xD8, 0xD9):
+                i += 2
+                continue
+            seglen = struct.unpack(">H", raw[i + 2 : i + 4])[0]
+            i += 2 + seglen
+    return 800, 600
+
+
+def _wl_decode_data_url(raw: str) -> bytes | None:
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    if "," in s and s.lower().startswith("data:image/"):
+        s = s.split(",", 1)[1]
+    try:
+        data = base64.b64decode(s, validate=False)
+    except Exception:
+        return None
+    if not data or len(data) > _WL_CAP_MAX_BYTES:
+        return None
+    if not (data[:8] == b"\x89PNG\r\n\x1a\n" or data[:2] == b"\xff\xd8" or data[:4] == b"RIFF"):
+        return None
+    return data
+
+
+def _wl_normalize_capture_png(data: bytes) -> bytes | None:
+    raw = data or b""
+    if not raw or len(raw) > _WL_CAP_MAX_BYTES:
+        return None
+    try:
+        from PIL import Image
+
+        im = Image.open(io.BytesIO(raw))
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGBA" if "A" in str(im.mode) else "RGB")
+        w, h = im.size
+        mx = 1600
+        if max(w, h) > mx:
+            sc = mx / float(max(w, h))
+            im = im.resize((max(1, int(w * sc)), max(1, int(h * sc))))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG", optimize=True)
+        out = buf.getvalue()
+        if out and len(out) <= _WL_CAP_MAX_BYTES:
+            return out
+    except Exception:
+        pass
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return raw
+    return None
+
+
+def _wl_read_captures(iso: str) -> list[dict]:
+    path = _wl_capture_meta_path(iso)
+    try:
+        with open(path, encoding="utf-8") as f:
+            rows = json.load(f)
+    except Exception:
+        rows = []
+    out: list[dict] = []
+    folder = _wl_capture_dir(iso)
+    if not isinstance(rows, list):
+        return out
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cid = str(row.get("id") or "").strip()
+        fn = str(row.get("file") or (cid + ".png")).strip()
+        fp = os.path.join(folder, fn)
+        if not cid or not os.path.isfile(fp):
+            continue
+        try:
+            with open(fp, "rb") as rf:
+                blob = rf.read(_WL_CAP_MAX_BYTES + 1)
+        except OSError:
+            continue
+        if len(blob) > _WL_CAP_MAX_BYTES:
+            continue
+        w0, h0 = _wl_image_wh(blob)
+        try:
+            page = int(row.get("page") or 0)
+        except (TypeError, ValueError):
+            page = 0
+        out.append(
+            {
+                "id": cid,
+                "file": fn,
+                "w_pct": _wl_clamp_cap_width(row.get("w_pct")),
+                "page": max(0, page),
+                "w0": int(row.get("w0") or w0 or 800),
+                "h0": int(row.get("h0") or h0 or 600),
+            }
+        )
+    return out[:_WL_CAP_MAX]
+
+
+def _wl_write_captures(iso: str, rows: list[dict]) -> None:
+    folder = _wl_capture_dir(iso)
+    os.makedirs(folder, exist_ok=True)
+    slim = []
+    for row in rows[:_WL_CAP_MAX]:
+        if not isinstance(row, dict) or not row.get("id"):
+            continue
+        slim.append(
+            {
+                "id": str(row.get("id")),
+                "file": str(row.get("file") or (str(row.get("id")) + ".png")),
+                "w_pct": _wl_clamp_cap_width(row.get("w_pct")),
+                "page": max(0, int(row.get("page") or 0)),
+                "w0": int(row.get("w0") or 800),
+                "h0": int(row.get("h0") or 600),
+            }
+        )
+    with open(_wl_capture_meta_path(iso), "w", encoding="utf-8") as f:
+        json.dump(slim, f, ensure_ascii=False, indent=0)
+
+
+def _wl_caps_session_key(iso: str) -> str:
+    return f"wl_caps_{iso}"
+
+
+def _wl_caps_from_session(iso: str) -> list[dict]:
+    cur = st.session_state.get(_wl_caps_session_key(iso))
+    if isinstance(cur, list):
+        return [r for r in cur if isinstance(r, dict) and r.get("id")]
+    rows = _wl_read_captures(iso)
+    st.session_state[_wl_caps_session_key(iso)] = rows
+    return rows
+
+
+def _wl_add_capture_bytes(iso: str, data: bytes, *, page: int = 0) -> str | None:
+    png = _wl_normalize_capture_png(data)
+    if not png:
+        return None
+    rows = _wl_caps_from_session(iso)
+    if len(rows) >= _WL_CAP_MAX:
+        return None
+    cid = secrets.token_hex(4)
+    folder = _wl_capture_dir(iso)
+    os.makedirs(folder, exist_ok=True)
+    fn = cid + ".png"
+    with open(os.path.join(folder, fn), "wb") as f:
+        f.write(png)
+    w0, h0 = _wl_image_wh(png)
+    rows.append(
+        {
+            "id": cid,
+            "file": fn,
+            "w_pct": _WL_CAP_W_DEFAULT,
+            "page": max(0, int(page or 0)),
+            "w0": w0,
+            "h0": h0,
+        }
+    )
+    st.session_state[_wl_caps_session_key(iso)] = rows
+    _wl_write_captures(iso, rows)
+    return cid
+
+
+def _wl_set_capture_width(iso: str, cid: str, w_pct) -> None:
+    rows = _wl_caps_from_session(iso)
+    for row in rows:
+        if str(row.get("id")) == str(cid):
+            row["w_pct"] = _wl_clamp_cap_width(w_pct)
+            break
+    st.session_state[_wl_caps_session_key(iso)] = rows
+    _wl_write_captures(iso, rows)
+
+
+def _wl_delete_capture(iso: str, cid: str) -> None:
+    rows = [r for r in _wl_caps_from_session(iso) if str(r.get("id")) != str(cid)]
+    folder = _wl_capture_dir(iso)
+    fp = os.path.join(folder, str(cid) + ".png")
+    try:
+        if os.path.isfile(fp):
+            os.remove(fp)
+    except OSError:
+        pass
+    st.session_state[_wl_caps_session_key(iso)] = rows
+    _wl_write_captures(iso, rows)
+
+
+def _wl_copy_captures(src_iso: str, dst_iso: str) -> None:
+    if not src_iso or not dst_iso or src_iso == dst_iso:
+        return
+    rows = _wl_read_captures(src_iso)
+    if not rows:
+        return
+    src_dir, dst_dir = _wl_capture_dir(src_iso), _wl_capture_dir(dst_iso)
+    os.makedirs(dst_dir, exist_ok=True)
+    copied = []
+    for row in rows:
+        src = os.path.join(src_dir, str(row.get("file") or ""))
+        if not os.path.isfile(src):
+            continue
+        dst = os.path.join(dst_dir, str(row.get("file") or ""))
+        try:
+            shutil.copy2(src, dst)
+            copied.append(dict(row))
+        except OSError:
+            continue
+    if copied:
+        _wl_write_captures(dst_iso, copied)
+        st.session_state[_wl_caps_session_key(dst_iso)] = copied
+
+
+def _wl_purge_captures(iso: str) -> None:
+    folder = _wl_capture_dir(iso)
+    try:
+        if os.path.isdir(folder):
+            shutil.rmtree(folder)
+    except OSError:
+        pass
+    st.session_state.pop(_wl_caps_session_key(iso), None)
+
+
+def _wl_capture_file_bytes(iso: str, row: dict) -> bytes | None:
+    fp = os.path.join(_wl_capture_dir(iso), str((row or {}).get("file") or ""))
+    try:
+        if os.path.isfile(fp) and os.path.getsize(fp) <= _WL_CAP_MAX_BYTES:
+            with open(fp, "rb") as f:
+                return f.read()
+    except OSError:
+        return None
+    return None
+
+
+def _wl_capture_html_block(path: str, page_n: int, layout_scale: float = 1.0) -> str:
+    iso = _wl_iso_from_worklog_path(path)
+    if not iso:
+        return ""
+    want = 1 if int(page_n or 1) <= 1 else int(page_n)
+    rows = [r for r in _wl_read_captures(iso) if int(r.get("page") or 0) + 1 == want]
+    if not rows:
+        rows = _wl_read_captures(iso) if want == 1 else []
+    if not rows:
+        return ""
+    ls = float(layout_scale) if layout_scale and layout_scale > 0 else 1.0
+    parts = []
+    for row in rows:
+        data = _wl_capture_file_bytes(iso, row)
+        if not data:
+            continue
+        w0 = max(1, int(row.get("w0") or 800))
+        h0 = max(1, int(row.get("h0") or 600))
+        pct = _wl_clamp_cap_width(row.get("w_pct")) / 100.0
+        w = max(40, int(round(w0 * pct * ls)))
+        h = max(24, int(round(h0 * (w / float(w0)))))
+        b64 = base64.b64encode(data).decode("ascii")
+        parts.append(
+            f'<div style="text-align:center;padding:8px 0 4px;">'
+            f'<img alt="캡처" src="data:image/png;base64,{b64}" '
+            f'width="{w}" height="{h}" '
+            f'style="width:{w}px;height:{h}px;max-width:100%;display:inline-block;">'
+            f"</div>"
+        )
+    if not parts:
+        return ""
+    return (
+        f'<tr style="border:none;background:#fff;">'
+        f'<td colspan="26" style="border:none;padding:4px 8px 10px;vertical-align:top;">'
+        f'{"".join(parts)}</td></tr>'
+    )
+
+
+def _wl_embed_captures_xlsx(path: str, d: date) -> None:
+    if load_workbook is None or not path or not os.path.isfile(path):
+        return
+    iso = d.isoformat()
+    rows = _wl_read_captures(iso)
+    if not rows:
+        return
+    try:
+        from openpyxl.drawing.image import Image as XLImage
+    except Exception:
+        return
+    try:
+        wb = load_workbook(path)
+    except Exception:
+        return
+    try:
+        pages = {1: wb.active}
+        active_title = wb.active.title if wb.worksheets else ""
+        for name in wb.sheetnames:
+            if name == active_title:
+                continue
+            n = _extra_page_n_from_sheet_name(name)
+            if n:
+                pages[n] = wb[name]
+        for row in rows:
+            data = _wl_capture_file_bytes(iso, row)
+            if not data:
+                continue
+            ws = pages.get(int(row.get("page") or 0) + 1) or wb.active
+            bio = io.BytesIO(data)
+            img = XLImage(bio)
+            w0 = max(1, int(row.get("w0") or img.width or 800))
+            h0 = max(1, int(row.get("h0") or img.height or 600))
+            pct = _wl_clamp_cap_width(row.get("w_pct")) / 100.0
+            img.width = max(40, int(round(w0 * pct)))
+            img.height = max(24, int(round(h0 * (img.width / float(w0)))))
+            img.anchor = "G48"
+            try:
+                ws.add_image(img)
+            except Exception:
+                continue
+        wb.save(path)
+    except Exception:
+        pass
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
 
 
 def _extra_page_sheet_name(page_n: int) -> str:
@@ -3796,6 +4234,10 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
     path = worklog_path(d)
     cells = _spill_all_content(cells)
     write_cells_to_path(path, d, cells, force_template=True)
+    try:
+        _wl_embed_captures_xlsx(path, d)
+    except Exception:
+        pass
     _invalidate_saved_dates_cache()
     _remember_calendar_saved_date(d)
     _invalidate_worklog_presence_cache(d)
@@ -4164,6 +4606,7 @@ def purge_worklog_day_files(d: date, *, remote: bool = False) -> list[str]:
     _drop_saved_date_from_cache(iso)
     _invalidate_worklog_presence_cache(d)
     _purge_worklog_day_preview_cache(d)
+    _wl_purge_captures(iso)
     return removed
 
 
@@ -4624,6 +5067,11 @@ def commit_worklog_date_save(source: date, target: date, cells: dict) -> str:
     """고른 날짜에 저장한다. 날짜만 바꾼 경우 예전 날짜 파일은 저장 때 지운다."""
     cells = dict(cells or {})
     cells["date"] = format_worklog_date(target)
+    if source != target:
+        try:
+            _wl_copy_captures(source.isoformat(), target.isoformat())
+        except Exception:
+            pass
     path = save_worklog_cells(target, cells, force=True, allow_overwrite=True)
     purge = _take_purge_dates(target)
     if source != target and source not in purge:
@@ -5224,11 +5672,12 @@ def _worksheet_to_table_html(
     m_p = re.match(r"p(\d+)-$", pfx)
     if m_p:
         page_n = max(2, int(m_p.group(1)))
+    cap_tr = _wl_capture_html_block(path, page_n, layout_scale)
     return (
         f'<div class="wl-preview-page" data-wl-page="{page_n}">'
         f'<table class="wl-sheet" style="border-collapse:collapse;table-layout:fixed;width:{int(total_w)}px;background:#fff;box-sizing:border-box;">'
         f"<colgroup>{colgroup}</colgroup>"
-        f"<tbody>{''.join(rows_html)}{logo_tr}</tbody>"
+        f"<tbody>{''.join(rows_html)}{logo_tr}{cap_tr}</tbody>"
         f"</table></div>"
     )
 
@@ -6661,7 +7110,7 @@ def _clear_date_widget_state(d: date) -> None:
         if not isinstance(k, str): continue
         if k in prefixes or any(k.startswith(p) for p in prefixes if p.endswith("_")): del st.session_state[k]
         elif k.startswith(f"wl_page_snap_{iso}_"): del st.session_state[k]
-        elif k in {f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_pending_sync_{iso}", f"wl_do_add_{iso}", f"wl_do_del_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}", f"wl_open_ctx_{iso}", f"wl_saved_ok_{iso}", f"wl_page_count_{iso}", f"wl_page_idx_{iso}"}: del st.session_state[k]
+        elif k in {f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_pending_sync_{iso}", f"wl_do_add_{iso}", f"wl_do_del_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}", f"wl_open_ctx_{iso}", f"wl_saved_ok_{iso}", f"wl_page_count_{iso}", f"wl_page_idx_{iso}", f"wl_caps_{iso}"}: del st.session_state[k]
 
 def _preview_path(d: date) -> str: return os.path.join(WORKLOG_DIR, f"_preview_{d.isoformat()}.xlsx")
 
@@ -6670,6 +7119,10 @@ def _build_preview_file(d: date, cells: dict) -> str:
     if not os.path.exists(WORKLOG_TEMPLATE): raise FileNotFoundError("업무일지 템플릿이 없습니다.")
     dst = _preview_path(d)
     write_cells_to_path(dst, d, cells, force_template=True)
+    try:
+        _wl_embed_captures_xlsx(dst, d)
+    except Exception:
+        pass
     return dst
 
 def _excel_app_path() -> str | None:
@@ -6683,6 +7136,10 @@ def prepare_print_xlsx(d: date, cells: dict) -> str:
     _ensure_dirs()
     dst = _print_xlsx_path(d)
     write_cells_to_path(dst, d, cells, force_template=True)
+    try:
+        _wl_embed_captures_xlsx(dst, d)
+    except Exception:
+        pass
     return os.path.abspath(dst)
 
 def open_excel_print_preview(xlsx_path: str, *, prefer_print_dialog: bool = True) -> tuple[bool, str]:
@@ -7108,6 +7565,8 @@ def _prepare_worklog_day_state(selected: date, *, skip_remote_pull: bool = False
         pres = detect_worklog_date_presence(selected, include_remote=False)
         st.session_state[open_k] = {"had_local": bool(pres.get("local")), "presence": pres}
     _init_widget_state(selected)
+    if _wl_caps_session_key(iso) not in st.session_state:
+        st.session_state[_wl_caps_session_key(iso)] = _wl_read_captures(iso)
     pending = st.session_state.pop(f"wl_pending_sync_{iso}", None)
     if isinstance(pending, dict):
         if not pending.get("keep_editor"):
@@ -7338,6 +7797,93 @@ def _render_worklog_date_toolbar(selected: date) -> None:
     _date_err = st.session_state.pop("wl_date_err", None)
     if _date_err:
         st.error(_date_err)
+
+
+def _render_worklog_captures(iso: str, page: int) -> None:
+    """업무입력 아래 캡처. 붙여넣기·파일·너비 조절."""
+    rows = _wl_caps_from_session(iso)
+    st.markdown(
+        "<div style='font-size:12px;font-weight:700;color:#334155;margin:10px 0 4px;'>"
+        "캡처 <span style='font-weight:500;color:#94A3B8;'>"
+        "(⌘V로 붙여넣기 · 너비 조절 · 저장 시 일지에 포함)</span></div>",
+        unsafe_allow_html=True,
+    )
+    if not _wl_quiet_ui():
+        def _on_cap_paste() -> None:
+            hook = st.session_state.get("wl_cap_hook") or {}
+            raw = str(hook.get("img") or "") if isinstance(hook, dict) else ""
+            if not raw:
+                return
+            try:
+                obj = json.loads(raw)
+            except Exception:
+                obj = {}
+            blob = _wl_decode_data_url(str((obj or {}).get("data") or raw))
+            if not blob:
+                return
+            sig = str((obj or {}).get("t") or raw[:24])
+            if st.session_state.get(f"wl_cap_done_{iso}") == sig:
+                return
+            st.session_state[f"wl_cap_done_{iso}"] = sig
+            pg = int((obj or {}).get("page") or page or 0)
+            _wl_add_capture_bytes(iso, blob, page=pg)
+
+        _WL_CAP_HOOK(
+            key="wl_cap_hook",
+            data={"iso": iso, "page": int(page or 0)},
+            on_img_change=_on_cap_paste,
+            height=1,
+        )
+
+    def _on_cap_file() -> None:
+        f = st.session_state.get(f"wl_cap_file_{iso}")
+        if f is None:
+            return
+        try:
+            data = f.getvalue()
+        except Exception:
+            return
+        _wl_add_capture_bytes(iso, data, page=int(page or 0))
+
+    st.file_uploader(
+        "캡처 파일",
+        type=["png", "jpg", "jpeg", "webp"],
+        key=f"wl_cap_file_{iso}",
+        label_visibility="collapsed",
+        on_change=_on_cap_file,
+        accept_multiple_files=False,
+    )
+    if len(rows) >= _WL_CAP_MAX:
+        st.caption(f"캡처는 하루 {_WL_CAP_MAX}장까지입니다.")
+    for row in rows:
+        cid = str(row.get("id") or "")
+        data = _wl_capture_file_bytes(iso, row)
+        if not data:
+            continue
+        w0 = max(1, int(row.get("w0") or 800))
+        h0 = max(1, int(row.get("h0") or 600))
+        pct = _wl_clamp_cap_width(row.get("w_pct"))
+        show_w = max(80, int(round(w0 * pct / 100.0)))
+        c_img, c_ctl = st.columns([3.2, 1.4], gap="small")
+        with c_img:
+            st.image(data, width=show_w)
+        with c_ctl:
+            sk = f"wl_cap_w_{iso}_{cid}"
+
+            def _on_w(iso=iso, cid=cid, sk=sk) -> None:
+                _wl_set_capture_width(iso, cid, st.session_state.get(sk))
+
+            st.slider(
+                "너비 %",
+                min_value=20,
+                max_value=100,
+                value=pct,
+                key=sk,
+                on_change=_on_w,
+            )
+            if st.button("삭제", key=f"wl_cap_del_{iso}_{cid}", width="stretch"):
+                _wl_delete_capture(iso, cid)
+                _wl_rerun()
 
 
 def _render_worklog_input_panel(selected: date) -> None:
@@ -7602,6 +8148,8 @@ def _render_worklog_input_panel(selected: date) -> None:
                     with col_remark:
                         st.markdown(_wl_col_limit_label("비고", _ru), unsafe_allow_html=True)
                         _mount_entry_remark_editor(iso2, pi, _ru)
+
+                _render_worklog_captures(iso2, pi)
 
                 if pi == 0:
                     st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
