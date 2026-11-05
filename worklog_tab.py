@@ -99,6 +99,7 @@ def _wl_mount_v2_lines_editor(
     changed_key: str,
     session_lines: list[str],
     on_cap_w_change=None,
+    on_cap_lay_change=None,
     on_cap_del_change=None,
 ):
     """아이패드만 text_area. Cloud 데스크톱·맥 로컬은 CCv2 줄칸(로컬과 동일)."""
@@ -127,6 +128,8 @@ def _wl_mount_v2_lines_editor(
     }
     if on_cap_w_change is not None:
         kw["on_cap_w_change"] = on_cap_w_change
+    if on_cap_lay_change is not None:
+        kw["on_cap_lay_change"] = on_cap_lay_change
     if on_cap_del_change is not None:
         kw["on_cap_del_change"] = on_cap_del_change
     return _WL_LINES_EDITOR(**kw)
@@ -438,18 +441,19 @@ _WL_LINES_CSS = _WL_FONT_FACE_CSS + """
 .wl-lines { position: relative; }
 .wl-caps {
   position: absolute;
-  left: 6px;
-  right: 6px;
-  top: 8px;
+  inset: 0;
   z-index: 5;
   pointer-events: none;
 }
 .wl-cap {
-  position: relative;
+  position: absolute;
   pointer-events: auto;
-  margin: 0 auto 6px;
+  margin: 0;
   max-width: 100%;
+  cursor: grab;
+  box-sizing: border-box;
 }
+.wl-cap.wl-cap-drag { cursor: grabbing; }
 .wl-cap img {
   width: 100%;
   height: auto;
@@ -1080,6 +1084,7 @@ export default function (component) {
     if (!caps.length) return;
     const host = document.createElement("div");
     host.className = "wl-caps";
+    let defY = 8;
     try {
       const rows = root.querySelectorAll(".wl-row");
       const vals = inst.lines || [];
@@ -1089,19 +1094,40 @@ export default function (component) {
       }
       const start = last < 0 ? 0 : Math.min(last + 1, Math.max(rows.length - 1, 0));
       const row = rows[start];
-      if (row) host.style.top = Math.max(8, row.offsetTop + (last < 0 ? 8 : 2)) + "px";
+      const rh = Math.max(1, root.offsetHeight || 1);
+      if (row) defY = Math.max(0, Math.min(90, Math.round((100 * row.offsetTop) / rh)));
     } catch (eTop) {}
-    caps.forEach((cap) => {
+    const emitLay = (wrap, cid) => {
+      emitCap("cap_lay", {
+        id: cid,
+        w_pct: Number(wrap.dataset.wp || 70),
+        x_pct: Number(wrap.dataset.xp || 0),
+        y_pct: Number(wrap.dataset.yp || 0),
+        t: Date.now(),
+      });
+    };
+    caps.forEach((cap, ci) => {
       const cid = String((cap && cap.id) || "");
       const src = String((cap && cap.src) || "");
       if (!cid || !src) return;
       let pct = Number((cap && cap.w_pct) || 70);
       if (!Number.isFinite(pct)) pct = 70;
       pct = Math.max(20, Math.min(100, Math.round(pct)));
+      let xp = Number(cap && cap.x_pct);
+      let yp = Number(cap && cap.y_pct);
+      if (!Number.isFinite(xp)) xp = 8;
+      if (!Number.isFinite(yp)) yp = Math.min(90, defY + ci * 4);
+      xp = Math.max(0, Math.min(100 - pct, Math.round(xp)));
+      yp = Math.max(0, Math.min(90, Math.round(yp)));
       const wrap = document.createElement("div");
       wrap.className = "wl-cap";
       wrap.style.width = pct + "%";
+      wrap.style.left = xp + "%";
+      wrap.style.top = yp + "%";
       wrap.dataset.wp = String(pct);
+      wrap.dataset.xp = String(xp);
+      wrap.dataset.yp = String(yp);
+      wrap.title = "끌어 이동 · 모서리로 크기";
       const img = document.createElement("img");
       img.alt = "캡처";
       img.src = src;
@@ -1124,15 +1150,52 @@ export default function (component) {
         const box = Math.max(1, root.getBoundingClientRect().width);
         const move = (e2) => {
           let nw = startW + (e2.clientX - startX);
-          let np = Math.round((100 * nw) / box);
-          np = Math.max(20, Math.min(100, np));
+          let np = Math.max(20, Math.min(100, Math.round((100 * nw) / box)));
+          let cx = Number(wrap.dataset.xp || 0);
+          if (cx + np > 100) cx = Math.max(0, 100 - np);
           wrap.style.width = np + "%";
+          wrap.style.left = cx + "%";
           wrap.dataset.wp = String(np);
+          wrap.dataset.xp = String(cx);
         };
         const up = () => {
           document.removeEventListener("pointermove", move);
           document.removeEventListener("pointerup", up);
-          emitCap("cap_w", { id: cid, w_pct: Number(wrap.dataset.wp || pct), t: Date.now() });
+          emitLay(wrap, cid);
+        };
+        document.addEventListener("pointermove", move);
+        document.addEventListener("pointerup", up);
+      });
+      wrap.addEventListener("pointerdown", (ev) => {
+        const t = ev.target;
+        if (t === handle || t === xbtn || (t && t.closest && t.closest(".wl-cap-h,.wl-cap-x"))) return;
+        try { ev.preventDefault(); ev.stopPropagation(); } catch (eM) {}
+        wrap.classList.add("wl-cap-drag");
+        const b = root.getBoundingClientRect();
+        const r0 = wrap.getBoundingClientRect();
+        const ox = ev.clientX - r0.left;
+        const oy = ev.clientY - r0.top;
+        const move = (e2) => {
+          const bw = Math.max(1, b.width);
+          const bh = Math.max(1, b.height);
+          let left = e2.clientX - ox - b.left;
+          let top = e2.clientY - oy - b.top;
+          const ww = wrap.getBoundingClientRect().width;
+          const hh = wrap.getBoundingClientRect().height;
+          left = Math.max(0, Math.min(bw - ww, left));
+          top = Math.max(0, Math.min(bh - hh, top));
+          const nx = Math.round((100 * left) / bw);
+          const ny = Math.round((100 * top) / bh);
+          wrap.style.left = nx + "%";
+          wrap.style.top = ny + "%";
+          wrap.dataset.xp = String(nx);
+          wrap.dataset.yp = String(ny);
+        };
+        const up = () => {
+          wrap.classList.remove("wl-cap-drag");
+          document.removeEventListener("pointermove", move);
+          document.removeEventListener("pointerup", up);
+          emitLay(wrap, cid);
         };
         document.addEventListener("pointermove", move);
         document.addEventListener("pointerup", up);
@@ -1186,7 +1249,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v61",
+    "worklog_entry_lines_v62",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -2208,6 +2271,16 @@ def _wl_clamp_cap_width(v) -> int:
     return max(20, min(100, n))
 
 
+def _wl_clamp_cap_pos(v, *, default=None, hi: int = 90):
+    if v is None or v == "":
+        return default
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(int(hi), n))
+
+
 def _wl_iso_from_worklog_path(path: str) -> str:
     m = re.search(r"(20\d{2}-\d{2}-\d{2})", os.path.basename(path or ""))
     return m.group(1) if m else ""
@@ -2326,6 +2399,8 @@ def _wl_read_captures(iso: str) -> list[dict]:
                 "id": cid,
                 "file": fn,
                 "w_pct": _wl_clamp_cap_width(row.get("w_pct")),
+                "x_pct": _wl_clamp_cap_pos(row.get("x_pct")),
+                "y_pct": _wl_clamp_cap_pos(row.get("y_pct")),
                 "page": max(0, page),
                 "w0": int(row.get("w0") or w0 or 800),
                 "h0": int(row.get("h0") or h0 or 600),
@@ -2346,6 +2421,8 @@ def _wl_write_captures(iso: str, rows: list[dict]) -> None:
                 "id": str(row.get("id")),
                 "file": str(row.get("file") or (str(row.get("id")) + ".png")),
                 "w_pct": _wl_clamp_cap_width(row.get("w_pct")),
+                "x_pct": _wl_clamp_cap_pos(row.get("x_pct")),
+                "y_pct": _wl_clamp_cap_pos(row.get("y_pct")),
                 "page": max(0, int(row.get("page") or 0)),
                 "w0": int(row.get("w0") or 800),
                 "h0": int(row.get("h0") or 600),
@@ -2387,6 +2464,8 @@ def _wl_add_capture_bytes(iso: str, data: bytes, *, page: int = 0) -> str | None
             "id": cid,
             "file": fn,
             "w_pct": _WL_CAP_W_DEFAULT,
+            "x_pct": None,
+            "y_pct": None,
             "page": max(0, int(page or 0)),
             "w0": w0,
             "h0": h0,
@@ -2398,11 +2477,21 @@ def _wl_add_capture_bytes(iso: str, data: bytes, *, page: int = 0) -> str | None
 
 
 def _wl_set_capture_width(iso: str, cid: str, w_pct) -> None:
+    _wl_set_capture_layout(iso, cid, w_pct=w_pct)
+
+
+def _wl_set_capture_layout(iso: str, cid: str, *, w_pct=None, x_pct=None, y_pct=None) -> None:
     rows = _wl_caps_from_session(iso)
     for row in rows:
-        if str(row.get("id")) == str(cid):
+        if str(row.get("id")) != str(cid):
+            continue
+        if w_pct is not None:
             row["w_pct"] = _wl_clamp_cap_width(w_pct)
-            break
+        if x_pct is not None:
+            row["x_pct"] = _wl_clamp_cap_pos(x_pct, default=0, hi=100)
+        if y_pct is not None:
+            row["y_pct"] = _wl_clamp_cap_pos(y_pct, default=0, hi=90)
+        break
     st.session_state[_wl_caps_session_key(iso)] = rows
     _wl_write_captures(iso, rows)
 
@@ -2507,13 +2596,18 @@ def _wl_capture_payload(iso: str, page: int) -> list[dict]:
         data = _wl_capture_file_bytes(iso, row)
         if not data:
             continue
-        out.append(
-            {
-                "id": str(row.get("id") or ""),
-                "src": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
-                "w_pct": _wl_clamp_cap_width(row.get("w_pct")),
-            }
-        )
+        item = {
+            "id": str(row.get("id") or ""),
+            "src": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
+            "w_pct": _wl_clamp_cap_width(row.get("w_pct")),
+        }
+        xp = _wl_clamp_cap_pos(row.get("x_pct"))
+        yp = _wl_clamp_cap_pos(row.get("y_pct"))
+        if xp is not None:
+            item["x_pct"] = xp
+        if yp is not None:
+            item["y_pct"] = yp
+        out.append(item)
     return out
 
 
@@ -2540,6 +2634,15 @@ def _wl_apply_cap_state(iso: str, cur, *, kind: str) -> None:
         return
     if kind == "cap_w":
         _wl_set_capture_width(iso, cid, (obj or {}).get("w_pct"))
+        return
+    if kind == "cap_lay":
+        _wl_set_capture_layout(
+            iso,
+            cid,
+            w_pct=(obj or {}).get("w_pct"),
+            x_pct=(obj or {}).get("x_pct"),
+            y_pct=(obj or {}).get("y_pct"),
+        )
 
 
 def _wl_capture_file_bytes(iso: str, row: dict) -> bytes | None:
@@ -6981,17 +7084,21 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     def _on_cap_w() -> None:
         _wl_apply_cap_state(iso, st.session_state.get(ck), kind="cap_w")
 
+    def _on_cap_lay() -> None:
+        _wl_apply_cap_state(iso, st.session_state.get(ck), kind="cap_lay")
+
     def _on_cap_del() -> None:
         _wl_apply_cap_state(iso, st.session_state.get(ck), kind="cap_del")
 
     result = _wl_mount_v2_lines_editor(
         key=ck,
         data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "ln"), "max_u": float(max_u), "cell_w": int(_orig_cell_px("content")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "content", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0, "captures": _wl_capture_payload(iso, entry_i)},
-        default={"lines": lines, "cap_w": "", "cap_del": ""},
+        default={"lines": lines, "cap_w": "", "cap_lay": "", "cap_del": ""},
         on_lines_change=_on_lines_change,
         changed_key=f"wl_lines_user_edit_{iso}_{entry_i}",
         session_lines=lines,
         on_cap_w_change=_on_cap_w,
+        on_cap_lay_change=_on_cap_lay,
         on_cap_del_change=_on_cap_del,
     )
     
@@ -8059,7 +8166,7 @@ def _render_worklog_captures(iso: str, page: int) -> None:
             _wl_rerun()
 
     st.file_uploader(
-        "파일을 고르면 내용 작성란에 바로 들어갑니다. 칸에서 ⌘V도 됩니다. 모서리를 끌어 크기.",
+        "파일을 고르면 내용 작성란에 바로 들어갑니다. 칸에서 ⌘V도 됩니다. 이미지를 끌어 이동, 모서리로 크기.",
         type=["png", "jpg", "jpeg", "webp"],
         key=_wl_cap_file_widget_key(iso),
         on_change=_on_cap_file,
