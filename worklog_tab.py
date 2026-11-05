@@ -969,24 +969,6 @@ export default function (component) {
     rebuild(j + 1);
   }
 
-  function paintStyle(input, j) {
-    const arr = (data && Array.isArray(data.styles)) ? data.styles : [];
-    const s = arr[j] || {};
-    const fill = String((s && s.fill) || "");
-    const col = String((s && s.color) || "");
-    const al = String((s && s.align) || "");
-    input.style.background = fill;
-    input.style.color = col;
-    input.style.textAlign = al;
-  }
-  function paintAllStyles() {
-    try {
-      root.querySelectorAll("input[data-idx]").forEach((inp) => {
-        paintStyle(inp, Number(inp.dataset.idx || 0));
-      });
-    } catch (eSt) {}
-  }
-
   function rebuild(focusIdx) {
     inst.rebuilding = true;
     root.innerHTML = "";
@@ -1082,13 +1064,11 @@ export default function (component) {
         e.stopPropagation();
         insertLineAfter(j, input);
       });
-      paintStyle(input, j);
       row.appendChild(input);
       root.appendChild(row);
     });
     inst.rebuilding = false;
     applyFillScale();
-    paintAllStyles();
     renderCaps();
     if (typeof focusIdx === "number" && focusIdx >= 0) focusAt(focusIdx);
   }
@@ -1264,13 +1244,12 @@ export default function (component) {
     } catch (eRo) {}
   }
   bindDragSelect();
-  paintAllStyles();
   renderCaps();
 }
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v63",
+    "worklog_entry_lines_v62",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -2300,212 +2279,6 @@ def _wl_clamp_cap_pos(v, *, default=None, hi: int = 90):
     except (TypeError, ValueError):
         return default
     return max(0, min(int(hi), n))
-
-
-_WL_FMT_FILL_YELLOW = "#FFF2CC"
-_WL_FMT_COLOR_RED = "#C00000"
-
-
-def _wl_fmt_hex(v) -> str:
-    s = str(v or "").strip()
-    if re.fullmatch(r"#[0-9A-Fa-f]{6}", s):
-        return s.upper()
-    return ""
-
-
-def _wl_fmt_path(iso: str) -> str:
-    return os.path.join(WORKLOG_DIR, "formats", f"{iso}.json")
-
-
-def _wl_fmt_session_key(iso: str) -> str:
-    return f"wl_fmt_{iso}"
-
-
-def _wl_read_fmt(iso: str) -> dict:
-    path = _wl_fmt_path(iso)
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except Exception:
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    out = {}
-    for k, v in raw.items():
-        if not isinstance(k, str) or not isinstance(v, dict):
-            continue
-        sty = {}
-        raw_fill = v.get("fill")
-        if raw_fill == "none":
-            sty["fill"] = "none"
-        else:
-            fill = _wl_fmt_hex(raw_fill)
-            if fill:
-                sty["fill"] = fill
-        raw_color = v.get("color")
-        if raw_color == "none":
-            sty["color"] = "none"
-        else:
-            color = _wl_fmt_hex(raw_color)
-            if color:
-                sty["color"] = color
-        align = str(v.get("align") or "")
-        if align in ("left", "center", "right"):
-            sty["align"] = align
-        if sty:
-            out[k] = sty
-    return out
-
-
-def _wl_write_fmt(iso: str, rows: dict) -> None:
-    folder = os.path.dirname(_wl_fmt_path(iso))
-    os.makedirs(folder, exist_ok=True)
-    slim = {}
-    for k, v in (rows or {}).items():
-        if not isinstance(k, str) or not isinstance(v, dict) or not v:
-            continue
-        slim[k] = dict(v)
-    with open(_wl_fmt_path(iso), "w", encoding="utf-8") as f:
-        json.dump(slim, f, ensure_ascii=False, indent=0)
-
-
-def _wl_fmt_from_session(iso: str) -> dict:
-    cur = st.session_state.get(_wl_fmt_session_key(iso))
-    if isinstance(cur, dict):
-        return cur
-    rows = _wl_read_fmt(iso)
-    st.session_state[_wl_fmt_session_key(iso)] = rows
-    return rows
-
-
-def _wl_fmt_key(page: int, kind: str, j: int) -> str:
-    return f"{int(page)}:{kind}:{int(j)}"
-
-
-def _wl_fmt_styles_payload(iso: str, page: int, kind: str, n: int) -> list[dict]:
-    rows = _wl_fmt_from_session(iso)
-    out = []
-    for j in range(max(0, int(n or 0))):
-        sty = rows.get(_wl_fmt_key(page, kind, j)) or {}
-        if not isinstance(sty, dict):
-            out.append({})
-            continue
-        vis = {}
-        if sty.get("fill") and sty.get("fill") != "none":
-            vis["fill"] = sty["fill"]
-        if sty.get("color") and sty.get("color") != "none":
-            vis["color"] = sty["color"]
-        if sty.get("align") in ("left", "center", "right"):
-            vis["align"] = sty["align"]
-        out.append(vis)
-    return out
-
-
-def _wl_set_fmt(iso: str, page: int, kind: str, j: int, **patch) -> None:
-    rows = dict(_wl_fmt_from_session(iso))
-    key = _wl_fmt_key(page, kind, j)
-    cur = dict(rows.get(key) or {})
-    if "fill" in patch:
-        fill = _wl_fmt_hex(patch.get("fill"))
-        cur["fill"] = fill if fill else "none"
-    if "color" in patch:
-        color = _wl_fmt_hex(patch.get("color"))
-        cur["color"] = color if color else "none"
-    if "align" in patch:
-        align = str(patch.get("align") or "")
-        if align in ("left", "center", "right"):
-            cur["align"] = align
-        else:
-            cur.pop("align", None)
-    if cur:
-        rows[key] = cur
-    else:
-        rows.pop(key, None)
-    st.session_state[_wl_fmt_session_key(iso)] = rows
-    _wl_write_fmt(iso, rows)
-
-
-def _wl_copy_fmt(src_iso: str, dst_iso: str) -> None:
-    if not src_iso or not dst_iso or src_iso == dst_iso:
-        return
-    rows = _wl_read_fmt(src_iso)
-    if not rows:
-        return
-    _wl_write_fmt(dst_iso, rows)
-    st.session_state[_wl_fmt_session_key(dst_iso)] = dict(rows)
-
-
-def _wl_purge_fmt(iso: str) -> None:
-    path = _wl_fmt_path(iso)
-    try:
-        if os.path.isfile(path):
-            os.remove(path)
-    except OSError:
-        pass
-    st.session_state.pop(_wl_fmt_session_key(iso), None)
-
-
-def _wl_fmt_focus_cell(iso: str, page: int):
-    k = str(st.session_state.get("wl_active_cell_key") or "")
-    m = re.match(r"^wl_ent_(ln|cl|rm)_(\d{4}-\d{2}-\d{2})_(\d+)_(\d+)", k)
-    if m and m.group(2) == iso:
-        return m.group(1), int(m.group(3)), int(m.group(4))
-    for kind, keyfn in (
-        ("ln", _entry_lines_comp_key),
-        ("cl", _entry_clients_comp_key),
-        ("rm", _entry_remarks_comp_key),
-    ):
-        cur = st.session_state.get(keyfn(iso, page))
-        if not isinstance(cur, dict):
-            continue
-        try:
-            fj = int(cur.get("focus", -1))
-        except (TypeError, ValueError):
-            fj = -1
-        if fj >= 0:
-            return kind, int(page), fj
-    return None, int(page), None
-
-
-def _wl_apply_openpyxl_fmt(cell, sty: dict | None, *, default_h: str) -> None:
-    if cell is None:
-        return
-    sty = sty if isinstance(sty, dict) else {}
-    try:
-        from openpyxl.styles import PatternFill
-    except Exception:
-        PatternFill = None
-    fill = sty.get("fill")
-    if PatternFill is not None and "fill" in sty:
-        try:
-            hx = _wl_fmt_hex(fill)
-            if hx:
-                cell.fill = PatternFill("solid", fgColor=hx.lstrip("#"))
-            else:
-                cell.fill = PatternFill(fill_type=None)
-        except Exception:
-            pass
-    if "color" in sty:
-        hx = _wl_fmt_hex(sty.get("color"))
-        try:
-            if hx:
-                cell.font = cell.font.copy(color=hx.lstrip("#"), name=_WL_BODY_FONT_NAME, size=float(_WL_BODY_FONT_PT))
-            else:
-                _set_body_font(cell)
-        except Exception:
-            pass
-    align = str(sty.get("align") or "") or default_h
-    if align not in ("left", "center", "right"):
-        align = default_h
-    try:
-        extra = {}
-        if default_h == "center":
-            extra = {"vertical": "center", "wrapText": False}
-        else:
-            extra = {"vertical": "top", "wrapText": True, "shrinkToFit": False}
-        cell.alignment = cell.alignment.copy(horizontal=align, **extra)
-    except Exception:
-        pass
 
 
 def _wl_iso_from_worklog_path(path: str) -> str:
@@ -4632,14 +4405,9 @@ def read_worklog_cells_from_archive(d: date) -> dict | None:
         return None
 
 # 💡 강제 템플릿 덮어쓰기 로직 적용
-def _apply_cells_to_worksheet(ws, d: date, cells: dict, *, include_panels: bool = True, page_i: int = 0) -> None:
+def _apply_cells_to_worksheet(ws, d: date, cells: dict, *, include_panels: bool = True) -> None:
     """활성/추가 시트에 본문 칸을 쓴다. 추가 페이지는 익일·특이를 비운다."""
     body, _extras = _detach_extra_pages(cells)
-    iso = d.isoformat() if hasattr(d, "isoformat") else ""
-    try:
-        fmt_rows = _wl_fmt_from_session(iso) if iso else {}
-    except Exception:
-        fmt_rows = _wl_read_fmt(iso) if iso else {}
     try:
         date_cell = ws[WL_DATE_CELL]
         date_cell.value = body.get("date") or format_worklog_date(d)
@@ -4647,32 +4415,29 @@ def _apply_cells_to_worksheet(ws, d: date, cells: dict, *, include_panels: bool 
     except AttributeError:
         pass
 
-    for i, r in enumerate(WL_CLIENT_ROWS):
+    for r in WL_CLIENT_ROWS:
         try:
             cell = ws.cell(r, 3)
             cell.value = (body.get(f"C{r}", "") or None)
             _set_body_font(cell)
             try: cell.alignment = cell.alignment.copy(horizontal="center", vertical="center", wrapText=False)
             except Exception: pass
-            _wl_apply_openpyxl_fmt(cell, (fmt_rows or {}).get(_wl_fmt_key(page_i, "cl", i)), default_h="center")
         except AttributeError: pass
-    for i, r in enumerate(WL_CONTENT_ROWS):
+    for r in WL_CONTENT_ROWS:
         try:
             cell = ws.cell(r, 7)
             cell.value = (body.get(f"G{r}", "") or None)
             _set_body_font(cell)
             try: cell.alignment = cell.alignment.copy(wrapText=True, shrinkToFit=False, vertical="top")
             except Exception: pass
-            _wl_apply_openpyxl_fmt(cell, (fmt_rows or {}).get(_wl_fmt_key(page_i, "ln", i)), default_h="left")
         except AttributeError: pass
-    for i, r in enumerate(WL_CONTENT_ROWS):
+    for r in WL_CONTENT_ROWS:
         try:
             cell = ws.cell(r, WL_REMARK_COL_START)
             cell.value = (body.get(f"Y{r}", "") or None)
             _set_body_font(cell)
             try: cell.alignment = cell.alignment.copy(wrapText=True, shrinkToFit=False, vertical="top")
             except Exception: pass
-            _wl_apply_openpyxl_fmt(cell, (fmt_rows or {}).get(_wl_fmt_key(page_i, "rm", i)), default_h="left")
         except AttributeError: pass
     for r in WL_NEXT_ROWS + WL_NOTE_ROWS:
         try:
@@ -4710,7 +4475,7 @@ def _sync_day_extra_sheets(path: str, d: date, extra_pages: list[dict]) -> None:
                     ws = wb.create_sheet(title)
                     _copy_worksheet_cross_workbook(src, ws)
                 _clear_content_cells(ws)
-            _apply_cells_to_worksheet(ws, d, extra_body, include_panels=False, page_i=i + 1)
+            _apply_cells_to_worksheet(ws, d, extra_body, include_panels=False)
             _ensure_worklog_body_merges(ws)
         for name in list(wb.sheetnames):
             if name != src.title and _is_day_extra_sheet_name(name) and name not in wanted:
@@ -5176,7 +4941,6 @@ def purge_worklog_day_files(d: date, *, remote: bool = False) -> list[str]:
     _invalidate_worklog_presence_cache(d)
     _purge_worklog_day_preview_cache(d)
     _wl_purge_captures(iso)
-    _wl_purge_fmt(iso)
     return removed
 
 
@@ -5640,7 +5404,6 @@ def commit_worklog_date_save(source: date, target: date, cells: dict) -> str:
     if source != target:
         try:
             _wl_copy_captures(source.isoformat(), target.isoformat())
-            _wl_copy_fmt(source.isoformat(), target.isoformat())
         except Exception:
             pass
     path = save_worklog_cells(target, cells, force=True, allow_overwrite=True)
@@ -5818,23 +5581,6 @@ def reassign_worklog_date(old: date, new: date, *, overwrite_dest: bool = True) 
     _invalidate_saved_dates_cache()
     _patch_saved_dates_after_move(old, new)
     return "moved" if should_write else "retargeted"
-
-def _cell_font_color(cell) -> str | None:
-    try:
-        font = cell.font
-        c = getattr(font, "color", None)
-        if c is None:
-            return None
-        if getattr(c, "type", None) == "rgb" and c.rgb and str(c.rgb) not in ("00000000", "FF000000"):
-            rgb = str(c.rgb)
-            if len(rgb) == 8:
-                rgb = rgb[2:]
-            if rgb and rgb.upper() not in ("000000",):
-                return f"#{rgb}"
-    except Exception:
-        return None
-    return None
-
 
 def _cell_fill_color(cell) -> str | None:
     try:
@@ -6148,14 +5894,11 @@ def _worksheet_to_table_html(
             is_vertical = is_side_label or getattr(align, "textRotation", 0) in (255, 90) or (_text_clean == "결재" and rs >= 2 and cs == 1)
 
             if is_vertical: ha, va = "center", "middle"
-            elif is_client:
-                if ha in ("general", "", None):
-                    ha, va = "center", "middle"
+            elif is_client: ha, va = "center", "middle"  # 거래처 칸 항상 가운데
             elif is_body_d: ha, va = "left", "top"  # 익일/특이 — 빈 줄·다음 줄 위치 유지
+            elif is_content or is_remark: ha = "left"
                 
             fill = _cell_fill_color(cell) or "#FFFFFF"
-            fcolor = _cell_font_color(cell)
-            color_css = f"color:{fcolor};" if fcolor else ""
             border = _border_css(cell)
             span = ""
             if rs > 1: span += f' rowspan="{rs}"'
@@ -6202,7 +5945,7 @@ def _worksheet_to_table_html(
                     f"font-family:{font_stack};font-size:{fsize_pt}pt;font-weight:{bold};"
                     f"font-synthesis:none;-webkit-font-smoothing:auto;"
                     f"text-align:center; vertical-align:middle;"
-                    f"background:{fill};{color_css} {border} {pad_css}"
+                    f"background:{fill}; {border} {pad_css}"
                 )
             else:
                 line_css = "line-height:1.35;" if is_vertical else "line-height:1.25;"
@@ -6212,7 +5955,7 @@ def _worksheet_to_table_html(
                     f"font-family:{font_stack};font-size:{fsize_pt}pt;font-weight:{bold};"
                     f"font-synthesis:none;-webkit-font-smoothing:auto;"
                     f"text-align:{ha};vertical-align:{va};"
-                    f"background:{fill};{color_css}{border}"
+                    f"background:{fill};{border}"
                     f"{pad_css}white-space:{white};overflow:{overflow};"
                     f"text-overflow:{text_overflow};word-break:{break_css};"
                     f"{wrap_css}"
@@ -7272,7 +7015,7 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     _seed_comp_focus_seen(iso, entry_i, "cl", focus_n)
     result = _wl_mount_v2_lines_editor(
         key=ck,
-        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "cl"), "max_u": int(max_u), "cell_w": int(_orig_cell_px("client")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "client", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0, "styles": _wl_fmt_styles_payload(iso, entry_i, "cl", WL_SHEET_N)},
+        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "cl"), "max_u": int(max_u), "cell_w": int(_orig_cell_px("client")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "client", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_clients_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0},
         default={"lines": lines},
         on_lines_change=_on_clients_change,
         changed_key=f"wl_clients_user_edit_{iso}_{entry_i}",
@@ -7349,7 +7092,7 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
 
     result = _wl_mount_v2_lines_editor(
         key=ck,
-        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "ln"), "max_u": float(max_u), "cell_w": int(_orig_cell_px("content")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "content", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0, "captures": _wl_capture_payload(iso, entry_i), "styles": _wl_fmt_styles_payload(iso, entry_i, "ln", WL_SHEET_N)},
+        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "ln"), "max_u": float(max_u), "cell_w": int(_orig_cell_px("content")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "content", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0, "captures": _wl_capture_payload(iso, entry_i)},
         default={"lines": lines, "cap_w": "", "cap_lay": "", "cap_del": ""},
         on_lines_change=_on_lines_change,
         changed_key=f"wl_lines_user_edit_{iso}_{entry_i}",
@@ -7427,7 +7170,7 @@ def _mount_entry_remark_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     _seed_comp_focus_seen(iso, entry_i, "rm", focus_n)
     result = _wl_mount_v2_lines_editor(
         key=ck,
-        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "rm"), "max_u": int(max_u), "cell_w": int(_orig_cell_px("remark")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "remark", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_remarks_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0, "styles": _wl_fmt_styles_payload(iso, entry_i, "rm", WL_SHEET_N)},
+        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "rm"), "max_u": int(max_u), "cell_w": int(_orig_cell_px("remark")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "remark", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_remarks_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0},
         default={"lines": lines},
         on_lines_change=_on_remarks_change,
         changed_key=f"wl_remarks_user_edit_{iso}_{entry_i}",
@@ -7710,7 +7453,7 @@ def _draft_cells_for_left_preview(d: date) -> dict:
 
 def _clear_date_widget_state(d: date) -> None:
     iso = d.isoformat()
-    prefixes = (f"wl_ent_c_{iso}_", f"wl_ent_t_{iso}_", f"wl_ent_r_{iso}_", f"wl_ent_gap_{iso}_", f"wl_ent_ln_{iso}_", f"wl_ent_lc_{iso}_", f"wl_ent_gen_{iso}_", f"wl_ent_cl_{iso}_", f"wl_ent_clc_{iso}_", f"wl_ent_rm_{iso}_", f"wl_ent_rmc_{iso}_", f"wl_ent_rev_{iso}_", f"wl_lines_comp_{iso}_", f"wl_lines_live_{iso}_", f"wl_lines_inst_{iso}_", f"wl_clients_comp_{iso}_", f"wl_clients_live_{iso}_", f"wl_clients_inst_{iso}_", f"wl_clients_rev_{iso}_", f"wl_remarks_comp_{iso}_", f"wl_remarks_live_{iso}_", f"wl_remarks_inst_{iso}_", f"wl_remarks_rev_{iso}_", f"wl_force_comp_lines_{iso}_", f"wl_force_comp_clients_{iso}_", f"wl_force_comp_remarks_{iso}_", f"wl_lines_user_edit_{iso}_", f"wl_clients_user_edit_{iso}_", f"wl_remarks_user_edit_{iso}_", f"wl_exp_{iso}_", f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_save_btn_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}", f"wl_parked_cells_{iso}", f"wl_fmt_{iso}")
+    prefixes = (f"wl_ent_c_{iso}_", f"wl_ent_t_{iso}_", f"wl_ent_r_{iso}_", f"wl_ent_gap_{iso}_", f"wl_ent_ln_{iso}_", f"wl_ent_lc_{iso}_", f"wl_ent_gen_{iso}_", f"wl_ent_cl_{iso}_", f"wl_ent_clc_{iso}_", f"wl_ent_rm_{iso}_", f"wl_ent_rmc_{iso}_", f"wl_ent_rev_{iso}_", f"wl_lines_comp_{iso}_", f"wl_lines_live_{iso}_", f"wl_lines_inst_{iso}_", f"wl_clients_comp_{iso}_", f"wl_clients_live_{iso}_", f"wl_clients_inst_{iso}_", f"wl_clients_rev_{iso}_", f"wl_remarks_comp_{iso}_", f"wl_remarks_live_{iso}_", f"wl_remarks_inst_{iso}_", f"wl_remarks_rev_{iso}_", f"wl_force_comp_lines_{iso}_", f"wl_force_comp_clients_{iso}_", f"wl_force_comp_remarks_{iso}_", f"wl_lines_user_edit_{iso}_", f"wl_clients_user_edit_{iso}_", f"wl_remarks_user_edit_{iso}_", f"wl_exp_{iso}_", f"wl_entries_{iso}", f"wl_next_{iso}", f"wl_notes_{iso}", f"wl_next_area_{iso}", f"wl_notes_area_{iso}", f"wl_entry_count_{iso}", f"worklog_booted_{iso}", f"wl_save_btn_{iso}", f"wl_focus_ln_{iso}", f"wl_do_save_{iso}", f"wl_flash_save_{iso}", f"wl_view_cells_{iso}", f"wl_parked_cells_{iso}")
     for k in list(st.session_state.keys()):
         if not isinstance(k, str): continue
         if k in prefixes or any(k.startswith(p) for p in prefixes if p.endswith("_")): del st.session_state[k]
@@ -8360,40 +8103,6 @@ def _wl_finish_edit_fragment() -> None:
 
 
 
-def _render_worklog_format_bar(iso: str, page: int) -> None:
-    """엑셀 홈 탭에 가까운 채우기·글자색·정렬. 칸을 고른 뒤 누른다."""
-    kind, pg, j = _wl_fmt_focus_cell(iso, page)
-    st.markdown(
-        """<style>
-        div[class*="st-key-wl_fmt_bar_"] button {
-          min-height: 2.05rem !important; height: 2.05rem !important;
-          padding: 0 0.55rem !important; font-size: 0.82rem !important;
-          font-weight: 700 !important; line-height: 1 !important;
-          border-radius: 6px !important;
-        }
-        </style>""",
-        unsafe_allow_html=True,
-    )
-    with st.container(key=f"wl_fmt_bar_{iso}_{page}", horizontal=True, gap="small"):
-        def _go(**patch):
-            if kind is None or j is None:
-                st.session_state["wl_fmt_need_cell"] = True
-                return
-            _wl_set_fmt(iso, int(pg if pg is not None else page), str(kind), int(j), **patch)
-
-        st.button("노랑", key=f"wl_fmt_fy_{iso}_{page}", help="선택한 칸 배경", on_click=_go, kwargs={"fill": _WL_FMT_FILL_YELLOW})
-        st.button("배경없음", key=f"wl_fmt_fn_{iso}_{page}", help="배경 지우기", on_click=_go, kwargs={"fill": ""})
-        st.button("빨강글씨", key=f"wl_fmt_cr_{iso}_{page}", help="선택한 칸 글자색", on_click=_go, kwargs={"color": _WL_FMT_COLOR_RED})
-        st.button("검정글씨", key=f"wl_fmt_ck_{iso}_{page}", help="글자색 원래대로", on_click=_go, kwargs={"color": ""})
-        st.button("왼쪽", key=f"wl_fmt_al_{iso}_{page}", on_click=_go, kwargs={"align": "left"})
-        st.button("가운데", key=f"wl_fmt_ac_{iso}_{page}", on_click=_go, kwargs={"align": "center"})
-        st.button("오른쪽", key=f"wl_fmt_ar_{iso}_{page}", on_click=_go, kwargs={"align": "right"})
-    if st.session_state.pop("wl_fmt_need_cell", None):
-        st.caption("칸을 클릭한 뒤 서식을 누르세요. 글자 크기·병합은 양식 줄을 깨서 넣지 않았습니다.")
-    else:
-        st.caption("칸을 고른 뒤 채우기·글자색·정렬. 저장하면 엑셀·미리보기에 같이 들어갑니다.")
-
-
 def _render_worklog_date_toolbar(selected: date) -> None:
     """날짜칸·달력·삭제. 본문(거래처/내용/비고)과 같은 폭·왼쪽선에 맞춘다."""
     saved = _saved_dates_for_calendar()
@@ -8735,7 +8444,6 @@ def _render_worklog_input_panel(selected: date) -> None:
                     )
 
                 # 입력만 가로 여백을 채운다. 줄바꿈·인쇄미리보기는 원본 14pt 칸 폭.
-                _render_worklog_format_bar(iso2, pi)
                 with st.container(key="wl_entry_sheet"):
                     col_client, col_content, col_remark = st.columns([_side, _gw, _side], gap="small")
 
