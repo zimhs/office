@@ -1327,24 +1327,31 @@ def _render_month_grid(
     st.markdown(
         """
 <style>
-div[class*="st-key-gc_calhead"] > div[data-testid="stVerticalBlock"],
-div[class*="st-key-gc_calhead"] > div > div[data-testid="stVerticalBlock"],
-div[class*="st-key-gc_calgrid"] > div[data-testid="stVerticalBlock"],
-div[class*="st-key-gc_calgrid"] > div > div[data-testid="stVerticalBlock"] {
-  display: grid !important;
-  grid-template-columns: 28px repeat(7, minmax(0, 1fr));
-  gap: 6px !important;
-  align-items: stretch !important;
-}
-div[class*="st-key-gc_calhead"] {
-  margin-bottom: 4px !important;
-}
 div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"],
-div[class*="st-key-gc_calhead"] .stHorizontalBlock,
+div[class*="st-key-gc_calhead"] .stHorizontalBlock {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 6px !important;
+  margin-bottom: 4px !important;
+  overflow: visible !important;
+}
 div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"],
 div[class*="st-key-gc_calgrid"] .stHorizontalBlock {
   display: flex !important;
   flex-wrap: nowrap !important;
+  gap: 6px !important;
+  margin-bottom: 6px !important;
+  overflow: hidden !important;
+}
+div[class*="st-key-gc_calhead"] [data-testid="stColumn"],
+div[class*="st-key-gc_calhead"] .stColumn {
+  padding: 2px 2px 6px !important;
+  background: transparent !important;
+  border: none !important;
+  min-width: 0 !important;
+  min-height: 1.6rem !important;
+  flex: 1 1 0 !important;
+  overflow: visible !important;
 }
 div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"],
 div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"] p,
@@ -1357,40 +1364,50 @@ div[class*="st-key-gc_calhead"] .gc-dow-lab {
   overflow: visible !important;
   margin: 0 !important;
 }
-div[class*="st-key-gc_cell_"] {
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"],
+div[class*="st-key-gc_calgrid"] .stColumn {
   border: 1px solid #eceff3;
   border-radius: 10px;
   min-height: 88px;
   min-width: 0 !important;
+  flex: 1 1 0 !important;
   padding: 4px 2px !important;
   background: #fff;
 }
-div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]),
-div[class*="st-key-gc_cellsel"] {
+div[class*="st-key-gc_calhead"] [data-testid="stHorizontalBlock"] > div:first-child,
+div[class*="st-key-gc_calgrid"] [data-testid="stHorizontalBlock"] > div:first-child,
+div[class*="st-key-gc_calhead"] .stHorizontalBlock > div:first-child,
+div[class*="st-key-gc_calgrid"] .stHorizontalBlock > div:first-child {
+  flex: 0 0 28px !important;
+  width: 28px !important;
+  max-width: 28px !important;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  min-height: 0 !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellsel"]) {
   background: #e8f0fe !important;
   box-shadow: none !important;
 }
-div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_celltoday"]),
-div[class*="st-key-gc_celltoday"] {
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_celltoday"]) {
   background: #e8f4ff !important;
 }
-div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellpink"]),
-div[class*="st-key-gc_cellpink"] {
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has([class*="st-key-gc_cellpink"]) {
   background: #fdecea !important;
 }
-div[class*="st-key-gc_cell_"] > div[data-testid="stVerticalBlock"],
-div[class*="st-key-gc_cell_"] > div > div[data-testid="stVerticalBlock"] {
-  display: flex !important;
-  flex-direction: column !important;
+div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has(.gc-js-sel),
+div[class*="st-key-gc_cell_"].gc-js-sel,
+div.gc-js-sel {
+  background: #e8f0fe !important;
+}
+div[class*="st-key-gc_calgrid"] [data-testid="stVerticalBlock"] {
   gap: 2px !important;
 }
 div[class*="st-key-gc_calhead"] [data-testid="stMarkdownContainer"] p,
 div[class*="st-key-gc_calgrid"] [data-testid="stMarkdownContainer"] p {
   margin: 0 !important;
-}
-div[class*="st-key-gc_cell_"].gc-js-sel,
-div.gc-js-sel {
-  background: #e8f0fe !important;
 }
 div[class*="st-key-gc_chiprow_"],
 div[class*="st-key-gc_evsel_"] {
@@ -1538,21 +1555,25 @@ div[class*="st-key-gc_cellpink"] {
         unsafe_allow_html=True,
     )
     with st.container(key="gc_calhead"):
-        st.markdown('<div class="gc-wn"></div>', unsafe_allow_html=True)
+        head = st.columns([0.38] + [1] * 7, gap=None)
+        with head[0]:
+            st.markdown('<div class="gc-wn"></div>', unsafe_allow_html=True)
         for i, name in enumerate(("일", "월", "화", "수", "목", "금", "토")):
             color = "#d93025" if i == 0 else "#1a73e8" if i == 6 else "#70757a"
-            st.markdown(
-                f'<div class="gc-dow-lab" style="color:{color}">{name}</div>',
-                unsafe_allow_html=True,
-            )
+            with head[i + 1]:
+                st.markdown(
+                    f'<div class="gc-dow-lab" style="color:{color}">{name}</div>',
+                    unsafe_allow_html=True,
+                )
     weeks = month_weeks(year, month)
     static_rules: list[str] = []
     sel_stamp = (
         selected.strftime("%Y%m%d") if isinstance(selected, date) else ""
     )
     today_stamp = today.strftime("%Y%m%d")
-    planned: list[tuple[date, str, list[dict], str]] = []
+    planned: list[list[tuple]] = []
     for week in weeks:
+        row = []
         for d in week:
             iso = d.isoformat()
             stamp = d.strftime("%Y%m%d")
@@ -1560,6 +1581,8 @@ div[class*="st-key-gc_cellpink"] {
             is_hol = _gc_is_holiday_day(items)
             if d.weekday() >= 5 or is_hol:
                 static_rules.append(
+                    f"div[class*='st-key-gc_calgrid'] [data-testid='stColumn']"
+                    f":has([class*='st-key-gc_cell_{stamp}']),"
                     f"div[class*='st-key-gc_cell_{stamp}']{{background:#fdecea!important;}}"
                 )
             if d.month != month:
@@ -1570,16 +1593,20 @@ div[class*="st-key-gc_cellpink"] {
                 color = "#c62828"
             else:
                 color = "#3c4043"
+            extra = ""
             if d == today and d.month == month:
                 color = "#1a73e8"
+                extra = "font-weight:700!important;"
                 static_rules.append(
+                    f"div[class*='st-key-gc_calgrid'] [data-testid='stColumn']"
+                    f":has([class*='st-key-gc_cell_{stamp}']),"
                     f"div[class*='st-key-gc_cell_{stamp}']{{background:#e8f4ff!important;}}"
-                    f"div[class*='st-key-gc_day_{stamp}'] button{{font-weight:700!important;}}"
                 )
             static_rules.append(
-                f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;}}"
+                f"div[class*='st-key-gc_day_{stamp}'] button{{color:{color}!important;{extra}}}"
             )
-            planned.append((d, stamp, items, iso, week))
+            row.append((d, stamp, items, iso))
+        planned.append(row)
     if static_rules:
         st.markdown(
             "<style>" + "".join(static_rules) + "</style>",
@@ -1588,6 +1615,8 @@ div[class*="st-key-gc_cellpink"] {
     if sel_stamp and sel_stamp != today_stamp:
         st.markdown(
             "<style>"
+            f"div[class*='st-key-gc_calgrid'] [data-testid='stColumn']"
+            f":has([class*='st-key-gc_cell_{sel_stamp}']),"
             f"div[class*='st-key-gc_cell_{sel_stamp}']{{background:#e8f0fe!important;}}"
             f"div[class*='st-key-gc_day_{sel_stamp}'] button{{"
             "background:#d2e3fc!important;color:#174ea6!important;font-weight:700!important;}}"
@@ -1595,55 +1624,56 @@ div[class*="st-key-gc_cellpink"] {
             unsafe_allow_html=True,
         )
     with st.container(key="gc_calgrid"):
-        prev_week = None
-        for d, stamp, items, iso, week in planned:
-            if week is not prev_week:
+        for week, row in zip(weeks, planned):
+            cols = st.columns([0.38] + [1] * 7, gap=None, vertical_alignment="top")
+            with cols[0]:
                 st.markdown(
                     f'<div style="color:#80868b;font-size:11px;text-align:center;'
                     f'padding-top:4px">{iso_week_label(week)}</div>',
                     unsafe_allow_html=True,
                 )
-                prev_week = week
-            with st.container(key=f"gc_cell_{stamp}"):
-                st.button(
-                    str(d.day),
-                    key=f"gc_day_{stamp}",
-                    type="tertiary",
-                    width="stretch",
-                    on_click=_gc_set_sel_day,
-                    args=(d,),
-                )
-                if items:
-                    with st.container(key=f"gc_evlist_{stamp}"):
-                        for idx, ev in enumerate(items):
-                            eid = str(ev.get("id") or "")
-                            cid = str(ev.get("cal_id") or "")
-                            lab = (
-                                (str(ev.get("hhmm") or "") + " ")
-                                if ev.get("hhmm")
-                                else ""
-                            ) + str(ev.get("title") or "")
-                            if len(lab) > 14:
-                                lab = lab[:13] + "…"
-                            lab = lab or "(일정)"
-                            with st.container(key=f"gc_chiprow_{stamp}_{idx}"):
-                                st.button(
-                                    lab,
-                                    key=f"gc_evpick_{stamp}_{idx}",
-                                    type="tertiary",
-                                    width="stretch",
-                                    on_click=_gc_set_sel_event,
-                                    args=(d, eid or iso, f"{stamp}_{idx}"),
-                                )
-                                if ev.get("writable") and eid and cid:
-                                    st.button(
-                                        "×",
-                                        key=f"gc_xd_{stamp}_{idx}",
-                                        type="tertiary",
-                                        width="content",
-                                        on_click=_gc_set_del_event,
-                                        args=(cid, eid),
-                                    )
+            for i, (d, stamp, items, iso) in enumerate(row):
+                with cols[i + 1]:
+                    with st.container(key=f"gc_cell_{stamp}"):
+                        st.button(
+                            str(d.day),
+                            key=f"gc_day_{stamp}",
+                            type="tertiary",
+                            width="stretch",
+                            on_click=_gc_set_sel_day,
+                            args=(d,),
+                        )
+                        if items:
+                            with st.container(key=f"gc_evlist_{stamp}"):
+                                for idx, ev in enumerate(items):
+                                    eid = str(ev.get("id") or "")
+                                    cid = str(ev.get("cal_id") or "")
+                                    lab = (
+                                        (str(ev.get("hhmm") or "") + " ")
+                                        if ev.get("hhmm")
+                                        else ""
+                                    ) + str(ev.get("title") or "")
+                                    if len(lab) > 14:
+                                        lab = lab[:13] + "…"
+                                    lab = lab or "(일정)"
+                                    with st.container(key=f"gc_chiprow_{stamp}_{idx}"):
+                                        st.button(
+                                            lab,
+                                            key=f"gc_evpick_{stamp}_{idx}",
+                                            type="tertiary",
+                                            width="stretch",
+                                            on_click=_gc_set_sel_event,
+                                            args=(d, eid or iso, f"{stamp}_{idx}"),
+                                        )
+                                        if ev.get("writable") and eid and cid:
+                                            st.button(
+                                                "×",
+                                                key=f"gc_xd_{stamp}_{idx}",
+                                                type="tertiary",
+                                                width="content",
+                                                on_click=_gc_set_del_event,
+                                                args=(cid, eid),
+                                            )
     _gc_shrink_event_titles()
 
 
@@ -2405,7 +2435,11 @@ def render_google_calendar_tab(
         n.classList.remove("gc-js-sel");
       });
       var cell = doc.querySelector('[class*="st-key-gc_cell_' + stamp + '"]');
-      if (cell) cell.classList.add("gc-js-sel");
+      if (cell) {
+        cell.classList.add("gc-js-sel");
+        var col = cell.closest('[data-testid="stColumn"]');
+        if (col) col.classList.add("gc-js-sel");
+      }
     }, true);
   }
   bindDayPick(document);
