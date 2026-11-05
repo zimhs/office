@@ -89,7 +89,17 @@ def _wl_quiet_ui() -> bool:
     return _wl_is_ipad_ui()
 
 
-def _wl_mount_v2_lines_editor(*, key, data, default, on_lines_change, changed_key: str, session_lines: list[str]):
+def _wl_mount_v2_lines_editor(
+    *,
+    key,
+    data,
+    default,
+    on_lines_change,
+    changed_key: str,
+    session_lines: list[str],
+    on_cap_w_change=None,
+    on_cap_del_change=None,
+):
     """아이패드만 text_area. Cloud 데스크톱·맥 로컬은 CCv2 줄칸(로컬과 동일)."""
     if _wl_quiet_ui():
         raw = st.text_area(
@@ -108,12 +118,17 @@ def _wl_mount_v2_lines_editor(*, key, data, default, on_lines_change, changed_ke
                 self.lines = lines
 
         return _QuietLines(out)
-    return _WL_LINES_EDITOR(
-        key=key,
-        data=data,
-        default=default,
-        on_lines_change=on_lines_change,
-    )
+    kw = {
+        "key": key,
+        "data": data,
+        "default": default,
+        "on_lines_change": on_lines_change,
+    }
+    if on_cap_w_change is not None:
+        kw["on_cap_w_change"] = on_cap_w_change
+    if on_cap_del_change is not None:
+        kw["on_cap_del_change"] = on_cap_del_change
+    return _WL_LINES_EDITOR(**kw)
 
 
 def _wl_is_streamlit_cloud() -> bool:
@@ -418,6 +433,55 @@ _WL_LINES_CSS = _WL_FONT_FACE_CSS + """
     #93C5FD var(--wl-sel-l, 0%),
     #93C5FD var(--wl-sel-r, 100%),
     transparent var(--wl-sel-r, 100%)) !important;
+}
+.wl-lines { position: relative; }
+.wl-caps {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  z-index: 5;
+  pointer-events: none;
+}
+.wl-cap {
+  position: relative;
+  pointer-events: auto;
+  margin: 0 auto 6px;
+  max-width: 100%;
+}
+.wl-cap img {
+  width: 100%;
+  height: auto;
+  display: block;
+  box-shadow: 0 1px 6px rgba(15, 23, 42, 0.18);
+  background: #fff;
+}
+.wl-cap-h {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  background: #1D4ED8;
+  border: 2px solid #fff;
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+.wl-cap-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 9px;
+  background: rgba(15, 23, 42, 0.62);
+  color: #fff;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+  padding: 0;
 }
 """
 
@@ -1000,7 +1064,73 @@ export default function (component) {
     });
     inst.rebuilding = false;
     applyFillScale();
+    renderCaps();
     if (typeof focusIdx === "number" && focusIdx >= 0) focusAt(focusIdx);
+  }
+
+  function emitCap(kind, payload) {
+    try { setStateValue(kind, JSON.stringify(payload || {})); } catch (eC) {}
+  }
+  function renderCaps() {
+    if (variant !== "content") return;
+    const old = root.querySelector(".wl-caps");
+    if (old) old.remove();
+    const caps = (data && Array.isArray(data.captures)) ? data.captures : [];
+    if (!caps.length) return;
+    const host = document.createElement("div");
+    host.className = "wl-caps";
+    caps.forEach((cap) => {
+      const cid = String((cap && cap.id) || "");
+      const src = String((cap && cap.src) || "");
+      if (!cid || !src) return;
+      let pct = Number((cap && cap.w_pct) || 70);
+      if (!Number.isFinite(pct)) pct = 70;
+      pct = Math.max(20, Math.min(100, Math.round(pct)));
+      const wrap = document.createElement("div");
+      wrap.className = "wl-cap";
+      wrap.style.width = pct + "%";
+      wrap.dataset.wp = String(pct);
+      const img = document.createElement("img");
+      img.alt = "캡처";
+      img.src = src;
+      img.draggable = false;
+      const handle = document.createElement("div");
+      handle.className = "wl-cap-h";
+      handle.title = "끌어서 크기";
+      const xbtn = document.createElement("button");
+      xbtn.type = "button";
+      xbtn.className = "wl-cap-x";
+      xbtn.textContent = "×";
+      xbtn.addEventListener("click", (ev) => {
+        try { ev.preventDefault(); ev.stopPropagation(); } catch (eX) {}
+        emitCap("cap_del", { id: cid, t: Date.now() });
+      });
+      handle.addEventListener("pointerdown", (ev) => {
+        try { ev.preventDefault(); ev.stopPropagation(); } catch (eD) {}
+        const startX = ev.clientX;
+        const startW = wrap.getBoundingClientRect().width;
+        const box = Math.max(1, root.getBoundingClientRect().width);
+        const move = (e2) => {
+          let nw = startW + (e2.clientX - startX);
+          let np = Math.round((100 * nw) / box);
+          np = Math.max(20, Math.min(100, np));
+          wrap.style.width = np + "%";
+          wrap.dataset.wp = String(np);
+        };
+        const up = () => {
+          document.removeEventListener("pointermove", move);
+          document.removeEventListener("pointerup", up);
+          emitCap("cap_w", { id: cid, w_pct: Number(wrap.dataset.wp || pct), t: Date.now() });
+        };
+        document.addEventListener("pointermove", move);
+        document.addEventListener("pointerup", up);
+      });
+      wrap.appendChild(img);
+      wrap.appendChild(handle);
+      wrap.appendChild(xbtn);
+      host.appendChild(wrap);
+    });
+    root.appendChild(host);
   }
 
   inst.iso = iso;
@@ -1039,11 +1169,12 @@ export default function (component) {
     } catch (eRo) {}
   }
   bindDragSelect();
+  renderCaps();
 }
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v59",
+    "worklog_entry_lines_v60",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -2309,6 +2440,50 @@ def _wl_purge_captures(iso: str) -> None:
     except OSError:
         pass
     st.session_state.pop(_wl_caps_session_key(iso), None)
+
+
+def _wl_capture_payload(iso: str, page: int) -> list[dict]:
+    out: list[dict] = []
+    want = max(0, int(page or 0))
+    for row in _wl_caps_from_session(iso):
+        if int(row.get("page") or 0) != want:
+            continue
+        data = _wl_capture_file_bytes(iso, row)
+        if not data:
+            continue
+        out.append(
+            {
+                "id": str(row.get("id") or ""),
+                "src": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
+                "w_pct": _wl_clamp_cap_width(row.get("w_pct")),
+            }
+        )
+    return out
+
+
+def _wl_apply_cap_state(iso: str, cur, *, kind: str) -> None:
+    if not isinstance(cur, dict):
+        return
+    raw = str(cur.get(kind) or "")
+    if not raw:
+        return
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return
+    cid = str((obj or {}).get("id") or "")
+    if not cid:
+        return
+    sig = str((obj or {}).get("t") or raw[:24])
+    done_k = f"wl_{kind}_done_{iso}_{cid}"
+    if st.session_state.get(done_k) == sig:
+        return
+    st.session_state[done_k] = sig
+    if kind == "cap_del":
+        _wl_delete_capture(iso, cid)
+        return
+    if kind == "cap_w":
+        _wl_set_capture_width(iso, cid, (obj or {}).get("w_pct"))
 
 
 def _wl_capture_file_bytes(iso: str, row: dict) -> bytes | None:
@@ -6745,13 +6920,22 @@ def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
             _maybe_remember_comp_focus(iso, entry_i, "ln", focus_cur, _entry_line_key)
 
     _seed_comp_focus_seen(iso, entry_i, "ln", focus_n)
+
+    def _on_cap_w() -> None:
+        _wl_apply_cap_state(iso, st.session_state.get(ck), kind="cap_w")
+
+    def _on_cap_del() -> None:
+        _wl_apply_cap_state(iso, st.session_state.get(ck), kind="cap_del")
+
     result = _wl_mount_v2_lines_editor(
         key=ck,
-        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "ln"), "max_u": float(max_u), "cell_w": int(_orig_cell_px("content")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "content", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0},
-        default={"lines": lines},
+        data={"iso": iso, "slot": str(entry_i), "lines": lines, "focus": _comp_send_focus(iso, entry_i, "ln"), "max_u": float(max_u), "cell_w": int(_orig_cell_px("content")), "font_pt": float(_WL_BODY_FONT_PT), "look_scale": float(_input_look_scale()), "variant": "content", "fixed_rows": WL_SHEET_N, "rev": int(st.session_state.get(_entry_lines_rev_key(iso, entry_i), 0) or 0), "replace": 1 if replace else 0, "captures": _wl_capture_payload(iso, entry_i)},
+        default={"lines": lines, "cap_w": "", "cap_del": ""},
         on_lines_change=_on_lines_change,
         changed_key=f"wl_lines_user_edit_{iso}_{entry_i}",
         session_lines=lines,
+        on_cap_w_change=_on_cap_w,
+        on_cap_del_change=_on_cap_del,
     )
     
     forced = st.session_state.pop(f"wl_force_comp_lines_{iso}_{entry_i}", None)
@@ -7800,14 +7984,7 @@ def _render_worklog_date_toolbar(selected: date) -> None:
 
 
 def _render_worklog_captures(iso: str, page: int) -> None:
-    """업무입력 아래 캡처. 붙여넣기·파일·너비 조절."""
-    rows = _wl_caps_from_session(iso)
-    st.markdown(
-        "<div style='font-size:12px;font-weight:700;color:#334155;margin:10px 0 4px;'>"
-        "캡처 <span style='font-weight:500;color:#94A3B8;'>"
-        "(⌘V로 붙여넣기 · 너비 조절 · 저장 시 일지에 포함)</span></div>",
-        unsafe_allow_html=True,
-    )
+    """내용 칸에 캡처를 붙인다. 크기는 작성란에서 직접 조절한다."""
     if not _wl_quiet_ui():
         def _on_cap_paste() -> None:
             hook = st.session_state.get("wl_cap_hook") or {}
@@ -7846,42 +8023,30 @@ def _render_worklog_captures(iso: str, page: int) -> None:
         _wl_add_capture_bytes(iso, data, page=int(page or 0))
 
     st.file_uploader(
-        "캡처 파일",
+        "캡처 넣기 (작성란에서 ⌘V · 모서리로 크기)",
         type=["png", "jpg", "jpeg", "webp"],
         key=f"wl_cap_file_{iso}",
-        label_visibility="collapsed",
         on_change=_on_cap_file,
         accept_multiple_files=False,
     )
-    if len(rows) >= _WL_CAP_MAX:
-        st.caption(f"캡처는 하루 {_WL_CAP_MAX}장까지입니다.")
-    for row in rows:
-        cid = str(row.get("id") or "")
-        data = _wl_capture_file_bytes(iso, row)
-        if not data:
-            continue
-        w0 = max(1, int(row.get("w0") or 800))
-        h0 = max(1, int(row.get("h0") or 600))
-        pct = _wl_clamp_cap_width(row.get("w_pct"))
-        show_w = max(80, int(round(w0 * pct / 100.0)))
-        c_img, c_ctl = st.columns([3.2, 1.4], gap="small")
-        with c_img:
-            st.image(data, width=show_w)
-        with c_ctl:
+    if _wl_quiet_ui():
+        for row in _wl_caps_from_session(iso):
+            if int(row.get("page") or 0) != int(page or 0):
+                continue
+            data = _wl_capture_file_bytes(iso, row)
+            if not data:
+                continue
+            cid = str(row.get("id") or "")
+            pct = _wl_clamp_cap_width(row.get("w_pct"))
+            w0 = max(1, int(row.get("w0") or 800))
+            st.image(data, width=max(80, int(round(w0 * pct / 100.0))))
             sk = f"wl_cap_w_{iso}_{cid}"
 
             def _on_w(iso=iso, cid=cid, sk=sk) -> None:
                 _wl_set_capture_width(iso, cid, st.session_state.get(sk))
 
-            st.slider(
-                "너비 %",
-                min_value=20,
-                max_value=100,
-                value=pct,
-                key=sk,
-                on_change=_on_w,
-            )
-            if st.button("삭제", key=f"wl_cap_del_{iso}_{cid}", width="stretch"):
+            st.slider("크기 %", min_value=20, max_value=100, value=pct, key=sk, on_change=_on_w)
+            if st.button("삭제", key=f"wl_cap_del_{iso}_{cid}"):
                 _wl_delete_capture(iso, cid)
                 _wl_rerun()
 
@@ -8145,11 +8310,10 @@ def _render_worklog_input_panel(selected: date) -> None:
                     with col_content:
                         st.markdown(_wl_col_limit_label("내용", max_u), unsafe_allow_html=True)
                         _mount_entry_lines_editor(iso2, pi, max_u)
+                        _render_worklog_captures(iso2, pi)
                     with col_remark:
                         st.markdown(_wl_col_limit_label("비고", _ru), unsafe_allow_html=True)
                         _mount_entry_remark_editor(iso2, pi, _ru)
-
-                _render_worklog_captures(iso2, pi)
 
                 if pi == 0:
                     st.markdown("<div style='font-size:12px;font-weight:700;color:#334155;margin:12px 0 4px;'>익일업무 <span style='font-weight:500;color:#94A3B8;'>(줄바꿈 = 항목 구분 · Enter=다음 줄)</span></div>", unsafe_allow_html=True)
