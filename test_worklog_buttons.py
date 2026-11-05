@@ -62,7 +62,8 @@ class WorklogButtonRestoreTest(unittest.TestCase):
     def test_component_names_bumped_for_cache(self):
         with open(self.wt.__file__, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn('"worklog_entry_lines_v60"', src)
+        self.assertIn('"worklog_entry_lines_v61"', src)
+        self.assertNotIn('"worklog_entry_lines_v60"', src)
         self.assertNotIn('"worklog_entry_lines_v59"', src)
         self.assertNotIn('"worklog_entry_lines_v58"', src)
         self.assertNotIn('"worklog_entry_lines_v57"', src)
@@ -173,6 +174,7 @@ class WorklogButtonRestoreTest(unittest.TestCase):
         self.assertIn("function renderCaps", js)
         self.assertIn("cap_w", js)
         self.assertIn("wl-cap-h", js)
+        self.assertIn("host.style.top", js)
         self.assertIn("noTrail", js)
         self.assertIn("focusAt(dest, pos);", js)
         self.assertIn("e.isComposing || e.keyCode === 229", js)

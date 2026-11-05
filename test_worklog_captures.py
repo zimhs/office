@@ -85,6 +85,23 @@ class WorklogCaptureTest(unittest.TestCase):
             self.wt._wl_apply_cap_state(iso, ss["ck"], kind="cap_del")
             self.assertEqual(ss[self.wt._wl_caps_session_key(iso)], [])
 
+    def test_ingest_pending_file_before_editor(self):
+        iso = "2026-11-06"
+
+        class _F:
+            name = "a.png"
+
+            def getvalue(self):
+                return _PNG_1
+
+        ss = {f"wl_cap_file_{iso}_0": _F()}
+        with patch.object(self.wt.st, "session_state", ss):
+            added = self.wt._wl_ingest_pending_captures(iso, 0)
+            self.assertTrue(added)
+            self.assertEqual(ss.get(f"wl_cap_file_n_{iso}"), 1)
+            self.assertEqual(len(ss[self.wt._wl_caps_session_key(iso)]), 1)
+            self.assertFalse(self.wt._wl_ingest_pending_captures(iso, 0))
+
     def test_add_capture_bytes_assigns_id(self):
         iso = "2026-11-06"
         ss = {}

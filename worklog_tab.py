@@ -440,7 +440,7 @@ _WL_LINES_CSS = _WL_FONT_FACE_CSS + """
   position: absolute;
   left: 6px;
   right: 6px;
-  bottom: 6px;
+  top: 8px;
   z-index: 5;
   pointer-events: none;
 }
@@ -1080,6 +1080,17 @@ export default function (component) {
     if (!caps.length) return;
     const host = document.createElement("div");
     host.className = "wl-caps";
+    try {
+      const rows = root.querySelectorAll(".wl-row");
+      const vals = inst.lines || [];
+      let last = -1;
+      for (let i = 0; i < vals.length; i++) {
+        if (String(vals[i] || "").replace(/\s+/g, "")) last = i;
+      }
+      const start = last < 0 ? 0 : Math.min(last + 1, Math.max(rows.length - 1, 0));
+      const row = rows[start];
+      if (row) host.style.top = Math.max(8, row.offsetTop + (last < 0 ? 8 : 2)) + "px";
+    } catch (eTop) {}
     caps.forEach((cap) => {
       const cid = String((cap && cap.id) || "");
       const src = String((cap && cap.src) || "");
@@ -1175,7 +1186,7 @@ export default function (component) {
 """
 
 _WL_LINES_EDITOR = st.components.v2.component(
-    "worklog_entry_lines_v60",
+    "worklog_entry_lines_v61",
     html=_WL_LINES_HTML,
     css=_WL_LINES_CSS,
     js=_WL_LINES_JS,
@@ -2441,6 +2452,50 @@ def _wl_purge_captures(iso: str) -> None:
     except OSError:
         pass
     st.session_state.pop(_wl_caps_session_key(iso), None)
+
+
+def _wl_cap_file_widget_key(iso: str) -> str:
+    n = int(st.session_state.get(f"wl_cap_file_n_{iso}") or 0)
+    return f"wl_cap_file_{iso}_{n}"
+
+
+def _wl_ingest_pending_captures(iso: str, page: int) -> bool:
+    """파일·붙여넣기는 내용 칸을 그리기 전에 반영한다."""
+    added = False
+    hook = st.session_state.get("wl_cap_hook") or {}
+    raw = str(hook.get("img") or "") if isinstance(hook, dict) else ""
+    if raw:
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            obj = {}
+        blob = _wl_decode_data_url(str((obj or {}).get("data") or raw))
+        sig = str((obj or {}).get("t") or raw[:24])
+        if blob and st.session_state.get(f"wl_cap_done_{iso}") != sig:
+            st.session_state[f"wl_cap_done_{iso}"] = sig
+            pg = int((obj or {}).get("page") or page or 0)
+            if _wl_add_capture_bytes(iso, blob, page=pg):
+                added = True
+    fk = _wl_cap_file_widget_key(iso)
+    f = st.session_state.get(fk)
+    if f is None:
+        return added
+    try:
+        data = f.getvalue()
+        name = str(getattr(f, "name", "") or "")
+        size = len(data or b"")
+    except Exception:
+        return added
+    if not data:
+        return added
+    sig = f"{name}:{size}"
+    if st.session_state.get(f"wl_cap_file_done_{iso}") == sig:
+        return added
+    if _wl_add_capture_bytes(iso, data, page=int(page or 0)):
+        st.session_state[f"wl_cap_file_done_{iso}"] = sig
+        st.session_state[f"wl_cap_file_n_{iso}"] = int(st.session_state.get(f"wl_cap_file_n_{iso}") or 0) + 1
+        added = True
+    return added
 
 
 def _wl_capture_payload(iso: str, page: int) -> list[dict]:
@@ -6882,6 +6937,7 @@ def _mount_entry_client_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
     return out
 
 def _mount_entry_lines_editor(iso: str, entry_i: int, max_u: int) -> list[str]:
+    _wl_ingest_pending_captures(iso, entry_i)
     ck, live_key, cs = _entry_lines_comp_key(iso, entry_i), _entry_lines_live_key(iso, entry_i), st.session_state.get(_entry_lines_comp_key(iso, entry_i))
     live = st.session_state.get(live_key)
     prog, replace = _program_editor_lines(iso, entry_i, "ln", live)
@@ -7985,26 +8041,11 @@ def _render_worklog_date_toolbar(selected: date) -> None:
 
 
 def _render_worklog_captures(iso: str, page: int) -> None:
-    """내용 칸에 캡처를 붙인다. 크기는 작성란에서 직접 조절한다."""
+    """내용 칸에 캡처를 붙인다. 고르거나 붙이면 바로 작성란에 들어간다."""
     if not _wl_quiet_ui():
         def _on_cap_paste() -> None:
-            hook = st.session_state.get("wl_cap_hook") or {}
-            raw = str(hook.get("img") or "") if isinstance(hook, dict) else ""
-            if not raw:
-                return
-            try:
-                obj = json.loads(raw)
-            except Exception:
-                obj = {}
-            blob = _wl_decode_data_url(str((obj or {}).get("data") or raw))
-            if not blob:
-                return
-            sig = str((obj or {}).get("t") or raw[:24])
-            if st.session_state.get(f"wl_cap_done_{iso}") == sig:
-                return
-            st.session_state[f"wl_cap_done_{iso}"] = sig
-            pg = int((obj or {}).get("page") or page or 0)
-            _wl_add_capture_bytes(iso, blob, page=pg)
+            if _wl_ingest_pending_captures(iso, page):
+                _wl_rerun()
 
         _WL_CAP_HOOK(
             key="wl_cap_hook",
@@ -8014,19 +8055,13 @@ def _render_worklog_captures(iso: str, page: int) -> None:
         )
 
     def _on_cap_file() -> None:
-        f = st.session_state.get(f"wl_cap_file_{iso}")
-        if f is None:
-            return
-        try:
-            data = f.getvalue()
-        except Exception:
-            return
-        _wl_add_capture_bytes(iso, data, page=int(page or 0))
+        if _wl_ingest_pending_captures(iso, page):
+            _wl_rerun()
 
     st.file_uploader(
-        "캡처 넣기 (작성란에서 ⌘V · 모서리로 크기)",
+        "파일을 고르면 내용 작성란에 바로 들어갑니다. 칸에서 ⌘V도 됩니다. 모서리를 끌어 크기.",
         type=["png", "jpg", "jpeg", "webp"],
-        key=f"wl_cap_file_{iso}",
+        key=_wl_cap_file_widget_key(iso),
         on_change=_on_cap_file,
         accept_multiple_files=False,
     )
