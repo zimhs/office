@@ -85,6 +85,17 @@ class WorklogCaptureTest(unittest.TestCase):
             self.wt._wl_apply_cap_state(iso, ss["ck"], kind="cap_del")
             self.assertEqual(ss[self.wt._wl_caps_session_key(iso)], [])
 
+    def test_add_capture_bytes_assigns_id(self):
+        iso = "2026-11-06"
+        ss = {}
+        with patch.object(self.wt.st, "session_state", ss):
+            cid = self.wt._wl_add_capture_bytes(iso, _PNG_1, page=0)
+        self.assertTrue(cid)
+        self.assertEqual(len(cid), 8)
+        rows = self.wt._wl_read_captures(iso)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], cid)
+
     def test_decode_data_url(self):
         url = "data:image/png;base64," + base64.b64encode(_PNG_1).decode("ascii")
         blob = self.wt._wl_decode_data_url(url)

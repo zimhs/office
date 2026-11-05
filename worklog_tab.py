@@ -7,6 +7,7 @@ import html
 import io
 import json
 import os
+import secrets
 import struct
 import platform
 import re
