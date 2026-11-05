@@ -132,6 +132,10 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("__gcEvpickObs.disconnect", src)
         self.assertNotIn("MutationObserver", src)
         self.assertIn("_gc_schedule_prefetch", src)
+        self.assertIn("_gc_pf_ym", src)
+        self.assertIn("grid-template-columns", src)
+        self.assertIn("__gcDayPick", src)
+        self.assertIn("gc-js-sel", src)
         shrink = src.split("def _gc_shrink_event_titles", 1)[1].split("def ", 1)[0]
         self.assertNotIn("st.html", shrink)
         self.assertNotIn("unsafe_allow_javascript", shrink)
