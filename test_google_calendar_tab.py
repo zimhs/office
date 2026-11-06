@@ -183,6 +183,7 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("GC_GMAIL_INBOX", src)
         self.assertIn("calendar_chip_label", src)
         self.assertEqual(gc.GC_BODY_FS, "11px")
+        self.assertIn("gc-chip-lab", src)
         self.assertIn("font-size:11px!important", src)
         self.assertIn("GC_BODY_FS", src)
         self.assertIn("stBaseButton-tertiary", src)
