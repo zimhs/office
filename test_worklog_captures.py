@@ -118,6 +118,12 @@ class WorklogCaptureTest(unittest.TestCase):
         self.assertIn('st.session_state["wl_need_cap_rerun"] = True', chunk)
         self.assertNotIn("if _wl_ingest_pending_captures(iso, page):\n                _wl_rerun()", chunk)
         self.assertIn('wl_need_cap_rerun', src[src.find("def _wl_finish_edit_fragment") : src.find("def _render_worklog_date_toolbar")])
+        self.assertIn("def _wl_in_widget_callback", src)
+        self.assertIn("_call_callbacks", src)
+        self.assertIn('st.session_state["wl_print_panel"] = False', src)
+        self.assertNotIn('st.session_state["wl_print_auto_once"] = False; _wl_rerun()', src)
+        self.assertNotIn("_wl_delete_capture(iso, cid)\n                _wl_rerun()", src)
+        self.assertNotIn('st.session_state["_wl_drive_sync_force"] = True\n                st.rerun()', src)
 
     def test_add_capture_bytes_assigns_id(self):
         iso = "2026-11-06"

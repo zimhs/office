@@ -16894,7 +16894,33 @@ def _dash_filter_and_tabs_fragment() -> None:
                     i_col_left2, i_col_right2 = st.columns([1, 1])
                     with i_col_left2:
                         st.caption("💡 표의 행(월)을 클릭하면 아래 '업종별 매출 비중' 도넛 차트의 기준 월이 변경됩니다.")
-                        ind_ev = st.dataframe(_ind_styled, use_container_width=True, height=460, on_select="rerun", selection_mode="single-row", key=_ind_tbl_key)
+                        def _on_ind_row_select() -> None:
+                            ev = st.session_state.get(_ind_tbl_key)
+                            try:
+                                rows = list(getattr(getattr(ev, "selection", None), "rows", None) or [])
+                            except Exception:
+                                rows = []
+                            if not rows:
+                                return
+                            try:
+                                sel_month = ind_pivot_disp.index[rows[0]]
+                            except Exception:
+                                return
+                            if sel_month in all_months:
+                                st.session_state["top30_month"] = sel_month
+                                try:
+                                    st.query_params["top30_month"] = sel_month
+                                except Exception:
+                                    pass
+
+                        ind_ev = st.dataframe(
+                            _ind_styled,
+                            use_container_width=True,
+                            height=460,
+                            on_select=_on_ind_row_select,
+                            selection_mode="single-row",
+                            key=_ind_tbl_key,
+                        )
                     
                         # 행(월) 클릭 시 도넛 차트 월(top30_month) 강제 업데이트
                         if ind_ev and ind_ev.selection.rows:
@@ -16907,7 +16933,6 @@ def _dash_filter_and_tabs_fragment() -> None:
                                     st.query_params["top30_month"] = sel_month
                                 except Exception:
                                     pass
-                                st.rerun()
                         
                     with i_col_right2:
                         render_plotly_chart(
@@ -17021,39 +17046,42 @@ def _dash_filter_and_tabs_fragment() -> None:
                             # 맥: 이전 가로 월버튼 / iPad(touch_ui=1): 현재 selectbox
                             if is_touch_ui():
                                 _m_idx = all_months.index(rank_m) if rank_m in all_months else 0
-                                picked_m = st.selectbox(
+
+                                def _on_top30_month_select() -> None:
+                                    picked = st.session_state.get("top30_month_select")
+                                    st.session_state["top30_month"] = picked
+                                    try:
+                                        st.query_params["top30_month"] = picked
+                                    except Exception:
+                                        pass
+
+                                st.selectbox(
                                     "기준 월",
                                     all_months,
                                     index=_m_idx,
                                     key="top30_month_select",
                                     label_visibility="collapsed",
+                                    on_change=_on_top30_month_select,
                                 )
-                                if picked_m != st.session_state.get("top30_month"):
-                                    st.session_state["top30_month"] = picked_m
+                            else:
+                                def _on_top30_month_btn(m: str) -> None:
+                                    st.session_state["top30_month"] = m
                                     try:
-                                        st.query_params["top30_month"] = picked_m
+                                        st.query_params["top30_month"] = m
                                     except Exception:
                                         pass
-                                    st.rerun()
-                            else:
+
                                 m_cols = st.columns(12, gap="small")
-                                _clicked_m = None
                                 for _i, _m in enumerate(all_months):
                                     with m_cols[_i]:
-                                        if st.button(
+                                        st.button(
                                             _m,
                                             key=f"top30_month_btn_{_m}",
                                             type="primary" if _m == rank_m else "secondary",
                                             width="stretch",
-                                        ):
-                                            _clicked_m = _m
-                                if _clicked_m:
-                                    st.session_state["top30_month"] = _clicked_m
-                                    try:
-                                        st.query_params["top30_month"] = _clicked_m
-                                    except Exception:
-                                        pass
-                                    st.rerun()
+                                            on_click=_on_top30_month_btn,
+                                            args=(_m,),
+                                        )
                             rank_m = st.session_state["top30_month"]
                             rank_month_label = f"{current_year_str}년 {rank_m}"
                 

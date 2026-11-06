@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import calendar
 import html
+import inspect
 import io
 import json
 import os
@@ -40,13 +41,39 @@ except Exception:  # pragma: no cover
     get_column_letter = None
 
 
+def _wl_in_widget_callback() -> bool:
+    """on_click/on_change/CCv2 콜백 안이면 True. 여기서 st.rerun 하면 상단 노란 경고."""
+    try:
+        from streamlit.runtime.scriptrunner_utils.script_run_context import ThreadState
+
+        if ThreadState.get().in_fragment_callback:
+            return True
+    except Exception:
+        pass
+    try:
+        names = {fr.function for fr in inspect.stack(context=0)}
+    except Exception:
+        return False
+    return bool(
+        names
+        & {
+            "_call_callbacks",
+            "call_callback",
+            "_execute_widget_callback",
+            "_dispatch_json_change_callbacks",
+            "_dispatch_trigger_callbacks",
+        }
+    )
+
+
 def _wl_rerun(*, full: bool = False) -> None:
     """업무일지 fragment 안이면 fragment만 다시 실행 (전체 앱 로딩 방지).
 
     full=True 는 저장·날짜변경처럼 왼쪽 요약도 같이 갱신해야 할 때 사용.
-    위젯 on_change 콜백 안에서는 호출하지 말 것 — Streamlit이 이미 rerun 중이라
-    중복 rerun이 Cached ForwardMsg MISS·특수기호 실패를 유발한다.
+    위젯 콜백 안에서는 호출하지 않는다 — Streamlit 1.59는 no-op 경고를 띄운다.
     """
+    if _wl_in_widget_callback():
+        return
     if full:
         st.rerun()
         return
@@ -7557,7 +7584,8 @@ def _render_worklog_print_panel() -> bool:
     top1, top2 = st.columns([1.1, 3])
     with top1:
         if st.button("← 본화면으로", type="primary", width="stretch", key="wl_print_back_home"):
-            st.session_state["wl_print_panel"] = False; st.session_state["wl_print_auto_once"] = False; _wl_rerun()
+            st.session_state["wl_print_panel"] = False
+            st.session_state["wl_print_auto_once"] = False
     with top2:
         st.markdown("##### 인쇄 미리보기")
         st.caption("자동 팝업 없음 · 「인쇄하기」만 누르면 인쇄 창이 열립니다.")
@@ -8191,7 +8219,6 @@ def _render_worklog_captures(iso: str, page: int) -> None:
             st.slider("크기 %", min_value=20, max_value=100, value=pct, key=sk, on_change=_on_w)
             if st.button("삭제", key=f"wl_cap_del_{iso}_{cid}"):
                 _wl_delete_capture(iso, cid)
-                _wl_rerun()
 
 
 def _render_worklog_input_panel(selected: date) -> None:
@@ -8692,7 +8719,6 @@ def _render_worklog_sync_ui() -> None:
         if _on_cloud:
             if st.button("↻ Drive에서 일지 가져오기", key="wl_drive_pull_btn", width="stretch"):
                 st.session_state["_wl_drive_sync_force"] = True
-                st.rerun()
         if st.session_state.get("_wl_sync_conflicts"):
             _cf = list(st.session_state.get("_wl_sync_conflicts") or [])
             st.warning(
@@ -8714,7 +8740,6 @@ def _render_worklog_sync_ui() -> None:
                         st.session_state.pop("_wl_sync_conflicts", None)
                         st.session_state["_wl_drive_sync_force"] = True
                         _invalidate_saved_dates_cache()
-                        st.rerun()
                     except Exception as e:
                         st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
             with c2:
@@ -8730,13 +8755,11 @@ def _render_worklog_sync_ui() -> None:
                         st.session_state.pop("_wl_sync_conflicts", None)
                         st.session_state["_wl_drive_sync_force"] = True
                         _invalidate_saved_dates_cache()
-                        st.rerun()
                     except Exception as e:
                         st.error(str(e) if not _wl_quiet_ui() else "동기화에 실패했습니다.")
             with c3:
                 if st.button("나중에", key="wl_cf_dismiss", width="stretch"):
                     st.session_state.pop("_wl_sync_conflicts", None)
-                    st.rerun()
         elif _on_cloud and not drive_remote_configured():
             if not st.session_state.get("_wl_remote_setup_hint"):
                 st.session_state["_wl_remote_setup_hint"] = True
