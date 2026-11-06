@@ -278,6 +278,7 @@ class WorklogButtonRestoreTest(unittest.TestCase):
         # 저장/추가/삭제 클릭 직후 fragment를 한 번 더 rerun 하면 ERROR·먹통
         self.assertNotIn('st.session_state[f"wl_do_save_{iso2}"] = True\n                    _wl_rerun()', src)
         self.assertNotIn('st.session_state[f"wl_do_add_{iso2}"] = True\n                    _wl_rerun()', src)
+        self.assertIn("if _wl_in_widget_callback():", src)
 
     def test_enter_hook_host_cannot_cover_buttons(self):
         with open(self.wt.__file__, encoding="utf-8") as f:
