@@ -109,6 +109,16 @@ class WorklogCaptureTest(unittest.TestCase):
             self.assertEqual(len(ss[self.wt._wl_caps_session_key(iso)]), 1)
             self.assertFalse(self.wt._wl_ingest_pending_captures(iso, 0))
 
+    def test_capture_widget_callbacks_do_not_call_rerun(self):
+        with open(self.wt.__file__, encoding="utf-8") as f:
+            src = f.read()
+        a = src.find("def _render_worklog_captures")
+        b = src.find("def _render_worklog_input_panel")
+        chunk = src[a:b]
+        self.assertIn('st.session_state["wl_need_cap_rerun"] = True', chunk)
+        self.assertNotIn("if _wl_ingest_pending_captures(iso, page):\n                _wl_rerun()", chunk)
+        self.assertIn('wl_need_cap_rerun', src[src.find("def _wl_finish_edit_fragment") : src.find("def _render_worklog_date_toolbar")])
+
     def test_add_capture_bytes_assigns_id(self):
         iso = "2026-11-06"
         ss = {}
