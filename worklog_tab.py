@@ -8098,7 +8098,7 @@ def _request_left_preview_refresh(d: date, *, focus_sig: str | None = None) -> N
 
 def _wl_finish_edit_fragment() -> None:
     """편집 fragment 마무리 — 왼쪽 요약 갱신 시 fragment만 rerun (전체 앱·sync 생략)."""
-    if st.session_state.pop("wl_need_left_refresh", None):
+    if st.session_state.pop("wl_need_left_refresh", None) or st.session_state.pop("wl_need_cap_rerun", None):
         _wl_rerun()
 
 
@@ -8152,7 +8152,7 @@ def _render_worklog_captures(iso: str, page: int) -> None:
     if not _wl_quiet_ui():
         def _on_cap_paste() -> None:
             if _wl_ingest_pending_captures(iso, page):
-                _wl_rerun()
+                st.session_state["wl_need_cap_rerun"] = True
 
         _WL_CAP_HOOK(
             key="wl_cap_hook",
@@ -8163,7 +8163,7 @@ def _render_worklog_captures(iso: str, page: int) -> None:
 
     def _on_cap_file() -> None:
         if _wl_ingest_pending_captures(iso, page):
-            _wl_rerun()
+            st.session_state["wl_need_cap_rerun"] = True
 
     st.file_uploader(
         "파일을 고르면 내용 작성란에 바로 들어갑니다. 칸에서 ⌘V도 됩니다. 이미지를 끌어 이동, 모서리로 크기.",
