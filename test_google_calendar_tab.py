@@ -194,6 +194,10 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_pending_mail_del", src)
         self.assertIn("Gmail 권한 다시 연결", src)
         self.assertIn("token_has_gmail_modify", src)
+        self.assertIn("연결 해제 후 처음부터", src)
+        consume = src.split("def _consume_oauth_redirect", 1)[1].split("def ", 1)[0]
+        self.assertNotIn("_usable_token(load_token())", consume)
+        self.assertIn("구글 캘린더·할 일·Gmail이 연결되었습니다", src)
         self.assertNotIn("gmail.readonly", src)
         self.assertIn("insert_mail_day_event", src)
         self.assertIn("메일 열기:", src)

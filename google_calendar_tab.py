@@ -824,6 +824,9 @@ def _gc_render_gmail_reconnect(*, key: str) -> None:
     if not cid:
         return
     st.session_state.setdefault("_gc_oauth_state", secrets.token_urlsafe(16))
+    st.caption(
+        "Google에서 Gmail 수정 권한을 허용한 뒤, 반드시 이 화면으로 돌아와야 저장됩니다."
+    )
     st.link_button(
         "Gmail 권한 다시 연결",
         auth_url(cid, st.session_state["_gc_oauth_state"]),
@@ -831,6 +834,11 @@ def _gc_render_gmail_reconnect(*, key: str) -> None:
         width="stretch",
         key=key,
     )
+    if st.button("연결 해제 후 처음부터", key=f"{key}_wipe"):
+        clear_token()
+        st.session_state.pop("_gc_need_gmail", None)
+        st.session_state.pop("_gc_oauth_code_used", None)
+        st.rerun()
 
 
 def gmail_ids_from_event(ev: dict | None) -> dict[str, str]:
@@ -2573,10 +2581,6 @@ def _consume_oauth_redirect() -> None:
     if st.session_state.get("_gc_oauth_code_used") == code:
         _qp_pop("code", "state", "scope", "prompt", "authuser", "hd", "session_state")
         return
-    if _usable_token(load_token()):
-        st.session_state["_gc_oauth_code_used"] = code
-        _qp_pop("code", "state", "scope", "prompt", "authuser", "hd", "session_state")
-        return
     expect = str(st.session_state.get("_gc_oauth_state") or "")
     if expect and state and state != expect:
         st.error("구글 연결 상태가 맞지 않습니다. 다시 연결해 주세요.")
@@ -2590,8 +2594,15 @@ def _consume_oauth_redirect() -> None:
         tok = exchange_code(cid, csec, code)
         save_token(tok)
         st.session_state.pop("_gc_oauth_state", None)
+        st.session_state.pop("_gc_need_gmail", None)
         _qp_pop("code", "state", "scope", "prompt", "authuser", "hd", "session_state")
-        st.success("구글 캘린더·할 일이 연결되었습니다.")
+        if token_has_gmail_modify():
+            st.success("구글 캘린더·할 일·Gmail이 연결되었습니다.")
+        else:
+            st.warning(
+                "연결은 됐지만 Gmail 수정 권한이 없습니다. "
+                "연결 해제 후 처음부터 다시 연결해 주세요."
+            )
         st.rerun()
     except Exception as e:
         st.session_state.pop("_gc_oauth_code_used", None)
