@@ -1812,7 +1812,7 @@ def _month_html(
 .gc-num {{ font-size:12px; font-weight:500; margin-bottom:2px; }}
 .gc-sun, .gc-sun .gc-num, .gc-hol, .gc-hol .gc-num {{ color:#d93025; }}
 .gc-sat, .gc-sat .gc-num {{ color:#c62828; }}
-.gc-chip {{ font-size:9px; line-height:1.2; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
+.gc-chip {{ font-size:8px; line-height:1.2; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
   display:flex; align-items:center; gap:2px; overflow:hidden; }}
 .gc-chip-t {{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 .gc-x {{ flex:0 0 auto; color:#80868b; font-size:13px; padding:0 3px; line-height:1; cursor:pointer; }}
@@ -2141,7 +2141,7 @@ div[class*="st-key-gc_evpick_"] button {
   height: 1.2rem !important;
   width: 100% !important;
   padding: 0 4px !important;
-  font-size: 9px !important;
+  font-size: 8px !important;
   font-weight: 400 !important;
   border: none !important;
   outline: none !important;
@@ -2160,7 +2160,7 @@ div[class*="st-key-gc_evpick_"] button span,
 div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],
 div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p,
 div[class*="st-key-gc_evpick_"] [data-testid^="stBaseButton"] p {
-  font-size: 9px !important;
+  font-size: 8px !important;
   line-height: 1.2 !important;
   font-weight: 400 !important;
 }
@@ -2350,14 +2350,14 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """일정 제목만 9px. 월 이동마다 스크립트를 넣지 않는다."""
+    """일정 제목만 8px. 월 이동마다 스크립트를 넣지 않는다."""
     st.markdown(
         "<style>html body div[class*='st-key-gc_evpick_'] button,"
         "html body div[class*='st-key-gc_evpick_'] button p,"
         "html body div[class*='st-key-gc_evpick_'] button span,"
         "html body div[class*='st-key-gc_evpick_'] button div,"
         "html body div[class*='st-key-gc_evpick_'] [data-testid='stMarkdownContainer'] p"
-        "{font-size:9px!important;line-height:1.2!important;font-weight:400!important}</style>",
+        "{font-size:8px!important;line-height:1.2!important;font-weight:400!important}</style>",
         unsafe_allow_html=True,
     )
 
@@ -3202,7 +3202,7 @@ def render_google_calendar_tab(
     'html body div[class*="st-key-gc_evpick_"] button span,' +
     'html body div[class*="st-key-gc_evpick_"] button div,' +
     'html body div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
-    '{font-size:9px!important;line-height:1.2!important;font-weight:400!important;}';
+    '{font-size:8px!important;line-height:1.2!important;font-weight:400!important;}';
   function put(doc) {
     if (!doc) return;
     var s = doc.getElementById(id);
