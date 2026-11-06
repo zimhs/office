@@ -2092,31 +2092,6 @@ div[class*="st-key-gc_calgrid"] [data-testid="stMarkdownContainer"] p {
 div[class*="st-key-gc_chiprow_"],
 div[class*="st-key-gc_evsel_"] {
   position: relative !important;
-  min-height: 1.2rem !important;
-}
-div[class*="st-key-gc_chiprow_"] [data-testid="stMarkdownContainer"],
-div[class*="st-key-gc_evsel_"] [data-testid="stMarkdownContainer"] {
-  position: absolute !important;
-  left: 6px !important;
-  right: 18px !important;
-  top: 0 !important;
-  bottom: 0 !important;
-  z-index: 2 !important;
-  pointer-events: none !important;
-  margin: 0 !important;
-  display: flex !important;
-  align-items: center !important;
-}
-div[class*="st-key-gc_chiprow_"] .gc-chip-lab,
-div[class*="st-key-gc_evsel_"] .gc-chip-lab {
-  font-size: 11px !important;
-  line-height: 1.2 !important;
-  font-weight: 400 !important;
-  color: #174ea6 !important;
-  white-space: nowrap !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-  width: 100% !important;
 }
 div[class*="st-key-gc_xd_"] {
   position: absolute !important;
@@ -2180,14 +2155,17 @@ div[class*="st-key-gc_evpick_"] button {
   white-space: nowrap !important;
   overflow: hidden !important;
 }
+div[class*="st-key-gc_evpick_"] *,
 div[class*="st-key-gc_evpick_"] button p,
 div[class*="st-key-gc_evpick_"] button span,
+div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],
 div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p,
 div[class*="st-key-gc_evpick_"] [data-testid^="stBaseButton"] p,
+div[class*="st-key-gc_evpick_"] [data-testid="stBaseButton-tertiary"],
 div[class*="st-key-gc_evpick_"] [data-testid="stBaseButton-tertiary"] p {
-  font-size: 0 !important;
-  line-height: 0 !important;
-  color: transparent !important;
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+  font-weight: 400 !important;
   margin: 0 !important;
 }
 div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
@@ -2355,12 +2333,6 @@ div[class*="st-key-gc_cellpink"] {
                                     cid = str(ev.get("cal_id") or "")
                                     lab = calendar_chip_label(ev)
                                     with st.container(key=f"gc_chiprow_{stamp}_{idx}"):
-                                        st.markdown(
-                                            f"<div class='gc-chip-lab' style='font-size:{GC_BODY_FS};"
-                                            "line-height:1.2;font-weight:400;color:#174ea6'>"
-                                            f"{html.escape(lab)}</div>",
-                                            unsafe_allow_html=True,
-                                        )
                                         st.button(
                                             lab,
                                             key=f"gc_evpick_{stamp}_{idx}",
@@ -2382,14 +2354,18 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """버튼 글자는 숨기고, 칩 제목은 HTML 11px(할 일 목록과 같음)."""
+    """일정 칩을 할 일 목록과 같은 11px로. Streamlit 버튼 기본값을 이긴다."""
+    fs = GC_BODY_FS
     st.markdown(
-        "<style>html body div[class*='st-key-gc_chiprow_'] .gc-chip-lab,"
-        "html body div[class*='st-key-gc_evsel_'] .gc-chip-lab"
-        "{font-size:11px!important;line-height:1.2!important;font-weight:400!important;}"
+        "<style>html body div[class*='st-key-gc_evpick_'] button,"
+        "html body div[class*='st-key-gc_evpick_'] [data-testid='stBaseButton-tertiary'],"
         "html body div[class*='st-key-gc_evpick_'] button p,"
-        "html body div[class*='st-key-gc_evpick_'] [data-testid='stBaseButton-tertiary'] p"
-        "{font-size:0!important;color:transparent!important;margin:0!important;}</style>",
+        "html body div[class*='st-key-gc_evpick_'] button span,"
+        "html body div[class*='st-key-gc_evpick_'] button div,"
+        "html body div[class*='st-key-gc_evpick_'] [data-testid='stBaseButton-tertiary'] p,"
+        "html body div[class*='st-key-gc_evpick_'] [data-testid='stMarkdownContainer'] p"
+        f"{{font-size:{fs}!important;line-height:1.2!important;font-weight:400!important;"
+        "margin:0!important}}</style>",
         unsafe_allow_html=True,
     )
 
@@ -3229,12 +3205,14 @@ def render_google_calendar_tab(
     if (w.__gcEvpickObs) { w.__gcEvpickObs.disconnect(); w.__gcEvpickObs = null; }
   } catch (e) {}
   var id = "gc-evpick-fs";
-  var css = 'html body div[class*="st-key-gc_chiprow_"] .gc-chip-lab,' +
-    'html body div[class*="st-key-gc_evsel_"] .gc-chip-lab' +
-    '{font-size:11px!important;line-height:1.2!important;font-weight:400!important;}' +
+  var css = 'html body div[class*="st-key-gc_evpick_"] button,' +
+    'html body div[class*="st-key-gc_evpick_"] [data-testid="stBaseButton-tertiary"],' +
     'html body div[class*="st-key-gc_evpick_"] button p,' +
-    'html body div[class*="st-key-gc_evpick_"] [data-testid="stBaseButton-tertiary"] p' +
-    '{font-size:0!important;color:transparent!important;margin:0!important;}';
+    'html body div[class*="st-key-gc_evpick_"] button span,' +
+    'html body div[class*="st-key-gc_evpick_"] button div,' +
+    'html body div[class*="st-key-gc_evpick_"] [data-testid="stBaseButton-tertiary"] p,' +
+    'html body div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
+    '{font-size:11px!important;line-height:1.2!important;font-weight:400!important;margin:0!important;}';
   function put(doc) {
     if (!doc) return;
     var s = doc.getElementById(id);
