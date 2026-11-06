@@ -5634,4 +5634,10 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     smtp_cfg = _render_smtp_bar()
     mail_df = _render_mail_settings_expander(mail_df)
     st.session_state["_pi_mail_df_cache"] = mail_df
+    try:
+        from gmail_folder_panel import render_shinil_gmail_folder
+
+        render_shinil_gmail_folder()
+    except Exception as _gf_err:
+        st.caption(f"신일가스 메일 폴더를 표시하지 못했습니다: {_gf_err}")
 
