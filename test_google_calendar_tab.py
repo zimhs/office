@@ -182,7 +182,7 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("GC_GMAIL_LABEL", src)
         self.assertIn("GC_GMAIL_INBOX", src)
         self.assertIn("calendar_chip_label", src)
-        self.assertIn("font-size:10px!important", src)
+        self.assertIn("font-size:9px!important", src)
         self.assertIn("gmail.modify", src)
         self.assertIn("개인업무", src)
         self.assertIn("GC_GMAIL_PERSONAL", src)
