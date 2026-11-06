@@ -33,7 +33,7 @@ _TZ = ZoneInfo("Asia/Seoul")
 _SCOPES = (
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/tasks",
-    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
 )
 _AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN = "https://oauth2.googleapis.com/token"
@@ -41,6 +41,7 @@ _CAL_API = "https://www.googleapis.com/calendar/v3"
 _TASK_API = "https://tasks.googleapis.com/tasks/v1"
 _GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 GC_GMAIL_LABEL = "신일가스"
+GC_GMAIL_PERSONAL = "개인업무"
 GC_GMAIL_INBOX = "INBOX"
 GC_MAIL_CHIP_TITLE = "메일"
 GC_GMAIL_SYNC = os.path.join(GC_DIR, "gmail_shinil_sync.json")
@@ -597,7 +598,7 @@ def list_events(cal_id: str, start: date, end: date, token: str = "") -> list[di
             "singleEvents": "true",
             "orderBy": "startTime",
             "maxResults": "250",
-            "fields": "items(id,summary,description,start,end)",
+            "fields": "items(id,summary,description,start,end,extendedProperties)",
         },
         token=token,
     )
@@ -777,6 +778,97 @@ def _gmail_get(path: str, params: dict | None = None) -> dict:
                 "Gmail 권한이 없습니다. 구글 계정을 다시 연결해 주세요."
             ) from e
         raise
+
+
+def _gmail_json(method: str, path: str, body: dict | None = None) -> dict:
+    try:
+        return api_json(method, f"{_GMAIL_API}/users/me/{path.lstrip('/')}", body)
+    except Exception as e:
+        if _gmail_error_is_scope(e):
+            raise GmailScopeError(
+                "Gmail 폴더 이동 권한이 없습니다. 구글 계정을 다시 연결해 주세요."
+            ) from e
+        raise
+
+
+def gmail_ids_from_event(ev: dict | None) -> dict[str, str]:
+    ev = ev or {}
+    mid = str(ev.get("gmail_msg") or "").strip()
+    tid = str(ev.get("gmail_thread") or "").strip()
+    desc = str(ev.get("description") or "")
+    if not tid:
+        for part in desc.replace("\n", " ").split():
+            if "#all/" in part:
+                tid = part.split("#all/", 1)[-1].strip().rstrip(").,]")
+                break
+    return {"msg": mid, "thread": tid}
+
+
+def gmail_move_body(label_id: str) -> dict[str, list[str]]:
+    return {
+        "addLabelIds": [str(label_id)],
+        "removeLabelIds": [GC_GMAIL_INBOX],
+    }
+
+
+def ensure_gmail_label(name: str = GC_GMAIL_LABEL) -> dict:
+    want = str(name or GC_GMAIL_LABEL).strip() or GC_GMAIL_LABEL
+    lab = match_gmail_label(list_gmail_labels(), want)
+    if lab:
+        return lab
+    created = _gmail_json(
+        "POST",
+        "labels",
+        {
+            "name": want,
+            "labelListVisibility": "labelShow",
+            "messageListVisibility": "show",
+        },
+    )
+    return created if isinstance(created, dict) else {}
+
+
+def gmail_move_inbox_to_label(
+    *, thread_id: str = "", msg_id: str = "", label_name: str = GC_GMAIL_LABEL
+) -> dict:
+    lab = ensure_gmail_label(label_name)
+    lid = str(lab.get("id") or "").strip()
+    if not lid:
+        raise RuntimeError(f"Gmail에 '{label_name}' 폴더를 만들지 못했습니다.")
+    body = gmail_move_body(lid)
+    tid = str(thread_id or "").strip()
+    mid = str(msg_id or "").strip()
+    if tid:
+        return _gmail_json("POST", f"threads/{urllib.parse.quote(tid, safe='')}/modify", body)
+    if mid:
+        return _gmail_json("POST", f"messages/{urllib.parse.quote(mid, safe='')}/modify", body)
+    raise RuntimeError("옮길 메일을 찾지 못했습니다.")
+
+
+def gmail_trash_path(*, thread_id: str = "", msg_id: str = "") -> str:
+    tid = str(thread_id or "").strip()
+    mid = str(msg_id or "").strip()
+    if tid:
+        return f"threads/{urllib.parse.quote(tid, safe='')}/trash"
+    if mid:
+        return f"messages/{urllib.parse.quote(mid, safe='')}/trash"
+    raise RuntimeError("지울 메일을 찾지 못했습니다.")
+
+
+def gmail_trash_mail(*, thread_id: str = "", msg_id: str = "") -> dict:
+    return _gmail_json("POST", gmail_trash_path(thread_id=thread_id, msg_id=msg_id), {})
+
+
+def _drop_gmail_sync_id(msg_id: str) -> None:
+    mid = str(msg_id or "").strip()
+    if not mid:
+        return
+    state = load_gmail_sync_state()
+    ids = dict(state.get("ids") or {})
+    if mid in ids:
+        ids.pop(mid, None)
+        state["ids"] = ids
+        save_gmail_sync_state(state)
 
 
 def list_gmail_labels() -> list[dict]:
@@ -1544,6 +1636,7 @@ def _event_chip(it: dict, cal: dict) -> dict | None:
             hhmm = dt.strftime("%H:%M")
         except Exception:
             hhmm = ""
+    priv = ((it.get("extendedProperties") or {}).get("private") or {})
     return {
         "title": it.get("summary") or "(제목 없음)",
         "color": cal.get("color") or "#7b8794",
@@ -1553,6 +1646,8 @@ def _event_chip(it: dict, cal: dict) -> dict | None:
         "description": str(it.get("description") or ""),
         "id": str(it.get("id") or ""),
         "cal_id": str(cal.get("id") or ""),
+        "gmail_msg": str(priv.get("gmailMsgId") or ""),
+        "gmail_thread": str(priv.get("gmailThread") or ""),
         "writable": bool(cal.get("writable"))
         and str(cal.get("id") or "") != GC_KR_HOLIDAY,
     }
@@ -2231,6 +2326,9 @@ def _render_event_memo_pop(ev: dict) -> None:
         )
         if meta:
             st.caption(meta)
+        move_msg = st.session_state.get("_gc_mail_move_msg")
+        if is_mail_calendar_event(ev) and move_msg:
+            st.caption(move_msg)
         if writable:
             st.text_area("메모", key=nk, height=90, placeholder="일정 메모")
             b1, b2 = st.columns(2)
@@ -2250,6 +2348,45 @@ def _render_event_memo_pop(ev: dict) -> None:
                     type="tertiary",
                     on_click=_gc_close_memo_pop,
                 )
+            if is_mail_calendar_event(ev):
+                ids = gmail_ids_from_event({**ev, "description": st.session_state.get(nk) or note})
+                st.caption("메일 이동")
+                m1, m2, m3 = st.columns(3)
+                with m1:
+                    if st.button("개인업무", key="gc_mail_move_personal"):
+                        st.session_state["_gc_pending_mail_move"] = {
+                            "cal": cid,
+                            "id": eid,
+                            "msg": ids.get("msg") or "",
+                            "thread": ids.get("thread") or "",
+                            "label": GC_GMAIL_PERSONAL,
+                        }
+                        st.rerun(scope="fragment")
+                with m2:
+                    if st.button("신일가스", key="gc_mail_move_shinil"):
+                        st.session_state["_gc_pending_mail_move"] = {
+                            "cal": cid,
+                            "id": eid,
+                            "msg": ids.get("msg") or "",
+                            "thread": ids.get("thread") or "",
+                            "label": GC_GMAIL_LABEL,
+                        }
+                        st.rerun(scope="fragment")
+                with m3:
+                    if st.button("삭제", key="gc_mail_del"):
+                        st.session_state["_gc_pending_mail_del"] = {
+                            "cal": cid,
+                            "id": eid,
+                            "msg": ids.get("msg") or "",
+                            "thread": ids.get("thread") or "",
+                        }
+                        st.session_state["_gc_memo_open"] = False
+                        st.rerun(scope="fragment")
+            elif eid:
+                if st.button("삭제", key="gc_pop_del"):
+                    st.session_state["_gc_pending_del_event"] = {"cal": cid, "id": eid}
+                    st.session_state["_gc_memo_open"] = False
+                    st.rerun(scope="fragment")
         else:
             st.markdown(
                 "<div style='font-size:12px;color:#31333F;white-space:pre-wrap;"
@@ -2405,7 +2542,7 @@ def _setup_expander() -> None:
     with st.expander("구글 연결 설정 (최초 1회)", expanded=not bool(cid and csec)):
         st.markdown(
             "Google Cloud에서 **캘린더 API · Tasks API · Gmail API**를 켜고, OAuth 클라이언트(웹)를 만든 뒤 "
-            "아래 리다이렉트 URI를 등록하세요. 신일가스 메일 연동은 계정 연결을 한 번 더 해야 Gmail 권한이 붙습니다."
+            "아래 리다이렉트 URI를 등록하세요. 메일 연동·신일가스 폴더 이동은 구글 계정을 다시 연결해야 합니다."
         )
         st.code(
             "http://localhost:8501/\n"
@@ -2480,6 +2617,21 @@ def _gc_cal_panel() -> None:
                 _gc_cache_add_event(day, real)
         except Exception as e:
             st.error(f"일정 저장 실패: {e}")
+    pending_move = st.session_state.pop("_gc_pending_mail_move", None)
+    if isinstance(pending_move, dict) and (pending_move.get("thread") or pending_move.get("msg")):
+        try:
+            folder = str(pending_move.get("label") or GC_GMAIL_LABEL).strip() or GC_GMAIL_LABEL
+            gmail_move_inbox_to_label(
+                thread_id=str(pending_move.get("thread") or ""),
+                msg_id=str(pending_move.get("msg") or ""),
+                label_name=folder,
+            )
+            st.session_state["_gc_mail_move_msg"] = f"받은편지함에서 {folder} 폴더로 옮겼습니다."
+        except GmailScopeError as e:
+            st.session_state["_gc_need_gmail"] = True
+            st.session_state["_gc_mail_move_msg"] = str(e)
+        except Exception as e:
+            st.session_state["_gc_mail_move_msg"] = f"메일 이동 실패: {e}"
     pending_note = st.session_state.pop("_gc_pending_ev_note", None)
     if isinstance(pending_note, dict) and pending_note.get("id"):
         cid = str(pending_note.get("cal") or "")
@@ -2491,6 +2643,29 @@ def _gc_cal_panel() -> None:
                 patch_event(cid, eid, {"description": notes})
             except Exception as e:
                 st.error(f"메모 저장 실패: {e}")
+    pending_mail_del = st.session_state.pop("_gc_pending_mail_del", None)
+    if isinstance(pending_mail_del, dict) and pending_mail_del.get("id"):
+        cid = str(pending_mail_del.get("cal") or "primary")
+        eid = str(pending_mail_del.get("id") or "")
+        try:
+            gmail_trash_mail(
+                thread_id=str(pending_mail_del.get("thread") or ""),
+                msg_id=str(pending_mail_del.get("msg") or ""),
+            )
+            _drop_gmail_sync_id(str(pending_mail_del.get("msg") or ""))
+            st.session_state["_gc_mail_move_msg"] = "메일과 캘린더에서 삭제했습니다."
+        except GmailScopeError as e:
+            st.session_state["_gc_need_gmail"] = True
+            st.session_state["_gc_mail_move_msg"] = str(e)
+        except Exception as e:
+            st.session_state["_gc_mail_move_msg"] = f"메일 삭제 실패: {e}"
+        _gc_cache_remove_event(cid, eid)
+        if eid and not eid.startswith("local-"):
+            try:
+                delete_event(cid, eid)
+            except Exception as e:
+                st.error(f"일정 삭제 실패: {e}")
+        st.session_state["_gc_memo_open"] = False
     pending_del = st.session_state.pop("_gc_pending_del_event", None)
     if isinstance(pending_del, dict) and pending_del.get("id"):
         cid = str(pending_del.get("cal") or "primary")
@@ -2501,6 +2676,7 @@ def _gc_cal_panel() -> None:
                 delete_event(cid, eid)
             except Exception as e:
                 st.error(f"일정 삭제 실패: {e}")
+        st.session_state["_gc_memo_open"] = False
 
     try:
         cals = _gc_cached_cals()
@@ -2627,6 +2803,9 @@ div[class*="st-key-gc_head_acts"] button {
     msg = st.session_state.pop("_gc_sync_msg", None)
     if msg:
         st.caption(msg)
+    move_msg = st.session_state.get("_gc_mail_move_msg")
+    if move_msg:
+        st.caption(move_msg)
     if st.session_state.get("_gc_need_gmail"):
         ocid, _ocsec = load_oauth_client()
         if ocid:

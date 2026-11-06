@@ -43,7 +43,7 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("accounts.google.com", url)
         self.assertIn("calendar", url)
         self.assertIn("tasks", url)
-        self.assertIn("gmail.readonly", url)
+        self.assertIn("gmail.modify", url)
         self.assertIn("redirect_uri=", url)
 
     def test_redirect_candidates_include_local_and_cloud(self):
@@ -183,7 +183,16 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("GC_GMAIL_INBOX", src)
         self.assertIn("calendar_chip_label", src)
         self.assertIn("font-size:10px!important", src)
-        self.assertIn("gmail.readonly", src)
+        self.assertIn("gmail.modify", src)
+        self.assertIn("개인업무", src)
+        self.assertIn("GC_GMAIL_PERSONAL", src)
+        self.assertIn('key="gc_mail_move_personal"', src)
+        self.assertIn('key="gc_mail_move_shinil"', src)
+        self.assertIn('key="gc_mail_del"', src)
+        self.assertIn("gmail_move_inbox_to_label", src)
+        self.assertIn("gmail_trash_mail", src)
+        self.assertIn("_gc_pending_mail_del", src)
+        self.assertNotIn("gmail.readonly", src)
         self.assertIn("insert_mail_day_event", src)
         self.assertIn("메일 열기:", src)
         self.assertIn("Gmail API", src)
@@ -474,6 +483,22 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             "메일",
         )
         self.assertEqual(gc.calendar_chip_label({"title": "미팅", "hhmm": "09:00"}), "09:00 미팅")
+
+    def test_mail_move_and_trash_helpers(self):
+        ids = gc.gmail_ids_from_event(
+            {
+                "description": "제목: a\n메일 열기: https://mail.google.com/mail/u/0/#all/18abcDEF",
+                "gmail_msg": "mid1",
+            }
+        )
+        self.assertEqual(ids["thread"], "18abcDEF")
+        self.assertEqual(ids["msg"], "mid1")
+        body = gc.gmail_move_body("Label_9")
+        self.assertEqual(body["addLabelIds"], ["Label_9"])
+        self.assertEqual(body["removeLabelIds"], ["INBOX"])
+        self.assertIn("threads/tid9/trash", gc.gmail_trash_path(thread_id="tid9"))
+        self.assertEqual(gc.GC_GMAIL_PERSONAL, "개인업무")
+        self.assertEqual(gc.GC_GMAIL_LABEL, "신일가스")
 
     def test_match_gmail_label_leaf_and_exact(self):
         labels = [
