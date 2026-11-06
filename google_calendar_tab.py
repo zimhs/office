@@ -33,11 +33,17 @@ _TZ = ZoneInfo("Asia/Seoul")
 _SCOPES = (
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/gmail.readonly",
 )
 _AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN = "https://oauth2.googleapis.com/token"
 _CAL_API = "https://www.googleapis.com/calendar/v3"
 _TASK_API = "https://tasks.googleapis.com/tasks/v1"
+_GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
+GC_GMAIL_LABEL = "신일가스"
+GC_GMAIL_SYNC = os.path.join(GC_DIR, "gmail_shinil_sync.json")
+GC_GMAIL_SYNC_HOME = os.path.join(_HOME_GC, "gmail_shinil_sync.json")
+GC_MAIL_SYNC_BATCH = 80
 _CLOUD_REDIRECT = "https://office-g8ryabkapprkpjmfwa5aypw.streamlit.app/"
 _EV_MEM: dict[str, dict[str, list[dict]]] = {}
 _EV_BG = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gc-ev")
@@ -541,6 +547,346 @@ def insert_event(
         body["start"] = {"dateTime": s.isoformat(), "timeZone": "Asia/Seoul"}
         body["end"] = {"dateTime": e.isoformat(), "timeZone": "Asia/Seoul"}
     return api_json("POST", f"{_CAL_API}/calendars/{urllib.parse.quote(cid, safe='')}/events", body)
+
+
+class GmailScopeError(RuntimeError):
+    """토큰에 Gmail 읽기 권한이 없을 때."""
+
+
+def gmail_thread_url(thread_id: str) -> str:
+    tid = str(thread_id or "").strip()
+    if not tid:
+        return "https://mail.google.com/mail/u/0/#inbox"
+    return "https://mail.google.com/mail/u/0/#all/" + urllib.parse.quote(tid, safe="")
+
+
+def gmail_received_date(internal_ms: Any) -> date | None:
+    try:
+        ms = int(internal_ms)
+    except (TypeError, ValueError):
+        return None
+    if ms <= 0:
+        return None
+    return datetime.fromtimestamp(ms / 1000.0, tz=_TZ).date()
+
+
+def _gmail_header(headers: list | None, name: str) -> str:
+    want = str(name or "").lower()
+    for h in headers or []:
+        if str((h or {}).get("name") or "").lower() == want:
+            return str((h or {}).get("value") or "").strip()
+    return ""
+
+
+def mail_event_title(subject: str) -> str:
+    sub = str(subject or "").strip() or "(제목 없음)"
+    if sub.startswith("[메일]"):
+        return sub
+    return f"[메일] {sub}"
+
+
+def mail_event_notes(*, sender: str, received: date, snippet: str, thread_id: str) -> str:
+    url = gmail_thread_url(thread_id)
+    snip = " ".join(str(snippet or "").split())
+    if len(snip) > 280:
+        snip = snip[:277] + "…"
+    lines = [
+        f"보낸사람: {str(sender or '').strip() or '-'}",
+        f"받은날: {received.isoformat()}",
+        "",
+    ]
+    if snip:
+        lines.extend([snip, ""])
+    lines.append(f"메일 열기: {url}")
+    return "\n".join(lines)
+
+
+def match_gmail_label(labels: list[dict], want: str = GC_GMAIL_LABEL) -> dict:
+    want = str(want or GC_GMAIL_LABEL).strip()
+    items = [x for x in (labels or []) if isinstance(x, dict) and str(x.get("id") or "")]
+    exact = [x for x in items if str(x.get("name") or "").strip() == want]
+    if exact:
+        return exact[0]
+    leaf = [
+        x
+        for x in items
+        if str(x.get("name") or "").strip().split("/")[-1] == want
+    ]
+    if leaf:
+        return leaf[0]
+    part = [x for x in items if want in str(x.get("name") or "")]
+    return part[0] if part else {}
+
+
+def _gmail_error_is_scope(exc: BaseException) -> bool:
+    resp = getattr(exc, "response", None)
+    text = ""
+    code = 0
+    try:
+        code = int(getattr(resp, "status_code", 0) or 0)
+        text = str(getattr(resp, "text", "") or "")
+    except Exception:
+        text = str(exc)
+    blob = (text + " " + str(exc)).lower()
+    return code in (401, 403) and (
+        "insufficient" in blob
+        or "access_token_scope" in blob
+        or "gmail" in blob
+        or "insufficientpermissions" in blob
+    )
+
+
+def _gmail_get(path: str, params: dict | None = None) -> dict:
+    try:
+        return api_get(f"{_GMAIL_API}/users/me/{path.lstrip('/')}", params)
+    except Exception as e:
+        if _gmail_error_is_scope(e):
+            raise GmailScopeError(
+                "Gmail 권한이 없습니다. 구글 계정을 다시 연결해 주세요."
+            ) from e
+        raise
+
+
+def list_gmail_labels() -> list[dict]:
+    data = _gmail_get("labels")
+    return list(data.get("labels") or [])
+
+
+def list_gmail_message_ids(label_id: str, *, limit: int = 500) -> list[dict]:
+    lid = str(label_id or "").strip()
+    if not lid:
+        return []
+    out: list[dict] = []
+    token = ""
+    cap = max(1, min(int(limit or 500), 2000))
+    while len(out) < cap:
+        params: dict[str, Any] = {
+            "labelIds": lid,
+            "maxResults": str(min(100, cap - len(out))),
+        }
+        if token:
+            params["pageToken"] = token
+        data = _gmail_get("messages", params)
+        for it in data.get("messages") or []:
+            mid = str((it or {}).get("id") or "")
+            if mid:
+                out.append(
+                    {
+                        "id": mid,
+                        "threadId": str((it or {}).get("threadId") or mid),
+                    }
+                )
+            if len(out) >= cap:
+                break
+        token = str(data.get("nextPageToken") or "")
+        if not token:
+            break
+    return out
+
+
+def gmail_message_meta(msg_id: str) -> dict:
+    mid = str(msg_id or "").strip()
+    if not mid:
+        return {}
+    data = _gmail_get(
+        f"messages/{urllib.parse.quote(mid, safe='')}",
+        {
+            "format": "metadata",
+            "metadataHeaders": ["Subject", "From", "Date"],
+            "fields": "id,threadId,internalDate,snippet,payload/headers",
+        },
+    )
+    headers = list(((data.get("payload") or {}).get("headers")) or [])
+    received = gmail_received_date(data.get("internalDate"))
+    return {
+        "id": str(data.get("id") or mid),
+        "threadId": str(data.get("threadId") or mid),
+        "subject": _gmail_header(headers, "Subject"),
+        "sender": _gmail_header(headers, "From"),
+        "snippet": str(data.get("snippet") or ""),
+        "day": received,
+    }
+
+
+def _gmail_sync_paths() -> list[str]:
+    return [GC_GMAIL_SYNC_HOME, GC_GMAIL_SYNC]
+
+
+def load_gmail_sync_state() -> dict:
+    for path in _gmail_sync_paths():
+        data = _read_json(path)
+        if data:
+            return data
+    return {"ids": {}}
+
+
+def save_gmail_sync_state(data: dict) -> None:
+    payload = dict(data or {})
+    if not isinstance(payload.get("ids"), dict):
+        payload["ids"] = {}
+    for path in _gmail_sync_paths():
+        _write_json(path, payload)
+
+
+def insert_mail_day_event(
+    cal_id: str,
+    *,
+    title: str,
+    day: date,
+    notes: str,
+    msg_id: str,
+    thread_id: str,
+) -> dict:
+    cid = str(cal_id or "").strip() or "primary"
+    if cid == GC_KR_HOLIDAY:
+        raise RuntimeError("공휴일 캘린더에는 일정을 넣을 수 없습니다.")
+    url = gmail_thread_url(thread_id)
+    body: dict[str, Any] = {
+        "summary": mail_event_title(title),
+        "description": str(notes or "").strip(),
+        "start": {"date": day.isoformat()},
+        "end": {"date": (day + timedelta(days=1)).isoformat()},
+        "source": {"title": "Gmail", "url": url},
+        "extendedProperties": {
+            "private": {
+                "shinilMail": "1",
+                "gmailMsgId": str(msg_id or "").strip(),
+                "gmailThread": str(thread_id or "").strip(),
+            }
+        },
+    }
+    return api_json(
+        "POST",
+        f"{_CAL_API}/calendars/{urllib.parse.quote(cid, safe='')}/events",
+        body,
+    )
+
+
+def _list_synced_mail_ids_from_calendar(cal_id: str) -> set[str]:
+    cid = str(cal_id or "").strip() or "primary"
+    found: set[str] = set()
+    token = ""
+    for _ in range(20):
+        params: dict[str, Any] = {
+            "privateExtendedProperty": "shinilMail=1",
+            "maxResults": "250",
+            "singleEvents": "true",
+            "fields": "items(extendedProperties),nextPageToken",
+        }
+        if token:
+            params["pageToken"] = token
+        try:
+            data = api_get(
+                f"{_CAL_API}/calendars/{urllib.parse.quote(cid, safe='')}/events",
+                params,
+            )
+        except Exception:
+            break
+        for it in data.get("items") or []:
+            priv = ((it or {}).get("extendedProperties") or {}).get("private") or {}
+            mid = str(priv.get("gmailMsgId") or "").strip()
+            if mid:
+                found.add(mid)
+        token = str(data.get("nextPageToken") or "")
+        if not token:
+            break
+    return found
+
+
+def _primary_writable_cal_id(cals: list[dict] | None = None) -> str:
+    items = _writable_calendars(cals or [])
+    for c in items:
+        if c.get("primary"):
+            return str(c.get("id") or "primary")
+    if items:
+        return str(items[0].get("id") or "primary")
+    return "primary"
+
+
+def sync_shinil_gmail_to_calendar(
+    *,
+    label_name: str = GC_GMAIL_LABEL,
+    cal_id: str = "",
+    limit: int = GC_MAIL_SYNC_BATCH,
+) -> dict[str, Any]:
+    """신일가스 라벨 메일을 받은 날 종일 일정으로 넣고 Gmail 링크를 건다."""
+    labels = list_gmail_labels()
+    lab = match_gmail_label(labels, label_name)
+    if not lab:
+        return {
+            "added": 0,
+            "skipped": 0,
+            "remain": 0,
+            "label": label_name,
+            "error": f"Gmail에 '{label_name}' 폴더(라벨)가 없습니다.",
+        }
+    lid = str(lab.get("id") or "")
+    listed = list_gmail_message_ids(lid, limit=500)
+    state = load_gmail_sync_state()
+    done = {
+        str(k): str(v)
+        for k, v in dict(state.get("ids") or {}).items()
+        if str(k).strip()
+    }
+    cid = str(cal_id or "").strip() or _primary_writable_cal_id()
+    cal_done = _list_synced_mail_ids_from_calendar(cid)
+    for mid in cal_done:
+        done.setdefault(mid, "cal")
+    pending = [it for it in listed if str(it.get("id") or "") not in done]
+    batch = pending[: max(0, int(limit or GC_MAIL_SYNC_BATCH))]
+    added = 0
+    skipped = len(listed) - len(pending)
+    months: set[tuple[int, int]] = set()
+    for it in batch:
+        mid = str(it.get("id") or "")
+        try:
+            meta = gmail_message_meta(mid)
+        except GmailScopeError:
+            raise
+        except Exception:
+            continue
+        day = meta.get("day")
+        if not isinstance(day, date):
+            continue
+        notes = mail_event_notes(
+            sender=str(meta.get("sender") or ""),
+            received=day,
+            snippet=str(meta.get("snippet") or ""),
+            thread_id=str(meta.get("threadId") or it.get("threadId") or mid),
+        )
+        try:
+            created = insert_mail_day_event(
+                cid,
+                title=str(meta.get("subject") or ""),
+                day=day,
+                notes=notes,
+                msg_id=mid,
+                thread_id=str(meta.get("threadId") or mid),
+            )
+        except Exception:
+            continue
+        done[mid] = day.isoformat()
+        added += 1
+        months.add((day.year, day.month))
+        chip = _event_chip(created, {"id": cid, "summary": "", "color": "#1a73e8", "writable": True})
+        if chip:
+            _gc_cache_add_event(day, chip)
+    state["ids"] = done
+    state["label"] = str(lab.get("name") or label_name)
+    state["cal_id"] = cid
+    state["at"] = datetime.now(_TZ).isoformat()
+    save_gmail_sync_state(state)
+    box = _gc_api_box()
+    for yy, mm in months:
+        key = _ev_key(yy, mm)
+        box.pop(key + ":at", None)
+    return {
+        "added": added,
+        "skipped": skipped,
+        "remain": max(0, len(pending) - added),
+        "label": str(lab.get("name") or label_name),
+        "error": "",
+    }
 
 
 def api_delete(url: str) -> None:
@@ -1880,8 +2226,8 @@ def _setup_expander() -> None:
     cid, csec = load_oauth_client()
     with st.expander("구글 연결 설정 (최초 1회)", expanded=not bool(cid and csec)):
         st.markdown(
-            "Google Cloud에서 **캘린더 API · Tasks API**를 켜고, OAuth 클라이언트(웹)를 만든 뒤 "
-            "아래 리다이렉트 URI를 등록하세요."
+            "Google Cloud에서 **캘린더 API · Tasks API · Gmail API**를 켜고, OAuth 클라이언트(웹)를 만든 뒤 "
+            "아래 리다이렉트 URI를 등록하세요. 신일가스 메일 연동은 계정 연결을 한 번 더 해야 Gmail 권한이 붙습니다."
         )
         st.code(
             "http://localhost:8501/\n"
@@ -2078,15 +2424,40 @@ div[class*="st-key-gc_head_acts"] button {
                     if st.button("연동실행", type="primary", key="gc_sync_run"):
                         try:
                             n_ev, n_tk = _gc_sync_google(y, m)
+                            mail = sync_shinil_gmail_to_calendar()
+                            extra = ""
+                            err = str(mail.get("error") or "")
+                            if err:
+                                extra = f" · 신일가스 메일: {err}"
+                            else:
+                                extra = (
+                                    f" · 신일가스 메일 {int(mail.get('added') or 0)}건 추가"
+                                )
+                                remain = int(mail.get("remain") or 0)
+                                if remain:
+                                    extra += f" · 남은 {remain}건은 다시 연동"
                             st.session_state["_gc_sync_msg"] = (
-                                f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건"
+                                f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건{extra}"
                             )
+                            st.session_state.pop("_gc_need_gmail", None)
+                        except GmailScopeError as e:
+                            st.session_state["_gc_need_gmail"] = True
+                            st.session_state["_gc_sync_msg"] = str(e)
                         except Exception as e:
                             st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
                         st.rerun()
     msg = st.session_state.pop("_gc_sync_msg", None)
     if msg:
         st.caption(msg)
+    if st.session_state.get("_gc_need_gmail"):
+        ocid, _ocsec = load_oauth_client()
+        if ocid:
+            st.session_state.setdefault("_gc_oauth_state", secrets.token_urlsafe(16))
+            st.link_button(
+                "Gmail 권한 연결 (신일가스 메일)",
+                auth_url(ocid, st.session_state["_gc_oauth_state"]),
+                width="stretch",
+            )
 
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)

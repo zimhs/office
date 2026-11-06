@@ -43,6 +43,7 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("accounts.google.com", url)
         self.assertIn("calendar", url)
         self.assertIn("tasks", url)
+        self.assertIn("gmail.readonly", url)
         self.assertIn("redirect_uri=", url)
 
     def test_redirect_candidates_include_local_and_cloud(self):
@@ -177,6 +178,12 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertNotIn("gc_task_import", src)
         self.assertNotIn("gc_task_export", src)
         self.assertNotIn("gc_task_sync", src)
+        self.assertIn("sync_shinil_gmail_to_calendar", src)
+        self.assertIn("GC_GMAIL_LABEL", src)
+        self.assertIn("gmail.readonly", src)
+        self.assertIn("insert_mail_day_event", src)
+        self.assertIn("메일 열기:", src)
+        self.assertIn("Gmail API", src)
 
 
     def test_month_html_x_only_on_writable(self):
@@ -377,6 +384,105 @@ class GoogleCalendarTokenPersistTest(unittest.TestCase):
                 titles = {t["title"] for t in merged}
                 self.assertIn("대시보드", titles)
                 self.assertIn("구글만", titles)
+
+
+class GoogleCalendarGmailSyncTest(unittest.TestCase):
+    def test_thread_url_and_received_date(self):
+        from datetime import date as d
+        from datetime import datetime, timezone
+
+        url = gc.gmail_thread_url("18abcDEF")
+        self.assertTrue(url.startswith("https://mail.google.com/mail/u/0/#all/"))
+        self.assertIn("18abcDEF", url)
+        ms = int(datetime(2026, 11, 6, 8, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        self.assertEqual(gc.gmail_received_date(ms), d(2026, 11, 6))
+        self.assertIsNone(gc.gmail_received_date("bad"))
+
+    def test_mail_event_notes_include_link(self):
+        from datetime import date as d
+
+        notes = gc.mail_event_notes(
+            sender="A <a@b.com>",
+            received=d(2026, 11, 6),
+            snippet="견적 문의",
+            thread_id="tid1",
+        )
+        self.assertIn("보낸사람: A <a@b.com>", notes)
+        self.assertIn("받은날: 2026-11-06", notes)
+        self.assertIn("메일 열기:", notes)
+        self.assertIn("tid1", notes)
+        self.assertEqual(gc.mail_event_title("납품"), "[메일] 납품")
+
+    def test_match_gmail_label_leaf_and_exact(self):
+        labels = [
+            {"id": "1", "name": "INBOX"},
+            {"id": "2", "name": "거래처/신일가스"},
+            {"id": "3", "name": "신일가스"},
+        ]
+        hit = gc.match_gmail_label(labels, "신일가스")
+        self.assertEqual(hit.get("id"), "3")
+        hit2 = gc.match_gmail_label(
+            [{"id": "2", "name": "거래처/신일가스"}], "신일가스"
+        )
+        self.assertEqual(hit2.get("id"), "2")
+        self.assertEqual(gc.match_gmail_label(labels, "없는폴더"), {})
+
+    def test_sync_skips_already_done_and_inserts_new(self):
+        from datetime import date as d
+
+        with tempfile.TemporaryDirectory() as td:
+            home = os.path.join(td, "sync.json")
+            cache = os.path.join(td, "cache.json")
+            created = []
+
+            def _insert(cal_id, **kwargs):
+                kwargs["cal_id"] = cal_id
+                created.append(kwargs)
+                return {
+                    "id": "ev-" + kwargs["msg_id"],
+                    "summary": kwargs["title"],
+                    "start": {"date": kwargs["day"].isoformat()},
+                    "end": {"date": kwargs["day"].isoformat()},
+                    "description": kwargs["notes"],
+                }
+
+            listed = [
+                {"id": "old1", "threadId": "t-old"},
+                {"id": "new1", "threadId": "t-new"},
+            ]
+            with patch.object(gc, "GC_GMAIL_SYNC_HOME", home), patch.object(
+                gc, "GC_GMAIL_SYNC", cache
+            ), patch.object(gc.st, "session_state", {"_gc_api": {}}), patch.object(
+                gc, "list_gmail_labels", return_value=[{"id": "L1", "name": "신일가스"}]
+            ), patch.object(
+                gc, "list_gmail_message_ids", return_value=listed
+            ), patch.object(
+                gc, "_list_synced_mail_ids_from_calendar", return_value=set()
+            ), patch.object(
+                gc, "_primary_writable_cal_id", return_value="user@gmail.com"
+            ), patch.object(
+                gc,
+                "gmail_message_meta",
+                return_value={
+                    "id": "new1",
+                    "threadId": "t-new",
+                    "subject": "발주",
+                    "sender": "a@b.com",
+                    "snippet": "본문",
+                    "day": d(2026, 11, 6),
+                },
+            ), patch.object(
+                gc, "insert_mail_day_event", side_effect=_insert
+            ), patch.object(
+                gc, "_gc_cache_add_event"
+            ):
+                gc.save_gmail_sync_state({"ids": {"old1": "2026-01-01"}})
+                out = gc.sync_shinil_gmail_to_calendar()
+            self.assertEqual(out["added"], 1)
+            self.assertEqual(out["skipped"], 1)
+            self.assertEqual(created[0]["msg_id"], "new1")
+            self.assertEqual(created[0]["day"], d(2026, 11, 6))
+            self.assertIn("메일 열기:", created[0]["notes"])
 
 
 if __name__ == "__main__":
