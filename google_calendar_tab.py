@@ -337,6 +337,8 @@ def _token_error_text(r: requests.Response) -> str:
         return "인증이 만료됐거나 이미 사용되었습니다. 다시 연결해 주세요."
     if err == "invalid_client":
         return "OAuth 클라이언트 ID 또는 비밀번호가 올바르지 않습니다."
+    if err == "unauthorized_client":
+        return "이 OAuth 클라이언트로 토큰을 갱신할 수 없습니다. 다시 연결해 주세요."
     if desc:
         return desc
     if err:
@@ -390,36 +392,87 @@ def exchange_code(client_id: str, client_secret: str, code: str) -> dict:
 
 
 def refresh_token(client_id: str, client_secret: str, tok: dict) -> dict:
-    rt = str(tok.get("refresh_token") or "")
+    rt = str(tok.get("refresh_token") or "").strip()
     if not rt:
         raise RuntimeError("재로그인 필요")
     r = requests.post(
         _TOKEN,
         data={
             "refresh_token": rt,
-            "client_id": client_id,
-            "client_secret": client_secret,
+            "client_id": str(client_id or "").strip(),
+            "client_secret": str(client_secret or "").strip(),
             "grant_type": "refresh_token",
         },
         timeout=30,
     )
-    r.raise_for_status()
-    data = r.json()
-    data["refresh_token"] = rt
+    if not r.ok:
+        raise RuntimeError(_token_error_text(r))
+    data = r.json() if r.content else {}
+    if not isinstance(data, dict):
+        data = {}
+    new_rt = str(data.get("refresh_token") or "").strip()
+    data["refresh_token"] = new_rt or rt
     data["_obtained"] = datetime.now(timezone.utc).isoformat()
+    if not data.get("expires_in"):
+        data["expires_in"] = 3500
     return data
 
 
 def _expired(tok: dict) -> bool:
+    if not str((tok or {}).get("access_token") or "").strip():
+        return True
     exp = tok.get("expires_in")
     obtained = tok.get("_obtained")
     if not exp or not obtained:
-        return False
+        return True
     try:
         t0 = datetime.fromisoformat(str(obtained).replace("Z", "+00:00"))
         return datetime.now(timezone.utc) > t0 + timedelta(seconds=int(exp) - 60)
     except Exception:
-        return False
+        return True
+
+
+def _is_reauth_error(exc: BaseException) -> bool:
+    resp = getattr(exc, "response", None)
+    err = ""
+    try:
+        if resp is not None:
+            err = str((resp.json() or {}).get("error") or "")
+    except Exception:
+        err = ""
+    blob = (err + " " + str(exc)).lower()
+    return err in ("invalid_grant", "invalid_client", "unauthorized_client") or any(
+        s in blob
+        for s in (
+            "재로그인",
+            "만료",
+            "invalid_grant",
+            "invalid_client",
+            "unauthorized_client",
+        )
+    )
+
+
+def _auth_error_message(exc: BaseException) -> str:
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            return _token_error_text(resp)
+        except Exception:
+            pass
+    msg = str(exc or "").strip()
+    if "oauth2.googleapis.com" in msg or "bad request" in msg.lower():
+        return "구글 인증이 만료되었습니다. 다시 연결해 주세요."
+    return msg or "구글 인증이 만료되었습니다. 다시 연결해 주세요."
+
+
+def _handle_refresh_failure(exc: BaseException) -> None:
+    if _is_reauth_error(exc):
+        clear_token()
+        try:
+            st.session_state["_gc_need_reauth"] = True
+        except Exception:
+            pass
 
 
 def access_token() -> str:
@@ -434,9 +487,25 @@ def access_token() -> str:
             tok = refresh_token(cid, csec, tok)
             save_token(tok)
             at = str(tok.get("access_token") or "")
-        except Exception:
-            pass
+        except Exception as e:
+            _handle_refresh_failure(e)
+            if _is_reauth_error(e):
+                return ""
     return at
+
+
+def _retry_after_refresh(request_fn):
+    cid, csec = load_oauth_client()
+    tok_d = load_token()
+    if not (cid and csec and tok_d.get("refresh_token")):
+        raise RuntimeError("구글 연결이 필요합니다.")
+    try:
+        tok_d = refresh_token(cid, csec, tok_d)
+        save_token(tok_d)
+    except Exception as e:
+        _handle_refresh_failure(e)
+        raise RuntimeError(_auth_error_message(e)) from e
+    return request_fn(str(tok_d.get("access_token") or ""))
 
 
 def api_get(url: str, params: dict | None = None, token: str = "") -> dict:
@@ -450,17 +519,18 @@ def api_get(url: str, params: dict | None = None, token: str = "") -> dict:
         timeout=30,
     )
     if r.status_code == 401:
-        cid, csec = load_oauth_client()
-        tok_d = load_token()
-        if cid and csec and tok_d.get("refresh_token"):
-            tok_d = refresh_token(cid, csec, tok_d)
-            save_token(tok_d)
-            r = requests.get(
+
+        def _once(at: str):
+            return requests.get(
                 url,
                 params=params or {},
-                headers={"Authorization": f"Bearer {tok_d.get('access_token')}"},
+                headers={"Authorization": f"Bearer {at}"},
                 timeout=30,
             )
+
+        r = _retry_after_refresh(_once)
+    if r.status_code == 401:
+        raise RuntimeError("구글 인증이 만료되었습니다. 다시 연결해 주세요.")
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -476,6 +546,20 @@ def api_json(method: str, url: str, body: dict | None = None) -> dict:
         headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
         timeout=30,
     )
+    if r.status_code == 401:
+
+        def _once(at: str):
+            return requests.request(
+                method,
+                url,
+                json=body or {},
+                headers={"Authorization": f"Bearer {at}", "Content-Type": "application/json"},
+                timeout=30,
+            )
+
+        r = _retry_after_refresh(_once)
+    if r.status_code == 401:
+        raise RuntimeError("구글 인증이 만료되었습니다. 다시 연결해 주세요.")
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -895,16 +979,14 @@ def api_delete(url: str) -> None:
         raise RuntimeError("구글 연결이 필요합니다.")
     r = requests.delete(url, headers={"Authorization": f"Bearer {tok}"}, timeout=30)
     if r.status_code == 401:
-        cid, csec = load_oauth_client()
-        tok_d = load_token()
-        if cid and csec and tok_d.get("refresh_token"):
-            tok_d = refresh_token(cid, csec, tok_d)
-            save_token(tok_d)
-            r = requests.delete(
-                url,
-                headers={"Authorization": f"Bearer {tok_d.get('access_token')}"},
-                timeout=30,
-            )
+
+        def _once(at: str):
+            return requests.delete(url, headers={"Authorization": f"Bearer {at}"}, timeout=30)
+
+        try:
+            r = _retry_after_refresh(_once)
+        except Exception:
+            return
     if r.status_code in (404, 410):
         return
     r.raise_for_status()
@@ -2832,6 +2914,8 @@ def render_google_calendar_tab(
         _setup_expander()
     connected = bool(access_token())
     if not connected:
+        if st.session_state.get("_gc_need_reauth"):
+            st.warning("구글 인증이 만료되었습니다. 다시 연결해 주세요.")
         if cid and csec:
             st.session_state.setdefault("_gc_oauth_state", secrets.token_urlsafe(16))
             st.link_button(
