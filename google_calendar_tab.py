@@ -751,32 +751,63 @@ def match_gmail_label(labels: list[dict], want: str = GC_GMAIL_LABEL) -> dict:
     return part[0] if part else {}
 
 
-def _gmail_error_is_scope(exc: BaseException) -> bool:
+def token_has_gmail_modify() -> bool:
+    tok = load_token()
+    return "gmail.modify" in str((tok or {}).get("scope") or "")
+
+
+def _gmail_error_blob(exc: BaseException) -> str:
     resp = getattr(exc, "response", None)
     text = ""
+    try:
+        text = str(getattr(resp, "text", "") or "")
+    except Exception:
+        text = ""
+    return (text + " " + str(exc)).lower()
+
+
+def _gmail_error_is_api_off(exc: BaseException) -> bool:
+    blob = _gmail_error_blob(exc)
+    return "has not been used" in blob or "it is disabled" in blob or "access not configured" in blob
+
+
+def _gmail_error_is_scope(exc: BaseException) -> bool:
+    resp = getattr(exc, "response", None)
     code = 0
     try:
         code = int(getattr(resp, "status_code", 0) or 0)
-        text = str(getattr(resp, "text", "") or "")
     except Exception:
-        text = str(exc)
-    blob = (text + " " + str(exc)).lower()
+        code = 0
+    blob = _gmail_error_blob(exc)
+    if _gmail_error_is_api_off(exc):
+        return False
     return code in (401, 403) and (
         "insufficient" in blob
         or "access_token_scope" in blob
-        or "gmail" in blob
         or "insufficientpermissions" in blob
+        or "forbidden" in blob
     )
+
+
+def _gmail_raise(exc: BaseException, *, write: bool = False) -> None:
+    if _gmail_error_is_api_off(exc):
+        raise RuntimeError(
+            "Google Cloud에서 Gmail API를 켠 뒤 잠시 기다려 주세요."
+        ) from exc
+    if _gmail_error_is_scope(exc):
+        raise GmailScopeError(
+            "Gmail 폴더 이동 권한이 없습니다. 아래 버튼으로 구글 계정을 다시 연결해 주세요."
+            if write
+            else "Gmail 권한이 없습니다. 아래 버튼으로 구글 계정을 다시 연결해 주세요."
+        ) from exc
+    raise exc
 
 
 def _gmail_get(path: str, params: dict | None = None) -> dict:
     try:
         return api_get(f"{_GMAIL_API}/users/me/{path.lstrip('/')}", params)
     except Exception as e:
-        if _gmail_error_is_scope(e):
-            raise GmailScopeError(
-                "Gmail 권한이 없습니다. 구글 계정을 다시 연결해 주세요."
-            ) from e
+        _gmail_raise(e, write=False)
         raise
 
 
@@ -784,11 +815,22 @@ def _gmail_json(method: str, path: str, body: dict | None = None) -> dict:
     try:
         return api_json(method, f"{_GMAIL_API}/users/me/{path.lstrip('/')}", body)
     except Exception as e:
-        if _gmail_error_is_scope(e):
-            raise GmailScopeError(
-                "Gmail 폴더 이동 권한이 없습니다. 구글 계정을 다시 연결해 주세요."
-            ) from e
+        _gmail_raise(e, write=True)
         raise
+
+
+def _gc_render_gmail_reconnect(*, key: str) -> None:
+    cid, _csec = load_oauth_client()
+    if not cid:
+        return
+    st.session_state.setdefault("_gc_oauth_state", secrets.token_urlsafe(16))
+    st.link_button(
+        "Gmail 권한 다시 연결",
+        auth_url(cid, st.session_state["_gc_oauth_state"]),
+        type="primary",
+        width="stretch",
+        key=key,
+    )
 
 
 def gmail_ids_from_event(ev: dict | None) -> dict[str, str]:
@@ -831,6 +873,10 @@ def ensure_gmail_label(name: str = GC_GMAIL_LABEL) -> dict:
 def gmail_move_inbox_to_label(
     *, thread_id: str = "", msg_id: str = "", label_name: str = GC_GMAIL_LABEL
 ) -> dict:
+    if not token_has_gmail_modify():
+        raise GmailScopeError(
+            "Gmail 폴더 이동 권한이 없습니다. 아래 버튼으로 구글 계정을 다시 연결해 주세요."
+        )
     lab = ensure_gmail_label(label_name)
     lid = str(lab.get("id") or "").strip()
     if not lid:
@@ -856,6 +902,10 @@ def gmail_trash_path(*, thread_id: str = "", msg_id: str = "") -> str:
 
 
 def gmail_trash_mail(*, thread_id: str = "", msg_id: str = "") -> dict:
+    if not token_has_gmail_modify():
+        raise GmailScopeError(
+            "Gmail 삭제 권한이 없습니다. 아래 버튼으로 구글 계정을 다시 연결해 주세요."
+        )
     return _gmail_json("POST", gmail_trash_path(thread_id=thread_id, msg_id=msg_id), {})
 
 
@@ -2329,6 +2379,17 @@ def _render_event_memo_pop(ev: dict) -> None:
         move_msg = st.session_state.get("_gc_mail_move_msg")
         if is_mail_calendar_event(ev) and move_msg:
             st.caption(move_msg)
+        need_mail_auth = bool(
+            is_mail_calendar_event(ev)
+            and (
+                st.session_state.get("_gc_need_gmail")
+                or not token_has_gmail_modify()
+            )
+        )
+        if need_mail_auth:
+            if not move_msg:
+                st.caption("폴더 이동·삭제는 Gmail 권한을 다시 연결해야 합니다.")
+            _gc_render_gmail_reconnect(key="gc_gmail_reauth_memo")
         if writable:
             st.text_area("메모", key=nk, height=90, placeholder="일정 메모")
             b1, b2 = st.columns(2)
@@ -2806,15 +2867,10 @@ div[class*="st-key-gc_head_acts"] button {
     move_msg = st.session_state.get("_gc_mail_move_msg")
     if move_msg:
         st.caption(move_msg)
-    if st.session_state.get("_gc_need_gmail"):
-        ocid, _ocsec = load_oauth_client()
-        if ocid:
-            st.session_state.setdefault("_gc_oauth_state", secrets.token_urlsafe(16))
-            st.link_button(
-                "Gmail 권한 연결 (신일가스 메일)",
-                auth_url(ocid, st.session_state["_gc_oauth_state"]),
-                width="stretch",
-            )
+    if st.session_state.get("_gc_need_gmail") or (
+        not token_has_gmail_modify() and bool(load_token())
+    ):
+        _gc_render_gmail_reconnect(key="gc_gmail_reauth_head")
 
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)

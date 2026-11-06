@@ -192,6 +192,8 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("gmail_move_inbox_to_label", src)
         self.assertIn("gmail_trash_mail", src)
         self.assertIn("_gc_pending_mail_del", src)
+        self.assertIn("Gmail 권한 다시 연결", src)
+        self.assertIn("token_has_gmail_modify", src)
         self.assertNotIn("gmail.readonly", src)
         self.assertIn("insert_mail_day_event", src)
         self.assertIn("메일 열기:", src)
