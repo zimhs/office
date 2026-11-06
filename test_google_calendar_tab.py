@@ -184,6 +184,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("insert_mail_day_event", src)
         self.assertIn("메일 열기:", src)
         self.assertIn("Gmail API", src)
+        self.assertIn("_auth_error_message", src)
+        self.assertIn("_handle_refresh_failure", src)
+        self.assertIn("구글 인증이 만료되었습니다", src)
 
 
     def test_month_html_x_only_on_writable(self):
@@ -359,6 +362,55 @@ class GoogleCalendarTokenPersistTest(unittest.TestCase):
             gc.insert_event(
                 gc.GC_KR_HOLIDAY, "제목", __import__("datetime").date(2026, 11, 11), True
             )
+
+    def test_refresh_keeps_rotated_refresh_token(self):
+        class _Resp:
+            ok = True
+            content = b"{}"
+            status_code = 200
+
+            def json(self):
+                return {"access_token": "at-new", "refresh_token": "rt-rotated", "expires_in": 3600}
+
+        with patch.object(gc.requests, "post", return_value=_Resp()):
+            out = gc.refresh_token("cid", "csec", {"refresh_token": "rt-old"})
+        self.assertEqual(out.get("refresh_token"), "rt-rotated")
+        self.assertEqual(out.get("access_token"), "at-new")
+        self.assertTrue(out.get("_obtained"))
+
+    def test_refresh_400_is_korean_not_token_url(self):
+        class _Resp:
+            ok = False
+            status_code = 400
+            content = b"{}"
+
+            def json(self):
+                return {
+                    "error": "invalid_grant",
+                    "error_description": "Token has been expired or revoked.",
+                }
+
+        with patch.object(gc.requests, "post", return_value=_Resp()):
+            with self.assertRaises(RuntimeError) as ctx:
+                gc.refresh_token("cid", "csec", {"refresh_token": "rt-dead"})
+        msg = str(ctx.exception)
+        self.assertIn("다시 연결", msg)
+        self.assertNotIn("oauth2.googleapis.com", msg)
+
+    def test_expired_without_obtained_tries_refresh(self):
+        self.assertTrue(gc._expired({"access_token": "at", "refresh_token": "rt"}))
+        self.assertTrue(gc._expired({"refresh_token": "rt"}))
+        self.assertFalse(
+            gc._expired(
+                {
+                    "access_token": "at",
+                    "expires_in": 3600,
+                    "_obtained": __import__("datetime")
+                    .datetime.now(__import__("datetime").timezone.utc)
+                    .isoformat(),
+                }
+            )
+        )
 
     def test_usable_without_access_token(self):
         self.assertTrue(gc._usable_token({"refresh_token": "r"}))
