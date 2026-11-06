@@ -180,6 +180,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertNotIn("gc_task_sync", src)
         self.assertIn("sync_shinil_gmail_to_calendar", src)
         self.assertIn("GC_GMAIL_LABEL", src)
+        self.assertIn("GC_GMAIL_INBOX", src)
+        self.assertIn("calendar_chip_label", src)
+        self.assertIn("font-size:10px!important", src)
         self.assertIn("gmail.readonly", src)
         self.assertIn("insert_mail_day_event", src)
         self.assertIn("메일 열기:", src)
@@ -454,16 +457,23 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
         from datetime import date as d
 
         notes = gc.mail_event_notes(
+            subject="견적 요청서",
             sender="A <a@b.com>",
             received=d(2026, 11, 6),
             snippet="견적 문의",
             thread_id="tid1",
         )
+        self.assertIn("제목: 견적 요청서", notes)
         self.assertIn("보낸사람: A <a@b.com>", notes)
         self.assertIn("받은날: 2026-11-06", notes)
         self.assertIn("메일 열기:", notes)
         self.assertIn("tid1", notes)
-        self.assertEqual(gc.mail_event_title("납품"), "[메일] 납품")
+        self.assertEqual(gc.mail_event_title("납품"), "메일")
+        self.assertEqual(
+            gc.calendar_chip_label({"title": "[메일] Fwd: 구매발주", "description": "메일 열기: x"}),
+            "메일",
+        )
+        self.assertEqual(gc.calendar_chip_label({"title": "미팅", "hhmm": "09:00"}), "09:00 미팅")
 
     def test_match_gmail_label_leaf_and_exact(self):
         labels = [
@@ -505,8 +515,6 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             with patch.object(gc, "GC_GMAIL_SYNC_HOME", home), patch.object(
                 gc, "GC_GMAIL_SYNC", cache
             ), patch.object(gc.st, "session_state", {"_gc_api": {}}), patch.object(
-                gc, "list_gmail_labels", return_value=[{"id": "L1", "name": "신일가스"}]
-            ), patch.object(
                 gc, "list_gmail_message_ids", return_value=listed
             ), patch.object(
                 gc, "_list_synced_mail_ids_from_calendar", return_value=set()
@@ -527,14 +535,18 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
                 gc, "insert_mail_day_event", side_effect=_insert
             ), patch.object(
                 gc, "_gc_cache_add_event"
+            ), patch.object(
+                gc, "_retitle_mail_calendar_events", return_value=0
             ):
                 gc.save_gmail_sync_state({"ids": {"old1": "2026-01-01"}})
-                out = gc.sync_shinil_gmail_to_calendar()
+                out = gc.sync_shinil_gmail_to_calendar(since=d(2026, 11, 6))
             self.assertEqual(out["added"], 1)
             self.assertEqual(out["skipped"], 1)
             self.assertEqual(created[0]["msg_id"], "new1")
             self.assertEqual(created[0]["day"], d(2026, 11, 6))
+            self.assertIn("제목: 발주", created[0]["notes"])
             self.assertIn("메일 열기:", created[0]["notes"])
+            self.assertIn("in:inbox after:", gc.gmail_inbox_query_since(d(2026, 11, 6)))
 
 
 if __name__ == "__main__":

@@ -41,6 +41,8 @@ _CAL_API = "https://www.googleapis.com/calendar/v3"
 _TASK_API = "https://tasks.googleapis.com/tasks/v1"
 _GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 GC_GMAIL_LABEL = "신일가스"
+GC_GMAIL_INBOX = "INBOX"
+GC_MAIL_CHIP_TITLE = "메일"
 GC_GMAIL_SYNC = os.path.join(GC_DIR, "gmail_shinil_sync.json")
 GC_GMAIL_SYNC_HOME = os.path.join(_HOME_GC, "gmail_shinil_sync.json")
 GC_MAIL_SYNC_BATCH = 80
@@ -662,19 +664,60 @@ def _gmail_header(headers: list | None, name: str) -> str:
     return ""
 
 
-def mail_event_title(subject: str) -> str:
-    sub = str(subject or "").strip() or "(제목 없음)"
-    if sub.startswith("[메일]"):
-        return sub
-    return f"[메일] {sub}"
+def mail_event_title(_subject: str = "") -> str:
+    return GC_MAIL_CHIP_TITLE
 
 
-def mail_event_notes(*, sender: str, received: date, snippet: str, thread_id: str) -> str:
+def is_mail_calendar_event(ev: dict | None) -> bool:
+    title = str((ev or {}).get("title") or (ev or {}).get("summary") or "").strip()
+    desc = str((ev or {}).get("description") or "")
+    if title == GC_MAIL_CHIP_TITLE or title.startswith("[메일]"):
+        return True
+    return "메일 열기:" in desc or "mail.google.com/mail" in desc
+
+
+def mail_subject_from_event(ev: dict | None) -> str:
+    title = str((ev or {}).get("title") or (ev or {}).get("summary") or "").strip()
+    if title.startswith("[메일]"):
+        return title[len("[메일]") :].strip()
+    if title and title != GC_MAIL_CHIP_TITLE:
+        return title
+    note = str((ev or {}).get("description") or "")
+    first = (note.splitlines() or [""])[0].strip()
+    if first.startswith("제목:"):
+        return first[3:].strip()
+    if first and not first.startswith("보낸사람:") and not first.startswith("받은날:") and not first.startswith("메일 열기:"):
+        return first
+    return ""
+
+
+def calendar_chip_label(ev: dict | None) -> str:
+    """칸에는 짧게. 메일은 '메일'만."""
+    if is_mail_calendar_event(ev):
+        return GC_MAIL_CHIP_TITLE
+    title = str((ev or {}).get("title") or "").strip()
+    hhmm = str((ev or {}).get("hhmm") or "").strip()
+    lab = ((hhmm + " ") if hhmm else "") + title
+    if len(lab) > 14:
+        lab = lab[:13] + "…"
+    return lab or "(일정)"
+
+
+def mail_event_notes(
+    *,
+    subject: str,
+    sender: str,
+    received: date,
+    snippet: str,
+    thread_id: str,
+) -> str:
     url = gmail_thread_url(thread_id)
+    sub = str(subject or "").strip() or "(제목 없음)"
     snip = " ".join(str(snippet or "").split())
     if len(snip) > 280:
         snip = snip[:277] + "…"
     lines = [
+        f"제목: {sub}",
         f"보낸사람: {str(sender or '').strip() or '-'}",
         f"받은날: {received.isoformat()}",
         "",
@@ -683,6 +726,11 @@ def mail_event_notes(*, sender: str, received: date, snippet: str, thread_id: st
         lines.extend([snip, ""])
     lines.append(f"메일 열기: {url}")
     return "\n".join(lines)
+
+
+def gmail_inbox_query_since(since: date) -> str:
+    prev = since - timedelta(days=1)
+    return f"in:inbox after:{prev.year}/{prev.month:02d}/{prev.day:02d}"
 
 
 def match_gmail_label(labels: list[dict], want: str = GC_GMAIL_LABEL) -> dict:
@@ -736,10 +784,10 @@ def list_gmail_labels() -> list[dict]:
     return list(data.get("labels") or [])
 
 
-def list_gmail_message_ids(label_id: str, *, limit: int = 500) -> list[dict]:
-    lid = str(label_id or "").strip()
-    if not lid:
-        return []
+def list_gmail_message_ids(
+    label_id: str = GC_GMAIL_INBOX, *, limit: int = 500, query: str = ""
+) -> list[dict]:
+    lid = str(label_id or GC_GMAIL_INBOX).strip() or GC_GMAIL_INBOX
     out: list[dict] = []
     token = ""
     cap = max(1, min(int(limit or 500), 2000))
@@ -748,6 +796,8 @@ def list_gmail_message_ids(label_id: str, *, limit: int = 500) -> list[dict]:
             "labelIds": lid,
             "maxResults": str(min(100, cap - len(out))),
         }
+        if str(query or "").strip():
+            params["q"] = str(query).strip()
         if token:
             params["pageToken"] = token
         data = _gmail_get("messages", params)
@@ -887,25 +937,64 @@ def _primary_writable_cal_id(cals: list[dict] | None = None) -> str:
     return "primary"
 
 
+def _retitle_mail_calendar_events(cal_id: str) -> int:
+    """이미 넣은 메일 일정의 칸 제목을 '메일'로 줄인다. 본문은 메모에 둔다."""
+    cid = str(cal_id or "").strip() or "primary"
+    n = 0
+    token = ""
+    for _ in range(20):
+        params: dict[str, Any] = {
+            "privateExtendedProperty": "shinilMail=1",
+            "maxResults": "250",
+            "singleEvents": "true",
+            "fields": "items(id,summary,description),nextPageToken",
+        }
+        if token:
+            params["pageToken"] = token
+        try:
+            data = api_get(
+                f"{_CAL_API}/calendars/{urllib.parse.quote(cid, safe='')}/events",
+                params,
+            )
+        except Exception:
+            break
+        for it in data.get("items") or []:
+            eid = str((it or {}).get("id") or "")
+            summary = str((it or {}).get("summary") or "").strip()
+            if not eid or summary == GC_MAIL_CHIP_TITLE:
+                continue
+            fields: dict[str, Any] = {"summary": GC_MAIL_CHIP_TITLE}
+            desc = str((it or {}).get("description") or "")
+            sub = mail_subject_from_event(
+                {"title": summary, "description": desc}
+            )
+            if sub and f"제목: {sub}" not in desc:
+                fields["description"] = f"제목: {sub}\n" + (desc.lstrip("\n") if desc else "")
+            try:
+                patch_event(cid, eid, fields)
+                n += 1
+            except Exception:
+                continue
+        token = str(data.get("nextPageToken") or "")
+        if not token:
+            break
+    return n
+
+
 def sync_shinil_gmail_to_calendar(
     *,
-    label_name: str = GC_GMAIL_LABEL,
+    label_name: str = GC_GMAIL_INBOX,
     cal_id: str = "",
     limit: int = GC_MAIL_SYNC_BATCH,
+    since: date | None = None,
 ) -> dict[str, Any]:
-    """신일가스 라벨 메일을 받은 날 종일 일정으로 넣고 Gmail 링크를 건다."""
-    labels = list_gmail_labels()
-    lab = match_gmail_label(labels, label_name)
-    if not lab:
-        return {
-            "added": 0,
-            "skipped": 0,
-            "remain": 0,
-            "label": label_name,
-            "error": f"Gmail에 '{label_name}' 폴더(라벨)가 없습니다.",
-        }
-    lid = str(lab.get("id") or "")
-    listed = list_gmail_message_ids(lid, limit=500)
+    """오늘부터 받은편지함 메일을 종일 일정으로 넣고, 칸에는 '메일'만 보여 준다."""
+    since = since or datetime.now(_TZ).date()
+    listed = list_gmail_message_ids(
+        GC_GMAIL_INBOX,
+        limit=500,
+        query=gmail_inbox_query_since(since),
+    )
     state = load_gmail_sync_state()
     done = {
         str(k): str(v)
@@ -930,9 +1019,10 @@ def sync_shinil_gmail_to_calendar(
         except Exception:
             continue
         day = meta.get("day")
-        if not isinstance(day, date):
+        if not isinstance(day, date) or day < since:
             continue
         notes = mail_event_notes(
+            subject=str(meta.get("subject") or ""),
             sender=str(meta.get("sender") or ""),
             received=day,
             snippet=str(meta.get("snippet") or ""),
@@ -954,9 +1044,15 @@ def sync_shinil_gmail_to_calendar(
         months.add((day.year, day.month))
         chip = _event_chip(created, {"id": cid, "summary": "", "color": "#1a73e8", "writable": True})
         if chip:
+            chip["title"] = GC_MAIL_CHIP_TITLE
             _gc_cache_add_event(day, chip)
+    try:
+        _retitle_mail_calendar_events(cid)
+    except Exception:
+        pass
     state["ids"] = done
-    state["label"] = str(lab.get("name") or label_name)
+    state["label"] = GC_GMAIL_INBOX
+    state["since"] = since.isoformat()
     state["cal_id"] = cid
     state["at"] = datetime.now(_TZ).isoformat()
     save_gmail_sync_state(state)
@@ -964,11 +1060,13 @@ def sync_shinil_gmail_to_calendar(
     for yy, mm in months:
         key = _ev_key(yy, mm)
         box.pop(key + ":at", None)
+        box.pop(key, None)
+        _EV_MEM.pop(key, None)
     return {
         "added": added,
         "skipped": skipped,
         "remain": max(0, len(pending) - added),
-        "label": str(lab.get("name") or label_name),
+        "label": GC_GMAIL_INBOX,
         "error": "",
     }
 
@@ -1526,7 +1624,7 @@ def _month_html(
                 cls.append("gc-hol")
             chips = []
             for ev in (by_day.get(key) or [])[:4]:
-                label = html.escape((ev.get("hhmm") + " " if ev.get("hhmm") else "") + ev["title"])
+                label = html.escape(calendar_chip_label(ev))
                 col = html.escape(str(ev.get("color") or "#c5c9ce"))
                 xbtn = ""
                 if ev.get("writable") and ev.get("id") and ev.get("cal_id"):
@@ -1561,7 +1659,7 @@ def _month_html(
 .gc-num {{ font-size:12px; font-weight:500; margin-bottom:2px; }}
 .gc-sun, .gc-sun .gc-num, .gc-hol, .gc-hol .gc-num {{ color:#d93025; }}
 .gc-sat, .gc-sat .gc-num {{ color:#c62828; }}
-.gc-chip {{ font-size:11px; line-height:1.25; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
+.gc-chip {{ font-size:10px; line-height:1.2; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
   display:flex; align-items:center; gap:2px; overflow:hidden; }}
 .gc-chip-t {{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 .gc-x {{ flex:0 0 auto; color:#80868b; font-size:13px; padding:0 3px; line-height:1; cursor:pointer; }}
@@ -1890,7 +1988,7 @@ div[class*="st-key-gc_evpick_"] button {
   height: 1.2rem !important;
   width: 100% !important;
   padding: 0 4px !important;
-  font-size: 13px !important;
+  font-size: 10px !important;
   font-weight: 400 !important;
   border: none !important;
   outline: none !important;
@@ -1909,7 +2007,7 @@ div[class*="st-key-gc_evpick_"] button span,
 div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],
 div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p,
 div[class*="st-key-gc_evpick_"] [data-testid^="stBaseButton"] p {
-  font-size: 13px !important;
+  font-size: 10px !important;
   line-height: 1.2 !important;
   font-weight: 400 !important;
 }
@@ -2076,14 +2174,7 @@ div[class*="st-key-gc_cellpink"] {
                                 for idx, ev in enumerate(items):
                                     eid = str(ev.get("id") or "")
                                     cid = str(ev.get("cal_id") or "")
-                                    lab = (
-                                        (str(ev.get("hhmm") or "") + " ")
-                                        if ev.get("hhmm")
-                                        else ""
-                                    ) + str(ev.get("title") or "")
-                                    if len(lab) > 14:
-                                        lab = lab[:13] + "…"
-                                    lab = lab or "(일정)"
+                                    lab = calendar_chip_label(ev)
                                     with st.container(key=f"gc_chiprow_{stamp}_{idx}"):
                                         st.button(
                                             lab,
@@ -2106,14 +2197,14 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """일정 제목만 13px. 월 이동마다 스크립트를 넣지 않는다."""
+    """일정 제목만 10px. 월 이동마다 스크립트를 넣지 않는다."""
     st.markdown(
         "<style>html body div[class*='st-key-gc_evpick_'] button,"
         "html body div[class*='st-key-gc_evpick_'] button p,"
         "html body div[class*='st-key-gc_evpick_'] button span,"
         "html body div[class*='st-key-gc_evpick_'] button div,"
         "html body div[class*='st-key-gc_evpick_'] [data-testid='stMarkdownContainer'] p"
-        "{font-size:13px!important;line-height:1.2!important;font-weight:400!important}</style>",
+        "{font-size:10px!important;line-height:1.2!important;font-weight:400!important}</style>",
         unsafe_allow_html=True,
     )
 
@@ -2124,6 +2215,11 @@ def _render_event_memo_pop(ev: dict) -> None:
     eid = str(ev.get("id") or "")
     cid = str(ev.get("cal_id") or "")
     note = str(ev.get("description") or "")
+    if is_mail_calendar_event(ev):
+        title = GC_MAIL_CHIP_TITLE
+        sub = mail_subject_from_event(ev)
+        if sub and f"제목: {sub}" not in note:
+            note = f"제목: {sub}\n" + note.lstrip()
     writable = bool(ev.get("writable"))
     nk = "gc_pop_note_" + (eid[-24:] if eid else "x")
     if nk not in st.session_state:
@@ -2510,10 +2606,10 @@ div[class*="st-key-gc_head_acts"] button {
                             extra = ""
                             err = str(mail.get("error") or "")
                             if err:
-                                extra = f" · 신일가스 메일: {err}"
+                                extra = f" · 받은편지함 메일: {err}"
                             else:
                                 extra = (
-                                    f" · 신일가스 메일 {int(mail.get('added') or 0)}건 추가"
+                                    f" · 받은편지함 메일 {int(mail.get('added') or 0)}건 추가"
                                 )
                                 remain = int(mail.get("remain") or 0)
                                 if remain:
@@ -2860,7 +2956,7 @@ def render_google_calendar_tab(
     'html body div[class*="st-key-gc_evpick_"] button span,' +
     'html body div[class*="st-key-gc_evpick_"] button div,' +
     'html body div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
-    '{font-size:13px!important;line-height:1.2!important;font-weight:400!important;}';
+    '{font-size:10px!important;line-height:1.2!important;font-weight:400!important;}';
   function put(doc) {
     if (!doc) return;
     var s = doc.getElementById(id);
