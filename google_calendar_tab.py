@@ -44,6 +44,7 @@ GC_GMAIL_LABEL = "신일가스"
 GC_GMAIL_PERSONAL = "개인업무"
 GC_GMAIL_INBOX = "INBOX"
 GC_MAIL_CHIP_TITLE = "메일"
+GC_BODY_FS = "11px"  # 할 일 목록 제목과 달력 칩 제목을 같게 둔다.
 GC_GMAIL_SYNC = os.path.join(GC_DIR, "gmail_shinil_sync.json")
 GC_GMAIL_SYNC_HOME = os.path.join(_HOME_GC, "gmail_shinil_sync.json")
 GC_MAIL_SYNC_BATCH = 80
@@ -1812,7 +1813,7 @@ def _month_html(
 .gc-num {{ font-size:12px; font-weight:500; margin-bottom:2px; }}
 .gc-sun, .gc-sun .gc-num, .gc-hol, .gc-hol .gc-num {{ color:#d93025; }}
 .gc-sat, .gc-sat .gc-num {{ color:#c62828; }}
-.gc-chip {{ font-size:8px; line-height:1.2; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
+.gc-chip {{ font-size:11px; line-height:1.2; padding:1px 2px 1px 4px; margin:1px 0; border-radius:2px;
   display:flex; align-items:center; gap:2px; overflow:hidden; }}
 .gc-chip-t {{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 .gc-x {{ flex:0 0 auto; color:#80868b; font-size:13px; padding:0 3px; line-height:1; cursor:pointer; }}
@@ -2141,7 +2142,7 @@ div[class*="st-key-gc_evpick_"] button {
   height: 1.2rem !important;
   width: 100% !important;
   padding: 0 4px !important;
-  font-size: 8px !important;
+  font-size: 11px !important;
   font-weight: 400 !important;
   border: none !important;
   outline: none !important;
@@ -2159,10 +2160,13 @@ div[class*="st-key-gc_evpick_"] button p,
 div[class*="st-key-gc_evpick_"] button span,
 div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],
 div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p,
-div[class*="st-key-gc_evpick_"] [data-testid^="stBaseButton"] p {
-  font-size: 8px !important;
+div[class*="st-key-gc_evpick_"] [data-testid^="stBaseButton"] p,
+div[class*="st-key-gc_evpick_"] [data-testid="stBaseButton-tertiary"],
+div[class*="st-key-gc_evpick_"] [data-testid="stBaseButton-tertiary"] p {
+  font-size: 11px !important;
   line-height: 1.2 !important;
   font-weight: 400 !important;
+  margin: 0 !important;
 }
 div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   background: #d2e3fc !important;
@@ -2350,14 +2354,18 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """일정 제목만 8px. 월 이동마다 스크립트를 넣지 않는다."""
+    """일정 칩을 할 일 목록과 같은 11px로. Streamlit 버튼 기본값을 이긴다."""
+    fs = GC_BODY_FS
     st.markdown(
         "<style>html body div[class*='st-key-gc_evpick_'] button,"
+        "html body div[class*='st-key-gc_evpick_'] [data-testid='stBaseButton-tertiary'],"
         "html body div[class*='st-key-gc_evpick_'] button p,"
         "html body div[class*='st-key-gc_evpick_'] button span,"
         "html body div[class*='st-key-gc_evpick_'] button div,"
+        "html body div[class*='st-key-gc_evpick_'] [data-testid='stBaseButton-tertiary'] p,"
         "html body div[class*='st-key-gc_evpick_'] [data-testid='stMarkdownContainer'] p"
-        "{font-size:8px!important;line-height:1.2!important;font-weight:400!important}</style>",
+        f"{{font-size:{fs}!important;line-height:1.2!important;font-weight:400!important;"
+        "margin:0!important}}</style>",
         unsafe_allow_html=True,
     )
 
@@ -3198,11 +3206,13 @@ def render_google_calendar_tab(
   } catch (e) {}
   var id = "gc-evpick-fs";
   var css = 'html body div[class*="st-key-gc_evpick_"] button,' +
+    'html body div[class*="st-key-gc_evpick_"] [data-testid="stBaseButton-tertiary"],' +
     'html body div[class*="st-key-gc_evpick_"] button p,' +
     'html body div[class*="st-key-gc_evpick_"] button span,' +
     'html body div[class*="st-key-gc_evpick_"] button div,' +
+    'html body div[class*="st-key-gc_evpick_"] [data-testid="stBaseButton-tertiary"] p,' +
     'html body div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
-    '{font-size:8px!important;line-height:1.2!important;font-weight:400!important;}';
+    '{font-size:11px!important;line-height:1.2!important;font-weight:400!important;margin:0!important;}';
   function put(doc) {
     if (!doc) return;
     var s = doc.getElementById(id);
