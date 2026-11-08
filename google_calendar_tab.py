@@ -1137,18 +1137,24 @@ def _retitle_mail_calendar_events(cal_id: str) -> int:
 
 def sync_shinil_gmail_to_calendar(
     *,
-    label_name: str = GC_GMAIL_INBOX,
+    label_name: str = GC_GMAIL_LABEL,
     cal_id: str = "",
     limit: int = GC_MAIL_SYNC_BATCH,
     since: date | None = None,
 ) -> dict[str, Any]:
-    """오늘부터 받은편지함 메일을 종일 일정으로 넣고, 칸에는 '메일'만 보여 준다."""
-    since = since or datetime.now(_TZ).date()
-    listed = list_gmail_message_ids(
-        GC_GMAIL_INBOX,
-        limit=500,
-        query=gmail_inbox_query_since(since),
-    )
+    """신일가스 라벨 메일을 받은 날 종일 일정으로 넣고, 칸에는 '메일'만 보여 준다."""
+    labels = list_gmail_labels()
+    lab = match_gmail_label(labels, label_name)
+    if not lab:
+        return {
+            "added": 0,
+            "skipped": 0,
+            "remain": 0,
+            "label": label_name,
+            "error": f"Gmail에 '{label_name}' 폴더(라벨)가 없습니다.",
+        }
+    lid = str(lab.get("id") or "")
+    listed = list_gmail_message_ids(lid, limit=500)
     state = load_gmail_sync_state()
     done = {
         str(k): str(v)
@@ -1173,7 +1179,9 @@ def sync_shinil_gmail_to_calendar(
         except Exception:
             continue
         day = meta.get("day")
-        if not isinstance(day, date) or day < since:
+        if not isinstance(day, date):
+            continue
+        if since is not None and day < since:
             continue
         notes = mail_event_notes(
             subject=str(meta.get("subject") or ""),
@@ -1205,8 +1213,9 @@ def sync_shinil_gmail_to_calendar(
     except Exception:
         pass
     state["ids"] = done
-    state["label"] = GC_GMAIL_INBOX
-    state["since"] = since.isoformat()
+    state["label"] = str(lab.get("name") or label_name)
+    if since is not None:
+        state["since"] = since.isoformat()
     state["cal_id"] = cid
     state["at"] = datetime.now(_TZ).isoformat()
     save_gmail_sync_state(state)
@@ -1220,7 +1229,7 @@ def sync_shinil_gmail_to_calendar(
         "added": added,
         "skipped": skipped,
         "remain": max(0, len(pending) - added),
-        "label": GC_GMAIL_INBOX,
+        "label": str(lab.get("name") or label_name),
         "error": "",
     }
 
@@ -2899,10 +2908,10 @@ div[class*="st-key-gc_head_acts"] button {
                             extra = ""
                             err = str(mail.get("error") or "")
                             if err:
-                                extra = f" · 받은편지함 메일: {err}"
+                                extra = f" · 신일가스 메일: {err}"
                             else:
                                 extra = (
-                                    f" · 받은편지함 메일 {int(mail.get('added') or 0)}건 추가"
+                                    f" · 신일가스 메일 {int(mail.get('added') or 0)}건 추가"
                                 )
                                 remain = int(mail.get("remain") or 0)
                                 if remain:
