@@ -11,6 +11,7 @@ class DashTabExpandTest(unittest.TestCase):
         self.assertIn("def _dash_skip_inactive_on_filter", src)
         self.assertIn("def _dash_inactive_tab_keep", src)
         self.assertIn("_dash_filter_changed_flag", src)
+        self.assertIn("_dash_full_tabs_once", src)
         light = src.split("def _dash_should_defer_light_tab", 1)[1].split("def ", 1)[0]
         heavy = src.split("def _dash_should_defer_heavy_tab", 1)[1].split("def ", 1)[0]
         self.assertIn("_dash_skip_inactive_on_filter", light)

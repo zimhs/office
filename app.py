@@ -8324,9 +8324,15 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_skip_inactive_on_filter(tab_idx: int) -> bool:
-    """담당자·거래처 등 상단 필터가 바뀐 이번 run에서, 보고 있지 않은 탭만 건너뛴다."""
+    """담당자·거래처 등 상단 필터가 바뀐 이번 run에서, 보고 있지 않은 탭만 건너뛴다.
+
+    재시작 직후엔 Streamlit이 첫 탭을 여는데 브라우저 cookie는 예전 탭일 수 있다.
+    한 번 전체를 그린 뒤에만 건너뛴다.
+    """
     if st.session_state.get(f"_dash_force_tab_{tab_idx}"):
         st.session_state.pop(f"_dash_force_tab_{tab_idx}", None)
+        return False
+    if not st.session_state.get("_dash_full_tabs_once"):
         return False
     if not st.session_state.get("_dash_filter_changed_flag"):
         return False
@@ -8334,9 +8340,14 @@ def _dash_skip_inactive_on_filter(tab_idx: int) -> bool:
     if active is None:
         return False
     try:
-        return int(active) != int(tab_idx)
+        active_i = int(active)
+        idx = int(tab_idx)
     except Exception:
         return False
+    # 재시작 후 Streamlit은 첫 탭을 여는데 cookie는 예전 탭일 수 있다. 첫 탭을 비우지 않는다.
+    if active_i != 0 and idx == 0:
+        return False
+    return active_i != idx
 
 
 def _dash_inactive_tab_keep(tab_idx: int) -> None:
@@ -20741,6 +20752,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     _dash_inject_sticky_resync_script(
         force=not bool(st.session_state.get("_dash_filter_changed_flag"))
     )
+    st.session_state["_dash_full_tabs_once"] = True
 
 
 _dash_filter_and_tabs_fragment()
