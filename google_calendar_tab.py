@@ -2145,13 +2145,33 @@ div[class*="st-key-gc_calgrid"] [data-testid="stMarkdownContainer"] p {
 div[class*="st-key-gc_chiprow_"],
 div[class*="st-key-gc_evsel_"] {
   position: relative !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+div[class*="st-key-gc_chiprow_"] [data-testid="stVerticalBlock"],
+div[class*="st-key-gc_evsel_"] [data-testid="stVerticalBlock"] {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 0 !important;
+  min-width: 0 !important;
+}
+div[class*="st-key-gc_chiprow_"] div[class*="st-key-gc_evpick_"],
+div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  max-width: calc(100% - 1.2rem) !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
 }
 div[class*="st-key-gc_xd_"] {
-  position: absolute !important;
-  top: 50% !important;
-  right: 1px !important;
-  transform: translateY(-50%) !important;
+  position: relative !important;
+  top: auto !important;
+  right: auto !important;
+  transform: none !important;
   z-index: 3 !important;
+  flex: 0 0 1.2rem !important;
   width: 1.2rem !important;
   height: 1.2rem !important;
   display: flex !important;
@@ -2186,14 +2206,11 @@ div[class*="st-key-gc_evlist_"] {
   overflow-x: hidden !important;
   padding: 0 2px 4px !important;
 }
-div[class*="st-key-gc_chiprow_"] div[class*="st-key-gc_evpick_"] button,
-div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
-  padding-right: 16px !important;
-}
 div[class*="st-key-gc_evpick_"] button {
   min-height: 1.2rem !important;
   height: 1.2rem !important;
   width: 100% !important;
+  max-width: 100% !important;
   padding: 0 4px !important;
   font-size: 10px !important;
   font-weight: 400 !important;
@@ -2206,7 +2223,8 @@ div[class*="st-key-gc_evpick_"] button {
   justify-content: flex-start !important;
   text-align: left !important;
   white-space: nowrap !important;
-  overflow: hidden !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
 }
 div[class*="st-key-gc_evpick_"] *,
 div[class*="st-key-gc_evpick_"] button p,
@@ -2217,6 +2235,10 @@ div[class*="st-key-gc_evpick_"] [data-testid^="stBaseButton"] p {
   font-size: 10px !important;
   line-height: 1.2 !important;
   font-weight: 400 !important;
+  white-space: nowrap !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  max-width: 100% !important;
 }
 div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   background: #d2e3fc !important;
