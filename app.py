@@ -8324,30 +8324,8 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_skip_inactive_on_filter(tab_idx: int) -> bool:
-    """담당자·거래처 등 상단 필터가 바뀐 이번 run에서, 보고 있지 않은 탭만 건너뛴다.
-
-    재시작 직후엔 Streamlit이 첫 탭을 여는데 브라우저 cookie는 예전 탭일 수 있다.
-    한 번 전체를 그린 뒤에만 건너뛴다.
-    """
-    if st.session_state.get(f"_dash_force_tab_{tab_idx}"):
-        st.session_state.pop(f"_dash_force_tab_{tab_idx}", None)
-        return False
-    if not st.session_state.get("_dash_full_tabs_once"):
-        return False
-    if not st.session_state.get("_dash_filter_changed_flag"):
-        return False
-    active = _dash_active_tab_idx()
-    if active is None:
-        return False
-    try:
-        active_i = int(active)
-        idx = int(tab_idx)
-    except Exception:
-        return False
-    # 재시작 후 Streamlit은 첫 탭을 여는데 cookie는 예전 탭일 수 있다. 첫 탭을 비우지 않는다.
-    if active_i != 0 and idx == 0:
-        return False
-    return active_i != idx
+    """탭을 건너뛰면 다른 탭이 빈 채로 열리지 않는다. 항상 그린다."""
+    return False
 
 
 def _dash_inactive_tab_keep(tab_idx: int) -> None:
@@ -8358,8 +8336,8 @@ def _dash_inactive_tab_keep(tab_idx: int) -> None:
 
 
 def _dash_should_defer_light_tab(tab_idx: int) -> bool:
-    """카카오맵·설비·탱크·수익성 — 필터 변경 때 비활성 탭만 건너뛴다."""
-    return _dash_skip_inactive_on_filter(tab_idx)
+    """카카오맵·설비·탱크·수익성 — 시작부터 펼침."""
+    return False
 
 
 def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
@@ -8367,13 +8345,13 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """업무일지·시장조사·공문 — 필터 변경 때 비활성 탭만 건너뛰고 입력값은 보존한다."""
+    """업무일지·시장조사·공문 — 시작부터 펼침."""
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
         mounted[i] = True
     st.session_state["_dash_heavy_warmed"] = True
     mounted[tab_idx] = True
-    return _dash_skip_inactive_on_filter(tab_idx)
+    return False
 
 
 def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: tuple[str, ...]) -> None:

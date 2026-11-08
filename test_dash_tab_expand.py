@@ -5,21 +5,15 @@ import unittest
 
 
 class DashTabExpandTest(unittest.TestCase):
-    def test_filter_skips_inactive_tabs_only(self):
+    def test_filter_does_not_skip_tabs(self):
         with open("app.py", encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("def _dash_skip_inactive_on_filter", src)
-        self.assertIn("def _dash_inactive_tab_keep", src)
-        self.assertIn("_dash_filter_changed_flag", src)
-        self.assertIn("_dash_full_tabs_once", src)
+        skip = src.split("def _dash_skip_inactive_on_filter", 1)[1].split("def ", 1)[0]
+        self.assertIn("return False", skip)
         light = src.split("def _dash_should_defer_light_tab", 1)[1].split("def ", 1)[0]
         heavy = src.split("def _dash_should_defer_heavy_tab", 1)[1].split("def ", 1)[0]
-        self.assertIn("_dash_skip_inactive_on_filter", light)
-        self.assertIn("_dash_skip_inactive_on_filter", heavy)
-        self.assertIn("_dash_skip_inactive_on_filter(0)", src)
-        self.assertIn("_dash_skip_inactive_on_filter(12)", src)
-        self.assertIn("st-key-_dash_reload_tab_", src)
-        self.assertIn("_ACTIVE_TAB_INJECT_VER = 18", src)
+        self.assertIn("return False", light)
+        self.assertIn("return False", heavy)
 
 
 class CloudClipFixIsolationTest(unittest.TestCase):
