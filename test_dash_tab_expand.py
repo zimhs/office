@@ -1,31 +1,24 @@
 """모든 탭은 시작부터 펼침 — 화면 불러오기 stub 로 접히지 않아야 한다."""
 from __future__ import annotations
 
-import ast
 import unittest
 
 
-_DEFER_FNS = (
-    "_dash_should_defer_light_tab",
-    "_dash_should_defer_heavy_tab",
-)
-
-
 class DashTabExpandTest(unittest.TestCase):
-    def test_defer_helpers_always_return_false(self):
+    def test_filter_skips_inactive_tabs_only(self):
         with open("app.py", encoding="utf-8") as f:
-            tree = ast.parse(f.read())
-        found: set[str] = set()
-        for node in tree.body:
-            if not isinstance(node, ast.FunctionDef) or node.name not in _DEFER_FNS:
-                continue
-            found.add(node.name)
-            returns = [n for n in ast.walk(node) if isinstance(n, ast.Return)]
-            self.assertTrue(returns, msg=f"{node.name} has no return")
-            for ret in returns:
-                self.assertIsInstance(ret.value, ast.Constant, msg=f"{node.name} return is not constant")
-                self.assertIs(ret.value.value, False, msg=f"{node.name} must always return False")
-        self.assertEqual(found, set(_DEFER_FNS))
+            src = f.read()
+        self.assertIn("def _dash_skip_inactive_on_filter", src)
+        self.assertIn("def _dash_inactive_tab_keep", src)
+        self.assertIn("_dash_filter_changed_flag", src)
+        light = src.split("def _dash_should_defer_light_tab", 1)[1].split("def ", 1)[0]
+        heavy = src.split("def _dash_should_defer_heavy_tab", 1)[1].split("def ", 1)[0]
+        self.assertIn("_dash_skip_inactive_on_filter", light)
+        self.assertIn("_dash_skip_inactive_on_filter", heavy)
+        self.assertIn("_dash_skip_inactive_on_filter(0)", src)
+        self.assertIn("_dash_skip_inactive_on_filter(12)", src)
+        self.assertIn("st-key-_dash_reload_tab_", src)
+        self.assertIn("_ACTIVE_TAB_INJECT_VER = 18", src)
 
 
 class CloudClipFixIsolationTest(unittest.TestCase):
