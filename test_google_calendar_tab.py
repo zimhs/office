@@ -180,6 +180,7 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertNotIn("gc_task_sync", src)
         self.assertIn("sync_shinil_gmail_to_calendar", src)
         self.assertIn("GC_GMAIL_LABEL", src)
+        self.assertIn("label_name: str = GC_GMAIL_LABEL", src)
         self.assertIn("GC_GMAIL_INBOX", src)
         self.assertIn("calendar_chip_label", src)
         self.assertIn("font-size:10px!important", src)
@@ -549,6 +550,10 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             with patch.object(gc, "GC_GMAIL_SYNC_HOME", home), patch.object(
                 gc, "GC_GMAIL_SYNC", cache
             ), patch.object(gc.st, "session_state", {"_gc_api": {}}), patch.object(
+                gc,
+                "list_gmail_labels",
+                return_value=[{"id": "Label_shinil", "name": "신일가스"}],
+            ), patch.object(
                 gc, "list_gmail_message_ids", return_value=listed
             ), patch.object(
                 gc, "_list_synced_mail_ids_from_calendar", return_value=set()
@@ -580,7 +585,7 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             self.assertEqual(created[0]["day"], d(2026, 11, 6))
             self.assertIn("제목: 발주", created[0]["notes"])
             self.assertIn("메일 열기:", created[0]["notes"])
-            self.assertIn("in:inbox after:", gc.gmail_inbox_query_since(d(2026, 11, 6)))
+            self.assertEqual(out["label"], "신일가스")
 
 
 if __name__ == "__main__":
