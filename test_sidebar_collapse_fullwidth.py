@@ -13,7 +13,7 @@ class SidebarCollapseFullwidthTest(unittest.TestCase):
             cls.src = f.read()
 
     def test_streamlit_default_collapse_restored(self):
-        self.assertIn("STICKY_SCRIPT_VER_MAC = 49", self.src)
+        self.assertIn("STICKY_SCRIPT_VER_MAC = 50", self.src)
         self.assertIn("_sticky_py_ver = 106", self.src)
         self.assertIn("분기사업분석 안정 시점", self.src)
         # 진동 원인이던 JS 강제 접힘 제거

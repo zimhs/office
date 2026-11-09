@@ -76,7 +76,7 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn("aria-label', '이전 탭'", src)
         self.assertIn("function sizeMainTabScrollWrap", src)
         self.assertIn("_sticky_py_ver = 100", src)
-        self.assertIn("_STICKY_INJECT_VER = 100", src)
+        self.assertIn("_STICKY_INJECT_VER = 101", src)
         self.assertIn("function ensureSidebarToggleLive", src)
         self.assertNotIn(
             "html:not(.dashboard-touch-mode) [data-testid=\"collapsedControl\"],\n"

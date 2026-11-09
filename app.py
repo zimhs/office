@@ -723,6 +723,10 @@ def inject_custom_css():
                 opacity: 0.28 !important;
                 cursor: default !important;
             }
+            [data-testid="stTabs"] [role="tabpanel"][hidden],
+            [data-testid="stTabs"] [role="tabpanel"][aria-hidden="true"] {
+                content-visibility: hidden !important;
+            }
             .dashboard-tab-scroll > [role="tablist"],
             .dashboard-tab-scroll > [role="tablist"].dashboard-tabs-in-filter {
                 flex: 1 1 0 !important;
@@ -11879,8 +11883,8 @@ def inject_sticky_tabs_script():
             var PY_STICKY_VER = __PY_STICKY_INJECT_VER__;
             var SPACER_ID = 'dashboard-sticky-spacer';
             var SHIELD_ID = 'dashboard-top-shield';
-            var STICKY_SCRIPT_VER_MAC = 49; /* v49: 분기사업분석 시점처럼 Streamlit 기본 접힘 복원 */
-            var STICKY_SCRIPT_VER_IPAD = 70; /* v70: 좌 >> · 우 Share 표시. 맥 수치 무손실 */
+            var STICKY_SCRIPT_VER_MAC = 50; /* v50: 건강한 탭 이동은 고정바를 다시 끼우지 않음 */
+            var STICKY_SCRIPT_VER_IPAD = 71; /* v71: 건강한 탭 이동은 고정바를 다시 끼우지 않음 */
             /* 배포 후에도 옛 parentWin 핸들러가 남지 않도록 Python inject ver로 Ready 무효화 */
             if (parentWin.__dashboardStickyPyVer !== PY_STICKY_VER) {
                 parentWin.__dashboardStickyMacReady = 0;
@@ -13998,12 +14002,25 @@ def inject_sticky_tabs_script():
                     } catch (eFi2) {}
                 }, true);
                 parentDoc.addEventListener('click', function(e) {
-                    if (e.target.closest('[data-testid="collapsedControl"]') ||
-                        e.target.closest('[data-testid="stSidebar"]') ||
-                        e.target.closest('[role="tab"]')) {
-                        scheduleSync(80);
-                        scheduleSync(400);
+                    var tabEl = null;
+                    var sideEl = false;
+                    try {
+                        tabEl = e.target && e.target.closest ? e.target.closest('[role="tab"]') : null;
+                        sideEl = !!(e.target && e.target.closest && (
+                            e.target.closest('[data-testid="collapsedControl"]') ||
+                            e.target.closest('[data-testid="stSidebar"]')
+                        ));
+                    } catch (eHit) {}
+                    if (!tabEl && !sideEl) return;
+                    if (tabEl && !sideEl) {
+                        try {
+                            var fbTab = findFilterBox();
+                            var allTab = collectMainTabLists();
+                            if (isTabMountHealthy(fbTab, allTab) && fbTab && isElementFixed(fbTab)) return;
+                        } catch (eTabOk) {}
                     }
+                    scheduleSync(80);
+                    scheduleSync(400);
                 }, true);
                 parentWin.addEventListener('resize', function() {
                     if (isIpadFilterLocked()) return;
@@ -14118,17 +14135,32 @@ def inject_sticky_tabs_script():
                 parentDoc.addEventListener('click', function(e) {
                     try { ensureSidebarToggleLive(); } catch (eSbC) {}
                     try { keepExpandBtnAlive(); } catch (eKeep) {}
-                    if (e.target.closest('[data-testid="collapsedControl"]') ||
-                        e.target.closest('[data-testid="stExpandSidebarButton"]') ||
-                        e.target.closest('[data-testid="stSidebarCollapsedControl"]') ||
-                        e.target.closest('[data-testid="stSidebar"] button') ||
-                        e.target.closest('[role="tab"]')) {
-                        /* 접기/펼치기 후 고정바 좌표만 다시 맞춤 — 사이드바 width는 Streamlit에 맡김 */
+                    var tabEl = null;
+                    var sideEl = false;
+                    try {
+                        tabEl = e.target && e.target.closest ? e.target.closest('[role="tab"]') : null;
+                        sideEl = !!(e.target && e.target.closest && (
+                            e.target.closest('[data-testid="collapsedControl"]') ||
+                            e.target.closest('[data-testid="stExpandSidebarButton"]') ||
+                            e.target.closest('[data-testid="stSidebarCollapsedControl"]') ||
+                            e.target.closest('[data-testid="stSidebar"] button')
+                        ));
+                    } catch (eHit) {}
+                    if (!tabEl && !sideEl) return;
+                    /* 탭만 옮길 때는 고정바가 이미 붙어 있으면 DOM을 다시 끼우지 않는다 */
+                    if (tabEl && !sideEl) {
                         try {
-                            parentWin.__dashboardStickyGeoFrozen = null;
-                            lastGeoKey = '';
-                        } catch (eClr) {}
-                        scheduleSync(80);
+                            var fbTab = findFilterBox();
+                            var allTab = collectMainTabLists();
+                            if (isTabMountHealthy(fbTab, allTab) && fbTab && isElementFixed(fbTab)) return;
+                        } catch (eTabOk) {}
+                    }
+                    try {
+                        parentWin.__dashboardStickyGeoFrozen = null;
+                        lastGeoKey = '';
+                    } catch (eClr) {}
+                    scheduleSync(sideEl ? 80 : 40);
+                    if (sideEl) {
                         scheduleSync(220);
                         scheduleSync(500);
                     }
@@ -16716,7 +16748,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     )
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
-    _STICKY_INJECT_VER = 100
+    _STICKY_INJECT_VER = 101
     _ACTIVE_TAB_INJECT_VER = 18
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
