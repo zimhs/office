@@ -108,6 +108,17 @@ def read_debt_upload_stamp(cache_dir: str) -> Dict[str, Any]:
     return {}
 
 
+def _file_md5(path: str) -> str:
+    try:
+        h = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
 def local_debt_upload_should_keep(
     cache_dir: str,
     *,
@@ -115,13 +126,43 @@ def local_debt_upload_should_keep(
     remote_ts: float = 0.0,
     remote_md5: str = "",
 ) -> bool:
-    """로컬 debt.csv가 방금 올린 본이고 Drive가 더 오래되면 True (덮어쓰기 금지)."""
+    """로컬 debt.csv가 방금 올린 본이고 Drive가 더 오래되면 True (덮어쓰기 금지).
+
+    Cloud 시드 파일은 배포 시각만 새고 내용은 9월까지인 경우가 있다.
+    Drive 채권이 더 늦은 달이면 그 시각과 상관없이 받는다.
+    """
     dst = os.path.join(cache_dir, DEBT_CACHE_REL)
     if not os.path.isfile(dst):
         return False
     stamp = read_debt_upload_stamp(cache_dir)
     local_sha = _file_sha256(dst)
     stamped = bool(stamp and stamp.get("sha256") and stamp.get("sha256") == local_sha)
+    local_month = 0
+    drive_month = 0
+    if generation_from_file is not None:
+        try:
+            local_month = int(generation_from_file(dst, kind="debt", name="debt.csv")[0] or 0)
+        except Exception:
+            local_month = 0
+        if drive_src and os.path.isfile(drive_src):
+            try:
+                drive_month = int(
+                    generation_from_file(drive_src, kind="debt", name="채권.csv")[0] or 0
+                )
+            except Exception:
+                drive_month = 0
+            if drive_month > local_month:
+                return False
+    remote_md5 = str(remote_md5 or "").strip().lower()
+    if remote_md5:
+        local_md5 = _file_md5(dst).lower()
+        if local_md5 and local_md5 == remote_md5:
+            return True
+        if stamped:
+            stamp_ts = float(stamp.get("ts") or 0.0)
+            if stamp_ts >= float(remote_ts or 0.0) - 1.0:
+                return True
+        return False
     drive_mtime = 0.0
     if drive_src and os.path.isfile(drive_src):
         try:
@@ -140,7 +181,8 @@ def local_debt_upload_should_keep(
             return True
         # Drive가 업로드 이후 더 최신이면(다른 기기) 허용
         return False
-    # 스탬프 없어도 로컬이 Drive보다 분명 더 최신이면 유지
+    # 스탬프 없어도 로컬이 Drive보다 분명 더 최신이면 유지.
+    # 단, Drive가 더 늦은 달이면 위에서 이미 받지 않도록 막았다.
     if other_ts > 0 and local_mtime > other_ts + 1.0:
         return True
     return False

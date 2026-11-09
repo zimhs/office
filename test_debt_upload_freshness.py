@@ -1,4 +1,5 @@
 """채권 업로드 후 예전 데이터가 남는 회귀 방지."""
+import hashlib
 import os
 import tempfile
 import time
@@ -100,6 +101,43 @@ class DebtStampProtectsDriveOverwriteTest(unittest.TestCase):
             os.utime(cache, (now - 3600, now - 3600))
             os.utime(drive, (now, now))
             self.assertFalse(local_debt_upload_should_keep(tmp, drive_src=drive))
+
+    def test_later_drive_month_wins_even_if_local_mtime_is_newer(self):
+        """Cloud 시드(9월, 배포 시각)가 Drive 11월 채권을 막지 않는다."""
+        def _months(last: int, amount: int) -> bytes:
+            cols = ",".join(f"{i}월" for i in range(1, 13))
+            vals = ",".join(str(amount if i <= last else 0) for i in range(1, 13))
+            return f"거래처,구분,{cols}\n테스트,잔액,{vals}\n".encode("utf-8-sig")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = os.path.join(tmp, "debt.csv")
+            drive = os.path.join(tmp, "drive_채권.csv")
+            with open(cache, "wb") as f:
+                f.write(_months(9, 100))
+            with open(drive, "wb") as f:
+                f.write(_months(11, 200))
+            now = time.time()
+            os.utime(cache, (now, now))
+            os.utime(drive, (now - 86400, now - 86400))
+            self.assertFalse(local_debt_upload_should_keep(tmp, drive_src=drive))
+
+    def test_cloud_md5_mismatch_without_stamp_does_not_keep_seed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = os.path.join(tmp, "debt.csv")
+            local = "거래처,구분,9월\n테스트,잔액,1\n".encode("utf-8")
+            remote = "거래처,구분,9월,10월,11월\n테스트,잔액,1,2,3\n".encode("utf-8")
+            with open(cache, "wb") as f:
+                f.write(local)
+            now = time.time()
+            os.utime(cache, (now, now))
+            remote_md5 = hashlib.md5(remote).hexdigest()
+            self.assertFalse(
+                local_debt_upload_should_keep(
+                    tmp,
+                    remote_ts=now - 86400,
+                    remote_md5=remote_md5,
+                )
+            )
 
 
 class DebtReloadBlankScreenRegressionTest(unittest.TestCase):
