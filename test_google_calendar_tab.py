@@ -149,18 +149,13 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_schedule_prefetch", src)
         self.assertIn("_gc_pf_ym", src)
         self.assertIn("__gcDayPick", src)
-        self.assertIn("__gcChipMove", src)
-        self.assertIn("__gcChipMoveAbort", src)
-        self.assertIn("_valueTracker", src)
-        self.assertIn("gc_move_payload", src)
-        self.assertIn("_gc_commit_day_move", src)
-        self.assertIn("_gc_take_query_move", src)
-        self.assertIn("gc_mv", src)
-        self.assertNotIn("setPointerCapture", src)
-        self.assertIn("_gc_pending_day_move", src)
-        self.assertIn("def _gc_cache_move_event", src)
-        self.assertIn("def _gc_apply_day_move", src)
+        self.assertIn("dropChipMove", src)
+        self.assertNotIn("bindChipMove", src)
+        self.assertNotIn("gc_move_payload", src)
+        self.assertNotIn("_gc_apply_day_move", src)
+        self.assertNotIn("cursor: grab", src)
         self.assertIn("gc-js-sel", src)
+        self.assertIn("st-key-gc_evpick_", src)
         shrink = src.split("def _gc_shrink_event_titles", 1)[1].split("def ", 1)[0]
         self.assertNotIn("st.html", shrink)
         self.assertNotIn("unsafe_allow_javascript", shrink)
@@ -612,72 +607,20 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             self.assertIn("메일 열기:", created[0]["notes"])
             self.assertEqual(out["label"], "신일가스")
 
-    def test_cache_move_event_changes_day(self):
+    def test_set_sel_event_opens_memo(self):
         from datetime import date as d
 
-        ev = {
-            "id": "e1",
-            "cal_id": "c1",
-            "title": "회의",
-            "day": "2026-11-04",
-            "writable": True,
-        }
-        gc._EV_MEM.clear()
-        gc._EV_MEM["ev:2026-11"] = {"2026-11-04": [dict(ev)]}
-        with patch.object(
-            gc.st,
-            "session_state",
-            {"_gc_api": {"ev:2026-11": {"2026-11-04": [dict(ev)]}}, "gc_year": 2026, "gc_month": 11},
-        ), patch.object(gc, "_gc_save_disk_events"):
-            moved = gc._gc_cache_move_event("c1", "e1", d(2026, 11, 4), d(2026, 11, 6), dict(ev))
-        self.assertEqual(moved["day"], "2026-11-06")
-        by = gc._EV_MEM["ev:2026-11"]
-        self.assertFalse(by.get("2026-11-04"))
-        self.assertEqual(by["2026-11-06"][0]["id"], "e1")
+        state = {}
+        with patch.object(gc.st, "session_state", state):
+            gc._gc_set_sel_event(d(2026, 11, 9), "e1", "20261109_0")
+        self.assertTrue(state["_gc_memo_open"])
+        self.assertEqual(state["_gc_sel_event"], "e1")
+        self.assertEqual(state["_gc_sel_chip"], "20261109_0")
 
-    def test_apply_day_move_patches_writable_event(self):
-        ev = {
-            "id": "e1",
-            "cal_id": "c1",
-            "title": "회의",
-            "day": "2026-11-04",
-            "writable": True,
-            "hhmm": "",
-        }
-        gc._EV_MEM.clear()
-        gc._EV_MEM["ev:2026-11"] = {"2026-11-04": [dict(ev)]}
-        patched = []
-        with patch.object(
-            gc.st,
-            "session_state",
-            {"_gc_api": {"ev:2026-11": {"2026-11-04": [dict(ev)]}}, "gc_year": 2026, "gc_month": 11},
-        ), patch.object(gc, "_gc_save_disk_events"), patch.object(
-            gc, "patch_event", side_effect=lambda cid, eid, body: patched.append((cid, eid, body))
-        ):
-            gc._gc_apply_day_move("20261104|0|20261106")
-        self.assertEqual(patched[0][0], "c1")
-        self.assertEqual(patched[0][1], "e1")
-        self.assertEqual(patched[0][2]["start"]["date"], "2026-11-06")
-        self.assertEqual(gc._EV_MEM["ev:2026-11"]["2026-11-06"][0]["id"], "e1")
-
-    def test_apply_day_move_skips_holiday_calendar(self):
-        ev = {
-            "id": "h1",
-            "cal_id": gc.GC_KR_HOLIDAY,
-            "title": "한글날",
-            "day": "2026-10-09",
-            "writable": True,
-        }
-        gc._EV_MEM.clear()
-        gc._EV_MEM["ev:2026-10"] = {"2026-10-09": [dict(ev)]}
-        with patch.object(
-            gc.st,
-            "session_state",
-            {"_gc_api": {"ev:2026-10": {"2026-10-09": [dict(ev)]}}, "gc_year": 2026, "gc_month": 10},
-        ), patch.object(gc, "patch_event") as patch_ev:
-            gc._gc_apply_day_move("20261009|0|20261010")
-        patch_ev.assert_not_called()
-        self.assertEqual(gc._EV_MEM["ev:2026-10"]["2026-10-09"][0]["id"], "h1")
+    def test_find_event_by_id(self):
+        ev = {"id": "e1", "title": "회의"}
+        found = gc._gc_find_event({"2026-11-09": [ev]}, "e1")
+        self.assertEqual(found["title"], "회의")
 
 
 if __name__ == "__main__":

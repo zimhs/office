@@ -1937,151 +1937,6 @@ def _month_html(
 """
 
 
-def _stamp_to_date(stamp: str) -> date | None:
-    s = str(stamp or "").strip()
-    if len(s) != 8 or not s.isdigit():
-        return None
-    try:
-        return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
-    except Exception:
-        return None
-
-
-def _gc_move_patch_body(ev: dict, dst: date) -> dict:
-    hhmm = str((ev or {}).get("hhmm") or "").strip()
-    if ":" in hhmm:
-        try:
-            h_s, m_s = hhmm.split(":")[:2]
-            sdt = datetime.combine(dst, time(int(h_s), int(m_s)), tzinfo=_TZ)
-            return {
-                "start": {"dateTime": sdt.isoformat(), "timeZone": "Asia/Seoul"},
-                "end": {
-                    "dateTime": (sdt + timedelta(hours=1)).isoformat(),
-                    "timeZone": "Asia/Seoul",
-                },
-            }
-        except Exception:
-            pass
-    return {
-        "start": {"date": dst.isoformat()},
-        "end": {"date": (dst + timedelta(days=1)).isoformat()},
-    }
-
-
-def _gc_cache_move_event(
-    cal_id: str, event_id: str, src: date, dst: date, ev: dict | None = None
-) -> dict | None:
-    """칸 캐시에서만 날짜를 옮긴다. 구글 반영은 호출 쪽에서 한다."""
-    if src == dst:
-        return None
-    cid, eid = str(cal_id), str(event_id)
-    found = dict(ev) if isinstance(ev, dict) else None
-
-    def _strip(by: dict) -> dict:
-        nonlocal found
-        out: dict[str, list[dict]] = {}
-        for day_k, items in (by or {}).items():
-            nxt = []
-            for e in items or []:
-                if str(e.get("id")) == eid and str(e.get("cal_id")) == cid:
-                    if found is None:
-                        found = dict(e)
-                    continue
-                nxt.append(e)
-            if nxt:
-                out[day_k] = nxt
-        return out
-
-    box = _gc_api_box()
-    for k in list(box.keys()):
-        if str(k).startswith("ev:") and isinstance(box.get(k), dict):
-            box[k] = _strip(box[k])
-    for k in list(_EV_MEM.keys()):
-        _EV_MEM[k] = _strip(_EV_MEM[k])
-    if not found or not eid:
-        return None
-    found["day"] = dst.isoformat()
-    view_y = int(st.session_state.get("gc_year") or dst.year)
-    view_m = int(st.session_state.get("gc_month") or dst.month)
-    keys = {_ev_key(dst.year, dst.month), _ev_key(view_y, view_m)}
-    for key in keys:
-        by = dict(box.get(key) or _EV_MEM.get(key) or {})
-        row = [e for e in (by.get(dst.isoformat()) or []) if not (
-            str(e.get("id")) == eid and str(e.get("cal_id")) == cid
-        )]
-        row.append(found)
-        by[dst.isoformat()] = row
-        box[key] = by
-        box[key + ":at"] = datetime.now(timezone.utc).timestamp()
-        _EV_MEM[key] = by
-    _gc_save_disk_events()
-    return found
-
-
-def _gc_commit_day_move() -> None:
-    """숨은 입력에 JS가 넣은 src|idx|dst 를 바로 반영한다."""
-    raw = str(st.session_state.get("gc_move_payload") or "").strip()
-    if raw.count("|") != 2:
-        return
-    _gc_apply_day_move(raw)
-
-
-def _gc_take_query_move() -> None:
-    """위젯 값이 안 넘어올 때 URL ?gc_mv= 로 옮긴다."""
-    raw = st.query_params.get("gc_mv", "")
-    if isinstance(raw, (list, tuple)):
-        raw = raw[0] if raw else ""
-    raw = str(raw or "").strip()
-    if raw.count("|") != 2:
-        return
-    try:
-        del st.query_params["gc_mv"]
-    except Exception:
-        pass
-    _gc_apply_day_move(raw)
-
-
-def _gc_apply_day_move(raw: str) -> None:
-    parts = [p.strip() for p in str(raw or "").split("|")]
-    if len(parts) != 3:
-        return
-    src = _stamp_to_date(parts[0])
-    dst = _stamp_to_date(parts[2])
-    try:
-        idx = int(parts[1])
-    except Exception:
-        return
-    if src is None or dst is None or src == dst or idx < 0:
-        return
-    y = int(st.session_state.get("gc_year") or src.year)
-    m = int(st.session_state.get("gc_month") or src.month)
-    box = _gc_api_box()
-    by = dict(box.get(_ev_key(y, m)) or _EV_MEM.get(_ev_key(y, m)) or {})
-    items = list(by.get(src.isoformat()) or [])
-    if idx >= len(items):
-        by2 = dict(box.get(_ev_key(src.year, src.month)) or _EV_MEM.get(_ev_key(src.year, src.month)) or {})
-        items = list(by2.get(src.isoformat()) or [])
-    if idx >= len(items):
-        return
-    ev = dict(items[idx] or {})
-    cid = str(ev.get("cal_id") or "")
-    eid = str(ev.get("id") or "")
-    if not eid or not ev.get("writable") or cid == GC_KR_HOLIDAY:
-        return
-    _gc_cache_move_event(cid, eid, src, dst, ev)
-    if eid.startswith("local-") or not cid:
-        st.session_state["_gc_sel_day"] = dst
-        st.session_state["_gc_memo_open"] = False
-        return
-    try:
-        patch_event(cid, eid, _gc_move_patch_body(ev, dst))
-    except Exception as e:
-        st.error(f"일정 이동 실패: {e}")
-        return
-    st.session_state["_gc_sel_day"] = dst
-    st.session_state["_gc_memo_open"] = False
-
-
 def _gc_set_del_event(cal_id: str, event_id: str) -> None:
     st.session_state["_gc_pending_del_event"] = {"cal": cal_id, "id": event_id}
 
@@ -2415,8 +2270,7 @@ div[class*="st-key-gc_evpick_"] button {
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
-  cursor: grab !important;
-  touch-action: none !important;
+  cursor: pointer !important;
 }
 div[class*="st-key-gc_evpick_"] *,
 div[class*="st-key-gc_evpick_"] button p,
@@ -2908,9 +2762,6 @@ def _setup_expander() -> None:
 def _gc_cal_panel() -> None:
     """달력 월 이동·일정 저장만 이 조각을 다시 그린다."""
     _gc_take_sync_result()
-    pending_day_move = st.session_state.pop("_gc_pending_day_move", None)
-    if pending_day_move:
-        _gc_apply_day_move(str(pending_day_move))
     today = datetime.now(_TZ).date()
     pending_m = st.session_state.pop("_gc_pending_month", None)
     if isinstance(pending_m, date):
@@ -3022,17 +2873,6 @@ def _gc_cal_panel() -> None:
                 st.error(f"일정 삭제 실패: {e}")
         st.session_state["_gc_memo_open"] = False
 
-    with st.container(key="gc_move_trap"):
-        st.text_input(
-            "move",
-            key="gc_move_payload",
-            label_visibility="collapsed",
-            on_change=_gc_commit_day_move,
-        )
-        if st.button("move", key="gc_move_go"):
-            _gc_commit_day_move()
-            st.rerun(scope="fragment")
-
     try:
         cals = _gc_cached_cals()
     except Exception as e:
@@ -3082,24 +2922,6 @@ div[class*="st-key-gc_head_acts"] button {
   padding-left: 0.65rem !important;
   padding-right: 0.65rem !important;
   white-space: nowrap !important;
-}
-div[class*="st-key-gc_move_trap"] {
-  position: absolute !important;
-  left: -10000px !important;
-  width: 8px !important;
-  height: 8px !important;
-  overflow: hidden !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  opacity: 0 !important;
-}
-div[class*="st-key-gc_evpick_"] button {
-  cursor: grab !important;
-}
-div[class*="st-key-gc_calgrid"] [data-testid="stColumn"]:has(.gc-js-drop),
-div[class*="st-key-gc_cell_"].gc-js-drop {
-  outline: 2px solid #1a73e8 !important;
-  outline-offset: -2px !important;
 }
 </style>
 """,
@@ -3474,7 +3296,6 @@ def render_google_calendar_tab(
     df=None, latest_update_str: str = ""
 ) -> None:
     """상단 담당자·거래처·납품줄 + 구글 월간 달력·할 일."""
-    _gc_take_query_move()
     st.html(
         """
 <script>
@@ -3483,6 +3304,14 @@ def render_google_calendar_tab(
   try { app = (window.parent && window.parent.document) ? window.parent : window; }
   catch (e0) { app = window; }
   var doc = app.document || document;
+  function dropChipMove(d) {
+    if (!d) return;
+    try { if (d.__gcChipMoveAbort) d.__gcChipMoveAbort.abort(); } catch (eA) {}
+    d.__gcChipMoveAbort = null;
+    d.__gcChipMove = false;
+  }
+  dropChipMove(document);
+  dropChipMove(doc);
   try {
     if (app.__gcEvpickObs) { app.__gcEvpickObs.disconnect(); app.__gcEvpickObs = null; }
   } catch (e) {}
@@ -3511,6 +3340,7 @@ def render_google_calendar_tab(
     d.addEventListener("click", function (ev) {
       var t = ev.target;
       if (!t || !t.closest) return;
+      if (t.closest('[class*="st-key-gc_evpick_"]')) return;
       var host = t.closest('[class*="st-key-gc_day_"]');
       if (!host) return;
       var m = String(host.className || "").match(/st-key-gc_day_([0-9]{8})/);
@@ -3529,132 +3359,6 @@ def render_google_calendar_tab(
   }
   bindDayPick(document);
   bindDayPick(doc);
-  function bindChipMove(d) {
-    if (!d) return;
-    if (d.__gcChipMoveAbort) {
-      try { d.__gcChipMoveAbort.abort(); } catch (eA) {}
-    }
-    var ac = new AbortController();
-    d.__gcChipMoveAbort = ac;
-    d.__gcChipMove = true;
-    var cap = { capture: true, signal: ac.signal };
-    var moveCap = { capture: true, signal: ac.signal, passive: false };
-    var drag = null;
-    var just = false;
-    function cellStamp(el) {
-      if (!el || !el.closest) return "";
-      var cell = el.closest('[class*="st-key-gc_cell_"]');
-      if (!cell) return "";
-      var m = String(cell.className || "").match(/st-key-gc_cell_([0-9]{8})/);
-      return m ? m[1] : "";
-    }
-    function freezeChip(host, off) {
-      if (!host) return;
-      var b = host.querySelector("button");
-      if (b) b.style.pointerEvents = off ? "none" : "";
-      host.style.opacity = off ? "0.55" : "";
-    }
-    function clearDrop() {
-      d.querySelectorAll(".gc-js-drop").forEach(function (n) {
-        n.classList.remove("gc-js-drop");
-      });
-    }
-    function markDrop(el) {
-      clearDrop();
-      var stamp = cellStamp(el);
-      if (!stamp) return;
-      var cell = d.querySelector('[class*="st-key-gc_cell_' + stamp + '"]');
-      if (!cell) return;
-      cell.classList.add("gc-js-drop");
-      var col = cell.closest('[data-testid="stColumn"]');
-      if (col) col.classList.add("gc-js-drop");
-    }
-    function setPayload(val) {
-      var host = d.querySelector('[class*="st-key-gc_move_payload"]');
-      if (!host) return false;
-      var inp = host.querySelector("textarea") || host.querySelector("input");
-      if (!inp) return false;
-      var view = inp.ownerDocument.defaultView || app;
-      var ctor = (inp.tagName === "TEXTAREA")
-        ? view.HTMLTextAreaElement
-        : view.HTMLInputElement;
-      var proto = Object.getOwnPropertyDescriptor(ctor.prototype, "value");
-      try { if (inp._valueTracker) inp._valueTracker.setValue(""); } catch (eT) {}
-      if (proto && proto.set) proto.set.call(inp, val);
-      else inp.value = val;
-      inp.dispatchEvent(new view.Event("input", { bubbles: true }));
-      inp.dispatchEvent(new view.Event("change", { bubbles: true }));
-      return true;
-    }
-    function commitMove(val) {
-      var ok = setPayload(val);
-      var btn = d.querySelector('[class*="st-key-gc_move_go"] button');
-      if (ok && btn) {
-        setTimeout(function () { try { btn.click(); } catch (eC) {} }, 40);
-        return;
-      }
-      try {
-        var loc = (app.location) || window.location;
-        var u = new URL(loc.href);
-        u.searchParams.set("gc_mv", val);
-        loc.assign(u.toString());
-      } catch (e5) {}
-    }
-    d.addEventListener("pointerdown", function (ev) {
-      var t = ev.target;
-      if (!t || !t.closest) return;
-      if (t.closest('[class*="st-key-gc_xd_"]')) return;
-      var host = t.closest('[class*="st-key-gc_evpick_"]');
-      if (!host) return;
-      var m = String(host.className || "").match(/st-key-gc_evpick_([0-9]{8})_([0-9]+)/);
-      if (!m) return;
-      drag = {
-        stamp: m[1],
-        idx: m[2],
-        x: ev.clientX,
-        y: ev.clientY,
-        moved: false,
-        host: host
-      };
-    }, cap);
-    d.addEventListener("pointermove", function (ev) {
-      if (!drag) return;
-      var dx = ev.clientX - drag.x;
-      var dy = ev.clientY - drag.y;
-      if (!drag.moved && (dx * dx + dy * dy) < 36) return;
-      drag.moved = true;
-      just = true;
-      freezeChip(drag.host, true);
-      try { ev.preventDefault(); } catch (eP) {}
-      markDrop(d.elementFromPoint(ev.clientX, ev.clientY));
-    }, moveCap);
-    d.addEventListener("pointerup", function (ev) {
-      if (!drag) return;
-      var info = drag;
-      drag = null;
-      freezeChip(info.host, false);
-      clearDrop();
-      if (!info.moved) return;
-      just = true;
-      var stamp = cellStamp(d.elementFromPoint(ev.clientX, ev.clientY));
-      if (!stamp || stamp === info.stamp) return;
-      commitMove(info.stamp + "|" + info.idx + "|" + stamp);
-    }, cap);
-    d.addEventListener("pointercancel", function () {
-      if (!drag) return;
-      freezeChip(drag.host, false);
-      drag = null;
-      clearDrop();
-    }, cap);
-    d.addEventListener("click", function (ev) {
-      if (!just) return;
-      just = false;
-      ev.preventDefault();
-      ev.stopPropagation();
-    }, cap);
-  }
-  bindChipMove(doc);
-  if (document !== doc) bindChipMove(document);
 })();
 </script>
 """,
