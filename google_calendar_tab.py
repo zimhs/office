@@ -58,6 +58,10 @@ _CLOUD_REDIRECT = "https://office-g8ryabkapprkpjmfwa5aypw.streamlit.app/"
 _EV_MEM: dict[str, dict[str, list[dict]]] = {}
 _EV_BG = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gc-ev")
 _EV_BG_FUTS: dict[str, Any] = {}
+_MAC_BG = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gc-mac")
+_MAC_FUTS: dict[str, Any] = {}
+_MAC_LIVE: dict[str, dict] = {}
+_MAC_GEN: dict[str, int] = {}
 _SYNC_BG = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gc-sync")
 _SYNC_STATE: dict[str, Any] = {"fut": None}
 _BG_API: dict[str, Any] = {}
@@ -1408,7 +1412,7 @@ def _gc_cached_tlists() -> list[dict]:
         except Exception as e:
             box["tlists"] = []
             box["tlists_err"] = str(e)
-    return list(box.get("tlists") or []) + _mac_reminder_lists()
+    return list(box.get("tlists") or [])
 
 
 def _ev_key(year: int, month: int) -> str:
@@ -1967,35 +1971,65 @@ return outText
 _MAC_ITEMS_SCRIPT = """
 on run argv
   set listId to item 1 of argv
+  set wantDone to item 2 of argv
   set us to ASCII character 31
   set rs to ASCII character 30
-  set outText to ""
   tell application "Reminders"
     set L to first list whose id is listId
-    repeat with r in (reminders of L)
-      set rid to id of r as text
-      set rname to my clean(name of r as text, us, rs)
-      set rbody to ""
-      try
-        if body of r is not missing value then set rbody to my clean(body of r as text, us, rs)
-      end try
-      set rdone to "0"
-      if completed of r then set rdone to "1"
-      set rdue to ""
-      try
-        set d to due date of r
-        if d is not missing value then
-          set y to year of d as integer
-          set mo to month of d as integer
-          set da to day of d as integer
-          set rdue to (y as text) & "-" & text -2 thru -1 of ("0" & mo) & "-" & text -2 thru -1 of ("0" & da)
-        end if
-      end try
-      set outText to outText & rid & us & rdone & us & rdue & us & rname & us & rbody & rs
-    end repeat
+    if wantDone is "1" then
+      set n to count of (reminders of L whose completed is true)
+    else
+      set n to count of (reminders of L whose completed is false)
+    end if
+    if n is 0 then return ""
+    if wantDone is "1" then
+      set idList to id of (reminders of L whose completed is true)
+      set nameList to name of (reminders of L whose completed is true)
+      set bodyList to body of (reminders of L whose completed is true)
+      set dueList to due date of (reminders of L whose completed is true)
+    else
+      set idList to id of (reminders of L whose completed is false)
+      set nameList to name of (reminders of L whose completed is false)
+      set bodyList to body of (reminders of L whose completed is false)
+      set dueList to due date of (reminders of L whose completed is false)
+    end if
   end tell
+  set idList to my asList(idList)
+  set nameList to my asList(nameList)
+  set bodyList to my asList(bodyList)
+  set dueList to my asList(dueList)
+  set doneFlag to "0"
+  if wantDone is "1" then set doneFlag to "1"
+  set outText to ""
+  set n to count of idList
+  repeat with i from 1 to n
+    set rid to item i of idList as text
+    set rname to my clean(item i of nameList as text, us, rs)
+    set rbody to ""
+    try
+      set b to item i of bodyList
+      if b is not missing value then set rbody to my clean(b as text, us, rs)
+    end try
+    set rdue to ""
+    try
+      set rdue to my ymd(item i of dueList)
+    end try
+    set outText to outText & rid & us & doneFlag & us & rdue & us & rname & us & rbody & rs
+  end repeat
   return outText
 end run
+on asList(x)
+  if x is missing value then return {}
+  if class of x is list then return x
+  return {x}
+end asList
+on ymd(d)
+  if d is missing value then return ""
+  set y to year of d as integer
+  set mo to month of d as integer
+  set da to day of d as integer
+  return (y as text) & "-" & text -2 thru -1 of ("0" & mo) & "-" & text -2 thru -1 of ("0" & da)
+end ymd
 on clean(t, us, rs)
   set AppleScript's text item delimiters to {us, rs, return, linefeed}
   set parts to text items of t
@@ -2011,13 +2045,56 @@ on run argv
   set listId to item 1 of argv
   set titleText to item 2 of argv
   set noteText to item 3 of argv
+  set yText to item 4 of argv
+  set mText to item 5 of argv
+  set dText to item 6 of argv
   tell application "Reminders"
     tell (first list whose id is listId)
       set r to make new reminder with properties {name:titleText, body:noteText}
+      if yText is not "" then set due date of r to my makeDue(yText, mText, dText)
       return id of r as text
     end tell
   end tell
 end run
+on makeDue(yText, mText, dText)
+  set dd to current date
+  set hours of dd to 9
+  set minutes of dd to 0
+  set seconds of dd to 0
+  set day of dd to 1
+  set year of dd to (yText as integer)
+  set month of dd to (mText as integer)
+  set day of dd to (dText as integer)
+  return dd
+end makeDue
+"""
+
+_MAC_DUE_SCRIPT = """
+on run argv
+  set rid to item 1 of argv
+  set yText to item 2 of argv
+  set mText to item 3 of argv
+  set dText to item 4 of argv
+  tell application "Reminders"
+    set r to first reminder whose id is rid
+    if yText is "" then
+      set due date of r to missing value
+    else
+      set due date of r to my makeDue(yText, mText, dText)
+    end if
+  end tell
+end run
+on makeDue(yText, mText, dText)
+  set dd to current date
+  set hours of dd to 9
+  set minutes of dd to 0
+  set seconds of dd to 0
+  set day of dd to 1
+  set year of dd to (yText as integer)
+  set month of dd to (mText as integer)
+  set day of dd to (dText as integer)
+  return dd
+end makeDue
 """
 
 _MAC_DONE_SCRIPT = """
@@ -2074,8 +2151,8 @@ def _mac_reminder_lists() -> list[dict]:
         return list(cached)
     try:
         raw = _osascript(_MAC_LISTS_SCRIPT, timeout=20)
-    except Exception as e:
-        box["mac_tlists_err"] = str(e)
+    except Exception:
+        box["mac_tlists_err"] = "미리 알림 목록을 열지 못했습니다."
         return []
     box.pop("mac_tlists_err", None)
     rows = []
@@ -2092,15 +2169,46 @@ def _mac_reminder_lists() -> list[dict]:
     return rows
 
 
-def list_mac_reminders(list_token: str) -> list[dict]:
-    raw = _osascript(_MAC_ITEMS_SCRIPT, [str(list_token or "")], timeout=40)
-    return [_slim_task(t) for t in parse_mac_reminder_dump(raw)]
+def _gc_due_parts(due: str) -> list[str]:
+    text = str(due or "")[:10]
+    try:
+        year, month, day = [int(part) for part in text.split("-")]
+        date(year, month, day)
+    except Exception:
+        return ["", "", ""]
+    return [str(year), str(month), str(day)]
 
 
-def add_mac_reminder(list_token: str, title: str, notes: str = "") -> str:
+def _gc_mac_err_text(exc: BaseException) -> str:
+    text = str(exc).lower()
+    if isinstance(exc, subprocess.TimeoutExpired) or "timed out" in text:
+        return "미리 알림이 많아 아직 다 불러오지 못했습니다."
+    return "미리 알림을 불러오지 못했습니다."
+
+
+def list_mac_reminders(list_token: str, *, completed: bool | None = None) -> list[dict]:
+    if completed is None:
+        return list_mac_reminders(list_token, completed=False) + list_mac_reminders(
+            list_token, completed=True
+        )
+    mode = "1" if completed else "0"
+    raw = _osascript(
+        _MAC_ITEMS_SCRIPT,
+        [str(list_token or ""), mode],
+        timeout=60 if completed else 20,
+    )
+    rows = []
+    for item in parse_mac_reminder_dump(raw):
+        item["status"] = "completed" if completed else "needsAction"
+        rows.append(_slim_task(item))
+    return rows
+
+
+def add_mac_reminder(list_token: str, title: str, notes: str = "", due: str = "") -> str:
+    year, month, day = _gc_due_parts(due)
     return _osascript(
         _MAC_ADD_SCRIPT,
-        [str(list_token or ""), str(title or ""), str(notes or "")],
+        [str(list_token or ""), str(title or ""), str(notes or ""), year, month, day],
         timeout=20,
     ).strip()
 
@@ -2111,6 +2219,15 @@ def set_mac_reminder_done(reminder_id: str, done: bool) -> None:
 
 def set_mac_reminder_note(reminder_id: str, notes: str) -> None:
     _osascript(_MAC_NOTE_SCRIPT, [str(reminder_id or ""), str(notes or "")], timeout=20)
+
+
+def set_mac_reminder_due(reminder_id: str, due: str) -> None:
+    year, month, day = _gc_due_parts(due)
+    _osascript(
+        _MAC_DUE_SCRIPT,
+        [str(reminder_id or ""), year, month, day],
+        timeout=20,
+    )
 
 
 def _gc_cached_mac_tasks(list_id: str, *, force: bool = False) -> list[dict]:
@@ -2130,6 +2247,97 @@ def _gc_invalidate_tasks(list_id: str) -> None:
     box = _gc_api_box()
     box.pop(f"tk_at:{list_id}", None)
     box.pop(f"tk:{list_id}", None)
+    box.pop(f"mac_part:{list_id}", None)
+    box.pop(f"mac_items_err:{list_id}", None)
+
+
+def _gc_mac_publish(list_id: str, gen: int, rows: list[dict], part: str, err: str = "") -> None:
+    if int(_MAC_GEN.get(list_id) or 0) != int(gen):
+        return
+    _MAC_LIVE[list_id] = {
+        "gen": int(gen),
+        "rows": list(rows),
+        "part": part,
+        "err": err,
+        "at": datetime.now(timezone.utc).timestamp(),
+    }
+
+
+def _gc_mac_job(list_id: str, token: str, gen: int) -> None:
+    try:
+        open_rows = list_mac_reminders(token, completed=False)
+    except Exception as exc:
+        _gc_mac_publish(list_id, gen, [], "fail", _gc_mac_err_text(exc))
+        return
+    _gc_mac_publish(list_id, gen, open_rows, "open")
+    try:
+        done_rows = list_mac_reminders(token, completed=True)
+    except Exception as exc:
+        _gc_mac_publish(list_id, gen, open_rows, "open-only", _gc_mac_err_text(exc))
+        return
+    _gc_mac_publish(list_id, gen, open_rows + done_rows, "all")
+
+
+def _gc_mac_apply(list_id: str) -> None:
+    live = _MAC_LIVE.get(list_id)
+    if not live or int(live.get("gen") or 0) != int(_MAC_GEN.get(list_id) or 0):
+        return
+    box = _gc_api_box()
+    box[f"tk:{list_id}"] = list(live.get("rows") or [])
+    part = str(live.get("part") or "")
+    if part:
+        box[f"mac_part:{list_id}"] = part
+    if part in ("all", "open-only", "fail") and live.get("at"):
+        box[f"tk_at:{list_id}"] = float(live["at"])
+    err = str(live.get("err") or "")
+    if err:
+        box[f"mac_items_err:{list_id}"] = err
+    elif part == "all":
+        box.pop(f"mac_items_err:{list_id}", None)
+
+
+def _gc_mac_view(list_id: str) -> tuple[list[dict], bool, str]:
+    _gc_mac_apply(list_id)
+    box = _gc_api_box()
+    now = datetime.now(timezone.utc).timestamp()
+    age = now - float(box.get(f"tk_at:{list_id}") or 0)
+    part = str(box.get(f"mac_part:{list_id}") or "")
+    cached = box.get(f"tk:{list_id}")
+    rows = list(cached) if isinstance(cached, list) else []
+    err = str(box.get(f"mac_items_err:{list_id}") or "")
+    if part in ("all", "open-only", "fail") and age < 20:
+        return rows, False, err
+    fut = _MAC_FUTS.get(list_id)
+    if fut is not None and not fut.done():
+        return rows, True, err
+    if fut is not None:
+        _MAC_FUTS.pop(list_id, None)
+        _gc_mac_apply(list_id)
+        age = now - float(box.get(f"tk_at:{list_id}") or 0)
+        part = str(box.get(f"mac_part:{list_id}") or "")
+        cached = box.get(f"tk:{list_id}")
+        rows = list(cached) if isinstance(cached, list) else []
+        err = str(box.get(f"mac_items_err:{list_id}") or "")
+        if part in ("all", "open-only", "fail") and age < 20:
+            return rows, False, err
+    gen = int(_MAC_GEN.get(list_id) or 0)
+    _MAC_FUTS[list_id] = _MAC_BG.submit(_gc_mac_job, list_id, _mac_list_token(list_id), gen)
+    return rows, True, err
+
+
+def _gc_mac_remember(list_id: str, rows: list[dict]) -> None:
+    gen = int(_MAC_GEN.get(list_id) or 0) + 1
+    _MAC_GEN[list_id] = gen
+    _gc_mac_publish(list_id, gen, rows, "all")
+    _gc_mac_apply(list_id)
+
+
+def _gc_due_text(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return ""
 
 
 def _gc_cached_tasks(list_id: str, *, force: bool = False) -> list[dict]:
@@ -3909,10 +4117,259 @@ div[class*="st-key-gc_head_acts"] button {
         _render_add_event_pop(cals)
 
 
+def _gc_mac_patch(list_id: str, task_id: str, **fields: Any) -> None:
+    rows = []
+    for item in _gc_api_box().get(f"tk:{list_id}") or []:
+        task = dict(item)
+        if str(task.get("id") or "") == str(task_id):
+            task.update(fields)
+        rows.append(task)
+    _gc_mac_remember(list_id, rows)
+
+
+def _gc_take_mac_actions() -> None:
+    lid = str(st.session_state.get("_gc_mac_lid") or "")
+    pending_new = st.session_state.pop("_gc_mac_pending_new", None)
+    if pending_new:
+        st.session_state["gc_mr_new"] = ""
+        st.session_state["gc_mr_note_new"] = ""
+        st.session_state.pop("gc_mr_due_new", None)
+    if isinstance(pending_new, dict) and lid and _is_mac_rem_list(lid):
+        title = str(pending_new.get("title") or "")
+        notes = str(pending_new.get("notes") or "")
+        due = str(pending_new.get("due") or "")[:10]
+        try:
+            rid = add_mac_reminder(_mac_list_token(lid), title, notes, due)
+            rows = [dict(item) for item in (_gc_api_box().get(f"tk:{lid}") or [])]
+            rows.append(
+                {
+                    "id": rid,
+                    "title": title or "(제목 없음)",
+                    "notes": notes,
+                    "status": "needsAction",
+                    "due": due,
+                    "position": "",
+                    "local_only": False,
+                }
+            )
+            _gc_mac_remember(lid, rows)
+        except Exception as exc:
+            st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
+    pending_note = st.session_state.pop("_gc_mac_pending_note", None)
+    if isinstance(pending_note, dict) and lid and pending_note.get("id"):
+        tid = str(pending_note.get("id") or "")
+        notes = str(pending_note.get("notes") or "")
+        due = str(pending_note.get("due") or "")[:10]
+        try:
+            set_mac_reminder_note(tid, notes)
+            set_mac_reminder_due(tid, due)
+            _gc_mac_patch(lid, tid, notes=notes, due=due)
+        except Exception as exc:
+            st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
+    pending_done = st.session_state.pop("_gc_mac_pending_done", None)
+    if pending_done and lid:
+        tid = str(pending_done)
+        try:
+            set_mac_reminder_done(tid, True)
+            _gc_mac_patch(lid, tid, status="completed")
+        except Exception as exc:
+            st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
+    pending_restore = st.session_state.pop("_gc_mac_pending_restore", None)
+    if pending_restore and lid:
+        tid = str(pending_restore)
+        try:
+            set_mac_reminder_done(tid, False)
+            _gc_mac_patch(lid, tid, status="needsAction")
+        except Exception as exc:
+            st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
+
+
+@st.fragment(run_every=timedelta(seconds=2))
+def _gc_mac_wait(list_id: str) -> None:
+    rows, busy, _err = _gc_mac_view(list_id)
+    part = str(_gc_api_box().get(f"mac_part:{list_id}") or "")
+    sig = (list_id, part, len(rows), busy)
+    if sig != st.session_state.get("_gc_mac_seen") and (part or not busy):
+        st.session_state["_gc_mac_seen"] = sig
+        st.rerun()
+
+
+def _gc_render_mac_box() -> None:
+    """할 일 목록 아래, 이 맥의 미리 알림만 따로 보여 준다."""
+    with st.container(border=True):
+        st.markdown("**미리 알림**")
+        st.caption("이 맥의 미리 알림입니다. 아이패드·클라우드에는 나오지 않습니다.")
+        warn = str(st.session_state.pop("_gc_mac_warn", "") or "")
+        if warn:
+            st.warning(warn)
+        if not _mac_reminders_enabled():
+            return
+        mac_lists = _mac_reminder_lists()
+        if not mac_lists:
+            err = str((_gc_api_box().get("mac_tlists_err") or "")).strip()
+            st.caption(err or "미리 알림 목록이 없습니다.")
+            return
+        names = [str(item.get("title") or "미리 알림") for item in mac_lists]
+        current = st.session_state.get("gc_mac_list")
+        if isinstance(current, int) and current >= len(names):
+            st.session_state["gc_mac_list"] = 0
+        picked = st.selectbox(
+            "목록",
+            options=list(range(len(names))),
+            format_func=lambda i: names[i],
+            key="gc_mac_list",
+        )
+        lid = str(mac_lists[int(picked)].get("id") or "")
+        st.session_state["_gc_mac_lid"] = lid
+        tasks, busy, err = _gc_mac_view(lid)
+        if busy:
+            part = str(_gc_api_box().get(f"mac_part:{lid}") or "")
+            st.caption(
+                "완료된 미리 알림을 불러오는 중…"
+                if part == "open"
+                else "미리 알림을 불러오는 중…"
+            )
+            _gc_mac_wait(lid)
+        elif err:
+            st.caption(err)
+        edit_id = str(st.session_state.get("_gc_mac_note_edit") or "")
+        open_tasks = [t for t in tasks if str(t.get("status") or "") != "completed"]
+        done_tasks = [t for t in tasks if str(t.get("status") or "") == "completed"]
+        for task in open_tasks:
+            _gc_render_mac_task(task, edit_id, done=False)
+        with st.expander(f"완료된 미리 알림 ({len(done_tasks)})", expanded=False):
+            if not done_tasks:
+                st.caption("완료된 미리 알림이 없습니다.")
+            for task in done_tasks:
+                _gc_render_mac_task(task, edit_id, done=True)
+        add_row = st.columns([5.2, 1.15, 1.15], gap="small", vertical_alignment="bottom")
+        with add_row[0]:
+            title = st.text_input(
+                "새 미리 알림",
+                key="gc_mr_new",
+                placeholder="미리 알림 제목",
+                label_visibility="collapsed",
+            )
+        with add_row[1]:
+            if st.button("메모", key="gc_mr_toggle_note", type="tertiary", width="content"):
+                st.session_state["_gc_mac_show_new_note"] = not bool(
+                    st.session_state.get("_gc_mac_show_new_note")
+                )
+                st.rerun(scope="fragment")
+        with add_row[2]:
+            add_clicked = st.button("추가", key="gc_mr_add", width="content")
+        notes = ""
+        if st.session_state.get("_gc_mac_show_new_note"):
+            notes = st.text_input(
+                "새 메모",
+                key="gc_mr_note_new",
+                placeholder="메모",
+                label_visibility="collapsed",
+            )
+        due_value = st.date_input(
+            "기한",
+            value=None,
+            key="gc_mr_due_new",
+            label_visibility="collapsed",
+        )
+        if add_clicked:
+            title = (title or "").strip()
+            if len(title) < 1:
+                st.error("제목을 입력하세요.")
+            else:
+                st.session_state["_gc_mac_pending_new"] = {
+                    "title": title,
+                    "notes": notes or "",
+                    "due": _gc_due_text(due_value),
+                }
+                st.session_state["_gc_mac_show_new_note"] = False
+                st.rerun(scope="fragment")
+
+
+def _gc_render_mac_task(task: dict, edit_id: str, *, done: bool) -> None:
+    tid = str(task.get("id") or "")
+    tw = _gc_task_widget_id(tid)
+    title = task.get("title") or "(제목 없음)"
+    due = str(task.get("due") or "")[:10]
+    label = title if not due else f"{title}  · {due}"
+    note = str(task.get("notes") or "").strip()
+    row = st.columns([8.2, 1.15], gap="small", vertical_alignment="top")
+    open_this = edit_id == tid
+    with row[0]:
+        if done:
+            st.markdown(
+                "<div style='font-size:13px;color:#80868b;text-decoration:line-through;"
+                f"line-height:1.35'>{html.escape(label)}</div>",
+                unsafe_allow_html=True,
+            )
+            if note:
+                st.markdown(
+                    "<div style='font-size:12px;color:#9aa0a6;line-height:1.35;"
+                    "margin:0 0 6px 0;white-space:pre-wrap'>"
+                    f"{html.escape(note)}</div>",
+                    unsafe_allow_html=True,
+                )
+        else:
+            if st.checkbox(label, value=False, key=f"gc_mr_td_{tw}"):
+                st.session_state["_gc_mac_pending_done"] = tid
+                st.rerun(scope="fragment")
+            if note and not open_this:
+                st.markdown(
+                    "<div style='font-size:12px;color:#5f6368;line-height:1.35;"
+                    "margin:-6px 0 6px 1.7rem;white-space:pre-wrap'>"
+                    f"{html.escape(note)}</div>",
+                    unsafe_allow_html=True,
+                )
+            if open_this:
+                st.text_input(
+                    "메모 입력",
+                    value=note,
+                    key=f"gc_mr_note_{tw}",
+                    label_visibility="collapsed",
+                    placeholder="메모",
+                )
+                try:
+                    due_default = date.fromisoformat(due) if due else None
+                except ValueError:
+                    due_default = None
+                st.date_input(
+                    "기한",
+                    value=due_default,
+                    key=f"gc_mr_due_{tw}",
+                    label_visibility="collapsed",
+                )
+    with row[1]:
+        if done:
+            if st.button("복원", key=f"gc_mr_tr_{tw}", type="tertiary", width="content"):
+                st.session_state["_gc_mac_pending_restore"] = tid
+                st.rerun(scope="fragment")
+            return
+        if st.button(
+            "닫기" if open_this else "메모",
+            key=f"gc_mr_ne_{tw}",
+            type="tertiary",
+            width="content",
+        ):
+            if open_this:
+                st.session_state["_gc_mac_pending_note"] = {
+                    "id": tid,
+                    "notes": st.session_state.get(f"gc_mr_note_{tw}") or "",
+                    "due": _gc_due_text(st.session_state.get(f"gc_mr_due_{tw}")),
+                }
+                st.session_state["_gc_mac_note_edit"] = ""
+            else:
+                st.session_state["_gc_mac_note_edit"] = tid
+            st.rerun(scope="fragment")
+
+
 @st.fragment
 def _gc_task_panel() -> None:
     """할 일만 이 조각을 다시 그린다."""
     lid = str(st.session_state.get("_gc_lid") or "")
+    if _is_mac_rem_list(lid):
+        lid = ""
+        st.session_state["_gc_lid"] = ""
+    _gc_take_mac_actions()
     pending_new = st.session_state.pop("_gc_pending_new", None)
     if pending_new:
         st.session_state["gc_new_task"] = ""
@@ -4025,6 +4482,10 @@ def _gc_task_panel() -> None:
         """
 <style>
 div[class*="st-key-gc_ne_"] button,
+div[class*="st-key-gc_mr_ne_"] button,
+div[class*="st-key-gc_mr_tr_"] button,
+div[class*="st-key-gc_mr_add"] button,
+div[class*="st-key-gc_mr_toggle_note"] button,
 div[class*="st-key-gc_toggle_new_note"] button,
 div[class*="st-key-gc_ns_"] button,
 div[class*="st-key-gc_tr_"] button {
@@ -4039,8 +4500,12 @@ div[class*="st-key-gc_tr_"] button {
 }
 div[class*="st-key-gc_td_"] p,
 div[class*="st-key-gc_td_"] label,
+div[class*="st-key-gc_mr_td_"] p,
+div[class*="st-key-gc_mr_td_"] label,
 div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"],
-div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
+div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"],
+div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p,
+div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
   font-size: 11px !important;
   line-height: 1.2 !important;
 }
@@ -4049,13 +4514,14 @@ div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
         unsafe_allow_html=True,
     )
     st.markdown("**할 일 목록**")
-    mac_err = str((_gc_api_box().get("mac_tlists_err") or "")).strip()
-    if mac_err and not any(_is_mac_rem_list(str(t.get("id") or "")) for t in tlists):
-        st.caption("맥 미리 알림을 열지 못했습니다. 자동화 권한을 허용해 주세요.")
     if not tlists:
         st.caption("할 일 목록이 없습니다.")
+        _gc_render_mac_box()
         return
     names = [_tlist_label(t) for t in tlists]
+    picked = st.session_state.get("gc_tlist")
+    if isinstance(picked, int) and picked >= len(names):
+        st.session_state["gc_tlist"] = 0
     li = st.selectbox(
         "목록",
         options=list(range(len(names))),
@@ -4064,8 +4530,6 @@ div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
     )
     lid = str(tlists[int(li)].get("id") or "")
     st.session_state["_gc_lid"] = lid
-    if _is_mac_rem_list(lid):
-        st.caption("이 맥의 미리 알림입니다. 아이패드·클라우드에는 나오지 않습니다.")
     try:
         tasks = _gc_cached_tasks(lid) if lid else []
     except Exception as e:
@@ -4191,6 +4655,7 @@ div[class*="st-key-gc_td_"] [data-testid="stWidgetLabel"] p {
             }
             st.session_state["_gc_show_new_note"] = False
             st.rerun(scope="fragment")
+    _gc_render_mac_box()
 
 
 @st.fragment

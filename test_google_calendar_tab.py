@@ -207,6 +207,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("맥 미리알림", src)
         self.assertIn("list_mac_reminders", src)
         self.assertIn("_is_mac_rem_list", src)
+        self.assertIn("_gc_render_mac_box", src)
+        self.assertIn("**미리 알림**", src)
+        self.assertIn("gc_mac_list", src)
         self.assertIn("_merge_event_days", src)
         self.assertNotIn("gc_task_import", src)
         self.assertNotIn("gc_task_export", src)
@@ -785,6 +788,20 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
         listed.assert_called_once_with("list-1")
         merged.assert_not_called()
         self.assertEqual(gc._tlist_label({"id": "macrem:list-1", "title": "미리 알림"}), "맥 미리알림 · 미리 알림")
+
+    def test_task_lists_leave_reminders_separate(self):
+        state: dict = {}
+        with patch.object(gc.st, "session_state", state), patch.object(
+            gc, "list_tasklists", return_value=[{"id": "g1", "title": "업무"}]
+        ), patch.object(
+            gc, "_mac_reminder_lists", return_value=[{"id": "macrem:1", "title": "고정비"}]
+        ):
+            rows = gc._gc_cached_tlists()
+        self.assertEqual([row["id"] for row in rows], ["g1"])
+
+    def test_mac_timeout_message_hides_command(self):
+        exc = TimeoutError("Command '['/usr/bin/osascript', '-', 'LIST']' timed out after 40 seconds")
+        self.assertNotIn("osascript", gc._gc_mac_err_text(exc))
 
     def test_set_sel_event_opens_memo(self):
         from datetime import date as d
