@@ -803,6 +803,46 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             rows = gc._gc_cached_tlists()
         self.assertEqual([row["id"] for row in rows], ["g1"])
 
+    def test_mac_note_save_skips_calendar_when_date_same(self):
+        state = {
+            "_gc_mac_lid": "macrem:list",
+            "_gc_mac_pending_note": {
+                "id": "r1",
+                "notes": "새 메모",
+                "due": "2026-11-20",
+            },
+            "_gc_api": {
+                "tk:macrem:list": [
+                    {
+                        "id": "r1",
+                        "title": "이자",
+                        "notes": "",
+                        "status": "needsAction",
+                        "due": "2026-11-20",
+                        "position": "",
+                        "local_only": False,
+                    }
+                ]
+            },
+        }
+        with patch.object(gc.st, "session_state", state), patch.object(
+            gc._MAC_BG, "submit"
+        ) as submit, patch.object(gc, "_gc_mac_patch") as patched:
+            gc._gc_take_mac_actions()
+        patched.assert_called_once()
+        submit.assert_called_once()
+        self.assertNotIn("_gc_cal_refresh", state)
+        state["_gc_mac_pending_note"] = {
+            "id": "r1",
+            "notes": "새 메모",
+            "due": "2026-12-01",
+        }
+        with patch.object(gc.st, "session_state", state), patch.object(
+            gc._MAC_BG, "submit"
+        ), patch.object(gc, "_gc_mac_patch"):
+            gc._gc_take_mac_actions()
+        self.assertTrue(state.get("_gc_cal_refresh"))
+
     def test_mac_view_skips_reload_when_fresh(self):
         now = gc.datetime.now(gc.timezone.utc).timestamp()
         state = {

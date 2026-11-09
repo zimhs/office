@@ -2202,6 +2202,36 @@ on run argv
 end run
 """
 
+_MAC_NOTE_DUE_SCRIPT = """
+on run argv
+  set rid to item 1 of argv
+  set noteText to item 2 of argv
+  set yText to item 3 of argv
+  set mText to item 4 of argv
+  set dText to item 5 of argv
+  tell application "Reminders"
+    set r to first reminder whose id is rid
+    set body of r to noteText
+    if yText is "" then
+      set due date of r to missing value
+    else
+      set due date of r to my makeDue(yText, mText, dText)
+    end if
+  end tell
+end run
+on makeDue(yText, mText, dText)
+  set dd to current date
+  set hours of dd to 9
+  set minutes of dd to 0
+  set seconds of dd to 0
+  set day of dd to 1
+  set year of dd to (yText as integer)
+  set month of dd to (mText as integer)
+  set day of dd to (dText as integer)
+  return dd
+end makeDue
+"""
+
 
 def parse_mac_reminder_dump(text: str) -> list[dict]:
     out: list[dict] = []
@@ -2381,6 +2411,35 @@ def set_mac_reminder_due(reminder_id: str, due: str) -> None:
         [str(reminder_id or ""), year, month, day],
         timeout=20,
     )
+
+
+_MAC_WRITE_ERR = ""
+
+
+def set_mac_reminder_note_due(reminder_id: str, notes: str, due: str) -> None:
+    year, month, day = _gc_due_parts(due)
+    _osascript(
+        _MAC_NOTE_DUE_SCRIPT,
+        [str(reminder_id or ""), str(notes or ""), year, month, day],
+        timeout=20,
+    )
+
+
+def _gc_mac_write_note_due(reminder_id: str, notes: str, due: str) -> None:
+    global _MAC_WRITE_ERR
+    try:
+        set_mac_reminder_note_due(reminder_id, notes, due)
+    except Exception as exc:
+        _MAC_WRITE_ERR = _gc_mac_err_text(exc)
+
+
+def _gc_mac_take_write_err() -> None:
+    global _MAC_WRITE_ERR
+    err = _MAC_WRITE_ERR
+    if not err:
+        return
+    _MAC_WRITE_ERR = ""
+    st.session_state["_gc_mac_warn"] = err
 
 
 def _gc_cached_mac_tasks(list_id: str, *, force: bool = False) -> list[dict]:
@@ -4370,6 +4429,7 @@ def _gc_mac_patch(list_id: str, task_id: str, **fields: Any) -> None:
 
 
 def _gc_take_mac_actions() -> None:
+    _gc_mac_take_write_err()
     lid = str(st.session_state.get("_gc_mac_lid") or "")
     pending_new = st.session_state.pop("_gc_mac_pending_new", None)
     if pending_new:
@@ -4403,14 +4463,16 @@ def _gc_take_mac_actions() -> None:
     if isinstance(pending_note, dict) and lid and pending_note.get("id"):
         tid = str(pending_note.get("id") or "")
         notes = str(pending_note.get("notes") or "")
-        due = str(pending_note.get("due") or "")[:10]
-        try:
-            set_mac_reminder_note(tid, notes)
-            set_mac_reminder_due(tid, due)
-            _gc_mac_patch(lid, tid, notes=notes, due=due)
+        due = _gc_task_due_day(pending_note.get("due"))
+        old_due = ""
+        for item in _gc_api_box().get(f"tk:{lid}") or []:
+            if str(item.get("id") or "") == tid:
+                old_due = _gc_task_due_day(item.get("due"))
+                break
+        _gc_mac_patch(lid, tid, notes=notes, due=due)
+        if old_due != due:
             st.session_state["_gc_cal_refresh"] = True
-        except Exception as exc:
-            st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
+        _MAC_BG.submit(_gc_mac_write_note_due, tid, notes, due)
     pending_done = st.session_state.pop("_gc_mac_pending_done", None)
     if pending_done and lid:
         tid = str(pending_done)
