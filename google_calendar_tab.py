@@ -50,11 +50,14 @@ GC_EV_CACHE = os.path.join(GC_DIR, "events_cache.json")
 GC_EV_CACHE_HOME = os.path.join(_HOME_GC, "gc_events_cache.json")
 GC_CALS_CACHE = os.path.join(GC_DIR, "cals_cache.json")
 GC_CALS_CACHE_HOME = os.path.join(_HOME_GC, "gc_cals_cache.json")
-GC_MAIL_SYNC_BATCH = 80
+GC_MAIL_SYNC_BATCH = 20
 _CLOUD_REDIRECT = "https://office-g8ryabkapprkpjmfwa5aypw.streamlit.app/"
 _EV_MEM: dict[str, dict[str, list[dict]]] = {}
 _EV_BG = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gc-ev")
 _EV_BG_FUTS: dict[str, Any] = {}
+_SYNC_BG = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gc-sync")
+_SYNC_STATE: dict[str, Any] = {"fut": None}
+_BG_API: dict[str, Any] = {}
 
 
 def calendar_embed_url(srcs: list[str] | None = None, *, height: int = 780) -> str:
@@ -1154,7 +1157,9 @@ def sync_shinil_gmail_to_calendar(
             "error": f"Gmail에 '{label_name}' 폴더(라벨)가 없습니다.",
         }
     lid = str(lab.get("id") or "")
-    listed = list_gmail_message_ids(lid, limit=500)
+    listed = list_gmail_message_ids(
+        lid, limit=max(int(limit or GC_MAIL_SYNC_BATCH) * 2, GC_MAIL_SYNC_BATCH)
+    )
     state = load_gmail_sync_state()
     done = {
         str(k): str(v)
@@ -1323,7 +1328,10 @@ def uncomplete_task(list_id: str, task_id: str) -> dict:
 
 
 def _gc_api_box() -> dict:
-    return st.session_state.setdefault("_gc_api", {})
+    try:
+        return st.session_state.setdefault("_gc_api", {})
+    except Exception:
+        return _BG_API
 
 
 def _gc_load_disk_events() -> None:
@@ -1536,13 +1544,9 @@ def _gc_sync_google(year: int, month: int) -> tuple[int, int]:
     return n_ev, n_tasks
 
 
-def _gc_run_sync_click() -> None:
-    """연동실행: 구글만 맞추고 달력 조각만 다시 그린다. 대시보드 전체를 켜지 않는다."""
-    today = datetime.now(_TZ).date()
-    y = int(st.session_state.get("gc_year") or today.year)
-    m = int(st.session_state.get("gc_month") or today.month)
+def _gc_sync_job(year: int, month: int) -> str:
+    """화면 스레드를 붙잡지 않고 메일·캐시만 맞춘다."""
     try:
-        n_ev, n_tk = _gc_sync_google(y, m)
         mail = sync_shinil_gmail_to_calendar()
         extra = ""
         err = str(mail.get("error") or "")
@@ -1553,15 +1557,52 @@ def _gc_run_sync_click() -> None:
             remain = int(mail.get("remain") or 0)
             if remain:
                 extra += f" · 남은 {remain}건은 다시 연동"
-        st.session_state["_gc_sync_msg"] = (
-            f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건{extra}"
-        )
-        st.session_state.pop("_gc_need_gmail", None)
+        key = _ev_key(year, month)
+        n_ev = sum(len(v or []) for v in (_EV_MEM.get(key) or {}).values())
+        return f"연동했습니다. 일정 {n_ev}건{extra}"
     except GmailScopeError as e:
-        st.session_state["_gc_need_gmail"] = True
-        st.session_state["_gc_sync_msg"] = str(e)
+        return f"GMAIL_SCOPE:{e}"
     except Exception as e:
-        st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
+        return f"연동 실패: {e}"
+
+
+def _gc_run_sync_click() -> None:
+    """연동실행은 바로 돌아가고, 구글 요청은 뒤에서 한다."""
+    fut = _SYNC_STATE.get("fut")
+    if fut is not None and not fut.done():
+        st.session_state["_gc_sync_busy"] = True
+        return
+    today = datetime.now(_TZ).date()
+    y = int(st.session_state.get("gc_year") or today.year)
+    m = int(st.session_state.get("gc_month") or today.month)
+    st.session_state["_gc_sync_busy"] = True
+    st.session_state["_gc_sync_msg"] = "연동 중…"
+    _SYNC_STATE["fut"] = _SYNC_BG.submit(_gc_sync_job, y, m)
+
+
+def _gc_take_sync_result() -> None:
+    """끝난 연동만 화면에 반영한다. 대기하지 않는다."""
+    fut = _SYNC_STATE.get("fut")
+    if fut is None or not fut.done():
+        return
+    _SYNC_STATE["fut"] = None
+    st.session_state["_gc_sync_busy"] = False
+    box = st.session_state.setdefault("_gc_api", {})
+    if _BG_API:
+        box.update(_BG_API)
+    for key, val in list(_EV_MEM.items()):
+        if isinstance(val, dict):
+            box[key] = val
+    try:
+        msg = str(fut.result() or "")
+    except Exception as e:
+        msg = f"연동 실패: {e}"
+    if msg.startswith("GMAIL_SCOPE:"):
+        st.session_state["_gc_need_gmail"] = True
+        st.session_state["_gc_sync_msg"] = msg.split(":", 1)[-1]
+        return
+    st.session_state.pop("_gc_need_gmail", None)
+    st.session_state["_gc_sync_msg"] = msg or "연동했습니다."
 
 
 def _gc_cache_add_event(day: date, chip: dict, *, flush: bool = True) -> None:
@@ -2719,6 +2760,7 @@ def _setup_expander() -> None:
 @st.fragment
 def _gc_cal_panel() -> None:
     """달력 월 이동·일정 저장만 이 조각을 다시 그린다."""
+    _gc_take_sync_result()
     today = datetime.now(_TZ).date()
     pending_m = st.session_state.pop("_gc_pending_month", None)
     if isinstance(pending_m, date):
@@ -2932,10 +2974,14 @@ div[class*="st-key-gc_head_acts"] button {
                         type="primary",
                         key="gc_sync_run",
                         on_click=_gc_run_sync_click,
+                        disabled=bool(st.session_state.get("_gc_sync_busy")),
                     )
-    msg = st.session_state.pop("_gc_sync_msg", None)
-    if msg:
-        st.caption(msg)
+    if st.session_state.get("_gc_sync_busy"):
+        st.caption(st.session_state.get("_gc_sync_msg") or "연동 중…")
+    else:
+        msg = st.session_state.pop("_gc_sync_msg", None)
+        if msg:
+            st.caption(msg)
     move_msg = st.session_state.get("_gc_mail_move_msg")
     if move_msg:
         st.caption(move_msg)
