@@ -2018,6 +2018,29 @@ def _gc_cache_move_event(
     return found
 
 
+def _gc_commit_day_move() -> None:
+    """숨은 입력에 JS가 넣은 src|idx|dst 를 바로 반영한다."""
+    raw = str(st.session_state.get("gc_move_payload") or "").strip()
+    if raw.count("|") != 2:
+        return
+    _gc_apply_day_move(raw)
+
+
+def _gc_take_query_move() -> None:
+    """위젯 값이 안 넘어올 때 URL ?gc_mv= 로 옮긴다."""
+    raw = st.query_params.get("gc_mv", "")
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else ""
+    raw = str(raw or "").strip()
+    if raw.count("|") != 2:
+        return
+    try:
+        del st.query_params["gc_mv"]
+    except Exception:
+        pass
+    _gc_apply_day_move(raw)
+
+
 def _gc_apply_day_move(raw: str) -> None:
     parts = [p.strip() for p in str(raw or "").split("|")]
     if len(parts) != 3:
@@ -3004,11 +3027,10 @@ def _gc_cal_panel() -> None:
             "move",
             key="gc_move_payload",
             label_visibility="collapsed",
+            on_change=_gc_commit_day_move,
         )
         if st.button("move", key="gc_move_go"):
-            st.session_state["_gc_pending_day_move"] = str(
-                st.session_state.get("gc_move_payload") or ""
-            )
+            _gc_commit_day_move()
             st.rerun(scope="fragment")
 
     try:
@@ -3062,12 +3084,14 @@ div[class*="st-key-gc_head_acts"] button {
   white-space: nowrap !important;
 }
 div[class*="st-key-gc_move_trap"] {
-  height: 0 !important;
-  min-height: 0 !important;
-  max-height: 0 !important;
+  position: absolute !important;
+  left: -10000px !important;
+  width: 8px !important;
+  height: 8px !important;
   overflow: hidden !important;
   margin: 0 !important;
   padding: 0 !important;
+  opacity: 0 !important;
 }
 div[class*="st-key-gc_evpick_"] button {
   cursor: grab !important;
@@ -3450,13 +3474,17 @@ def render_google_calendar_tab(
     df=None, latest_update_str: str = ""
 ) -> None:
     """상단 담당자·거래처·납품줄 + 구글 월간 달력·할 일."""
+    _gc_take_query_move()
     st.html(
         """
 <script>
 (function () {
+  var app;
+  try { app = (window.parent && window.parent.document) ? window.parent : window; }
+  catch (e0) { app = window; }
+  var doc = app.document || document;
   try {
-    var w = window.parent || window;
-    if (w.__gcEvpickObs) { w.__gcEvpickObs.disconnect(); w.__gcEvpickObs = null; }
+    if (app.__gcEvpickObs) { app.__gcEvpickObs.disconnect(); app.__gcEvpickObs = null; }
   } catch (e) {}
   var id = "gc-evpick-fs";
   var css = 'html body div[class*="st-key-gc_evpick_"] button,' +
@@ -3465,22 +3493,22 @@ def render_google_calendar_tab(
     'html body div[class*="st-key-gc_evpick_"] button div,' +
     'html body div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
     '{font-size:10px!important;line-height:1.2!important;font-weight:400!important;}';
-  function put(doc) {
-    if (!doc) return;
-    var s = doc.getElementById(id);
+  function put(d) {
+    if (!d) return;
+    var s = d.getElementById(id);
     if (!s) {
-      s = doc.createElement("style");
+      s = d.createElement("style");
       s.id = id;
-      (doc.head || doc.documentElement).appendChild(s);
+      (d.head || d.documentElement).appendChild(s);
     }
     s.textContent = css;
   }
   put(document);
-  try { put(window.parent.document); } catch (e) {}
-  function bindDayPick(doc) {
-    if (!doc || doc.__gcDayPick) return;
-    doc.__gcDayPick = true;
-    doc.addEventListener("click", function (ev) {
+  put(doc);
+  function bindDayPick(d) {
+    if (!d || d.__gcDayPick) return;
+    d.__gcDayPick = true;
+    d.addEventListener("click", function (ev) {
       var t = ev.target;
       if (!t || !t.closest) return;
       var host = t.closest('[class*="st-key-gc_day_"]');
@@ -3488,10 +3516,10 @@ def render_google_calendar_tab(
       var m = String(host.className || "").match(/st-key-gc_day_([0-9]{8})/);
       if (!m) return;
       var stamp = m[1];
-      doc.querySelectorAll(".gc-js-sel").forEach(function (n) {
+      d.querySelectorAll(".gc-js-sel").forEach(function (n) {
         n.classList.remove("gc-js-sel");
       });
-      var cell = doc.querySelector('[class*="st-key-gc_cell_' + stamp + '"]');
+      var cell = d.querySelector('[class*="st-key-gc_cell_' + stamp + '"]');
       if (cell) {
         cell.classList.add("gc-js-sel");
         var col = cell.closest('[data-testid="stColumn"]');
@@ -3500,10 +3528,17 @@ def render_google_calendar_tab(
     }, true);
   }
   bindDayPick(document);
-  try { bindDayPick(window.parent.document); } catch (e2) {}
-  function bindChipMove(doc) {
-    if (!doc || doc.__gcChipMove) return;
-    doc.__gcChipMove = true;
+  bindDayPick(doc);
+  function bindChipMove(d) {
+    if (!d) return;
+    if (d.__gcChipMoveAbort) {
+      try { d.__gcChipMoveAbort.abort(); } catch (eA) {}
+    }
+    var ac = new AbortController();
+    d.__gcChipMoveAbort = ac;
+    d.__gcChipMove = true;
+    var cap = { capture: true, signal: ac.signal };
+    var moveCap = { capture: true, signal: ac.signal, passive: false };
     var drag = null;
     var just = false;
     function cellStamp(el) {
@@ -3513,8 +3548,14 @@ def render_google_calendar_tab(
       var m = String(cell.className || "").match(/st-key-gc_cell_([0-9]{8})/);
       return m ? m[1] : "";
     }
+    function freezeChip(host, off) {
+      if (!host) return;
+      var b = host.querySelector("button");
+      if (b) b.style.pointerEvents = off ? "none" : "";
+      host.style.opacity = off ? "0.55" : "";
+    }
     function clearDrop() {
-      doc.querySelectorAll(".gc-js-drop").forEach(function (n) {
+      d.querySelectorAll(".gc-js-drop").forEach(function (n) {
         n.classList.remove("gc-js-drop");
       });
     }
@@ -3522,28 +3563,44 @@ def render_google_calendar_tab(
       clearDrop();
       var stamp = cellStamp(el);
       if (!stamp) return;
-      var cell = doc.querySelector('[class*="st-key-gc_cell_' + stamp + '"]');
+      var cell = d.querySelector('[class*="st-key-gc_cell_' + stamp + '"]');
       if (!cell) return;
       cell.classList.add("gc-js-drop");
       var col = cell.closest('[data-testid="stColumn"]');
       if (col) col.classList.add("gc-js-drop");
     }
     function setPayload(val) {
-      var host = doc.querySelector('[class*="st-key-gc_move_payload"]');
+      var host = d.querySelector('[class*="st-key-gc_move_payload"]');
       if (!host) return false;
       var inp = host.querySelector("textarea") || host.querySelector("input");
       if (!inp) return false;
-      var proto = Object.getOwnPropertyDescriptor(
-        inp.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
-        "value"
-      );
+      var view = inp.ownerDocument.defaultView || app;
+      var ctor = (inp.tagName === "TEXTAREA")
+        ? view.HTMLTextAreaElement
+        : view.HTMLInputElement;
+      var proto = Object.getOwnPropertyDescriptor(ctor.prototype, "value");
+      try { if (inp._valueTracker) inp._valueTracker.setValue(""); } catch (eT) {}
       if (proto && proto.set) proto.set.call(inp, val);
       else inp.value = val;
-      inp.dispatchEvent(new Event("input", { bubbles: true }));
-      inp.dispatchEvent(new Event("change", { bubbles: true }));
+      inp.dispatchEvent(new view.Event("input", { bubbles: true }));
+      inp.dispatchEvent(new view.Event("change", { bubbles: true }));
       return true;
     }
-    doc.addEventListener("pointerdown", function (ev) {
+    function commitMove(val) {
+      var ok = setPayload(val);
+      var btn = d.querySelector('[class*="st-key-gc_move_go"] button');
+      if (ok && btn) {
+        setTimeout(function () { try { btn.click(); } catch (eC) {} }, 40);
+        return;
+      }
+      try {
+        var loc = (app.location) || window.location;
+        var u = new URL(loc.href);
+        u.searchParams.set("gc_mv", val);
+        loc.assign(u.toString());
+      } catch (e5) {}
+    }
+    d.addEventListener("pointerdown", function (ev) {
       var t = ev.target;
       if (!t || !t.closest) return;
       if (t.closest('[class*="st-key-gc_xd_"]')) return;
@@ -3556,41 +3613,48 @@ def render_google_calendar_tab(
         idx: m[2],
         x: ev.clientX,
         y: ev.clientY,
-        moved: false
+        moved: false,
+        host: host
       };
-      try { host.setPointerCapture(ev.pointerId); } catch (e3) {}
-    }, true);
-    doc.addEventListener("pointermove", function (ev) {
+    }, cap);
+    d.addEventListener("pointermove", function (ev) {
       if (!drag) return;
       var dx = ev.clientX - drag.x;
       var dy = ev.clientY - drag.y;
-      if (!drag.moved && (dx * dx + dy * dy) < 64) return;
+      if (!drag.moved && (dx * dx + dy * dy) < 36) return;
       drag.moved = true;
       just = true;
-      markDrop(doc.elementFromPoint(ev.clientX, ev.clientY));
-    }, true);
-    doc.addEventListener("pointerup", function (ev) {
+      freezeChip(drag.host, true);
+      try { ev.preventDefault(); } catch (eP) {}
+      markDrop(d.elementFromPoint(ev.clientX, ev.clientY));
+    }, moveCap);
+    d.addEventListener("pointerup", function (ev) {
       if (!drag) return;
       var info = drag;
       drag = null;
+      freezeChip(info.host, false);
       clearDrop();
       if (!info.moved) return;
       just = true;
-      var stamp = cellStamp(doc.elementFromPoint(ev.clientX, ev.clientY));
+      var stamp = cellStamp(d.elementFromPoint(ev.clientX, ev.clientY));
       if (!stamp || stamp === info.stamp) return;
-      if (!setPayload(info.stamp + "|" + info.idx + "|" + stamp)) return;
-      var btn = doc.querySelector('[class*="st-key-gc_move_go"] button');
-      if (btn) btn.click();
-    }, true);
-    doc.addEventListener("click", function (ev) {
+      commitMove(info.stamp + "|" + info.idx + "|" + stamp);
+    }, cap);
+    d.addEventListener("pointercancel", function () {
+      if (!drag) return;
+      freezeChip(drag.host, false);
+      drag = null;
+      clearDrop();
+    }, cap);
+    d.addEventListener("click", function (ev) {
       if (!just) return;
       just = false;
       ev.preventDefault();
       ev.stopPropagation();
-    }, true);
+    }, cap);
   }
-  bindChipMove(document);
-  try { bindChipMove(window.parent.document); } catch (e4) {}
+  bindChipMove(doc);
+  if (document !== doc) bindChipMove(document);
 })();
 </script>
 """,
