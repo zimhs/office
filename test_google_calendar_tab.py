@@ -803,6 +803,35 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             rows = gc._gc_cached_tlists()
         self.assertEqual([row["id"] for row in rows], ["g1"])
 
+    def test_mac_view_skips_reload_when_fresh(self):
+        now = gc.datetime.now(gc.timezone.utc).timestamp()
+        state = {
+            "_gc_api": {
+                "_mac_disk": True,
+                "tk:macrem:1": [
+                    {
+                        "id": "a",
+                        "title": "하나",
+                        "notes": "",
+                        "status": "needsAction",
+                        "due": "",
+                        "position": "",
+                        "local_only": False,
+                    }
+                ],
+                "mac_part:macrem:1": "all",
+                "tk_at:macrem:1": now,
+            }
+        }
+        with patch.object(gc.st, "session_state", state), patch.object(
+            gc, "list_mac_reminders"
+        ) as listed:
+            rows, busy, err = gc._gc_mac_view("macrem:1")
+        self.assertEqual(rows[0]["title"], "하나")
+        self.assertFalse(busy)
+        self.assertEqual(err, "")
+        listed.assert_not_called()
+
     def test_mac_timeout_message_hides_command(self):
         exc = TimeoutError("Command '['/usr/bin/osascript', '-', 'LIST']' timed out after 40 seconds")
         self.assertNotIn("osascript", gc._gc_mac_err_text(exc))

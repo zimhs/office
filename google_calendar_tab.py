@@ -2054,13 +2054,18 @@ on run argv
   set rs to ASCII character 30
   tell application "Reminders"
     set L to first list whose id is listId
-    if wantDone is "1" then
-      set n to count of (reminders of L whose completed is true)
-    else
+    if wantDone is "0" then
       set n to count of (reminders of L whose completed is false)
+    else
+      set n to count of (reminders of L whose completed is true)
     end if
     if n is 0 then return ""
-    if wantDone is "1" then
+    if wantDone is "2" then
+      set idList to id of (reminders of L whose completed is true)
+      set nameList to name of (reminders of L whose completed is true)
+      set bodyList to {}
+      set dueList to {}
+    else if wantDone is "1" then
       set idList to id of (reminders of L whose completed is true)
       set nameList to name of (reminders of L whose completed is true)
       set bodyList to body of (reminders of L whose completed is true)
@@ -2084,14 +2089,16 @@ on run argv
     set rid to item i of idList as text
     set rname to my clean(item i of nameList as text, us, rs)
     set rbody to ""
-    try
-      set b to item i of bodyList
-      if b is not missing value then set rbody to my clean(b as text, us, rs)
-    end try
     set rdue to ""
-    try
-      set rdue to my ymd(item i of dueList)
-    end try
+    if wantDone is not "2" then
+      try
+        set b to item i of bodyList
+        if b is not missing value then set rbody to my clean(b as text, us, rs)
+      end try
+      try
+        set rdue to my ymd(item i of dueList)
+      end try
+    end if
     set outText to outText & rid & us & doneFlag & us & rdue & us & rname & us & rbody & rs
   end repeat
   return outText
@@ -2220,9 +2227,68 @@ def parse_mac_reminder_dump(text: str) -> list[dict]:
     return out
 
 
+_MAC_DISK = os.path.join(_HOME_GC, "mac_reminders.json")
+_MAC_KEEP_SEC = 180
+
+
+def _gc_mac_warm_disk() -> None:
+    """재시작 직후 지난 미리 알림을 바로 보여 주고, 방금 읽은 것은 다시 읽지 않는다."""
+    box = _gc_api_box()
+    if box.get("_mac_disk"):
+        return
+    box["_mac_disk"] = True
+    data = _read_json(_MAC_DISK)
+    saved = float(data.get("saved_at") or 0)
+    lists = data.get("lists")
+    if isinstance(lists, list) and not isinstance(box.get("mac_tlists"), list):
+        box["mac_tlists"] = lists
+    items = data.get("items")
+    if not isinstance(items, dict):
+        return
+    for lid, rows in items.items():
+        if not _is_mac_rem_list(str(lid)) or not isinstance(rows, list):
+            continue
+        if isinstance(box.get(f"tk:{lid}"), list):
+            continue
+        box[f"tk:{lid}"] = [_slim_task(t) for t in rows if isinstance(t, dict)]
+        box[f"mac_part:{lid}"] = "all"
+        box[f"tk_at:{lid}"] = saved
+        box.pop(f"mac_items_err:{lid}", None)
+
+
+def _gc_mac_disk_store_items(list_id: str, rows: list[dict]) -> None:
+    data = _read_json(_MAC_DISK)
+    items = dict(data.get("items") or {})
+    items[str(list_id)] = list(rows)
+    data["items"] = items
+    data["saved_at"] = datetime.now(timezone.utc).timestamp()
+    if not isinstance(data.get("lists"), list):
+        data["lists"] = []
+    _write_json(_MAC_DISK, data)
+
+
+def _gc_mac_disk_save() -> None:
+    box = _gc_api_box()
+    data = _read_json(_MAC_DISK)
+    items = dict(data.get("items") or {})
+    for key, rows in list(box.items()):
+        if str(key).startswith("tk:" + _MAC_REM_PREFIX) and isinstance(rows, list):
+            items[str(key)[3:]] = list(rows)
+    lists = box.get("mac_tlists")
+    _write_json(
+        _MAC_DISK,
+        {
+            "saved_at": datetime.now(timezone.utc).timestamp(),
+            "lists": list(lists) if isinstance(lists, list) else list(data.get("lists") or []),
+            "items": items,
+        },
+    )
+
+
 def _mac_reminder_lists() -> list[dict]:
     if not _mac_reminders_enabled():
         return []
+    _gc_mac_warm_disk()
     box = _gc_api_box()
     cached = box.get("mac_tlists")
     if isinstance(cached, list):
@@ -2244,6 +2310,7 @@ def _mac_reminder_lists() -> list[dict]:
             continue
         rows.append({"id": _MAC_REM_PREFIX + rid, "title": name or "미리 알림"})
     box["mac_tlists"] = rows
+    _gc_mac_disk_save()
     return rows
 
 
@@ -2269,11 +2336,11 @@ def list_mac_reminders(list_token: str, *, completed: bool | None = None) -> lis
         return list_mac_reminders(list_token, completed=False) + list_mac_reminders(
             list_token, completed=True
         )
-    mode = "1" if completed else "0"
+    mode = "2" if completed else "0"
     raw = _osascript(
         _MAC_ITEMS_SCRIPT,
         [str(list_token or ""), mode],
-        timeout=60 if completed else 20,
+        timeout=30 if completed else 25,
     )
     rows = []
     for item in parse_mac_reminder_dump(raw):
@@ -2349,19 +2416,29 @@ def _gc_mac_publish(list_id: str, gen: int, rows: list[dict], part: str, err: st
     }
 
 
-def _gc_mac_job(list_id: str, token: str, gen: int) -> None:
+def _gc_mac_job(
+    list_id: str, token: str, gen: int, kept_done: list[dict] | None = None
+) -> None:
+    kept_done = [row for row in (kept_done or []) if str(row.get("status") or "") == "completed"]
     try:
         open_rows = list_mac_reminders(token, completed=False)
     except Exception as exc:
-        _gc_mac_publish(list_id, gen, [], "fail", _gc_mac_err_text(exc))
+        if kept_done:
+            _gc_mac_publish(list_id, gen, kept_done, "all", "")
+        else:
+            _gc_mac_publish(list_id, gen, [], "fail", _gc_mac_err_text(exc))
         return
-    _gc_mac_publish(list_id, gen, open_rows, "open")
+    _gc_mac_publish(list_id, gen, open_rows + kept_done, "open")
     try:
         done_rows = list_mac_reminders(token, completed=True)
-    except Exception as exc:
-        _gc_mac_publish(list_id, gen, open_rows, "open-only", _gc_mac_err_text(exc))
+    except Exception:
+        rows = open_rows + kept_done
+        _gc_mac_publish(list_id, gen, rows, "all", "")
+        _gc_mac_disk_store_items(list_id, rows)
         return
-    _gc_mac_publish(list_id, gen, open_rows + done_rows, "all")
+    rows = open_rows + done_rows
+    _gc_mac_publish(list_id, gen, rows, "all", "")
+    _gc_mac_disk_store_items(list_id, rows)
 
 
 def _gc_mac_apply(list_id: str) -> None:
@@ -2383,6 +2460,7 @@ def _gc_mac_apply(list_id: str) -> None:
 
 
 def _gc_mac_view(list_id: str) -> tuple[list[dict], bool, str]:
+    _gc_mac_warm_disk()
     _gc_mac_apply(list_id)
     box = _gc_api_box()
     now = datetime.now(timezone.utc).timestamp()
@@ -2391,7 +2469,9 @@ def _gc_mac_view(list_id: str) -> tuple[list[dict], bool, str]:
     cached = box.get(f"tk:{list_id}")
     rows = list(cached) if isinstance(cached, list) else []
     err = str(box.get(f"mac_items_err:{list_id}") or "")
-    if part in ("all", "open-only", "fail") and age < 20:
+    if part == "all" and rows and age < _MAC_KEEP_SEC:
+        return rows, False, ""
+    if part == "fail" and not rows and age < 30:
         return rows, False, err
     fut = _MAC_FUTS.get(list_id)
     if fut is not None and not fut.done():
@@ -2404,10 +2484,15 @@ def _gc_mac_view(list_id: str) -> tuple[list[dict], bool, str]:
         cached = box.get(f"tk:{list_id}")
         rows = list(cached) if isinstance(cached, list) else []
         err = str(box.get(f"mac_items_err:{list_id}") or "")
-        if part in ("all", "open-only", "fail") and age < 20:
+        if part == "all" and rows and age < _MAC_KEEP_SEC:
+            return rows, False, ""
+        if part == "fail" and not rows and age < 30:
             return rows, False, err
     gen = int(_MAC_GEN.get(list_id) or 0)
-    _MAC_FUTS[list_id] = _MAC_BG.submit(_gc_mac_job, list_id, _mac_list_token(list_id), gen)
+    kept_done = [row for row in rows if str(row.get("status") or "") == "completed"]
+    _MAC_FUTS[list_id] = _MAC_BG.submit(
+        _gc_mac_job, list_id, _mac_list_token(list_id), gen, kept_done
+    )
     return rows, True, err
 
 
@@ -2416,6 +2501,7 @@ def _gc_mac_remember(list_id: str, rows: list[dict]) -> None:
     _MAC_GEN[list_id] = gen
     _gc_mac_publish(list_id, gen, rows, "all")
     _gc_mac_apply(list_id)
+    _gc_mac_disk_store_items(list_id, rows)
 
 
 def _gc_due_text(value: Any) -> str:
@@ -4524,15 +4610,10 @@ def _gc_render_mac_box() -> None:
         if not mac_lists:
             return
         tasks, busy, err = _gc_mac_view(lid)
-        if busy:
-            part = str(_gc_api_box().get(f"mac_part:{lid}") or "")
-            st.caption(
-                "완료된 미리 알림을 불러오는 중…"
-                if part == "open"
-                else "미리 알림을 불러오는 중…"
-            )
+        if busy and not tasks:
+            st.caption("미리 알림을 불러오는 중…")
             _gc_mac_wait(lid)
-        elif err:
+        elif err and not tasks:
             st.caption(err)
         edit_id = str(st.session_state.get("_gc_mac_note_edit") or "")
         open_tasks = [t for t in tasks if str(t.get("status") or "") != "completed"]
