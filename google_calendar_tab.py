@@ -103,6 +103,21 @@ def iso_week_label(week: list[date]) -> int:
     return int(week[3].isocalendar()[1])
 
 
+def _gc_rerun_task() -> None:
+    """조각 갱신 중이면 그 조각만, 화면 전체 실행 중이면 전체를 다시 그린다."""
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+    ctx = get_script_run_ctx()
+    if ctx is not None and ctx.fragment_ids_this_run:
+        st.rerun(scope="fragment")
+    st.rerun()
+
+
+def _gc_mark_done(key: str, pending_key: str, tid: str) -> None:
+    st.session_state[key] = False
+    st.session_state[pending_key] = tid
+
+
 def _gc_is_holiday_day(items: list[dict] | None) -> bool:
     return any(str((ev or {}).get("cal_id") or "") == GC_KR_HOLIDAY for ev in (items or []))
 
@@ -3360,7 +3375,7 @@ def _render_event_memo_pop(ev: dict) -> None:
                         pending_save["day"] = picked.isoformat()
                     st.session_state["_gc_pending_ev_note"] = pending_save
                     st.session_state["_gc_memo_open"] = False
-                    st.rerun(scope="fragment")
+                    _gc_rerun_task()
             with b2:
                 st.button(
                     "닫기",
@@ -3381,7 +3396,7 @@ def _render_event_memo_pop(ev: dict) -> None:
                             "thread": ids.get("thread") or "",
                             "label": GC_GMAIL_PERSONAL,
                         }
-                        st.rerun(scope="fragment")
+                        _gc_rerun_task()
                 with m2:
                     if st.button("신일가스", key="gc_mail_move_shinil"):
                         st.session_state["_gc_pending_mail_move"] = {
@@ -3391,7 +3406,7 @@ def _render_event_memo_pop(ev: dict) -> None:
                             "thread": ids.get("thread") or "",
                             "label": GC_GMAIL_LABEL,
                         }
-                        st.rerun(scope="fragment")
+                        _gc_rerun_task()
                 with m3:
                     if st.button("삭제", key="gc_mail_del"):
                         st.session_state["_gc_pending_mail_del"] = {
@@ -3401,12 +3416,12 @@ def _render_event_memo_pop(ev: dict) -> None:
                             "thread": ids.get("thread") or "",
                         }
                         st.session_state["_gc_memo_open"] = False
-                        st.rerun(scope="fragment")
+                        _gc_rerun_task()
             elif eid:
                 if st.button("삭제", key="gc_pop_del"):
                     st.session_state["_gc_pending_del_event"] = {"cal": cid, "id": eid}
                     st.session_state["_gc_memo_open"] = False
-                    st.rerun(scope="fragment")
+                    _gc_rerun_task()
         else:
             st.markdown(
                 "<div style='font-size:12px;color:#31333F;white-space:pre-wrap;"
@@ -3810,7 +3825,7 @@ def _render_add_event_pop(cals: list[dict]) -> None:
                     "notes": en or "",
                 }
                 st.session_state["_gc_add_pop"] = False
-                st.rerun(scope="fragment")
+                _gc_rerun_task()
     _gc_bind_add_pop_dismiss()
 
 
@@ -4420,7 +4435,7 @@ def _gc_render_list_tools(
         if st.button("목록 추가", key=add_key + "_btn", width="stretch"):
             st.session_state[add_key] = not bool(st.session_state.get(add_key))
             st.session_state[del_key] = False
-            st.rerun(scope="fragment")
+            _gc_rerun_task()
     with row[1]:
         if st.button(
             "목록 삭제",
@@ -4430,7 +4445,7 @@ def _gc_render_list_tools(
         ):
             st.session_state[del_key] = not bool(st.session_state.get(del_key))
             st.session_state[add_key] = False
-            st.rerun(scope="fragment")
+            _gc_rerun_task()
     if st.session_state.get(add_key):
         name = st.text_input(
             "새 목록",
@@ -4445,13 +4460,13 @@ def _gc_render_list_tools(
             else:
                 st.session_state[add_pending] = title
                 st.session_state[add_key] = False
-                st.rerun(scope="fragment")
+                _gc_rerun_task()
     if st.session_state.get(del_key) and selected_id:
         st.caption("이 목록과 안의 항목이 삭제됩니다.")
         if st.button("삭제", key=del_key + "_ok", width="content"):
             st.session_state[del_pending] = selected_id
             st.session_state[del_key] = False
-            st.rerun(scope="fragment")
+            _gc_rerun_task()
 
 
 @st.fragment(run_every=timedelta(seconds=2))
@@ -4542,7 +4557,7 @@ def _gc_render_mac_box() -> None:
                 st.session_state["_gc_mac_show_new_note"] = not bool(
                     st.session_state.get("_gc_mac_show_new_note")
                 )
-                st.rerun(scope="fragment")
+                _gc_rerun_task()
         with add_row[2]:
             add_clicked = st.button("추가", key="gc_mr_add", width="content")
         notes = ""
@@ -4570,7 +4585,7 @@ def _gc_render_mac_box() -> None:
                     "due": _gc_due_text(due_value),
                 }
                 st.session_state["_gc_mac_show_new_note"] = False
-                st.rerun(scope="fragment")
+                _gc_rerun_task()
 
 
 def _gc_render_mac_task(task: dict, edit_id: str, *, done: bool) -> None:
@@ -4597,9 +4612,13 @@ def _gc_render_mac_task(task: dict, edit_id: str, *, done: bool) -> None:
                     unsafe_allow_html=True,
                 )
         else:
-            if st.checkbox(label, value=False, key=f"gc_mr_td_{tw}"):
-                st.session_state["_gc_mac_pending_done"] = tid
-                st.rerun(scope="fragment")
+            st.checkbox(
+                label,
+                value=False,
+                key=f"gc_mr_td_{tw}",
+                on_change=_gc_mark_done,
+                args=(f"gc_mr_td_{tw}", "_gc_mac_pending_done", tid),
+            )
             if note and not open_this:
                 st.markdown(
                     "<div style='font-size:12px;color:#5f6368;line-height:1.35;"
@@ -4629,7 +4648,7 @@ def _gc_render_mac_task(task: dict, edit_id: str, *, done: bool) -> None:
         if done:
             if st.button("복원", key=f"gc_mr_tr_{tw}", type="tertiary", width="content"):
                 st.session_state["_gc_mac_pending_restore"] = tid
-                st.rerun(scope="fragment")
+                _gc_rerun_task()
             return
         if st.button(
             "닫기" if open_this else "메모",
@@ -4646,7 +4665,7 @@ def _gc_render_mac_task(task: dict, edit_id: str, *, done: bool) -> None:
                 st.session_state["_gc_mac_note_edit"] = ""
             else:
                 st.session_state["_gc_mac_note_edit"] = tid
-            st.rerun(scope="fragment")
+            _gc_rerun_task()
 
 
 @st.fragment
@@ -4878,9 +4897,13 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
         row = st.columns([8.2, 1.15], gap="small", vertical_alignment="top")
         open_this = edit_id == tid
         with row[0]:
-            if st.checkbox(label, value=False, key=f"gc_td_{tw}"):
-                st.session_state["_gc_pending_done"] = tid
-                st.rerun(scope="fragment")
+            st.checkbox(
+                label,
+                value=False,
+                key=f"gc_td_{tw}",
+                on_change=_gc_mark_done,
+                args=(f"gc_td_{tw}", "_gc_pending_done", tid),
+            )
             if note and not open_this:
                 st.markdown(
                     "<div style='font-size:12px;color:#5f6368;line-height:1.35;"
@@ -4924,7 +4947,7 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                     st.session_state["_gc_note_edit"] = ""
                 else:
                     st.session_state["_gc_note_edit"] = tid
-                st.rerun(scope="fragment")
+                _gc_rerun_task()
     with st.expander(f"완료된 할 일 ({len(done_tasks)})", expanded=False):
         if not done_tasks:
             st.caption("완료된 할 일이 없습니다.")
@@ -4957,7 +4980,7 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                     width="content",
                 ):
                     st.session_state["_gc_pending_restore"] = tid
-                    st.rerun(scope="fragment")
+                    _gc_rerun_task()
     add_row = st.columns([6.4, 1.1, 1.15], gap="small", vertical_alignment="bottom")
     with add_row[0]:
         nt = st.text_input(
@@ -4976,7 +4999,7 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
             st.session_state["_gc_show_new_note"] = not bool(
                 st.session_state.get("_gc_show_new_note")
             )
-            st.rerun(scope="fragment")
+            _gc_rerun_task()
     with add_row[2]:
         add_clicked = st.button("추가", key="gc_add_task", width="content")
     nn = ""
@@ -5000,7 +5023,7 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                 "due": _gc_due_text(due_new),
             }
             st.session_state["_gc_show_new_note"] = False
-            st.rerun(scope="fragment")
+            _gc_rerun_task()
     _gc_render_mac_box()
 
 
