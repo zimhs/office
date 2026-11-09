@@ -19147,6 +19147,32 @@ def _dash_filter_and_tabs_fragment() -> None:
                         }
                         _compact_sum = is_touch_ui()
                         _pad = "5px 5px" if _compact_sum else "7px 9px"
+                        # 아이패드 세로: 칸 고정이면 10월 이후 숫자가 잘림. 맥·Cloud 데스크톱 CSS는 그대로.
+                        _touch_sum_css = ""
+                        if _compact_sum:
+                            _touch_sum_css = """
+      @media (max-width: 1040px) {
+        .debt-sum-wrap {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+          touch-action: pan-x;
+        }
+        .debt-sum-table {
+          width: max-content;
+          min-width: 100%;
+          table-layout: auto;
+        }
+        .debt-sum-table thead th,
+        .debt-sum-table td.sum-label,
+        .debt-sum-table td.sum-num {
+          white-space: nowrap;
+          overflow: visible;
+        }
+        .debt-sum-table td.sum-label { min-width: 3.2em; }
+        .debt-sum-table td.sum-num,
+        .debt-sum-table thead th { min-width: 9.6em; }
+      }
+"""
                         _ff = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
                         _head_cells = "".join(
                             f"<th>{html.escape(str(col))}</th>"
@@ -19174,6 +19200,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                                 )
                             _body_rows.append("<tr>" + "".join(cells) + "</tr>")
                         _iframe_h = 92 + (len(summary_rows) + 1) * (32 if _compact_sum else 36)
+                        if _compact_sum:
+                            _iframe_h += 18
                         components.html(
                             f"""
     <div class="debt-sum-card">
@@ -19221,6 +19249,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         font-size:13px !important; font-weight:500 !important; line-height:1.45;
         font-variant-numeric:tabular-nums; border-bottom:1px solid #CBD5E1;
       }}
+      {_touch_sum_css}
     </style>
                             """,
                             height=_iframe_h,

@@ -197,5 +197,21 @@ class DebtReloadBlankScreenRegressionTest(unittest.TestCase):
         self.assertIn('"_dash_debt_staff_sig"', clear_fn)
 
 
+class DebtSumPortraitCssTest(unittest.TestCase):
+    """아이패드 세로 합계표만 칸을 넓힌다. 맥·Cloud 기본표는 table-layout:fixed."""
+
+    def test_portrait_override_is_touch_only(self):
+        path = os.path.join(os.path.dirname(__file__), "app.py")
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        tab5 = src.split("# Tab 5:", 1)[1].split("# Tab 6:", 1)[0]
+        self.assertIn("table-layout:fixed", tab5)
+        self.assertIn('_touch_sum_css = ""', tab5)
+        self.assertIn("if _compact_sum:", tab5)
+        self.assertIn("@media (max-width: 1040px)", tab5)
+        self.assertIn("min-width: 9.6em", tab5)
+        self.assertLess(tab5.index('_touch_sum_css = ""'), tab5.index("@media (max-width: 1040px)"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
