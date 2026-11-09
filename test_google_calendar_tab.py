@@ -149,6 +149,11 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_schedule_prefetch", src)
         self.assertIn("_gc_pf_ym", src)
         self.assertIn("__gcDayPick", src)
+        self.assertIn("__gcChipMove", src)
+        self.assertIn("gc_move_payload", src)
+        self.assertIn("_gc_pending_day_move", src)
+        self.assertIn("def _gc_cache_move_event", src)
+        self.assertIn("def _gc_apply_day_move", src)
         self.assertIn("gc-js-sel", src)
         shrink = src.split("def _gc_shrink_event_titles", 1)[1].split("def ", 1)[0]
         self.assertNotIn("st.html", shrink)
@@ -600,6 +605,29 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             self.assertIn("제목: 발주", created[0]["notes"])
             self.assertIn("메일 열기:", created[0]["notes"])
             self.assertEqual(out["label"], "신일가스")
+
+    def test_cache_move_event_changes_day(self):
+        from datetime import date as d
+
+        ev = {
+            "id": "e1",
+            "cal_id": "c1",
+            "title": "회의",
+            "day": "2026-11-04",
+            "writable": True,
+        }
+        gc._EV_MEM.clear()
+        gc._EV_MEM["ev:2026-11"] = {"2026-11-04": [dict(ev)]}
+        with patch.object(
+            gc.st,
+            "session_state",
+            {"_gc_api": {"ev:2026-11": {"2026-11-04": [dict(ev)]}}, "gc_year": 2026, "gc_month": 11},
+        ), patch.object(gc, "_gc_save_disk_events"):
+            moved = gc._gc_cache_move_event("c1", "e1", d(2026, 11, 4), d(2026, 11, 6), dict(ev))
+        self.assertEqual(moved["day"], "2026-11-06")
+        by = gc._EV_MEM["ev:2026-11"]
+        self.assertFalse(by.get("2026-11-04"))
+        self.assertEqual(by["2026-11-06"][0]["id"], "e1")
 
 
 if __name__ == "__main__":
