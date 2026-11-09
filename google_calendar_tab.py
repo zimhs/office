@@ -1162,14 +1162,14 @@ def sync_shinil_gmail_to_calendar(
         if str(k).strip()
     }
     cid = str(cal_id or "").strip() or _primary_writable_cal_id()
-    cal_done = _list_synced_mail_ids_from_calendar(cid)
-    for mid in cal_done:
-        done.setdefault(mid, "cal")
+    if not done:
+        cal_done = _list_synced_mail_ids_from_calendar(cid)
+        for mid in cal_done:
+            done.setdefault(mid, "cal")
     pending = [it for it in listed if str(it.get("id") or "") not in done]
     batch = pending[: max(0, int(limit or GC_MAIL_SYNC_BATCH))]
     added = 0
     skipped = len(listed) - len(pending)
-    months: set[tuple[int, int]] = set()
     for it in batch:
         mid = str(it.get("id") or "")
         try:
@@ -1203,15 +1203,11 @@ def sync_shinil_gmail_to_calendar(
             continue
         done[mid] = day.isoformat()
         added += 1
-        months.add((day.year, day.month))
         chip = _event_chip(created, {"id": cid, "summary": "", "color": "#1a73e8", "writable": True})
         if chip:
             chip["title"] = GC_MAIL_CHIP_TITLE
-            _gc_cache_add_event(day, chip)
-    try:
-        _retitle_mail_calendar_events(cid)
-    except Exception:
-        pass
+            _gc_cache_add_event(day, chip, flush=False)
+    _gc_save_disk_events()
     state["ids"] = done
     state["label"] = str(lab.get("name") or label_name)
     if since is not None:
@@ -1219,12 +1215,6 @@ def sync_shinil_gmail_to_calendar(
     state["cal_id"] = cid
     state["at"] = datetime.now(_TZ).isoformat()
     save_gmail_sync_state(state)
-    box = _gc_api_box()
-    for yy, mm in months:
-        key = _ev_key(yy, mm)
-        box.pop(key + ":at", None)
-        box.pop(key, None)
-        _EV_MEM.pop(key, None)
     return {
         "added": added,
         "skipped": skipped,
@@ -1546,7 +1536,35 @@ def _gc_sync_google(year: int, month: int) -> tuple[int, int]:
     return n_ev, n_tasks
 
 
-def _gc_cache_add_event(day: date, chip: dict) -> None:
+def _gc_run_sync_click() -> None:
+    """연동실행: 구글만 맞추고 달력 조각만 다시 그린다. 대시보드 전체를 켜지 않는다."""
+    today = datetime.now(_TZ).date()
+    y = int(st.session_state.get("gc_year") or today.year)
+    m = int(st.session_state.get("gc_month") or today.month)
+    try:
+        n_ev, n_tk = _gc_sync_google(y, m)
+        mail = sync_shinil_gmail_to_calendar()
+        extra = ""
+        err = str(mail.get("error") or "")
+        if err:
+            extra = f" · 신일가스 메일: {err}"
+        else:
+            extra = f" · 신일가스 메일 {int(mail.get('added') or 0)}건 추가"
+            remain = int(mail.get("remain") or 0)
+            if remain:
+                extra += f" · 남은 {remain}건은 다시 연동"
+        st.session_state["_gc_sync_msg"] = (
+            f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건{extra}"
+        )
+        st.session_state.pop("_gc_need_gmail", None)
+    except GmailScopeError as e:
+        st.session_state["_gc_need_gmail"] = True
+        st.session_state["_gc_sync_msg"] = str(e)
+    except Exception as e:
+        st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
+
+
+def _gc_cache_add_event(day: date, chip: dict, *, flush: bool = True) -> None:
     key = _ev_key(day.year, day.month)
     box = _gc_api_box()
     by = dict(box.get(key) or _EV_MEM.get(key) or {})
@@ -1555,7 +1573,8 @@ def _gc_cache_add_event(day: date, chip: dict) -> None:
     box[key] = by
     box[key + ":at"] = datetime.now(timezone.utc).timestamp()
     _EV_MEM[key] = by
-    _gc_save_disk_events()
+    if flush:
+        _gc_save_disk_events()
 
 
 def _gc_cache_patch_event(cal_id: str, event_id: str, fields: dict) -> None:
@@ -2908,31 +2927,12 @@ div[class*="st-key-gc_head_acts"] button {
                         on_click=_gc_open_add_pop,
                     )
                 with a2:
-                    if st.button("연동실행", type="primary", key="gc_sync_run"):
-                        try:
-                            n_ev, n_tk = _gc_sync_google(y, m)
-                            mail = sync_shinil_gmail_to_calendar()
-                            extra = ""
-                            err = str(mail.get("error") or "")
-                            if err:
-                                extra = f" · 신일가스 메일: {err}"
-                            else:
-                                extra = (
-                                    f" · 신일가스 메일 {int(mail.get('added') or 0)}건 추가"
-                                )
-                                remain = int(mail.get("remain") or 0)
-                                if remain:
-                                    extra += f" · 남은 {remain}건은 다시 연동"
-                            st.session_state["_gc_sync_msg"] = (
-                                f"연동했습니다. 일정 {n_ev}건 · 할 일 {n_tk}건{extra}"
-                            )
-                            st.session_state.pop("_gc_need_gmail", None)
-                        except GmailScopeError as e:
-                            st.session_state["_gc_need_gmail"] = True
-                            st.session_state["_gc_sync_msg"] = str(e)
-                        except Exception as e:
-                            st.session_state["_gc_sync_msg"] = f"연동 실패: {e}"
-                        st.rerun()
+                    st.button(
+                        "연동실행",
+                        type="primary",
+                        key="gc_sync_run",
+                        on_click=_gc_run_sync_click,
+                    )
     msg = st.session_state.pop("_gc_sync_msg", None)
     if msg:
         st.caption(msg)
