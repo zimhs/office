@@ -184,6 +184,8 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("gc-dow-lab", src)
         self.assertNotIn("gc_ovc=", src)
         self.assertIn("일정 저장", src)
+        self.assertIn("__gcAddOutside", src)
+        self.assertIn("gc_add_close", src)
         self.assertNotIn('with st.expander("일정 추가"', src)
         self.assertIn("_gc_add_pop", src)
         self.assertIn("_gc_open_add_pop", src)
@@ -202,6 +204,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("완료된 할 일", src)
         self.assertIn("_gc_pending_restore", src)
         self.assertIn("gc_tr_", src)
+        self.assertIn("맥 미리알림", src)
+        self.assertIn("list_mac_reminders", src)
+        self.assertIn("_is_mac_rem_list", src)
         self.assertIn("_merge_event_days", src)
         self.assertNotIn("gc_task_import", src)
         self.assertNotIn("gc_task_export", src)
@@ -748,6 +753,38 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             gc._gc_take_memo_action()
         self.assertEqual(state["_gc_pending_mail_del"]["thread"], "t")
         self.assertTrue(state["_gc_memo_client_close"])
+
+    def test_parse_mac_reminder_dump(self):
+        raw = "rid-1\x1f0\x1f2026-11-09\x1f장보기\x1f우유\x1e" "rid-2\x1f1\x1f\x1f완료건\x1f\x1e"
+        rows = gc.parse_mac_reminder_dump(raw)
+        self.assertEqual(rows[0]["title"], "장보기")
+        self.assertEqual(rows[0]["notes"], "우유")
+        self.assertEqual(rows[0]["due"], "2026-11-09")
+        self.assertEqual(rows[0]["status"], "needsAction")
+        self.assertEqual(rows[1]["status"], "completed")
+
+    def test_mac_task_cache_skips_google(self):
+        state: dict = {}
+        with patch.object(gc.st, "session_state", state), patch.object(
+            gc,
+            "list_mac_reminders",
+            return_value=[
+                {
+                    "id": "rid",
+                    "title": "맥할일",
+                    "notes": "",
+                    "status": "needsAction",
+                    "due": "",
+                    "position": "",
+                    "local_only": False,
+                }
+            ],
+        ) as listed, patch.object(gc, "merge_tasks_with_google") as merged:
+            out = gc._gc_cached_tasks("macrem:list-1")
+        self.assertEqual(out[0]["title"], "맥할일")
+        listed.assert_called_once_with("list-1")
+        merged.assert_not_called()
+        self.assertEqual(gc._tlist_label({"id": "macrem:list-1", "title": "미리 알림"}), "맥 미리알림 · 미리 알림")
 
     def test_set_sel_event_opens_memo(self):
         from datetime import date as d
