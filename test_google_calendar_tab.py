@@ -110,6 +110,11 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertNotIn("_retitle_mail_calendar_events", sync_fn)
         click = src.split("def _gc_run_sync_click", 1)[1].split("\ndef ", 1)[0]
         self.assertNotIn("st.rerun()", click)
+        self.assertIn("_SYNC_BG.submit", click)
+        self.assertIn("def _gc_sync_job", src)
+        self.assertIn("def _gc_take_sync_result", src)
+        self.assertNotIn("_gc_sync_google(y, m)", click)
+        self.assertIn("GC_MAIL_SYNC_BATCH = 20", src)
         self.assertIn("gc_head_acts", src)
         self.assertIn("gc_cal_top", src)
         self.assertIn("gc_ym", src)
