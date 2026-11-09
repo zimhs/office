@@ -210,6 +210,10 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_render_mac_box", src)
         self.assertIn("**미리 알림**", src)
         self.assertIn("gc_mac_list", src)
+        self.assertIn("목록 추가", src)
+        self.assertIn("목록 삭제", src)
+        self.assertIn("task_chip", src)
+        self.assertIn("날짜를 넣으면 달력에 나옵니다.", src)
         self.assertIn("_merge_event_days", src)
         self.assertNotIn("gc_task_import", src)
         self.assertNotIn("gc_task_export", src)
@@ -802,6 +806,37 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
     def test_mac_timeout_message_hides_command(self):
         exc = TimeoutError("Command '['/usr/bin/osascript', '-', 'LIST']' timed out after 40 seconds")
         self.assertNotIn("osascript", gc._gc_mac_err_text(exc))
+
+    def test_task_due_day_uses_seoul(self):
+        self.assertEqual(gc._gc_task_due_day("2026-11-20"), "2026-11-20")
+        self.assertEqual(gc._gc_task_due_day("2026-11-19T15:00:00.000Z"), "2026-11-20")
+        self.assertEqual(gc._gc_google_due("2026-11-20"), "2026-11-20T00:00:00+09:00")
+
+    def test_dated_task_lands_on_month_grid(self):
+        state = {"_gc_api": {}}
+        lists = {
+            "lists": {
+                "g1": [
+                    {
+                        "id": "t1",
+                        "title": "방문",
+                        "notes": "",
+                        "status": "needsAction",
+                        "due": "2026-11-20",
+                        "position": "",
+                        "local_only": False,
+                    }
+                ]
+            }
+        }
+        with patch.object(gc.st, "session_state", state), patch.object(
+            gc, "load_local_task_lists", return_value=lists
+        ):
+            shown = gc._gc_with_task_chips({}, 2026, 11)
+        chip = shown["2026-11-20"][0]
+        self.assertEqual(chip["title"], "방문")
+        self.assertTrue(chip["task_chip"])
+        self.assertFalse(chip["writable"])
 
     def test_set_sel_event_opens_memo(self):
         from datetime import date as d

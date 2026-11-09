@@ -579,10 +579,11 @@ def api_json(method: str, url: str, body: dict | None = None) -> dict:
     tok = access_token()
     if not tok:
         raise RuntimeError("구글 연결이 필요합니다.")
+    payload = None if method.upper() == "DELETE" and not body else (body or {})
     r = requests.request(
         method,
         url,
-        json=body or {},
+        json=payload,
         headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
         timeout=30,
     )
@@ -592,7 +593,7 @@ def api_json(method: str, url: str, body: dict | None = None) -> dict:
             return requests.request(
                 method,
                 url,
-                json=body or {},
+                json=payload,
                 headers={"Authorization": f"Bearer {at}", "Content-Type": "application/json"},
                 timeout=30,
             )
@@ -1322,14 +1323,32 @@ def list_tasks(list_id: str, *, include_completed: bool = False) -> list[dict]:
     return items
 
 
-def add_task(list_id: str, title: str, notes: str = "") -> dict:
+def add_task(list_id: str, title: str, notes: str = "", due: str = "") -> dict:
     body: dict[str, Any] = {"title": title}
     if str(notes or "").strip():
         body["notes"] = str(notes).strip()
+    gdue = _gc_google_due(due)
+    if gdue:
+        body["due"] = gdue
     return api_json(
         "POST",
         f"{_TASK_API}/lists/{urllib.parse.quote(list_id, safe='')}/tasks",
         body,
+    )
+
+
+def add_tasklist(title: str) -> dict:
+    return api_json(
+        "POST",
+        f"{_TASK_API}/users/@me/lists",
+        {"title": str(title or "").strip()},
+    )
+
+
+def delete_tasklist(list_id: str) -> None:
+    api_json(
+        "DELETE",
+        f"{_TASK_API}/users/@me/lists/{urllib.parse.quote(list_id, safe='')}",
     )
 
 
@@ -1808,13 +1827,36 @@ def _task_store_paths() -> list[str]:
     return [GC_TASKS_HOME, GC_TASKS_ST, GC_TASKS]
 
 
+def _gc_task_due_day(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "T" not in text[:11]:
+        try:
+            return date.fromisoformat(text[:10]).isoformat()
+        except ValueError:
+            return ""
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_TZ).date().isoformat()
+
+
+def _gc_google_due(due: str) -> str:
+    day = _gc_task_due_day(due)
+    return f"{day}T00:00:00+09:00" if day else ""
+
+
 def _slim_task(t: dict) -> dict:
     return {
         "id": str((t or {}).get("id") or ""),
         "title": str((t or {}).get("title") or ""),
         "notes": str((t or {}).get("notes") or ""),
         "status": str((t or {}).get("status") or "needsAction"),
-        "due": str((t or {}).get("due") or ""),
+        "due": _gc_task_due_day((t or {}).get("due")),
         "position": str((t or {}).get("position") or ""),
         "local_only": bool((t or {}).get("local_only")),
     }
@@ -1859,7 +1901,9 @@ def merge_tasks_with_google(list_id: str) -> list[dict]:
             continue
         if t.get("local_only") or not tid or tid.startswith("local-"):
             try:
-                pushed.append(_slim_task(add_task(list_id, title, notes)))
+                pushed.append(
+                    _slim_task(add_task(list_id, title, notes, str(t.get("due") or "")))
+                )
             except Exception:
                 pushed.append(_slim_task(t))
             continue
@@ -1955,6 +1999,25 @@ def _osascript(source: str, args: list[str] | None = None, timeout: int = 30) ->
         raise RuntimeError(err or "미리 알림을 열지 못했습니다.")
     return proc.stdout or ""
 
+
+_MAC_ADD_LIST_SCRIPT = """
+on run argv
+  set titleText to item 1 of argv
+  tell application "Reminders"
+    set L to make new list with properties {name:titleText}
+    return id of L as text
+  end tell
+end run
+"""
+
+_MAC_DEL_LIST_SCRIPT = """
+on run argv
+  set listId to item 1 of argv
+  tell application "Reminders"
+    delete (first list whose id is listId)
+  end tell
+end run
+"""
 
 _MAC_LISTS_SCRIPT = """
 set us to ASCII character 31
@@ -2202,6 +2265,14 @@ def list_mac_reminders(list_token: str, *, completed: bool | None = None) -> lis
         item["status"] = "completed" if completed else "needsAction"
         rows.append(_slim_task(item))
     return rows
+
+
+def add_mac_list(title: str) -> str:
+    return _osascript(_MAC_ADD_LIST_SCRIPT, [str(title or "").strip()], timeout=20).strip()
+
+
+def delete_mac_list(list_token: str) -> None:
+    _osascript(_MAC_DEL_LIST_SCRIPT, [str(list_token or "")], timeout=20)
 
 
 def add_mac_reminder(list_token: str, title: str, notes: str = "", due: str = "") -> str:
@@ -3178,18 +3249,33 @@ div[class*="st-key-gc_cellpink"] {
                                     eid = str(ev.get("id") or "")
                                     cid = str(ev.get("cal_id") or "")
                                     lab = calendar_chip_label(ev)
+                                    if ev.get("task_chip"):
+                                        prefix = "알림" if ev.get("cal") == "미리 알림" else "할일"
+                                        lab = f"{prefix} {lab}"
+                                        if len(lab) > 14:
+                                            lab = lab[:13] + "…"
                                     with st.container(key=f"gc_chiprow_{stamp}_{idx}"):
-                                        st.button(
-                                            lab,
-                                            key=f"gc_evpick_{stamp}_{idx}",
-                                            type="tertiary",
-                                            width="stretch",
-                                            on_click=_gc_set_sel_event,
-                                            args=(d, eid or iso, f"{stamp}_{idx}"),
-                                        )
-                                        records[f"gc_evpick_{stamp}_{idx}"] = (
-                                            _gc_memo_record(ev, need_auth=need_auth)
-                                        )
+                                        if ev.get("task_chip"):
+                                            st.button(
+                                                lab,
+                                                key=f"gc_evpick_{stamp}_{idx}",
+                                                type="tertiary",
+                                                width="stretch",
+                                                on_click=_gc_set_sel_day,
+                                                args=(d,),
+                                            )
+                                        else:
+                                            st.button(
+                                                lab,
+                                                key=f"gc_evpick_{stamp}_{idx}",
+                                                type="tertiary",
+                                                width="stretch",
+                                                on_click=_gc_set_sel_event,
+                                                args=(d, eid or iso, f"{stamp}_{idx}"),
+                                            )
+                                            records[f"gc_evpick_{stamp}_{idx}"] = (
+                                                _gc_memo_record(ev, need_auth=need_auth)
+                                            )
                                         if ev.get("writable") and eid and cid:
                                             st.button(
                                                 "×",
@@ -3866,6 +3952,61 @@ def _setup_expander() -> None:
                 st.rerun()
 
 
+def _gc_task_chip(task: dict, *, kind: str) -> dict | None:
+    if str((task or {}).get("status") or "") == "completed":
+        return None
+    day = _gc_task_due_day((task or {}).get("due"))
+    if not day:
+        return None
+    title = str((task or {}).get("title") or "(제목 없음)")
+    if kind == "mac":
+        color, cal = "#e37400", "미리 알림"
+    else:
+        color, cal = "#188038", "할 일"
+    return {
+        "title": title,
+        "color": color,
+        "cal": cal,
+        "hhmm": "",
+        "day": day,
+        "description": str((task or {}).get("notes") or ""),
+        "id": f"taskdue-{kind}-{task.get('id')}",
+        "cal_id": "",
+        "writable": False,
+        "task_chip": True,
+    }
+
+
+def _gc_with_task_chips(
+    by_day: dict[str, list[dict]], year: int, month: int
+) -> dict[str, list[dict]]:
+    """날짜가 있는 할 일·미리 알림을 이번 달 칸에만 얹는다."""
+    visible = {d.isoformat() for week in month_weeks(year, month) for d in week}
+    merged = {key: list(items) for key, items in (by_day or {}).items()}
+    seen: set[tuple[str, str]] = set()
+    lists = load_local_task_lists().get("lists") or {}
+    tasks: list[tuple[str, dict]] = []
+    for lid, items in lists.items():
+        if _is_mac_rem_list(str(lid)) or not isinstance(items, list):
+            continue
+        tasks.extend(("task", item) for item in items if isinstance(item, dict))
+    box = _gc_api_box()
+    for key, items in box.items():
+        if not str(key).startswith("tk:" + _MAC_REM_PREFIX) or not isinstance(items, list):
+            continue
+        tasks.extend(("mac", item) for item in items if isinstance(item, dict))
+    for kind, task in tasks:
+        chip = _gc_task_chip(task, kind=kind)
+        if not chip or chip["day"] not in visible:
+            continue
+        mark = (chip["day"], str(chip.get("id") or ""))
+        if mark in seen:
+            continue
+        seen.add(mark)
+        merged.setdefault(chip["day"], []).append(chip)
+    return merged
+
+
 @st.fragment
 def _gc_cal_panel() -> None:
     """달력 월 이동·일정 저장만 이 조각을 다시 그린다."""
@@ -4095,7 +4236,7 @@ div[class*="st-key-gc_head_acts"] button {
 
     y = int(st.session_state.get("gc_year") or today.year)
     m = int(st.session_state.get("gc_month") or today.month)
-    by_day = _gc_cached_events(cals, y, m)
+    by_day = _gc_with_task_chips(_gc_cached_events(cals, y, m), y, m)
     if st.session_state.get("_gc_pf_ym") != (y, m):
         st.session_state["_gc_pf_ym"] = (y, m)
         _gc_schedule_prefetch(cals, y, m)
@@ -4153,6 +4294,8 @@ def _gc_take_mac_actions() -> None:
                 }
             )
             _gc_mac_remember(lid, rows)
+            if due:
+                st.session_state["_gc_cal_refresh"] = True
         except Exception as exc:
             st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
     pending_note = st.session_state.pop("_gc_mac_pending_note", None)
@@ -4164,24 +4307,151 @@ def _gc_take_mac_actions() -> None:
             set_mac_reminder_note(tid, notes)
             set_mac_reminder_due(tid, due)
             _gc_mac_patch(lid, tid, notes=notes, due=due)
+            st.session_state["_gc_cal_refresh"] = True
         except Exception as exc:
             st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
     pending_done = st.session_state.pop("_gc_mac_pending_done", None)
     if pending_done and lid:
         tid = str(pending_done)
         try:
+            had_due = any(
+                str(item.get("id") or "") == tid and _gc_task_due_day(item.get("due"))
+                for item in (_gc_api_box().get(f"tk:{lid}") or [])
+            )
             set_mac_reminder_done(tid, True)
             _gc_mac_patch(lid, tid, status="completed")
+            if had_due:
+                st.session_state["_gc_cal_refresh"] = True
         except Exception as exc:
             st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
     pending_restore = st.session_state.pop("_gc_mac_pending_restore", None)
     if pending_restore and lid:
         tid = str(pending_restore)
         try:
+            had_due = any(
+                str(item.get("id") or "") == tid and _gc_task_due_day(item.get("due"))
+                for item in (_gc_api_box().get(f"tk:{lid}") or [])
+            )
             set_mac_reminder_done(tid, False)
             _gc_mac_patch(lid, tid, status="needsAction")
+            if had_due:
+                st.session_state["_gc_cal_refresh"] = True
         except Exception as exc:
             st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
+    new_list = st.session_state.pop("_gc_mac_pending_list_new", None)
+    if isinstance(new_list, str) and new_list.strip():
+        try:
+            rid = add_mac_list(new_list.strip())
+            new_id = _MAC_REM_PREFIX + rid
+            rows = [
+                item
+                for item in _mac_reminder_lists()
+                if str(item.get("id") or "") != new_id
+            ]
+            rows.append({"id": new_id, "title": new_list.strip()})
+            _gc_api_box()["mac_tlists"] = rows
+            _gc_api_box().pop("mac_tlists_err", None)
+            st.session_state["_gc_pick_mac"] = new_id
+        except Exception as exc:
+            st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
+    del_list = st.session_state.pop("_gc_mac_pending_list_del", None)
+    if del_list and _is_mac_rem_list(str(del_list)):
+        try:
+            delete_mac_list(_mac_list_token(str(del_list)))
+            box = _gc_api_box()
+            box["mac_tlists"] = [
+                item
+                for item in (box.get("mac_tlists") or [])
+                if str(item.get("id") or "") != str(del_list)
+            ]
+            box.pop(f"tk:{del_list}", None)
+            box.pop(f"tk_at:{del_list}", None)
+            box.pop(f"mac_part:{del_list}", None)
+            _MAC_GEN[str(del_list)] = int(_MAC_GEN.get(str(del_list)) or 0) + 1
+            _MAC_FUTS.pop(str(del_list), None)
+            st.session_state["gc_mac_list"] = 0
+        except Exception as exc:
+            st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
+
+
+def _gc_take_list_actions() -> None:
+    new_name = st.session_state.pop("_gc_pending_tlist_new", None)
+    if isinstance(new_name, str) and new_name.strip():
+        try:
+            created = add_tasklist(new_name.strip())
+            _gc_api_box().pop("tlists", None)
+            st.session_state["_gc_pick_tlist"] = str(created.get("id") or "")
+            st.session_state["_gc_new_tlist"] = {
+                "id": created.get("id") or "",
+                "title": created.get("title") or new_name.strip(),
+            }
+        except Exception as exc:
+            st.warning(f"할 일 목록을 만들지 못했습니다: {exc}")
+    del_id = st.session_state.pop("_gc_pending_tlist_del", None)
+    if del_id:
+        try:
+            delete_tasklist(str(del_id))
+            data = load_local_task_lists()
+            lists = data.get("lists") or {}
+            lists.pop(str(del_id), None)
+            data["lists"] = lists
+            save_local_task_lists(data)
+            box = _gc_api_box()
+            box.pop("tlists", None)
+            box.pop(f"tk:{del_id}", None)
+            box.pop(f"tk_at:{del_id}", None)
+            st.session_state["gc_tlist"] = 0
+        except Exception as exc:
+            st.warning(f"할 일 목록을 지우지 못했습니다: {exc}")
+
+
+def _gc_render_list_tools(
+    *,
+    add_key: str,
+    del_key: str,
+    name_key: str,
+    add_pending: str,
+    del_pending: str,
+    selected_id: str,
+    can_delete: bool,
+) -> None:
+    row = st.columns([1, 1], gap="small")
+    with row[0]:
+        if st.button("목록 추가", key=add_key + "_btn", width="stretch"):
+            st.session_state[add_key] = not bool(st.session_state.get(add_key))
+            st.session_state[del_key] = False
+            st.rerun(scope="fragment")
+    with row[1]:
+        if st.button(
+            "목록 삭제",
+            key=del_key + "_btn",
+            width="stretch",
+            disabled=not can_delete,
+        ):
+            st.session_state[del_key] = not bool(st.session_state.get(del_key))
+            st.session_state[add_key] = False
+            st.rerun(scope="fragment")
+    if st.session_state.get(add_key):
+        name = st.text_input(
+            "새 목록",
+            key=name_key,
+            placeholder="목록 이름",
+            label_visibility="collapsed",
+        )
+        if st.button("만들기", key=add_key + "_ok", width="content"):
+            title = (name or "").strip()
+            if len(title) < 1:
+                st.error("목록 이름을 입력하세요.")
+            else:
+                st.session_state[add_pending] = title
+                st.session_state[add_key] = False
+                st.rerun(scope="fragment")
+    if st.session_state.get(del_key) and selected_id:
+        st.caption("이 목록과 안의 항목이 삭제됩니다.")
+        if st.button("삭제", key=del_key + "_ok", width="content"):
+            st.session_state[del_pending] = selected_id
+            st.session_state[del_key] = False
+            st.rerun(scope="fragment")
 
 
 @st.fragment(run_every=timedelta(seconds=2))
@@ -4205,22 +4475,39 @@ def _gc_render_mac_box() -> None:
         if not _mac_reminders_enabled():
             return
         mac_lists = _mac_reminder_lists()
+        want_mac = st.session_state.pop("_gc_pick_mac", None)
+        if want_mac:
+            for i, item in enumerate(mac_lists):
+                if str(item.get("id") or "") == str(want_mac):
+                    st.session_state["gc_mac_list"] = i
         if not mac_lists:
             err = str((_gc_api_box().get("mac_tlists_err") or "")).strip()
             st.caption(err or "미리 알림 목록이 없습니다.")
-            return
-        names = [str(item.get("title") or "미리 알림") for item in mac_lists]
-        current = st.session_state.get("gc_mac_list")
-        if isinstance(current, int) and current >= len(names):
-            st.session_state["gc_mac_list"] = 0
-        picked = st.selectbox(
-            "목록",
-            options=list(range(len(names))),
-            format_func=lambda i: names[i],
-            key="gc_mac_list",
-        )
-        lid = str(mac_lists[int(picked)].get("id") or "")
+            lid = ""
+        else:
+            names = [str(item.get("title") or "미리 알림") for item in mac_lists]
+            current = st.session_state.get("gc_mac_list")
+            if isinstance(current, int) and current >= len(names):
+                st.session_state["gc_mac_list"] = 0
+            picked = st.selectbox(
+                "목록",
+                options=list(range(len(names))),
+                format_func=lambda i: names[i],
+                key="gc_mac_list",
+            )
+            lid = str(mac_lists[int(picked)].get("id") or "")
         st.session_state["_gc_mac_lid"] = lid
+        _gc_render_list_tools(
+            add_key="_gc_mac_add",
+            del_key="_gc_mac_del",
+            name_key="gc_mac_list_name",
+            add_pending="_gc_mac_pending_list_new",
+            del_pending="_gc_mac_pending_list_del",
+            selected_id=lid,
+            can_delete=bool(lid),
+        )
+        if not mac_lists:
+            return
         tasks, busy, err = _gc_mac_view(lid)
         if busy:
             part = str(_gc_api_box().get(f"mac_part:{lid}") or "")
@@ -4374,6 +4661,7 @@ def _gc_task_panel() -> None:
     if pending_new:
         st.session_state["gc_new_task"] = ""
         st.session_state["gc_new_note"] = ""
+        st.session_state.pop("gc_new_due", None)
     if pending_new and lid and _is_mac_rem_list(lid):
         if isinstance(pending_new, dict):
             title_in = str(pending_new.get("title") or "")
@@ -4389,18 +4677,21 @@ def _gc_task_panel() -> None:
         if isinstance(pending_new, dict):
             title_in = str(pending_new.get("title") or "")
             notes_in = str(pending_new.get("notes") or "")
+            due_in = _gc_task_due_day(pending_new.get("due"))
         else:
-            title_in, notes_in = str(pending_new), ""
+            title_in, notes_in, due_in = str(pending_new), "", ""
         created: dict[str, Any]
         try:
-            created = _slim_task(add_task(lid, title_in, notes_in))
+            created = _slim_task(add_task(lid, title_in, notes_in, due_in))
+            if due_in and not created.get("due"):
+                created["due"] = due_in
         except Exception as e:
             created = {
                 "id": "local-" + secrets.token_hex(8),
                 "title": title_in,
                 "notes": notes_in,
                 "status": "needsAction",
-                "due": "",
+                "due": due_in,
                 "position": "",
                 "local_only": True,
             }
@@ -4408,6 +4699,8 @@ def _gc_task_panel() -> None:
         cur = load_local_tasks(lid)
         cur.append(created)
         save_local_tasks(lid, cur)
+        if due_in:
+            st.session_state["_gc_cal_refresh"] = True
     pending_note = st.session_state.pop("_gc_pending_note", None)
     if isinstance(pending_note, dict) and lid and _is_mac_rem_list(lid) and pending_note.get("id"):
         try:
@@ -4418,19 +4711,28 @@ def _gc_task_panel() -> None:
     elif isinstance(pending_note, dict) and lid and pending_note.get("id"):
         nid = str(pending_note.get("id") or "")
         ntxt = str(pending_note.get("notes") or "")
+        has_due = "due" in pending_note
+        due_in = _gc_task_due_day(pending_note.get("due")) if has_due else ""
         cur = []
         for t in load_local_tasks(lid):
             if str(t.get("id")) == nid:
                 t = dict(t)
                 t["notes"] = ntxt
+                if has_due:
+                    t["due"] = due_in
                 if not t.get("local_only") and nid and not nid.startswith("local-"):
+                    fields: dict[str, Any] = {"notes": ntxt}
+                    if has_due:
+                        fields["due"] = _gc_google_due(due_in) or None
                     try:
-                        patch_task(lid, nid, {"notes": ntxt})
+                        patch_task(lid, nid, fields)
                     except Exception as e:
                         t["local_only"] = True
                         st.warning(f"구글 메모 반영 실패, 대시보드에만 저장: {e}")
             cur.append(t)
         save_local_tasks(lid, cur)
+        if has_due:
+            st.session_state["_gc_cal_refresh"] = True
     pending_done = st.session_state.pop("_gc_pending_done", None)
     if pending_done and lid and _is_mac_rem_list(lid):
         try:
@@ -4442,6 +4744,8 @@ def _gc_task_panel() -> None:
         nid = str(pending_done)
         left = []
         for t in load_local_tasks(lid):
+            if str(t.get("id")) == nid and _gc_task_due_day(t.get("due")):
+                st.session_state["_gc_cal_refresh"] = True
             if str(t.get("id")) == nid:
                 t = dict(t)
                 t["status"] = "completed"
@@ -4463,6 +4767,8 @@ def _gc_task_panel() -> None:
         nid = str(pending_restore)
         left = []
         for t in load_local_tasks(lid):
+            if str(t.get("id")) == nid and _gc_task_due_day(t.get("due")):
+                st.session_state["_gc_cal_refresh"] = True
             if str(t.get("id")) == nid:
                 t = dict(t)
                 t["status"] = "needsAction"
@@ -4473,6 +4779,9 @@ def _gc_task_panel() -> None:
                         st.warning(f"구글 복원 반영 실패: {e}")
             left.append(t)
         save_local_tasks(lid, left)
+    _gc_take_list_actions()
+    if st.session_state.pop("_gc_cal_refresh", False):
+        st.rerun()
     try:
         tlists = _gc_cached_tlists()
     except Exception as e:
@@ -4514,22 +4823,43 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
         unsafe_allow_html=True,
     )
     st.markdown("**할 일 목록**")
+    extra = st.session_state.pop("_gc_new_tlist", None)
+    if isinstance(extra, dict) and extra.get("id"):
+        if not any(str(item.get("id") or "") == str(extra.get("id")) for item in tlists):
+            tlists.append(extra)
+    want = st.session_state.pop("_gc_pick_tlist", None)
+    if want:
+        for i, item in enumerate(tlists):
+            if str(item.get("id") or "") == str(want):
+                st.session_state["gc_tlist"] = i
     if not tlists:
         st.caption("할 일 목록이 없습니다.")
+        lid = ""
+    else:
+        names = [_tlist_label(t) for t in tlists]
+        picked = st.session_state.get("gc_tlist")
+        if isinstance(picked, int) and picked >= len(names):
+            st.session_state["gc_tlist"] = 0
+        li = st.selectbox(
+            "목록",
+            options=list(range(len(names))),
+            format_func=lambda i: names[i],
+            key="gc_tlist",
+        )
+        lid = str(tlists[int(li)].get("id") or "")
+    st.session_state["_gc_lid"] = lid
+    _gc_render_list_tools(
+        add_key="_gc_tlist_add",
+        del_key="_gc_tlist_del",
+        name_key="gc_tlist_name",
+        add_pending="_gc_pending_tlist_new",
+        del_pending="_gc_pending_tlist_del",
+        selected_id=lid,
+        can_delete=bool(lid),
+    )
+    if not tlists:
         _gc_render_mac_box()
         return
-    names = [_tlist_label(t) for t in tlists]
-    picked = st.session_state.get("gc_tlist")
-    if isinstance(picked, int) and picked >= len(names):
-        st.session_state["gc_tlist"] = 0
-    li = st.selectbox(
-        "목록",
-        options=list(range(len(names))),
-        format_func=lambda i: names[i],
-        key="gc_tlist",
-    )
-    lid = str(tlists[int(li)].get("id") or "")
-    st.session_state["_gc_lid"] = lid
     try:
         tasks = _gc_cached_tasks(lid) if lid else []
     except Exception as e:
@@ -4566,6 +4896,18 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                     label_visibility="collapsed",
                     placeholder="할 일 아래 메모",
                 )
+                try:
+                    due_default = date.fromisoformat(due) if due else None
+                except ValueError:
+                    due_default = None
+                due_key = f"gc_due_{tw}"
+                due_kwargs: dict[str, Any] = {
+                    "key": due_key,
+                    "label_visibility": "collapsed",
+                }
+                if due_key not in st.session_state:
+                    due_kwargs["value"] = due_default
+                st.date_input("날짜", **due_kwargs)
         with row[1]:
             if st.button(
                 "닫기" if open_this else "메모",
@@ -4577,6 +4919,7 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                     st.session_state["_gc_pending_note"] = {
                         "id": tid,
                         "notes": st.session_state.get(f"gc_note_{tw}") or "",
+                        "due": _gc_due_text(st.session_state.get(f"gc_due_{tw}")),
                     }
                     st.session_state["_gc_note_edit"] = ""
                 else:
@@ -4644,6 +4987,8 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
             placeholder="할 일 아래 메모",
             label_visibility="collapsed",
         )
+    due_new = st.date_input("날짜", value=None, key="gc_new_due")
+    st.caption("날짜를 넣으면 달력에 나옵니다.")
     if add_clicked:
         title = (nt or "").strip()
         if len(title) < 1:
@@ -4652,6 +4997,7 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
             st.session_state["_gc_pending_new"] = {
                 "title": title,
                 "notes": nn or "",
+                "due": _gc_due_text(due_new),
             }
             st.session_state["_gc_show_new_note"] = False
             st.rerun(scope="fragment")
