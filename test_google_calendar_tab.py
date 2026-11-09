@@ -98,6 +98,14 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("#e8f0fe", src)
         self.assertIn("patch_event", src)
         self.assertIn("_gc_memo_open", src)
+        self.assertIn("_gc_take_memo_action", src)
+        self.assertIn("gc-memo-float", src)
+        self.assertIn("gc-mf-day", src)
+        self.assertIn("event_day_patch", src)
+        self.assertIn("_gc_cache_move_event", src)
+        self.assertIn("__gcMemoPack", src)
+        self.assertIn("gc_memo_act", src)
+        self.assertIn("stopPropagation", src)
         self.assertIn("gc_ev_note", src)
         self.assertIn("_writable_calendars", src)
         self.assertIn('body["description"]', src)
@@ -606,6 +614,140 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             self.assertIn("제목: 발주", created[0]["notes"])
             self.assertIn("메일 열기:", created[0]["notes"])
             self.assertEqual(out["label"], "신일가스")
+
+    def test_memo_record_plain_and_gmail_auth(self):
+        plain = gc._gc_memo_record(
+            {
+                "title": "큐에스아이",
+                "description": "HE (1)",
+                "day": "2026-11-10",
+                "cal": "방문예정",
+                "id": "e",
+                "cal_id": "c",
+                "writable": True,
+            }
+        )
+        self.assertEqual(plain["title"], "큐에스아이")
+        self.assertEqual(plain["note"], "HE (1)")
+        self.assertEqual(plain["day"], "2026-11-10")
+        self.assertIn("2026-11-10", plain["meta"])
+        self.assertTrue(plain["writable"])
+        self.assertFalse(plain["server"])
+        mail = gc._gc_memo_record(
+            {
+                "title": "메일",
+                "description": "메일 열기: https://mail.google.com/mail",
+                "id": "e",
+                "cal_id": "c",
+                "writable": True,
+                "gmail_msg": "m",
+                "gmail_thread": "t",
+            },
+            need_auth=True,
+        )
+        self.assertTrue(mail["server"])
+        self.assertFalse(mail["writable"])
+
+    def test_take_memo_action_save_once(self):
+        raw = json.dumps(
+            {"op": "save", "id": "e1", "cal": "c1", "notes": "안녕", "n": 1},
+            ensure_ascii=False,
+        )
+        state = {"gc_memo_act": raw}
+        with patch.object(gc.st, "session_state", state):
+            gc._gc_take_memo_action()
+            gc._gc_take_memo_action()
+        self.assertEqual(
+            state["_gc_pending_ev_note"],
+            {"cal": "c1", "id": "e1", "notes": "안녕"},
+        )
+        self.assertTrue(state["_gc_memo_client_close"])
+
+    def test_event_day_patch_keeps_clock(self):
+        from datetime import date as d
+
+        all_day = gc.event_day_patch(d(2026, 11, 12))
+        self.assertEqual(all_day["start"]["date"], "2026-11-12")
+        self.assertEqual(all_day["end"]["date"], "2026-11-13")
+        timed = gc.event_day_patch(d(2026, 11, 12), "14:30")
+        self.assertIn("T14:30", timed["start"]["dateTime"])
+        self.assertEqual(timed["start"]["timeZone"], "Asia/Seoul")
+
+    def test_apply_event_save_moves_day_and_patches_google(self):
+        from datetime import date as d
+
+        ev = {
+            "id": "e1",
+            "cal_id": "c1",
+            "title": "큐에스아이",
+            "day": "2026-11-10",
+            "description": "old",
+            "hhmm": "",
+            "writable": True,
+        }
+        key = gc._ev_key(2026, 11)
+        month = {key: {"2026-11-10": [dict(ev)]}}
+        state = {"_gc_api": {key: month[key]}}
+        with patch.object(gc, "_EV_MEM", month), patch.object(
+            gc.st, "session_state", state
+        ), patch.object(gc, "patch_event") as patched, patch.object(
+            gc, "_gc_save_disk_events"
+        ):
+            gc._gc_apply_event_save(
+                {"cal": "c1", "id": "e1", "notes": "HE", "day": "2026-11-12"}
+            )
+        self.assertEqual(state["gc_month"], 11)
+        self.assertEqual(state["_gc_sel_day"], d(2026, 11, 12))
+        days = state["_gc_api"][key]
+        self.assertNotIn("2026-11-10", days)
+        self.assertEqual(days["2026-11-12"][0]["description"], "HE")
+        self.assertEqual(days["2026-11-12"][0]["day"], "2026-11-12")
+        body = patched.call_args[0][2]
+        self.assertEqual(body["start"]["date"], "2026-11-12")
+        self.assertEqual(body["end"]["date"], "2026-11-13")
+        self.assertEqual(body["description"], "HE")
+        patched.assert_called_once()
+
+    def test_apply_event_save_keeps_cache_when_google_fails(self):
+        from datetime import date as d
+
+        ev = {
+            "id": "e1",
+            "cal_id": "c1",
+            "day": "2026-11-10",
+            "description": "old",
+            "hhmm": "",
+        }
+        key = gc._ev_key(2026, 11)
+        month = {key: {"2026-11-10": [dict(ev)]}}
+        state = {"_gc_api": {key: month[key]}}
+        with patch.object(gc, "_EV_MEM", month), patch.object(
+            gc.st, "session_state", state
+        ), patch.object(
+            gc, "patch_event", side_effect=RuntimeError("google down")
+        ), patch.object(gc, "_gc_save_disk_events"):
+            gc._gc_apply_event_save(
+                {"cal": "c1", "id": "e1", "notes": "HE", "day": "2026-11-12"}
+            )
+        self.assertIn("2026-11-10", state["_gc_api"][key])
+        self.assertNotIn("gc_month", state)
+
+    def test_take_memo_action_mail_delete(self):
+        raw = json.dumps(
+            {
+                "op": "mail_del",
+                "id": "e1",
+                "cal": "c1",
+                "msg": "m",
+                "thread": "t",
+                "n": 2,
+            }
+        )
+        state = {"gc_memo_act": raw}
+        with patch.object(gc.st, "session_state", state):
+            gc._gc_take_memo_action()
+        self.assertEqual(state["_gc_pending_mail_del"]["thread"], "t")
+        self.assertTrue(state["_gc_memo_client_close"])
 
     def test_set_sel_event_opens_memo(self):
         from datetime import date as d

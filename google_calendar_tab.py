@@ -120,6 +120,29 @@ def event_day_key(item: dict) -> str:
     return raw[:10]
 
 
+def event_day_patch(day: date, hhmm: str = "") -> dict:
+    """날짜 이동용 구글 일정 본문. 시간이 있으면 시각은 유지한다."""
+    clock = str(hhmm or "").strip()
+    if ":" in clock:
+        h_s, m_s = clock.split(":", 1)
+        try:
+            sdt = datetime.combine(day, time(int(h_s), int(m_s[:2])), tzinfo=_TZ)
+        except ValueError:
+            sdt = None
+        if sdt is not None:
+            return {
+                "start": {"dateTime": sdt.isoformat(), "timeZone": "Asia/Seoul"},
+                "end": {
+                    "dateTime": (sdt + timedelta(hours=1)).isoformat(),
+                    "timeZone": "Asia/Seoul",
+                },
+            }
+    return {
+        "start": {"date": day.isoformat()},
+        "end": {"date": (day + timedelta(days=1)).isoformat()},
+    }
+
+
 def _mkdir() -> None:
     for d in (GC_DIR, _HOME_GC, _ST_GC):
         try:
@@ -1618,6 +1641,94 @@ def _gc_cache_add_event(day: date, chip: dict, *, flush: bool = True) -> None:
         _gc_save_disk_events()
 
 
+def _gc_find_cached_event(cal_id: str, event_id: str) -> dict | None:
+    cid, eid = str(cal_id), str(event_id)
+    if not eid:
+        return None
+    seen: set[int] = set()
+    for store in (_gc_api_box(), _EV_MEM):
+        for key, val in store.items():
+            if not str(key).startswith("ev:") or str(key).endswith(":at"):
+                continue
+            if not isinstance(val, dict) or id(val) in seen:
+                continue
+            seen.add(id(val))
+            for items in val.values():
+                for ev in items or []:
+                    if str(ev.get("id")) == eid and str(ev.get("cal_id")) == cid:
+                        return ev
+    return None
+
+
+def _gc_cache_move_event(
+    cal_id: str, event_id: str, new_day: date, fields: dict | None = None
+) -> None:
+    """일정 칩을 다른 날짜로 옮긴다. 도착 달이 캐시에 있을 때만 거기에 넣는다."""
+    cid, eid = str(cal_id), str(event_id)
+    found: dict | None = None
+
+    def _pull(by: dict) -> dict:
+        nonlocal found
+        out: dict[str, list] = {}
+        for day_k, items in (by or {}).items():
+            nxt = []
+            for ev in items or []:
+                if (
+                    found is None
+                    and str(ev.get("id")) == eid
+                    and str(ev.get("cal_id")) == cid
+                ):
+                    found = dict(ev)
+                    continue
+                nxt.append(ev)
+            if nxt:
+                out[day_k] = nxt
+        return out
+
+    box = _gc_api_box()
+    for store in (box, _EV_MEM):
+        for key in list(store.keys()):
+            if not str(key).startswith("ev:") or str(key).endswith(":at"):
+                continue
+            val = store.get(key)
+            if not isinstance(val, dict):
+                continue
+            if found is not None and not any(
+                str(ev.get("id")) == eid and str(ev.get("cal_id")) == cid
+                for items in val.values()
+                for ev in items or []
+            ):
+                continue
+            store[key] = _pull(val)
+            if found is not None and store is _EV_MEM:
+                break
+        if found is not None and store is _EV_MEM:
+            break
+    if not found:
+        return
+    if fields:
+        found.update(fields)
+    found["day"] = new_day.isoformat()
+    dest = _ev_key(new_day.year, new_day.month)
+    if not isinstance(box.get(dest), dict) and not isinstance(_EV_MEM.get(dest), dict):
+        _gc_save_disk_events()
+        return
+    day_k = new_day.isoformat()
+    for store in (box, _EV_MEM):
+        by = dict(store.get(dest) or {})
+        row = [
+            ev
+            for ev in (by.get(day_k) or [])
+            if not (str(ev.get("id")) == eid and str(ev.get("cal_id")) == cid)
+        ]
+        row.append(found)
+        by[day_k] = row
+        store[dest] = by
+    box[dest + ":at"] = datetime.now(timezone.utc).timestamp()
+    _EV_MEM[dest] = box.get(dest) or _EV_MEM.get(dest)
+    _gc_save_disk_events()
+
+
 def _gc_cache_patch_event(cal_id: str, event_id: str, fields: dict) -> None:
     cid, eid = str(cal_id), str(event_id)
 
@@ -1964,6 +2075,165 @@ def _gc_set_sel_event(day: date, event_id: str, chip: str = "") -> None:
     st.session_state["_gc_memo_open"] = True
 
 
+def _gc_memo_record(ev: dict, *, need_auth: bool = False) -> dict:
+    """제목 클릭 즉시 띄울 메모. 서버를 다시 그리지 않는다."""
+    title = str(ev.get("title") or "(제목 없음)")
+    note = str(ev.get("description") or "")
+    mail = is_mail_calendar_event(ev)
+    if mail:
+        title = GC_MAIL_CHIP_TITLE
+        sub = mail_subject_from_event(ev)
+        if sub and f"제목: {sub}" not in note:
+            note = f"제목: {sub}\n" + note.lstrip()
+    ids = gmail_ids_from_event(ev) if mail else {}
+    blocked = bool(mail and need_auth)
+    return {
+        "title": title,
+        "meta": " · ".join(
+            p for p in (str(ev.get("day") or ""), str(ev.get("cal") or "")) if p
+        ),
+        "note": note,
+        "day": str(ev.get("day") or "")[:10],
+        "hhmm": str(ev.get("hhmm") or ""),
+        "calName": str(ev.get("cal") or ""),
+        "writable": bool(ev.get("writable")) and not blocked,
+        "server": blocked,
+        "id": str(ev.get("id") or ""),
+        "cal": str(ev.get("cal_id") or ""),
+        "mail": bool(mail and not blocked),
+        "msg": str(ids.get("msg") or ""),
+        "thread": str(ids.get("thread") or ""),
+    }
+
+
+def _gc_take_memo_action() -> None:
+    """브라우저 메모의 저장·삭제만 받는다. 팝업을 여는 클릭은 여기 오지 않는다."""
+    raw = st.session_state.get("gc_memo_act")
+    if not isinstance(raw, str) or not raw:
+        return
+    if st.session_state.get("_gc_memo_act_seen") == raw:
+        return
+    st.session_state["_gc_memo_act_seen"] = raw
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    op = str(data.get("op") or "")
+    eid = str(data.get("id") or "")
+    cid = str(data.get("cal") or "")
+    if not eid:
+        return
+    if op == "save":
+        pending = {
+            "cal": cid,
+            "id": eid,
+            "notes": str(data.get("notes") or ""),
+        }
+        day_s = str(data.get("day") or "")[:10]
+        if day_s:
+            pending["day"] = day_s
+        st.session_state["_gc_pending_ev_note"] = pending
+        st.session_state["_gc_memo_client_close"] = True
+    elif op == "del":
+        st.session_state["_gc_pending_del_event"] = {"cal": cid, "id": eid}
+        st.session_state["_gc_memo_client_close"] = True
+    elif op == "mail_move":
+        st.session_state["_gc_pending_mail_move"] = {
+            "cal": cid,
+            "id": eid,
+            "msg": str(data.get("msg") or ""),
+            "thread": str(data.get("thread") or ""),
+            "label": str(data.get("label") or GC_GMAIL_LABEL),
+        }
+    elif op == "mail_del":
+        st.session_state["_gc_pending_mail_del"] = {
+            "cal": cid,
+            "id": eid,
+            "msg": str(data.get("msg") or ""),
+            "thread": str(data.get("thread") or ""),
+        }
+        st.session_state["_gc_memo_client_close"] = True
+
+
+def _gc_memo_action_box() -> None:
+    """저장·삭제를 조각 갱신으로 넘기는 숨은 입력. 열기에는 쓰지 않는다."""
+    st.markdown(
+        """
+<style>
+div[class*="st-key-gc_memo_act"] {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  left: 0 !important;
+  top: 0 !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    st.text_input(
+        "gc_memo_act",
+        key="gc_memo_act",
+        label_visibility="collapsed",
+        autocomplete="off",
+    )
+
+
+def _gc_show_day(day: date) -> None:
+    st.session_state["gc_year"] = day.year
+    st.session_state["gc_month"] = day.month
+    st.session_state["gc_mini_year"] = day.year
+    st.session_state["gc_mini_month"] = day.month
+    st.session_state["_gc_sel_day"] = day
+
+
+def _gc_apply_event_save(pending: dict) -> None:
+    """메모와 날짜를 저장한다. 날짜가 바뀌면 그 날로 옮기고 구글에도 반영한다."""
+    cid = str(pending.get("cal") or "")
+    eid = str(pending.get("id") or "")
+    notes = str(pending.get("notes") or "")
+    if not eid:
+        return
+    new_day = None
+    raw_day = str(pending.get("day") or "")[:10]
+    if raw_day:
+        try:
+            new_day = date.fromisoformat(raw_day)
+        except ValueError:
+            new_day = None
+    cur = _gc_find_cached_event(cid, eid) or {}
+    old_day = str(cur.get("day") or "")[:10]
+    hhmm = str(cur.get("hhmm") or "")
+    fields = {"description": notes}
+    body: dict[str, Any] = {"description": notes}
+    moving = bool(new_day and new_day.isoformat() != old_day)
+    if moving and new_day is not None:
+        fields["day"] = new_day.isoformat()
+        fields["hhmm"] = hhmm
+        body.update(event_day_patch(new_day, hhmm))
+        if cid and not eid.startswith("local-"):
+            try:
+                patch_event(cid, eid, body)
+            except Exception as e:
+                st.error("날짜 이동 실패: " + str(e))
+                return
+        _gc_cache_move_event(cid, eid, new_day, fields)
+        _gc_show_day(new_day)
+        return
+    _gc_cache_patch_event(cid, eid, fields)
+    if eid.startswith("local-") or not cid:
+        return
+    try:
+        patch_event(cid, eid, body)
+    except Exception as e:
+        st.error("메모 저장 실패: " + str(e))
+
+
 def _gc_close_memo_pop() -> None:
     st.session_state["_gc_memo_open"] = False
     st.session_state.pop("_gc_sel_chip", None)
@@ -2115,8 +2385,12 @@ def _render_month_grid(
     by_day: dict[str, list[dict]],
     today: date,
     selected: date | None = None,
-) -> None:
-    """표 달력. 제목은 클릭하지 않고, 쓸 수 있는 일정만 ×로 지운다."""
+) -> dict[str, dict]:
+    """표 달력. 제목을 누르면 메모가 서버를 기다리지 않고 열린다."""
+    records: dict[str, dict] = {}
+    need_auth = bool(
+        st.session_state.get("_gc_need_gmail") or not token_has_gmail_modify()
+    )
     st.markdown(
         """
 <style>
@@ -2459,6 +2733,9 @@ div[class*="st-key-gc_cellpink"] {
                                             on_click=_gc_set_sel_event,
                                             args=(d, eid or iso, f"{stamp}_{idx}"),
                                         )
+                                        records[f"gc_evpick_{stamp}_{idx}"] = (
+                                            _gc_memo_record(ev, need_auth=need_auth)
+                                        )
                                         if ev.get("writable") and eid and cid:
                                             st.button(
                                                 "×",
@@ -2469,6 +2746,7 @@ div[class*="st-key-gc_cellpink"] {
                                                 args=(cid, eid),
                                             )
     _gc_shrink_event_titles()
+    return records
 
 
 def _gc_shrink_event_titles() -> None:
@@ -2506,6 +2784,12 @@ def _render_event_memo_pop(ev: dict) -> None:
         )
         if meta:
             st.caption(meta)
+        dk = "gc_pop_day_" + (eid[-24:] if eid else "x")
+        if writable and dk not in st.session_state:
+            try:
+                st.session_state[dk] = date.fromisoformat(str(ev.get("day") or "")[:10])
+            except ValueError:
+                st.session_state[dk] = datetime.now(_TZ).date()
         move_msg = st.session_state.get("_gc_mail_move_msg")
         if is_mail_calendar_event(ev) and move_msg:
             st.caption(move_msg)
@@ -2521,15 +2805,20 @@ def _render_event_memo_pop(ev: dict) -> None:
                 st.caption("폴더 이동·삭제는 Gmail 권한을 다시 연결해야 합니다.")
             _gc_render_gmail_reconnect(key="gc_gmail_reauth_memo")
         if writable:
+            st.date_input("날짜", key=dk)
             st.text_area("메모", key=nk, height=90, placeholder="일정 메모")
             b1, b2 = st.columns(2)
             with b1:
                 if st.button("메모 저장", type="primary", key="gc_pop_save"):
-                    st.session_state["_gc_pending_ev_note"] = {
+                    picked = st.session_state.get(dk)
+                    pending_save = {
                         "cal": cid,
                         "id": eid,
                         "notes": st.session_state.get(nk) or "",
                     }
+                    if isinstance(picked, date):
+                        pending_save["day"] = picked.isoformat()
+                    st.session_state["_gc_pending_ev_note"] = pending_save
                     st.session_state["_gc_memo_open"] = False
                     st.rerun(scope="fragment")
             with b2:
@@ -2626,6 +2915,322 @@ def _gc_place_memo_pop(chip: str) -> None:
   setTimeout(place, 50);
   setTimeout(place, 200);
 }})();
+</script>
+""",
+        unsafe_allow_javascript=True,
+    )
+
+
+def _gc_publish_memo_index(items: dict) -> None:
+    """이번 달 메모를 브라우저에 넘긴다. 제목 클릭은 이 데이터로 바로 연다."""
+    close = bool(st.session_state.pop("_gc_memo_client_close", None))
+    pack = {
+        "close": close,
+        "msg": str(st.session_state.get("_gc_mail_move_msg") or ""),
+        "personal": GC_GMAIL_PERSONAL,
+        "shinil": GC_GMAIL_LABEL,
+        "items": items or {},
+    }
+    blob = json.dumps(pack, ensure_ascii=False).replace("<", "\\u003c")
+    st.html(
+        f"""
+<script>
+(function () {{
+  var pack = {blob};
+  function put(w) {{
+    if (!w) return;
+    w.__gcMemoPack = pack;
+    if (w.__gcMemoSync) w.__gcMemoSync();
+  }}
+  put(window);
+  try {{ put(window.parent); }} catch (e) {{}}
+}})();
+</script>
+""",
+        unsafe_allow_javascript=True,
+    )
+
+
+def _gc_bind_memo_pop() -> None:
+    """일정 제목을 누르는 즉시 메모를 연다. 달력을 다시 그리지 않는다."""
+    st.html(
+        """
+<script>
+(function () {
+  function docs() {
+    var out = [];
+    function add(d) { if (d && out.indexOf(d) < 0) out.push(d); }
+    add(document);
+    try { add(window.parent.document); } catch (e) {}
+    return out;
+  }
+  if (window.__gcMemoVer === 2) return;
+  window.__gcMemoVer = 2;
+  window.__gcMemoBound = true;
+  var css = ""
+    + "#gc-memo-float{position:fixed;z-index:10050;width:min(340px,92vw);"
+    + "background:#fff;border:1px solid #e0e3e8;border-radius:12px;"
+    + "box-shadow:0 12px 40px rgba(32,33,36,.22);padding:14px 16px 12px;"
+    + "font-family:'Noto Sans KR',system-ui,sans-serif;color:#31333F;}"
+    + "#gc-memo-float[hidden]{display:none!important;}"
+    + "#gc-memo-float .gc-mf-title{font-weight:700;font-size:16px;line-height:1.3;}"
+    + "#gc-memo-float .gc-mf-meta{margin-top:4px;font-size:12px;color:#6b7280;}"
+    + "#gc-memo-float .gc-mf-msg{margin-top:6px;font-size:12px;color:#6b7280;}"
+    + "#gc-memo-float .gc-mf-daylab{margin-top:8px;font-size:14px;}"
+    + "#gc-memo-float .gc-mf-day{width:100%;box-sizing:border-box;margin-top:4px;"
+    + "height:34px;border:1px solid #e0e3e8;border-radius:8px;padding:4px 8px;font-size:14px;}"
+    + "#gc-memo-float .gc-mf-lab{margin:10px 0 4px;font-size:14px;}"
+    + "#gc-memo-float .gc-mf-note{width:100%;box-sizing:border-box;height:90px;"
+    + "resize:vertical;border:1px solid #e0e3e8;border-radius:8px;padding:8px;"
+    + "font:14px/1.4 'Noto Sans KR',system-ui,sans-serif;color:#31333F;}"
+    + "#gc-memo-float .gc-mf-ro{margin-top:8px;font-size:12px;white-space:pre-wrap;line-height:1.4;}"
+    + "#gc-memo-float .gc-mf-actions{display:flex;align-items:center;gap:8px;margin-top:10px;}"
+    + "#gc-memo-float .gc-mf-save{background:#ff4b4b;color:#fff;border:none;border-radius:8px;"
+    + "padding:6px 14px;font-size:14px;cursor:pointer;}"
+    + "#gc-memo-float .gc-mf-close{background:transparent;border:none;color:#31333F;"
+    + "font-size:14px;cursor:pointer;padding:6px 8px;}"
+    + "#gc-memo-float .gc-mf-cap{margin:10px 0 4px;font-size:12px;color:#6b7280;}"
+    + "#gc-memo-float .gc-mf-mail-row{display:flex;gap:6px;}"
+    + "#gc-memo-float .gc-mf-mail-row button,#gc-memo-float .gc-mf-del{"
+    + "background:#fff;border:1px solid #d0d5dd;border-radius:8px;padding:4px 10px;"
+    + "font-size:13px;cursor:pointer;}"
+    + "#gc-memo-float .gc-mf-del{margin-top:8px;}"
+    + "#gc-memo-float button:disabled{opacity:.55;cursor:default;}";
+  docs().forEach(function (d) {
+    if (d.getElementById("gc-memo-float-css")) return;
+    var s = d.createElement("style");
+    s.id = "gc-memo-float-css";
+    s.textContent = css;
+    (d.head || d.documentElement).appendChild(s);
+  });
+  function hide(pop) {
+    if (!pop) return;
+    pop.hidden = true;
+    pop.setAttribute("data-open", "0");
+    pop.__key = "";
+    pop.__rec = null;
+  }
+  function showMsg(pop, text) {
+    var msg = pop.querySelector(".gc-mf-msg");
+    if (msg) msg.textContent = text || "";
+  }
+  function place(pop) {
+    var anchor = pop.__anchor;
+    if (!anchor || !anchor.getBoundingClientRect) return;
+    var win = pop.ownerDocument.defaultView || window;
+    var r = anchor.getBoundingClientRect();
+    var pw = Math.min(340, win.innerWidth - 16);
+    pop.style.width = pw + "px";
+    var ph = pop.getBoundingClientRect().height || 240;
+    var left = Math.min(Math.max(8, r.left), win.innerWidth - pw - 8);
+    var top = r.bottom + 6;
+    if (top + ph > win.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+    pop.style.top = top + "px";
+    pop.style.left = left + "px";
+  }
+  function send(doc, obj) {
+    var root = doc.querySelector('[class*="st-key-gc_memo_act"]');
+    var input = root && root.querySelector("input, textarea");
+    if (!input) return false;
+    var view = doc.defaultView || window;
+    var proto = input.tagName === "TEXTAREA"
+      ? view.HTMLTextAreaElement.prototype
+      : view.HTMLInputElement.prototype;
+    var desc = view.Object.getOwnPropertyDescriptor(proto, "value");
+    if (desc && desc.set) desc.set.call(input, JSON.stringify(obj));
+    else input.value = JSON.stringify(obj);
+    if (input._valueTracker) input._valueTracker.setValue("");
+    input.dispatchEvent(new view.Event("input", { bubbles: true }));
+    return true;
+  }
+  function act(pop, op, extra) {
+    var rec = pop.__rec || {};
+    var body = {
+      op: op, id: rec.id || "", cal: rec.cal || "",
+      msg: rec.msg || "", thread: rec.thread || "", n: Date.now()
+    };
+    if (extra) { for (var k in extra) body[k] = extra[k]; }
+    if (!body.id) { showMsg(pop, "이 일정은 여기서 저장할 수 없습니다."); return; }
+    showMsg(pop, "처리 중…");
+    if (!send(pop.ownerDocument, body)) {
+      showMsg(pop, "한 번 더 눌러 주세요.");
+      return;
+    }
+    var buttons = pop.querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
+  }
+  function fill(pop, rec, key, anchor) {
+    pop.__rec = rec;
+    pop.__key = key;
+    pop.__anchor = anchor;
+    pop.querySelector(".gc-mf-title").textContent = rec.title || "(제목 없음)";
+    var view = pop.ownerDocument.defaultView || window;
+    showMsg(pop, ((view.__gcMemoPack || {}).msg) || "");
+    var note = pop.querySelector(".gc-mf-note");
+    var day = pop.querySelector(".gc-mf-day");
+    var dayLab = pop.querySelector(".gc-mf-daylab");
+    var ro = pop.querySelector(".gc-mf-ro");
+    var lab = pop.querySelector(".gc-mf-lab");
+    var save = pop.querySelector(".gc-mf-save");
+    var mail = pop.querySelector(".gc-mf-mail");
+    var del = pop.querySelector(".gc-mf-del");
+    var buttons = pop.querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i++) buttons[i].disabled = false;
+    if (rec.writable) {
+      lab.hidden = false;
+      note.hidden = false;
+      note.value = rec.note || "";
+      ro.hidden = true;
+      save.hidden = false;
+      mail.hidden = !rec.mail;
+      del.hidden = !!rec.mail;
+      if (day) { day.hidden = false; day.value = String(rec.day || "").slice(0, 10); }
+      if (dayLab) dayLab.hidden = false;
+      pop.querySelector(".gc-mf-meta").textContent = rec.calName || "";
+    } else {
+      lab.hidden = true;
+      note.hidden = true;
+      save.hidden = true;
+      mail.hidden = true;
+      del.hidden = true;
+      if (day) day.hidden = true;
+      if (dayLab) dayLab.hidden = true;
+      ro.hidden = false;
+      ro.textContent = rec.note || "메모 없음";
+      pop.querySelector(".gc-mf-meta").textContent = rec.meta || "";
+    }
+    pop.hidden = false;
+    pop.setAttribute("data-open", "1");
+    pop.style.visibility = "hidden";
+    place(pop);
+    pop.style.visibility = "visible";
+    if (rec.writable) note.focus();
+  }
+  function popOf(doc) {
+    var pop = doc.getElementById("gc-memo-float");
+    if (pop && !pop.querySelector(".gc-mf-day")) {
+      pop.remove();
+      pop = null;
+    }
+    if (pop) return pop;
+    pop = doc.createElement("div");
+    pop.id = "gc-memo-float";
+    pop.hidden = true;
+    pop.setAttribute("data-open", "0");
+    pop.innerHTML = '<div class="gc-mf-title"></div><div class="gc-mf-meta"></div>'
+      + '<div class="gc-mf-msg"></div>'
+      + '<div class="gc-mf-daylab">날짜</div><input type="date" class="gc-mf-day">'
+      + '<div class="gc-mf-lab">메모</div>'
+      + '<textarea class="gc-mf-note"></textarea><div class="gc-mf-ro"></div>'
+      + '<div class="gc-mf-actions"><button type="button" class="gc-mf-save">메모 저장</button>'
+      + '<button type="button" class="gc-mf-close">닫기</button></div>'
+      + '<div class="gc-mf-mail"><div class="gc-mf-cap">메일 이동</div><div class="gc-mf-mail-row">'
+      + '<button type="button" class="gc-mf-personal">개인업무</button>'
+      + '<button type="button" class="gc-mf-shinil">신일가스</button>'
+      + '<button type="button" class="gc-mf-mdel">삭제</button></div></div>'
+      + '<button type="button" class="gc-mf-del">삭제</button>';
+    (doc.body || doc.documentElement).appendChild(pop);
+    pop.querySelector(".gc-mf-close").addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation(); hide(pop);
+    });
+    function savePayload() {
+      var extra = { notes: (pop.querySelector(".gc-mf-note").value || "") };
+      var dayEl = pop.querySelector(".gc-mf-day");
+      if (dayEl && !dayEl.hidden && dayEl.value) extra.day = dayEl.value;
+      return extra;
+    }
+    pop.querySelector(".gc-mf-save").addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      act(pop, "save", savePayload());
+    });
+    var dayInput = pop.querySelector(".gc-mf-day");
+    if (dayInput) {
+      dayInput.addEventListener("change", function (e) {
+        e.preventDefault(); e.stopPropagation();
+        var day = dayInput.value || "";
+        var rec = pop.__rec || {};
+        if (!day || day === String(rec.day || "").slice(0, 10)) return;
+        act(pop, "save", savePayload());
+      });
+    }
+    pop.querySelector(".gc-mf-del").addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation(); act(pop, "del");
+    });
+    pop.querySelector(".gc-mf-personal").addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      var pack = (doc.defaultView && doc.defaultView.__gcMemoPack) || {};
+      act(pop, "mail_move", { label: pack.personal || "개인업무" });
+    });
+    pop.querySelector(".gc-mf-shinil").addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      var pack = (doc.defaultView && doc.defaultView.__gcMemoPack) || {};
+      act(pop, "mail_move", { label: pack.shinil || "신일가스" });
+    });
+    pop.querySelector(".gc-mf-mdel").addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation(); act(pop, "mail_del");
+    });
+    var win = doc.defaultView || window;
+    win.__gcMemoSync = function () {
+      var pack = win.__gcMemoPack || {};
+      if (pack.close) { hide(pop); return; }
+      if (pop.getAttribute("data-open") !== "1") return;
+      if (pop.__key && pack.items && !pack.items[pop.__key]) { hide(pop); return; }
+      showMsg(pop, pack.msg || "");
+      var buttons = pop.querySelectorAll("button");
+      for (var i = 0; i < buttons.length; i++) buttons[i].disabled = false;
+    };
+    doc.addEventListener("scroll", function () {
+      if (pop.getAttribute("data-open") === "1") place(pop);
+    }, true);
+    win.addEventListener("resize", function () {
+      if (pop.getAttribute("data-open") === "1") place(pop);
+    });
+    return pop;
+  }
+  function openFrom(ev) {
+    if (ev.type === "pointerdown" && ev.button) return;
+    var t = ev.target;
+    if (!t || !t.closest) return;
+    if (t.closest("#gc-memo-float")) return;
+    var host = t.closest('[class*="st-key-gc_evpick_"]');
+    if (!host) return;
+    var cls = host.getAttribute("class") || "";
+    var m = cls.match(/st-key-(gc_evpick_[0-9]+_[0-9]+)/);
+    if (!m) return;
+    var doc = host.ownerDocument;
+    var view = doc.defaultView || window;
+    var pack = view.__gcMemoPack || window.__gcMemoPack || {};
+    var rec = (pack.items || {})[m[1]];
+    if (!rec || rec.server) return;
+    var pop = doc.getElementById("gc-memo-float");
+    if (ev.type === "click" && pop && pop.getAttribute("data-open") === "1" && pop.__key === m[1]) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
+    ev.preventDefault();
+    ev.stopPropagation();
+    var stamp = m[1].slice("gc_evpick_".length).split("_")[0];
+    doc.querySelectorAll(".gc-js-sel").forEach(function (n) { n.classList.remove("gc-js-sel"); });
+    var cell = doc.querySelector('[class*="st-key-gc_cell_' + stamp + '"]');
+    if (cell) {
+      cell.classList.add("gc-js-sel");
+      var col = cell.closest('[data-testid="stColumn"]');
+      if (col) col.classList.add("gc-js-sel");
+    }
+    fill(popOf(doc), rec, m[1], host.querySelector("button") || host);
+  }
+  docs().forEach(function (d) {
+    if (d.__gcMemoOpen) {
+      d.removeEventListener("pointerdown", d.__gcMemoOpen, true);
+      d.removeEventListener("click", d.__gcMemoOpen, true);
+    }
+    d.__gcMemoOpen = openFrom;
+    d.__gcMemoClick = true;
+    d.addEventListener("pointerdown", openFrom, true);
+    d.addEventListener("click", openFrom, true);
+  });
+})();
 </script>
 """,
         unsafe_allow_javascript=True,
@@ -2761,6 +3366,8 @@ def _setup_expander() -> None:
 @st.fragment
 def _gc_cal_panel() -> None:
     """달력 월 이동·일정 저장만 이 조각을 다시 그린다."""
+    _gc_take_memo_action()
+    _gc_memo_action_box()
     _gc_take_sync_result()
     today = datetime.now(_TZ).date()
     pending_m = st.session_state.pop("_gc_pending_month", None)
@@ -2829,15 +3436,7 @@ def _gc_cal_panel() -> None:
             st.session_state["_gc_mail_move_msg"] = f"메일 이동 실패: {e}"
     pending_note = st.session_state.pop("_gc_pending_ev_note", None)
     if isinstance(pending_note, dict) and pending_note.get("id"):
-        cid = str(pending_note.get("cal") or "")
-        eid = str(pending_note.get("id") or "")
-        notes = str(pending_note.get("notes") or "")
-        _gc_cache_patch_event(cid, eid, {"description": notes})
-        if eid and not eid.startswith("local-") and cid:
-            try:
-                patch_event(cid, eid, {"description": notes})
-            except Exception as e:
-                st.error(f"메모 저장 실패: {e}")
+        _gc_apply_event_save(pending_note)
     pending_mail_del = st.session_state.pop("_gc_pending_mail_del", None)
     if isinstance(pending_mail_del, dict) and pending_mail_del.get("id"):
         cid = str(pending_mail_del.get("cal") or "primary")
@@ -2998,9 +3597,10 @@ div[class*="st-key-gc_head_acts"] button {
         st.session_state["_gc_pf_ym"] = (y, m)
         _gc_schedule_prefetch(cals, y, m)
     sel_day = st.session_state.get("_gc_sel_day")
-    _render_month_grid(
+    memo_items = _render_month_grid(
         y, m, by_day, today, selected=sel_day if isinstance(sel_day, date) else None
     )
+    _gc_publish_memo_index(memo_items)
     if st.session_state.get("_gc_memo_open"):
         pop_ev = _gc_find_event(
             by_day, str(st.session_state.get("_gc_sel_event") or "")
@@ -3387,4 +3987,5 @@ def render_google_calendar_tab(
                 width="stretch",
             )
         return
+    _gc_bind_memo_pop()
     _gc_work_panel()
