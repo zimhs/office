@@ -1,6 +1,7 @@
 """구글 캘린더 탭 — 내장 URL·탭 연결."""
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
@@ -841,7 +842,28 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             gc._MAC_BG, "submit"
         ), patch.object(gc, "_gc_mac_patch"):
             gc._gc_take_mac_actions()
-        self.assertTrue(state.get("_gc_cal_refresh"))
+        self.assertNotIn("_gc_cal_refresh", state)
+
+    def test_empty_reminder_lists_stay_on_screen_without_osascript(self):
+        state = {
+            "_gc_api": {
+                "_mac_disk": True,
+                "mac_tlists": [],
+                "tk:macrem:abc": [{"id": "1", "title": "이자", "status": "needsAction"}],
+            }
+        }
+        with patch.object(gc.st, "session_state", state), patch.object(
+            gc, "_mac_reminders_enabled", return_value=True
+        ), patch.object(gc, "_osascript") as osa, patch.object(gc._MAC_BG, "submit"):
+            rows = gc._mac_reminder_lists()
+        osa.assert_not_called()
+        self.assertEqual(rows[0]["id"], "macrem:abc")
+        src = inspect.getsource(gc._gc_render_mac_box)
+        self.assertIn('placeholder="할 일 제목"', src)
+        self.assertIn('placeholder="세부내용"', src)
+        self.assertIn('st.date_input("날짜"', src)
+        self.assertNotIn("_gc_mac_wait", src)
+        self.assertNotIn("불러오는 중", src)
 
     def test_mac_view_skips_reload_when_fresh(self):
         now = gc.datetime.now(gc.timezone.utc).timestamp()
