@@ -48,7 +48,32 @@ class WorklogRemarkColumnTest(unittest.TestCase):
         self.assertIn("Y39:AB39", merged)
         self.assertIn("C8:F8", merged)
         self.assertIn("G8:X8", merged)
+        self.assertIn("D45:AB45", merged)
+        self.assertIn("D44:AB44", merged)
         wb.close()
+
+    def test_note_line_stays_horizontal_in_print_cell(self):
+        from openpyxl import load_workbook
+
+        text = "○ 에스엔케이 최경순상무 자제 11/28일 결혼 : 방문예정 （화환 , 부주금 전달 필요）"
+        note_u = self.wt._note_line_units()
+        self.assertGreater(note_u, self.wt._content_line_units())
+        self.assertLessEqual(self.wt._display_units(text), note_u)
+        cells = self.wt._pack_entries_to_cells(date(2026, 11, 11), [], notes=[text])
+        self.assertEqual(cells["D44"].replace("\u00a0", "").strip(), text)
+        self.assertFalse(str(cells.get("D45") or "").strip())
+        wb = load_workbook(self.wt.WORKLOG_TEMPLATE)
+        ws = wb.active
+        self.wt._ensure_worklog_body_merges(ws)
+        ws["D44"] = text
+        html = self.wt._worksheet_to_table_html(ws, self.wt.WORKLOG_TEMPLATE, include_logo=False)
+        wb.close()
+        start = html.find('data-wl="D44"')
+        tag = html[html.rfind("<td", 0, start): html.find("</td>", start)]
+        self.assertIn('colspan="25"', tag)
+        self.assertIn("에스엔케이", tag)
+        self.assertNotIn("<br>", tag)
+        self.assertIn("keep-all", tag)
 
     def test_pack_and_group_roundtrip_remark(self):
         d = date(2026, 9, 12)

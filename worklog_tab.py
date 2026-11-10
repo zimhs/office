@@ -2165,6 +2165,11 @@ def _content_line_units() -> float:
     return float(_preview_cell_inner_px("content")) / (_preview_em_px() / 2.0)
 
 @lru_cache(maxsize=1)
+def _note_line_units() -> float:
+    """익일업무·특이사항 D~AB. 작성란 한 줄이 인쇄 칸 한 줄이 되게 한다."""
+    return float(_orig_cell_px("note")) / (_preview_em_px() / 2.0)
+
+@lru_cache(maxsize=1)
 def _client_line_units() -> int: return int(_WL_CLIENT_HANGUL) * 2
 
 # 비고 Y~AB — 거래처와 같이 한글 8자.
@@ -2182,6 +2187,8 @@ def _orig_cell_px(kind: str) -> int:
         c0, c1, fallback = WL_CONTENT_COL_START, WL_CONTENT_COL_END, _WL_ORIG_CONTENT_PX
     elif kind == "remark":
         c0, c1, fallback = WL_REMARK_COL_START, WL_REMARK_COL_END, _WL_ORIG_SIDE_PX
+    elif kind == "note":
+        c0, c1, fallback = 4, WL_MAX_COL, 926
     else:
         c0, c1, fallback = WL_CLIENT_COL_START, WL_CLIENT_COL_END, _WL_ORIG_SIDE_PX
     try:
@@ -2242,9 +2249,9 @@ def _pack_sheet_to_cells(
         cells[f"C{r}"] = clients[i]
         cells[f"G{r}"] = contents[i]
         cells[f"Y{r}"] = remarks[i]
-    max_u = _content_line_units()
+    note_u = _note_line_units()
     for t_list, t_rows in ((next_day, WL_NEXT_ROWS), (notes, WL_NOTE_ROWS)):
-        chunks = _panel_lines_to_cells(t_list, max_u)
+        chunks = _panel_lines_to_cells(t_list, note_u)
         for i, r in enumerate(t_rows):
             cells[f"D{r}"] = chunks[i] if i < len(chunks) else ""
     return cells
@@ -3010,8 +3017,8 @@ def _spill_all_content(cells: dict) -> dict:
     body, extras = _detach_extra_pages(cells)
     body = _spill_column(body, WL_CONTENT_ROWS, "G")
     body = _spill_column(body, WL_CONTENT_ROWS, "Y", _remark_line_units())
-    body = _spill_column(body, WL_NEXT_ROWS, "D")
-    body = _spill_column(body, WL_NOTE_ROWS, "D")
+    body = _spill_column(body, WL_NEXT_ROWS, "D", _note_line_units())
+    body = _spill_column(body, WL_NOTE_ROWS, "D", _note_line_units())
     spilled_extras = [_spill_all_content(extra) for extra in extras]
     return _attach_extra_pages(body, spilled_extras)
 
@@ -5794,11 +5801,13 @@ def _worklog_logo_bytes(xlsx_path: str | None = None) -> tuple[bytes, str, int, 
 
 
 def _worklog_body_merge_bands() -> tuple[tuple[int, int, list[int]], ...]:
-    """본문 한 행 = 거래처 C~F / 내용 G~X / 비고 Y~AB."""
+    """본문 한 행 = 거래처 C~F / 내용 G~X / 비고 Y~AB. 익일·특이는 D~AB."""
     return (
         (WL_CLIENT_COL_START, WL_CLIENT_COL_END, WL_CLIENT_ROWS),
         (WL_CONTENT_COL_START, WL_CONTENT_COL_END, WL_CONTENT_ROWS),
         (WL_REMARK_COL_START, WL_REMARK_COL_END, WL_CONTENT_ROWS),
+        (4, WL_MAX_COL, WL_NEXT_ROWS),
+        (4, WL_MAX_COL, WL_NOTE_ROWS),
     )
 
 
@@ -5942,7 +5951,11 @@ def _worksheet_to_table_html(
             else:
                 esc = html.escape(text).replace(" ", "&nbsp;").replace("\n", "<br>")
                 
-            if is_content:
+            if is_body_d:
+                # 작성란과 같이 가로로. 글자마다 줄을 바꾸지 않는다.
+                white, overflow, text_overflow, break_css = "pre-wrap", "hidden", "clip", "keep-all"
+                wrap_css = "overflow-wrap:normal;"
+            elif is_content:
                 # 원본.xlsx wrapText — 바탕체 14pt 원본 칸 폭에서 줄바꿈
                 white, overflow, text_overflow, break_css = "pre-wrap", "hidden", "clip", "break-all"
                 wrap_css = "overflow-wrap:anywhere;"
@@ -6165,7 +6178,7 @@ def render_worklog_view_html(path: str, *, print_mode: bool = False, scale: floa
     else:
         print_media = "@media print { html, body { overflow:visible !important; } }"
     
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap" rel="stylesheet"><style>{_WL_FONT_FACE_CSS} @page {{ size: A4 portrait; margin: {page_margins}; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"6px" if not print_mode else "0"}; box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:0; }} .sheet-scale {{ {scale_css} }} {_WL_FONT_RENDER_CSS} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet td[data-wl^="G"] {{ white-space:pre-wrap !important; overflow:hidden !important; word-break:break-all !important; overflow-wrap:anywhere !important; }} .wl-sheet td[data-wl^="Y"], .wl-sheet td[data-wl^="C"] {{ white-space:nowrap !important; overflow:hidden !important; word-break:keep-all !important; overflow-wrap:normal !important; }} .wl-page-break {{ page-break-before:always; break-before:page; }} {fallback_block} {print_media}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>일일업무일지</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700&display=swap" rel="stylesheet"><style>{_WL_FONT_FACE_CSS} @page {{ size: A4 portrait; margin: {page_margins}; }} html, body {{ margin:0; padding:0; background:#fff; overflow:{body_overflow} !important; height:{body_h}; }} body {{ padding:{"6px" if not print_mode else "0"}; box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .toolbar {{ margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }} .toolbar button {{ padding:8px 14px; font-size:14px; border:1px solid #334155; border-radius:6px; background:#1E293B; color:#fff; cursor:pointer; }} .toolbar button.secondary {{ background:#F8FAFC; color:#334155; border-color:#CBD5E1; cursor:default; }} .toolbar .hint {{ font:12px/1.45 sans-serif; color:#64748B; max-width:42rem; }} .wrap {{ overflow:{wrap_overflow} !important; height:{wrap_h}; width:{wrap_w}; max-width:{"none" if print_mode else "100%"}; border:{"none" if print_mode else "1px solid #94A3B8"}; background:#fff; box-sizing:border-box; padding:0; }} .sheet-scale {{ {scale_css} }} {_WL_FONT_RENDER_CSS} .wl-sheet {{ border-collapse:collapse; table-layout:fixed; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet, .wl-sheet td, .wl-sheet tr {{ box-sizing:border-box; font-family:{_WL_FONT_STACK} !important; }} .wl-sheet td[data-wl^="G"] {{ white-space:pre-wrap !important; overflow:hidden !important; word-break:break-all !important; overflow-wrap:anywhere !important; }} .wl-sheet td[data-wl^="Y"], .wl-sheet td[data-wl^="C"] {{ white-space:nowrap !important; overflow:hidden !important; word-break:keep-all !important; overflow-wrap:normal !important; }} .wl-sheet td[data-wl^="D"] {{ white-space:pre-wrap !important; overflow:hidden !important; word-break:keep-all !important; overflow-wrap:normal !important; }} .wl-page-break {{ page-break-before:always; break-before:page; }} {fallback_block} {print_media}</style></head><body>{toolbar}<div class="wrap"><div class="sheet-scale">{sheet}</div></div>{auto_script}</body></html>"""
 
 def _entry_blank_after(ent: dict | None, default: int = 1) -> int:
     try: n = int((ent or {}).get("blank_after", default))
@@ -6371,8 +6384,9 @@ def _pack_entries_to_cells(d: date, entries: list[dict], next_day: list[str] | N
             cells[f"Y{r}"] = y_val
             row_i += 1
         wrote_any, prev_gap = True, _entry_blank_after(ent, 1)
+    note_u = _note_line_units()
     for t_list, t_rows in ((next_day, WL_NEXT_ROWS), (notes, WL_NOTE_ROWS)):
-        chunks = _panel_lines_to_cells(t_list, max_u)
+        chunks = _panel_lines_to_cells(t_list, note_u)
         for i, r in enumerate(t_rows): cells[f"D{r}"] = chunks[i] if i < len(chunks) else ""
     return cells
 
