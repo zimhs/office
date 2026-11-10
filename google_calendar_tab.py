@@ -1612,30 +1612,165 @@ def _gc_sync_google(year: int, month: int) -> tuple[int, int]:
     return n_ev, n_tasks
 
 
+def _gc_pull_google_month(year: int, month: int) -> int:
+    """연동실행: 구글에만 있는 이번 달 일정을 받고, 아직 안 올린 로컬 일정은 올린다."""
+    box = _BG_API
+    try:
+        cals = list_calendars()
+        box["cals"] = list(cals)
+        _gc_save_disk_cals(box["cals"])
+    except Exception:
+        cals = list(box.get("cals") or [])
+        if not cals:
+            raise
+    key = _ev_key(year, month)
+    cached = dict(_EV_MEM.get(key) or box.get(key) or {})
+    kept_local: dict[str, list[dict]] = {}
+    for day_k, items in cached.items():
+        row: list[dict] = []
+        for ev in items or []:
+            eid = str(ev.get("id") or "")
+            local = eid.startswith("local-") or bool(ev.get("local_only"))
+            if not local:
+                continue
+            if ev.get("writable", True):
+                try:
+                    day = date.fromisoformat(str(ev.get("day") or day_k)[:10])
+                    created = insert_event(
+                        str(ev.get("cal_id") or "primary"),
+                        str(ev.get("title") or ""),
+                        day,
+                        True,
+                        str(ev.get("description") or ""),
+                    )
+                    meta = {
+                        "id": ev.get("cal_id"),
+                        "color": ev.get("color"),
+                        "summary": ev.get("cal"),
+                        "writable": True,
+                    }
+                    for cal in cals:
+                        if str(cal.get("id")) == str(ev.get("cal_id")):
+                            meta = cal
+                            break
+                    row.append(_event_chip(created, meta) or ev)
+                    continue
+                except Exception:
+                    pass
+            row.append(ev)
+        if row:
+            kept_local[day_k] = row
+    fresh = _events_by_day(cals, year, month) if cals else {}
+    merged = _merge_event_days(kept_local, fresh)
+    now = datetime.now(timezone.utc).timestamp()
+    box[key] = merged
+    box[key + ":at"] = now
+    _EV_MEM[key] = merged
+    _gc_save_disk_events()
+    return sum(len(v or []) for v in merged.values())
+
+
+def _gc_pull_mac_reminders() -> tuple[int, str]:
+    """연동실행: 맥 미리 알림 목록과 항목을 다시 읽는다. 화면 스레드에서는 호출하지 않는다."""
+    if not _mac_reminders_enabled():
+        return 0, "이 기기에서는 미리 알림을 열 수 없습니다."
+    try:
+        raw = _osascript(_MAC_LISTS_SCRIPT, timeout=20)
+    except Exception as exc:
+        return 0, _gc_mac_err_text(exc)
+    lists = _gc_parse_mac_lists(raw)
+    box = _BG_API
+    if lists:
+        box["mac_tlists"] = lists
+    now = datetime.now(timezone.utc).timestamp()
+    count = 0
+    first_err = ""
+    for item in lists:
+        lid = str(item.get("id") or "")
+        token = _mac_list_token(lid)
+        gen = int(_MAC_GEN.get(lid) or 0) + 1
+        _MAC_GEN[lid] = gen
+        try:
+            open_rows = list_mac_reminders(token, completed=False)
+        except Exception as exc:
+            if not first_err:
+                first_err = _gc_mac_err_text(exc)
+            continue
+        try:
+            done_rows = list_mac_reminders(token, completed=True)
+        except Exception:
+            done_rows = []
+        rows = open_rows + done_rows
+        box[f"tk:{lid}"] = rows
+        box[f"mac_part:{lid}"] = "all"
+        box[f"tk_at:{lid}"] = now
+        box.pop(f"mac_items_err:{lid}", None)
+        _MAC_LIVE[lid] = {
+            "gen": gen,
+            "rows": rows,
+            "part": "all",
+            "err": "",
+            "at": now,
+        }
+        count += len(rows)
+        try:
+            _gc_mac_disk_store_items(lid, rows)
+        except Exception:
+            pass
+    try:
+        _gc_mac_disk_save()
+    except Exception:
+        pass
+    if first_err and count == 0:
+        return 0, first_err
+    return count, ""
+
+
 def _gc_sync_job(year: int, month: int) -> str:
-    """화면 스레드를 붙잡지 않고 메일·캐시만 맞춘다."""
+    """연동실행. 화면을 붙잡지 않고 구글 일정·미리 알림을 맞춘 뒤 메일도 이어서 넣는다."""
+    mail_note = ""
+    scope_err = ""
     try:
         mail = sync_shinil_gmail_to_calendar()
-        extra = ""
         err = str(mail.get("error") or "")
         if err:
-            extra = f" · 신일가스 메일: {err}"
+            mail_note = f" · 신일가스 메일: {err}"
         else:
-            extra = f" · 신일가스 메일 {int(mail.get('added') or 0)}건 추가"
+            mail_note = f" · 신일가스 메일 {int(mail.get('added') or 0)}건 추가"
             remain = int(mail.get("remain") or 0)
             if remain:
-                extra += f" · 남은 {remain}건은 다시 연동"
-        key = _ev_key(year, month)
-        n_ev = sum(len(v or []) for v in (_EV_MEM.get(key) or {}).values())
-        return f"연동했습니다. 일정 {n_ev}건{extra}"
-    except GmailScopeError as e:
-        return f"GMAIL_SCOPE:{e}"
-    except Exception as e:
-        return f"연동 실패: {e}"
+                mail_note += f" · 남은 {remain}건은 다시 연동"
+    except GmailScopeError as exc:
+        scope_err = str(exc)
+    except Exception as exc:
+        mail_note = f" · 신일가스 메일 연동 실패: {exc}"
+    parts: list[str] = []
+    try:
+        n_ev = _gc_pull_google_month(year, month)
+        parts.append(f"구글 일정 {n_ev}건")
+    except Exception as exc:
+        parts.append(f"구글 캘린더 연동 실패: {exc}")
+    try:
+        n_mac, mac_note = _gc_pull_mac_reminders()
+        parts.append(mac_note or f"미리 알림 {n_mac}건")
+    except Exception as exc:
+        parts.append(f"미리 알림 연동 실패: {exc}")
+    msg = "연동했습니다. " + " · ".join(parts) + mail_note
+    if scope_err:
+        return f"GMAIL_SCOPE:{msg} · {scope_err}"
+    return msg
+
+
+@st.fragment(run_every=timedelta(seconds=2))
+def _gc_sync_watch() -> None:
+    """연동실행이 끝나면 달력과 미리 알림을 한 번만 다시 그린다."""
+    fut = _SYNC_STATE.get("fut")
+    if fut is not None and fut.done():
+        st.rerun(scope="app")
 
 
 def _gc_run_sync_click() -> None:
-    """연동실행은 바로 돌아가고, 구글 요청은 뒤에서 한다."""
+    """연동실행은 바로 돌아가고, 구글·미리 알림 요청은 뒤에서 한다."""
     fut = _SYNC_STATE.get("fut")
     if fut is not None and not fut.done():
         st.session_state["_gc_sync_busy"] = True
@@ -5264,6 +5399,8 @@ def _gc_mini_panel() -> None:
 
 def _gc_work_panel() -> None:
     """상단 가로 달력 아래: 왼쪽 작은 달력 · 가운데 월간 · 오른쪽 할 일."""
+    if st.session_state.get("_gc_sync_busy"):
+        _gc_sync_watch()
     mini, cal, tasks = st.columns([0.82, 2.70, 1.05], gap="small")
     with mini:
         _gc_mini_panel()

@@ -122,6 +122,10 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_SYNC_BG.submit", click)
         self.assertIn("def _gc_sync_job", src)
         self.assertIn("def _gc_take_sync_result", src)
+        job = src.split("def _gc_sync_job", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("_gc_pull_google_month", job)
+        self.assertIn("_gc_pull_mac_reminders", job)
+        self.assertIn("_gc_sync_watch", src)
         self.assertNotIn("_gc_sync_google(y, m)", click)
         self.assertIn("GC_MAIL_SYNC_BATCH = 20", src)
         self.assertIn("gc_head_acts", src)
@@ -951,6 +955,75 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
         ev = {"id": "e1", "title": "회의"}
         found = gc._gc_find_event({"2026-11-09": [ev]}, "e1")
         self.assertEqual(found["title"], "회의")
+
+    def test_sync_job_pulls_calendar_and_reminders(self):
+        with patch.object(gc, "_gc_pull_google_month", return_value=4) as google, patch.object(
+            gc, "_gc_pull_mac_reminders", return_value=(2, "")
+        ) as mac, patch.object(
+            gc,
+            "sync_shinil_gmail_to_calendar",
+            return_value={"added": 1, "error": "", "remain": 0},
+        ):
+            msg = gc._gc_sync_job(2026, 11)
+        google.assert_called_once_with(2026, 11)
+        mac.assert_called_once_with()
+        self.assertIn("구글 일정 4건", msg)
+        self.assertIn("미리 알림 2건", msg)
+        self.assertIn("신일가스 메일 1건", msg)
+
+    def test_pull_mac_reminders_fills_background_cache(self):
+        gc._BG_API.clear()
+
+        def rows(token, completed=None):
+            if completed:
+                return []
+            return [
+                {
+                    "id": "r1",
+                    "title": "방문",
+                    "status": "needsAction",
+                    "due": "2026-11-10",
+                }
+            ]
+
+        with patch.object(gc, "_mac_reminders_enabled", return_value=True), patch.object(
+            gc, "_osascript", return_value="abc\x1f고정비\x1e"
+        ) as script, patch.object(
+            gc, "list_mac_reminders", side_effect=rows
+        ), patch.object(gc, "_gc_mac_disk_store_items"), patch.object(
+            gc, "_gc_mac_disk_save"
+        ):
+            count, note = gc._gc_pull_mac_reminders()
+        script.assert_called_once()
+        self.assertEqual(count, 1)
+        self.assertEqual(note, "")
+        self.assertEqual(gc._BG_API["mac_tlists"][0]["id"], "macrem:abc")
+        self.assertEqual(gc._BG_API["tk:macrem:abc"][0]["title"], "방문")
+        self.assertEqual(gc._BG_API["mac_part:macrem:abc"], "all")
+
+    def test_pull_google_month_replaces_cached_events(self):
+        key = gc._ev_key(2026, 11)
+        gc._EV_MEM.pop(key, None)
+        gc._BG_API.pop(key, None)
+        fresh = {
+            "2026-11-10": [
+                {
+                    "id": "g1",
+                    "title": "회의",
+                    "day": "2026-11-10",
+                    "cal_id": "c1",
+                    "writable": True,
+                }
+            ]
+        }
+        with patch.object(
+            gc, "list_calendars", return_value=[{"id": "c1", "summary": "방문예정"}]
+        ), patch.object(gc, "_gc_save_disk_cals"), patch.object(
+            gc, "_events_by_day", return_value=fresh
+        ), patch.object(gc, "_gc_save_disk_events"):
+            count = gc._gc_pull_google_month(2026, 11)
+        self.assertEqual(count, 1)
+        self.assertEqual(gc._EV_MEM[key]["2026-11-10"][0]["title"], "회의")
 
 
 if __name__ == "__main__":
