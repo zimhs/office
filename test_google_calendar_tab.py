@@ -192,6 +192,11 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_open_add_pop", src)
         self.assertIn('key="gc_add_open"', src)
         self.assertIn("gc_add_pop", src)
+        add_css = src.split('div[class*="st-key-gc_add_pop"]', 1)[1].split(
+            "div[class*=", 1
+        )[0]
+        self.assertIn("position: relative", add_css)
+        self.assertNotIn("position: fixed", add_css)
         self.assertIn("_render_add_event_pop", src)
         self.assertIn('st.rerun(scope="fragment")', src)
         self.assertNotIn('st.session_state["_vc_month"] = date(pending_m', src)

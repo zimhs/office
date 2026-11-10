@@ -3301,17 +3301,20 @@ div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   background: #d2e3fc !important;
 }
 div[class*="st-key-gc_add_pop"] {
-  position: fixed !important;
-  top: 18% !important;
-  left: 50% !important;
-  transform: translateX(-50%) !important;
-  z-index: 10050 !important;
-  width: min(520px, 92vw) !important;
+  position: relative !important;
+  top: auto !important;
+  left: auto !important;
+  transform: none !important;
+  z-index: 3 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 12px 0 16px !important;
+  clear: both !important;
   background: #fff !important;
   border: 1px solid #e0e3e8 !important;
   border-radius: 12px !important;
-  box-shadow: 0 12px 40px rgba(32, 33, 36, 0.22) !important;
-  padding: 14px 16px 12px !important;
+  box-shadow: 0 8px 24px rgba(32, 33, 36, 0.12) !important;
+  padding: 16px 18px 14px !important;
 }
 div[class*="st-key-gc_memo_pop"] {
   position: fixed !important;
@@ -4032,8 +4035,6 @@ def _gc_bind_add_pop_dismiss() -> None:
         """
 <script>
 (function () {
-  if (window.__gcAddOutside) return;
-  window.__gcAddOutside = true;
   function docs() {
     var out = [];
     function add(d) { if (d && out.indexOf(d) < 0) out.push(d); }
@@ -4041,6 +4042,19 @@ def _gc_bind_add_pop_dismiss() -> None:
     try { add(window.parent.document); } catch (e) {}
     return out;
   }
+  function placeUnderCal() {
+    docs().forEach(function (d) {
+      var pop = d.querySelector('[class*="st-key-gc_add_pop"]');
+      var sc = d.querySelector('section.stMain');
+      if (!pop || !sc) return;
+      var delta = pop.getBoundingClientRect().top - sc.getBoundingClientRect().top - Math.round(sc.clientHeight * 0.34);
+      if (delta > 40) sc.scrollTop += delta;
+    });
+  }
+  placeUnderCal();
+  setTimeout(placeUnderCal, 80);
+  if (window.__gcAddOutside) return;
+  window.__gcAddOutside = true;
   function inside(node) {
     if (!node || !node.closest) return false;
     return !!(
