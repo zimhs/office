@@ -3301,20 +3301,21 @@ div[class*="st-key-gc_evsel_"] div[class*="st-key-gc_evpick_"] button {
   background: #d2e3fc !important;
 }
 div[class*="st-key-gc_add_pop"] {
-  position: relative !important;
-  top: auto !important;
-  left: auto !important;
-  transform: none !important;
-  z-index: 3 !important;
-  width: 100% !important;
-  max-width: 100% !important;
-  margin: 12px 0 16px !important;
-  clear: both !important;
+  position: fixed !important;
+  z-index: 10050 !important;
+  width: min(520px, 92vw) !important;
+  max-width: min(520px, 92vw) !important;
+  margin: 0 !important;
   background: #fff !important;
   border: 1px solid #e0e3e8 !important;
   border-radius: 12px !important;
-  box-shadow: 0 8px 24px rgba(32, 33, 36, 0.12) !important;
-  padding: 16px 18px 14px !important;
+  box-shadow: 0 12px 40px rgba(32, 33, 36, 0.22) !important;
+  padding: 14px 16px 12px !important;
+}
+div[class*="st-key-gc_add_pop"] [data-testid="stHorizontalBlock"]:first-of-type {
+  cursor: move !important;
+  touch-action: none !important;
+  user-select: none !important;
 }
 div[class*="st-key-gc_memo_pop"] {
   position: fixed !important;
@@ -4042,17 +4043,72 @@ def _gc_bind_add_pop_dismiss() -> None:
     try { add(window.parent.document); } catch (e) {}
     return out;
   }
-  function placeUnderCal() {
-    docs().forEach(function (d) {
-      var pop = d.querySelector('[class*="st-key-gc_add_pop"]');
-      var sc = d.querySelector('section.stMain');
-      if (!pop || !sc) return;
-      var delta = pop.getBoundingClientRect().top - sc.getBoundingClientRect().top - Math.round(sc.clientHeight * 0.34);
-      if (delta > 40) sc.scrollTop += delta;
+  function readPos(view) {
+    try { return JSON.parse(view.sessionStorage.getItem("gc_add_pop_pos") || "null"); }
+    catch (e) { return null; }
+  }
+  function writePos(view, x, y) {
+    try { view.sessionStorage.setItem("gc_add_pop_pos", JSON.stringify({ left: x, top: y })); }
+    catch (e) {}
+  }
+  function clamp(n, lo, hi) { return Math.max(lo, Math.min(n, hi)); }
+  function movePop(d, pop) {
+    if (!pop || pop.__gcDrag) return;
+    pop.__gcDrag = true;
+    var view = d.defaultView || window;
+    var handle = pop.querySelector('[data-testid="stHorizontalBlock"]');
+    function apply(x, y, store) {
+      var w = pop.offsetWidth || Math.min(520, view.innerWidth * 0.92);
+      var h = pop.offsetHeight || 280;
+      x = clamp(x, 8, Math.max(8, view.innerWidth - w - 8));
+      y = clamp(y, 8, Math.max(8, view.innerHeight - Math.min(h, view.innerHeight - 16) ));
+      pop.style.left = x + "px";
+      pop.style.top = y + "px";
+      pop.style.right = "auto";
+      pop.style.bottom = "auto";
+      pop.style.transform = "none";
+      if (store) writePos(view, x, y);
+    }
+    var saved = readPos(view);
+    if (saved && isFinite(saved.left) && isFinite(saved.top)) {
+      apply(saved.left, saved.top, false);
+    } else {
+      var head = d.querySelector('[class*="st-key-gc_cal_top"]');
+      var cells = d.querySelectorAll('[class*="st-key-gc_day_"]');
+      var last = cells.length ? cells[cells.length - 1] : null;
+      var hr = head ? head.getBoundingClientRect() : null;
+      var lr = last ? last.getBoundingClientRect() : null;
+      var x = hr ? hr.left : Math.max(12, (view.innerWidth - 520) / 2);
+      var y = lr ? lr.bottom + 12 : (hr ? hr.bottom + 12 : 120);
+      apply(x, y, false);
+    }
+    if (!handle) return;
+    handle.addEventListener("pointerdown", function (ev) {
+      if (ev.button !== 0) return;
+      if (ev.target.closest && ev.target.closest("button, a, input, textarea, select")) return;
+      ev.preventDefault();
+      var rect = pop.getBoundingClientRect();
+      var sx = ev.clientX, sy = ev.clientY, sl = rect.left, stt = rect.top;
+      handle.style.cursor = "grabbing";
+      function onMove(e) {
+        apply(sl + (e.clientX - sx), stt + (e.clientY - sy), true);
+      }
+      function onUp() {
+        d.removeEventListener("pointermove", onMove, true);
+        d.removeEventListener("pointerup", onUp, true);
+        handle.style.cursor = "move";
+      }
+      d.addEventListener("pointermove", onMove, true);
+      d.addEventListener("pointerup", onUp, true);
     });
   }
-  placeUnderCal();
-  setTimeout(placeUnderCal, 80);
+  function placeAddPop() {
+    docs().forEach(function (d) {
+      movePop(d, d.querySelector('[class*="st-key-gc_add_pop"]'));
+    });
+  }
+  placeAddPop();
+  setTimeout(placeAddPop, 60);
   if (window.__gcAddOutside) return;
   window.__gcAddOutside = true;
   function inside(node) {
