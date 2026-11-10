@@ -4857,7 +4857,6 @@ def _gc_render_mac_box() -> None:
     """할 일 목록 아래, 이 맥의 미리 알림만 따로 보여 준다."""
     with st.container(border=True):
         st.markdown("**미리 알림**")
-        st.caption("이 맥의 미리 알림입니다. 아이패드·클라우드에는 나오지 않습니다.")
         warn = str(st.session_state.pop("_gc_mac_warn", "") or "")
         if warn:
             st.warning(warn)
@@ -4924,7 +4923,6 @@ def _gc_render_mac_box() -> None:
         )
         due_value = st.date_input("날짜", value=None, key="gc_mr_due_new")
         add_clicked = st.button("추가", key="gc_mr_add", width="content")
-        st.caption("날짜를 넣으면 달력에 나옵니다.")
         if add_clicked:
             title = (title or "").strip()
             if len(title) < 1:
@@ -5362,7 +5360,6 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
             label_visibility="collapsed",
         )
     due_new = st.date_input("날짜", value=None, key="gc_new_due")
-    st.caption("날짜를 넣으면 달력에 나옵니다.")
     if add_clicked:
         title = (nt or "").strip()
         if len(title) < 1:
