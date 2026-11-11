@@ -8786,6 +8786,338 @@ def _render_worklog_sync_ui() -> None:
         pass
 
 
+def worklog_search_words(query: str) -> list[str]:
+    """검색창의 단어를 나눈다. 공백으로 구분하고, 비어 있으면 검색하지 않는다."""
+    out: list[str] = []
+    for part in re.split(r"\s+", str(query or "").strip()):
+        word = part.strip(" ,.\t").casefold()
+        if word:
+            out.append(word)
+    return out
+
+
+def worklog_row_matches(client: str, content: str, words: list[str]) -> bool:
+    """모든 단어가 거래처 또는 내용에 있으면 맞다."""
+    if not words:
+        return False
+    hay = f"{client or ''}\n{content or ''}".casefold()
+    return all(word in hay for word in words)
+
+
+def search_worklog_rows(rows: list[dict], query: str) -> list[dict]:
+    words = worklog_search_words(query)
+    if not words:
+        return []
+    hits: list[dict] = []
+    for row in rows or []:
+        client = str(row.get("client") or "")
+        content = str(row.get("content") or "")
+        if worklog_row_matches(client, content, words):
+            hits.append(row)
+    hits.sort(key=lambda r: (str(r.get("date") or ""), int(r.get("page") or 1)), reverse=True)
+    return hits
+
+
+def _search_sheet_date(name: str, year: int, month: int) -> tuple[date, int] | None:
+    """월 파일 시트 → (날짜, 페이지). 추가 시트는 2페이지부터."""
+    title = str(name or "").strip()
+    extra = re.fullmatch(r"(\d{1,2})p(\d+)", title)
+    if extra:
+        day = int(extra.group(1))
+        page = int(extra.group(2))
+        if page < 2:
+            return None
+    else:
+        page = 1
+        day = _archive_sheet_day_number(title, expect_year=year, expect_month=month)
+        if day is None:
+            day = _openpyxl_duplicate_base_day(title)
+        if day is None:
+            return None
+    try:
+        return date(year, month, day), page
+    except ValueError:
+        return None
+
+
+def _search_rows_from_worksheet(ws, d: date, page: int = 1) -> list[dict]:
+    """한 시트에서 거래처·내용 묶음을 뽑는다. 비고·익일·특이는 검색에 넣지 않는다."""
+    cells: dict[str, str] = {}
+    try:
+        labeled = None
+        for row in ws.iter_rows(min_row=5, max_row=5, min_col=3, max_col=3, values_only=True):
+            labeled = _parse_worklog_sheet_date("" if not row or row[0] is None else str(row[0]))
+            break
+        if page == 1 and labeled is not None and labeled != d:
+            return []
+    except Exception:
+        pass
+    try:
+        body = ws.iter_rows(min_row=8, max_row=39, min_col=3, max_col=25, values_only=True)
+    except Exception:
+        return []
+    for i, row in enumerate(body):
+        if i >= len(WL_CONTENT_ROWS):
+            break
+        r = WL_CONTENT_ROWS[i]
+        vals = list(row or ())
+        def _at(idx: int) -> str:
+            if idx >= len(vals) or vals[idx] is None:
+                return ""
+            return str(vals[idx])
+        cells[f"C{r}"] = _at(0)
+        cells[f"G{r}"] = _at(4)
+        cells[f"Y{r}"] = _at(22)
+    out: list[dict] = []
+    for ent in _grouped_entries_from_cells(cells):
+        client, content = _summary_row_from_entry(ent)
+        if not str(client).strip() and not str(content).strip():
+            continue
+        out.append(
+            {
+                "date": d.isoformat(),
+                "page": int(page),
+                "client": str(client or "").strip(),
+                "content": str(content or "").strip(),
+            }
+        )
+    return out
+
+
+def worklog_search_rows_from_month(path: str, year: int, month: int) -> list[dict]:
+    """N월.xlsx 를 한 번 열어 날짜별 거래처·내용을 모은다."""
+    if load_workbook is None or not path or not os.path.isfile(path):
+        return []
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return []
+    try:
+        chosen: dict[date, object] = {}
+        extras: list[tuple[date, int, object]] = []
+        for ws in wb.worksheets:
+            found = _search_sheet_date(getattr(ws, "title", ""), year, month)
+            if not found:
+                continue
+            d, page = found
+            if page > 1:
+                extras.append((d, page, ws))
+                continue
+            prev = chosen.get(d)
+            if prev is None or str(getattr(ws, "title", "")) == str(d.day):
+                chosen[d] = ws
+        rows: list[dict] = []
+        for d, ws in chosen.items():
+            rows.extend(_search_rows_from_worksheet(ws, d, 1))
+        for d, page, ws in extras:
+            rows.extend(_search_rows_from_worksheet(ws, d, page))
+        return rows
+    finally:
+        wb.close()
+
+
+def worklog_search_rows_from_day_file(path: str, d: date) -> list[dict]:
+    """일자 파일(YYYY-MM-DD.xlsx)과 그 추가 페이지를 읽는다."""
+    if load_workbook is None or not path or not os.path.isfile(path):
+        return []
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return []
+    try:
+        rows: list[dict] = []
+        sheets = list(wb.worksheets)
+        active = str(getattr(sheets[0], "title", "") or "") if sheets else ""
+        for ws in sheets:
+            title = str(getattr(ws, "title", "") or "")
+            if title == active:
+                rows.extend(_search_rows_from_worksheet(ws, d, 1))
+                continue
+            page = _extra_page_n_from_sheet_name(title)
+            if not page:
+                continue
+            rows.extend(_search_rows_from_worksheet(ws, d, page))
+        return rows
+    finally:
+        wb.close()
+
+
+def _worklog_search_filesig() -> tuple:
+    parts: list[tuple] = []
+    root = resolve_worklog_archive_root()
+    if root and os.path.isdir(root):
+        try:
+            years = os.listdir(root)
+        except OSError:
+            years = []
+        for year_name in years:
+            if not (str(year_name).isdigit() and len(str(year_name)) == 4):
+                continue
+            year_dir = os.path.join(root, year_name)
+            try:
+                names = os.listdir(year_dir)
+            except OSError:
+                continue
+            for fname in names:
+                nfc = _nfc(fname)
+                if re.match(r"^\d{1,2}월\.xlsx$", nfc) or re.match(r"^\d{4}-\d{2}-\d{2}\.xlsx$", nfc):
+                    path = os.path.join(year_dir, fname)
+                    try:
+                        stt = os.stat(path)
+                    except OSError:
+                        continue
+                    parts.append((path, int(stt.st_mtime), int(stt.st_size)))
+    try:
+        local_names = os.listdir(WORKLOG_DIR)
+    except OSError:
+        local_names = []
+    for fname in local_names:
+        if not re.match(r"^\d{4}-\d{2}-\d{2}\.xlsx$", fname):
+            continue
+        path = os.path.join(WORKLOG_DIR, fname)
+        try:
+            stt = os.stat(path)
+        except OSError:
+            continue
+        parts.append((path, int(stt.st_mtime), int(stt.st_size)))
+    parts.sort()
+    return tuple(parts)
+
+
+def collect_worklog_search_rows() -> list[dict]:
+    """저장된 일지에서 거래처·내용 줄을 모은다. 같은 날은 더 나중에 저장된 파일을 쓴다."""
+    by_date: dict[str, tuple[float, list[dict]]] = {}
+
+    def _put(d: date, rows: list[dict], mtime: float) -> None:
+        if _worklog_day_marked_deleted(d):
+            return
+        iso = d.isoformat()
+        prev = by_date.get(iso)
+        if prev is not None and prev[0] > mtime:
+            return
+        by_date[iso] = (mtime, rows)
+
+    root = resolve_worklog_archive_root()
+    if root and os.path.isdir(root):
+        try:
+            years = os.listdir(root)
+        except OSError:
+            years = []
+        for year_name in years:
+            if not (str(year_name).isdigit() and len(str(year_name)) == 4):
+                continue
+            year = int(year_name)
+            year_dir = os.path.join(root, year_name)
+            try:
+                names = os.listdir(year_dir)
+            except OSError:
+                continue
+            for fname in names:
+                nfc = _nfc(fname)
+                month_m = re.match(r"^(\d{1,2})월\.xlsx$", nfc)
+                day_m = re.match(r"^(\d{4}-\d{2}-\d{2})\.xlsx$", nfc)
+                path = os.path.join(year_dir, fname)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                if month_m:
+                    month = int(month_m.group(1))
+                    if month < 1 or month > 12:
+                        continue
+                    grouped: dict[str, list[dict]] = {}
+                    for row in worklog_search_rows_from_month(path, year, month):
+                        grouped.setdefault(str(row.get("date")), []).append(row)
+                    for iso, rows in grouped.items():
+                        try:
+                            d = date.fromisoformat(iso)
+                        except ValueError:
+                            continue
+                        _put(d, rows, mtime)
+                elif day_m:
+                    try:
+                        d = date.fromisoformat(day_m.group(1))
+                    except ValueError:
+                        continue
+                    if d.year != year:
+                        continue
+                    _put(d, worklog_search_rows_from_day_file(path, d), mtime)
+    try:
+        local_names = os.listdir(WORKLOG_DIR)
+    except OSError:
+        local_names = []
+    for fname in local_names:
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})\.xlsx$", fname)
+        if not m:
+            continue
+        try:
+            d = date.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        path = os.path.join(WORKLOG_DIR, fname)
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        _put(d, worklog_search_rows_from_day_file(path, d), mtime)
+    out: list[dict] = []
+    for _iso, (_mtime, rows) in by_date.items():
+        out.extend(rows)
+    return out
+
+
+def load_worklog_search_rows() -> list[dict]:
+    sig = _worklog_search_filesig()
+    cached = st.session_state.get("_wl_search_cache")
+    if isinstance(cached, dict) and cached.get("sig") == sig and isinstance(cached.get("rows"), list):
+        return cached["rows"]
+    rows = collect_worklog_search_rows()
+    st.session_state["_wl_search_cache"] = {"sig": sig, "rows": rows}
+    return rows
+
+
+def _render_worklog_search() -> None:
+    st.markdown("##### 통합검색")
+    st.caption("거래처와 내용에서 단어를 찾습니다. 띄어 쓴 단어는 모두 들어 있는 줄만 나옵니다.")
+    note = st.session_state.get("wl_search_note")
+    if note:
+        st.info(f"{note} 을 골랐습니다. 작성 탭에서 그 날이 열립니다.")
+    query = st.text_input("검색어", key="wl_search_q", placeholder="거래처 또는 내용의 단어")
+    words = worklog_search_words(query)
+    if not words:
+        return
+    with st.spinner("일지를 찾고 있습니다."):
+        rows = load_worklog_search_rows()
+    hits = search_worklog_rows(rows, query)
+    if not hits:
+        st.caption("맞는 거래처·내용이 없습니다.")
+        return
+    shown = hits[:300]
+    st.caption(f"{len(hits)}건" + (" · 300건까지 표시" if len(hits) > 300 else ""))
+    table = []
+    for row in shown:
+        page = int(row.get("page") or 1)
+        table.append(
+            {
+                "날짜": row.get("date") or "",
+                "페이지": page if page > 1 else "",
+                "거래처": row.get("client") or "",
+                "내용": row.get("content") or "",
+            }
+        )
+    st.dataframe(table, use_container_width=True, hide_index=True)
+    labels = []
+    for i, row in enumerate(shown):
+        who = str(row.get("client") or "").strip() or "(거래처 없음)"
+        labels.append(f"{row.get('date')} · {who}")
+    pick_key = f"wl_search_pick_{query}"
+    pick = st.selectbox("열 날짜", list(range(len(shown))), format_func=lambda i: labels[i], key=pick_key)
+    if st.button("이 날 열기", key="wl_search_open"):
+        opened = date.fromisoformat(str(shown[int(pick)].get("date")))
+        _switch_worklog_selected_date(opened)
+        st.session_state["wl_search_note"] = format_worklog_date(opened)
+
+
 def render_worklog_tab(latest_update_str: str = "") -> None:
     if load_workbook is None:
         st.error("openpyxl 이 필요합니다. `pip install openpyxl` 후 다시 실행하세요.")
@@ -8975,17 +9307,22 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     # 업무일지 영역만 fragment 스코프로 갱신 → 달력 클릭/날짜 이동 로딩이 크게 짧아진다.
     @st.fragment
     def _worklog_body() -> None:
+        _flush_queued_date_pick()
         _run_pending_worklog_day_delete()
         sel: date = st.session_state.get("worklog_selected") or selected
         _prepare_worklog_day_state(sel, skip_remote_pull=True)
         _render_worklog_scroll_lock(sel.isoformat())
-        with st.container(key="wl_fit_root"):
-            col_preview, col_edit = st.columns([1, 1.14], gap="small")
-            with col_preview:
-                _render_worklog_left_preview(sel)
-            with col_edit:
-                st.markdown("##### 업무 입력")
-                _render_worklog_input_panel(sel)
-                _wl_finish_edit_fragment()
+        tab_edit, tab_find = st.tabs(["작성", "통합검색"])
+        with tab_edit:
+            with st.container(key="wl_fit_root"):
+                col_preview, col_edit = st.columns([1, 1.14], gap="small")
+                with col_preview:
+                    _render_worklog_left_preview(sel)
+                with col_edit:
+                    st.markdown("##### 업무 입력")
+                    _render_worklog_input_panel(sel)
+                    _wl_finish_edit_fragment()
+        with tab_find:
+            _render_worklog_search()
 
     _worklog_body()
