@@ -348,3 +348,54 @@ def test_sent_log_shows_latest_client_first():
         assert str(df.iloc[0]["client"]) == "예성이엔지(아산)"
         summary = pit.sent_summary_by_client(df)
         assert str(summary.iloc[0]["거래처"]) == "예성이엔지(아산)"
+        assert pit._sent_log_body_text(df.iloc[0].get("body")) == ""
+
+
+def test_sent_log_stores_body_and_client_search():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    import price_increase_tab as pit
+
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "sent_log.jsonl"
+        log.write_text(
+            '{"ts":"2026-09-11T12:00:00","date":"2026-09-11","client":"Z가람플랜트","email":"a@b.com","subject":"old","ok":true,"mode":"single","staff":"","items":1,"msg":"ok"}\n',
+            encoding="utf-8",
+        )
+        with (
+            patch.object(pit, "PI_SENT_LOG", str(log)),
+            patch.object(pit, "PI_DRAFTS", td),
+            patch.object(pit, "PI_DIR", td),
+        ):
+            pit.append_sent_log(
+                client="예성이엔지(아산)",
+                email="yesung@yesung-eng.com",
+                subject="가스 공급 단가 인상 안내의 건",
+                ok=True,
+                body="안녕하세요\n단가를 안내합니다.",
+            )
+            df = pit.load_sent_log()
+        new = df[df["client"].astype(str) == "예성이엔지(아산)"].iloc[0]
+        old = df[df["client"].astype(str) == "Z가람플랜트"].iloc[0]
+        assert "단가를 안내합니다" in pit._sent_log_body_text(new["body"])
+        assert pit._sent_log_body_text(old["body"]) == ""
+        hit = pit.filter_sent_log_by_client(df, "(아산)")
+        assert list(hit["client"].astype(str)) == ["예성이엔지(아산)"]
+        assert pit.filter_sent_log_by_client(df, "없는거래처").empty
+        show = pit._sent_history_show(hit)
+        assert "body" not in show.columns
+        assert list(show.columns)[:4] == ["발송일", "거래처", "제목", "이메일"]
+
+
+def test_sent_history_opens_body_from_row():
+    src = open("price_increase_tab.py", encoding="utf-8").read()
+    hist = src.split("def _render_pi_sent_history", 1)[1].split("\ndef ", 1)[0]
+    assert "거래처 검색" in hist
+    assert "filter_sent_log_by_client" in hist
+    assert 'on_select="rerun"' in hist
+    assert 'selection_mode="single-row"' in hist
+    assert "메일 본문" in hist
+    assert src.count("body=body") >= 2
+    assert "body=_with_mail_signature(body_b)" in src

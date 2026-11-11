@@ -2126,6 +2126,7 @@ def append_sent_log(
     staff: str = "",
     items: int = 0,
     msg: str = "",
+    body: str = "",
 ) -> None:
     _ensure_dirs()
     row = {
@@ -2139,6 +2140,7 @@ def append_sent_log(
         "staff": staff,
         "items": int(items or 0),
         "msg": msg or "",
+        "body": body or "",
     }
     try:
         with open(PI_SENT_LOG, "a", encoding="utf-8") as f:
@@ -2158,7 +2160,7 @@ def append_sent_log(
 
 
 def _sent_log_columns() -> list[str]:
-    return ["ts", "date", "client", "email", "subject", "ok", "mode", "staff", "items", "msg"]
+    return ["ts", "date", "client", "email", "subject", "ok", "mode", "staff", "items", "msg", "body"]
 
 
 def _sent_log_df_from_rows(rows: list) -> pd.DataFrame:
@@ -2288,6 +2290,112 @@ def sent_summary_by_client(log_df: Optional[pd.DataFrame] = None) -> pd.DataFram
             }
         )
     return pd.DataFrame(rows).sort_values("최근발송일", ascending=False).reset_index(drop=True)
+
+
+def filter_sent_log_by_client(log_df: Optional[pd.DataFrame], query: str) -> pd.DataFrame:
+    """거래처명에 검색어가 들어 있는 발송만 남긴다."""
+    if log_df is None:
+        return pd.DataFrame(columns=_sent_log_columns())
+    if log_df.empty or "client" not in log_df.columns:
+        return log_df
+    q = str(query or "").strip()
+    if not q:
+        return log_df
+    mask = log_df["client"].astype(str).str.contains(q, case=False, na=False, regex=False)
+    return log_df.loc[mask].reset_index(drop=True)
+
+
+def _sent_log_body_text(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if text.lower() == "nan":
+        return ""
+    return text
+
+
+def _sent_history_show(log_df: pd.DataFrame) -> pd.DataFrame:
+    show = log_df.copy()
+    show["ok"] = show["ok"].map(
+        lambda x: "✅" if str(x) in ("True", "true", "1") or x is True else "❌"
+    )
+    show = show.rename(
+        columns={
+            "date": "발송일",
+            "client": "거래처",
+            "email": "이메일",
+            "subject": "제목",
+            "mode": "모드",
+            "staff": "담당자",
+            "items": "품목수",
+            "msg": "결과",
+            "ts": "시각",
+        }
+    )
+    cols = ["발송일", "거래처", "제목", "이메일", "ok", "모드", "담당자", "품목수", "결과", "시각"]
+    return show[cols]
+
+
+@st.fragment
+def _render_pi_sent_history() -> None:
+    """발송 이력: 거래처 검색, 줄 선택 시 그 메일의 본문."""
+    log_all = load_sent_log()
+    st.text_input("거래처 검색", key="pi_hist_client_q", placeholder="거래처명")
+    q = str(st.session_state.get("pi_hist_client_q") or "")
+    if log_all is None or log_all.empty:
+        st.info("발송 이력이 없습니다.")
+        return
+    log_df = filter_sent_log_by_client(log_all, q)
+    if log_df.empty:
+        st.info("해당하는 거래처가 없습니다.")
+        return
+    summary = sent_summary_by_client(log_df)
+    if summary.empty and not q.strip():
+        st.info("발송 이력이 없습니다.")
+    elif not summary.empty:
+        st.markdown("##### 거래처별 최근 발송")
+        st.caption("최신 발송이 위에 있습니다.")
+        st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    show = _sent_history_show(log_df)
+    st.markdown("##### 전체 이력")
+    st.caption("거래처명으로 찾고, 줄을 누르면 메일 본문이 열립니다.")
+    event = st.dataframe(
+        show,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"pi_sent_hist_pick_{q.strip()}",
+    )
+    rows = []
+    try:
+        rows = list(event.selection.rows or [])
+    except Exception:
+        rows = []
+    if not rows:
+        return
+    try:
+        rec = log_df.iloc[int(rows[0])]
+    except Exception:
+        return
+    client = str(rec.get("client") or "")
+    subject = str(rec.get("subject") or "")
+    when = str(rec.get("date") or "")
+    body = _sent_log_body_text(rec.get("body") if "body" in getattr(rec, "index", []) else "")
+    st.markdown(f"**{client}** · {subject} · {when}")
+    st.text_area(
+        "메일 본문",
+        value=body or "이 발송은 본문이 기록되어 있지 않습니다.",
+        height=280,
+        disabled=True,
+        key=f"pi_hist_body_{rec.get('ts')}",
+    )
 
 
 def _items_key(client: str) -> str:
@@ -3522,6 +3630,7 @@ def _pi_mail_compose_dialog() -> None:
                 staff=staff,
                 items=items_n,
                 msg=msg,
+                body=body,
             )
             _finish_pi_mail_send(
                 ok=ok,
@@ -3806,6 +3915,7 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                         staff=staff,
                         items=items_n,
                         msg=msg,
+                        body=body,
                     )
                     _finish_pi_mail_send(
                         ok=ok,
@@ -5588,6 +5698,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             staff=b_staff,
                             items=len(items_b),
                             msg=msg,
+                            body=_with_mail_signature(body_b),
                         )
                         results.append(f"{'✅' if ok else '❌'} {cl}: {msg}")
                         prog.progress((i + 1) / max(n, 1))
@@ -5598,38 +5709,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
 
     # ── 발송 이력 ──
     with tab_hist:
-        log_df = load_sent_log()
-        summary = sent_summary_by_client(log_df)
-        if summary.empty:
-            st.info("발송 이력이 없습니다.")
-        else:
-            st.markdown("##### 거래처별 최근 발송")
-            st.caption("최신 발송이 위에 있습니다.")
-            st.dataframe(summary, use_container_width=True, hide_index=True)
-
-        if not log_df.empty:
-            show = log_df.copy()
-            show["ok"] = show["ok"].map(lambda x: "✅" if str(x) in ("True", "true", "1") or x is True else "❌")
-            show = show.rename(
-                columns={
-                    "date": "발송일",
-                    "client": "거래처",
-                    "email": "이메일",
-                    "subject": "제목",
-                    "mode": "모드",
-                    "staff": "담당자",
-                    "items": "품목수",
-                    "msg": "결과",
-                    "ts": "시각",
-                }
-            )
-            st.markdown("##### 전체 이력")
-            st.caption("최신 발송이 위에 있습니다.")
-            st.dataframe(
-                show[["발송일", "거래처", "제목", "이메일", "ok", "모드", "담당자", "품목수", "결과", "시각"]],
-                use_container_width=True,
-                hide_index=True,
-            )
+        _render_pi_sent_history()
 
     smtp_cfg = _render_smtp_bar()
     mail_df = _render_mail_settings_expander(mail_df)
