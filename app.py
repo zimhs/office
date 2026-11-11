@@ -16729,23 +16729,27 @@ def _dash_filter_and_tabs_fragment() -> None:
     # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
     _dash_note_filter_change_for_heavy_tabs()
     _DASH_CLOUD_TABS = _dash_cloud_merged_tabs()
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs(
-        [
-            "📌 영업 종합 요약",
-            "🏢 거래처 분석",
-            "📦 품목 및 단가 분석",
-            "👤 담당자 & 상세내역",
-            "📌 채권 관리",
-            "📍 카카오맵",
-            "🏭 설비 재고 현황",
-            "🛢️ 통합 탱크 재고",
-            "📈 수익성 분석",
-            "📝 일일업무일지",
-            "🔎 시장조사",
-            "📨 메일",
-            "📆 구글캘린더",
-        ]
-    )
+    _biz_local = not _is_streamlit_cloud()
+    _dash_tab_labels = [
+        "📌 영업 종합 요약",
+        "🏢 거래처 분석",
+        "📦 품목 및 단가 분석",
+        "👤 담당자 & 상세내역",
+        "📌 채권 관리",
+        "📍 카카오맵",
+        "🏭 설비 재고 현황",
+        "🛢️ 통합 탱크 재고",
+        "📈 수익성 분석",
+        "📝 일일업무일지",
+        "🔎 시장조사",
+        "📨 메일",
+        "📆 구글캘린더",
+    ]
+    if _biz_local:
+        _dash_tab_labels.append("📊 분기 사업분석")
+    _dash_tab_objs = st.tabs(_dash_tab_labels)
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = _dash_tab_objs[:13]
+    tab_biz = _dash_tab_objs[13] if _biz_local else None
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
     _STICKY_INJECT_VER = 101
@@ -20785,6 +20789,22 @@ def _dash_filter_and_tabs_fragment() -> None:
                 except Exception as _gc_err:
                     st.error(f"구글캘린더 탭 오류: {_gc_err}")
                     st.info("다른 탭은 정상 이용 가능합니다.")
+
+    if tab_biz is not None:
+        with tab_biz:
+            try:
+                import biz_plan_tab as _bp_tab
+
+                _bp_path = getattr(_bp_tab, "__file__", None) or ""
+                _bp_mtime = os.path.getmtime(_bp_path) if _bp_path and os.path.exists(_bp_path) else 0
+                if getattr(_bp_tab, "_src_mtime", None) != _bp_mtime:
+                    _bp_tab = importlib.reload(_bp_tab)
+                    _bp_tab._src_mtime = _bp_mtime
+                    sys.modules["biz_plan_tab"] = _bp_tab
+                _bp_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                _bp_tab.render_biz_plan_tab(_bp_df)
+            except Exception as _bp_err:
+                st.error(f"분기 사업분석 탭 오류: {_bp_err}")
 
     _dash_inject_filter_select_script_for_run()
     # 로컬·Cloud 공통: fragment/탭 전환·heavy 로드 후 고정바 1회 재동기화
