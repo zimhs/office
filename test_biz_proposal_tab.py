@@ -161,6 +161,43 @@ def test_page2_strategy_lines_add_and_remove(tmp_path: Path | None = None):
     shutil.rmtree(root)
 
 
+def test_page2_policy_and_review_are_editable(tmp_path: Path | None = None):
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "1. {POLICY_TITLE}" in src
+    assert "년 사업계획 대비" in src
+    template = _template()
+    root = tmp_path or Path("/tmp/biz_proposal_toc")
+    if root.exists():
+        import shutil
+        shutil.rmtree(root)
+    dest = root / "27년 사업계획서.pptx"
+    dest.parent.mkdir(parents=True)
+    import shutil
+    shutil.copy(template, dest)
+    bp.save_page(
+        2,
+        2027,
+        12,
+        policy_lines=["방침가", "방침나"],
+        review_lines=["판매하나", "담당둘"],
+        strategy_lines=["전략셋"],
+        path=dest,
+        template=template,
+    )
+    slide2 = zipfile.ZipFile(dest).read("ppt/slides/slide2.xml").decode("utf-8")
+    assert bp._shape_lines(slide2, "policy") == ["방침가", "방침나"]
+    assert bp._shape_lines(slide2, "review") == ["판매하나", "담당둘"]
+    assert bp._shape_lines(slide2, "strategy") == ["전략셋"]
+    review = next(block for block in re.findall(r"<p:sp\b.*?</p:sp>", slide2, flags=re.S) if "사업계획 대비" in block)
+    assert ">27</a:t>" in review and ">26</a:t>" in review
+    policy = next(block for block in re.findall(r"<p:sp\b.*?</p:sp>", slide2, flags=re.S) if "방침가" in block)
+    assert "영업방침 및 영업목표" in policy
+    with zipfile.ZipFile(template) as old, zipfile.ZipFile(dest) as new:
+        assert old.read("ppt/theme/theme1.xml") == new.read("ppt/theme/theme1.xml")
+        assert old.read("ppt/slides/slide1.xml") == new.read("ppt/slides/slide1.xml")
+    shutil.rmtree(root)
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -175,4 +212,5 @@ if __name__ == "__main__":
     test_save_name_is_two_digit_and_updates_the_same_file()
     test_existing_file_saves_without_desktop_template()
     test_page2_strategy_lines_add_and_remove()
+    test_page2_policy_and_review_are_editable()
     print("ok")

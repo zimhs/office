@@ -37,7 +37,17 @@ PLAN_HWA = (1081, 942, 1054, 1205, 1333, 1508, 1764, 1638, 1535, 1365, 1162, 117
 PLAN_CHART = {"아산": 5695, "화성": 15764, "전체": 21461}
 PRIOR_PLAN_TOTAL = {2024: 21085, 2025: 21567, 2026: 21461}
 PLAN_TONS = {"산소": 6502, "질소": 11381, "알곤": 7491, "탄산": 50688, "LPG": 319}
+POLICY_TITLE = "영업방침 및 영업목표"
+REVIEW_MARK = "사업계획 대비"
 STRATEGY_TITLE = "년도 세부 영업전략"
+POLICY_DEFAULTS = ("영업방침 및 영업목표",)
+REVIEW_DEFAULTS = (
+    "총 판매현황",
+    "세부실적 / 품목별 판매현황",
+    "세부실적 / 품목별 BULK 현황",
+    "25년도 담당별 실적",
+    "분석 / 향후 추진",
+)
 STRATEGY_DEFAULTS = (
     "신규영업 및 투자계획",
     "지역별 산업단지 영업계획",
@@ -443,56 +453,101 @@ def _set_nth_text(block: str, index: int, text: str) -> str:
     return _AT.sub(repl, block)
 
 
-def strategy_lines_in(xml: str) -> list[str] | None:
-    """2페이지 3번 세부전략. 그 칸이 없으면 None, 항목이 없으면 빈 목록."""
+def _bullet_line(texts: list[str]) -> str | None:
+    if not texts or "-" not in texts[0]:
+        return None
+    head = texts[0].strip().lstrip("-").strip()
+    rest = "".join(texts[1:])
+    line = f"{head}{rest}".strip() if head else rest.strip()
+    return line or None
+
+
+def _shape_lines(xml: str, kind: str) -> list[str] | None:
     for shape in re.finditer(r"<p:sp\b.*?</p:sp>", xml, flags=re.S):
         block = shape.group(0)
-        if STRATEGY_TITLE not in block:
+        if kind == "strategy" and STRATEGY_TITLE not in block:
+            continue
+        if kind == "review" and REVIEW_MARK not in block:
+            continue
+        if kind == "policy" and (POLICY_TITLE not in block or REVIEW_MARK in block or STRATEGY_TITLE in block):
             continue
         paras = re.findall(r"<a:p\b.*?</a:p>", block, flags=re.S)
         lines = []
         for para in paras[1:]:
-            texts = _para_texts(para)
-            if not texts:
-                continue
-            item = texts[-1].strip()
-            if item and item != "-":
-                lines.append(item)
+            line = _bullet_line(_para_texts(para))
+            if line:
+                lines.append(line)
         return lines
     return None
 
 
-def read_strategy_lines(year: int) -> list[str]:
+def strategy_lines_in(xml: str) -> list[str] | None:
+    """2페이지 3번 세부전략. 그 칸이 없으면 None, 항목이 없으면 빈 목록."""
+    return _shape_lines(xml, "strategy")
+
+
+def _read_slide2(year: int) -> str | None:
     path = proposal_path(year)
     if path is None or not path.is_file():
-        return list(STRATEGY_DEFAULTS)
+        return None
     try:
-        xml = zipfile.ZipFile(path).read("ppt/slides/slide2.xml").decode("utf-8")
+        return zipfile.ZipFile(path).read("ppt/slides/slide2.xml").decode("utf-8")
     except (OSError, KeyError, zipfile.BadZipFile):
-        return list(STRATEGY_DEFAULTS)
-    found = strategy_lines_in(xml)
-    return list(STRATEGY_DEFAULTS) if found is None else found
+        return None
 
 
-def _apply_strategy_lines(xml: str, lines: list[str], year: int) -> str:
-    """3번 제목의 년도와 항목만 바꾼다. 1번·2번 문안은 그대로 둔다."""
+def read_toc_lines(year: int) -> tuple[list[str], list[str], list[str]]:
+    xml = _read_slide2(year)
+    defaults = (list(POLICY_DEFAULTS), list(REVIEW_DEFAULTS), list(STRATEGY_DEFAULTS))
+    if xml is None:
+        return defaults
+    found = [_shape_lines(xml, kind) for kind in ("policy", "review", "strategy")]
+    return tuple(default if lines is None else lines for default, lines in zip(defaults, found, strict=False))
+
+
+def read_strategy_lines(year: int) -> list[str]:
+    return read_toc_lines(year)[2]
+
+
+def _fill_bullets(block: str, lines: list[str], year: int, kind: str) -> str:
+    paras = list(re.finditer(r"<a:p\b.*?</a:p>", block, flags=re.S))
+    if not paras:
+        return block
+    title = paras[0].group(0)
+    texts = _para_texts(title)
+    if kind == "strategy" and texts and texts[0].isdigit():
+        title = _set_nth_text(title, 1, f"{int(year) % 100:02d}")
+    if kind == "review" and len(texts) >= 4 and texts[0].isdigit() and texts[2].isdigit():
+        title = _set_nth_text(title, 1, f"{int(year) % 100:02d}")
+        title = _set_nth_text(title, 3, f"{(int(year) - 1) % 100:02d}")
+    sample = next((para.group(0) for para in paras[1:] if _bullet_line(_para_texts(para.group(0)))), _STRATEGY_BULLET)
+    tail = ""
+    if len(paras) > 1 and _bullet_line(_para_texts(paras[-1].group(0))) is None:
+        tail = paras[-1].group(0)
+    built = [title, *[_set_nth_text(sample, 2, line) for line in lines]]
+    if tail:
+        built.append(tail)
+    return block[: paras[0].start()] + "".join(built) + block[paras[-1].end() :]
+
+
+def _apply_toc_lines(
+    xml: str,
+    year: int,
+    policy_lines: list[str] | None,
+    review_lines: list[str] | None,
+    strategy_lines: list[str] | None,
+) -> str:
+    """2페이지 1·2·3번 항목만 바꾼다. 넘기지 않은 칸은 그대로 둔다."""
 
     def repl(match: re.Match[str]) -> str:
         block = match.group(0)
-        if STRATEGY_TITLE not in block:
-            return block
-        paras = list(re.finditer(r"<a:p\b.*?</a:p>", block, flags=re.S))
-        if not paras:
-            return block
-        title = paras[0].group(0)
-        texts = _para_texts(title)
-        if texts and texts[0].isdigit():
-            title = _set_nth_text(title, 1, f"{int(year) % 100:02d}")
-        sample = paras[1].group(0) if len(paras) > 1 else _STRATEGY_BULLET
-        built = [title]
-        for line in lines:
-            built.append(_set_nth_text(sample, 2, line))
-        return block[: paras[0].start()] + "".join(built) + block[paras[-1].end() :]
+        if STRATEGY_TITLE in block and strategy_lines is not None:
+            return _fill_bullets(block, strategy_lines, year, "strategy")
+        if REVIEW_MARK in block and review_lines is not None:
+            return _fill_bullets(block, review_lines, year, "review")
+        if POLICY_TITLE in block and policy_lines is not None:
+            return _fill_bullets(block, policy_lines, year, "policy")
+        return block
 
     return re.sub(r"<p:sp\b.*?</p:sp>", repl, xml, flags=re.S)
 
@@ -782,6 +837,8 @@ def save_page(
     tons_plan: dict[str, int] | None = None,
     asan_months: list[int] | None = None,
     hwa_months: list[int] | None = None,
+    policy_lines: list[str] | None = None,
+    review_lines: list[str] | None = None,
     strategy_lines: list[str] | None = None,
     path: Path | None = None,
     template: Path | None = None,
@@ -806,8 +863,12 @@ def save_page(
     slide_name = f"ppt/slides/slide{int(page)}.xml"
     xml = parts[slide_name].decode("utf-8")
     xml = _map_text(xml, lambda text: _shift_year_text(text, year))
-    if page == 2 and strategy_lines is not None:
-        xml = _apply_strategy_lines(xml, [line.strip() for line in strategy_lines if str(line).strip()], year)
+    if page == 2 and any(lines is not None for lines in (policy_lines, review_lines, strategy_lines)):
+        cleaned = [
+            None if lines is None else [str(line).strip() for line in lines if str(line).strip()]
+            for lines in (policy_lines, review_lines, strategy_lines)
+        ]
+        xml = _apply_toc_lines(xml, year, cleaned[0], cleaned[1], cleaned[2])
     if page == 4:
         numbers = _slide4_numbers(year, month, targets)
         xml = _map_text(xml, lambda text: numbers.get(text, text))
@@ -922,6 +983,33 @@ def _plant_frame(year: int, month: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _edit_lines(year: int, slot: str, lines: list[str]) -> list[str]:
+    store = f"bppt_s2_{slot}_{year}"
+    if store not in st.session_state:
+        st.session_state[store] = [{"id": index + 1, "text": line} for index, line in enumerate(lines)]
+    items = st.session_state[store]
+    for item in items:
+        key = f"bppt_s2_{slot}_{year}_{item['id']}"
+        if key in st.session_state:
+            item["text"] = st.session_state[key]
+    kept = [str(item["text"]).strip() for item in items if str(item["text"]).strip()]
+    for item in items:
+        key = f"bppt_s2_{slot}_{year}_{item['id']}"
+        if key not in st.session_state:
+            st.session_state[key] = item["text"]
+        left, right = st.columns([8, 1])
+        left.text_input(slot, key=key, label_visibility="collapsed")
+        if right.button("삭제", key=f"bppt_s2_del_{slot}_{year}_{item['id']}"):
+            st.session_state[store] = [row for row in items if row["id"] != item["id"]]
+            st.session_state.pop(key, None)
+            st.rerun(scope="fragment")
+    if st.button("항목 추가", key=f"bppt_s2_add_{slot}_{year}"):
+        nxt = max((item["id"] for item in items), default=0) + 1
+        items.append({"id": nxt, "text": ""})
+        st.rerun(scope="fragment")
+    return kept
+
+
 @st.fragment
 def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
     """로컬 사업계획서. 16페이지가 각각 방이고, 저장은 그 페이지만 반영한다."""
@@ -937,6 +1025,8 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
             tons_plan = dict(PLAN_TONS)
             asan_months = list(PLAN_ASAN)
             hwa_months = list(PLAN_HWA)
+            policy_lines = None
+            review_lines = None
             strategy_lines = None
             if page == 4:
                 st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
@@ -995,33 +1085,16 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     )
                 st.dataframe(pd.DataFrame(preview), hide_index=True, use_container_width=True)
             elif page == 2:
-                st.markdown(f"**{year % 100:02d}{STRATEGY_TITLE}**")
-                st.caption("3번 항목만 고칩니다. 줄을 추가하거나 삭제할 수 있고, 1번과 2번은 그대로입니다.")
-                store = f"bppt_s2_lines_{year}"
-                if store not in st.session_state:
-                    st.session_state[store] = [
-                        {"id": index + 1, "text": line} for index, line in enumerate(read_strategy_lines(year))
-                    ]
-                items = st.session_state[store]
-                for item in items:
-                    key = f"bppt_s2_{year}_{item['id']}"
-                    if key in st.session_state:
-                        item["text"] = st.session_state[key]
-                strategy_lines = [str(item["text"]).strip() for item in items if str(item["text"]).strip()]
-                for item in items:
-                    key = f"bppt_s2_{year}_{item['id']}"
-                    if key not in st.session_state:
-                        st.session_state[key] = item["text"]
-                    left, right = st.columns([8, 1])
-                    left.text_input("전략", key=key, label_visibility="collapsed")
-                    if right.button("삭제", key=f"bppt_s2_del_{year}_{item['id']}"):
-                        st.session_state[store] = [row for row in items if row["id"] != item["id"]]
-                        st.session_state.pop(key, None)
-                        st.rerun(scope="fragment")
-                if st.button("항목 추가", key=f"bppt_s2_add_{year}"):
-                    nxt = max((item["id"] for item in items), default=0) + 1
-                    items.append({"id": nxt, "text": ""})
-                    st.rerun(scope="fragment")
+                yy = int(year) % 100
+                prev = (int(year) - 1) % 100
+                st.caption("1번, 2번, 3번 항목을 고치고 줄을 추가하거나 삭제할 수 있습니다.")
+                policy_now, review_now, strategy_now = read_toc_lines(year)
+                st.markdown(f"**1. {POLICY_TITLE}**")
+                policy_lines = _edit_lines(year, "policy", policy_now)
+                st.markdown(f"**2. {yy}년 사업계획 대비 {prev}년 실적**")
+                review_lines = _edit_lines(year, "review", review_now)
+                st.markdown(f"**3. {yy:02d}{STRATEGY_TITLE}**")
+                strategy_lines = _edit_lines(year, "strategy", strategy_now)
             else:
                 st.caption(f"이 페이지는 문안의 년도를 {year}년 기준으로 바꿉니다. 표 서식은 그대로입니다.")
             if st.button(f"{page}페이지 저장", key=f"bppt_save_{page}"):
@@ -1034,6 +1107,8 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                         tons_plan=tons_plan,
                         asan_months=asan_months,
                         hwa_months=hwa_months,
+                        policy_lines=policy_lines,
+                        review_lines=review_lines,
                         strategy_lines=strategy_lines,
                     )
                     st.success(f"{page}페이지를 저장했습니다. {saved}")
