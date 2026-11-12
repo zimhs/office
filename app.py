@@ -16746,13 +16746,13 @@ def _dash_filter_and_tabs_fragment() -> None:
         "📆 구글캘린더",
     ]
     if _biz_local:
-        _dash_tab_labels.append("📊 분기 사업분석")
         _dash_tab_labels.append("📄 견적서")
+        _dash_tab_labels.append("📊 분기 사업분석")
         _dash_tab_labels.append("📑 사업계획서")
     _dash_tab_objs = st.tabs(_dash_tab_labels)
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = _dash_tab_objs[:13]
-    tab_biz = _dash_tab_objs[13] if _biz_local else None
-    tab_quote = _dash_tab_objs[14] if _biz_local else None
+    tab_quote = _dash_tab_objs[13] if _biz_local else None
+    tab_biz = _dash_tab_objs[14] if _biz_local else None
     tab_proposal = _dash_tab_objs[15] if _biz_local else None
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
