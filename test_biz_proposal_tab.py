@@ -73,6 +73,31 @@ def test_page_save_keeps_theme_and_writes_the_chart(tmp_path: Path | None = None
     shutil.rmtree(root)
 
 
+def test_save_name_is_two_digit_and_updates_the_same_file(tmp_path: Path | None = None):
+    assert bp.proposal_name(2026) == "26년 사업계획서.pptx"
+    template = _template()
+    root = tmp_path or Path("/tmp/biz_proposal_name")
+    if root.exists():
+        import shutil
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    existing = root / bp.proposal_name(2026)
+    existing.write_bytes(b"placeholder")
+    assert bp.resolve_proposal_path(root, 2026) == existing
+    fresh = bp.resolve_proposal_path(root, 2027)
+    assert fresh == root / "2027" / "27년 사업계획서.pptx"
+    dest = root / "2026" / bp.proposal_name(2026)
+    bp.save_page(1, 2027, 12, path=dest, template=template)
+    with zipfile.ZipFile(dest) as book:
+        slide1 = book.read("ppt/slides/slide1.xml")
+    bp.save_page(5, 2026, 12, path=dest, template=template)
+    with zipfile.ZipFile(dest) as book:
+        assert book.read("ppt/slides/slide1.xml") == slide1
+        assert "1,152" in book.read("ppt/slides/slide5.xml").decode("utf-8")
+    import shutil
+    shutil.rmtree(root)
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -84,4 +109,5 @@ if __name__ == "__main__":
     test_2025_plant_months_match_the_plan()
     test_2025_bulk_amounts_match_known_rows()
     test_page_save_keeps_theme_and_writes_the_chart()
+    test_save_name_is_two_digit_and_updates_the_same_file()
     print("ok")

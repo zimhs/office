@@ -86,11 +86,26 @@ def find_template() -> Path | None:
     return None
 
 
+def proposal_name(year: int) -> str:
+    """2026 → 26년 사업계획서.pptx."""
+    return f"{int(year) % 100:02d}년 사업계획서.pptx"
+
+
+def resolve_proposal_path(root: Path, year: int) -> Path:
+    """같은 이름의 파일이 있으면 그 파일을 이어서 고친다."""
+    name = proposal_name(year)
+    folder = root / str(int(year))
+    for candidate in (folder / name, root / name):
+        if candidate.is_file():
+            return candidate
+    return folder / name
+
+
 def proposal_path(year: int) -> Path | None:
     root = find_plan_root()
     if root is None:
         return None
-    return root / str(int(year)) / f"{int(year)}년 사업계획.pptx"
+    return resolve_proposal_path(root, year)
 
 
 def _num(series: pd.Series) -> pd.Series:
@@ -678,7 +693,7 @@ def save_page(
     path: Path | None = None,
     template: Path | None = None,
 ) -> Path:
-    """양식 또는 기존 파일을 복사한 뒤 해당 슬라이드 값만 넣는다."""
+    """같은 파일이 있으면 그 파일의 해당 페이지만 갱신한다. 없을 때만 양식을 복사한다."""
     template = template or find_template()
     if template is None or not template.is_file():
         raise FileNotFoundError("사업계획서 양식을 찾지 못했습니다.")
@@ -816,7 +831,7 @@ def _plant_frame(year: int, month: int) -> pd.DataFrame:
 def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
     """로컬 사업계획서. 16페이지가 각각 방이고, 저장은 그 페이지만 반영한다."""
     st.markdown("##### 사업계획서")
-    st.caption("가스코아산은 아산, 그 외는 화성입니다. 금액은 부가세 포함이고, 월은 그 달까지의 실적입니다. 4페이지 2026년은 목표라서 고칠 수 있습니다.")
+    st.caption("가스코아산은 아산, 그 외는 화성입니다. 금액은 부가세 포함이고, 월은 그 달까지의 실적입니다. 4페이지 2026년은 목표라서 고칠 수 있습니다. 저장 파일은 26년 사업계획서.pptx이고, 같은 파일이 있으면 그 파일에 이어서 넣습니다.")
     rooms = st.tabs([f"{page}페이지" for page in PAGES])
     for page, room in zip(PAGES, rooms, strict=False):
         with room:
