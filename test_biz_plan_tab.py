@@ -113,3 +113,5 @@ def test_local_tab_only_in_app():
     assert "min_tabs=13" in app
     assert "render_biz_plan_tab" in app
     assert "with tab13:" in app
+    src = Path("biz_plan_tab.py").read_text(encoding="utf-8")
+    assert "@st.fragment\ndef render_biz_plan_tab" in src

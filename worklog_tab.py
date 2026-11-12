@@ -9116,6 +9116,8 @@ def _render_worklog_search() -> None:
         opened = date.fromisoformat(str(shown[int(pick)].get("date")))
         _switch_worklog_selected_date(opened)
         st.session_state["wl_search_note"] = format_worklog_date(opened)
+        st.session_state["_wl_open_editor"] = True
+        st.rerun(scope="fragment")
 
 
 def render_worklog_tab(latest_update_str: str = "") -> None:
@@ -9309,20 +9311,29 @@ def render_worklog_tab(latest_update_str: str = "") -> None:
     def _worklog_body() -> None:
         _flush_queued_date_pick()
         _run_pending_worklog_day_delete()
+        # 작성 화면에서는 통합검색(월별 엑셀 스캔)을 돌리지 않는다.
+        if st.session_state.pop("_wl_open_editor", False) or "wl_panel" not in st.session_state:
+            st.session_state["wl_panel"] = "작성"
+        panel = st.segmented_control(
+            "업무일지 화면",
+            ["작성", "통합검색"],
+            key="wl_panel",
+            label_visibility="collapsed",
+            required=True,
+        )
+        if panel == "통합검색":
+            _render_worklog_search()
+            return
         sel: date = st.session_state.get("worklog_selected") or selected
         _prepare_worklog_day_state(sel, skip_remote_pull=True)
         _render_worklog_scroll_lock(sel.isoformat())
-        tab_edit, tab_find = st.tabs(["작성", "통합검색"])
-        with tab_edit:
-            with st.container(key="wl_fit_root"):
-                col_preview, col_edit = st.columns([1, 1.14], gap="small")
-                with col_preview:
-                    _render_worklog_left_preview(sel)
-                with col_edit:
-                    st.markdown("##### 업무 입력")
-                    _render_worklog_input_panel(sel)
-                    _wl_finish_edit_fragment()
-        with tab_find:
-            _render_worklog_search()
+        with st.container(key="wl_fit_root"):
+            col_preview, col_edit = st.columns([1, 1.14], gap="small")
+            with col_preview:
+                _render_worklog_left_preview(sel)
+            with col_edit:
+                st.markdown("##### 업무 입력")
+                _render_worklog_input_panel(sel)
+                _wl_finish_edit_fragment()
 
     _worklog_body()

@@ -34,6 +34,24 @@ def _nfc(text: str) -> str:
 
 def find_plan_root() -> Path | None:
     """스크린샷 경로: Drive › 다른 컴퓨터 › 내 컴퓨터 (1) › Desktop › 업무 › 사업계획."""
+    try:
+        cached = st.session_state.get("_bp_plan_root")
+    except Exception:
+        cached = None
+    if isinstance(cached, str) and cached:
+        path = Path(cached)
+        if path.is_dir():
+            return path
+    found = _scan_plan_root()
+    if found is not None:
+        try:
+            st.session_state["_bp_plan_root"] = str(found)
+        except Exception:
+            pass
+    return found
+
+
+def _scan_plan_root() -> Path | None:
     base = Path.home() / "Library" / "CloudStorage"
     if not base.is_dir():
         return None
@@ -156,9 +174,16 @@ def aggregate_quarter(df: pd.DataFrame, year: int, quarter: int) -> dict:
     now_money, prev_money = [], []
     now_qty = {key: [] for key in _PRODUCTS}
     prev_qty = {key: [] for key in _PRODUCTS}
+    dated = None
+    if isinstance(df, pd.DataFrame) and not df.empty and "매출일_dt" in df.columns:
+        dated = pd.to_datetime(df["매출일_dt"], errors="coerce")
     for month in months:
-        cur = _month_frame(df, int(year), month)
-        old = _month_frame(df, int(year) - 1, month)
+        if dated is not None:
+            cur = df.loc[(dated.dt.year == int(year)) & (dated.dt.month == int(month))]
+            old = df.loc[(dated.dt.year == int(year) - 1) & (dated.dt.month == int(month))]
+        else:
+            cur = _month_frame(df, int(year), month)
+            old = _month_frame(df, int(year) - 1, month)
         now_money.append(_sum_money(cur))
         prev_money.append(_sum_money(old))
         cur_q = _sum_qty(cur)
@@ -250,7 +275,18 @@ def locate_sheet(path: Path) -> dict:
         "products": products,
         "title": title,
         "ws": ws,
+        "wb": wb,
     }
+
+
+def _close_located(info: dict | None) -> None:
+    wb = info.get("wb") if isinstance(info, dict) else None
+    if wb is None:
+        return
+    try:
+        wb.close()
+    except Exception:
+        pass
 
 
 def _col_letter(index: int) -> str:
@@ -365,6 +401,7 @@ def build_writes(path: Path, year: int, quarter: int, targets: list[float], agg:
             writes[ref] = bulk_prev[i]
         for i, col in enumerate(QTY_PCT_COLS):
             writes[_cell(row, col)] = arrow_pct(bulk_now[i], bulk_prev[i])
+    _close_located(info)
     return writes
 
 
@@ -487,29 +524,32 @@ def read_targets(path: Path, year: int, quarter: int) -> list[int] | None:
     if not path.is_file():
         return None
     info = locate_sheet(path)
-    row = info["roles"].get("target")
-    header = info["money_header"]
-    if not row or not header:
-        return None
-    ws = info["ws"]
-    months = []
-    for col in MONEY_COLS:
-        text = str(ws.cell(header, col).value or "")
-        found = re.search(r"(\d+)", text)
-        months.append(int(found.group(1)) if found else 0)
-    if tuple(months) != QUARTERS[int(quarter)]:
-        return None
-    values = []
-    for col in MONEY_COLS:
-        cell = ws.cell(row, col)
-        if _is_formula(cell):
-            values.append(0)
-            continue
-        try:
-            values.append(int(round(float(cell.value or 0))))
-        except (TypeError, ValueError):
-            values.append(0)
-    return values
+    try:
+        row = info["roles"].get("target")
+        header = info["money_header"]
+        if not row or not header:
+            return None
+        ws = info["ws"]
+        months = []
+        for col in MONEY_COLS:
+            text = str(ws.cell(header, col).value or "")
+            found = re.search(r"(\d+)", text)
+            months.append(int(found.group(1)) if found else 0)
+        if tuple(months) != QUARTERS[int(quarter)]:
+            return None
+        values = []
+        for col in MONEY_COLS:
+            cell = ws.cell(row, col)
+            if _is_formula(cell):
+                values.append(0)
+                continue
+            try:
+                values.append(int(round(float(cell.value or 0))))
+            except (TypeError, ValueError):
+                values.append(0)
+        return values
+    finally:
+        _close_located(info)
 
 
 def _money_table(year: int, months: tuple[int, ...], targets: list[int], agg: dict) -> pd.DataFrame:
@@ -562,6 +602,54 @@ def _qty_table(year: int, months: tuple[int, ...], agg: dict) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def _cached_targets(path: Path | None, year: int, quarter: int) -> list[int] | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        sig = (str(path), path.stat().st_mtime_ns, int(year), int(quarter))
+        bag = st.session_state.get("_bp_target_cache")
+        if not isinstance(bag, dict):
+            bag = {}
+        if sig in bag:
+            return bag[sig]
+    except Exception:
+        return read_targets(path, year, quarter)
+    values = read_targets(path, year, quarter)
+    try:
+        bag[sig] = values
+        st.session_state["_bp_target_cache"] = bag
+    except Exception:
+        pass
+    return values
+
+
+def _cached_aggregate(df: pd.DataFrame, year: int, quarter: int) -> dict:
+    frame = df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    sig = (int(year), int(quarter), id(frame), int(getattr(frame, "shape", (0,))[0]))
+    try:
+        bag = st.session_state.get("_bp_agg_cache")
+        if isinstance(bag, dict) and sig in bag:
+            return bag[sig]
+    except Exception:
+        bag = None
+    agg = aggregate_quarter(frame, year, quarter)
+    if isinstance(bag, dict):
+        if len(bag) > 8:
+            bag.clear()
+        bag[sig] = agg
+        try:
+            st.session_state["_bp_agg_cache"] = bag
+        except Exception:
+            pass
+    else:
+        try:
+            st.session_state["_bp_agg_cache"] = {sig: agg}
+        except Exception:
+            pass
+    return agg
+
+
+@st.fragment
 def render_biz_plan_tab(sales_df: pd.DataFrame) -> None:
     """로컬 분기 사업분석. 연도·분기와 목표를 고르고 두 표를 보여 준다."""
     st.markdown("##### 분기 사업분석")
@@ -588,10 +676,10 @@ def render_biz_plan_tab(sales_df: pd.DataFrame) -> None:
         )
     months = QUARTERS[quarter]
     dest = quarter_path(year, quarter)
-    stored = read_targets(dest, year, quarter) if dest else None
+    stored = _cached_targets(dest, year, quarter)
     if stored is None:
         template = find_template()
-        stored = read_targets(template, year, quarter) if template else None
+        stored = _cached_targets(template, year, quarter) if template else None
     if stored is None:
         stored = [0, 0, 0]
     boxes = st.columns(3)
@@ -611,7 +699,7 @@ def render_biz_plan_tab(sales_df: pd.DataFrame) -> None:
                     )
                 )
             )
-    agg = aggregate_quarter(sales_df if isinstance(sales_df, pd.DataFrame) else pd.DataFrame(), year, quarter)
+    agg = _cached_aggregate(sales_df if isinstance(sales_df, pd.DataFrame) else pd.DataFrame(), year, quarter)
     st.markdown("**목표 / 달성**")
     st.caption("단위: 백만원, 부가세 별도. 목표는 위 칸에서 바꿉니다.")
     st.dataframe(_money_table(year, months, targets, agg), use_container_width=True, hide_index=True)

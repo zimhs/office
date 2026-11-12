@@ -55,6 +55,7 @@ def test_month_file_finds_client_content_and_extra_page():
 
 def test_search_tab_is_inside_worklog():
     src = Path("worklog_tab.py").read_text(encoding="utf-8")
-    assert 'st.tabs(["작성", "통합검색"])' in src
+    assert '["작성", "통합검색"]' in src
+    assert 'if panel == "통합검색"' in src
     assert "def _render_worklog_search" in src
     assert "거래처와 내용에서 단어를 찾습니다" in src
