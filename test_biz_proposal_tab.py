@@ -16,6 +16,12 @@ PPT = {
 
 def _template() -> Path:
     path = bp.find_template()
+    if path is None:
+        for year in (2026, 2027, 2025):
+            candidate = bp.proposal_path(year)
+            if candidate is not None and candidate.is_file():
+                path = candidate
+                break
     assert path is not None and path.is_file()
     return path
 
@@ -98,6 +104,30 @@ def test_save_name_is_two_digit_and_updates_the_same_file(tmp_path: Path | None 
     shutil.rmtree(root)
 
 
+def test_existing_file_saves_without_desktop_template(tmp_path: Path | None = None):
+    template = _template()
+    root = tmp_path or Path("/tmp/biz_proposal_notemplate")
+    if root.exists():
+        import shutil
+        shutil.rmtree(root)
+    dest = root / "2027" / "27년 사업계획서.pptx"
+    dest.parent.mkdir(parents=True)
+    import shutil
+    shutil.copy(template, dest)
+    saved = bp.save_page(
+        4,
+        2027,
+        12,
+        plan={"아산": 1111, "화성": 2222, "전체": 3333},
+        path=dest,
+        template=Path("/tmp/missing-business-plan-template.pptx"),
+    )
+    assert saved == dest
+    chart = zipfile.ZipFile(dest).read("ppt/charts/chart1.xml").decode("utf-8")
+    assert "<c:v>1111</c:v>" in chart
+    shutil.rmtree(root)
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -110,4 +140,5 @@ if __name__ == "__main__":
     test_2025_bulk_amounts_match_known_rows()
     test_page_save_keeps_theme_and_writes_the_chart()
     test_save_name_is_two_digit_and_updates_the_same_file()
+    test_existing_file_saves_without_desktop_template()
     print("ok")

@@ -694,14 +694,14 @@ def save_page(
     template: Path | None = None,
 ) -> Path:
     """같은 파일이 있으면 그 파일의 해당 페이지만 갱신한다. 없을 때만 양식을 복사한다."""
-    template = template or find_template()
-    if template is None or not template.is_file():
-        raise FileNotFoundError("사업계획서 양식을 찾지 못했습니다.")
     dest = path or proposal_path(year)
     if dest is None:
         raise FileNotFoundError("사업계획 폴더를 찾지 못했습니다.")
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.is_file():
+        template = template or find_template()
+        if template is None or not template.is_file():
+            raise FileNotFoundError("사업계획서 양식을 찾지 못했습니다.")
         shutil.copy(template, dest)
     source = dest
     targets = {**PLAN_CHART, **(plan or {})}
