@@ -16747,9 +16747,11 @@ def _dash_filter_and_tabs_fragment() -> None:
     ]
     if _biz_local:
         _dash_tab_labels.append("📊 분기 사업분석")
+        _dash_tab_labels.append("📄 견적서")
     _dash_tab_objs = st.tabs(_dash_tab_labels)
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = _dash_tab_objs[:13]
     tab_biz = _dash_tab_objs[13] if _biz_local else None
+    tab_quote = _dash_tab_objs[14] if _biz_local else None
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
     _STICKY_INJECT_VER = 101
@@ -20805,6 +20807,22 @@ def _dash_filter_and_tabs_fragment() -> None:
                 _bp_tab.render_biz_plan_tab(_bp_df)
             except Exception as _bp_err:
                 st.error(f"분기 사업분석 탭 오류: {_bp_err}")
+
+    if tab_quote is not None:
+        with tab_quote:
+            try:
+                import quote_tab as _qt_tab
+
+                _qt_path = getattr(_qt_tab, "__file__", None) or ""
+                _qt_mtime = os.path.getmtime(_qt_path) if _qt_path and os.path.exists(_qt_path) else 0
+                if getattr(_qt_tab, "_src_mtime", None) != _qt_mtime:
+                    _qt_tab = importlib.reload(_qt_tab)
+                    _qt_tab._src_mtime = _qt_mtime
+                    sys.modules["quote_tab"] = _qt_tab
+                _qt_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                _qt_tab.render_quote_tab(_qt_df)
+            except Exception as _qt_err:
+                st.error(f"견적서 탭 오류: {_qt_err}")
 
     _dash_inject_filter_select_script_for_run()
     # 로컬·Cloud 공통: fragment/탭 전환·heavy 로드 후 고정바 1회 재동기화
