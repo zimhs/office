@@ -17,6 +17,7 @@ import pandas as pd
 import streamlit as st
 
 _BAD_SHEET = re.compile(r"[:\\/?*\[\]]")
+_PRICE_FROM = pd.Timestamp("2020-01-01")
 _LINE_ROWS = tuple(range(19, 27))
 _NOTE_ROWS = (34, 35, 36, 37)
 _EXCEL_EPOCH = date(1899, 12, 30)
@@ -492,8 +493,8 @@ def save_quote(quote: dict, path: Path | None = None) -> tuple[Path, str]:
     return book, title
 
 
-def search_item_prices(df: pd.DataFrame | None, query: str, limit: int = 300) -> pd.DataFrame:
-    """품목명에 단어가 모두 들어 있는 거래를 최근 날짜부터 돌려준다."""
+def search_item_prices(df: pd.DataFrame | None, query: str, limit: int | None = None) -> pd.DataFrame:
+    """2020년 이후 전체 거래에서, 품목 검색 결과의 거래처별 최근 단가 한 건만 돌려준다."""
     columns = ["날짜", "단가", "품목", "거래처", "출고량"]
     empty = pd.DataFrame(columns=columns)
     words = [word.casefold() for word in str(query or "").split() if word.strip()]
@@ -505,16 +506,32 @@ def search_item_prices(df: pd.DataFrame | None, query: str, limit: int = 300) ->
     mask = pd.Series(True, index=df.index)
     for word in words:
         mask = mask & names.str.contains(word, regex=False)
-    hit = df.loc[mask]
+    hit = df.loc[mask].copy()
     if hit.empty:
         return empty
     if "매출일_dt" in hit.columns:
-        dates = pd.to_datetime(hit["매출일_dt"], errors="coerce")
+        hit["_d"] = pd.to_datetime(hit["매출일_dt"], errors="coerce")
     elif "매출일" in hit.columns:
-        dates = pd.to_datetime(hit["매출일"], errors="coerce")
+        hit["_d"] = pd.to_datetime(hit["매출일"], errors="coerce")
     else:
-        dates = pd.Series(pd.NaT, index=hit.index)
-    hit = hit.assign(_d=dates).sort_values("_d", ascending=False, kind="mergesort").head(limit)
+        return empty
+    hit = hit.loc[hit["_d"] >= _PRICE_FROM]
+    if hit.empty:
+        return empty
+    if "거래처" in hit.columns:
+        hit["_client"] = hit["거래처"].map(lambda value: "" if pd.isna(value) else str(value).strip())
+    else:
+        hit["_client"] = ""
+    hit["_i"] = range(len(hit))
+    hit = hit.sort_values(
+        ["_d", "_i"],
+        ascending=[False, False],
+        kind="mergesort",
+        na_position="last",
+    )
+    hit = hit.drop_duplicates("_client", keep="first")
+    if limit:
+        hit = hit.head(int(limit))
     return pd.DataFrame(
         {
             "날짜": hit["_d"].dt.strftime("%Y-%m-%d").fillna(""),
@@ -688,12 +705,12 @@ def _quote_from_widgets(edited: pd.DataFrame) -> dict:
 
 def _show_prices(sales_df: pd.DataFrame) -> None:
     st.markdown("##### 품목 단가")
-    st.caption("품목명에 들어 있는 단어로 찾습니다. 최근 거래가 위에 나옵니다.")
+    st.caption("2020년 이후 전체 매출입니다. 거래처마다 최근 단가 한 건만 나옵니다.")
     query = st.text_input("품목", key="qt_item_q", placeholder="예: CO2, N2 Bulk", label_visibility="collapsed")
     words = [word for word in query.split() if word.strip()]
     if not words:
         return
-    key = (tuple(word.casefold() for word in words), id(sales_df), 0 if sales_df is None else len(sales_df))
+    key = (3, tuple(word.casefold() for word in words), id(sales_df), 0 if sales_df is None else len(sales_df))
     bag = st.session_state.get("_qt_search_cache")
     if isinstance(bag, dict) and bag.get("key") == key:
         rows = bag["rows"]

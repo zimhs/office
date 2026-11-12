@@ -56,15 +56,20 @@ def test_search_is_recent_first():
     frame = pd.DataFrame(
         [
             {"매출일_dt": "2026-01-02", "거래처": "가", "품목명": "N2 (kg, Bulk)", "출고량": 1, "단가": 100},
+            {"매출일_dt": "2026-07-01", "거래처": "가", "품목명": "N2 실린더", "출고량": 4, "단가": 180},
             {"매출일_dt": "2026-08-09", "거래처": "나", "품목명": "N2 (kg, Bulk)", "출고량": 2, "단가": 300},
+            {"매출일_dt": "2026-08-09", "거래처": "나", "품목명": "N2 (kg, Bulk)", "출고량": 9, "단가": 320},
             {"매출일_dt": "2026-03-01", "거래처": "다", "품목명": "O2 (kg, Bulk)", "출고량": 3, "단가": 200},
-            {"매출일_dt": "2026-05-01", "거래처": "라", "품목명": "CO2 실린더", "출고량": 4, "단가": 50},
+            {"매출일_dt": "2019-12-31", "거래처": "가", "품목명": "N2 (kg, Bulk)", "출고량": 8, "단가": 999},
+            {"매출일_dt": "2019-06-01", "거래처": "옛업체", "품목명": "N2 (kg, Bulk)", "출고량": 1, "단가": 50},
         ]
     )
-    rows = qt.search_item_prices(frame, "n2 bulk")
+    rows = qt.search_item_prices(frame, "n2")
     assert list(rows["거래처"]) == ["나", "가"]
-    assert list(rows["단가"]) == [300, 100]
+    assert list(rows["단가"]) == [320, 180]
     assert rows.iloc[0]["날짜"] == "2026-08-09"
+    assert rows.iloc[1]["날짜"] == "2026-07-01"
+    assert "옛업체" not in set(rows["거래처"])
     assert qt.search_item_prices(frame, "").empty
     assert qt.search_item_prices(frame, "없는품목").empty
 
