@@ -493,8 +493,34 @@ def save_quote(quote: dict, path: Path | None = None) -> tuple[Path, str]:
     return book, title
 
 
-def search_item_prices(df: pd.DataFrame | None, query: str, limit: int | None = None) -> pd.DataFrame:
-    """2020년 이후 전체 거래에서, 품목 검색 결과의 거래처별 최근 단가 한 건만 돌려준다."""
+def _item_key(series: pd.Series) -> pd.Series:
+    return series.map(lambda value: "" if pd.isna(value) else str(value).strip())
+
+
+def _prev_year_monthly_qty(hit: pd.DataFrame, year: int) -> pd.Series:
+    """같은 거래처·같은 품목의 전년도 출고량 합계를 12로 나눈 월평균."""
+    if hit.empty or "출고량" not in hit.columns:
+        return pd.Series(dtype="float64")
+    prev = hit.loc[hit["_d"].dt.year == int(year)]
+    if prev.empty:
+        return pd.Series(dtype="float64")
+    frame = pd.DataFrame(
+        {
+            "_client": prev["_client"].to_numpy(),
+            "_item": _item_key(prev["품목명"]).to_numpy(),
+            "_q": pd.to_numeric(prev["출고량"], errors="coerce").fillna(0.0).to_numpy(),
+        }
+    )
+    return (frame.groupby(["_client", "_item"], sort=False)["_q"].sum() / 12.0).round(2)
+
+
+def search_item_prices(
+    df: pd.DataFrame | None,
+    query: str,
+    limit: int | None = None,
+    as_of: date | None = None,
+) -> pd.DataFrame:
+    """2020년 이후 거래처별 최근 단가. 출고량은 그 품목의 전년도 월평균이다."""
     columns = ["날짜", "단가", "품목", "거래처", "출고량"]
     empty = pd.DataFrame(columns=columns)
     words = [word.casefold() for word in str(query or "").split() if word.strip()]
@@ -522,6 +548,9 @@ def search_item_prices(df: pd.DataFrame | None, query: str, limit: int | None = 
         hit["_client"] = hit["거래처"].map(lambda value: "" if pd.isna(value) else str(value).strip())
     else:
         hit["_client"] = ""
+    hit["_item"] = _item_key(hit["품목명"])
+    prev_year = (as_of or date.today()).year - 1
+    monthly = _prev_year_monthly_qty(hit, prev_year)
     hit["_i"] = range(len(hit))
     hit = hit.sort_values(
         ["_d", "_i"],
@@ -532,13 +561,18 @@ def search_item_prices(df: pd.DataFrame | None, query: str, limit: int | None = 
     hit = hit.drop_duplicates("_client", keep="first")
     if limit:
         hit = hit.head(int(limit))
+    if monthly.empty:
+        qty = pd.Series(float("nan"), index=hit.index)
+    else:
+        qty = monthly.reindex(pd.MultiIndex.from_arrays([hit["_client"], hit["_item"]]))
+        qty.index = hit.index
     return pd.DataFrame(
         {
             "날짜": hit["_d"].dt.strftime("%Y-%m-%d").fillna(""),
             "단가": hit["단가"] if "단가" in hit.columns else None,
             "품목": hit["품목명"].astype(str),
             "거래처": hit["거래처"].astype(str) if "거래처" in hit.columns else "",
-            "출고량": hit["출고량"] if "출고량" in hit.columns else None,
+            "출고량": qty,
         }
     )
 
@@ -776,12 +810,12 @@ def _bind_quote_copy() -> None:
 def _show_prices(sales_df: pd.DataFrame) -> None:
     _bind_quote_copy()
     st.markdown("##### 품목 단가")
-    st.caption("2020년 이후 전체 매출입니다. 거래처마다 최근 단가 한 건만 나옵니다.")
+    st.caption("2020년 이후 전체 매출입니다. 거래처마다 최근 단가 한 건, 출고량은 그 품목의 전년도 사용량을 12로 나눈 값입니다.")
     query = st.text_input("품목", key="qt_item_q", placeholder="예: CO2, N2 Bulk", label_visibility="collapsed")
     words = [word for word in query.split() if word.strip()]
     if not words:
         return
-    key = (3, tuple(word.casefold() for word in words), id(sales_df), 0 if sales_df is None else len(sales_df))
+    key = (5, date.today().year, tuple(word.casefold() for word in words), id(sales_df), 0 if sales_df is None else len(sales_df))
     bag = st.session_state.get("_qt_search_cache")
     if isinstance(bag, dict) and bag.get("key") == key:
         rows = bag["rows"]
@@ -803,7 +837,7 @@ def _show_prices(sales_df: pd.DataFrame) -> None:
                 "단가": st.column_config.NumberColumn(format="%.0f", width="small"),
                 "품목": st.column_config.TextColumn(width="medium"),
                 "거래처": st.column_config.TextColumn(width="medium"),
-                "출고량": st.column_config.NumberColumn(format="%.4g", width="small"),
+                "출고량": st.column_config.NumberColumn("전년 월평균", format="%.2f", width="small"),
             },
         )
 
