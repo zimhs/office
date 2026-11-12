@@ -1,6 +1,7 @@
 """사업계획서: 16페이지를 나눠 저장하고, 2025년 실적은 원본과 맞춘다."""
 from __future__ import annotations
 
+import re
 import zipfile
 from pathlib import Path
 
@@ -128,6 +129,38 @@ def test_existing_file_saves_without_desktop_template(tmp_path: Path | None = No
     shutil.rmtree(root)
 
 
+def test_page2_strategy_lines_add_and_remove(tmp_path: Path | None = None):
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "항목 추가" in src and "삭제" in src
+    template = _template()
+    root = tmp_path or Path("/tmp/biz_proposal_strategy")
+    if root.exists():
+        import shutil
+        shutil.rmtree(root)
+    dest = root / "2027" / "27년 사업계획서.pptx"
+    dest.parent.mkdir(parents=True)
+    import shutil
+    shutil.copy(template, dest)
+    bp.save_page(2, 2027, 12, strategy_lines=["가나다", "둘"], path=dest, template=template)
+    with zipfile.ZipFile(template) as old, zipfile.ZipFile(dest) as new:
+        assert old.read("ppt/theme/theme1.xml") == new.read("ppt/theme/theme1.xml")
+        assert old.read("ppt/slides/slide1.xml") == new.read("ppt/slides/slide1.xml")
+        slide2 = new.read("ppt/slides/slide2.xml").decode("utf-8")
+    assert bp.strategy_lines_in(slide2) == ["가나다", "둘"]
+    shape = next(block for block in re.findall(r"<p:sp\b.*?</p:sp>", slide2, flags=re.S) if "년도 세부 영업전략" in block)
+    assert ">27</a:t>" in shape
+    assert "총 판매현황" in slide2
+    assert "영업방침 및 영업목표" in slide2
+    bp.save_page(2, 2027, 12, strategy_lines=["가", "나", "다", "라"], path=dest, template=template)
+    slide2 = zipfile.ZipFile(dest).read("ppt/slides/slide2.xml").decode("utf-8")
+    assert bp.strategy_lines_in(slide2) == ["가", "나", "다", "라"]
+    bp.save_page(2, 2027, 12, strategy_lines=[], path=dest, template=template)
+    slide2 = zipfile.ZipFile(dest).read("ppt/slides/slide2.xml").decode("utf-8")
+    assert bp.strategy_lines_in(slide2) == []
+    assert "년도 세부 영업전략" in slide2
+    shutil.rmtree(root)
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -141,4 +174,5 @@ if __name__ == "__main__":
     test_page_save_keeps_theme_and_writes_the_chart()
     test_save_name_is_two_digit_and_updates_the_same_file()
     test_existing_file_saves_without_desktop_template()
+    test_page2_strategy_lines_add_and_remove()
     print("ok")

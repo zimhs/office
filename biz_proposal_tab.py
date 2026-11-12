@@ -12,7 +12,7 @@ import unicodedata
 import zipfile
 from functools import lru_cache
 from pathlib import Path
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, unescape
 
 import pandas as pd
 import streamlit as st
@@ -37,6 +37,27 @@ PLAN_HWA = (1081, 942, 1054, 1205, 1333, 1508, 1764, 1638, 1535, 1365, 1162, 117
 PLAN_CHART = {"아산": 5695, "화성": 15764, "전체": 21461}
 PRIOR_PLAN_TOTAL = {2024: 21085, 2025: 21567, 2026: 21461}
 PLAN_TONS = {"산소": 6502, "질소": 11381, "알곤": 7491, "탄산": 50688, "LPG": 319}
+STRATEGY_TITLE = "년도 세부 영업전략"
+STRATEGY_DEFAULTS = (
+    "신규영업 및 투자계획",
+    "지역별 산업단지 영업계획",
+    "악성 채권현황 및 업체 관리방안",
+)
+_STRATEGY_BULLET = (
+    '<a:p><a:pPr marL="0" lvl="0" indent="0"><a:lnSpc><a:spcPct val="150000"/></a:lnSpc>'
+    '<a:spcBef><a:spcPts val="864"/></a:spcBef><a:buNone/></a:pPr>'
+    '<a:r><a:rPr lang="en-US" altLang="ko-KR" sz="2700" dirty="0"><a:solidFill><a:srgbClr val="242529"/></a:solidFill>'
+    '<a:latin typeface="HY견고딕" panose="02030600000101010101" pitchFamily="18" charset="-127"/>'
+    '<a:ea typeface="HY견고딕" panose="02030600000101010101" pitchFamily="18" charset="-127"/></a:rPr>'
+    "<a:t>   - </a:t></a:r>"
+    '<a:r><a:rPr lang="ko-KR" altLang="en-US" sz="2700" dirty="0"><a:solidFill><a:srgbClr val="242529"/></a:solidFill>'
+    '<a:latin typeface="HY견고딕" panose="02030600000101010101" pitchFamily="18" charset="-127"/>'
+    '<a:ea typeface="HY견고딕" panose="02030600000101010101" pitchFamily="18" charset="-127"/></a:rPr>'
+    "<a:t>신규영업 및 투자계획</a:t></a:r>"
+    '<a:endParaRPr lang="en-US" altLang="ko-KR" sz="2700" dirty="0"><a:solidFill><a:srgbClr val="242529"/></a:solidFill>'
+    '<a:latin typeface="HY견고딕" panose="02030600000101010101" pitchFamily="18" charset="-127"/>'
+    '<a:ea typeface="HY견고딕" panose="02030600000101010101" pitchFamily="18" charset="-127"/></a:endParaRPr></a:p>'
+)
 BULK_ROWS = ("O2", "N2", "AR", "CO2", "LPG(T/K)")
 CYL_ROWS = (
     "O2(L.G.C)",
@@ -405,6 +426,77 @@ def _map_text(xml: str, fn) -> str:
     return _AT.sub(lambda match: match.group(1) + fn(match.group(2)) + match.group(3), xml)
 
 
+def _para_texts(para: str) -> list[str]:
+    return [unescape(match.group(2)) for match in _AT.finditer(para)]
+
+
+def _set_nth_text(block: str, index: int, text: str) -> str:
+    seen = {"n": 0}
+    safe = escape(text)
+
+    def repl(match: re.Match[str]) -> str:
+        seen["n"] += 1
+        if seen["n"] != index:
+            return match.group(0)
+        return match.group(1) + safe + match.group(3)
+
+    return _AT.sub(repl, block)
+
+
+def strategy_lines_in(xml: str) -> list[str] | None:
+    """2페이지 3번 세부전략. 그 칸이 없으면 None, 항목이 없으면 빈 목록."""
+    for shape in re.finditer(r"<p:sp\b.*?</p:sp>", xml, flags=re.S):
+        block = shape.group(0)
+        if STRATEGY_TITLE not in block:
+            continue
+        paras = re.findall(r"<a:p\b.*?</a:p>", block, flags=re.S)
+        lines = []
+        for para in paras[1:]:
+            texts = _para_texts(para)
+            if not texts:
+                continue
+            item = texts[-1].strip()
+            if item and item != "-":
+                lines.append(item)
+        return lines
+    return None
+
+
+def read_strategy_lines(year: int) -> list[str]:
+    path = proposal_path(year)
+    if path is None or not path.is_file():
+        return list(STRATEGY_DEFAULTS)
+    try:
+        xml = zipfile.ZipFile(path).read("ppt/slides/slide2.xml").decode("utf-8")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return list(STRATEGY_DEFAULTS)
+    found = strategy_lines_in(xml)
+    return list(STRATEGY_DEFAULTS) if found is None else found
+
+
+def _apply_strategy_lines(xml: str, lines: list[str], year: int) -> str:
+    """3번 제목의 년도와 항목만 바꾼다. 1번·2번 문안은 그대로 둔다."""
+
+    def repl(match: re.Match[str]) -> str:
+        block = match.group(0)
+        if STRATEGY_TITLE not in block:
+            return block
+        paras = list(re.finditer(r"<a:p\b.*?</a:p>", block, flags=re.S))
+        if not paras:
+            return block
+        title = paras[0].group(0)
+        texts = _para_texts(title)
+        if texts and texts[0].isdigit():
+            title = _set_nth_text(title, 1, f"{int(year) % 100:02d}")
+        sample = paras[1].group(0) if len(paras) > 1 else _STRATEGY_BULLET
+        built = [title]
+        for line in lines:
+            built.append(_set_nth_text(sample, 2, line))
+        return block[: paras[0].start()] + "".join(built) + block[paras[-1].end() :]
+
+    return re.sub(r"<p:sp\b.*?</p:sp>", repl, xml, flags=re.S)
+
+
 def _set_cell_text(cell_xml: str, text: str) -> str:
     seen = {"n": 0}
     safe = escape(text)
@@ -690,6 +782,7 @@ def save_page(
     tons_plan: dict[str, int] | None = None,
     asan_months: list[int] | None = None,
     hwa_months: list[int] | None = None,
+    strategy_lines: list[str] | None = None,
     path: Path | None = None,
     template: Path | None = None,
 ) -> Path:
@@ -713,6 +806,8 @@ def save_page(
     slide_name = f"ppt/slides/slide{int(page)}.xml"
     xml = parts[slide_name].decode("utf-8")
     xml = _map_text(xml, lambda text: _shift_year_text(text, year))
+    if page == 2 and strategy_lines is not None:
+        xml = _apply_strategy_lines(xml, [line.strip() for line in strategy_lines if str(line).strip()], year)
     if page == 4:
         numbers = _slide4_numbers(year, month, targets)
         xml = _map_text(xml, lambda text: numbers.get(text, text))
@@ -842,6 +937,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
             tons_plan = dict(PLAN_TONS)
             asan_months = list(PLAN_ASAN)
             hwa_months = list(PLAN_HWA)
+            strategy_lines = None
             if page == 4:
                 st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
                 st.dataframe(_plant_frame(year - 1, month).assign(연도=year - 1), hide_index=True, use_container_width=True)
@@ -898,6 +994,34 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                         }
                     )
                 st.dataframe(pd.DataFrame(preview), hide_index=True, use_container_width=True)
+            elif page == 2:
+                st.markdown(f"**{year % 100:02d}{STRATEGY_TITLE}**")
+                st.caption("3번 항목만 고칩니다. 줄을 추가하거나 삭제할 수 있고, 1번과 2번은 그대로입니다.")
+                store = f"bppt_s2_lines_{year}"
+                if store not in st.session_state:
+                    st.session_state[store] = [
+                        {"id": index + 1, "text": line} for index, line in enumerate(read_strategy_lines(year))
+                    ]
+                items = st.session_state[store]
+                for item in items:
+                    key = f"bppt_s2_{year}_{item['id']}"
+                    if key in st.session_state:
+                        item["text"] = st.session_state[key]
+                strategy_lines = [str(item["text"]).strip() for item in items if str(item["text"]).strip()]
+                for item in items:
+                    key = f"bppt_s2_{year}_{item['id']}"
+                    if key not in st.session_state:
+                        st.session_state[key] = item["text"]
+                    left, right = st.columns([8, 1])
+                    left.text_input("전략", key=key, label_visibility="collapsed")
+                    if right.button("삭제", key=f"bppt_s2_del_{year}_{item['id']}"):
+                        st.session_state[store] = [row for row in items if row["id"] != item["id"]]
+                        st.session_state.pop(key, None)
+                        st.rerun(scope="fragment")
+                if st.button("항목 추가", key=f"bppt_s2_add_{year}"):
+                    nxt = max((item["id"] for item in items), default=0) + 1
+                    items.append({"id": nxt, "text": ""})
+                    st.rerun(scope="fragment")
             else:
                 st.caption(f"이 페이지는 문안의 년도를 {year}년 기준으로 바꿉니다. 표 서식은 그대로입니다.")
             if st.button(f"{page}페이지 저장", key=f"bppt_save_{page}"):
@@ -910,6 +1034,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                         tons_plan=tons_plan,
                         asan_months=asan_months,
                         hwa_months=hwa_months,
+                        strategy_lines=strategy_lines,
                     )
                     st.success(f"{page}페이지를 저장했습니다. {saved}")
                 except FileNotFoundError as exc:
