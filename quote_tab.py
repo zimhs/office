@@ -703,7 +703,78 @@ def _quote_from_widgets(edited: pd.DataFrame) -> dict:
     }
 
 
+def _bind_quote_copy() -> None:
+    """단가 표 복사를 살리고, 검색칸·입력칸 붙여넣기는 그 칸이 받게 한다."""
+    st.components.v1.html(
+        """
+        <script>
+        (function () {
+          const doc = window.parent.document;
+          const win = window.parent;
+          if (doc.__qtClipBound) return;
+          doc.__qtClipBound = true;
+          const proto = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value");
+          function writeInput(input, next, caret) {
+            if (proto && proto.set) proto.set.call(input, next);
+            else input.value = next;
+            try { input.setSelectionRange(caret, caret); } catch (err) {}
+            input.dispatchEvent(new InputEvent("input", { bubbles: true, data: next, inputType: "insertFromPaste" }));
+          }
+          doc.addEventListener("paste", function (e) {
+            const target = e.target;
+            if (!target || !target.closest) return;
+            const field = target.closest(
+              ".st-key-qt_item_q, .st-key-qt_client, .st-key-qt_person, .st-key-qt_phone, .st-key-qt_ref, .st-key-qt_number, .st-key-qt_address, .st-key-qt_delivery, .st-key-qt_pay, .st-key-qt_note_0, .st-key-qt_note_1, .st-key-qt_note_2, .st-key-qt_note_3"
+            );
+            if (!field) return;
+            const input = (target.tagName === "INPUT" || target.tagName === "TEXTAREA")
+              ? target
+              : field.querySelector("input, textarea");
+            if (!input || input.readOnly || input.disabled) return;
+            const raw = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+            const text = String(raw || "").replace(/\\r\\n/g, "\\n").split("\\n")[0];
+            if (!text) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const start = typeof input.selectionStart === "number" ? input.selectionStart : String(input.value || "").length;
+            const end = typeof input.selectionEnd === "number" ? input.selectionEnd : start;
+            const value = String(input.value || "");
+            writeInput(input, value.slice(0, start) + text + value.slice(end), start + text.length);
+          }, true);
+          doc.addEventListener("copy", function (e) {
+            const target = e.target;
+            if (target && target.closest && target.closest(".st-key-qt_item_q, .st-key-qt_client, .st-key-qt_person, .st-key-qt_phone, .st-key-qt_address, .st-key-qt_note_0")) return;
+            const box = doc.querySelector(".st-key-qt_price_box");
+            if (!box) return;
+            const cells = [...box.querySelectorAll('[role="gridcell"][aria-selected="true"]')];
+            if (!cells.length) return;
+            const lines = new Map();
+            cells.forEach(function (cell) {
+              const row = cell.closest("tr");
+              const rowKey = row ? row.getAttribute("aria-rowindex") || "0" : "0";
+              const colKey = cell.getAttribute("aria-colindex") || "0";
+              if (!lines.has(rowKey)) lines.set(rowKey, []);
+              lines.get(rowKey).push([Number(colKey), (cell.innerText || "").trim()]);
+            });
+            const text = [...lines.values()].map(function (cols) {
+              cols.sort(function (a, b) { return a[0] - b[0]; });
+              return cols.map(function (pair) { return pair[1]; }).join("\\t");
+            }).join("\\n");
+            if (!text) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.clipboardData) e.clipboardData.setData("text/plain", text);
+          }, true);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def _show_prices(sales_df: pd.DataFrame) -> None:
+    _bind_quote_copy()
     st.markdown("##### 품목 단가")
     st.caption("2020년 이후 전체 매출입니다. 거래처마다 최근 단가 한 건만 나옵니다.")
     query = st.text_input("품목", key="qt_item_q", placeholder="예: CO2, N2 Bulk", label_visibility="collapsed")
@@ -720,20 +791,21 @@ def _show_prices(sales_df: pd.DataFrame) -> None:
     if rows.empty:
         st.caption("이 품목의 거래가 없습니다.")
         return
-    st.caption(f"{len(rows)}건")
-    st.dataframe(
-        rows,
-        hide_index=True,
-        use_container_width=True,
-        height=640,
-        column_config={
-            "날짜": st.column_config.TextColumn(width="small"),
-            "단가": st.column_config.NumberColumn(format="%.0f", width="small"),
-            "품목": st.column_config.TextColumn(width="medium"),
-            "거래처": st.column_config.TextColumn(width="medium"),
-            "출고량": st.column_config.NumberColumn(format="%.4g", width="small"),
-        },
-    )
+    st.caption(f"{len(rows)}건 · 칸은 ⌘C, 검색칸과 단가 칸은 ⌘V.")
+    with st.container(key="qt_price_box"):
+        st.dataframe(
+            rows,
+            hide_index=True,
+            use_container_width=True,
+            height=640,
+            column_config={
+                "날짜": st.column_config.TextColumn(width="small"),
+                "단가": st.column_config.NumberColumn(format="%.0f", width="small"),
+                "품목": st.column_config.TextColumn(width="medium"),
+                "거래처": st.column_config.TextColumn(width="medium"),
+                "출고량": st.column_config.NumberColumn(format="%.4g", width="small"),
+            },
+        )
 
 
 @st.fragment

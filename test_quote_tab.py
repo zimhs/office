@@ -135,6 +135,10 @@ def test_local_tab_wiring():
     assert "tab14" not in app
     src = Path("quote_tab.py").read_text(encoding="utf-8")
     assert "@st.fragment\ndef render_quote_tab" in src
+    assert "st-key-qt_price_box" in src or "qt_price_box" in src
+    assert 'addEventListener("copy"' in src
+    assert 'addEventListener("paste"' in src
+    assert "st-key-qt_item_q" in src
 
 
 if __name__ == "__main__":
