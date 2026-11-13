@@ -1457,12 +1457,12 @@ def _page10_groups_in(xml: str) -> list[dict]:
     return groups
 
 
-def read_page10_groups(year: int) -> list[dict]:
+def read_page10_groups(year: int, page: int = 10) -> list[dict]:
     path = proposal_path(year)
     if path is None or not path.is_file():
         return []
     try:
-        xml = zipfile.ZipFile(path).read("ppt/slides/slide10.xml").decode("utf-8")
+        xml = zipfile.ZipFile(path).read(f"ppt/slides/slide{int(page)}.xml").decode("utf-8")
     except (OSError, KeyError, zipfile.BadZipFile):
         return []
     return _page10_groups_in(xml)
@@ -1573,6 +1573,7 @@ def save_page(
     bulk_lines: list[str] | None = None,
     page8_rows: list[dict] | None = None,
     page10_groups: list[dict] | None = None,
+    page11_groups: list[dict] | None = None,
     path: Path | None = None,
     template: Path | None = None,
 ) -> Path:
@@ -1625,6 +1626,8 @@ def save_page(
             xml = _update_tables(xml, [_slide8_cells(year, month)])
     elif page == 10 and page10_groups is not None:
         xml = _apply_page10(xml, year, month, page10_groups)
+    elif page == 11 and page11_groups is not None:
+        xml = _apply_page10(xml, year, month, page11_groups)
     parts[slide_name] = xml.encode("utf-8")
     if page == 4:
         cats, series = _chart1(year, month, targets)
@@ -1772,8 +1775,9 @@ def _edit_page8(year: int, month: int, product: str, rows: list[dict[str, str]])
     return kept
 
 
-def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
-    store = f"bppt_p10_{year}"
+def _edit_page10(year: int, month: int, groups: list[dict], page: int = 10) -> list[dict]:
+    prefix = f"bppt_p{int(page)}"
+    store = f"{prefix}_{year}"
     if store not in st.session_state:
         seeded = []
         for index, group in enumerate(groups, start=1):
@@ -1796,7 +1800,7 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
     saved: list[dict] = []
     for person in people:
         pid = person["id"]
-        staff_key = f"bppt_p10s_{year}_{pid}"
+        staff_key = f"{prefix}s_{year}_{pid}"
         if staff_key not in st.session_state:
             st.session_state[staff_key] = person.get("staff") or ""
         st.markdown("---")
@@ -1805,7 +1809,7 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
         staff = str(st.session_state.get(staff_key) or "").strip()
         person["staff"] = staff
         staff_key_name = staff_key_in_label(staff)
-        if delete_col.button("담당 삭제", key=f"bppt_p10del_{year}_{pid}"):
+        if delete_col.button("담당 삭제", key=f"{prefix}del_{year}_{pid}"):
             st.session_state[store] = [row for row in people if row["id"] != pid]
             st.rerun(scope="fragment")
         st.markdown("**신규**")
@@ -1824,7 +1828,7 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
                 use_container_width=True,
             )
             apply_col, pick_col, one_col = st.columns([1.2, 3, 1])
-            if apply_col.button("전체 적용", key=f"bppt_p10nall_{year}_{pid}"):
+            if apply_col.button("전체 적용", key=f"{prefix}nall_{year}_{pid}"):
                 already = {_fold_name(row.get("client")) for row in person["news"]}
                 nxt = max((item["id"] for item in person["news"]), default=0)
                 for row in newcomers:
@@ -1834,8 +1838,8 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
                     nxt += 1
                     already.add(folded)
                     person["news"].append({"id": nxt, "client": row["client"], "gas": row["gas"]})
-                    st.session_state[f"bppt_p10n_{year}_{pid}_{nxt}"] = row["client"]
-                    st.session_state[f"bppt_p10g_{year}_{pid}_{nxt}"] = row["gas"]
+                    st.session_state[f"{prefix}n_{year}_{pid}_{nxt}"] = row["client"]
+                    st.session_state[f"{prefix}g_{year}_{pid}_{nxt}"] = row["gas"]
                 st.rerun(scope="fragment")
             new_options = [row["client"] for row in newcomers]
             new_labels = {row["client"]: f"{row['client']}  {row['gas']}" for row in newcomers}
@@ -1843,17 +1847,17 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
                 "신규 업체",
                 new_options,
                 format_func=lambda name: new_labels.get(name, name),
-                key=f"bppt_p10npick_{year}_{pid}",
+                key=f"{prefix}npick_{year}_{pid}",
             )
-            if one_col.button("선택 추가", key=f"bppt_p10none_{year}_{pid}"):
-                chosen = str(st.session_state.get(f"bppt_p10npick_{year}_{pid}") or "").strip()
+            if one_col.button("선택 추가", key=f"{prefix}none_{year}_{pid}"):
+                chosen = str(st.session_state.get(f"{prefix}npick_{year}_{pid}") or "").strip()
                 gas = next((row["gas"] for row in newcomers if row["client"] == chosen), "")
                 already = {_fold_name(row.get("client")) for row in person["news"]}
                 if chosen and _fold_name(chosen) not in already:
                     nxt = max((item["id"] for item in person["news"]), default=0) + 1
                     person["news"].append({"id": nxt, "client": chosen, "gas": gas})
-                    st.session_state[f"bppt_p10n_{year}_{pid}_{nxt}"] = chosen
-                    st.session_state[f"bppt_p10g_{year}_{pid}_{nxt}"] = gas
+                    st.session_state[f"{prefix}n_{year}_{pid}_{nxt}"] = chosen
+                    st.session_state[f"{prefix}g_{year}_{pid}_{nxt}"] = gas
                     st.rerun(scope="fragment")
         elif staff_key_name:
             st.caption(f"{year - 1}년에 전년 대비 신규 업체가 없습니다.")
@@ -1861,8 +1865,8 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
             st.caption("담당 이름에 김명현처럼 적으면 신규 업체가 나옵니다.")
         news_kept = []
         for item in person["news"]:
-            client_key = f"bppt_p10n_{year}_{pid}_{item['id']}"
-            gas_key = f"bppt_p10g_{year}_{pid}_{item['id']}"
+            client_key = f"{prefix}n_{year}_{pid}_{item['id']}"
+            gas_key = f"{prefix}g_{year}_{pid}_{item['id']}"
             if client_key not in st.session_state:
                 st.session_state[client_key] = item.get("client") or ""
             known_gas = client_gas_text(year, month, str(st.session_state.get(client_key) or item.get("client") or ""))
@@ -1873,7 +1877,7 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
             client_col, gas_col, row_delete = st.columns([3, 2, 0.8])
             client_col.text_input("업체명", key=client_key, label_visibility="collapsed")
             gas_col.text_input("가스종류", key=gas_key, label_visibility="collapsed")
-            if row_delete.button("삭제", key=f"bppt_p10ndel_{year}_{pid}_{item['id']}"):
+            if row_delete.button("삭제", key=f"{prefix}ndel_{year}_{pid}_{item['id']}"):
                 person["news"] = [row for row in person["news"] if row["id"] != item["id"]]
                 st.rerun(scope="fragment")
             client = str(st.session_state.get(client_key) or "").strip()
@@ -1882,7 +1886,7 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
             item["gas"] = gas
             if client or gas:
                 news_kept.append({"client": client, "gas": gas})
-        if st.button("신규 추가", key=f"bppt_p10nadd_{year}_{pid}"):
+        if st.button("신규 추가", key=f"{prefix}nadd_{year}_{pid}"):
             nxt = max((item["id"] for item in person["news"]), default=0) + 1
             person["news"].append({"id": nxt, "client": "", "gas": ""})
             st.rerun(scope="fragment")
@@ -1903,11 +1907,11 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
                 use_container_width=True,
             )
             pick_col, add_col = st.columns([4, 1])
-            pick_key = f"bppt_p10pick_{year}_{pid}"
+            pick_key = f"{prefix}pick_{year}_{pid}"
             options = [row["client"] for row in ranks]
             labels = {row["client"]: f"{row['rank']}위 {row['client']}  {row['change']}" for row in ranks}
             pick_col.selectbox("1~10위", options, format_func=lambda name: labels.get(name, name), key=pick_key)
-            if add_col.button("선택 추가", key=f"bppt_p10gadd_{year}_{pid}"):
+            if add_col.button("선택 추가", key=f"{prefix}gadd_{year}_{pid}"):
                 chosen = str(st.session_state.get(pick_key) or "").strip()
                 already = {str(row.get("client") or "").strip() for row in person["growth"]}
                 if chosen and chosen not in already:
@@ -1918,7 +1922,7 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
             st.caption("담당 이름에 김명현처럼 적으면 그 담당 1~10위가 나옵니다.")
         growth_kept = []
         for item in person["growth"]:
-            grow_key = f"bppt_p10c_{year}_{pid}_{item['id']}"
+            grow_key = f"{prefix}c_{year}_{pid}_{item['id']}"
             if grow_key not in st.session_state:
                 st.session_state[grow_key] = item.get("client") or ""
             client_col, delta_col, row_delete = st.columns([3, 1.6, 0.8])
@@ -1926,14 +1930,14 @@ def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
             client = str(st.session_state.get(grow_key) or "").strip()
             item["client"] = client
             delta_col.markdown(volume_change_text(year, month, client) if client else "\u00a0")
-            if row_delete.button("삭제", key=f"bppt_p10gdel_{year}_{pid}_{item['id']}"):
+            if row_delete.button("삭제", key=f"{prefix}gdel_{year}_{pid}_{item['id']}"):
                 person["growth"] = [row for row in person["growth"] if row["id"] != item["id"]]
                 st.rerun(scope="fragment")
             if client:
                 growth_kept.append({"client": client})
         if staff and (news_kept or growth_kept):
             saved.append({"staff": staff, "news": news_kept, "growth": growth_kept})
-    if st.button("담당 추가", key=f"bppt_p10add_{year}"):
+    if st.button("담당 추가", key=f"{prefix}add_{year}"):
         nxt = max((person["id"] for person in people), default=0) + 1
         people.append({"id": nxt, "staff": "", "news": [], "growth": []})
         st.rerun(scope="fragment")
@@ -2074,6 +2078,7 @@ def _build_preview_deck(specs: list[dict], dest: Path) -> None:
             bulk_lines=spec.get("bulk"),
             page8_rows=spec.get("page8"),
             page10_groups=spec.get("page10"),
+            page11_groups=spec.get("page11"),
             path=dest,
             template=base,
         )
@@ -2146,6 +2151,7 @@ def _refresh_one_page(spec: dict) -> None:
         bulk_lines=spec.get("bulk"),
         page8_rows=spec.get("page8"),
         page10_groups=spec.get("page10"),
+        page11_groups=spec.get("page11"),
         path=deck,
         template=deck,
     )
@@ -2221,6 +2227,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                 bulk_lines = None
                 page8_rows = None
                 page10_groups = None
+                page11_groups = None
                 if page == 4:
                     st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
                     st.dataframe(_plant_frame(year - 1, month).assign(연도=year - 1), hide_index=True, use_container_width=True)
@@ -2290,9 +2297,13 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                         page8_rows.extend(
                             _edit_page8(year, month, product, [row for row in loaded if row["product"] == product])
                         )
-                elif page == 10:
+                elif page in (10, 11):
                     st.caption("담당별로 신규 업체와 물량증대를 넣고 뺄 수 있습니다. 신규는 전년 대비 새 업체와 가스종류를 불러오고, 물량증대는 1~10위를 고르면 증감이 계산됩니다. 비고는 비워 둡니다.")
-                    page10_groups = _edit_page10(year, month, read_page10_groups(year))
+                    loaded_groups = read_page10_groups(year, page)
+                    if page == 10:
+                        page10_groups = _edit_page10(year, month, loaded_groups, page=10)
+                    else:
+                        page11_groups = _edit_page10(year, month, loaded_groups, page=11)
                 elif page == 2:
                     yy = int(year) % 100
                     prev = (int(year) - 1) % 100
@@ -2334,6 +2345,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                             bulk_lines=bulk_lines,
                             page8_rows=page8_rows,
                             page10_groups=page10_groups,
+                            page11_groups=page11_groups,
                         )
                         st.success(f"{page}페이지를 저장했습니다. {saved}")
                     except FileNotFoundError as exc:
@@ -2360,6 +2372,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     "bulk": list(bulk_lines) if page == 7 and bulk_lines is not None else None,
                     "page8": list(page8_rows) if page == 8 and page8_rows is not None else None,
                     "page10": list(page10_groups) if page == 10 and page10_groups is not None else None,
+                    "page11": list(page11_groups) if page == 11 and page11_groups is not None else None,
                 }
             )
     if preview_specs:

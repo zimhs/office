@@ -451,6 +451,55 @@ def test_page10_new_clients_fill_gas_and_growth_is_calculated():
     shutil.rmtree(root)
 
 
+def test_page11_uses_the_same_staff_editor_and_growth_text():
+    import shutil
+
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "page11_groups" in src
+    assert "read_page10_groups(year, page)" in src
+    news = bp.staff_new_clients(2026, 12, "김효동")
+    top = bp.staff_top_clients(2026, 12, "김효동")
+    assert news and news[0]["gas"]
+    assert top and top[0]["change"] == bp.volume_change_text(2026, 12, top[0]["client"])
+    template = _template()
+    original = zipfile.ZipFile(template).read("ppt/slides/slide11.xml").decode("utf-8")
+    assert bp._page10_groups_in(original)[0]["staff"].startswith("김효동")
+    root = Path("/tmp/biz_proposal_page11")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    dest = root / "26년 사업계획서.pptx"
+    real = bp.proposal_path(2026)
+    before = real.read_bytes() if real is not None and real.is_file() else None
+    groups = [
+        {
+            "staff": "김효동 과장(25년 6월 입사)",
+            "news": [{"client": news[0]["client"], "gas": news[0]["gas"]}, {"client": news[1]["client"], "gas": news[1]["gas"]}],
+            "growth": [{"client": top[0]["client"]}],
+        }
+    ]
+    bp.save_page(11, 2026, 12, page11_groups=groups, path=dest, template=template)
+    slide11 = zipfile.ZipFile(dest).read("ppt/slides/slide11.xml").decode("utf-8")
+    parsed = bp._page10_groups_in(slide11)
+    assert parsed[0]["news"][0]["gas"] == news[0]["gas"]
+    assert parsed[0]["growth"][0]["client"] == top[0]["client"]
+    assert top[0]["change"] in slide11
+    assert "신규계약" not in slide11
+    assert 'rowSpan="2"' in slide11
+    assert "_2" in slide11
+    assert "25년 6월" in slide11
+    assert re.search(r"<a:tblGrid>.*?</a:tblGrid>", original, flags=re.S).group(0) == re.search(
+        r"<a:tblGrid>.*?</a:tblGrid>", slide11, flags=re.S
+    ).group(0)
+    with zipfile.ZipFile(template) as old, zipfile.ZipFile(dest) as new:
+        assert old.read("ppt/theme/theme1.xml") == new.read("ppt/theme/theme1.xml")
+        assert old.read("ppt/slides/slide1.xml") == new.read("ppt/slides/slide1.xml")
+        assert old.read("ppt/slides/slide10.xml") == new.read("ppt/slides/slide10.xml")
+    if before is not None:
+        assert real.read_bytes() == before
+    shutil.rmtree(root)
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -471,5 +520,6 @@ if __name__ == "__main__":
     test_page8_clients_aggregate_without_changing_the_format()
     test_client_lookup_uses_one_index_and_page8_preview_is_the_only_change()
     test_page10_new_clients_fill_gas_and_growth_is_calculated()
+    test_page11_uses_the_same_staff_editor_and_growth_text()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")
