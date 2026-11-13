@@ -289,6 +289,64 @@ def test_page7_bulk_lines_follow_the_total_growth(tmp_path: Path | None = None):
     shutil.rmtree(root)
 
 
+def test_page8_clients_aggregate_without_changing_the_format(tmp_path: Path | None = None):
+    import shutil
+
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "거래처 추가" in src
+    assert "page8_figures" in src
+    template = _template()
+    root = tmp_path or Path("/tmp/biz_proposal_page8")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    dest = root / "26년 사업계획서.pptx"
+    real = bp.proposal_path(2026)
+    before = real.read_bytes() if real is not None and real.is_file() else None
+    original = zipfile.ZipFile(template).read("ppt/slides/slide8.xml").decode("utf-8")
+    rows = [
+        {"product": "LO2", "client": "가스코아산", "budget": "", "note": ""},
+        {"product": "LO2", "client": "추가거래처", "budget": "1000", "note": "메모"},
+        {"product": "LPG", "client": "신규 거래선", "budget": "5000", "note": ""},
+    ]
+    bp.save_page(8, 2026, 12, page8_rows=rows, path=dest, template=template)
+    slide8 = zipfile.ZipFile(dest).read("ppt/slides/slide8.xml").decode("utf-8")
+    parsed = bp._page8_rows_in(slide8)
+    assert [(row["product"], row["client"]) for row in parsed] == [
+        ("LO2", "가스코아산"),
+        ("LO2", "추가거래처"),
+        ("LPG", "신규 거래선"),
+    ]
+    assert 'rowSpan="2"' in slide8
+    assert bp.client_kg(2025, 12, "태성 EPS", "LCO2") == bp.client_kg(2025, 12, "태성EPS", "LCO2")
+    actual = bp.client_kg(2025, 12, "가스코아산", "LO2")
+    assert actual is not None
+    assert bp._fmt_int(actual) in slide8
+    assert bp._fmt_int(-round(actual)) in slide8
+    gas_row = next(row for row in re.findall(r"<a:tr\b.*?</a:tr>", slide8, flags=re.S) if "가스코아산" in row)
+    assert "FF0000" in gas_row
+    added = next(row for row in re.findall(r"<a:tr\b.*?</a:tr>", slide8, flags=re.S) if "추가거래처" in row)
+    assert "메모" in added
+    added_delta = re.findall(r"<a:tc\b.*?</a:tc>", added, flags=re.S)[4]
+    assert "FF0000" not in added_delta
+    assert ">1,000</a:t>" in added
+    new_row = next(row for row in re.findall(r"<a:tr\b.*?</a:tr>", slide8, flags=re.S) if "신규 거래선" in row)
+    assert ">-" in new_row or ">-</a:t>" in new_row or ">-</a:t>" in new_row
+    assert ">5,000</a:t>" in new_row
+    assert re.search(r"<a:tblGrid>.*?</a:tblGrid>", original, flags=re.S).group(0) == re.search(
+        r"<a:tblGrid>.*?</a:tblGrid>", slide8, flags=re.S
+    ).group(0)
+    assert 'h="417189"' in slide8
+    assert "HY견고딕" in added
+    with zipfile.ZipFile(template) as old, zipfile.ZipFile(dest) as new:
+        assert old.read("ppt/theme/theme1.xml") == new.read("ppt/theme/theme1.xml")
+        assert old.read("ppt/slides/slide1.xml") == new.read("ppt/slides/slide1.xml")
+        assert old.read("ppt/slides/slide7.xml") == new.read("ppt/slides/slide7.xml")
+    if before is not None:
+        assert real.read_bytes() == before
+    shutil.rmtree(root)
+
+
 def test_preview_deck_updates_a_copy_and_leaves_the_saved_file():
     import shutil
 
@@ -336,5 +394,6 @@ if __name__ == "__main__":
     test_page2_policy_and_review_are_editable()
     test_page3_three_sections_are_editable()
     test_page7_bulk_lines_follow_the_total_growth()
+    test_page8_clients_aggregate_without_changing_the_format()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")

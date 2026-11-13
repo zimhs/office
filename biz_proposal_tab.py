@@ -110,6 +110,9 @@ CYL_ROWS = (
 )
 _TON_OF = {"산소": "O2", "질소": "N2", "알곤": "AR", "탄산": "CO2", "LPG": "LPG(T/K)"}
 _CLIENT_GAS = {"LO2": "O2", "LN2": "N2", "LAR": "AR", "LCO2": "CO2", "LPG": "LPG"}
+PAGE8_PRODUCTS = ("LO2", "LN2", "LAR", "LCO2", "LPG")
+_DELTA_RED = '<a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>'
+_DELTA_DARK = '<a:solidFill><a:schemeClr val="bg2"><a:lumMod val="50000"/></a:schemeClr></a:solidFill>'
 
 
 def _nfc(text: str) -> str:
@@ -426,7 +429,9 @@ def client_kg(year: int, month: int, client: str, product: str) -> float | None:
     frame = _through(load_year(year), month)
     if frame.empty:
         return 0.0
-    mask = frame["거래처"].str.contains(re.escape(client.strip()), na=False)
+    needle = re.sub(r"\s+", "", client.strip())
+    folded = frame["거래처"].fillna("").map(lambda name: re.sub(r"\s+", "", str(name)))
+    mask = folded.str.contains(re.escape(needle), na=False)
     picked = frame[mask]
     if picked.empty:
         return 0.0
@@ -1023,6 +1028,152 @@ def _parse_int(text: str) -> int | None:
         return None
 
 
+def page8_figures(year: int, month: int, product: str, client: str, budget_text: str) -> tuple[str, str, str]:
+    """실적 집계, 예상 표시, 증감. 예상이 비어 있고 실적이 있으면 증감은 실적의 마이너스다."""
+    name = str(client or "").strip()
+    raw_budget = str(budget_text or "").strip()
+    budget = None if raw_budget in {"", "-"} else _parse_int(raw_budget)
+    actual = client_kg(year - 1, month, name, product) if name else None
+    actual_txt = "-" if actual is None else _fmt_int(actual)
+    actual_n = 0 if actual is None else int(round(actual))
+    if budget is None:
+        budget_txt = "-"
+        delta_n = None if actual is None else -actual_n
+    else:
+        budget_txt = _fmt_int(budget)
+        delta_n = int(budget) - actual_n
+    delta_txt = "-" if delta_n is None else _fmt_int(delta_n)
+    return actual_txt, budget_txt, delta_txt
+
+
+def _row_cell_texts(row_xml: str) -> list[str]:
+    cells = re.findall(r"<a:tc\b.*?</a:tc>", row_xml, flags=re.S)
+    return ["".join(_para_texts(cell)).strip() for cell in cells]
+
+
+def _page8_rows_in(xml: str) -> list[dict[str, str]]:
+    table = re.search(r"<a:tbl\b.*?</a:tbl>", xml, flags=re.S)
+    if table is None:
+        return []
+    rows = re.findall(r"<a:tr\b.*?</a:tr>", table.group(0), flags=re.S)
+    current = ""
+    found: list[dict[str, str]] = []
+    for row in rows[2:]:
+        cells = _row_cell_texts(row)
+        if len(cells) < 6:
+            continue
+        product = cells[0].replace("\u3000", "").strip()
+        if product:
+            current = product
+        if current not in PAGE8_PRODUCTS:
+            continue
+        budget = cells[3].strip()
+        note = cells[5].replace("\u3000", "").strip()
+        found.append(
+            {
+                "product": current,
+                "client": cells[1].strip(),
+                "budget": "" if budget in {"", "-"} else budget,
+                "note": "" if note in {"", "-"} else note,
+            }
+        )
+    return found
+
+
+def read_page8_rows(year: int) -> list[dict[str, str]]:
+    path = proposal_path(year)
+    if path is None or not path.is_file():
+        return []
+    try:
+        xml = zipfile.ZipFile(path).read("ppt/slides/slide8.xml").decode("utf-8")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return []
+    return _page8_rows_in(xml)
+
+
+def _set_row_cells(row_xml: str, values: list[str]) -> str:
+    found = list(re.finditer(r"<a:tc\b.*?</a:tc>", row_xml, flags=re.S))
+    if not found:
+        return row_xml
+    pieces = [row_xml[: found[0].start()]]
+    for index, cell in enumerate(found):
+        block = _set_cell_text(cell.group(0), values[index]) if index < len(values) else cell.group(0)
+        pieces.append(block)
+        nxt = found[index + 1].start() if index + 1 < len(found) else len(row_xml)
+        pieces.append(row_xml[cell.end() : nxt])
+    return "".join(pieces)
+
+
+def _paint_delta(row_xml: str, negative: bool) -> str:
+    found = list(re.finditer(r"<a:tc\b.*?</a:tc>", row_xml, flags=re.S))
+    if len(found) < 5:
+        return row_xml
+    cell = found[4].group(0)
+    fill = _DELTA_RED if negative else _DELTA_DARK
+
+    def repl(match: re.Match[str]) -> str:
+        body = match.group(0)
+        if "FF0000" in body or 'val="bg2"' in body:
+            return fill
+        return body
+
+    painted = re.sub(r"<a:solidFill>.*?</a:solidFill>", repl, cell, flags=re.S)
+    return row_xml[: found[4].start()] + painted + row_xml[found[4].end() :]
+
+
+def _span_row(row_xml: str, count: int) -> str:
+    row_xml = re.sub(r"\srowSpan=\"\d+\"", "", row_xml, count=1)
+    row_xml = re.sub(r"\svMerge=\"\d+\"", "", row_xml, count=1)
+    if count > 1:
+        row_xml = re.sub(r"<a:tc\b", f'<a:tc rowSpan="{count}"', row_xml, count=1)
+    return row_xml
+
+
+def _apply_page8(xml: str, year: int, month: int, rows: list[dict]) -> str:
+    """8페이지 데이터 행만 다시 쓴다. 글꼴과 테두리는 원래 행을 복사한다."""
+    table_match = re.search(r"<a:tbl\b.*?</a:tbl>", xml, flags=re.S)
+    if table_match is None:
+        return xml
+    table = table_match.group(0)
+    found = list(re.finditer(r"<a:tr\b.*?</a:tr>", table, flags=re.S))
+    if len(found) < 4:
+        return xml
+    head = found[2].group(0)
+    cont = found[3].group(0)
+    grouped: dict[str, list[dict]] = {product: [] for product in PAGE8_PRODUCTS}
+    for row in rows:
+        product = str(row.get("product") or "").strip()
+        client = str(row.get("client") or "").strip()
+        if product not in grouped or not client:
+            continue
+        grouped[product].append(row)
+    built = [found[0].group(0), found[1].group(0)]
+    for product, items in grouped.items():
+        if not items:
+            continue
+        for index, item in enumerate(items):
+            sample = head if index == 0 else cont
+            row_xml = _span_row(sample, len(items)) if index == 0 else sample
+            actual_txt, budget_txt, delta_txt = page8_figures(
+                year, month, product, str(item.get("client") or ""), str(item.get("budget") or "")
+            )
+            delta_n = _parse_int(delta_txt)
+            row_xml = _set_row_cells(
+                row_xml,
+                [
+                    product if index == 0 else "",
+                    str(item.get("client") or "").strip(),
+                    actual_txt,
+                    budget_txt,
+                    delta_txt,
+                    str(item.get("note") or "").strip(),
+                ],
+            )
+            built.append(_paint_delta(row_xml, delta_n is not None and delta_n < 0))
+    new_table = table[: found[0].start()] + "".join(built) + table[found[-1].end() :]
+    return xml[: table_match.start()] + new_table + xml[table_match.end() :]
+
+
 def _slide8_cells(year: int, month: int) -> dict[tuple[int, int], str]:
     cells: dict[tuple[int, int], str] = {}
     for index, (product, client, budget_text, _note) in enumerate(_page8_template()):
@@ -1060,6 +1211,7 @@ def save_page(
     focus_lines: list[str] | None = None,
     task_lines: list[str] | None = None,
     bulk_lines: list[str] | None = None,
+    page8_rows: list[dict] | None = None,
     path: Path | None = None,
     template: Path | None = None,
 ) -> Path:
@@ -1106,7 +1258,10 @@ def save_page(
         xml = _update_tables(xml, [_slide7_cells(year, month, ton_targets)])
         xml = _apply_bulk_plan(xml, year, month, ton_targets, bulk_lines)
     elif page == 8:
-        xml = _update_tables(xml, [_slide8_cells(year, month)])
+        if page8_rows is not None:
+            xml = _apply_page8(xml, year, month, page8_rows)
+        else:
+            xml = _update_tables(xml, [_slide8_cells(year, month)])
     parts[slide_name] = xml.encode("utf-8")
     if page == 4:
         cats, series = _chart1(year, month, targets)
@@ -1208,6 +1363,50 @@ def _plant_frame(year: int, month: int) -> pd.DataFrame:
         vals = millions(won[label], month)
         rows.append({"구분": label, **{f"{m}월": vals[m - 1] for m in range(1, 13)}, "합계": annual_million(won[label], month)})
     return pd.DataFrame(rows)
+
+
+def _edit_page8(year: int, month: int, product: str, rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    store = f"bppt_p8_{product}_{year}"
+    if store not in st.session_state:
+        st.session_state[store] = [
+            {"id": index + 1, "client": row["client"], "budget": row["budget"], "note": row["note"]}
+            for index, row in enumerate(rows)
+        ]
+    items = st.session_state[store]
+    kept: list[dict[str, str]] = []
+    for item in items:
+        client_key = f"bppt_p8c_{product}_{year}_{item['id']}"
+        budget_key = f"bppt_p8b_{product}_{year}_{item['id']}"
+        note_key = f"bppt_p8n_{product}_{year}_{item['id']}"
+        if client_key not in st.session_state:
+            st.session_state[client_key] = item["client"]
+        if budget_key not in st.session_state:
+            st.session_state[budget_key] = item["budget"]
+        if note_key not in st.session_state:
+            st.session_state[note_key] = item["note"]
+        client_col, actual_col, budget_col, delta_col, note_col, delete_col = st.columns([2.1, 1.5, 1.5, 1.4, 2.2, 0.7])
+        client_col.text_input("거래처", key=client_key, label_visibility="collapsed")
+        client = str(st.session_state.get(client_key) or "")
+        budget = str(st.session_state.get(budget_key) or "")
+        note = str(st.session_state.get(note_key) or "")
+        actual_txt, _budget_txt, delta_txt = page8_figures(year, month, product, client, budget)
+        actual_col.markdown(actual_txt)
+        budget_col.text_input("예상", key=budget_key, label_visibility="collapsed")
+        delta_col.markdown(delta_txt)
+        note_col.text_input("비고", key=note_key, label_visibility="collapsed")
+        if delete_col.button("삭제", key=f"bppt_p8del_{product}_{year}_{item['id']}"):
+            st.session_state[store] = [row for row in items if row["id"] != item["id"]]
+            st.rerun(scope="fragment")
+        item["client"] = client
+        item["budget"] = budget
+        item["note"] = note
+        if client.strip():
+            kept.append({"product": product, "client": client.strip(), "budget": budget.strip(), "note": note.strip()})
+    if st.button("거래처 추가", key=f"bppt_p8add_{product}_{year}"):
+        nxt = max((item["id"] for item in items), default=0) + 1
+        items.append({"id": nxt, "client": "", "budget": "", "note": ""})
+        st.rerun(scope="fragment")
+    return kept
 
 
 def _edit_lines(year: int, slot: str, lines: list[str], page: int = 2) -> list[str]:
@@ -1342,6 +1541,7 @@ def _build_preview_deck(specs: list[dict], dest: Path) -> None:
             focus_lines=spec.get("focus"),
             task_lines=spec.get("task"),
             bulk_lines=spec.get("bulk"),
+            page8_rows=spec.get("page8"),
             path=dest,
             template=base,
         )
@@ -1423,6 +1623,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                 focus_lines = None
                 task_lines = None
                 bulk_lines = None
+                page8_rows = None
                 if page == 4:
                     st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
                     st.dataframe(_plant_frame(year - 1, month).assign(연도=year - 1), hide_index=True, use_container_width=True)
@@ -1478,19 +1679,20 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     st.markdown(f"**{year}년 벌크운영 계획**")
                     bulk_lines = _edit_lines(year, "bulk", bulk_now, page=7)
                 elif page == 8:
-                    preview = []
-                    for product, client, budget, note in _page8_template():
-                        actual = client_kg(year - 1, month, client, product)
-                        preview.append(
-                            {
-                                "품목": product,
-                                "거래처": client,
-                                f"{year - 1} 실적(kg)": None if actual is None else int(round(actual)),
-                                f"{year} 예산(kg)": budget,
-                                "비고": note,
-                            }
+                    st.caption("거래처를 넣으면 그 해 실적이 집계됩니다. 예상과 비고는 비워 둘 수 있고, 증감량은 예상이 있으면 예상에서 실적을 뺀 값입니다.")
+                    loaded = read_page8_rows(year)
+                    page8_rows = []
+                    head_client, head_actual, head_budget, head_delta, head_note, _head_delete = st.columns([2.1, 1.5, 1.5, 1.4, 2.2, 0.7])
+                    head_client.markdown("**거래처**")
+                    head_actual.markdown(f"**{year - 1} 실적**")
+                    head_budget.markdown("**예상**")
+                    head_delta.markdown("**증감**")
+                    head_note.markdown("**비고**")
+                    for product in PAGE8_PRODUCTS:
+                        st.markdown(f"**{product}**")
+                        page8_rows.extend(
+                            _edit_page8(year, month, product, [row for row in loaded if row["product"] == product])
                         )
-                    st.dataframe(pd.DataFrame(preview), hide_index=True, use_container_width=True)
                 elif page == 2:
                     yy = int(year) % 100
                     prev = (int(year) - 1) % 100
@@ -1530,6 +1732,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                             focus_lines=focus_lines,
                             task_lines=task_lines,
                             bulk_lines=bulk_lines,
+                            page8_rows=page8_rows,
                         )
                         st.success(f"{page}페이지를 저장했습니다. {saved}")
                     except FileNotFoundError as exc:
@@ -1554,6 +1757,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     "focus": list(focus_lines) if page == 3 and focus_lines is not None else None,
                     "task": list(task_lines) if page == 3 and task_lines is not None else None,
                     "bulk": list(bulk_lines) if page == 7 and bulk_lines is not None else None,
+                    "page8": list(page8_rows) if page == 8 and page8_rows is not None else None,
                 }
             )
     if preview_specs:
