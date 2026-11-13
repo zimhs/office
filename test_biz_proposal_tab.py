@@ -347,6 +347,18 @@ def test_page8_clients_aggregate_without_changing_the_format(tmp_path: Path | No
     shutil.rmtree(root)
 
 
+def test_only_the_open_page_is_reread():
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "bppt_room" in src
+    assert "st.tabs" not in src
+    specs = [{"page": page, "year": 2026} for page in range(1, 17)]
+    tokens = {page: bp._preview_token([spec]) for page, spec in enumerate(specs, start=1)}
+    assert bp._pending_preview_pages(specs, tokens) == []
+    specs[14] = {"page": 15, "year": 2026, "debt": 3661}
+    pending = bp._pending_preview_pages(specs, tokens)
+    assert [item["page"] for item in pending] == [15]
+
+
 def test_preview_deck_updates_a_copy_and_leaves_the_saved_file():
     import shutil
 
@@ -648,5 +660,6 @@ if __name__ == "__main__":
     test_page14_map_replaces_only_the_picture()
     test_page14_table_edits_keep_format_and_title_stays_one_line()
     test_page15_aggregates_the_balance_and_keeps_the_table_format()
+    test_only_the_open_page_is_reread()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")

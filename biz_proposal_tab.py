@@ -2699,17 +2699,6 @@ def _changed_preview_pages(old: object, new: list[dict]) -> list[int] | None:
     return changed
 
 
-def _saved_preview_specs() -> list | None:
-    raw = st.session_state.get("_bppt_preview_token")
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        specs = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return specs if isinstance(specs, list) else None
-
-
 def _render_one_png(pdf: Path, page: int) -> bytes:
     renderer = _ensure_renderer()
     folder = _PREVIEW_DIR / "pages"
@@ -2751,27 +2740,38 @@ def _refresh_one_page(spec: dict) -> None:
     st.session_state["_bppt_preview_pngs"] = pngs
 
 
+def _pending_preview_pages(specs: list[dict], tokens: dict) -> list[dict]:
+    """이미 맞춰 둔 페이지는 다시 읽지 않는다."""
+    pending: list[dict] = []
+    for spec in specs:
+        page = int(spec.get("page", 0))
+        if tokens.get(page) == _preview_token([spec]):
+            continue
+        pending.append(spec)
+    return pending
+
+
 def _refresh_previews(specs: list[dict]) -> None:
-    token = _preview_token(specs)
-    if st.session_state.get("_bppt_preview_token") == token:
+    tokens = dict(st.session_state.get("_bppt_page_tokens") or {})
+    pending = _pending_preview_pages(specs, tokens)
+    if not pending:
         return
-    changed = _changed_preview_pages(_saved_preview_specs(), specs)
     deck = _PREVIEW_DIR / "preview.pptx"
     try:
         _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-        if changed and len(changed) == 1 and deck.is_file():
-            spec = next(item for item in specs if int(item.get("page", 0)) == changed[0])
-            with st.spinner(f"{changed[0]}페이지 미리보기를 맞추고 있습니다."):
+        if not deck.is_file():
+            shutil.copy(_preview_base(), deck)
+        label = " · ".join(f"{int(spec['page'])}페이지" for spec in pending)
+        with st.spinner(f"{label} 미리보기를 맞추고 있습니다."):
+            for spec in pending:
                 _refresh_one_page(spec)
-        else:
-            with st.spinner("슬라이드 미리보기를 만들고 있습니다."):
-                _build_preview_deck(specs, deck)
-                st.session_state["_bppt_preview_pngs"] = _render_pngs(_export_pdf(deck))
+                tokens[int(spec["page"])] = _preview_token([spec])
         st.session_state["_bppt_preview_error"] = ""
     except Exception as exc:
-        st.session_state["_bppt_preview_pngs"] = {}
+        for spec in pending:
+            tokens[int(spec["page"])] = _preview_token([spec])
         st.session_state["_bppt_preview_error"] = f"미리보기를 만들지 못했습니다. {exc}"
-    st.session_state["_bppt_preview_token"] = token
+    st.session_state["_bppt_page_tokens"] = tokens
     from streamlit.runtime.scriptrunner_utils.script_run_context import get_script_run_ctx
 
     ctx = get_script_run_ctx()
@@ -2796,196 +2796,204 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
     """로컬 사업계획서. 16페이지가 각각 방이고, 저장은 그 페이지만 반영한다."""
     st.markdown("##### 사업계획서")
     st.caption("가스코아산은 아산, 그 외는 화성입니다. 금액은 부가세 포함이고, 월은 그 달까지의 실적입니다. 4페이지 2026년은 목표라서 고칠 수 있습니다. 저장 파일은 26년 사업계획서.pptx이고, 같은 파일이 있으면 그 파일에 이어서 넣습니다.")
-    rooms = st.tabs([f"{page}페이지" for page in PAGES])
+    page = int(
+        st.radio(
+            "페이지",
+            list(PAGES),
+            horizontal=True,
+            format_func=lambda value: f"{value}페이지",
+            key="bppt_room",
+            label_visibility="collapsed",
+        )
+    )
     preview_specs: list[dict] = []
-    for page, room in zip(PAGES, rooms, strict=False):
-        with room:
-            edit_col, view_col = st.columns([1, 1.15])
-            with edit_col:
-                left, mid, _right = st.columns([1, 1, 2])
-                year = int(left.number_input("년도", min_value=2021, max_value=2035, value=2026, step=1, key=f"bppt_y_{page}"))
-                month = int(mid.selectbox("월", list(range(1, 13)), index=11, format_func=lambda value: f"{value}월", key=f"bppt_m_{page}"))
-                plan = dict(PLAN_CHART)
-                tons_plan = dict(PLAN_TONS)
-                asan_months = list(PLAN_ASAN)
-                hwa_months = list(PLAN_HWA)
-                policy_lines = None
-                review_lines = None
-                strategy_lines = None
-                directive_lines = None
-                focus_lines = None
-                task_lines = None
-                bulk_lines = None
-                page8_rows = None
-                page10_groups = None
-                page11_groups = None
-                page14_groups = None
-                page15_groups = None
-                if page == 4:
-                    st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
-                    st.dataframe(_plant_frame(year - 1, month).assign(연도=year - 1), hide_index=True, use_container_width=True)
-                    c1, c2, c3 = st.columns(3)
-                    plan["아산"] = int(c1.number_input("아산 목표(백만원)", min_value=0, value=PLAN_CHART["아산"], step=1, key=f"bppt_asan_{year}"))
-                    plan["화성"] = int(c2.number_input("화성 목표(백만원)", min_value=0, value=PLAN_CHART["화성"], step=1, key=f"bppt_hwa_{year}"))
-                    plan["전체"] = int(c3.number_input("전체 목표(백만원)", min_value=0, value=PLAN_CHART["전체"], step=1, key=f"bppt_all_{year}"))
-                    st.bar_chart(
-                        pd.DataFrame(
-                            {"아산": [plan["아산"], annual_million(plant_won(year - 1, month)["아산"], month), annual_million(plant_won(year - 2, month)["아산"], month)],
-                             "화성": [plan["화성"], annual_million(plant_won(year - 1, month)["화성"], month), annual_million(plant_won(year - 2, month)["화성"], month)]},
-                            index=[f"{year}(P)", str(year - 1), str(year - 2)],
-                        )
+    with st.container():
+        edit_col, view_col = st.columns([1, 1.15])
+        with edit_col:
+            left, mid, _right = st.columns([1, 1, 2])
+            year = int(left.number_input("년도", min_value=2021, max_value=2035, value=2026, step=1, key=f"bppt_y_{page}"))
+            month = int(mid.selectbox("월", list(range(1, 13)), index=11, format_func=lambda value: f"{value}월", key=f"bppt_m_{page}"))
+            plan = dict(PLAN_CHART)
+            tons_plan = dict(PLAN_TONS)
+            asan_months = list(PLAN_ASAN)
+            hwa_months = list(PLAN_HWA)
+            policy_lines = None
+            review_lines = None
+            strategy_lines = None
+            directive_lines = None
+            focus_lines = None
+            task_lines = None
+            bulk_lines = None
+            page8_rows = None
+            page10_groups = None
+            page11_groups = None
+            page14_groups = None
+            page15_groups = None
+            if page == 4:
+                st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
+                st.dataframe(_plant_frame(year - 1, month).assign(연도=year - 1), hide_index=True, use_container_width=True)
+                c1, c2, c3 = st.columns(3)
+                plan["아산"] = int(c1.number_input("아산 목표(백만원)", min_value=0, value=PLAN_CHART["아산"], step=1, key=f"bppt_asan_{year}"))
+                plan["화성"] = int(c2.number_input("화성 목표(백만원)", min_value=0, value=PLAN_CHART["화성"], step=1, key=f"bppt_hwa_{year}"))
+                plan["전체"] = int(c3.number_input("전체 목표(백만원)", min_value=0, value=PLAN_CHART["전체"], step=1, key=f"bppt_all_{year}"))
+                st.bar_chart(
+                    pd.DataFrame(
+                        {"아산": [plan["아산"], annual_million(plant_won(year - 1, month)["아산"], month), annual_million(plant_won(year - 2, month)["아산"], month)],
+                         "화성": [plan["화성"], annual_million(plant_won(year - 1, month)["화성"], month), annual_million(plant_won(year - 2, month)["화성"], month)]},
+                        index=[f"{year}(P)", str(year - 1), str(year - 2)],
                     )
-                elif page == 5:
-                    st.dataframe(_plant_frame(year - 2, month), hide_index=True, use_container_width=True)
-                    st.dataframe(_plant_frame(year - 1, month), hide_index=True, use_container_width=True)
-                    grid = pd.DataFrame({"월": list(range(1, 13)), "화성": hwa_months, "아산": asan_months})
-                    edited = st.data_editor(grid, hide_index=True, num_rows="fixed", key=f"bppt_grid_{year}", use_container_width=True)
-                    if isinstance(edited, pd.DataFrame) and {"화성", "아산"} <= set(edited.columns):
-                        hwa_months = [int(v) for v in edited["화성"].tolist()]
-                        asan_months = [int(v) for v in edited["아산"].tolist()]
-                    st.caption(f"{year}년 목표 합계 화성 {sum(hwa_months):,} · 아산 {sum(asan_months):,}")
-                elif page == 6:
-                    st.dataframe(pd.DataFrame(item_sheet(year - 1, month)), hide_index=True, use_container_width=True)
-                elif page == 7:
-                    older = tons_of(year - 2, month)
-                    mid = tons_of(year - 1, month)
-                    st.dataframe(
-                        pd.DataFrame(
-                            [
-                                {"품목": label, str(year - 2): older[label], str(year - 1): mid[label], f"{year}(P)": PLAN_TONS[label]}
-                                for label in ("산소", "질소", "알곤", "탄산", "LPG", "합계")
-                                if label != "합계"
-                            ]
-                        ),
-                        hide_index=True,
-                        use_container_width=True,
-                    )
-                    cols = st.columns(5)
-                    for col, label in zip(cols, ("산소", "질소", "알곤", "탄산", "LPG"), strict=False):
-                        tons_plan[label] = int(col.number_input(f"{label} 목표(톤)", min_value=0, value=PLAN_TONS[label], step=1, key=f"bppt_ton_{year}_{label}"))
-                    pct = bulk_growth_percent(year, month, tons_plan)
-                    st.caption(f"벌크운영 계획 문안을 고치고 줄을 추가하거나 삭제할 수 있습니다. 삼각형 {pct}%는 {year - 1}년 대비 {year}년 계획 합계의 증가율입니다.")
-                    bulk_store = f"bppt_s7_bulk_{year}"
-                    if bulk_store in st.session_state:
-                        for item in st.session_state[bulk_store]:
-                            item["text"] = _tune_bulk_line(item["text"], year, pct)
-                            item_key = f"bppt_s7_bulk_{year}_{item['id']}"
-                            if item_key in st.session_state:
-                                st.session_state[item_key] = _tune_bulk_line(st.session_state[item_key], year, pct)
-                    bulk_now = [_tune_bulk_line(line, year, pct) for line in read_bulk_lines(year)]
-                    st.markdown(f"**{year}년 벌크운영 계획**")
-                    bulk_lines = _edit_lines(year, "bulk", bulk_now, page=7)
-                elif page == 8:
-                    st.caption("거래처를 넣으면 그 해 실적이 집계됩니다. 예상과 비고는 비워 둘 수 있고, 증감량은 예상이 있으면 예상에서 실적을 뺀 값입니다.")
-                    loaded = read_page8_rows(year)
-                    page8_rows = []
-                    head_client, head_actual, head_budget, head_delta, head_note, _head_delete = st.columns([2.1, 1.5, 1.5, 1.4, 2.2, 0.7])
-                    head_client.markdown("**거래처**")
-                    head_actual.markdown(f"**{year - 1} 실적**")
-                    head_budget.markdown("**예상**")
-                    head_delta.markdown("**증감**")
-                    head_note.markdown("**비고**")
-                    for product in PAGE8_PRODUCTS:
-                        st.markdown(f"**{product}**")
-                        page8_rows.extend(
-                            _edit_page8(year, month, product, [row for row in loaded if row["product"] == product])
-                        )
-                elif page == 14:
-                    st.caption("구분, 담당지역, 산업단지를 고치고 줄을 넣거나 뺄 수 있습니다. 오른쪽 슬라이드는 바로 바뀌고, 저장을 누르면 파일에 들어갑니다.")
-                    page14_groups = _edit_page14(year, read_page14_groups(year))
-                    st.markdown("**담당 지도**")
-                    map_png = page14_map_png(year)
-                    if map_png:
-                        st.image(map_png, use_container_width=True)
-                elif page == 15:
-                    st.caption("업체와 관리방안을 고치고 줄을 넣거나 뺄 수 있습니다. 위 잔액은 채권표에서 집계되고, 오른쪽 슬라이드는 바로 바뀌며 저장을 누르면 파일에 들어갑니다.")
-                    page15_groups = _edit_page15(year, read_page15_groups(year), debt_headline(year, month))
-                elif page in (10, 11):
-                    st.caption("담당별로 신규 업체와 물량증대를 넣고 뺄 수 있습니다. 신규는 전년 대비 새 업체와 가스종류를 불러오고, 물량증대는 1~10위를 고르면 증감이 계산됩니다. 비고는 비워 둡니다.")
-                    loaded_groups = read_page10_groups(year, page)
-                    if page == 10:
-                        page10_groups = _edit_page10(year, month, loaded_groups, page=10)
-                    else:
-                        page11_groups = _edit_page10(year, month, loaded_groups, page=11)
-                elif page == 2:
-                    yy = int(year) % 100
-                    prev = (int(year) - 1) % 100
-                    st.caption("1번, 2번, 3번 항목을 고치고 줄을 추가하거나 삭제할 수 있습니다.")
-                    policy_now, review_now, strategy_now = read_toc_lines(year)
-                    st.markdown(f"**1. {POLICY_TITLE}**")
-                    policy_lines = _edit_lines(year, "policy", policy_now)
-                    st.markdown(f"**2. {yy}년 사업계획 대비 {prev}년 실적**")
-                    review_lines = _edit_lines(year, "review", review_now)
-                    st.markdown(f"**3. {yy:02d}{STRATEGY_TITLE}**")
-                    strategy_lines = _edit_lines(year, "strategy", strategy_now)
-                elif page == 3:
-                    st.caption("1번, 2번, 3번 항목을 고치고 줄을 추가하거나 삭제할 수 있습니다.")
-                    directive_now, focus_now, task_now = read_goal_lines(year)
-                    st.markdown(f"**1. {DIRECTIVE_LABEL}**")
-                    directive_lines = _edit_lines(year, "directive", directive_now, page=3)
-                    st.markdown(f"**2. {FOCUS_LABEL}**")
-                    focus_lines = _edit_lines(year, "focus", focus_now, page=3)
-                    st.markdown(f"**3. {TASK_LABEL}**")
-                    task_lines = _edit_lines(year, "task", task_now, page=3)
-                else:
-                    st.caption(f"이 페이지는 문안의 년도를 {year}년 기준으로 바꿉니다. 표 서식은 그대로입니다.")
-                if st.button(f"{page}페이지 저장", key=f"bppt_save_{page}"):
-                    try:
-                        saved = save_page(
-                            page,
-                            year,
-                            month,
-                            plan=plan,
-                            tons_plan=tons_plan,
-                            asan_months=asan_months,
-                            hwa_months=hwa_months,
-                            policy_lines=policy_lines,
-                            review_lines=review_lines,
-                            strategy_lines=strategy_lines,
-                            directive_lines=directive_lines,
-                            focus_lines=focus_lines,
-                            task_lines=task_lines,
-                            bulk_lines=bulk_lines,
-                            page8_rows=page8_rows,
-                            page10_groups=page10_groups,
-                            page11_groups=page11_groups,
-                            page14_groups=page14_groups,
-                            page15_groups=page15_groups,
-                        )
-                        st.success(f"{page}페이지를 저장했습니다. {saved}")
-                    except FileNotFoundError as exc:
-                        st.error(str(exc))
-                    except Exception as exc:
-                        st.error(f"{page}페이지 저장 오류: {exc}")
-            with view_col:
-                _show_page_preview(page)
-            preview_specs.append(
-                {
-                    "page": page,
-                    "year": int(year),
-                    "month": int(month),
-                    "plan": dict(plan) if page == 4 else None,
-                    "tons": dict(tons_plan) if page == 7 else None,
-                    "asan": list(asan_months) if page == 5 else None,
-                    "hwa": list(hwa_months) if page == 5 else None,
-                    "policy": list(policy_lines) if page == 2 and policy_lines is not None else None,
-                    "review": list(review_lines) if page == 2 and review_lines is not None else None,
-                    "strategy": list(strategy_lines) if page == 2 and strategy_lines is not None else None,
-                    "directive": list(directive_lines) if page == 3 and directive_lines is not None else None,
-                    "focus": list(focus_lines) if page == 3 and focus_lines is not None else None,
-                    "task": list(task_lines) if page == 3 and task_lines is not None else None,
-                    "bulk": list(bulk_lines) if page == 7 and bulk_lines is not None else None,
-                    "page8": list(page8_rows) if page == 8 and page8_rows is not None else None,
-                    "page10": list(page10_groups) if page == 10 and page10_groups is not None else None,
-                    "page11": list(page11_groups) if page == 11 and page11_groups is not None else None,
-                    "map": (
-                        list(page14_groups)
-                        if page == 14 and page14_groups is not None
-                        else {"rows": list(page15_groups), "debt": debt_headline(year, month)}
-                        if page == 15 and page15_groups is not None
-                        else None
+                )
+            elif page == 5:
+                st.dataframe(_plant_frame(year - 2, month), hide_index=True, use_container_width=True)
+                st.dataframe(_plant_frame(year - 1, month), hide_index=True, use_container_width=True)
+                grid = pd.DataFrame({"월": list(range(1, 13)), "화성": hwa_months, "아산": asan_months})
+                edited = st.data_editor(grid, hide_index=True, num_rows="fixed", key=f"bppt_grid_{year}", use_container_width=True)
+                if isinstance(edited, pd.DataFrame) and {"화성", "아산"} <= set(edited.columns):
+                    hwa_months = [int(v) for v in edited["화성"].tolist()]
+                    asan_months = [int(v) for v in edited["아산"].tolist()]
+                st.caption(f"{year}년 목표 합계 화성 {sum(hwa_months):,} · 아산 {sum(asan_months):,}")
+            elif page == 6:
+                st.dataframe(pd.DataFrame(item_sheet(year - 1, month)), hide_index=True, use_container_width=True)
+            elif page == 7:
+                older = tons_of(year - 2, month)
+                mid = tons_of(year - 1, month)
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {"품목": label, str(year - 2): older[label], str(year - 1): mid[label], f"{year}(P)": PLAN_TONS[label]}
+                            for label in ("산소", "질소", "알곤", "탄산", "LPG", "합계")
+                            if label != "합계"
+                        ]
                     ),
-                }
-            )
+                    hide_index=True,
+                    use_container_width=True,
+                )
+                cols = st.columns(5)
+                for col, label in zip(cols, ("산소", "질소", "알곤", "탄산", "LPG"), strict=False):
+                    tons_plan[label] = int(col.number_input(f"{label} 목표(톤)", min_value=0, value=PLAN_TONS[label], step=1, key=f"bppt_ton_{year}_{label}"))
+                pct = bulk_growth_percent(year, month, tons_plan)
+                st.caption(f"벌크운영 계획 문안을 고치고 줄을 추가하거나 삭제할 수 있습니다. 삼각형 {pct}%는 {year - 1}년 대비 {year}년 계획 합계의 증가율입니다.")
+                bulk_store = f"bppt_s7_bulk_{year}"
+                if bulk_store in st.session_state:
+                    for item in st.session_state[bulk_store]:
+                        item["text"] = _tune_bulk_line(item["text"], year, pct)
+                        item_key = f"bppt_s7_bulk_{year}_{item['id']}"
+                        if item_key in st.session_state:
+                            st.session_state[item_key] = _tune_bulk_line(st.session_state[item_key], year, pct)
+                bulk_now = [_tune_bulk_line(line, year, pct) for line in read_bulk_lines(year)]
+                st.markdown(f"**{year}년 벌크운영 계획**")
+                bulk_lines = _edit_lines(year, "bulk", bulk_now, page=7)
+            elif page == 8:
+                st.caption("거래처를 넣으면 그 해 실적이 집계됩니다. 예상과 비고는 비워 둘 수 있고, 증감량은 예상이 있으면 예상에서 실적을 뺀 값입니다.")
+                loaded = read_page8_rows(year)
+                page8_rows = []
+                head_client, head_actual, head_budget, head_delta, head_note, _head_delete = st.columns([2.1, 1.5, 1.5, 1.4, 2.2, 0.7])
+                head_client.markdown("**거래처**")
+                head_actual.markdown(f"**{year - 1} 실적**")
+                head_budget.markdown("**예상**")
+                head_delta.markdown("**증감**")
+                head_note.markdown("**비고**")
+                for product in PAGE8_PRODUCTS:
+                    st.markdown(f"**{product}**")
+                    page8_rows.extend(
+                        _edit_page8(year, month, product, [row for row in loaded if row["product"] == product])
+                    )
+            elif page == 14:
+                st.caption("구분, 담당지역, 산업단지를 고치고 줄을 넣거나 뺄 수 있습니다. 오른쪽 슬라이드는 바로 바뀌고, 저장을 누르면 파일에 들어갑니다.")
+                page14_groups = _edit_page14(year, read_page14_groups(year))
+                st.markdown("**담당 지도**")
+                map_png = page14_map_png(year)
+                if map_png:
+                    st.image(map_png, use_container_width=True)
+            elif page == 15:
+                st.caption("업체와 관리방안을 고치고 줄을 넣거나 뺄 수 있습니다. 위 잔액은 채권표에서 집계되고, 오른쪽 슬라이드는 바로 바뀌며 저장을 누르면 파일에 들어갑니다.")
+                page15_groups = _edit_page15(year, read_page15_groups(year), debt_headline(year, month))
+            elif page in (10, 11):
+                st.caption("담당별로 신규 업체와 물량증대를 넣고 뺄 수 있습니다. 신규는 전년 대비 새 업체와 가스종류를 불러오고, 물량증대는 1~10위를 고르면 증감이 계산됩니다. 비고는 비워 둡니다.")
+                loaded_groups = read_page10_groups(year, page)
+                if page == 10:
+                    page10_groups = _edit_page10(year, month, loaded_groups, page=10)
+                else:
+                    page11_groups = _edit_page10(year, month, loaded_groups, page=11)
+            elif page == 2:
+                yy = int(year) % 100
+                prev = (int(year) - 1) % 100
+                st.caption("1번, 2번, 3번 항목을 고치고 줄을 추가하거나 삭제할 수 있습니다.")
+                policy_now, review_now, strategy_now = read_toc_lines(year)
+                st.markdown(f"**1. {POLICY_TITLE}**")
+                policy_lines = _edit_lines(year, "policy", policy_now)
+                st.markdown(f"**2. {yy}년 사업계획 대비 {prev}년 실적**")
+                review_lines = _edit_lines(year, "review", review_now)
+                st.markdown(f"**3. {yy:02d}{STRATEGY_TITLE}**")
+                strategy_lines = _edit_lines(year, "strategy", strategy_now)
+            elif page == 3:
+                st.caption("1번, 2번, 3번 항목을 고치고 줄을 추가하거나 삭제할 수 있습니다.")
+                directive_now, focus_now, task_now = read_goal_lines(year)
+                st.markdown(f"**1. {DIRECTIVE_LABEL}**")
+                directive_lines = _edit_lines(year, "directive", directive_now, page=3)
+                st.markdown(f"**2. {FOCUS_LABEL}**")
+                focus_lines = _edit_lines(year, "focus", focus_now, page=3)
+                st.markdown(f"**3. {TASK_LABEL}**")
+                task_lines = _edit_lines(year, "task", task_now, page=3)
+            else:
+                st.caption(f"이 페이지는 문안의 년도를 {year}년 기준으로 바꿉니다. 표 서식은 그대로입니다.")
+            if st.button(f"{page}페이지 저장", key=f"bppt_save_{page}"):
+                try:
+                    saved = save_page(
+                        page,
+                        year,
+                        month,
+                        plan=plan,
+                        tons_plan=tons_plan,
+                        asan_months=asan_months,
+                        hwa_months=hwa_months,
+                        policy_lines=policy_lines,
+                        review_lines=review_lines,
+                        strategy_lines=strategy_lines,
+                        directive_lines=directive_lines,
+                        focus_lines=focus_lines,
+                        task_lines=task_lines,
+                        bulk_lines=bulk_lines,
+                        page8_rows=page8_rows,
+                        page10_groups=page10_groups,
+                        page11_groups=page11_groups,
+                        page14_groups=page14_groups,
+                        page15_groups=page15_groups,
+                    )
+                    st.success(f"{page}페이지를 저장했습니다. {saved}")
+                except FileNotFoundError as exc:
+                    st.error(str(exc))
+                except Exception as exc:
+                    st.error(f"{page}페이지 저장 오류: {exc}")
+        with view_col:
+            _show_page_preview(page)
+        preview_specs.append(
+            {
+                "page": page,
+                "year": int(year),
+                "month": int(month),
+                "plan": dict(plan) if page == 4 else None,
+                "tons": dict(tons_plan) if page == 7 else None,
+                "asan": list(asan_months) if page == 5 else None,
+                "hwa": list(hwa_months) if page == 5 else None,
+                "policy": list(policy_lines) if page == 2 and policy_lines is not None else None,
+                "review": list(review_lines) if page == 2 and review_lines is not None else None,
+                "strategy": list(strategy_lines) if page == 2 and strategy_lines is not None else None,
+                "directive": list(directive_lines) if page == 3 and directive_lines is not None else None,
+                "focus": list(focus_lines) if page == 3 and focus_lines is not None else None,
+                "task": list(task_lines) if page == 3 and task_lines is not None else None,
+                "bulk": list(bulk_lines) if page == 7 and bulk_lines is not None else None,
+                "page8": list(page8_rows) if page == 8 and page8_rows is not None else None,
+                "page10": list(page10_groups) if page == 10 and page10_groups is not None else None,
+                "page11": list(page11_groups) if page == 11 and page11_groups is not None else None,
+                "map": (
+                    list(page14_groups)
+                    if page == 14 and page14_groups is not None
+                    else {"rows": list(page15_groups), "debt": debt_headline(year, month)}
+                    if page == 15 and page15_groups is not None
+                    else None
+                ),
+            }
+        )
     if preview_specs:
         _refresh_previews(preview_specs)
