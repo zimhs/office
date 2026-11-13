@@ -581,6 +581,49 @@ def test_page14_table_edits_keep_format_and_title_stays_one_line():
     shutil.rmtree(root)
 
 
+def test_page15_aggregates_the_balance_and_keeps_the_table_format():
+    import shutil
+
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "업체 추가" in src
+    assert "_apply_page15_headline" in src
+    template = _template()
+    real = bp.proposal_path(2026)
+    before = real.read_bytes() if real is not None and real.is_file() else None
+    root = Path("/tmp/biz_proposal_page15")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    dest = root / "26년 사업계획서.pptx"
+    shutil.copy(template, dest)
+    original = zipfile.ZipFile(template).read("ppt/slides/slide15.xml").decode("utf-8")
+    groups = bp._page15_groups_in(original)
+    assert groups[0]["staff"] == "김명현"
+    assert groups[0]["rows"][0]["company"] == "가스텍"
+    assert groups[1]["rows"][1]["merged"] is True
+    groups[0]["rows"][0]["company"] = "테스트가스"
+    grid = re.search(r"<a:tblGrid\b.*?</a:tblGrid>", original, flags=re.S).group(0)
+    bp.save_page(15, 2026, 12, page15_groups=groups, path=dest, template=template)
+    saved = zipfile.ZipFile(dest).read("ppt/slides/slide15.xml").decode("utf-8")
+    info = bp.debt_headline(2026, 12)
+    assert "테스트가스" in saved
+    assert "가스텍" not in saved
+    assert saved.count("지불각서") == original.count("지불각서")
+    assert saved.count('rowSpan="2"') == original.count('rowSpan="2"')
+    assert saved.count('rowSpan="3"') == original.count('rowSpan="3"')
+    assert f"{info['million']:,}" in saved
+    assert "2,123" not in saved
+    assert "잔여 채권 총액" in saved
+    assert "익월 초 결제" in saved
+    assert re.search(r"<a:tblGrid\b.*?</a:tblGrid>", saved, flags=re.S).group(0) == grid
+    assert zipfile.ZipFile(dest).read("ppt/theme/theme1.xml") == zipfile.ZipFile(template).read("ppt/theme/theme1.xml")
+    assert zipfile.ZipFile(dest).read("ppt/slides/slide1.xml") == zipfile.ZipFile(template).read("ppt/slides/slide1.xml")
+    assert zipfile.ZipFile(dest).read("ppt/slides/slide14.xml") == zipfile.ZipFile(template).read("ppt/slides/slide14.xml")
+    if before is not None:
+        assert real.read_bytes() == before
+    shutil.rmtree(root)
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -604,5 +647,6 @@ if __name__ == "__main__":
     test_page11_uses_the_same_staff_editor_and_growth_text()
     test_page14_map_replaces_only_the_picture()
     test_page14_table_edits_keep_format_and_title_stays_one_line()
+    test_page15_aggregates_the_balance_and_keeps_the_table_format()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")

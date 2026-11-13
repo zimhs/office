@@ -22,6 +22,7 @@ from openpyxl import load_workbook
 from pptx import Presentation
 
 SALES_DIR = Path(__file__).resolve().parent / "uploaded_cache" / "sales"
+DEBT_PATH = Path(__file__).resolve().parent / "uploaded_cache" / "debt.csv"
 PAGES = tuple(range(1, 17))
 _AT = re.compile(r"(<a:t(?:\s[^>]*)?>)([^<]*)(</a:t>)")
 _YEAR_TOKEN = {
@@ -1811,6 +1812,295 @@ def page14_map_png(year: int = 2026) -> bytes | None:
         return None
 
 
+def _mark_cell(row_xml: str, index: int, kind: str, count: int = 1) -> str:
+    found = list(re.finditer(r"<a:tc\b.*?</a:tc>", row_xml, flags=re.S))
+    if index >= len(found):
+        return row_xml
+    cell = re.sub(r'\srowSpan="\d+"', "", found[index].group(0))
+    cell = re.sub(r'\svMerge="\d+"', "", cell)
+    if kind == "span" and count > 1:
+        cell = re.sub(r"<a:tc\b", f'<a:tc rowSpan="{count}"', cell, count=1)
+    elif kind == "merge":
+        cell = re.sub(r"<a:tc\b", '<a:tc vMerge="1"', cell, count=1)
+    return row_xml[: found[index].start()] + cell + row_xml[found[index].end() :]
+
+
+@lru_cache(maxsize=8)
+def _debt_month_won(stamp: int) -> tuple[tuple[int, int], ...]:
+    if not DEBT_PATH.is_file():
+        return ()
+    try:
+        frame = pd.read_csv(DEBT_PATH, encoding="utf-8-sig")
+    except (OSError, UnicodeError, pd.errors.ParserError):
+        try:
+            frame = pd.read_csv(DEBT_PATH, encoding="cp949")
+        except (OSError, UnicodeError, pd.errors.ParserError):
+            return ()
+    if "구분" not in frame.columns:
+        return ()
+    balance = frame[frame["구분"].astype(str).str.contains("잔액", na=False)]
+    totals: list[tuple[int, int]] = []
+    for month in range(1, 13):
+        column = f"{month}월"
+        if column not in balance.columns:
+            continue
+        won = pd.to_numeric(balance[column], errors="coerce").fillna(0).sum()
+        totals.append((month, int(round(float(won)))))
+    return tuple(totals)
+
+
+def debt_headline(year: int, month: int) -> dict:
+    """채권표 잔액 합계. 고른 달이 비어 있으면 잔액이 있는 마지막 달을 쓴다."""
+    stamp = int(DEBT_PATH.stat().st_mtime) if DEBT_PATH.is_file() else 0
+    totals = dict(_debt_month_won(stamp))
+    chosen = int(month)
+    if not totals.get(chosen):
+        filled = [item for item, won in totals.items() if won]
+        chosen = max(filled) if filled else chosen
+    current = int(totals.get(chosen) or 0)
+    return {
+        "year": int(year),
+        "month": chosen,
+        "million": int(round(current / 1_000_000)),
+        "prior_year": int(year) - 1,
+        "prior_million": None,
+        "pct": None,
+    }
+
+
+def _page15_table(xml: str) -> str:
+    tables = re.findall(r"<a:tbl\b.*?</a:tbl>", xml, flags=re.S)
+    for table in tables:
+        if "업체" in table and "관리" in table:
+            return table
+    return ""
+
+
+def _page15_groups_in(xml: str) -> list[dict]:
+    table = _page15_table(xml)
+    if not table:
+        return []
+    rows = re.findall(r"<a:tr\b.*?</a:tr>", table, flags=re.S)
+    groups: list[dict] = []
+    current: dict | None = None
+    shared = ""
+    for row in rows[1:]:
+        cells = re.findall(r"<a:tc\b.*?</a:tc>", row, flags=re.S)
+        if len(cells) < 3:
+            continue
+        staff = _cell_plain(cells[0])
+        if staff:
+            current = {"staff": staff, "rows": []}
+            groups.append(current)
+            shared = ""
+        company = _cell_plain(cells[1])
+        own_plan = _cell_plain(cells[2])
+        if own_plan:
+            plan = own_plan
+            shared = own_plan
+            merged = False
+        else:
+            plan = shared
+            merged = bool(shared)
+        if current is not None and company:
+            current["rows"].append({"company": company, "plan": plan, "merged": merged})
+    return groups
+
+
+def read_page15_groups(year: int) -> list[dict]:
+    path = proposal_path(year)
+    if path is None or not path.is_file():
+        return []
+    try:
+        xml = zipfile.ZipFile(path).read("ppt/slides/slide15.xml").decode("utf-8")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return []
+    return _page15_groups_in(xml)
+
+
+def _apply_page15(xml: str, groups: list[dict]) -> str:
+    """15페이지 업체 표만 다시 쓴다. 같은 관리방안이 이어지면 칸을 합친다."""
+    table = _page15_table(xml)
+    if not table:
+        return xml
+    found = list(re.finditer(r"<a:tr\b.*?</a:tr>", table, flags=re.S))
+    if len(found) < 3:
+        return xml
+    head = _clear_row_spans(found[1].group(0))
+    cont = _clear_row_spans(found[2].group(0))
+    built = [found[0].group(0)]
+    for group in groups:
+        staff = str(group.get("staff") or "").strip()
+        rows = [item for item in group.get("rows") or [] if str(item.get("company") or "").strip()]
+        if not staff or not rows:
+            continue
+        spans: list[int] = []
+        index = 0
+        while index < len(rows):
+            plan = str(rows[index].get("plan") or "").strip()
+            nxt = index + 1
+            while (
+                nxt < len(rows)
+                and rows[nxt].get("merged")
+                and str(rows[nxt].get("plan") or "").strip() == plan
+                and plan
+            ):
+                nxt += 1
+            width = nxt - index
+            spans.extend([width] + [0] * (width - 1))
+            index = nxt
+        for index, item in enumerate(rows):
+            sample = head if index == 0 else cont
+            plan_text = str(item.get("plan") or "") if spans[index] else ""
+            sample = _set_row_lines(
+                sample,
+                [staff if index == 0 else "\u3000", str(item.get("company") or ""), plan_text],
+            )
+            sample = _mark_cell(sample, 0, "span" if index == 0 else "merge", len(rows))
+            sample = _mark_cell(sample, 2, "span" if spans[index] else "merge", spans[index])
+            built.append(sample)
+    new_table = table[: found[0].start()] + "".join(built) + table[found[-1].end() :]
+    return xml.replace(table, new_table, 1)
+
+
+def _apply_page15_headline(xml: str, info: dict) -> str:
+    """위쪽 잔여 채권 숫자만 바꾼다. 문장과 글꼴은 그대로 둔다."""
+    marker = "잔여 채권 총액"
+    idx = xml.find(marker)
+    if idx < 0 or not info:
+        return xml
+    start = xml.rfind("<p:sp>", 0, idx)
+    end = xml.find("</p:sp>", idx)
+    if start < 0 or end < 0:
+        return xml
+    shape = xml[start:end]
+    values = [match.group(2) for match in _AT.finditer(shape)]
+
+    def before(token: str) -> int | None:
+        for index, text in enumerate(values):
+            if token in text and index:
+                return index - 1
+        return None
+
+    month_at = before("월 말 기준")
+    year_at = month_at - 2 if month_at is not None and month_at >= 2 else None
+    current_at = before("백만원")
+    percent_at = next((index for index, text in enumerate(values) if "%" in text), None)
+    prior_label = next((index for index, text in enumerate(values) if "년 잔여" in text), None)
+    updates: dict[int, str] = {}
+    if year_at is not None and year_at >= 0:
+        updates[year_at] = f" {int(info['year'])}"
+    if month_at is not None:
+        updates[month_at] = str(int(info["month"]))
+    if current_at is not None:
+        updates[current_at] = f"    -  {int(info['million']):,}"
+    if percent_at is not None:
+        pct = info.get("pct")
+        updates[percent_at] = " — " if pct is None else f" {abs(int(pct))} % "
+        if percent_at + 1 < len(values):
+            updates[percent_at + 1] = "" if pct is None else ("증가" if int(pct) >= 0 else "감소")
+    if prior_label is not None:
+        updates[prior_label - 1] = f"{int(info['prior_year']) % 100}"
+        if prior_label + 1 < len(values):
+            prior = info.get("prior_million")
+            updates[prior_label + 1] = "—" if prior is None else f"{int(prior):,}"
+    if not updates:
+        return xml
+
+    seen = {"n": 0}
+
+    def repl(match: re.Match[str]) -> str:
+        seen["n"] += 1
+        if seen["n"] - 1 in updates:
+            return match.group(1) + escape(updates[seen["n"] - 1]) + match.group(3)
+        return match.group(0)
+
+    return xml[:start] + _AT.sub(repl, shape) + xml[end:]
+
+
+def _edit_page15(year: int, groups: list[dict], info: dict) -> list[dict]:
+    note = f"{info['year']}년 {info['month']}월 말 잔여 채권은 {info['million']:,}백만원입니다."
+    st.markdown(f"**{note}**")
+    if info.get("pct") is None:
+        st.caption("채권표에는 비교할 전년 잔액이 없어 총액만 넣습니다. 글꼴과 표 칸은 그대로입니다.")
+    store = f"bppt_p15_{year}"
+    seq_key = f"bppt_p15_seq_{year}"
+    if store not in st.session_state:
+        seeded: list[dict] = []
+        nxt = 1
+        for group in groups:
+            rows = []
+            for row in group.get("rows") or []:
+                rows.append(
+                    {
+                        "id": nxt,
+                        "company": row.get("company") or "",
+                        "plan": row.get("plan") or "",
+                        "merged": bool(row.get("merged")),
+                    }
+                )
+                nxt += 1
+            if not rows:
+                rows.append({"id": nxt, "company": "", "plan": ""})
+                nxt += 1
+            seeded.append({"id": nxt, "staff": group.get("staff") or "", "rows": rows})
+            nxt += 1
+        st.session_state[store] = seeded
+        st.session_state[seq_key] = nxt
+    people = st.session_state[store]
+    head_staff, head_company, head_plan, _head_delete = st.columns([1.2, 1.8, 3.2, 0.7])
+    head_staff.markdown("**구분**")
+    head_company.markdown("**업체 현황**")
+    head_plan.markdown("**관리 방안**")
+    saved: list[dict] = []
+    for person in list(people):
+        pid = person["id"]
+        staff_key = f"bppt_p15s_{year}_{pid}"
+        if staff_key not in st.session_state:
+            st.session_state[staff_key] = person.get("staff") or ""
+        kept: list[dict] = []
+        for index, row in enumerate(list(person["rows"])):
+            rid = row["id"]
+            company_key = f"bppt_p15c_{year}_{pid}_{rid}"
+            plan_key = f"bppt_p15p_{year}_{pid}_{rid}"
+            if company_key not in st.session_state:
+                st.session_state[company_key] = row.get("company") or ""
+            if plan_key not in st.session_state:
+                st.session_state[plan_key] = row.get("plan") or ""
+            staff_col, company_col, plan_col, delete_col = st.columns([1.2, 1.8, 3.2, 0.7])
+            if index == 0:
+                staff_col.text_input("구분", key=staff_key, label_visibility="collapsed")
+            company_col.text_input("업체", key=company_key, label_visibility="collapsed")
+            plan_col.text_area("관리 방안", key=plan_key, height=68, label_visibility="collapsed")
+            company = str(st.session_state.get(company_key) or "")
+            plan = str(st.session_state.get(plan_key) or "")
+            row["company"], row["plan"] = company, plan
+            if delete_col.button("삭제", key=f"bppt_p15del_{year}_{pid}_{rid}"):
+                if len(person["rows"]) == 1:
+                    st.session_state[store] = [item for item in people if item["id"] != pid]
+                else:
+                    person["rows"] = [item for item in person["rows"] if item["id"] != rid]
+                st.rerun(scope="fragment")
+            if company.strip() or plan.strip():
+                kept.append({"company": company, "plan": plan, "merged": bool(row.get("merged"))})
+        add_col, _rest = st.columns([1, 4])
+        if add_col.button("업체 추가", key=f"bppt_p15add_{year}_{pid}"):
+            seq = int(st.session_state.get(seq_key) or 1)
+            st.session_state[seq_key] = seq + 1
+            person["rows"].append({"id": seq, "company": "", "plan": ""})
+            st.rerun(scope="fragment")
+        staff = str(st.session_state.get(staff_key) or "").strip()
+        person["staff"] = staff
+        if staff and kept:
+            saved.append({"staff": staff, "rows": kept})
+    if st.button("구분 추가", key=f"bppt_p15new_{year}"):
+        seq = int(st.session_state.get(seq_key) or 1)
+        st.session_state[seq_key] = seq + 2
+        people.append({"id": seq, "staff": "", "rows": [{"id": seq + 1, "company": "", "plan": ""}]})
+        st.rerun(scope="fragment")
+    return saved
+
+
 def _write_package(path: Path, source: Path, parts: dict[str, bytes]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with zipfile.ZipFile(source, "r") as zin, zipfile.ZipFile(tmp, "w") as zout:
@@ -1862,6 +2152,7 @@ def save_page(
     page10_groups: list[dict] | None = None,
     page11_groups: list[dict] | None = None,
     page14_groups: list[dict] | None = None,
+    page15_groups: list[dict] | None = None,
     path: Path | None = None,
     template: Path | None = None,
 ) -> Path:
@@ -1920,6 +2211,10 @@ def save_page(
         if page14_groups is not None:
             xml = _apply_page14(xml, page14_groups)
         xml = _keep_page14_title(xml)
+    elif page == 15:
+        if page15_groups is not None:
+            xml = _apply_page15(xml, page15_groups)
+        xml = _apply_page15_headline(xml, debt_headline(year, month))
     parts[slide_name] = xml.encode("utf-8")
     if page == 4:
         cats, series = _chart1(year, month, targets)
@@ -2372,6 +2667,7 @@ def _build_preview_deck(specs: list[dict], dest: Path) -> None:
             page10_groups=spec.get("page10"),
             page11_groups=spec.get("page11"),
             page14_groups=spec.get("map") if int(spec.get("page") or 0) == 14 else None,
+            page15_groups=(spec.get("map") or {}).get("rows") if int(spec.get("page") or 0) == 15 and isinstance(spec.get("map"), dict) else None,
             path=dest,
             template=base,
         )
@@ -2446,6 +2742,7 @@ def _refresh_one_page(spec: dict) -> None:
         page10_groups=spec.get("page10"),
         page11_groups=spec.get("page11"),
         page14_groups=spec.get("map") if int(spec.get("page") or 0) == 14 else None,
+        page15_groups=(spec.get("map") or {}).get("rows") if int(spec.get("page") or 0) == 15 and isinstance(spec.get("map"), dict) else None,
         path=deck,
         template=deck,
     )
@@ -2523,6 +2820,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                 page10_groups = None
                 page11_groups = None
                 page14_groups = None
+                page15_groups = None
                 if page == 4:
                     st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
                     st.dataframe(_plant_frame(year - 1, month).assign(연도=year - 1), hide_index=True, use_container_width=True)
@@ -2599,6 +2897,9 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     map_png = page14_map_png(year)
                     if map_png:
                         st.image(map_png, use_container_width=True)
+                elif page == 15:
+                    st.caption("업체와 관리방안을 고치고 줄을 넣거나 뺄 수 있습니다. 위 잔액은 채권표에서 집계되고, 오른쪽 슬라이드는 바로 바뀌며 저장을 누르면 파일에 들어갑니다.")
+                    page15_groups = _edit_page15(year, read_page15_groups(year), debt_headline(year, month))
                 elif page in (10, 11):
                     st.caption("담당별로 신규 업체와 물량증대를 넣고 뺄 수 있습니다. 신규는 전년 대비 새 업체와 가스종류를 불러오고, 물량증대는 1~10위를 고르면 증감이 계산됩니다. 비고는 비워 둡니다.")
                     loaded_groups = read_page10_groups(year, page)
@@ -2649,6 +2950,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                             page10_groups=page10_groups,
                             page11_groups=page11_groups,
                             page14_groups=page14_groups,
+                            page15_groups=page15_groups,
                         )
                         st.success(f"{page}페이지를 저장했습니다. {saved}")
                     except FileNotFoundError as exc:
@@ -2676,7 +2978,13 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     "page8": list(page8_rows) if page == 8 and page8_rows is not None else None,
                     "page10": list(page10_groups) if page == 10 and page10_groups is not None else None,
                     "page11": list(page11_groups) if page == 11 and page11_groups is not None else None,
-                    "map": list(page14_groups) if page == 14 and page14_groups is not None else None,
+                    "map": (
+                        list(page14_groups)
+                        if page == 14 and page14_groups is not None
+                        else {"rows": list(page15_groups), "debt": debt_headline(year, month)}
+                        if page == 15 and page15_groups is not None
+                        else None
+                    ),
                 }
             )
     if preview_specs:
