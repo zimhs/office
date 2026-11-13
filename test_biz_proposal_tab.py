@@ -347,6 +347,37 @@ def test_page8_clients_aggregate_without_changing_the_format(tmp_path: Path | No
     shutil.rmtree(root)
 
 
+def test_page1_year_comes_back_from_the_original_slide():
+    import shutil
+
+    template = _template()
+    real = bp.proposal_path(2026)
+    before = real.read_bytes() if real is not None and real.is_file() else None
+    root = Path("/tmp/biz_proposal_page1_year")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    dest = root / "preview.pptx"
+    shutil.copy(template, dest)
+    bp.save_page(1, 2027, 12, path=dest, template=template)
+    shifted = zipfile.ZipFile(dest).read("ppt/slides/slide1.xml").decode("utf-8")
+    assert "2027" in shifted
+    original_base = bp._preview_base
+    bp._preview_base = lambda: template
+    try:
+        bp._restore_preview_slide(dest, 1)
+        bp.save_page(1, 2026, 12, path=dest, template=template)
+    finally:
+        bp._preview_base = original_base
+    restored = zipfile.ZipFile(dest).read("ppt/slides/slide1.xml").decode("utf-8")
+    assert "2026" in restored
+    assert "2027" not in restored
+    assert zipfile.ZipFile(dest).read("ppt/slides/slide2.xml") == zipfile.ZipFile(template).read("ppt/slides/slide2.xml")
+    if before is not None:
+        assert real.read_bytes() == before
+    shutil.rmtree(root)
+
+
 def test_only_the_open_page_is_reread():
     src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
     assert "bppt_room" in src
@@ -660,6 +691,7 @@ if __name__ == "__main__":
     test_page14_map_replaces_only_the_picture()
     test_page14_table_edits_keep_format_and_title_stays_one_line()
     test_page15_aggregates_the_balance_and_keeps_the_table_format()
+    test_page1_year_comes_back_from_the_original_slide()
     test_only_the_open_page_is_reread()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")

@@ -2685,8 +2685,34 @@ def _render_pngs(pdf: Path) -> dict[int, bytes]:
     return images
 
 
+_PREVIEW_REV = 2
+
+
 def _preview_token(specs: list[dict]) -> str:
-    return json.dumps(specs, ensure_ascii=False, sort_keys=True)
+    return json.dumps({"rev": _PREVIEW_REV, "specs": specs}, ensure_ascii=False, sort_keys=True)
+
+
+def _restore_preview_slide(deck: Path, page: int) -> None:
+    """미리보기 한 장을 원본 슬라이드로 되돌린 뒤 년도를 다시 입힌다."""
+    base = _preview_base()
+    with zipfile.ZipFile(base) as zin:
+        names = zin.namelist()
+        wanted = [f"ppt/slides/slide{int(page)}.xml"]
+        rel_name = f"ppt/slides/_rels/slide{int(page)}.xml.rels"
+        if rel_name in names:
+            rels = zin.read(rel_name).decode("utf-8")
+            for chart in re.findall(r'Target="\.\./charts/([^"]+)"', rels):
+                wanted.append(f"ppt/charts/{chart}")
+                chart_rels = f"ppt/charts/_rels/{chart}.rels"
+                if chart_rels in names:
+                    crels = zin.read(chart_rels).decode("utf-8")
+                    for embed in re.findall(r'Target="\.\./embeddings/([^"]+)"', crels):
+                        wanted.append(f"ppt/embeddings/{embed}")
+        fresh = {name: zin.read(name) for name in wanted if name in names}
+    with zipfile.ZipFile(deck) as zin:
+        parts = {item.filename: zin.read(item.filename) for item in zin.infolist()}
+    parts.update(fresh)
+    _write_package(deck, deck, parts)
 
 
 def _changed_preview_pages(old: object, new: list[dict]) -> list[int] | None:
@@ -2712,6 +2738,7 @@ def _refresh_one_page(spec: dict) -> None:
     """이미 만든 미리보기에서 그 페이지만 고친다."""
     deck = _PREVIEW_DIR / "preview.pptx"
     page = int(spec["page"])
+    _restore_preview_slide(deck, page)
     save_page(
         page,
         int(spec["year"]),
