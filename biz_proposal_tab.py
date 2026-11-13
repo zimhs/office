@@ -420,26 +420,40 @@ def tons_of(year: int, month: int) -> dict[str, int]:
     return out
 
 
+@lru_cache(maxsize=8)
+def _client_bulk_index(year: int, month: int) -> dict[str, dict[str, float]]:
+    """접힌 거래처 이름 → 벌크 품목별 kg. 한 해에 한 번만 만든다."""
+    frame = _through(load_year(year), month)
+    index: dict[str, dict[str, float]] = {}
+    if frame.empty:
+        return index
+    for client, item, qty in zip(frame["거래처"], frame["품목명"], frame["수량"], strict=False):
+        kind = _item_key(str(item))
+        if not kind.startswith("B:"):
+            continue
+        gas = kind[2:]
+        folded = re.sub(r"\s+", "", str(client))
+        bucket = index.setdefault(folded, {})
+        bucket[gas] = bucket.get(gas, 0.0) + _qty_kg(str(item), float(qty))
+    return index
+
+
 def client_kg(year: int, month: int, client: str, product: str) -> float | None:
     if not client or "신규" in client or client.strip() in {"-", "—"}:
         return None
     key = _CLIENT_GAS.get(re.sub(r"[^A-Za-z0-9]", "", product))
     if key is None:
         return None
-    frame = _through(load_year(year), month)
-    if frame.empty:
-        return 0.0
     needle = re.sub(r"\s+", "", client.strip())
-    folded = frame["거래처"].fillna("").map(lambda name: re.sub(r"\s+", "", str(name)))
-    mask = folded.str.contains(re.escape(needle), na=False)
-    picked = frame[mask]
-    if picked.empty:
+    if not needle:
         return 0.0
     total = 0.0
-    for name, qty in zip(picked["품목명"], picked["수량"], strict=False):
-        if _item_key(str(name)) == f"B:{key}":
-            total += _qty_kg(str(name), float(qty))
-    return total
+    found = False
+    for name, gases in _client_bulk_index(int(year), int(month)).items():
+        if needle in name:
+            found = True
+            total += gases.get(key, 0.0)
+    return total if found else 0.0
 
 
 def _shift_year_text(text: str, year: int) -> str:
@@ -1563,17 +1577,80 @@ def _preview_token(specs: list[dict]) -> str:
     return json.dumps(specs, ensure_ascii=False, sort_keys=True)
 
 
+def _changed_preview_pages(old: object, new: list[dict]) -> list[int] | None:
+    if not isinstance(old, list) or len(old) != len(new):
+        return None
+    changed: list[int] = []
+    for before, after in zip(old, new, strict=False):
+        if before != after:
+            changed.append(int(after.get("page", 0)))
+    return changed
+
+
+def _saved_preview_specs() -> list | None:
+    raw = st.session_state.get("_bppt_preview_token")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        specs = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return specs if isinstance(specs, list) else None
+
+
+def _render_one_png(pdf: Path, page: int) -> bytes:
+    renderer = _ensure_renderer()
+    folder = _PREVIEW_DIR / "pages"
+    folder.mkdir(parents=True, exist_ok=True)
+    png = folder / f"{page}.png"
+    subprocess.run([str(renderer), str(pdf), str(page), str(png)], check=True, timeout=30)
+    return png.read_bytes()
+
+
+def _refresh_one_page(spec: dict) -> None:
+    """이미 만든 미리보기에서 그 페이지만 고친다."""
+    deck = _PREVIEW_DIR / "preview.pptx"
+    page = int(spec["page"])
+    save_page(
+        page,
+        int(spec["year"]),
+        int(spec["month"]),
+        plan=spec.get("plan"),
+        tons_plan=spec.get("tons"),
+        asan_months=spec.get("asan"),
+        hwa_months=spec.get("hwa"),
+        policy_lines=spec.get("policy"),
+        review_lines=spec.get("review"),
+        strategy_lines=spec.get("strategy"),
+        directive_lines=spec.get("directive"),
+        focus_lines=spec.get("focus"),
+        task_lines=spec.get("task"),
+        bulk_lines=spec.get("bulk"),
+        page8_rows=spec.get("page8"),
+        path=deck,
+        template=deck,
+    )
+    pngs = dict(st.session_state.get("_bppt_preview_pngs") or {})
+    pngs[page] = _render_one_png(_export_pdf(deck), page)
+    st.session_state["_bppt_preview_pngs"] = pngs
+
+
 def _refresh_previews(specs: list[dict]) -> None:
     token = _preview_token(specs)
     if st.session_state.get("_bppt_preview_token") == token:
         return
+    changed = _changed_preview_pages(_saved_preview_specs(), specs)
+    deck = _PREVIEW_DIR / "preview.pptx"
     try:
         _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-        deck = _PREVIEW_DIR / "preview.pptx"
-        with st.spinner("슬라이드 미리보기를 만들고 있습니다."):
-            _build_preview_deck(specs, deck)
-            pngs = _render_pngs(_export_pdf(deck))
-        st.session_state["_bppt_preview_pngs"] = pngs
+        if changed == [8] and deck.is_file():
+            spec = next(item for item in specs if int(item.get("page", 0)) == 8)
+            with st.spinner("8페이지 실적을 미리보기에 맞추고 있습니다."):
+                _refresh_one_page(spec)
+        else:
+            with st.spinner("슬라이드 미리보기를 만들고 있습니다."):
+                _build_preview_deck(specs, deck)
+                st.session_state["_bppt_preview_pngs"] = _render_pngs(_export_pdf(deck))
         st.session_state["_bppt_preview_error"] = ""
     except Exception as exc:
         st.session_state["_bppt_preview_pngs"] = {}

@@ -377,6 +377,26 @@ def test_preview_deck_updates_a_copy_and_leaves_the_saved_file():
     shutil.rmtree(root)
 
 
+def test_client_lookup_uses_one_index_and_page8_preview_is_the_only_change():
+    assert bp.client_kg(2025, 12, "태성 EPS", "LCO2") == bp.client_kg(2025, 12, "태성EPS", "LCO2")
+    assert bp.client_kg(2025, 12, "제원산업", "LCO2") > 0
+    assert bp.client_kg(2025, 12, "제원사업", "LCO2") == 0.0
+    before = [
+        {"page": 1, "year": 2026, "page8": None},
+        {"page": 8, "year": 2026, "page8": [{"client": "가스텍"}]},
+    ]
+    after = [
+        {"page": 1, "year": 2026, "page8": None},
+        {"page": 8, "year": 2026, "page8": [{"client": "제원산업"}]},
+    ]
+    assert bp._changed_preview_pages(before, after) == [8]
+    moved = [
+        {"page": 1, "year": 2027, "page8": None},
+        {"page": 8, "year": 2026, "page8": [{"client": "제원산업"}]},
+    ]
+    assert bp._changed_preview_pages(before, moved) == [1, 8]
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -395,5 +415,6 @@ if __name__ == "__main__":
     test_page3_three_sections_are_editable()
     test_page7_bulk_lines_follow_the_total_growth()
     test_page8_clients_aggregate_without_changing_the_format()
+    test_client_lookup_uses_one_index_and_page8_preview_is_the_only_change()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")
