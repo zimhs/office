@@ -1585,6 +1585,221 @@ def replace_named_part(path: Path, name: str, data: bytes) -> None:
     _write_package(path, path, parts)
 
 
+def _cell_plain(cell_xml: str) -> str:
+    lines: list[str] = []
+    for para in re.findall(r"<a:p\b.*?</a:p>", cell_xml, flags=re.S):
+        text = "".join(_para_texts(para)).replace("\u3000", "").strip()
+        if text:
+            lines.append(text)
+    return "\n".join(lines)
+
+
+_PAGE14_RUN = (
+    '<a:r><a:rPr lang="ko-KR" altLang="en-US" sz="2300" b="0" dirty="0">'
+    '<a:latin typeface="HY견고딕" panose="02030600000101010101" pitchFamily="18" charset="-127"/>'
+    '<a:ea typeface="HY견고딕" panose="02030600000101010101" pitchFamily="18" charset="-127"/>'
+    "</a:rPr><a:t>\u3000</a:t></a:r>"
+)
+
+
+def _set_cell_lines(cell_xml: str, text: str) -> str:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()] or ["\u3000"]
+    paras = list(re.finditer(r"<a:p\b.*?</a:p>", cell_xml, flags=re.S))
+    if not paras:
+        return _set_cell_text(cell_xml, lines[0] if lines != ["\u3000"] else "")
+    template = paras[0].group(0)
+    if "<a:t" not in template:
+        template = template.replace("</a:p>", _PAGE14_RUN + "</a:p>", 1)
+    built = [_set_cell_text(template, line) for line in lines]
+    return cell_xml[: paras[0].start()] + "".join(built) + cell_xml[paras[-1].end() :]
+
+
+def _set_row_lines(row_xml: str, values: list[str]) -> str:
+    found = list(re.finditer(r"<a:tc\b.*?</a:tc>", row_xml, flags=re.S))
+    if not found:
+        return row_xml
+    pieces = [row_xml[: found[0].start()]]
+    for index, cell in enumerate(found):
+        block = _set_cell_lines(cell.group(0), values[index]) if index < len(values) else cell.group(0)
+        pieces.append(block)
+        nxt = found[index + 1].start() if index + 1 < len(found) else len(row_xml)
+        pieces.append(row_xml[cell.end() : nxt])
+    return "".join(pieces)
+
+
+def _clear_row_spans(row_xml: str) -> str:
+    row_xml = re.sub(r'\srowSpan="\d+"', "", row_xml)
+    return re.sub(r'\svMerge="\d+"', "", row_xml)
+
+
+def _page14_groups_in(xml: str) -> list[dict]:
+    table = re.search(r"<a:tbl\b.*?</a:tbl>", xml, flags=re.S)
+    if table is None:
+        return []
+    rows = re.findall(r"<a:tr\b.*?</a:tr>", table.group(0), flags=re.S)
+    groups: list[dict] = []
+    current: dict | None = None
+    for row in rows[1:]:
+        cells = re.findall(r"<a:tc\b.*?</a:tc>", row, flags=re.S)
+        if len(cells) < 4:
+            continue
+        staff = _cell_plain(cells[0])
+        if staff:
+            current = {"staff": staff, "rows": []}
+            groups.append(current)
+        if current is None:
+            continue
+        region = _cell_plain(cells[1])
+        zone = _cell_plain(cells[2])
+        note = _cell_plain(cells[3])
+        if region or zone or note:
+            current["rows"].append({"region": region, "zone": zone, "note": note})
+    return groups
+
+
+def read_page14_groups(year: int) -> list[dict]:
+    path = proposal_path(year)
+    if path is None or not path.is_file():
+        return []
+    try:
+        xml = zipfile.ZipFile(path).read("ppt/slides/slide14.xml").decode("utf-8")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return []
+    return _page14_groups_in(xml)
+
+
+def _apply_page14(xml: str, groups: list[dict]) -> str:
+    """14페이지 지역 표만 다시 쓴다. 글꼴과 테두리는 원래 행을 복사한다."""
+    table_match = re.search(r"<a:tbl\b.*?</a:tbl>", xml, flags=re.S)
+    if table_match is None:
+        return xml
+    table = table_match.group(0)
+    found = list(re.finditer(r"<a:tr\b.*?</a:tr>", table, flags=re.S))
+    if len(found) < 4:
+        return xml
+    head = _clear_row_spans(found[2].group(0))
+    cont = _clear_row_spans(found[3].group(0))
+    note_cell = re.findall(r"<a:tc\b.*?</a:tc>", head, flags=re.S)[3]
+    built = [found[0].group(0)]
+    for group in groups:
+        staff = str(group.get("staff") or "").strip()
+        rows = [
+            item
+            for item in group.get("rows") or []
+            if str(item.get("region") or "").strip() or str(item.get("zone") or "").strip() or str(item.get("note") or "").strip()
+        ]
+        if not staff or not rows:
+            continue
+        for index, item in enumerate(rows):
+            sample = head if index == 0 else cont
+            if index == 0 and len(rows) > 1:
+                sample = re.sub(r"<a:tc\b", f'<a:tc rowSpan="{len(rows)}"', sample, count=1)
+            elif index > 0:
+                sample = re.sub(r"<a:tc\b", '<a:tc vMerge="1"', sample, count=1)
+            note_at = list(re.finditer(r"<a:tc\b.*?</a:tc>", sample, flags=re.S))
+            if len(note_at) >= 4:
+                sample = sample[: note_at[3].start()] + note_cell + sample[note_at[3].end() :]
+            built.append(
+                _set_row_lines(
+                    sample,
+                    [
+                        staff if index == 0 else "\u3000",
+                        str(item.get("region") or ""),
+                        str(item.get("zone") or ""),
+                        str(item.get("note") or ""),
+                    ],
+                )
+            )
+    new_table = table[: found[0].start()] + "".join(built) + table[found[-1].end() :]
+    return xml[: table_match.start()] + new_table + xml[table_match.end() :]
+
+
+def _edit_page14(year: int, groups: list[dict]) -> list[dict]:
+    """14페이지 구분·담당지역·산업단지·비고를 넣고 뺀다."""
+    store = f"bppt_p14_{year}"
+    seq_key = f"bppt_p14_seq_{year}"
+    if store not in st.session_state:
+        seeded: list[dict] = []
+        nxt = 1
+        for group in groups:
+            rows = []
+            for row in group.get("rows") or []:
+                rows.append(
+                    {
+                        "id": nxt,
+                        "region": row.get("region") or "",
+                        "zone": row.get("zone") or "",
+                        "note": row.get("note") or "",
+                    }
+                )
+                nxt += 1
+            if not rows:
+                rows.append({"id": nxt, "region": "", "zone": "", "note": ""})
+                nxt += 1
+            seeded.append({"id": nxt, "staff": group.get("staff") or "", "rows": rows})
+            nxt += 1
+        st.session_state[store] = seeded
+        st.session_state[seq_key] = nxt
+    people = st.session_state[store]
+    head_staff, head_region, head_zone, head_note, _head_delete = st.columns([1.1, 1.6, 2.4, 1.2, 0.7])
+    head_staff.markdown("**구분**")
+    head_region.markdown("**담당지역**")
+    head_zone.markdown("**주요 산업단지**")
+    head_note.markdown("**비고**")
+    saved: list[dict] = []
+    for person in list(people):
+        pid = person["id"]
+        staff_key = f"bppt_p14s_{year}_{pid}"
+        if staff_key not in st.session_state:
+            st.session_state[staff_key] = person.get("staff") or ""
+        kept_rows: list[dict] = []
+        for index, row in enumerate(list(person["rows"])):
+            rid = row["id"]
+            region_key = f"bppt_p14r_{year}_{pid}_{rid}"
+            zone_key = f"bppt_p14z_{year}_{pid}_{rid}"
+            note_key = f"bppt_p14n_{year}_{pid}_{rid}"
+            if region_key not in st.session_state:
+                st.session_state[region_key] = row.get("region") or ""
+            if zone_key not in st.session_state:
+                st.session_state[zone_key] = row.get("zone") or ""
+            if note_key not in st.session_state:
+                st.session_state[note_key] = row.get("note") or ""
+            staff_col, region_col, zone_col, note_col, delete_col = st.columns([1.1, 1.6, 2.4, 1.2, 0.7])
+            if index == 0:
+                staff_col.text_input("구분", key=staff_key, label_visibility="collapsed")
+            region_col.text_area("담당지역", key=region_key, height=70, label_visibility="collapsed")
+            zone_col.text_area("주요 산업단지", key=zone_key, height=70, label_visibility="collapsed")
+            note_col.text_input("비고", key=note_key, label_visibility="collapsed")
+            region = str(st.session_state.get(region_key) or "")
+            zone = str(st.session_state.get(zone_key) or "")
+            note = str(st.session_state.get(note_key) or "")
+            row["region"], row["zone"], row["note"] = region, zone, note
+            if delete_col.button("삭제", key=f"bppt_p14del_{year}_{pid}_{rid}"):
+                if len(person["rows"]) == 1:
+                    st.session_state[store] = [item for item in people if item["id"] != pid]
+                else:
+                    person["rows"] = [item for item in person["rows"] if item["id"] != rid]
+                st.rerun(scope="fragment")
+            if region.strip() or zone.strip() or note.strip():
+                kept_rows.append({"region": region, "zone": zone, "note": note})
+        add_col, _rest = st.columns([1, 4])
+        if add_col.button("지역 추가", key=f"bppt_p14add_{year}_{pid}"):
+            seq = int(st.session_state.get(seq_key) or 1)
+            st.session_state[seq_key] = seq + 1
+            person["rows"].append({"id": seq, "region": "", "zone": "", "note": ""})
+            st.rerun(scope="fragment")
+        staff = str(st.session_state.get(staff_key) or "").strip()
+        person["staff"] = staff
+        if staff and kept_rows:
+            saved.append({"staff": staff, "rows": kept_rows})
+    if st.button("구분 추가", key=f"bppt_p14new_{year}"):
+        seq = int(st.session_state.get(seq_key) or 1)
+        st.session_state[seq_key] = seq + 2
+        people.append({"id": seq, "staff": "", "rows": [{"id": seq + 1, "region": "", "zone": "", "note": ""}]})
+        st.rerun(scope="fragment")
+    return saved
+
+
 def page14_map_png(year: int = 2026) -> bytes | None:
     path = proposal_path(year)
     if path is None or not path.is_file():
@@ -1602,6 +1817,30 @@ def _write_package(path: Path, source: Path, parts: dict[str, bytes]) -> None:
         for item in zin.infolist():
             zout.writestr(item, parts.get(item.filename, zin.read(item.filename)))
     tmp.replace(path)
+
+
+def _keep_page14_title(xml: str) -> str:
+    """'선제적 접근'이 줄 끝에서 끊기지 않게 제목 칸을 넓히고 한 줄로 잇는다."""
+    idx = xml.find(">선제적<")
+    if idx < 0:
+        return xml
+    start = xml.rfind("<p:sp>", 0, idx)
+    end = xml.find("</p:sp>", idx)
+    if start < 0 or end < 0:
+        return xml
+    shape = xml[start:end]
+    if 'wrap="none"' not in shape:
+        shape = shape.replace("<a:bodyPr>", '<a:bodyPr wrap="none">', 1)
+
+    def widen(match: re.Match[str]) -> str:
+        width = int(match.group(1))
+        height = match.group(2)
+        if width >= 22000000:
+            return match.group(0)
+        return f'<a:ext cx="22000000" cy="{height}"/>'
+
+    shape = re.sub(r'<a:ext cx="(\d+)" cy="(\d+)"/>', widen, shape, count=1)
+    return xml[:start] + shape + xml[end:]
 
 
 def save_page(
@@ -1622,6 +1861,7 @@ def save_page(
     page8_rows: list[dict] | None = None,
     page10_groups: list[dict] | None = None,
     page11_groups: list[dict] | None = None,
+    page14_groups: list[dict] | None = None,
     path: Path | None = None,
     template: Path | None = None,
 ) -> Path:
@@ -1676,6 +1916,10 @@ def save_page(
         xml = _apply_page10(xml, year, month, page10_groups)
     elif page == 11 and page11_groups is not None:
         xml = _apply_page10(xml, year, month, page11_groups)
+    elif page == 14:
+        if page14_groups is not None:
+            xml = _apply_page14(xml, page14_groups)
+        xml = _keep_page14_title(xml)
     parts[slide_name] = xml.encode("utf-8")
     if page == 4:
         cats, series = _chart1(year, month, targets)
@@ -2127,6 +2371,7 @@ def _build_preview_deck(specs: list[dict], dest: Path) -> None:
             page8_rows=spec.get("page8"),
             page10_groups=spec.get("page10"),
             page11_groups=spec.get("page11"),
+            page14_groups=spec.get("map") if int(spec.get("page") or 0) == 14 else None,
             path=dest,
             template=base,
         )
@@ -2200,6 +2445,7 @@ def _refresh_one_page(spec: dict) -> None:
         page8_rows=spec.get("page8"),
         page10_groups=spec.get("page10"),
         page11_groups=spec.get("page11"),
+        page14_groups=spec.get("map") if int(spec.get("page") or 0) == 14 else None,
         path=deck,
         template=deck,
     )
@@ -2276,6 +2522,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                 page8_rows = None
                 page10_groups = None
                 page11_groups = None
+                page14_groups = None
                 if page == 4:
                     st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
                     st.dataframe(_plant_frame(year - 1, month).assign(연도=year - 1), hide_index=True, use_container_width=True)
@@ -2346,7 +2593,9 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                             _edit_page8(year, month, product, [row for row in loaded if row["product"] == product])
                         )
                 elif page == 14:
-                    st.caption("담당자 색 범례와 거래처 점 지도를 겹친 그림입니다. 빨간 원 지도는 뺐습니다.")
+                    st.caption("구분, 담당지역, 산업단지를 고치고 줄을 넣거나 뺄 수 있습니다. 오른쪽 슬라이드는 바로 바뀌고, 저장을 누르면 파일에 들어갑니다.")
+                    page14_groups = _edit_page14(year, read_page14_groups(year))
+                    st.markdown("**담당 지도**")
                     map_png = page14_map_png(year)
                     if map_png:
                         st.image(map_png, use_container_width=True)
@@ -2399,6 +2648,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                             page8_rows=page8_rows,
                             page10_groups=page10_groups,
                             page11_groups=page11_groups,
+                            page14_groups=page14_groups,
                         )
                         st.success(f"{page}페이지를 저장했습니다. {saved}")
                     except FileNotFoundError as exc:
@@ -2426,7 +2676,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     "page8": list(page8_rows) if page == 8 and page8_rows is not None else None,
                     "page10": list(page10_groups) if page == 10 and page10_groups is not None else None,
                     "page11": list(page11_groups) if page == 11 and page11_groups is not None else None,
-                    "map": "staff" if page == 14 else None,
+                    "map": list(page14_groups) if page == 14 and page14_groups is not None else None,
                 }
             )
     if preview_specs:

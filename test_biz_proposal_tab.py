@@ -537,6 +537,50 @@ def test_page14_map_replaces_only_the_picture():
     shutil.rmtree(root)
 
 
+def test_page14_table_edits_keep_format_and_title_stays_one_line():
+    import shutil
+
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "지역 추가" in src
+    assert "구분 추가" in src
+    assert "_keep_page14_title" in src
+    template = _template()
+    real = bp.proposal_path(2026)
+    before = real.read_bytes() if real is not None and real.is_file() else None
+    root = Path("/tmp/biz_proposal_page14_table")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    dest = root / "26년 사업계획서.pptx"
+    shutil.copy(template, dest)
+    original = zipfile.ZipFile(template).read("ppt/slides/slide14.xml").decode("utf-8")
+    groups = bp._page14_groups_in(original)
+    assert groups and "김명현" in groups[1]["staff"]
+    assert len(groups[1]["rows"]) == 3
+    assert "용인" in groups[0]["rows"][0]["region"]
+    groups[0]["rows"][0]["zone"] = "용인반도체클러스터, 테스트산단"
+    groups[0]["rows"].append({"region": "평택", "zone": "포승", "note": "메모"})
+    grid = re.search(r"<a:tblGrid\b.*?</a:tblGrid>", original, flags=re.S).group(0)
+    bp.save_page(14, 2026, 12, page14_groups=groups, path=dest, template=template)
+    saved = zipfile.ZipFile(dest).read("ppt/slides/slide14.xml").decode("utf-8")
+    assert "테스트산단" in saved
+    assert "평택" in saved
+    assert "메모" in saved
+    assert 'rowSpan="2"' in saved
+    assert 'wrap="none"' in saved
+    assert 'cx="22000000"' in saved
+    assert ">선제적<" in saved and "> 접근<" in saved
+    assert re.search(r"<a:tblGrid\b.*?</a:tblGrid>", saved, flags=re.S).group(0) == grid
+    assert zipfile.ZipFile(dest).read("ppt/media/image3.png") == zipfile.ZipFile(template).read("ppt/media/image3.png")
+    assert zipfile.ZipFile(dest).read("ppt/theme/theme1.xml") == zipfile.ZipFile(template).read("ppt/theme/theme1.xml")
+    assert zipfile.ZipFile(dest).read("ppt/slides/slide1.xml") == zipfile.ZipFile(template).read("ppt/slides/slide1.xml")
+    again = bp._keep_page14_title(saved)
+    assert again == saved
+    if before is not None:
+        assert real.read_bytes() == before
+    shutil.rmtree(root)
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -559,5 +603,6 @@ if __name__ == "__main__":
     test_page10_new_clients_fill_gas_and_growth_is_calculated()
     test_page11_uses_the_same_staff_editor_and_growth_text()
     test_page14_map_replaces_only_the_picture()
+    test_page14_table_edits_keep_format_and_title_stays_one_line()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")
