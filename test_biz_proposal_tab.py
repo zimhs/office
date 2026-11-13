@@ -500,6 +500,43 @@ def test_page11_uses_the_same_staff_editor_and_growth_text():
     shutil.rmtree(root)
 
 
+def _tiny_png(width: int, height: int, color: tuple[int, int, int]) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_page14_map_replaces_only_the_picture():
+    import shutil
+
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "compose_staff_map" in src
+    assert "page14_map_png" in src
+    template = _template()
+    root = Path("/tmp/biz_proposal_page14")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    dest = root / "26년 사업계획서.pptx"
+    shutil.copy(template, dest)
+    before_slide = zipfile.ZipFile(dest).read("ppt/slides/slide14.xml")
+    before_theme = zipfile.ZipFile(dest).read("ppt/theme/theme1.xml")
+    before_image = zipfile.ZipFile(dest).read("ppt/media/image3.png")
+    png = bp.compose_staff_map(_tiny_png(40, 8, (230, 240, 255)), _tiny_png(30, 24, (80, 160, 220)), size=(80, 64))
+    bp.replace_named_part(dest, "ppt/media/image3.png", png)
+    with zipfile.ZipFile(dest) as book:
+        assert book.read("ppt/slides/slide14.xml") == before_slide
+        assert book.read("ppt/theme/theme1.xml") == before_theme
+        assert book.read("ppt/slides/slide10.xml") == zipfile.ZipFile(template).read("ppt/slides/slide10.xml")
+        assert book.read("ppt/media/image3.png") != before_image
+        assert book.read("ppt/media/image3.png") == png
+    shutil.rmtree(root)
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -521,5 +558,6 @@ if __name__ == "__main__":
     test_client_lookup_uses_one_index_and_page8_preview_is_the_only_change()
     test_page10_new_clients_fill_gas_and_growth_is_calculated()
     test_page11_uses_the_same_staff_editor_and_growth_text()
+    test_page14_map_replaces_only_the_picture()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")

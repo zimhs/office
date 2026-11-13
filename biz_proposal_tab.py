@@ -1548,6 +1548,54 @@ def _slide8_cells(year: int, month: int) -> dict[tuple[int, int], str]:
     return cells
 
 
+def compose_staff_map(legend: bytes, dots: bytes, size: tuple[int, int] = (1600, 1274)) -> bytes:
+    """담당자 색 범례를 위에, 거래처 점 지도를 아래에 붙인다."""
+    from PIL import Image
+
+    width, height = size
+    canvas = Image.new("RGB", size, "white")
+    legend_im = Image.open(io.BytesIO(legend)).convert("RGBA")
+    dots_im = Image.open(io.BytesIO(dots)).convert("RGBA")
+    pad = 28
+    legend_w = width - pad * 2
+    legend_h = max(1, round(legend_im.height * legend_w / legend_im.width))
+    legend_im = legend_im.resize((legend_w, legend_h), Image.Resampling.LANCZOS)
+    canvas.paste(legend_im, (pad, pad), legend_im)
+    top = pad + legend_h + 16
+    room_w = width - pad * 2
+    room_h = height - top - pad
+    scale = min(room_w / dots_im.width, room_h / dots_im.height)
+    dots_w = max(1, round(dots_im.width * scale))
+    dots_h = max(1, round(dots_im.height * scale))
+    dots_im = dots_im.resize((dots_w, dots_h), Image.Resampling.LANCZOS)
+    left = pad + (room_w - dots_w) // 2
+    canvas.paste(dots_im, (left, top), dots_im)
+    out = io.BytesIO()
+    canvas.save(out, format="PNG")
+    return out.getvalue()
+
+
+def replace_named_part(path: Path, name: str, data: bytes) -> None:
+    """압축 안의 파일 하나만 바꾼다. 슬라이드 XML은 그대로 둔다."""
+    with zipfile.ZipFile(path, "r") as zin:
+        parts = {item.filename: zin.read(item.filename) for item in zin.infolist()}
+    if name not in parts:
+        raise KeyError(name)
+    parts[name] = data
+    _write_package(path, path, parts)
+
+
+def page14_map_png(year: int = 2026) -> bytes | None:
+    path = proposal_path(year)
+    if path is None or not path.is_file():
+        return None
+    try:
+        with zipfile.ZipFile(path) as book:
+            return book.read("ppt/media/image3.png")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+
+
 def _write_package(path: Path, source: Path, parts: dict[str, bytes]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with zipfile.ZipFile(source, "r") as zin, zipfile.ZipFile(tmp, "w") as zout:
@@ -2297,6 +2345,11 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                         page8_rows.extend(
                             _edit_page8(year, month, product, [row for row in loaded if row["product"] == product])
                         )
+                elif page == 14:
+                    st.caption("담당자 색 범례와 거래처 점 지도를 겹친 그림입니다. 빨간 원 지도는 뺐습니다.")
+                    map_png = page14_map_png(year)
+                    if map_png:
+                        st.image(map_png, use_container_width=True)
                 elif page in (10, 11):
                     st.caption("담당별로 신규 업체와 물량증대를 넣고 뺄 수 있습니다. 신규는 전년 대비 새 업체와 가스종류를 불러오고, 물량증대는 1~10위를 고르면 증감이 계산됩니다. 비고는 비워 둡니다.")
                     loaded_groups = read_page10_groups(year, page)
@@ -2373,6 +2426,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     "page8": list(page8_rows) if page == 8 and page8_rows is not None else None,
                     "page10": list(page10_groups) if page == 10 and page10_groups is not None else None,
                     "page11": list(page11_groups) if page == 11 and page11_groups is not None else None,
+                    "map": "staff" if page == 14 else None,
                 }
             )
     if preview_specs:
