@@ -397,6 +397,60 @@ def test_client_lookup_uses_one_index_and_page8_preview_is_the_only_change():
     assert bp._changed_preview_pages(before, moved) == [1, 8]
 
 
+def test_page10_new_clients_fill_gas_and_growth_is_calculated():
+    import shutil
+
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "전체 적용" in src
+    assert "staff_new_clients" in src
+    news = bp.staff_new_clients(2026, 12, "박준우")
+    assert news
+    assert all(row["gas"] for row in news)
+    gong = next(row for row in news if "공성기계" in row["client"])
+    assert "LGC" in gong["gas"]
+    assert bp.volume_change_text(2026, 12, "두산판금") == "▲38% 증대"
+    assert bp.staff_top_clients(2026, 12, "박준우")[0]["client"] == "두산판금"
+    template = _template()
+    root = Path("/tmp/biz_proposal_page10")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    dest = root / "26년 사업계획서.pptx"
+    real = bp.proposal_path(2026)
+    before = real.read_bytes() if real is not None and real.is_file() else None
+    original = zipfile.ZipFile(template).read("ppt/slides/slide10.xml").decode("utf-8")
+    groups = [
+        {
+            "staff": "박준우 대리(25년 3월 입사)",
+            "news": [{"client": gong["client"], "gas": gong["gas"]}, {"client": "추가신규", "gas": "LO2(BULK)"}],
+            "growth": [{"client": "두산판금"}],
+        }
+    ]
+    bp.save_page(10, 2026, 12, page10_groups=groups, path=dest, template=template)
+    slide10 = zipfile.ZipFile(dest).read("ppt/slides/slide10.xml").decode("utf-8")
+    parsed = bp._page10_groups_in(slide10)
+    assert parsed[0]["staff"] == "박준우 대리(25년 3월 입사)"
+    assert parsed[0]["news"][0]["gas"] == gong["gas"]
+    assert parsed[0]["growth"][0]["client"] == "두산판금"
+    row = next(item for item in re.findall(r"<a:tr\b.*?</a:tr>", slide10, flags=re.S) if "두산판금" in item)
+    assert "▲38% 증대" in row
+    assert "93백" not in row
+    assert 'rowSpan="2"' in slide10
+    headed = bp._apply_page10_heading(slide10, 2027)
+    assert re.search(r">\s*26<", headed)
+    assert "25년 3월" in headed
+    assert re.search(r"<a:tblGrid>.*?</a:tblGrid>", original, flags=re.S).group(0) == re.search(
+        r"<a:tblGrid>.*?</a:tblGrid>", slide10, flags=re.S
+    ).group(0)
+    with zipfile.ZipFile(template) as old, zipfile.ZipFile(dest) as new:
+        assert old.read("ppt/theme/theme1.xml") == new.read("ppt/theme/theme1.xml")
+        assert old.read("ppt/slides/slide1.xml") == new.read("ppt/slides/slide1.xml")
+        assert old.read("ppt/slides/slide8.xml") == new.read("ppt/slides/slide8.xml")
+    if before is not None:
+        assert real.read_bytes() == before
+    shutil.rmtree(root)
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -416,5 +470,6 @@ if __name__ == "__main__":
     test_page7_bulk_lines_follow_the_total_growth()
     test_page8_clients_aggregate_without_changing_the_format()
     test_client_lookup_uses_one_index_and_page8_preview_is_the_only_change()
+    test_page10_new_clients_fill_gas_and_growth_is_calculated()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")

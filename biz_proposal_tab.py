@@ -456,6 +456,243 @@ def client_kg(year: int, month: int, client: str, product: str) -> float | None:
     return total if found else 0.0
 
 
+ADDRESS_PATH = Path(__file__).resolve().parent / "uploaded_cache" / "address.csv"
+
+
+def _fold_name(value: object) -> str:
+    text = re.sub(r"\s+", "", str(value or ""))
+    return re.sub(r"^[zZ]", "", text)
+
+
+@lru_cache(maxsize=1)
+def _staff_pairs() -> tuple[tuple[str, str], ...]:
+    """접힌 업체명 → 영업담당자. 긴 이름부터 맞춘다."""
+    if not ADDRESS_PATH.is_file():
+        return ()
+    frame = pd.read_csv(ADDRESS_PATH, encoding="utf-8-sig")
+    frame.columns = frame.columns.astype(str).str.strip()
+    if "영업담당자" not in frame.columns:
+        return ()
+    pairs: list[tuple[str, str]] = []
+    for _, row in frame.iterrows():
+        staff = str(row.get("영업담당자") or "").strip()
+        if staff in {"", "담당자없음", "nan", "None", "미지정"}:
+            continue
+        for column in ("사업체명", "상호"):
+            if column not in frame.columns:
+                continue
+            name = _fold_name(row.get(column))
+            if len(name) >= 2:
+                pairs.append((name, staff))
+    pairs.sort(key=lambda item: len(item[0]), reverse=True)
+    return tuple(pairs)
+
+
+def staff_of(client: object) -> str:
+    folded = _fold_name(client)
+    if len(folded) < 2:
+        return ""
+    exact = ""
+    loose = ""
+    for name, staff in _staff_pairs():
+        if name == folded:
+            exact = staff
+            break
+        if not loose and (folded.startswith(name) or name.startswith(folded)):
+            loose = staff
+    return exact or loose
+
+
+def staff_key_in_label(label: str) -> str:
+    folded = _fold_name(label)
+    keys = sorted({staff for _name, staff in _staff_pairs()}, key=len, reverse=True)
+    for key in keys:
+        if _fold_name(key) and _fold_name(key) in folded:
+            return key
+    return ""
+
+
+@lru_cache(maxsize=8)
+def _raw_won_index(year: int, month: int) -> dict[str, float]:
+    frame = _through(load_year(year), month)
+    totals: dict[str, float] = {}
+    if frame.empty:
+        return totals
+    for client, money in zip(frame["거래처"], frame["금액"], strict=False):
+        key = _fold_name(client)
+        if not key:
+            continue
+        totals[key] = totals.get(key, 0.0) + float(money)
+    return totals
+
+
+def _million_of(year: int, month: int, client: str) -> int:
+    needle = _fold_name(client)
+    if not needle:
+        return 0
+    totals = _raw_won_index(int(year), int(month))
+    if needle in totals:
+        return int(round(totals[needle] / 1_000_000))
+    picked = [won for name, won in totals.items() if name.startswith(needle) or needle.startswith(name)]
+    if not picked:
+        return 0
+    return int(round(sum(picked) / 1_000_000))
+
+
+def volume_change_text(plan_year: int, month: int, client: str) -> str:
+    """물량증감. 전년 대비 분석년의 백만원 증감률이다."""
+    current = _million_of(int(plan_year) - 1, month, client)
+    previous = _million_of(int(plan_year) - 2, month, client)
+    if previous <= 0 and current <= 0:
+        return ""
+    if previous <= 0:
+        return "신규"
+    pct = int(round((current - previous) / previous * 100))
+    if pct > 0:
+        return f"▲{pct}% 증대"
+    if pct < 0:
+        return f"▼{abs(pct)}%"
+    return "0%"
+
+
+def staff_top_clients(plan_year: int, month: int, staff: str) -> list[dict]:
+    """담당자 실적 1~10위. 금액은 부가세 포함 백만원이다."""
+    key = str(staff or "").strip()
+    if not key:
+        return []
+    frame = _through(load_year(int(plan_year) - 1), month)
+    raw: dict[str, float] = {}
+    label: dict[str, str] = {}
+    if not frame.empty:
+        for client, money in zip(frame["거래처"], frame["금액"], strict=False):
+            if staff_of(client) != key:
+                continue
+            folded = _fold_name(client)
+            if not folded:
+                continue
+            raw[folded] = raw.get(folded, 0.0) + float(money)
+            current = label.get(folded, "")
+            name = str(client).strip()
+            if len(name) > len(current):
+                label[folded] = name
+    ranked = sorted(raw.items(), key=lambda item: item[1], reverse=True)[:10]
+    rows: list[dict] = []
+    for index, (folded, _won) in enumerate(ranked, start=1):
+        client = label.get(folded) or folded
+        rows.append(
+            {
+                "rank": index,
+                "client": client,
+                "prev": _million_of(int(plan_year) - 2, month, client),
+                "curr": _million_of(int(plan_year) - 1, month, client),
+                "change": volume_change_text(plan_year, month, client),
+            }
+        )
+    return rows
+
+
+_GAS_LABEL = {
+    "B:O2": "LO2(BULK)",
+    "B:N2": "LN2(BULK)",
+    "B:AR": "LAr(BULK)",
+    "B:CO2": "LCO2(BULK)",
+    "B:LPG": "LPG(BULK)",
+    "C:O2L": "LO2(LGC)",
+    "C:N2L": "LN2(LGC)",
+    "C:ARL": "LAr(LGC)",
+    "C:O2": "O2(Cyl)",
+    "C:N2": "N2(Cyl)",
+    "C:Ar": "Ar(Cyl)",
+    "C:CO2": "CO2(Cyl)",
+    "C:Mix": "Mix Gas(Cyl)",
+    "C:He": "He(Cyl)",
+    "C:UHP": "UHP(Cyl)",
+    "C:기타": "기타",
+}
+
+
+@lru_cache(maxsize=8)
+def _client_item_won(year: int, month: int) -> dict[str, tuple[tuple[str, float], ...]]:
+    frame = _through(load_year(year), month)
+    buckets: dict[str, dict[str, float]] = {}
+    if frame.empty:
+        return {}
+    for client, item, money in zip(frame["거래처"], frame["품목명"], frame["금액"], strict=False):
+        key = _fold_name(client)
+        if not key:
+            continue
+        kind = _item_key(str(item))
+        bucket = buckets.setdefault(key, {})
+        bucket[kind] = bucket.get(kind, 0.0) + float(money)
+    return {key: tuple(sorted(kinds.items(), key=lambda item: item[1], reverse=True)) for key, kinds in buckets.items()}
+
+
+def client_gas_text(plan_year: int, month: int, client: str) -> str:
+    """분석년 매출에서 가스 종류를 적는다. 두 종류면 나란히, 더 많으면 대표 하나에 외를 붙인다."""
+    needle = _fold_name(client)
+    if not needle:
+        return ""
+    kinds = _client_item_won(int(plan_year) - 1, month)
+    picked = kinds.get(needle)
+    if picked is None:
+        merged: dict[str, float] = {}
+        for name, rows in kinds.items():
+            if name.startswith(needle) or needle.startswith(name):
+                for key, won in rows:
+                    merged[key] = merged.get(key, 0.0) + won
+        picked = tuple(sorted(merged.items(), key=lambda item: item[1], reverse=True))
+    ranked = [(key, won) for key, won in picked if won > 0 and _GAS_LABEL.get(key, "") not in {"", "기타"}]
+    if not ranked:
+        ranked = [(key, won) for key, won in picked if won > 0 and _GAS_LABEL.get(key)]
+    labels: list[str] = []
+    for key, _won in ranked:
+        label = _GAS_LABEL[key]
+        if label not in labels:
+            labels.append(label)
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]}, {labels[1]}"
+    return f"{labels[0]} 외"
+
+
+def staff_new_clients(plan_year: int, month: int, staff: str) -> list[dict]:
+    """전년도에 없고 분석년에 있는 담당 거래처 전부."""
+    key = str(staff or "").strip()
+    if not key:
+        return []
+    previous = set(_raw_won_index(int(plan_year) - 2, month))
+    frame = _through(load_year(int(plan_year) - 1), month)
+    raw: dict[str, float] = {}
+    label: dict[str, str] = {}
+    if not frame.empty:
+        for client, money in zip(frame["거래처"], frame["금액"], strict=False):
+            if staff_of(client) != key:
+                continue
+            folded = _fold_name(client)
+            if not folded or folded in previous:
+                continue
+            raw[folded] = raw.get(folded, 0.0) + float(money)
+            name = str(client).strip()
+            if len(name) > len(label.get(folded, "")):
+                label[folded] = name
+    rows: list[dict] = []
+    for folded, won in sorted(raw.items(), key=lambda item: item[1], reverse=True):
+        if won <= 0:
+            continue
+        client = label.get(folded) or folded
+        rows.append(
+            {
+                "client": client,
+                "gas": client_gas_text(plan_year, month, client),
+                "won": int(round(won / 1_000_000)),
+            }
+        )
+    return rows
+
+
 def _shift_year_text(text: str, year: int) -> str:
     if int(year) == 2026 and "2023" not in text and "23년" not in text:
         return text
@@ -1188,6 +1425,115 @@ def _apply_page8(xml: str, year: int, month: int, rows: list[dict]) -> str:
     return xml[: table_match.start()] + new_table + xml[table_match.end() :]
 
 
+def _blank_cell(text: str) -> str:
+    cleaned = str(text or "").replace("\u3000", "").strip()
+    return cleaned or "\u3000"
+
+
+def _page10_groups_in(xml: str) -> list[dict]:
+    table = re.search(r"<a:tbl\b.*?</a:tbl>", xml, flags=re.S)
+    if table is None:
+        return []
+    rows = re.findall(r"<a:tr\b.*?</a:tr>", table.group(0), flags=re.S)
+    groups: list[dict] = []
+    current: dict | None = None
+    for row in rows[2:]:
+        cells = _row_cell_texts(row)
+        if len(cells) < 6:
+            continue
+        staff = cells[0].replace("\u3000", "").strip()
+        if staff:
+            current = {"staff": staff, "news": [], "growth": []}
+            groups.append(current)
+        if current is None:
+            continue
+        client = cells[1].replace("\u3000", "").strip()
+        gas = cells[2].replace("\u3000", "").strip()
+        growth = cells[3].replace("\u3000", "").strip()
+        if client or gas:
+            current["news"].append({"client": client, "gas": gas})
+        if growth:
+            current["growth"].append({"client": growth})
+    return groups
+
+
+def read_page10_groups(year: int) -> list[dict]:
+    path = proposal_path(year)
+    if path is None or not path.is_file():
+        return []
+    try:
+        xml = zipfile.ZipFile(path).read("ppt/slides/slide10.xml").decode("utf-8")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return []
+    return _page10_groups_in(xml)
+
+
+def _apply_page10_heading(xml: str, year: int) -> str:
+    """제목의 실적 연도만 맞춘다. 입사년도는 표 문안 그대로 둔다."""
+    yy = f"{(int(year) - 1) % 100:02d}"
+
+    def shape(match: re.Match[str]) -> str:
+        block = match.group(0)
+        if "담당별" not in block:
+            return block
+
+        def run(text_match: re.Match[str]) -> str:
+            body = text_match.group(2)
+            found = re.fullmatch(r"(\s*)\d{2}", body)
+            if found is None:
+                return text_match.group(0)
+            return text_match.group(1) + found.group(1) + yy + text_match.group(3)
+
+        return _AT.sub(run, block)
+
+    return re.sub(r"<p:sp\b.*?</p:sp>", shape, xml, flags=re.S)
+
+
+def _apply_page10(xml: str, year: int, month: int, groups: list[dict]) -> str:
+    """10페이지 데이터 행만 다시 쓴다. 글꼴과 테두리는 원래 행을 복사한다."""
+    table_match = re.search(r"<a:tbl\b.*?</a:tbl>", xml, flags=re.S)
+    if table_match is None:
+        return xml
+    table = table_match.group(0)
+    found = list(re.finditer(r"<a:tr\b.*?</a:tr>", table, flags=re.S))
+    if len(found) < 4:
+        return xml
+    head = found[2].group(0)
+    cont = found[3].group(0)
+    built = [found[0].group(0), found[1].group(0)]
+    for group in groups:
+        staff = str(group.get("staff") or "").strip()
+        news = [
+            item
+            for item in group.get("news") or []
+            if str(item.get("client") or "").strip() or str(item.get("gas") or "").strip()
+        ]
+        growth = [item for item in group.get("growth") or [] if str(item.get("client") or "").strip()]
+        count = max(len(news), len(growth))
+        if not staff or count == 0:
+            continue
+        for index in range(count):
+            sample = _span_row(head, count) if index == 0 else cont
+            new_item = news[index] if index < len(news) else {}
+            grow_item = growth[index] if index < len(growth) else {}
+            client = str(grow_item.get("client") or "").strip()
+            sample = _set_row_cells(
+                sample,
+                [
+                    staff if index == 0 else "\u3000",
+                    _blank_cell(str(new_item.get("client") or "")),
+                    _blank_cell(str(new_item.get("gas") or "")),
+                    _blank_cell(client),
+                    _blank_cell(volume_change_text(year, month, client) if client else ""),
+                    "\u3000",
+                ],
+            )
+            built.append(sample)
+    new_table = table[: found[0].start()] + "".join(built) + table[found[-1].end() :]
+    xml = xml[: table_match.start()] + new_table + xml[table_match.end() :]
+    return _apply_page10_heading(xml, year)
+
+
 def _slide8_cells(year: int, month: int) -> dict[tuple[int, int], str]:
     cells: dict[tuple[int, int], str] = {}
     for index, (product, client, budget_text, _note) in enumerate(_page8_template()):
@@ -1226,6 +1572,7 @@ def save_page(
     task_lines: list[str] | None = None,
     bulk_lines: list[str] | None = None,
     page8_rows: list[dict] | None = None,
+    page10_groups: list[dict] | None = None,
     path: Path | None = None,
     template: Path | None = None,
 ) -> Path:
@@ -1276,6 +1623,8 @@ def save_page(
             xml = _apply_page8(xml, year, month, page8_rows)
         else:
             xml = _update_tables(xml, [_slide8_cells(year, month)])
+    elif page == 10 and page10_groups is not None:
+        xml = _apply_page10(xml, year, month, page10_groups)
     parts[slide_name] = xml.encode("utf-8")
     if page == 4:
         cats, series = _chart1(year, month, targets)
@@ -1423,6 +1772,174 @@ def _edit_page8(year: int, month: int, product: str, rows: list[dict[str, str]])
     return kept
 
 
+def _edit_page10(year: int, month: int, groups: list[dict]) -> list[dict]:
+    store = f"bppt_p10_{year}"
+    if store not in st.session_state:
+        seeded = []
+        for index, group in enumerate(groups, start=1):
+            seeded.append(
+                {
+                    "id": index,
+                    "staff": group.get("staff") or "",
+                    "news": [
+                        {"id": nindex, "client": item.get("client") or "", "gas": item.get("gas") or ""}
+                        for nindex, item in enumerate(group.get("news") or [], start=1)
+                    ],
+                    "growth": [
+                        {"id": gindex, "client": item.get("client") or ""}
+                        for gindex, item in enumerate(group.get("growth") or [], start=1)
+                    ],
+                }
+            )
+        st.session_state[store] = seeded
+    people = st.session_state[store]
+    saved: list[dict] = []
+    for person in people:
+        pid = person["id"]
+        staff_key = f"bppt_p10s_{year}_{pid}"
+        if staff_key not in st.session_state:
+            st.session_state[staff_key] = person.get("staff") or ""
+        st.markdown("---")
+        name_col, delete_col = st.columns([6, 1])
+        name_col.text_input("담당", key=staff_key)
+        staff = str(st.session_state.get(staff_key) or "").strip()
+        person["staff"] = staff
+        staff_key_name = staff_key_in_label(staff)
+        if delete_col.button("담당 삭제", key=f"bppt_p10del_{year}_{pid}"):
+            st.session_state[store] = [row for row in people if row["id"] != pid]
+            st.rerun(scope="fragment")
+        st.markdown("**신규**")
+        newcomers = staff_new_clients(year, month, staff_key_name) if staff_key_name else []
+        if newcomers:
+            st.caption(f"{year - 1}년에 새로 거래한 업체 {len(newcomers)}곳입니다. 전체 적용을 누르면 업체명과 가스종류가 들어갑니다.")
+            st.dataframe(
+                pd.DataFrame(
+                    {
+                        "거래처": [row["client"] for row in newcomers],
+                        "가스종류": [row["gas"] for row in newcomers],
+                        f"{year - 1}년(백만)": [row["won"] for row in newcomers],
+                    }
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+            apply_col, pick_col, one_col = st.columns([1.2, 3, 1])
+            if apply_col.button("전체 적용", key=f"bppt_p10nall_{year}_{pid}"):
+                already = {_fold_name(row.get("client")) for row in person["news"]}
+                nxt = max((item["id"] for item in person["news"]), default=0)
+                for row in newcomers:
+                    folded = _fold_name(row["client"])
+                    if not folded or folded in already:
+                        continue
+                    nxt += 1
+                    already.add(folded)
+                    person["news"].append({"id": nxt, "client": row["client"], "gas": row["gas"]})
+                    st.session_state[f"bppt_p10n_{year}_{pid}_{nxt}"] = row["client"]
+                    st.session_state[f"bppt_p10g_{year}_{pid}_{nxt}"] = row["gas"]
+                st.rerun(scope="fragment")
+            new_options = [row["client"] for row in newcomers]
+            new_labels = {row["client"]: f"{row['client']}  {row['gas']}" for row in newcomers}
+            pick_col.selectbox(
+                "신규 업체",
+                new_options,
+                format_func=lambda name: new_labels.get(name, name),
+                key=f"bppt_p10npick_{year}_{pid}",
+            )
+            if one_col.button("선택 추가", key=f"bppt_p10none_{year}_{pid}"):
+                chosen = str(st.session_state.get(f"bppt_p10npick_{year}_{pid}") or "").strip()
+                gas = next((row["gas"] for row in newcomers if row["client"] == chosen), "")
+                already = {_fold_name(row.get("client")) for row in person["news"]}
+                if chosen and _fold_name(chosen) not in already:
+                    nxt = max((item["id"] for item in person["news"]), default=0) + 1
+                    person["news"].append({"id": nxt, "client": chosen, "gas": gas})
+                    st.session_state[f"bppt_p10n_{year}_{pid}_{nxt}"] = chosen
+                    st.session_state[f"bppt_p10g_{year}_{pid}_{nxt}"] = gas
+                    st.rerun(scope="fragment")
+        elif staff_key_name:
+            st.caption(f"{year - 1}년에 전년 대비 신규 업체가 없습니다.")
+        else:
+            st.caption("담당 이름에 김명현처럼 적으면 신규 업체가 나옵니다.")
+        news_kept = []
+        for item in person["news"]:
+            client_key = f"bppt_p10n_{year}_{pid}_{item['id']}"
+            gas_key = f"bppt_p10g_{year}_{pid}_{item['id']}"
+            if client_key not in st.session_state:
+                st.session_state[client_key] = item.get("client") or ""
+            known_gas = client_gas_text(year, month, str(st.session_state.get(client_key) or item.get("client") or ""))
+            if gas_key not in st.session_state:
+                st.session_state[gas_key] = item.get("gas") or known_gas
+            elif not str(st.session_state.get(gas_key) or "").strip() and known_gas:
+                st.session_state[gas_key] = known_gas
+            client_col, gas_col, row_delete = st.columns([3, 2, 0.8])
+            client_col.text_input("업체명", key=client_key, label_visibility="collapsed")
+            gas_col.text_input("가스종류", key=gas_key, label_visibility="collapsed")
+            if row_delete.button("삭제", key=f"bppt_p10ndel_{year}_{pid}_{item['id']}"):
+                person["news"] = [row for row in person["news"] if row["id"] != item["id"]]
+                st.rerun(scope="fragment")
+            client = str(st.session_state.get(client_key) or "").strip()
+            gas = str(st.session_state.get(gas_key) or "").strip()
+            item["client"] = client
+            item["gas"] = gas
+            if client or gas:
+                news_kept.append({"client": client, "gas": gas})
+        if st.button("신규 추가", key=f"bppt_p10nadd_{year}_{pid}"):
+            nxt = max((item["id"] for item in person["news"]), default=0) + 1
+            person["news"].append({"id": nxt, "client": "", "gas": ""})
+            st.rerun(scope="fragment")
+        st.markdown("**물량증대**")
+        ranks = staff_top_clients(year, month, staff_key_name) if staff_key_name else []
+        if ranks:
+            st.dataframe(
+                pd.DataFrame(
+                    {
+                        "순위": [row["rank"] for row in ranks],
+                        "거래처": [row["client"] for row in ranks],
+                        f"{year - 2}년(백만)": [row["prev"] for row in ranks],
+                        f"{year - 1}년(백만)": [row["curr"] for row in ranks],
+                        "물량증감": [row["change"] for row in ranks],
+                    }
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+            pick_col, add_col = st.columns([4, 1])
+            pick_key = f"bppt_p10pick_{year}_{pid}"
+            options = [row["client"] for row in ranks]
+            labels = {row["client"]: f"{row['rank']}위 {row['client']}  {row['change']}" for row in ranks}
+            pick_col.selectbox("1~10위", options, format_func=lambda name: labels.get(name, name), key=pick_key)
+            if add_col.button("선택 추가", key=f"bppt_p10gadd_{year}_{pid}"):
+                chosen = str(st.session_state.get(pick_key) or "").strip()
+                already = {str(row.get("client") or "").strip() for row in person["growth"]}
+                if chosen and chosen not in already:
+                    nxt = max((item["id"] for item in person["growth"]), default=0) + 1
+                    person["growth"].append({"id": nxt, "client": chosen})
+                    st.rerun(scope="fragment")
+        else:
+            st.caption("담당 이름에 김명현처럼 적으면 그 담당 1~10위가 나옵니다.")
+        growth_kept = []
+        for item in person["growth"]:
+            grow_key = f"bppt_p10c_{year}_{pid}_{item['id']}"
+            if grow_key not in st.session_state:
+                st.session_state[grow_key] = item.get("client") or ""
+            client_col, delta_col, row_delete = st.columns([3, 1.6, 0.8])
+            client_col.text_input("물량증대 업체", key=grow_key, label_visibility="collapsed")
+            client = str(st.session_state.get(grow_key) or "").strip()
+            item["client"] = client
+            delta_col.markdown(volume_change_text(year, month, client) if client else "\u00a0")
+            if row_delete.button("삭제", key=f"bppt_p10gdel_{year}_{pid}_{item['id']}"):
+                person["growth"] = [row for row in person["growth"] if row["id"] != item["id"]]
+                st.rerun(scope="fragment")
+            if client:
+                growth_kept.append({"client": client})
+        if staff and (news_kept or growth_kept):
+            saved.append({"staff": staff, "news": news_kept, "growth": growth_kept})
+    if st.button("담당 추가", key=f"bppt_p10add_{year}"):
+        nxt = max((person["id"] for person in people), default=0) + 1
+        people.append({"id": nxt, "staff": "", "news": [], "growth": []})
+        st.rerun(scope="fragment")
+    return saved
+
+
 def _edit_lines(year: int, slot: str, lines: list[str], page: int = 2) -> list[str]:
     store = f"bppt_s{page}_{slot}_{year}"
     if store not in st.session_state:
@@ -1556,6 +2073,7 @@ def _build_preview_deck(specs: list[dict], dest: Path) -> None:
             task_lines=spec.get("task"),
             bulk_lines=spec.get("bulk"),
             page8_rows=spec.get("page8"),
+            page10_groups=spec.get("page10"),
             path=dest,
             template=base,
         )
@@ -1627,6 +2145,7 @@ def _refresh_one_page(spec: dict) -> None:
         task_lines=spec.get("task"),
         bulk_lines=spec.get("bulk"),
         page8_rows=spec.get("page8"),
+        page10_groups=spec.get("page10"),
         path=deck,
         template=deck,
     )
@@ -1643,9 +2162,9 @@ def _refresh_previews(specs: list[dict]) -> None:
     deck = _PREVIEW_DIR / "preview.pptx"
     try:
         _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-        if changed == [8] and deck.is_file():
-            spec = next(item for item in specs if int(item.get("page", 0)) == 8)
-            with st.spinner("8페이지 실적을 미리보기에 맞추고 있습니다."):
+        if changed and len(changed) == 1 and deck.is_file():
+            spec = next(item for item in specs if int(item.get("page", 0)) == changed[0])
+            with st.spinner(f"{changed[0]}페이지 미리보기를 맞추고 있습니다."):
                 _refresh_one_page(spec)
         else:
             with st.spinner("슬라이드 미리보기를 만들고 있습니다."):
@@ -1701,6 +2220,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                 task_lines = None
                 bulk_lines = None
                 page8_rows = None
+                page10_groups = None
                 if page == 4:
                     st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
                     st.dataframe(_plant_frame(year - 1, month).assign(연도=year - 1), hide_index=True, use_container_width=True)
@@ -1770,6 +2290,9 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                         page8_rows.extend(
                             _edit_page8(year, month, product, [row for row in loaded if row["product"] == product])
                         )
+                elif page == 10:
+                    st.caption("담당별로 신규 업체와 물량증대를 넣고 뺄 수 있습니다. 신규는 전년 대비 새 업체와 가스종류를 불러오고, 물량증대는 1~10위를 고르면 증감이 계산됩니다. 비고는 비워 둡니다.")
+                    page10_groups = _edit_page10(year, month, read_page10_groups(year))
                 elif page == 2:
                     yy = int(year) % 100
                     prev = (int(year) - 1) % 100
@@ -1810,6 +2333,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                             task_lines=task_lines,
                             bulk_lines=bulk_lines,
                             page8_rows=page8_rows,
+                            page10_groups=page10_groups,
                         )
                         st.success(f"{page}페이지를 저장했습니다. {saved}")
                     except FileNotFoundError as exc:
@@ -1835,6 +2359,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     "task": list(task_lines) if page == 3 and task_lines is not None else None,
                     "bulk": list(bulk_lines) if page == 7 and bulk_lines is not None else None,
                     "page8": list(page8_rows) if page == 8 and page8_rows is not None else None,
+                    "page10": list(page10_groups) if page == 10 and page10_groups is not None else None,
                 }
             )
     if preview_specs:
