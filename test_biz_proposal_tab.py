@@ -36,6 +36,9 @@ def test_sixteen_pages_each_have_a_save_button():
     assert "render_biz_proposal_tab" in app
     assert "min_tabs=13" in app
     assert "tab14" not in app
+    assert "edit_col, view_col = st.columns([1, 1.15])" in src
+    assert "st.image" in src
+    assert "_show_page_preview" in src
 
 
 def test_2025_plant_months_match_the_plan():
@@ -198,6 +201,36 @@ def test_page2_policy_and_review_are_editable(tmp_path: Path | None = None):
     shutil.rmtree(root)
 
 
+def test_preview_deck_updates_a_copy_and_leaves_the_saved_file():
+    import shutil
+
+    src_template = _template()
+    template_before = src_template.read_bytes()
+    real = bp.proposal_path(2026)
+    before = real.read_bytes() if real is not None and real.is_file() else None
+    root = Path("/tmp/biz_proposal_preview_test")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    dest = root / "preview.pptx"
+    specs = [
+        {"page": 1, "year": 2026, "month": 12, "plan": None, "tons": None, "asan": None, "hwa": None, "policy": None, "review": None, "strategy": None},
+        {"page": 2, "year": 2027, "month": 12, "plan": None, "tons": None, "asan": None, "hwa": None, "policy": ["방침가"], "review": ["판매하나"], "strategy": ["전략셋"]},
+    ]
+    original = bp._preview_base
+    bp._preview_base = lambda: src_template
+    try:
+        bp._build_preview_deck(specs, dest)
+    finally:
+        bp._preview_base = original
+    slide2 = zipfile.ZipFile(dest).read("ppt/slides/slide2.xml").decode("utf-8")
+    assert "방침가" in slide2
+    assert src_template.read_bytes() == template_before
+    if before is not None:
+        assert real.read_bytes() == before
+    shutil.rmtree(root)
+
+
 def test_plan_months_match_the_template_sum():
     assert sum(bp.PLAN_ASAN) == 5695
     assert sum(bp.PLAN_HWA) == 15765
@@ -213,4 +246,5 @@ if __name__ == "__main__":
     test_existing_file_saves_without_desktop_template()
     test_page2_strategy_lines_add_and_remove()
     test_page2_policy_and_review_are_editable()
+    test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")
