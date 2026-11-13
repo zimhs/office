@@ -55,6 +55,30 @@ STRATEGY_DEFAULTS = (
     "지역별 산업단지 영업계획",
     "악성 채권현황 및 업체 관리방안",
 )
+DIRECTIVE_LABEL = "영업 방침"
+FOCUS_LABEL = "중점운영 목표"
+TASK_LABEL = "추진 과제"
+_GOAL_MARK = {"directive": "영업방침", "focus": "중점운영목표", "task": "추진과제"}
+DIRECTIVE_DEFAULTS = (
+    "신규영업 강화 / 수익성 위주 영업",
+    "기술영업 / 관리강화",
+    "고객만족 영업",
+    "거래처 관리",
+)
+FOCUS_DEFAULTS = (
+    "직 거래처  개발",
+    "단가인상 / 채권관리",
+    "안전 / 전문교육 실시",
+    "기존 거래처 관리(주기적 방문)",
+)
+TASK_DEFAULTS = (
+    "신규 산업단지 집중 영업",
+    "신규 충전소 / 판매점 선점",
+    "단가인상 적기 반영",
+    "부실채권 관리 / 여신점검",
+    "고객응대 / 서비스 강화",
+    "주기적인 안전점검(분기 1회)",
+)
 _STRATEGY_BULLET = (
     '<a:p><a:pPr marL="0" lvl="0" indent="0"><a:lnSpc><a:spcPct val="150000"/></a:lnSpc>'
     '<a:spcBef><a:spcPts val="864"/></a:spcBef><a:buNone/></a:pPr>'
@@ -554,6 +578,93 @@ def _apply_toc_lines(
     return re.sub(r"<p:sp\b.*?</p:sp>", repl, xml, flags=re.S)
 
 
+_NUMBERED_ITEM = (
+    '<a:p><a:pPr marL="514350" indent="-514350"><a:lnSpc><a:spcPct val="150000"/></a:lnSpc>'
+    '<a:spcBef><a:spcPts val="864"/></a:spcBef><a:buAutoNum type="arabicPeriod"/></a:pPr>'
+    '<a:r><a:rPr lang="ko-KR" altLang="en-US" dirty="0"><a:solidFill><a:srgbClr val="242529"/></a:solidFill>'
+    '<a:latin typeface="HY견고딕" panose="02030600000101010101" pitchFamily="18" charset="-127"/>'
+    '<a:ea typeface="HY견고딕" panose="02030600000101010101" pitchFamily="18" charset="-127"/></a:rPr>'
+    "<a:t>거래처 관리</a:t></a:r></a:p>"
+)
+
+
+def _compact_title(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+def _goal_lines(xml: str, kind: str) -> list[str] | None:
+    mark = _GOAL_MARK[kind]
+    for shape in re.finditer(r"<p:sp\b.*?</p:sp>", xml, flags=re.S):
+        paras = re.findall(r"<a:p\b.*?</a:p>", shape.group(0), flags=re.S)
+        if not paras:
+            continue
+        if _compact_title("".join(_para_texts(paras[0]))) != mark:
+            continue
+        lines = []
+        for para in paras[1:]:
+            line = "".join(_para_texts(para)).strip()
+            if line:
+                lines.append(line)
+        return lines
+    return None
+
+
+def _read_slide3(year: int) -> str | None:
+    path = proposal_path(year)
+    if path is None or not path.is_file():
+        return None
+    try:
+        return zipfile.ZipFile(path).read("ppt/slides/slide3.xml").decode("utf-8")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+
+
+def read_goal_lines(year: int) -> tuple[list[str], list[str], list[str]]:
+    xml = _read_slide3(year)
+    defaults = (list(DIRECTIVE_DEFAULTS), list(FOCUS_DEFAULTS), list(TASK_DEFAULTS))
+    if xml is None:
+        return defaults
+    found = [_goal_lines(xml, kind) for kind in ("directive", "focus", "task")]
+    return tuple(default if lines is None else lines for default, lines in zip(defaults, found, strict=False))
+
+
+def _fill_numbered(block: str, lines: list[str]) -> str:
+    paras = list(re.finditer(r"<a:p\b.*?</a:p>", block, flags=re.S))
+    if not paras:
+        return block
+    title = paras[0].group(0)
+    sample = next((para.group(0) for para in paras[1:] if "".join(_para_texts(para.group(0))).strip()), _NUMBERED_ITEM)
+    built = [title, *[_set_cell_text(sample, line) for line in lines]]
+    return block[: paras[0].start()] + "".join(built) + block[paras[-1].end() :]
+
+
+def _apply_goal_lines(
+    xml: str,
+    directive_lines: list[str] | None,
+    focus_lines: list[str] | None,
+    task_lines: list[str] | None,
+) -> str:
+    """3페이지 영업 방침, 중점운영 목표, 추진 과제만 바꾼다."""
+    chosen = {
+        "영업방침": directive_lines,
+        "중점운영목표": focus_lines,
+        "추진과제": task_lines,
+    }
+
+    def repl(match: re.Match[str]) -> str:
+        block = match.group(0)
+        paras = re.findall(r"<a:p\b.*?</a:p>", block, flags=re.S)
+        if not paras:
+            return block
+        mark = _compact_title("".join(_para_texts(paras[0])))
+        lines = chosen.get(mark)
+        if lines is None:
+            return block
+        return _fill_numbered(block, lines)
+
+    return re.sub(r"<p:sp\b.*?</p:sp>", repl, xml, flags=re.S)
+
+
 def _set_cell_text(cell_xml: str, text: str) -> str:
     seen = {"n": 0}
     safe = escape(text)
@@ -842,6 +953,9 @@ def save_page(
     policy_lines: list[str] | None = None,
     review_lines: list[str] | None = None,
     strategy_lines: list[str] | None = None,
+    directive_lines: list[str] | None = None,
+    focus_lines: list[str] | None = None,
+    task_lines: list[str] | None = None,
     path: Path | None = None,
     template: Path | None = None,
 ) -> Path:
@@ -871,6 +985,12 @@ def save_page(
             for lines in (policy_lines, review_lines, strategy_lines)
         ]
         xml = _apply_toc_lines(xml, year, cleaned[0], cleaned[1], cleaned[2])
+    if page == 3 and any(lines is not None for lines in (directive_lines, focus_lines, task_lines)):
+        cleaned = [
+            None if lines is None else [str(line).strip() for line in lines if str(line).strip()]
+            for lines in (directive_lines, focus_lines, task_lines)
+        ]
+        xml = _apply_goal_lines(xml, cleaned[0], cleaned[1], cleaned[2])
     if page == 4:
         numbers = _slide4_numbers(year, month, targets)
         xml = _map_text(xml, lambda text: numbers.get(text, text))
@@ -985,27 +1105,27 @@ def _plant_frame(year: int, month: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _edit_lines(year: int, slot: str, lines: list[str]) -> list[str]:
-    store = f"bppt_s2_{slot}_{year}"
+def _edit_lines(year: int, slot: str, lines: list[str], page: int = 2) -> list[str]:
+    store = f"bppt_s{page}_{slot}_{year}"
     if store not in st.session_state:
         st.session_state[store] = [{"id": index + 1, "text": line} for index, line in enumerate(lines)]
     items = st.session_state[store]
     for item in items:
-        key = f"bppt_s2_{slot}_{year}_{item['id']}"
+        key = f"bppt_s{page}_{slot}_{year}_{item['id']}"
         if key in st.session_state:
             item["text"] = st.session_state[key]
     kept = [str(item["text"]).strip() for item in items if str(item["text"]).strip()]
     for item in items:
-        key = f"bppt_s2_{slot}_{year}_{item['id']}"
+        key = f"bppt_s{page}_{slot}_{year}_{item['id']}"
         if key not in st.session_state:
             st.session_state[key] = item["text"]
         left, right = st.columns([8, 1])
         left.text_input(slot, key=key, label_visibility="collapsed")
-        if right.button("삭제", key=f"bppt_s2_del_{slot}_{year}_{item['id']}"):
+        if right.button("삭제", key=f"bppt_s{page}_del_{slot}_{year}_{item['id']}"):
             st.session_state[store] = [row for row in items if row["id"] != item["id"]]
             st.session_state.pop(key, None)
             st.rerun(scope="fragment")
-    if st.button("항목 추가", key=f"bppt_s2_add_{slot}_{year}"):
+    if st.button("항목 추가", key=f"bppt_s{page}_add_{slot}_{year}"):
         nxt = max((item["id"] for item in items), default=0) + 1
         items.append({"id": nxt, "text": ""})
         st.rerun(scope="fragment")
@@ -1110,9 +1230,12 @@ def _build_preview_deck(specs: list[dict], dest: Path) -> None:
             tons_plan=spec["tons"],
             asan_months=spec["asan"],
             hwa_months=spec["hwa"],
-            policy_lines=spec["policy"],
-            review_lines=spec["review"],
-            strategy_lines=spec["strategy"],
+            policy_lines=spec.get("policy"),
+            review_lines=spec.get("review"),
+            strategy_lines=spec.get("strategy"),
+            directive_lines=spec.get("directive"),
+            focus_lines=spec.get("focus"),
+            task_lines=spec.get("task"),
             path=dest,
             template=base,
         )
@@ -1190,6 +1313,9 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                 policy_lines = None
                 review_lines = None
                 strategy_lines = None
+                directive_lines = None
+                focus_lines = None
+                task_lines = None
                 if page == 4:
                     st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
                     st.dataframe(_plant_frame(year - 1, month).assign(연도=year - 1), hide_index=True, use_container_width=True)
@@ -1257,6 +1383,15 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     review_lines = _edit_lines(year, "review", review_now)
                     st.markdown(f"**3. {yy:02d}{STRATEGY_TITLE}**")
                     strategy_lines = _edit_lines(year, "strategy", strategy_now)
+                elif page == 3:
+                    st.caption("1번, 2번, 3번 항목을 고치고 줄을 추가하거나 삭제할 수 있습니다.")
+                    directive_now, focus_now, task_now = read_goal_lines(year)
+                    st.markdown(f"**1. {DIRECTIVE_LABEL}**")
+                    directive_lines = _edit_lines(year, "directive", directive_now, page=3)
+                    st.markdown(f"**2. {FOCUS_LABEL}**")
+                    focus_lines = _edit_lines(year, "focus", focus_now, page=3)
+                    st.markdown(f"**3. {TASK_LABEL}**")
+                    task_lines = _edit_lines(year, "task", task_now, page=3)
                 else:
                     st.caption(f"이 페이지는 문안의 년도를 {year}년 기준으로 바꿉니다. 표 서식은 그대로입니다.")
                 if st.button(f"{page}페이지 저장", key=f"bppt_save_{page}"):
@@ -1272,6 +1407,9 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                             policy_lines=policy_lines,
                             review_lines=review_lines,
                             strategy_lines=strategy_lines,
+                            directive_lines=directive_lines,
+                            focus_lines=focus_lines,
+                            task_lines=task_lines,
                         )
                         st.success(f"{page}페이지를 저장했습니다. {saved}")
                     except FileNotFoundError as exc:
@@ -1292,6 +1430,9 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     "policy": list(policy_lines) if page == 2 and policy_lines is not None else None,
                     "review": list(review_lines) if page == 2 and review_lines is not None else None,
                     "strategy": list(strategy_lines) if page == 2 and strategy_lines is not None else None,
+                    "directive": list(directive_lines) if page == 3 and directive_lines is not None else None,
+                    "focus": list(focus_lines) if page == 3 and focus_lines is not None else None,
+                    "task": list(task_lines) if page == 3 and task_lines is not None else None,
                 }
             )
     if preview_specs:

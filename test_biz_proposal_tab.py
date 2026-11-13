@@ -201,6 +201,52 @@ def test_page2_policy_and_review_are_editable(tmp_path: Path | None = None):
     shutil.rmtree(root)
 
 
+def test_page3_three_sections_are_editable(tmp_path: Path | None = None):
+    import shutil
+
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "1. {DIRECTIVE_LABEL}" in src
+    assert "2. {FOCUS_LABEL}" in src
+    assert "3. {TASK_LABEL}" in src
+    template = _template()
+    root = tmp_path or Path("/tmp/biz_proposal_goals")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    dest = root / "27년 사업계획서.pptx"
+    real = bp.proposal_path(2026)
+    before = real.read_bytes() if real is not None and real.is_file() else None
+    bp.save_page(
+        3,
+        2027,
+        12,
+        directive_lines=["방침하나", "방침둘"],
+        focus_lines=["목표하나"],
+        task_lines=["과제하나", "과제둘", "과제셋"],
+        path=dest,
+        template=template,
+    )
+    slide3 = zipfile.ZipFile(dest).read("ppt/slides/slide3.xml").decode("utf-8")
+    assert bp._goal_lines(slide3, "directive") == ["방침하나", "방침둘"]
+    assert bp._goal_lines(slide3, "focus") == ["목표하나"]
+    assert bp._goal_lines(slide3, "task") == ["과제하나", "과제둘", "과제셋"]
+    directive = next(block for block in re.findall(r"<p:sp\b.*?</p:sp>", slide3, flags=re.S) if "방침하나" in block)
+    assert "buAutoNum" in directive
+    assert "영업방침" in bp._compact_title("".join(bp._para_texts(re.findall(r"<a:p\b.*?</a:p>", directive, flags=re.S)[0])))
+    bp.save_page(3, 2027, 12, task_lines=[], path=dest, template=template)
+    slide3 = zipfile.ZipFile(dest).read("ppt/slides/slide3.xml").decode("utf-8")
+    assert bp._goal_lines(slide3, "directive") == ["방침하나", "방침둘"]
+    assert bp._goal_lines(slide3, "focus") == ["목표하나"]
+    assert bp._goal_lines(slide3, "task") == []
+    assert "추진과제" in slide3.replace(" ", "")
+    with zipfile.ZipFile(template) as old, zipfile.ZipFile(dest) as new:
+        assert old.read("ppt/theme/theme1.xml") == new.read("ppt/theme/theme1.xml")
+        assert old.read("ppt/slides/slide2.xml") == new.read("ppt/slides/slide2.xml")
+    if before is not None:
+        assert real.read_bytes() == before
+    shutil.rmtree(root)
+
+
 def test_preview_deck_updates_a_copy_and_leaves_the_saved_file():
     import shutil
 
@@ -246,5 +292,6 @@ if __name__ == "__main__":
     test_existing_file_saves_without_desktop_template()
     test_page2_strategy_lines_add_and_remove()
     test_page2_policy_and_review_are_editable()
+    test_page3_three_sections_are_editable()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")
