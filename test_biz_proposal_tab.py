@@ -247,6 +247,48 @@ def test_page3_three_sections_are_editable(tmp_path: Path | None = None):
     shutil.rmtree(root)
 
 
+def test_page7_bulk_lines_follow_the_total_growth(tmp_path: Path | None = None):
+    import shutil
+
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    assert "벌크운영 계획" in src
+    assert "증가율" in src
+    template = _template()
+    root = tmp_path or Path("/tmp/biz_proposal_bulk")
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    dest = root / "27년 사업계획서.pptx"
+    real = bp.proposal_path(2026)
+    before = real.read_bytes() if real is not None and real.is_file() else None
+    pct = bp.bulk_growth_percent(2026, 12, bp.PLAN_TONS)
+    prev = bp.tons_of(2025, 12)["합계"]
+    assert pct == int(round((sum(bp.PLAN_TONS.values()) - prev) / prev * 100))
+    bp.save_page(
+        7,
+        2026,
+        12,
+        bulk_lines=["- 26년 벌크 전년대비 목표 17% 증대", "- 26년 신규 항목"],
+        path=dest,
+        template=template,
+    )
+    slide7 = zipfile.ZipFile(dest).read("ppt/slides/slide7.xml").decode("utf-8")
+    assert bp._bulk_lines_in(slide7) == [f"- 26년 벌크 전년대비 목표 {pct}% 증대", "- 26년 신규 항목"]
+    assert f">{pct}%</a:t>" in slide7
+    bp.save_page(7, 2027, 12, bulk_lines=["- 26년 벌크 전년대비 목표 1% 증대"], path=dest, template=template)
+    slide7 = zipfile.ZipFile(dest).read("ppt/slides/slide7.xml").decode("utf-8")
+    tuned = bp._bulk_lines_in(slide7)
+    assert tuned is not None and tuned[0].startswith("- 27년 벌크 전년대비 목표 ")
+    assert "신규 항목" not in slide7
+    assert "벌크운영 계획" in slide7
+    with zipfile.ZipFile(template) as old, zipfile.ZipFile(dest) as new:
+        assert old.read("ppt/theme/theme1.xml") == new.read("ppt/theme/theme1.xml")
+        assert old.read("ppt/slides/slide1.xml") == new.read("ppt/slides/slide1.xml")
+    if before is not None:
+        assert real.read_bytes() == before
+    shutil.rmtree(root)
+
+
 def test_preview_deck_updates_a_copy_and_leaves_the_saved_file():
     import shutil
 
@@ -293,5 +335,6 @@ if __name__ == "__main__":
     test_page2_strategy_lines_add_and_remove()
     test_page2_policy_and_review_are_editable()
     test_page3_three_sections_are_editable()
+    test_page7_bulk_lines_follow_the_total_growth()
     test_preview_deck_updates_a_copy_and_leaves_the_saved_file()
     print("ok")

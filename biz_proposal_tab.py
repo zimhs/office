@@ -887,6 +887,109 @@ def _slide7_cells(year: int, month: int, tons_plan: dict[str, int]) -> dict[tupl
     return cells
 
 
+BULK_DEFAULTS = (
+    "- 26년 벌크 전년대비 목표 17% 증대",
+    "- 26년 LPG(T/K) 전년대비 62% 증대 (라쿨 설비 증설)",
+    "- 26년 탄산 전년대비 25% 증대",
+    "(1~3월, 10~12월 : 월 4,400톤, 4~6월 :5,900톤, 7~9월 : 7,400톤)",
+)
+
+
+def bulk_growth_percent(year: int, month: int, tons_plan: dict[str, int] | None = None) -> int:
+    """전년 합계 대비 올해 계획 합계의 증가율. 슬라이드 삼각형 숫자다."""
+    labels = ("산소", "질소", "알곤", "탄산", "LPG")
+    chosen = tons_plan or PLAN_TONS
+    prev = int(tons_of(int(year) - 1, month)["합계"])
+    plan = sum(int(chosen[label]) for label in labels)
+    if prev <= 0:
+        return 0
+    return int(round((plan - prev) / prev * 100))
+
+
+def _tune_bulk_line(line: str, year: int, pct: int) -> str:
+    text = re.sub(r"(?<!\d)\d{2}(?=년)", f"{int(year) % 100:02d}", str(line).strip())
+    if "벌크" in text and "목표" in text:
+        text = re.sub(r"\d+%", f"{int(pct)}%", text, count=1)
+    return text
+
+
+def _bulk_lines_in(xml: str) -> list[str] | None:
+    for shape in re.finditer(r"<p:sp\b.*?</p:sp>", xml, flags=re.S):
+        block = shape.group(0)
+        if "outerShdw" not in block or 'sz="2400"' not in block or "벌크운영 계획" in block:
+            continue
+        lines = []
+        for para in re.findall(r"<a:p\b.*?</a:p>", block, flags=re.S):
+            line = "".join(_para_texts(para)).strip()
+            if line:
+                lines.append(line)
+        return lines
+    return None
+
+
+def read_bulk_lines(year: int) -> list[str]:
+    path = proposal_path(year)
+    if path is None or not path.is_file():
+        return list(BULK_DEFAULTS)
+    try:
+        xml = zipfile.ZipFile(path).read("ppt/slides/slide7.xml").decode("utf-8")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return list(BULK_DEFAULTS)
+    found = _bulk_lines_in(xml)
+    return list(BULK_DEFAULTS) if found is None else found
+
+
+def _fill_plain_lines(block: str, lines: list[str]) -> str:
+    paras = list(re.finditer(r"<a:p\b.*?</a:p>", block, flags=re.S))
+    if not paras:
+        return block
+    sample = paras[0].group(0)
+    built = [_set_cell_text(sample, line) for line in lines] or [_set_cell_text(sample, "")]
+    return block[: paras[0].start()] + "".join(built) + block[paras[-1].end() :]
+
+
+def _patch_goal_percent(block: str, pct: int) -> str:
+    def para_repl(match: re.Match[str]) -> str:
+        para = match.group(0)
+        joined = "".join(_para_texts(para))
+        if "벌크" not in joined or "목표" not in joined:
+            return para
+
+        def text_repl(text_match: re.Match[str]) -> str:
+            if not re.fullmatch(r"\d+%\s*", text_match.group(2)):
+                return text_match.group(0)
+            space = " " if text_match.group(2).endswith(" ") else ""
+            return text_match.group(1) + f"{int(pct)}%{space}" + text_match.group(3)
+
+        return _AT.sub(text_repl, para)
+
+    return re.sub(r"<a:p\b.*?</a:p>", para_repl, block, flags=re.S)
+
+
+def _apply_bulk_plan(
+    xml: str,
+    year: int,
+    month: int,
+    tons_plan: dict[str, int],
+    lines: list[str] | None,
+) -> str:
+    pct = bulk_growth_percent(year, month, tons_plan)
+    tuned = None if lines is None else [_tune_bulk_line(line, year, pct) for line in lines if str(line).strip()]
+
+    def repl(match: re.Match[str]) -> str:
+        block = match.group(0)
+        text = "".join(piece for para in re.findall(r"<a:p\b.*?</a:p>", block, flags=re.S) for piece in _para_texts(para)).strip()
+        if re.fullmatch(r"\d+%", text):
+            return _set_cell_text(block, f"{pct}%")
+        if "outerShdw" in block and 'sz="2400"' in block and "벌크운영 계획" not in block:
+            if tuned is None:
+                return _patch_goal_percent(block, pct)
+            return _fill_plain_lines(block, tuned)
+        return block
+
+    return re.sub(r"<p:sp\b.*?</p:sp>", repl, xml, flags=re.S)
+
+
 @lru_cache(maxsize=1)
 def _page8_template() -> tuple[tuple[str, str, str, str], ...]:
     template = find_template()
@@ -956,6 +1059,7 @@ def save_page(
     directive_lines: list[str] | None = None,
     focus_lines: list[str] | None = None,
     task_lines: list[str] | None = None,
+    bulk_lines: list[str] | None = None,
     path: Path | None = None,
     template: Path | None = None,
 ) -> Path:
@@ -1000,6 +1104,7 @@ def save_page(
         xml = _update_tables(xml, _slide6_cells(year, month))
     elif page == 7:
         xml = _update_tables(xml, [_slide7_cells(year, month, ton_targets)])
+        xml = _apply_bulk_plan(xml, year, month, ton_targets, bulk_lines)
     elif page == 8:
         xml = _update_tables(xml, [_slide8_cells(year, month)])
     parts[slide_name] = xml.encode("utf-8")
@@ -1236,6 +1341,7 @@ def _build_preview_deck(specs: list[dict], dest: Path) -> None:
             directive_lines=spec.get("directive"),
             focus_lines=spec.get("focus"),
             task_lines=spec.get("task"),
+            bulk_lines=spec.get("bulk"),
             path=dest,
             template=base,
         )
@@ -1316,6 +1422,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                 directive_lines = None
                 focus_lines = None
                 task_lines = None
+                bulk_lines = None
                 if page == 4:
                     st.dataframe(_plant_frame(year - 2, month).assign(연도=year - 2), hide_index=True, use_container_width=True)
                     st.dataframe(_plant_frame(year - 1, month).assign(연도=year - 1), hide_index=True, use_container_width=True)
@@ -1358,6 +1465,18 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     cols = st.columns(5)
                     for col, label in zip(cols, ("산소", "질소", "알곤", "탄산", "LPG"), strict=False):
                         tons_plan[label] = int(col.number_input(f"{label} 목표(톤)", min_value=0, value=PLAN_TONS[label], step=1, key=f"bppt_ton_{year}_{label}"))
+                    pct = bulk_growth_percent(year, month, tons_plan)
+                    st.caption(f"벌크운영 계획 문안을 고치고 줄을 추가하거나 삭제할 수 있습니다. 삼각형 {pct}%는 {year - 1}년 대비 {year}년 계획 합계의 증가율입니다.")
+                    bulk_store = f"bppt_s7_bulk_{year}"
+                    if bulk_store in st.session_state:
+                        for item in st.session_state[bulk_store]:
+                            item["text"] = _tune_bulk_line(item["text"], year, pct)
+                            item_key = f"bppt_s7_bulk_{year}_{item['id']}"
+                            if item_key in st.session_state:
+                                st.session_state[item_key] = _tune_bulk_line(st.session_state[item_key], year, pct)
+                    bulk_now = [_tune_bulk_line(line, year, pct) for line in read_bulk_lines(year)]
+                    st.markdown(f"**{year}년 벌크운영 계획**")
+                    bulk_lines = _edit_lines(year, "bulk", bulk_now, page=7)
                 elif page == 8:
                     preview = []
                     for product, client, budget, note in _page8_template():
@@ -1410,6 +1529,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                             directive_lines=directive_lines,
                             focus_lines=focus_lines,
                             task_lines=task_lines,
+                            bulk_lines=bulk_lines,
                         )
                         st.success(f"{page}페이지를 저장했습니다. {saved}")
                     except FileNotFoundError as exc:
@@ -1433,6 +1553,7 @@ def render_biz_proposal_tab(_sales_df: pd.DataFrame | None = None) -> None:
                     "directive": list(directive_lines) if page == 3 and directive_lines is not None else None,
                     "focus": list(focus_lines) if page == 3 and focus_lines is not None else None,
                     "task": list(task_lines) if page == 3 and task_lines is not None else None,
+                    "bulk": list(bulk_lines) if page == 7 and bulk_lines is not None else None,
                 }
             )
     if preview_specs:
