@@ -8331,6 +8331,31 @@ def _dash_force_open_tab(tab_idx: int) -> None:
     st.session_state[f"_dash_force_tab_{int(tab_idx)}"] = True
 
 
+def _dash_remember_tab(tab_idx: int) -> None:
+    """탭을 옮긴 번호만 남긴다. 화면은 다시 그리지 않는다."""
+    st.session_state["_dash_seen_tab"] = int(tab_idx)
+
+
+@st.fragment
+def _dash_tab_memory_fragment() -> None:
+    """탭 번호만 받는 작은 조각. 본문 탭은 건드리지 않는다."""
+    st.markdown(
+        """<style>
+        div[class*="st-key-_dash_remember_tab_"] {
+          display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+    for _i in range(16):
+        st.button(
+            "탭기억",
+            key=f"_dash_remember_tab_{_i}",
+            on_click=_dash_remember_tab,
+            args=(_i,),
+        )
+
+
 def _dash_backup_session_keys(store_key: str, prefixes: tuple[str, ...]) -> None:
     bak: dict = {}
     for k, v in list(st.session_state.items()):
@@ -8369,7 +8394,9 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_skip_inactive_on_filter(tab_idx: int) -> bool:
-    """보고 있는 탭만 그린다. 어느 탭인지 모르면 건너뛰지 않는다."""
+    """상단 필터가 바뀐 실행만 다른 탭을 건너뛴다. 탭 이동은 이미 그린 화면을 연다."""
+    if not st.session_state.get("_dash_filter_changed_flag"):
+        return False
     if _dash_tab_is_open(tab_idx):
         return False
     return True
@@ -8381,7 +8408,9 @@ def _dash_inactive_tab_keep(tab_idx: int) -> None:
 
 
 def _dash_should_defer_light_tab(tab_idx: int) -> bool:
-    """보고 있지 않은 지도·재고·수익성은 필터 때 건너뛴다."""
+    """상단 필터가 바뀌었고 보고 있지 않은 지도·재고·수익성만 건너뛴다."""
+    if not st.session_state.get("_dash_filter_changed_flag"):
+        return False
     if _dash_tab_is_open(tab_idx):
         return False
     return True
@@ -8392,8 +8421,8 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """보고 있지 않은 업무일지·시장조사·메일은 필터 때 건너뛴다."""
-    if not _dash_tab_is_open(tab_idx):
+    """상단 필터가 바뀌었고 보고 있지 않은 업무일지·시장조사·메일만 건너뛴다."""
+    if st.session_state.get("_dash_filter_changed_flag") and not _dash_tab_is_open(tab_idx):
         return True
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
@@ -8408,6 +8437,18 @@ def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: 
     _dash_inactive_tab_keep(tab_idx)
 
 
+def _dash_mark_tabs_skipped(skipped: bool) -> None:
+    """필터로 다른 탭을 비운 실행만 탭 클릭이 다시 그리게 한다."""
+    components.html(
+        f"""
+        <script>
+        window.parent.__dashTabsSkipped = {"true" if skipped else "false"};
+        </script>
+        """,
+        height=0,
+    )
+
+
 def _dash_install_tab_opener() -> None:
     """탭 클릭 리스너는 부모 문서에 둔다. 필터 fragment 재실행에는 다시 넣지 않는다."""
     components.html(
@@ -8415,14 +8456,28 @@ def _dash_install_tab_opener() -> None:
         <script>
         (function () {
           var doc = window.parent.document;
-          if (doc.__dashActiveTabCookieVer === 22) return;
+          if (doc.__dashReloadGuardVer === 25) return;
           var s = doc.createElement("script");
           s.textContent = [
             "(function(){",
-            "if (document.__dashActiveTabCookieVer === 22) return;",
-            "document.__dashActiveTabCookieVer = 22;",
+            "if (document.__dashReloadGuardVer === 25) return;",
+            "document.__dashReloadGuardVer = 25;",
+            "var origClick=HTMLElement.prototype.click;",
+            "HTMLElement.prototype.click=function(){",
+            "try{",
+            "var host=this.closest&&this.closest('[class*=\\"st-key-_dash_reload_tab_\\"]');",
+            "if(host && !window.__dashTabsSkipped) return;",
+            "}catch(eG){}",
+            "return origClick.apply(this, arguments);",
+            "};",
+            "if (document.__dashActiveTabCookieVer >= 22) return;",
+            "document.__dashActiveTabCookieVer = 23;",
             "function clickRemount(idx){",
             "var btn=document.querySelector('[class*=\\"st-key-_dash_reload_tab_'+idx+'\\"] button');",
+            "if(!btn) return false; try{btn.click();}catch(e){} return true;",
+            "}",
+            "function clickRemember(idx){",
+            "var btn=document.querySelector('[class*=\\"st-key-_dash_remember_tab_'+idx+'\\"] button');",
             "if(!btn) return false; try{btn.click();}catch(e){} return true;",
             "}",
             "function openTab(idx){",
@@ -8431,6 +8486,8 @@ def _dash_install_tab_opener() -> None:
             "var now=Date.now(); var prev=window.__dashTabClickAt||{};",
             "if(prev.idx===idx && now-(prev.t||0)<800) return;",
             "window.__dashTabClickAt={idx:idx,t:now};",
+            "setTimeout(function(){clickRemember(idx);},0);",
+            "if(!window.__dashTabsSkipped) return;",
             "setTimeout(function(){clickRemount(idx);},40);",
             "}",
             "window.__dashOpenTab=openTab;",
@@ -8447,14 +8504,18 @@ def _dash_install_tab_opener() -> None:
             "setTimeout(function(){",
             "if(window.__dashTabBootDone) return;",
             "window.__dashTabBootDone=1;",
-            "var panel=document.querySelector('[role=\\"tabpanel\\"]:not([hidden])');",
-            "if(panel && (panel.innerText||'').trim().length>40) return;",
             "var lists=document.querySelectorAll('[role=\\"tablist\\"]');",
             "var list=null,i,n,best=0;",
             "for(i=0;i<lists.length;i++){n=lists[i].querySelectorAll('[role=\\"tab\\"]').length; if(n>best){best=n; list=lists[i];}}",
             "if(!list) return;",
             "var tabs=list.querySelectorAll('[role=\\"tab\\"]');",
-            "for(i=0;i<tabs.length;i++) if(tabs[i].getAttribute('aria-selected')==='true'){openTab(i); break;}",
+            "var selected=-1;",
+            "for(i=0;i<tabs.length;i++) if(tabs[i].getAttribute('aria-selected')==='true'){selected=i; break;}",
+            "if(selected<0) return;",
+            "clickRemember(selected);",
+            "var panel=document.querySelector('[role=\\"tabpanel\\"]:not([hidden])');",
+            "if(panel && (panel.innerText||'').trim().length>40) return;",
+            "openTab(selected);",
             "},120);",
             "})();"
           ].join("\\n");
@@ -16429,7 +16490,8 @@ def _dash_filter_and_tabs_fragment() -> None:
             st.markdown(
                 """<style>
                 div[class*="st-key-_dash_filter_clear_"],
-                div[class*="st-key-_dash_reload_tab_"] {
+                div[class*="st-key-_dash_reload_tab_"],
+                div[class*="st-key-_dash_remember_tab_"] {
                   display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important;
                 }
                 </style>""",
@@ -16810,8 +16872,9 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.sidebar.warning("PPT 내보내기: `pip install python-pptx kaleido` 설치 후 이용하세요.")
     except Exception as exc:
         st.sidebar.error(f"PPT 생성 오류: {exc}")
-    # 필터를 바꾸면 보고 있는 탭만 다시 그린다. 다른 탭은 열 때 채운다.
+    # 담당자·거래처 필터가 바뀌면 보고 있는 탭만 다시 그린다. 탭 이동은 이미 그린 화면을 연다.
     _dash_note_filter_change_for_heavy_tabs()
+    _dash_mark_tabs_skipped(bool(st.session_state.get("_dash_filter_changed_flag")))
     _DASH_CLOUD_TABS = _dash_cloud_merged_tabs()
     _biz_local = not _is_streamlit_cloud()
     _dash_tab_labels = [
@@ -20949,6 +21012,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     st.session_state["_dash_full_tabs_once"] = True
 
 
+_dash_tab_memory_fragment()
 _dash_filter_and_tabs_fragment()
 _dash_install_tab_opener()
 
