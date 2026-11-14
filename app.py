@@ -312,10 +312,16 @@ def inject_custom_css():
                 padding-top: 0 !important;
             }
 
-            /* 사이드바 — 접힘/펼침은 Streamlit 기본. position/height 덮어쓰면 >> 가 죽거나 창이 안 보임 */
+            /* 사이드바 — 접힘/펼침은 Streamlit 기본. position/height 덮어쓰면 >> 가 죽거나 창이 안 보임.
+               헤더(z-index 1000002)가 왼쪽 << 버튼을 덮지 않도록 사이드바만 그 위에 둔다. */
             [data-testid="stSidebar"] {
                 background-color: #F1F5F9 !important;
                 border-right: 1px solid #E2E8F0;
+                z-index: 1000005 !important;
+            }
+            [data-testid="stSidebarCollapseButton"] {
+                position: relative !important;
+                z-index: 1000007 !important;
             }
             [data-testid="stSidebar"] > div:first-child {
                 overflow-y: auto !important;
