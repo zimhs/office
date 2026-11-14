@@ -1150,14 +1150,88 @@ def _sales_by_client(df: pd.DataFrame | None, staff: str) -> dict[str, list[dict
     return out
 
 
+def _sales_rows_for_key(df: pd.DataFrame, staff: str, key: str) -> list[dict]:
+    """한 거래처 행만 고른다. 담당자의 다른 거래처는 훑지 않는다."""
+    if "거래처" not in df.columns or "매출일_dt" not in df.columns:
+        return []
+    work = df
+    if staff and "담당자" in work.columns:
+        work = work.loc[work["담당자"].astype(str).str.strip() == staff]
+    if work.empty:
+        return []
+    names = work["거래처"].astype(str)
+    keymap = {x: _company_key(x) for x in pd.unique(names)}
+    work = work.loc[names.map(keymap).eq(key)]
+    if work.empty:
+        return []
+    names = work["거래처"].astype(str)
+    isos = pd.to_datetime(work["매출일_dt"], errors="coerce").dt.strftime("%Y-%m-%d")
+    if "품목명" in work.columns:
+        items = work["품목명"].astype(str)
+        skip = items.str.contains(r"이월\s*미수|\[이월", na=False, regex=True)
+    else:
+        items = pd.Series("", index=work.index, dtype=str)
+        skip = pd.Series(False, index=work.index)
+    qtys = (
+        pd.to_numeric(work["출고량"], errors="coerce")
+        if "출고량" in work.columns
+        else pd.Series(0.0, index=work.index)
+    )
+    amts = (
+        pd.to_numeric(work["매출액"], errors="coerce")
+        if "매출액" in work.columns
+        else pd.Series(0.0, index=work.index)
+    )
+    bulk = items.str.upper().str.contains("BULK", na=False) | items.str.contains("벌크", na=False)
+    out: list[dict] = []
+    for iso, item, qty, amt, is_bulk, cname, dropped in zip(
+        isos.tolist(),
+        items.tolist(),
+        qtys.tolist(),
+        amts.tolist(),
+        bulk.tolist(),
+        names.tolist(),
+        skip.tolist(),
+    ):
+        if dropped or not iso or iso == "NaT":
+            continue
+        name = _s(item) or "납품"
+        if name.lower() in {"nan", "none"}:
+            name = "납품"
+        out.append(
+            {
+                "date": iso,
+                "item": name,
+                "qty": 0.0 if pd.isna(qty) else float(qty),
+                "amount": 0.0 if pd.isna(amt) else float(amt),
+                "staff": staff,
+                "client": _s(cname),
+                "source": "납품",
+                "bulk": bool(is_bulk),
+            }
+        )
+    out.sort(key=lambda x: (str(x.get("date") or ""), str(x.get("item") or "")), reverse=True)
+    return out
+
+
 def _sales_delivery_rows(df: pd.DataFrame | None, staff: str, client: str) -> list[dict]:
-    """선택 거래처의 납품 상세(날짜·품목·출고량·매출액)."""
+    """선택 거래처의 납품 상세. 담당자 전체 색인은 만들지 않는다."""
     if df is None or df.empty or not client:
         return []
     key = _company_key(client)
     if not key:
         return []
-    return list(_sales_by_client(df, staff).get(key) or [])
+    n = int(len(df))
+    sig = (staff, key, n, "one1")
+    box = _vc_state_dict("_vc_one_client_rows")
+    hit = box.get("rows")
+    if box.get("sig") == sig and isinstance(hit, list):
+        return list(hit)
+    rows = _sales_rows_for_key(df, staff, key)
+    box.clear()
+    box["sig"] = sig
+    box["rows"] = rows
+    return list(rows)
 
 
 def _t2d_delivery_rows(

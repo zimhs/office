@@ -267,6 +267,26 @@ class VisitCalendarTest(unittest.TestCase):
         idx = self.vc._sales_by_client(df, "김혁수")
         self.assertEqual(len(idx[self.vc._company_key("라콜 주식회사(구.신정우)")]), 2)
 
+    def test_one_client_rows_skip_the_other_clients(self):
+        n = 4000
+        df = pd.DataFrame(
+            {
+                "담당자": ["김혁수"] * n,
+                "거래처": ["다른곳"] * (n - 1) + ["한곳"],
+                "매출일_dt": [date(2026, 8, 11)] * n,
+                "품목명": ["AR"] * n,
+                "출고량": [1] * n,
+                "매출액": [9] * n,
+            }
+        )
+        with patch.object(
+            self.vc, "_sales_by_client", side_effect=AssertionError("full index")
+        ):
+            rows = self.vc._sales_delivery_rows(df, "김혁수", "한곳")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["client"], "한곳")
+        self.assertEqual(rows[0]["date"], "2026-08-11")
+
     def test_visit_and_history_merge(self):
         self.vc.add_visit(
             {"date": date(2026, 9, 10), "staff": "김혁수", "client": "한신테크", "note": "미팅"}
