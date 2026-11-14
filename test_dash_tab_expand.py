@@ -6,14 +6,23 @@ import unittest
 
 class DashTabExpandTest(unittest.TestCase):
     def test_filter_does_not_skip_tabs(self):
+        """어느 탭인지 모르면 전부 그린다. 알고 있으면 보고 있는 탭만 그린다."""
         with open("app.py", encoding="utf-8") as f:
             src = f.read()
         skip = src.split("def _dash_skip_inactive_on_filter", 1)[1].split("def ", 1)[0]
         self.assertIn("return False", skip)
+        self.assertIn("return True", skip)
+        self.assertIn("_dash_tab_is_open", skip)
         light = src.split("def _dash_should_defer_light_tab", 1)[1].split("def ", 1)[0]
         heavy = src.split("def _dash_should_defer_heavy_tab", 1)[1].split("def ", 1)[0]
         self.assertIn("return False", light)
+        self.assertIn("return True", light)
+        self.assertIn("_dash_tab_is_open", light)
         self.assertIn("return False", heavy)
+        self.assertIn("return True", heavy)
+        self.assertIn("_dash_tab_is_open", heavy)
+        self.assertIn('key=f"_dash_reload_tab_{_dash_i}"', src)
+        self.assertNotIn("tab14", src)
 
 
 class CloudClipFixIsolationTest(unittest.TestCase):

@@ -8282,18 +8282,53 @@ def _dash_note_filter_change_for_heavy_tabs() -> bool:
     return changed
 
 
+def _dash_tab_limit() -> int:
+    return 12 if _is_streamlit_cloud() else 15
+
+
+def _dash_parse_tab_idx(raw) -> int | None:
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if n < 0 or n > _dash_tab_limit():
+        return None
+    return n
+
+
 def _dash_active_tab_idx() -> int | None:
-    """JS가 심은 cookie dash_active_tab (0-based). 없으면 None."""
+    """보고 있는 메인 탭. 마지막 클릭이 우선이고, 없으면 처음 요청의 cookie."""
+    seen = _dash_parse_tab_idx(st.session_state.get("_dash_seen_tab"))
+    if seen is not None:
+        return seen
     try:
         cookies = getattr(st.context, "cookies", None)
         if cookies is None:
             return None
-        raw = cookies.get("dash_active_tab")
-        if raw is None:
-            return None
-        return int(str(raw).strip())
+        n = _dash_parse_tab_idx(cookies.get("dash_active_tab"))
     except Exception:
         return None
+    if n is not None:
+        st.session_state["_dash_seen_tab"] = n
+    return n
+
+
+def _dash_tab_is_open(tab_idx: int) -> bool:
+    """이 탭을 그릴지. 아직 어느 탭인지 모르면 전부 연다."""
+    if st.session_state.pop(f"_dash_force_tab_{tab_idx}", None):
+        st.session_state["_dash_seen_tab"] = int(tab_idx)
+        return True
+    active = _dash_active_tab_idx()
+    if active is None:
+        return True
+    return active == int(tab_idx)
+
+
+def _dash_force_open_tab(tab_idx: int) -> None:
+    st.session_state["_dash_seen_tab"] = int(tab_idx)
+    st.session_state[f"_dash_force_tab_{int(tab_idx)}"] = True
 
 
 def _dash_backup_session_keys(store_key: str, prefixes: tuple[str, ...]) -> None:
@@ -8334,20 +8369,22 @@ def _dash_restore_session_keys(store_key: str) -> None:
 
 
 def _dash_skip_inactive_on_filter(tab_idx: int) -> bool:
-    """탭을 건너뛰면 다른 탭이 빈 채로 열리지 않는다. 항상 그린다."""
-    return False
+    """보고 있는 탭만 그린다. 어느 탭인지 모르면 건너뛰지 않는다."""
+    if _dash_tab_is_open(tab_idx):
+        return False
+    return True
 
 
 def _dash_inactive_tab_keep(tab_idx: int) -> None:
-    """보이지 않는 불러오기 버튼. 탭을 누르면 cookie 스크립트가 눌러 해당 탭을 채운다."""
-    if st.button("탭불러오기", key=f"_dash_reload_tab_{tab_idx}"):
-        st.session_state[f"_dash_force_tab_{tab_idx}"] = True
-        st.rerun(scope="fragment")
+    """본문은 그리지 않는다. 불러오기 버튼은 탭 줄 앞에 항상 있다."""
+    return None
 
 
 def _dash_should_defer_light_tab(tab_idx: int) -> bool:
-    """카카오맵·설비·탱크·수익성 — 시작부터 펼침."""
-    return False
+    """보고 있지 않은 지도·재고·수익성은 필터 때 건너뛴다."""
+    if _dash_tab_is_open(tab_idx):
+        return False
+    return True
 
 
 def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
@@ -8355,7 +8392,9 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """업무일지·시장조사·공문 — 시작부터 펼침."""
+    """보고 있지 않은 업무일지·시장조사·메일은 필터 때 건너뛴다."""
+    if not _dash_tab_is_open(tab_idx):
+        return True
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
     for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
         mounted[i] = True
@@ -8367,6 +8406,64 @@ def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
 def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: tuple[str, ...]) -> None:
     _dash_backup_session_keys(backup_key, prefixes)
     _dash_inactive_tab_keep(tab_idx)
+
+
+def _dash_install_tab_opener() -> None:
+    """탭 클릭 리스너는 부모 문서에 둔다. 필터 fragment 재실행에는 다시 넣지 않는다."""
+    components.html(
+        """
+        <script>
+        (function () {
+          var doc = window.parent.document;
+          if (doc.__dashActiveTabCookieVer === 22) return;
+          var s = doc.createElement("script");
+          s.textContent = [
+            "(function(){",
+            "if (document.__dashActiveTabCookieVer === 22) return;",
+            "document.__dashActiveTabCookieVer = 22;",
+            "function clickRemount(idx){",
+            "var btn=document.querySelector('[class*=\\"st-key-_dash_reload_tab_'+idx+'\\"] button');",
+            "if(!btn) return false; try{btn.click();}catch(e){} return true;",
+            "}",
+            "function openTab(idx){",
+            "if(idx<0) return;",
+            "document.cookie='dash_active_tab='+idx+'; path=/; max-age=31536000; SameSite=Lax';",
+            "var now=Date.now(); var prev=window.__dashTabClickAt||{};",
+            "if(prev.idx===idx && now-(prev.t||0)<800) return;",
+            "window.__dashTabClickAt={idx:idx,t:now};",
+            "setTimeout(function(){clickRemount(idx);},40);",
+            "}",
+            "window.__dashOpenTab=openTab;",
+            "document.addEventListener('click',function(ev){",
+            "try{",
+            "var t=ev.target&&ev.target.closest&&ev.target.closest('[role=\\"tab\\"]');",
+            "if(!t) return;",
+            "var list=t.closest('[role=\\"tablist\\"]'); if(!list) return;",
+            "var tabs=list.querySelectorAll('[role=\\"tab\\"]'); var idx=-1,i;",
+            "for(i=0;i<tabs.length;i++) if(tabs[i]===t){idx=i;break;}",
+            "openTab(idx);",
+            "}catch(e2){}",
+            "},true);",
+            "setTimeout(function(){",
+            "if(window.__dashTabBootDone) return;",
+            "window.__dashTabBootDone=1;",
+            "var panel=document.querySelector('[role=\\"tabpanel\\"]:not([hidden])');",
+            "if(panel && (panel.innerText||'').trim().length>40) return;",
+            "var lists=document.querySelectorAll('[role=\\"tablist\\"]');",
+            "var list=null,i,n,best=0;",
+            "for(i=0;i<lists.length;i++){n=lists[i].querySelectorAll('[role=\\"tab\\"]').length; if(n>best){best=n; list=lists[i];}}",
+            "if(!list) return;",
+            "var tabs=list.querySelectorAll('[role=\\"tab\\"]');",
+            "for(i=0;i<tabs.length;i++) if(tabs[i].getAttribute('aria-selected')==='true'){openTab(i); break;}",
+            "},120);",
+            "})();"
+          ].join("\\n");
+          doc.documentElement.appendChild(s);
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 
 def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: tuple[int, ...] = (9,)) -> None:
@@ -8432,18 +8529,6 @@ def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: t
               /* 숨은 불러오기 버튼이 있을 때만 remount (필터 때 건너뛴 탭) */
               var sel = '[class*="st-key-_dash_reload_tab_' + idx + '"] button';
               if (!doc.querySelector(sel)) return;
-              var lockKey = 'dash_heavy_lock_' + idx;
-              try {{
-                if (sessionStorage.getItem(lockKey) === '1') return;
-              }} catch (eLk0) {{}}
-              function armLock() {{
-                try {{
-                  sessionStorage.setItem(lockKey, '1');
-                  setTimeout(function () {{
-                    try {{ sessionStorage.removeItem(lockKey); }} catch (eLk1) {{}}
-                  }}, 30000);
-                }} catch (eLk2) {{}}
-              }}
               function kickSticky() {{
                 try {{
                   var w = window.parent;
@@ -8451,34 +8536,27 @@ def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: t
                   if (typeof w.__dashboardIpadScheduleSync === 'function') w.__dashboardIpadScheduleSync(0);
                 }} catch (eKs) {{}}
               }}
+              function clickNow() {{
+                var now = Date.now();
+                var prev = window.parent.__dashTabClickAt || {{}};
+                if (prev.idx === idx && now - (prev.t || 0) < 800) return;
+                window.parent.__dashTabClickAt = {{ idx: idx, t: now }};
+                if (clickRemountForTab(idx)) kickSticky();
+              }}
               if (triggerRemount) {{
-                armLock();
-                setTimeout(function () {{
-                  if (clickRemountForTab(idx)) kickSticky();
-                }}, 40);
+                setTimeout(clickNow, 40);
                 return;
               }}
-              var bootKey = 'dash_heavy_boot_' + idx;
+              var bootKey = 'dash_tab_boot_v19_' + idx;
               try {{
                 if (!sessionStorage.getItem(bootKey)) {{
                   sessionStorage.setItem(bootKey, '1');
-                  armLock();
-                  setTimeout(function () {{
-                    if (clickRemountForTab(idx)) kickSticky();
-                  }}, 80);
+                  setTimeout(clickNow, 80);
                 }}
               }} catch (eBoot) {{}}
             }} catch (e1) {{}}
           }}
-          if (!doc.__dashActiveTabCookieReady) {{
-            doc.__dashActiveTabCookieReady = true;
-            doc.addEventListener('click', function (ev) {{
-              try {{
-                var t = ev.target && ev.target.closest && ev.target.closest('[role="tab"]');
-                if (t) setTimeout(function () {{ writeIdx(true); }}, 30);
-              }} catch (e2) {{}}
-            }}, true);
-          }}
+          window.parent.__dashWriteTabIdx = writeIdx;
           writeIdx(false);
           setTimeout(function () {{ writeIdx(false); }}, 120);
         }})();
@@ -16732,7 +16810,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.sidebar.warning("PPT 내보내기: `pip install python-pptx kaleido` 설치 후 이용하세요.")
     except Exception as exc:
         st.sidebar.error(f"PPT 생성 오류: {exc}")
-    # 탭 전환은 클라이언트 전환만 (rerun 없음). 필터 변경 시에만 전체 재계산.
+    # 필터를 바꾸면 보고 있는 탭만 다시 그린다. 다른 탭은 열 때 채운다.
     _dash_note_filter_change_for_heavy_tabs()
     _DASH_CLOUD_TABS = _dash_cloud_merged_tabs()
     _biz_local = not _is_streamlit_cloud()
@@ -16755,6 +16833,13 @@ def _dash_filter_and_tabs_fragment() -> None:
         _dash_tab_labels.append("📄 견적서")
         _dash_tab_labels.append("📊 분기 사업분석")
         _dash_tab_labels.append("📑 사업계획서")
+    for _dash_i in range(len(_dash_tab_labels)):
+        st.button(
+            "탭불러오기",
+            key=f"_dash_reload_tab_{_dash_i}",
+            on_click=_dash_force_open_tab,
+            args=(_dash_i,),
+        )
     _dash_tab_objs = st.tabs(_dash_tab_labels)
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = _dash_tab_objs[:13]
     tab_quote = _dash_tab_objs[13] if _biz_local else None
@@ -16763,7 +16848,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
     _STICKY_INJECT_VER = 101
-    _ACTIVE_TAB_INJECT_VER = 18
+    _ACTIVE_TAB_INJECT_VER = 21
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
@@ -20802,50 +20887,59 @@ def _dash_filter_and_tabs_fragment() -> None:
 
     if tab_biz is not None:
         with tab_biz:
-            try:
-                import biz_plan_tab as _bp_tab
+            if _dash_skip_inactive_on_filter(14):
+                _dash_inactive_tab_keep(14)
+            else:
+                try:
+                    import biz_plan_tab as _bp_tab
 
-                _bp_path = getattr(_bp_tab, "__file__", None) or ""
-                _bp_mtime = os.path.getmtime(_bp_path) if _bp_path and os.path.exists(_bp_path) else 0
-                if getattr(_bp_tab, "_src_mtime", None) != _bp_mtime:
-                    _bp_tab = importlib.reload(_bp_tab)
-                    _bp_tab._src_mtime = _bp_mtime
-                    sys.modules["biz_plan_tab"] = _bp_tab
-                _bp_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
-                _bp_tab.render_biz_plan_tab(_bp_df)
-            except Exception as _bp_err:
-                st.error(f"분기 사업분석 탭 오류: {_bp_err}")
+                    _bp_path = getattr(_bp_tab, "__file__", None) or ""
+                    _bp_mtime = os.path.getmtime(_bp_path) if _bp_path and os.path.exists(_bp_path) else 0
+                    if getattr(_bp_tab, "_src_mtime", None) != _bp_mtime:
+                        _bp_tab = importlib.reload(_bp_tab)
+                        _bp_tab._src_mtime = _bp_mtime
+                        sys.modules["biz_plan_tab"] = _bp_tab
+                    _bp_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                    _bp_tab.render_biz_plan_tab(_bp_df)
+                except Exception as _bp_err:
+                    st.error(f"분기 사업분석 탭 오류: {_bp_err}")
 
     if tab_quote is not None:
         with tab_quote:
-            try:
-                import quote_tab as _qt_tab
+            if _dash_skip_inactive_on_filter(13):
+                _dash_inactive_tab_keep(13)
+            else:
+                try:
+                    import quote_tab as _qt_tab
 
-                _qt_path = getattr(_qt_tab, "__file__", None) or ""
-                _qt_mtime = os.path.getmtime(_qt_path) if _qt_path and os.path.exists(_qt_path) else 0
-                if getattr(_qt_tab, "_src_mtime", None) != _qt_mtime:
-                    _qt_tab = importlib.reload(_qt_tab)
-                    _qt_tab._src_mtime = _qt_mtime
-                    sys.modules["quote_tab"] = _qt_tab
-                _qt_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
-                _qt_tab.render_quote_tab(_qt_df)
-            except Exception as _qt_err:
-                st.error(f"견적서 탭 오류: {_qt_err}")
+                    _qt_path = getattr(_qt_tab, "__file__", None) or ""
+                    _qt_mtime = os.path.getmtime(_qt_path) if _qt_path and os.path.exists(_qt_path) else 0
+                    if getattr(_qt_tab, "_src_mtime", None) != _qt_mtime:
+                        _qt_tab = importlib.reload(_qt_tab)
+                        _qt_tab._src_mtime = _qt_mtime
+                        sys.modules["quote_tab"] = _qt_tab
+                    _qt_df = full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame()
+                    _qt_tab.render_quote_tab(_qt_df)
+                except Exception as _qt_err:
+                    st.error(f"견적서 탭 오류: {_qt_err}")
 
     if tab_proposal is not None:
         with tab_proposal:
-            try:
-                import biz_proposal_tab as _bpr_tab
+            if _dash_skip_inactive_on_filter(15):
+                _dash_inactive_tab_keep(15)
+            else:
+                try:
+                    import biz_proposal_tab as _bpr_tab
 
-                _bpr_path = getattr(_bpr_tab, "__file__", None) or ""
-                _bpr_mtime = os.path.getmtime(_bpr_path) if _bpr_path and os.path.exists(_bpr_path) else 0
-                if getattr(_bpr_tab, "_src_mtime", None) != _bpr_mtime:
-                    _bpr_tab = importlib.reload(_bpr_tab)
-                    _bpr_tab._src_mtime = _bpr_mtime
-                    sys.modules["biz_proposal_tab"] = _bpr_tab
-                _bpr_tab.render_biz_proposal_tab(full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame())
-            except Exception as _bpr_err:
-                st.error(f"사업계획서 탭 오류: {_bpr_err}")
+                    _bpr_path = getattr(_bpr_tab, "__file__", None) or ""
+                    _bpr_mtime = os.path.getmtime(_bpr_path) if _bpr_path and os.path.exists(_bpr_path) else 0
+                    if getattr(_bpr_tab, "_src_mtime", None) != _bpr_mtime:
+                        _bpr_tab = importlib.reload(_bpr_tab)
+                        _bpr_tab._src_mtime = _bpr_mtime
+                        sys.modules["biz_proposal_tab"] = _bpr_tab
+                    _bpr_tab.render_biz_proposal_tab(full_df if isinstance(full_df, pd.DataFrame) else pd.DataFrame())
+                except Exception as _bpr_err:
+                    st.error(f"사업계획서 탭 오류: {_bpr_err}")
 
     _dash_inject_filter_select_script_for_run()
     # 로컬·Cloud 공통: fragment/탭 전환·heavy 로드 후 고정바 1회 재동기화
@@ -20856,6 +20950,7 @@ def _dash_filter_and_tabs_fragment() -> None:
 
 
 _dash_filter_and_tabs_fragment()
+_dash_install_tab_opener()
 
 
 # Cloud: 시드 캐시로 먼저 그리고, Drive는 백그라운드 fragment에서만 확인
