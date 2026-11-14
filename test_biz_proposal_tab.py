@@ -378,6 +378,43 @@ def test_page1_year_comes_back_from_the_original_slide():
     shutil.rmtree(root)
 
 
+def test_preview_refresh_reruns_the_app_when_the_outer_tab_is_running():
+    from contextlib import nullcontext
+    from unittest.mock import patch
+
+    class _Ctx:
+        fragment_ids_this_run = ["outer-tab-fragment"]
+
+    class _Thread:
+        fragment_id = "proposal-fragment"
+
+    calls = []
+
+    def _rerun(**kwargs):
+        calls.append(kwargs)
+
+    state = {}
+    with (
+        patch.object(bp.st, "session_state", state),
+        patch.object(bp.st, "spinner", return_value=nullcontext()),
+        patch.object(bp.st, "rerun", side_effect=_rerun),
+        patch.object(bp, "_pending_preview_pages", return_value=[{"page": 1}]),
+        patch("pathlib.Path.mkdir", side_effect=OSError("skip")),
+        patch.object(bp, "_refresh_one_page", lambda spec: None),
+        patch.object(bp, "_preview_token", lambda specs: "tok"),
+        patch(
+            "streamlit.runtime.scriptrunner_utils.script_run_context.get_script_run_ctx",
+            return_value=_Ctx(),
+        ),
+        patch(
+            "streamlit.runtime.scriptrunner_utils.script_run_context.ThreadState.get",
+            return_value=_Thread(),
+        ),
+    ):
+        bp._refresh_previews([{"page": 1}])
+    assert calls == [{}]
+
+
 def test_only_the_open_page_is_reread():
     src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
     assert "bppt_room" in src

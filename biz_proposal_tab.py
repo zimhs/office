@@ -2799,10 +2799,19 @@ def _refresh_previews(specs: list[dict]) -> None:
             tokens[int(spec["page"])] = _preview_token([spec])
         st.session_state["_bppt_preview_error"] = f"미리보기를 만들지 못했습니다. {exc}"
     st.session_state["_bppt_page_tokens"] = tokens
-    from streamlit.runtime.scriptrunner_utils.script_run_context import get_script_run_ctx
+    from streamlit.runtime.scriptrunner_utils.script_run_context import (
+        ThreadState,
+        get_script_run_ctx,
+    )
 
     ctx = get_script_run_ctx()
-    if ctx is not None and ctx.fragment_ids_this_run:
+    queue = list(getattr(ctx, "fragment_ids_this_run", None) or [])
+    try:
+        frag_id = ThreadState.get().fragment_id
+    except Exception:
+        frag_id = None
+    # 바깥 탭 조각이 이 탭을 그리는 중이면 fragment id가 큐에 없다.
+    if frag_id and frag_id in queue:
         st.rerun(scope="fragment")
     st.rerun()
 
