@@ -3855,9 +3855,6 @@ def _gc_bind_memo_pop() -> None:
     try { add(window.parent.document); } catch (e) {}
     return out;
   }
-  if (window.__gcMemoVer === 2) return;
-  window.__gcMemoVer = 2;
-  window.__gcMemoBound = true;
   var css = ""
     + "#gc-memo-float{position:fixed;z-index:10050;width:min(340px,92vw);"
     + "background:#fff;border:1px solid #e0e3e8;border-radius:12px;"
@@ -4008,18 +4005,39 @@ def _gc_bind_memo_pop() -> None:
     pop.id = "gc-memo-float";
     pop.hidden = true;
     pop.setAttribute("data-open", "0");
-    pop.innerHTML = '<div class="gc-mf-title"></div><div class="gc-mf-meta"></div>'
-      + '<div class="gc-mf-msg"></div>'
-      + '<div class="gc-mf-daylab">날짜</div><input type="date" class="gc-mf-day">'
-      + '<div class="gc-mf-lab">메모</div>'
-      + '<textarea class="gc-mf-note"></textarea><div class="gc-mf-ro"></div>'
-      + '<div class="gc-mf-actions"><button type="button" class="gc-mf-save">메모 저장</button>'
-      + '<button type="button" class="gc-mf-close">닫기</button></div>'
-      + '<div class="gc-mf-mail"><div class="gc-mf-cap">메일 이동</div><div class="gc-mf-mail-row">'
-      + '<button type="button" class="gc-mf-personal">개인업무</button>'
-      + '<button type="button" class="gc-mf-shinil">신일가스</button>'
-      + '<button type="button" class="gc-mf-mdel">삭제</button></div></div>'
-      + '<button type="button" class="gc-mf-del">삭제</button>';
+    function node(tag, cls, text) {
+      var n = doc.createElement(tag);
+      if (cls) n.className = cls;
+      if (text) n.textContent = text;
+      if (tag === "button") n.type = "button";
+      return n;
+    }
+    var day = doc.createElement("input");
+    day.type = "date";
+    day.className = "gc-mf-day";
+    var note = doc.createElement("textarea");
+    note.className = "gc-mf-note";
+    var actions = node("div", "gc-mf-actions");
+    actions.appendChild(node("button", "gc-mf-save", "메모 저장"));
+    actions.appendChild(node("button", "gc-mf-close", "닫기"));
+    var mailRow = node("div", "gc-mf-mail-row");
+    mailRow.appendChild(node("button", "gc-mf-personal", "개인업무"));
+    mailRow.appendChild(node("button", "gc-mf-shinil", "신일가스"));
+    mailRow.appendChild(node("button", "gc-mf-mdel", "삭제"));
+    var mailBox = node("div", "gc-mf-mail");
+    mailBox.appendChild(node("div", "gc-mf-cap", "메일 이동"));
+    mailBox.appendChild(mailRow);
+    pop.appendChild(node("div", "gc-mf-title"));
+    pop.appendChild(node("div", "gc-mf-meta"));
+    pop.appendChild(node("div", "gc-mf-msg"));
+    pop.appendChild(node("div", "gc-mf-daylab", "날짜"));
+    pop.appendChild(day);
+    pop.appendChild(node("div", "gc-mf-lab", "메모"));
+    pop.appendChild(note);
+    pop.appendChild(node("div", "gc-mf-ro"));
+    pop.appendChild(actions);
+    pop.appendChild(mailBox);
+    pop.appendChild(node("button", "gc-mf-del", "삭제"));
     (doc.body || doc.documentElement).appendChild(pop);
     pop.querySelector(".gc-mf-close").addEventListener("click", function (e) {
       e.preventDefault(); e.stopPropagation(); hide(pop);
@@ -4092,15 +4110,12 @@ def _gc_bind_memo_pop() -> None:
     var view = doc.defaultView || window;
     var pack = view.__gcMemoPack || window.__gcMemoPack || {};
     var rec = (pack.items || {})[m[1]];
-    if (!rec || rec.server) return;
-    var pop = doc.getElementById("gc-memo-float");
-    if (ev.type === "click" && pop && pop.getAttribute("data-open") === "1" && pop.__key === m[1]) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      return;
-    }
+    if (!rec) return;
     ev.preventDefault();
     ev.stopPropagation();
+    if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+    var pop = doc.getElementById("gc-memo-float");
+    if (pop && pop.getAttribute("data-open") === "1" && pop.__key === m[1]) return;
     var stamp = m[1].slice("gc_evpick_".length).split("_")[0];
     doc.querySelectorAll(".gc-js-sel").forEach(function (n) { n.classList.remove("gc-js-sel"); });
     var cell = doc.querySelector('[class*="st-key-gc_cell_' + stamp + '"]');
@@ -4112,14 +4127,12 @@ def _gc_bind_memo_pop() -> None:
     fill(popOf(doc), rec, m[1], host.querySelector("button") || host);
   }
   docs().forEach(function (d) {
-    if (d.__gcMemoOpen) {
-      d.removeEventListener("pointerdown", d.__gcMemoOpen, true);
-      d.removeEventListener("click", d.__gcMemoOpen, true);
-    }
+    ["pointerdown", "mousedown", "click"].forEach(function (name) {
+      if (d.__gcMemoOpen) d.removeEventListener(name, d.__gcMemoOpen, true);
+      d.addEventListener(name, openFrom, true);
+    });
     d.__gcMemoOpen = openFrom;
     d.__gcMemoClick = true;
-    d.addEventListener("pointerdown", openFrom, true);
-    d.addEventListener("click", openFrom, true);
   });
 })();
 </script>

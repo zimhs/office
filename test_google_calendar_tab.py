@@ -4,6 +4,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -673,6 +674,19 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
         )
         self.assertTrue(mail["server"])
         self.assertFalse(mail["writable"])
+
+    def test_memo_bind_script_is_not_stripped(self):
+        with open("google_calendar_tab.py", encoding="utf-8") as f:
+            src = f.read()
+        body = src.split("def _gc_bind_memo_pop", 1)[1].split(
+            "def _render_add_event_pop", 1
+        )[0]
+        script = body.split("<script>", 1)[1].split("</script>", 1)[0]
+        self.assertIsNone(re.search(r"<[/\w!]", script))
+        self.assertNotIn("rec.server) return", script)
+        self.assertIn("stopImmediatePropagation", script)
+        self.assertIn("gc-mf-day", script)
+        self.assertIn("gc-memo-float", script)
 
     def test_take_memo_action_save_once(self):
         raw = json.dumps(
