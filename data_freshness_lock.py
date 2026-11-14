@@ -24,6 +24,7 @@ _SALES_YMD_RE = re.compile(r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일
 _SALES_SCAN_HEAD = 24576
 _SALES_SCAN_TAIL = 49152
 _SALES_MD_RE = re.compile(r"(?<!\d)(\d{1,2})/(\d{1,2})(?!\d)")
+_PAREN_NOTE_RE = re.compile(r"[(（][^)）]*[)）]")
 _MONTH_COLS = tuple(f"{i}월" for i in range(1, 13))
 
 Gen = Tuple[int, int, int]
@@ -80,7 +81,10 @@ def parse_sales_name_period(name: str) -> int:
 
 
 def _max_sales_end_ymd(text: str, period: int) -> int:
-    """헤더(YYYY년 M월 D일) 또는 본문 MM/DD 중 가장 늦은 매출일."""
+    """헤더(YYYY년 M월 D일) 또는 본문 MM/DD 중 가장 늦은 매출일.
+
+    비고의 가수(11/20)처럼 괄호 안 날짜는 매출일이 아니므로 종료일에 넣지 않는다.
+    """
     end_ymd = 0
     for yy, mo, dd in _SALES_YMD_RE.findall(text or ""):
         try:
@@ -92,7 +96,8 @@ def _max_sales_end_ymd(text: str, period: int) -> int:
     year = period // 100 if period >= 10000 else int(period or 0)
     if year < 2000:
         return end_ymd
-    for mo, dd in _SALES_MD_RE.findall(text or ""):
+    body = _PAREN_NOTE_RE.sub(" ", text or "")
+    for mo, dd in _SALES_MD_RE.findall(body):
         try:
             month, day = int(mo), int(dd)
         except ValueError:
@@ -319,18 +324,22 @@ def _copy_file(src: str, dst: str) -> bool:
 
 def _snapshot_and_lock(cache_dir: str, rel: str, raw: bytes, gen: Gen, sha: str, *, kind: str) -> None:
     snap = _snapshot_path(cache_dir, rel)
-    _atomic_write(snap, raw)
     data = load_lock(cache_dir)
     if kind == "debt":
         prev = _gen_from_lock_entry(data.get("debt"))
-        if generation_at_least(gen, prev, kind="debt"):
-            data["debt"] = _entry_for(gen, sha)
+    elif os.path.isfile(snap):
+        prev = generation_from_file(snap, kind="sales", name=os.path.basename(rel))
+    else:
+        prev = _gen_from_lock_entry((data.get("sales") or {}).get(os.path.basename(rel)))
+    if not generation_at_least(gen, prev, kind=kind):
+        return
+    _atomic_write(snap, raw)
+    if kind == "debt":
+        data["debt"] = _entry_for(gen, sha)
     else:
         key = os.path.basename(rel)
         sales = dict(data.get("sales") or {})
-        prev = _gen_from_lock_entry(sales.get(key))
-        if generation_at_least(gen, prev, kind="sales"):
-            sales[key] = _entry_for(gen, sha)
+        sales[key] = _entry_for(gen, sha)
         data["sales"] = sales
         periods = [int((sales.get(n) or {}).get("g0") or 0) for n in sales]
         data["max_sales_period"] = max(periods) if periods else 0
@@ -338,7 +347,18 @@ def _snapshot_and_lock(cache_dir: str, rel: str, raw: bytes, gen: Gen, sha: str,
 
 
 def floor_gen(cache_dir: str, rel: str, *, kind: str, name: str, current_path: str) -> Gen:
-    locked = locked_debt_gen(cache_dir) if kind == "debt" else locked_sales_gen(cache_dir, name)
+    if kind == "sales":
+        # 잠금 JSON의 종료일은 괄호 안 메모 날짜로 부풀 수 있다. 스냅샷·캐시 바이트를 다시 읽는다.
+        gens: List[Gen] = []
+        snap = _snapshot_path(cache_dir, rel if rel else f"sales/{os.path.basename(name)}")
+        if os.path.isfile(snap):
+            gens.append(generation_from_file(snap, kind="sales", name=name))
+        if current_path and os.path.isfile(current_path):
+            gens.append(generation_from_file(current_path, kind="sales", name=name))
+        if gens:
+            return max(gens)
+        return locked_sales_gen(cache_dir, name)
+    locked = locked_debt_gen(cache_dir)
     current = (0, 0, 0)
     if current_path and os.path.isfile(current_path):
         current = generation_from_file(current_path, kind=kind, name=name)

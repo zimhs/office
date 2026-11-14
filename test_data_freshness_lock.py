@@ -45,6 +45,48 @@ class GenerationParseTest(unittest.TestCase):
         g = sales_generation_from_bytes("202609.csv", pad + tail)
         self.assertEqual(g[1], 20260916)
 
+    def test_parenthetical_note_date_is_not_the_sales_end(self):
+        raw = (
+            ",,,,,,,,,,,,,,일자 : 2026년 11월 1일 ~ 2026년 11월 10일,,,,,,,,,,,,\n"
+            "거래처,매출일,매출액,비고\n"
+            "A,11/09,100,\n"
+            "B,11/02,0,가수(11/20)\n"
+        ).encode("utf-8-sig")
+        g = sales_generation_from_bytes("202611.csv", raw)
+        self.assertEqual(g[1], 20261110)
+
+    def test_later_real_sales_replaces_file_whose_lock_used_a_note_date(self):
+        old = (
+            ",,,,,,,,,,,,,,일자 : 2026년 11월 1일 ~ 2026년 11월 10일,,,,,,,,,,,,\n"
+            "거래처,매출일,합계액,비고\n"
+            "A,11/09,100,\n"
+            "B,11/02,0,가수(11/20)\n"
+        ).encode("utf-8-sig")
+        new = (
+            "거래처,매출일,합계액,비고\n"
+            "A,11/13,877777770,\n"
+        ).encode("utf-8-sig")
+        self.assertGreater(len(new), 0)
+        self.assertEqual(sales_generation_from_bytes("202611.csv", old)[1], 20261110)
+        self.assertEqual(sales_generation_from_bytes("202611.csv", new)[1], 20261113)
+        with tempfile.TemporaryDirectory() as tmp:
+            wrote, reason = write_bytes_if_newer(
+                tmp, "sales/202611.csv", old, kind="sales", name="202611.csv"
+            )
+            self.assertTrue(wrote, reason)
+            lock_path = os.path.join(tmp, ".data_lock", "lock.json")
+            with open(lock_path, "r", encoding="utf-8") as f:
+                lock = __import__("json").load(f)
+            lock["sales"]["202611.csv"]["g1"] = 20261120
+            with open(lock_path, "w", encoding="utf-8") as f:
+                __import__("json").dump(lock, f)
+            wrote2, reason2 = write_bytes_if_newer(
+                tmp, "sales/202611.csv", new, kind="sales", name="202611.csv"
+            )
+            self.assertTrue(wrote2, reason2)
+            with open(os.path.join(tmp, "sales", "202611.csv"), "rb") as f:
+                self.assertIn("877777770".encode(), f.read())
+
     def test_later_day_is_newer(self):
         old = sales_generation_from_bytes("202609.csv", _sales(5))
         new = sales_generation_from_bytes("202609.csv", _sales(11))
