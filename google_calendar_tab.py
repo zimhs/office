@@ -4355,6 +4355,33 @@ def _consume_oauth_redirect() -> None:
         st.error(f"구글 연결 실패: {e}")
 
 
+def _gc_client_id_mid(cid: str) -> str:
+    raw = (cid or "").strip()
+    if "-" not in raw:
+        return raw
+    mid = raw.split("-", 1)[1]
+    tail = ".apps.googleusercontent.com"
+    if mid.endswith(tail):
+        mid = mid[: -len(tail)]
+    return mid
+
+
+def _gc_client_id_ok(cid: str) -> bool:
+    """구글 웹 클라이언트 ID. 하이픈 뒤 32자가 아니면 구글이 invalid_client 를 낸다."""
+    raw = (cid or "").strip()
+    head, sep, rest = raw.partition("-")
+    mid = _gc_client_id_mid(raw)
+    return bool(
+        sep
+        and head.isdigit()
+        and len(head) >= 6
+        and rest.endswith(".apps.googleusercontent.com")
+        and len(mid) == 32
+        and mid.isalnum()
+        and mid.islower()
+    )
+
+
 def _setup_expander(*, expanded: bool = True) -> None:
     cid, csec = load_oauth_client()
     with st.expander("구글 연결 설정", expanded=expanded):
@@ -4373,11 +4400,21 @@ def _setup_expander(*, expanded: bool = True) -> None:
             nid = st.text_input("클라이언트 ID", value=cid, type="default", key="gc_cid")
         with i2:
             nsec = st.text_input("클라이언트 비밀번호", value=csec, type="password", key="gc_csec")
+        nid_s = (nid or "").strip()
+        nsec_s = (nsec or "").strip()
+        if nid_s and not _gc_client_id_ok(nid_s):
+            mid_n = len(_gc_client_id_mid(nid_s))
+            st.error(
+                f"클라이언트 ID가 잘렸습니다. 하이픈 뒤는 32자인데 지금 {mid_n}자입니다. "
+                "웹 클라이언트 2를 열고, 목록에 보이는 줄임 글자가 아니라 ID 옆 복사 버튼으로 전체를 다시 붙여 넣으세요."
+            )
+        elif nid_s and nsec_s and (nid_s != (cid or "").strip() or nsec_s != (csec or "").strip()):
+            st.warning("설정 저장을 누른 뒤에 구글 계정 연결을 누르세요. 저장 전에 연결하면 이전 ID로 들어갑니다.")
         if st.button("설정 저장", key="gc_save_oauth"):
-            if len((nid or "").strip()) < 8 or len((nsec or "").strip()) < 8:
-                st.error("클라이언트 ID와 비밀번호를 넣어 주세요.")
+            if not _gc_client_id_ok(nid_s) or len(nsec_s) < 8:
+                st.error("클라이언트 ID 전체와 비밀번호를 넣어 주세요.")
             else:
-                save_oauth_client(nid, nsec)
+                save_oauth_client(nid_s, nsec_s)
                 st.success("저장했습니다. 아래에서 구글 계정을 연결하세요.")
                 st.rerun()
 
@@ -5523,14 +5560,16 @@ html.dashboard-touch-mode div[class*="st-key-gc_vc_delivery_head"] [class*="st-k
     cid, csec = load_oauth_client()
     connected = bool(access_token())
     _setup_expander(expanded=not connected)
+    entered = str(st.session_state.get("gc_cid") or "").strip()
     if not connected:
         if st.session_state.get("_gc_need_reauth"):
             st.warning("구글 인증이 만료되었습니다. 다시 연결해 주세요.")
-        if cid and csec:
+        saved_id = (cid or "").strip()
+        if saved_id and csec and _gc_client_id_ok(saved_id) and entered == saved_id:
             st.session_state.setdefault("_gc_oauth_state", secrets.token_urlsafe(16))
             st.link_button(
                 "구글 계정 연결",
-                auth_url(cid, st.session_state["_gc_oauth_state"]),
+                auth_url(saved_id, st.session_state["_gc_oauth_state"]),
                 type="primary",
                 width="stretch",
             )

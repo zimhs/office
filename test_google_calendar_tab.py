@@ -48,6 +48,13 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("gmail.modify", url)
         self.assertIn("redirect_uri=", url)
 
+    def test_client_id_must_be_32_chars_after_hyphen(self):
+        full = "186634419242-" + ("a" * 32) + ".apps.googleusercontent.com"
+        self.assertTrue(gc._gc_client_id_ok(full))
+        short = "186634419242-" + ("a" * 29) + ".apps.googleusercontent.com"
+        self.assertFalse(gc._gc_client_id_ok(short))
+        self.assertEqual(len(gc._gc_client_id_mid(short)), 29)
+
     def test_redirect_candidates_include_local_and_cloud(self):
         items = gc._redirect_candidates("http://127.0.0.1:8501/")
         self.assertIn("http://127.0.0.1:8501/", items)
