@@ -8591,6 +8591,8 @@ def _dash_replay_open_tab(selected_staff, selected_client, selected_item) -> Non
         targets = [active] + [i for i in targets if i != active]
     if not targets:
         return
+    nonce = int(st.session_state.get("_dash_repaint_nonce") or 0) + 1
+    st.session_state["_dash_repaint_nonce"] = nonce
     target_js = ",".join(str(int(i)) for i in targets)
     inner = (
         "(function(){var ids=["
@@ -8615,7 +8617,7 @@ def _dash_replay_open_tab(selected_staff, selected_client, selected_item) -> Non
         "setTimeout(go,60);})();"
     )
     components.html(
-        "<script>(function(){var s=window.parent.document.createElement('script');"
+        f"<script data-n=\"{nonce}\">(function(){{var s=window.parent.document.createElement('script');"
         f"s.textContent={json.dumps(inner)};"
         "window.parent.document.documentElement.appendChild(s);})();</script>",
         height=0,
