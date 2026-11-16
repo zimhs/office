@@ -4355,9 +4355,9 @@ def _consume_oauth_redirect() -> None:
         st.error(f"구글 연결 실패: {e}")
 
 
-def _setup_expander() -> None:
+def _setup_expander(*, expanded: bool = True) -> None:
     cid, csec = load_oauth_client()
-    with st.expander("구글 연결 설정 (최초 1회)", expanded=not bool(cid and csec)):
+    with st.expander("구글 연결 설정", expanded=expanded):
         st.markdown(
             "Google Cloud에서 **캘린더 API · Tasks API · Gmail API**를 켜고, OAuth 클라이언트(웹)를 만든 뒤 "
             "아래 리다이렉트 URI를 등록하세요. 메일 연동·신일가스 폴더 이동은 구글 계정을 다시 연결해야 합니다."
@@ -5521,9 +5521,8 @@ html.dashboard-touch-mode div[class*="st-key-gc_vc_delivery_head"] [class*="st-k
         st.error(f"납품 달력을 표시하지 못했습니다: {e}")
     _consume_oauth_redirect()
     cid, csec = load_oauth_client()
-    if not (cid and csec):
-        _setup_expander()
     connected = bool(access_token())
+    _setup_expander(expanded=not connected)
     if not connected:
         if st.session_state.get("_gc_need_reauth"):
             st.warning("구글 인증이 만료되었습니다. 다시 연결해 주세요.")
