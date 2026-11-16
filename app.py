@@ -1268,6 +1268,43 @@ def inject_custom_css():
                 }
             }
 
+            /* iPad 세로만: 고정 높이로 늘어난 블록이 제목 아래 빈칸을 만들지 않게.
+               가로·맥은 이 쿼리에 안 걸린다. */
+            @media (orientation: portrait) and (hover: none) and (pointer: coarse) {
+                html.dashboard-touch-mode .dashboard-tabs-host-compact [data-testid="stVerticalBlock"],
+                html.dashboard-touch-mode .dashboard-tabs-host-compact [data-testid="stVerticalBlockBorderWrapper"] {
+                    height: auto !important;
+                    min-height: 0 !important;
+                    flex: 0 0 auto !important;
+                    justify-content: flex-start !important;
+                }
+                html.dashboard-touch-mode .dashboard-tabs-host-compact [role="tabpanel"]:not([hidden]) {
+                    min-height: 0 !important;
+                    padding-bottom: 12px !important;
+                }
+                html.dashboard-touch-mode [data-testid="stElementContainer"]:has(iframe[height="0"]) {
+                    height: 0 !important;
+                    min-height: 0 !important;
+                    max-height: 0 !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    overflow: hidden !important;
+                }
+                html.dashboard-touch-mode [data-testid="stHorizontalBlock"]:has([data-testid="stDataFrame"]):has(iframe),
+                html.dashboard-touch-mode [data-testid="stHorizontalBlock"]:has(.stCustomComponentV1) {
+                    flex-direction: column !important;
+                }
+                html.dashboard-touch-mode [data-testid="stHorizontalBlock"]:has([data-testid="stDataFrame"]):has(iframe) > [data-testid="stColumn"],
+                html.dashboard-touch-mode [data-testid="stHorizontalBlock"]:has([data-testid="stDataFrame"]):has(iframe) > div > [data-testid="stColumn"],
+                html.dashboard-touch-mode [data-testid="stHorizontalBlock"]:has(.stCustomComponentV1) > [data-testid="stColumn"],
+                html.dashboard-touch-mode [data-testid="stHorizontalBlock"]:has(.stCustomComponentV1) > div > [data-testid="stColumn"] {
+                    width: 100% !important;
+                    flex: 0 0 auto !important;
+                    min-width: 0 !important;
+                    max-width: 100% !important;
+                }
+            }
+
             /* iPad만: 필터 fixed 슬롯·Cloud 패드가 고정바 아래 흰 여백을 만들지 않게.
                맥북(로컬·Cloud)은 dashboard-touch-mode가 없어 적용되지 않음. */
             html.dashboard-touch-mode [data-testid="stElementContainer"]:has(.dashboard-filter-sticky):not(:has(#dashboard-sticky-spacer)) {
@@ -15168,8 +15205,17 @@ def inject_top30_month_bridge():
                 el.style.setProperty("width", "100%", "important");
                 el.style.setProperty("min-width", "100%", "important");
                 el.style.setProperty("max-width", "100%", "important");
-                el.style.setProperty("flex", "1 1 100%", "important");
                 el.style.setProperty("box-sizing", "border-box", "important");
+                var portrait = false;
+                try { portrait = !!parentWin.matchMedia("(orientation: portrait)").matches; } catch (ePor) {}
+                if (portrait) {
+                    el.style.setProperty("flex", "0 0 auto", "important");
+                    el.style.setProperty("height", "auto", "important");
+                    el.style.setProperty("min-height", "0", "important");
+                    el.style.setProperty("justify-content", "flex-start", "important");
+                } else {
+                    el.style.setProperty("flex", "1 1 100%", "important");
+                }
             }
             function applyTop30FullWidthRow(row) {
                 row.classList.add("top30-touch-row");
