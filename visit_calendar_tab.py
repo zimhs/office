@@ -2420,24 +2420,15 @@ def render_visit_delivery_header(
                         or ""
                     )
                 else:
-                    q = st.text_input(
-                        "거래처 검색",
-                        key="vc_client_q",
-                        placeholder="거래처명 입력",
-                    )
-                    qq = _s(q).casefold()
-                    cur = _s(st.session_state.get("vc_client"))
-                    opts = [c for c in (clients or []) if qq and qq in c.casefold()][:40]
-                    if not qq:
-                        opts = [cur] if cur else [""]
-                    if cur and cur not in opts:
-                        opts = [cur] + [x for x in opts if x != cur]
                     client = (
                         st.selectbox(
                             "거래처",
-                            options=opts or [""],
+                            options=clients or [""],
+                            index=None,
+                            placeholder="거래처명 입력",
                             key="vc_client",
-                            help="검색어를 넣으면 담당자 매출 거래처가 나옵니다.",
+                            accept_new_options=True,
+                            help="이 담당자의 매출 거래처가 모두 나옵니다. 고르면 납품 달력에 연동됩니다.",
                         )
                         or ""
                     )

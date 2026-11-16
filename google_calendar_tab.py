@@ -5461,22 +5461,62 @@ def render_google_calendar_tab(
     df=None, latest_update_str: str = ""
 ) -> None:
     """상단 담당자·거래처·납품줄 + 구글 월간 달력·할 일."""
-    # 아이패드만: 고정 필터 바로 아래에 담당자·거래처가 깔리지 않게.
-    # dashboard-touch-mode 가 없는 맥·Cloud 데스크톱에는 적용되지 않음.
+    # 클라우드 버튼 납품줄만. 맥 v2 iframe 안에는 적용되지 않는다.
     st.markdown(
         """
-<style id="gc-touch-staff-row">
-html.dashboard-touch-mode div[class*="st-key-gc_vc_delivery_head"] {
-  margin-top: 5.75rem !important;
+<style id="gc-cloud-strip">
+div[class*="st-key-gc_vc_delivery_head"] {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
 }
-html.dashboard-touch-mode div[class*="st-key-gc_vc_delivery_head"] [class*="st-key-vc_staff"],
-html.dashboard-touch-mode div[class*="st-key-gc_vc_delivery_head"] [class*="st-key-vc_client"],
-html.dashboard-touch-mode div[class*="st-key-gc_vc_delivery_head"] [class*="st-key-vc_client_q"] {
-  visibility: visible !important;
-  opacity: 1 !important;
-  height: auto !important;
-  max-height: none !important;
-  overflow: visible !important;
+div[class*="st-key-gc_vc_delivery_head"] .vc-strip-html {
+  width: 100% !important;
+  margin: 0 0 2px !important;
+}
+div[class*="st-key-gc_vc_delivery_head"] .vc-strip-html .vc-strip-wd {
+  display: flex !important;
+  gap: 3px !important;
+  width: 100% !important;
+  margin: 0 !important;
+}
+div[class*="st-key-gc_vc_delivery_head"] .vc-strip-html .vc-strip-wd span {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+  text-align: center !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  line-height: 1.1 !important;
+  letter-spacing: -0.2px !important;
+}
+div[class*="st-key-gc_vc_delivery_head"] [data-testid="stHorizontalBlock"]:has(div[class*="st-key-vc_strip_"]) {
+  gap: 3px !important;
+}
+div[class*="st-key-gc_vc_delivery_head"] [data-testid="stHorizontalBlock"]:has(div[class*="st-key-vc_strip_"]) [data-testid="stColumn"] {
+  flex: 1 1 0 !important;
+  width: 0 !important;
+  padding: 0 !important;
+  min-width: 0 !important;
+}
+div[class*="st-key-gc_vc_delivery_head"] [data-testid="stHorizontalBlock"]:has(div[class*="st-key-vc_strip_"]) [data-testid="stElementContainer"] {
+  padding: 0 !important;
+  min-width: 0 !important;
+}
+div[class*="st-key-gc_vc_delivery_head"] div[class*="st-key-vc_strip_"] button {
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 2.7rem !important;
+  height: 2.7rem !important;
+  max-height: 2.7rem !important;
+  padding: 2px 0 !important;
+  border-radius: 10px !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  line-height: 1.15 !important;
+}
+div[class*="st-key-gc_vc_delivery_head"] div[class*="st-key-vc_strip_"] button p {
+  font-size: 10px !important;
+  line-height: 1.15 !important;
+  margin: 0 !important;
 }
 </style>
 """,
