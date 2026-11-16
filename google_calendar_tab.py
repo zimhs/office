@@ -5424,6 +5424,27 @@ def render_google_calendar_tab(
     df=None, latest_update_str: str = ""
 ) -> None:
     """상단 담당자·거래처·납품줄 + 구글 월간 달력·할 일."""
+    # 아이패드만: 고정 필터 바로 아래에 담당자·거래처가 깔리지 않게.
+    # dashboard-touch-mode 가 없는 맥·Cloud 데스크톱에는 적용되지 않음.
+    st.markdown(
+        """
+<style id="gc-touch-staff-row">
+html.dashboard-touch-mode div[class*="st-key-gc_vc_delivery_head"] {
+  margin-top: 5.75rem !important;
+}
+html.dashboard-touch-mode div[class*="st-key-gc_vc_delivery_head"] [class*="st-key-vc_staff"],
+html.dashboard-touch-mode div[class*="st-key-gc_vc_delivery_head"] [class*="st-key-vc_client"],
+html.dashboard-touch-mode div[class*="st-key-gc_vc_delivery_head"] [class*="st-key-vc_client_q"] {
+  visibility: visible !important;
+  opacity: 1 !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
     st.html(
         """
 <script>
