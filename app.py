@@ -8455,6 +8455,9 @@ def _dash_refresh_name_view(selected_staff, selected_client, selected_item) -> N
     global staff_debt_df, filtered_debt_df, client_addr
     if full_df is None or getattr(full_df, "empty", True):
         return
+    globals()["selected_staff"] = list(selected_staff or [])
+    globals()["selected_item"] = list(selected_item or [])
+    globals()["selected_client"] = selected_client or "전체 거래처"
     df_base = st.session_state.get("_dash_date_slice_df", full_df)
     df_client_filtered = st.session_state.get("_dash_client_slice_df", df_base)
     if not isinstance(df_client_filtered, pd.DataFrame):
@@ -8565,22 +8568,27 @@ def _dash_refresh_name_view(selected_staff, selected_client, selected_item) -> N
 
 
 def _dash_replay_open_tab(selected_staff, selected_client, selected_item) -> None:
-    """거래처가 바뀌면 거래처 분석만, 품목이 바뀌면 품목 탭만 다시 그린다."""
+    """이름 필터가 바뀌면 그 데이터를 쓰는 탭만 다시 그린다. 탭 클릭은 그대로다."""
     client_now = selected_client or "전체 거래처"
     item_now = tuple(selected_item or ())
     staff_now = tuple(selected_staff or ())
     prev = st.session_state.get("_dash_name_replay_prev")
     st.session_state["_dash_name_replay_prev"] = (staff_now, client_now, item_now)
-    client_changed = not isinstance(prev, tuple) or len(prev) < 3 or prev[1] != client_now
-    item_changed = not isinstance(prev, tuple) or len(prev) < 3 or tuple(prev[2] or ()) != item_now
+    changed = not isinstance(prev, tuple) or len(prev) < 3
+    staff_changed = changed or tuple(prev[0] or ()) != staff_now
+    client_changed = changed or prev[1] != client_now
+    item_changed = changed or tuple(prev[2] or ()) != item_now
+    # 1 거래처 분석, 2 품목·단가, 3 담당자·거래상세, 4 채권. 요약·지도·재고는 다시 열지 않는다.
     targets: list[int] = []
-    if client_changed:
-        targets.append(1)
+    if staff_changed or client_changed:
+        targets.extend((1, 2, 3, 4))
     if item_changed:
-        targets.append(2)
-    idx = _dash_active_tab_idx()
-    if idx == 2 and client_changed and 2 not in targets:
-        targets.append(2)
+        for _i in (2, 3):
+            if _i not in targets:
+                targets.append(_i)
+    active = _dash_active_tab_idx()
+    if active in targets:
+        targets = [active] + [i for i in targets if i != active]
     if not targets:
         return
     target_js = ",".join(str(int(i)) for i in targets)
