@@ -148,7 +148,10 @@ def _create_quarter_book(path: Path, year: int, quarter: int) -> None:
             cell = ws.cell(offset, col, 0)
             cell.border = thin
             cell.alignment = Alignment(horizontal="right")
-    qty = 13
+    for row in range(12, 20):
+        ws.cell(row, 3, "")
+    ws["C20"] = "■ 실적 / 분석"
+    qty = 22
     ws.cell(qty, 3, "구분").font = head_font
     ws.cell(qty, 3).fill = head_fill
     for col, month in zip(QTY_NOW_COLS, months):
@@ -161,6 +164,12 @@ def _create_quarter_book(path: Path, year: int, quarter: int) -> None:
         for col in (*QTY_NOW_COLS, *QTY_PREV_COLS):
             cell = ws.cell(row, col, 0)
             cell.border = thin
+    ws["C32"] = " ※ 원인 / 분석"
+    for row in range(33, 44):
+        ws.cell(row, 3, "")
+    ws["C44"] = " ※ 전망"
+    for row in range(45, 61):
+        ws.cell(row, 3, "")
     wb.save(path)
     wb.close()
 
@@ -285,6 +294,122 @@ def aggregate_quarter(df: pd.DataFrame, year: int, quarter: int) -> dict:
     }
 
 
+def _fmt_mil(value: int) -> str:
+    return f"{int(value):,}"
+
+
+def quarter_money(df: pd.DataFrame, year: int, quarter: int) -> int:
+    total = 0
+    for month in QUARTERS[int(quarter)]:
+        total += _sum_money(_month_frame(df, int(year), month))
+    return int(total)
+
+
+def sales_goal_lines(year: int, quarter: int, annual: int, df: pd.DataFrame) -> list[str]:
+    """목표/달성 아래 1번 문장. 매출이 있으면 분기 실적과 달성률을 채운다."""
+    annual = int(annual or 0)
+    quarter = int(quarter)
+    yy = str(int(year))[2:]
+    actuals = [quarter_money(df, year, q) for q in (1, 2, 3, 4)]
+    prev = quarter_money(df, int(year) - 1, quarter)
+    q_now = actuals[quarter - 1]
+    ytd = sum(actuals[:quarter])
+
+    def _ratio(num: float, den: float) -> int | None:
+        if not den:
+            return None
+        return int(round(float(num) / float(den) * 100))
+
+    q_pct = _ratio(q_now, annual)
+    yoy = _ratio(q_now - prev, prev)
+    ytd_pct = _ratio(ytd, annual)
+    goal_bit = f"목표대비 {q_pct}% 달성" if q_pct is not None else "목표대비 달성"
+    if yoy is None:
+        yoy_bit = "전년 실적 없음"
+    elif yoy > 0:
+        yoy_bit = f"전년 분기 대비 {yoy}% 상승"
+    elif yoy < 0:
+        yoy_bit = f"전년 분기 대비 {abs(yoy)}% 하락"
+    else:
+        yoy_bit = "전년 분기 대비 보합"
+    ytd_bit = f"목표대비 {ytd_pct}% 달성" if ytd_pct is not None else "목표대비 달성"
+    indent = " " * 31
+    parts = [f"{i}분기 실적 {_fmt_mil(actuals[i - 1])}백만" for i in range(1, quarter + 1)]
+    return [
+        f"1. {yy}년 매출목표      : {_fmt_mil(annual)}백만 / {quarter}분기 실적 {_fmt_mil(q_now)}백만 / {goal_bit}",
+        f"{indent}전년 {quarter}분기 실적 {_fmt_mil(prev)}백만  {yoy_bit}",
+        f"{indent}{' / '.join(parts)}",
+        f"{indent}{ytd_bit}",
+    ]
+
+
+def growth_top(df: pd.DataFrame, year: int, quarter: int, limit: int = 30) -> list[tuple[str, int, int, int]]:
+    """전년 같은 분기보다 매출이 늘어난 거래처. (이름, 올해 원, 전년 원, 증가 원)."""
+    if not isinstance(df, pd.DataFrame) or df.empty or "거래처" not in df.columns or "매출액" not in df.columns:
+        return []
+    months = set(QUARTERS[int(quarter)])
+
+    def _slice(which_year: int) -> pd.DataFrame:
+        if "매출일_dt" in df.columns:
+            dated = pd.to_datetime(df["매출일_dt"], errors="coerce")
+            return df.loc[(dated.dt.year == int(which_year)) & (dated.dt.month.isin(months))]
+        parts = [_month_frame(df, which_year, month) for month in months]
+        parts = [part for part in parts if isinstance(part, pd.DataFrame) and not part.empty]
+        if not parts:
+            return pd.DataFrame()
+        return pd.concat(parts, ignore_index=True)
+
+    def _totals(frame: pd.DataFrame) -> dict[str, float]:
+        if frame is None or frame.empty:
+            return {}
+        money = pd.to_numeric(frame["매출액"], errors="coerce").fillna(0)
+        names = frame["거래처"].astype(str).str.strip()
+        return money.groupby(names).sum().to_dict()
+
+    now = _totals(_slice(int(year)))
+    old = _totals(_slice(int(year) - 1))
+    rows = []
+    for name in set(now) | set(old):
+        if not name or name.lower() == "nan" or name in {"미지정", "(거래처명 없음)"}:
+            continue
+        current = float(now.get(name) or 0)
+        previous = float(old.get(name) or 0)
+        if current <= previous:
+            continue
+        rows.append((name, int(round(current)), int(round(previous)), int(round(current - previous))))
+    rows.sort(key=lambda item: item[3], reverse=True)
+    return rows[: int(limit)]
+
+
+def cause_lines(picked: list[str], ranked: list[tuple[str, int, int, int]], year: int, quarter: int) -> list[str]:
+    yy = str(int(year) - 1)[2:]
+    amounts = {name: delta for name, _now, _old, delta in ranked}
+    lines = [f"2. {yy}년 {int(quarter)}분기 대비 매출성장업체"]
+    for name in picked:
+        man = int(round(float(amounts.get(name) or 0) / 10000.0))
+        lines.append(f"      • {name} : {man:,}만")
+    return lines
+
+
+def _marker_rows(ws) -> dict[str, int | None]:
+    perf = cause = outlook = nxt = None
+    for row in ws.iter_rows(min_row=1, max_row=120, max_col=3):
+        cell = row[2]
+        raw = str(cell.value or "")
+        text = _norm_label(raw)
+        if not text:
+            continue
+        if perf is None and "실적" in text and "분석" in text:
+            perf = cell.row
+        elif cause is None and "원인" in text:
+            cause = cell.row
+        elif outlook is None and "전망" in text:
+            outlook = cell.row
+        elif nxt is None and raw.strip().startswith("■") and perf and cell.row > (outlook or perf):
+            nxt = cell.row
+    return {"perf": perf, "cause": cause, "outlook": outlook, "next": nxt}
+
+
 def _label_bucket(label: str) -> str | None:
     text = str(label or "").replace(" ", "").replace("-", "").upper()
     if "합계" in str(label):
@@ -352,6 +477,16 @@ def locate_sheet(path: Path) -> dict:
         if row[2].value and "사업분석" in str(row[2].value):
             title = row[2].coordinate
             break
+    markers = _marker_rows(ws)
+    last_money = max(roles.values()) if roles else (money_header or 0)
+    note_rows = list(range(int(last_money) + 2, int(markers["perf"]))) if markers["perf"] and last_money else []
+    cause_rows = (
+        list(range(int(markers["cause"]) + 1, int(markers["outlook"])))
+        if markers["cause"] and markers["outlook"]
+        else []
+    )
+    outlook_end = int(markers["next"] or ((markers["outlook"] or 0) + 17))
+    outlook_rows = list(range(int(markers["outlook"]) + 1, outlook_end)) if markers["outlook"] else []
     return {
         "sheet": ws.title,
         "money_header": money_header,
@@ -359,6 +494,9 @@ def locate_sheet(path: Path) -> dict:
         "roles": roles,
         "products": products,
         "title": title,
+        "note_rows": note_rows,
+        "cause_rows": cause_rows,
+        "outlook_rows": outlook_rows,
         "ws": ws,
         "wb": wb,
     }
@@ -391,7 +529,59 @@ def _is_formula(cell) -> bool:
     return isinstance(cell.value, str) and str(cell.value).startswith("=")
 
 
-def build_writes(path: Path, year: int, quarter: int, targets: list[float], agg: dict) -> dict[str, object]:
+def _put_lines(writes: dict[str, object], rows: list[int], lines: list[str] | None) -> None:
+    if lines is None:
+        return
+    for i, row in enumerate(rows):
+        writes[_cell(int(row), 3)] = lines[i] if i < len(lines) else ""
+
+
+def read_text_blocks(path: Path | None) -> dict:
+    empty = {"notes": [], "causes": [], "outlooks": [], "note_rows": [], "cause_rows": [], "outlook_rows": [], "annual": 0}
+    if path is None or not path.is_file():
+        return empty
+    info = locate_sheet(path)
+    try:
+        ws = info["ws"]
+
+        def grab(rows: list[int]) -> list[str]:
+            lines = []
+            for row in rows:
+                value = ws.cell(int(row), 3).value
+                lines.append("" if value is None else str(value))
+            while lines and not str(lines[-1]).strip():
+                lines.pop()
+            return lines
+
+        notes = grab(info["note_rows"])
+        annual = 0
+        if notes and "매출목표" in notes[0]:
+            found = re.search(r"([\d,]{3,})\s*백만", notes[0])
+            if found:
+                annual = int(found.group(1).replace(",", ""))
+        return {
+            "notes": notes,
+            "causes": grab(info["cause_rows"]),
+            "outlooks": grab(info["outlook_rows"]),
+            "note_rows": list(info["note_rows"]),
+            "cause_rows": list(info["cause_rows"]),
+            "outlook_rows": list(info["outlook_rows"]),
+            "annual": annual,
+        }
+    finally:
+        _close_located(info)
+
+
+def build_writes(
+    path: Path,
+    year: int,
+    quarter: int,
+    targets: list[float],
+    agg: dict,
+    notes: list[str] | None = None,
+    causes: list[str] | None = None,
+    outlooks: list[str] | None = None,
+) -> dict[str, object]:
     info = locate_sheet(path)
     ws = info["ws"]
     writes: dict[str, object] = {}
@@ -486,6 +676,9 @@ def build_writes(path: Path, year: int, quarter: int, targets: list[float], agg:
             writes[ref] = bulk_prev[i]
         for i, col in enumerate(QTY_PCT_COLS):
             writes[_cell(row, col)] = arrow_pct(bulk_now[i], bulk_prev[i])
+    _put_lines(writes, info.get("note_rows") or [], notes)
+    _put_lines(writes, info.get("cause_rows") or [], causes)
+    _put_lines(writes, info.get("outlook_rows") or [], outlooks)
     _close_located(info)
     return writes
 
@@ -515,7 +708,8 @@ def _append_shared(sst: str, text: str, strings: list[str]) -> tuple[str, int]:
         return sst, strings.index(text)
     idx = len(strings)
     strings.append(text)
-    piece = f"<si><t>{_xml_text(text)}</t></si>"
+    space = ' xml:space="preserve"' if text != text.strip() else ""
+    piece = f"<si><t{space}>{_xml_text(text)}</t></si>"
     if "</sst>" not in sst:
         raise ValueError("sharedStrings에 끝 태그가 없습니다.")
     sst = sst.replace("</sst>", piece + "</sst>", 1)
@@ -528,13 +722,23 @@ def _append_shared(sst: str, text: str, strings: list[str]) -> tuple[str, int]:
 
 def _patch_sheet(xml: str, writes: dict[str, object], strings: list[str], sst: str) -> tuple[str, str]:
     for ref, value in writes.items():
-        found = re.search(rf'<c r="{re.escape(ref)}"[^>]*>.*?</c>', xml, re.S)
-        self_closed = False
+        found = re.search(rf'<c r="{re.escape(ref)}"[^>]*/>', xml)
+        self_closed = found is not None
         if not found:
-            found = re.search(rf'<c r="{re.escape(ref)}"[^>]*/>', xml)
-            self_closed = found is not None
+            found = re.search(rf'<c r="{re.escape(ref)}"[^>]*>.*?</c>', xml, re.S)
         if not found:
-            continue
+            row_no = re.search(r"(\d+)$", ref)
+            if row_no and re.search(rf'<row r="{row_no.group(1)}"[^>]*>', xml):
+                xml = re.sub(
+                    rf'(<row r="{row_no.group(1)}"[^>]*>)',
+                    rf'\1<c r="{ref}"/>',
+                    xml,
+                    count=1,
+                )
+                found = re.search(rf'<c r="{re.escape(ref)}"[^>]*/>', xml)
+                self_closed = found is not None
+            if not found:
+                continue
         tag = found.group(0)
         if self_closed:
             open_tag = tag[:-2] + ">"
@@ -622,7 +826,15 @@ def write_values(path: Path, writes: dict[str, object]) -> None:
     os.replace(tmp, path)
 
 
-def save_quarter(year: int, quarter: int, targets: list[float], sales_df: pd.DataFrame) -> Path:
+def save_quarter(
+    year: int,
+    quarter: int,
+    targets: list[float],
+    sales_df: pd.DataFrame,
+    notes: list[str] | None = None,
+    causes: list[str] | None = None,
+    outlooks: list[str] | None = None,
+) -> Path:
     root = find_plan_root()
     if root is None:
         raise FileNotFoundError("사업계획 폴더를 찾지 못했습니다.")
@@ -636,7 +848,7 @@ def save_quarter(year: int, quarter: int, targets: list[float], sales_df: pd.Dat
         else:
             _create_quarter_book(dest, year, quarter)
     agg = aggregate_quarter(sales_df, year, quarter)
-    writes = build_writes(dest, year, quarter, targets, agg)
+    writes = build_writes(dest, year, quarter, targets, agg, notes=notes, causes=causes, outlooks=outlooks)
     write_values(dest, writes)
     return dest
 
@@ -730,7 +942,16 @@ def _preview_source(year: int, quarter: int) -> Path | None:
     return find_template()
 
 
-def _preview_token(src: Path, year: int, quarter: int, targets: list[int], agg: dict) -> tuple:
+def _preview_token(
+    src: Path,
+    year: int,
+    quarter: int,
+    targets: list[int],
+    agg: dict,
+    notes: list[str] | None = None,
+    causes: list[str] | None = None,
+    outlooks: list[str] | None = None,
+) -> tuple:
     return (
         str(src),
         int(src.stat().st_mtime_ns),
@@ -739,6 +960,9 @@ def _preview_token(src: Path, year: int, quarter: int, targets: list[int], agg: 
         tuple(int(v) for v in targets),
         tuple(int(v) for v in (agg.get("money_now") or [])),
         tuple(int(v) for v in (agg.get("money_prev") or [])),
+        tuple(notes or ()),
+        tuple(causes or ()),
+        tuple(outlooks or ()),
     )
 
 
@@ -758,14 +982,22 @@ def _ql_png(xlsx: Path) -> bytes:
         return pngs[0].read_bytes()
 
 
-def sheet_preview_png(year: int, quarter: int, targets: list[int], sales_df: pd.DataFrame) -> bytes | None:
+def sheet_preview_png(
+    year: int,
+    quarter: int,
+    targets: list[int],
+    sales_df: pd.DataFrame,
+    notes: list[str] | None = None,
+    causes: list[str] | None = None,
+    outlooks: list[str] | None = None,
+) -> bytes | None:
     """저장과 같은 숫자만 임시 파일에 넣고, 원본 서식 이미지를 돌려준다. 저장 파일은 그대로 둔다."""
     src = _preview_source(year, quarter)
     if src is None:
         return None
     frame = sales_df if isinstance(sales_df, pd.DataFrame) else pd.DataFrame()
     agg = _cached_aggregate(frame, year, quarter)
-    token = _preview_token(src, year, quarter, targets, agg)
+    token = _preview_token(src, year, quarter, targets, agg, notes, causes, outlooks)
     try:
         cached = st.session_state.get("_bp_sheet_preview")
     except Exception:
@@ -775,7 +1007,7 @@ def sheet_preview_png(year: int, quarter: int, targets: list[int], sales_df: pd.
     with tempfile.TemporaryDirectory(prefix="bp_fill_") as td:
         copy = Path(td) / "preview.xlsx"
         shutil.copy(src, copy)
-        write_values(copy, build_writes(copy, year, quarter, targets, agg))
+        write_values(copy, build_writes(copy, year, quarter, targets, agg, notes=notes, causes=causes, outlooks=outlooks))
         png = _ql_png(copy)
     try:
         st.session_state["_bp_sheet_preview"] = (token, png)
@@ -829,6 +1061,47 @@ def _cached_aggregate(df: pd.DataFrame, year: int, quarter: int) -> dict:
         except Exception:
             pass
     return agg
+
+
+def _sync_lines(key: str, lines: list[str]) -> None:
+    st.session_state[key] = list(lines)
+    prefix = f"{key}__"
+    for name in list(st.session_state.keys()):
+        if str(name).startswith(prefix):
+            del st.session_state[name]
+    for i, text in enumerate(lines):
+        st.session_state[f"{prefix}{i}"] = text
+
+
+def _line_editor(key: str, max_lines: int, add_label: str) -> list[str]:
+    lines = list(st.session_state.get(key) or [])
+    remove_at = None
+    for i in range(len(lines)):
+        left, right = st.columns([10, 1.3])
+        with left:
+            lines[i] = st.text_input("줄", key=f"{key}__{i}", label_visibility="collapsed")
+        with right:
+            if st.button("삭제", key=f"{key}_del_{i}"):
+                remove_at = i
+    if remove_at is not None:
+        lines.pop(remove_at)
+        _sync_lines(key, lines)
+        st.rerun(scope="fragment")
+    st.session_state[key] = lines
+    if len(lines) < int(max_lines):
+        if st.button(add_label, key=f"{key}_add"):
+            lines.append("")
+            _sync_lines(key, lines)
+            st.rerun(scope="fragment")
+    elif int(max_lines) > 0:
+        st.caption("엑셀에 더 쓸 줄이 없습니다.")
+    return lines
+
+
+def _rest_after_goal(notes: list[str]) -> list[str]:
+    if notes and "매출목표" in str(notes[0]):
+        return list(notes[4:])
+    return list(notes)
 
 
 @st.fragment
@@ -885,17 +1158,103 @@ def render_biz_plan_tab(sales_df: pd.DataFrame) -> None:
                     )
                 )
         agg = _cached_aggregate(frame, year, quarter)
+        source = dest if dest is not None and dest.is_file() else find_template()
+        stamp = int(source.stat().st_mtime_ns) if source is not None and source.is_file() else 0
+        text_sig = (int(year), int(quarter), str(source or ""), stamp)
+        if st.session_state.get("_bp_text_sig") != text_sig:
+            loaded = read_text_blocks(source)
+            st.session_state["_bp_text_loaded"] = loaded
+            st.session_state["_bp_text_sig"] = text_sig
+            st.session_state[f"_bp_goal_auto_{year}_{quarter}"] = None
+            st.session_state[f"_bp_cause_sel_{year}_{quarter}"] = None
+            annual_key = f"bp_annual_{year}"
+            if annual_key not in st.session_state and loaded.get("annual"):
+                st.session_state[annual_key] = int(loaded["annual"])
+        loaded = st.session_state.get("_bp_text_loaded") or {}
+        note_cap = len(loaded.get("note_rows") or []) or 8
+        cause_cap = len(loaded.get("cause_rows") or []) or 11
+        outlook_cap = len(loaded.get("outlook_rows") or []) or 16
+        annual_key = f"bp_annual_{year}"
+        if annual_key not in st.session_state:
+            st.session_state[annual_key] = int(loaded.get("annual") or 0)
+        annual = int(
+            st.number_input(
+                "연간 매출목표 (백만원, 부가세 별도)",
+                min_value=0,
+                step=1,
+                key=annual_key,
+            )
+        )
+        auto = sales_goal_lines(year, quarter, annual, frame)
+        notes_key = f"bp_notes_{year}_{quarter}"
+        if notes_key not in st.session_state:
+            _sync_lines(notes_key, auto + _rest_after_goal(list(loaded.get("notes") or [])))
+        prev_auto = st.session_state.get(f"_bp_goal_auto_{year}_{quarter}")
+        notes_now = list(st.session_state.get(notes_key) or [])
+        refresh_goal = bool(st.session_state.pop(f"_bp_goal_refresh_{year}_{quarter}", False))
+        if prev_auto is None or refresh_goal or notes_now[:4] == list(prev_auto):
+            if prev_auto is None:
+                rest = _rest_after_goal(list(loaded.get("notes") or []))
+            else:
+                rest = notes_now[4:]
+            merged = list(auto) + rest
+            if merged != notes_now:
+                _sync_lines(notes_key, merged)
+            st.session_state[f"_bp_goal_auto_{year}_{quarter}"] = list(auto)
         st.markdown("**목표 / 달성**")
         st.caption("단위: 백만원, 부가세 별도. 목표는 위 칸에서 바꿉니다.")
         st.dataframe(_money_table(year, months, targets, agg), use_container_width=True, hide_index=True)
+        st.caption("1번은 매출이 있으면 다시 채웁니다. 줄은 추가·삭제할 수 있고, 오른쪽 이미지와 저장 파일에 들어갑니다.")
+        notes = _line_editor(notes_key, note_cap, "목표 문구 줄 추가")
+        if st.button("1번을 실적으로 다시 채우기", key=f"bp_goal_btn_{year}_{quarter}"):
+            st.session_state[f"_bp_goal_refresh_{year}_{quarter}"] = True
+            st.rerun(scope="fragment")
         st.markdown("**실적 / 분석**")
         st.caption("벌크는 톤, 벌크가 아닌 실린더는 병입니다.")
         st.dataframe(_qty_table(year, months, agg), use_container_width=True, hide_index=True)
+        st.markdown("**원인 / 분석**")
+        st.caption(
+            f"전년 같은 분기보다 매출이 늘어난 거래처 상위 30입니다. 고르면 원인/분석에 들어가고, 엑셀에는 {cause_cap}줄까지 씁니다."
+        )
+        ranked = growth_top(frame, year, quarter, 30)
+        cause_key = f"bp_causes_{year}_{quarter}"
+        if cause_key not in st.session_state:
+            _sync_lines(cause_key, list(loaded.get("causes") or []))
+        if ranked:
+            show = pd.DataFrame(
+                {
+                    "순위": list(range(1, len(ranked) + 1)),
+                    "거래처": [item[0] for item in ranked],
+                    "올해(만)": [int(round(item[1] / 10000.0)) for item in ranked],
+                    "전년(만)": [int(round(item[2] / 10000.0)) for item in ranked],
+                    "증가(만)": [int(round(item[3] / 10000.0)) for item in ranked],
+                }
+            )
+            st.dataframe(show, use_container_width=True, hide_index=True)
+            options = [item[0] for item in ranked]
+            picked = st.multiselect("원인/분석에 넣을 거래처", options, key=f"bp_grow_{year}_{quarter}")
+            sel_key = f"_bp_cause_sel_{year}_{quarter}"
+            prev_sel = st.session_state.get(sel_key)
+            if prev_sel is None:
+                st.session_state[sel_key] = tuple(picked)
+            elif tuple(picked) != tuple(prev_sel):
+                written = cause_lines(list(picked), ranked, year, quarter)[:cause_cap]
+                _sync_lines(cause_key, written)
+                st.session_state[sel_key] = tuple(picked)
+                st.rerun(scope="fragment")
+        else:
+            st.caption("비교할 매출 자료가 없습니다.")
+        causes = _line_editor(cause_key, cause_cap, "원인 줄 추가")
+        st.markdown("**전망**")
+        outlook_key = f"bp_outlook_{year}_{quarter}"
+        if outlook_key not in st.session_state:
+            _sync_lines(outlook_key, list(loaded.get("outlooks") or []))
+        outlooks = _line_editor(outlook_key, outlook_cap, "전망 줄 추가")
         year_dir = root / str(year)
         st.caption(f"저장 위치 {year_dir / f'{quarter}분기 사업계획.xlsx'}")
         if st.button("저장", type="primary", key="bp_save"):
             try:
-                saved = save_quarter(year, quarter, targets, frame)
+                saved = save_quarter(year, quarter, targets, frame, notes=notes, causes=causes, outlooks=outlooks)
                 st.success(f"저장했습니다. {saved}")
             except Exception as exc:
                 st.error(f"저장하지 못했습니다. {exc}")
@@ -903,11 +1262,13 @@ def render_biz_plan_tab(sales_df: pd.DataFrame) -> None:
         png = None
         try:
             with st.spinner("엑셀 원본을 맞추고 있습니다."):
-                png = sheet_preview_png(year, quarter, targets, frame)
+                png = sheet_preview_png(
+                    year, quarter, targets, frame, notes=notes, causes=causes, outlooks=outlooks
+                )
         except Exception as exc:
             st.caption(f"엑셀 원본을 보여 주지 못했습니다. {exc}")
         if png:
             st.image(png, use_container_width=True)
-            st.caption("엑셀 원본입니다. 오른쪽 숫자는 지금 입력과 같고, 저장을 누르면 파일에 남습니다.")
+            st.caption("엑셀 원본입니다. 숫자와 문구는 지금 입력과 같고, 저장을 누르면 파일에 남습니다.")
         elif _preview_source(year, quarter) is None:
             st.caption("보여 줄 엑셀 원본이 없습니다.")

@@ -106,6 +106,68 @@ def test_save_creates_year_folder_and_reuses_file(monkeypatch=None):
             bp.find_template = original_template
 
 
+def test_sales_goal_lines_follow_the_sheet_sentence():
+    rows = []
+    for quarter, million in ((1, 4148), (2, 5100), (3, 7895)):
+        month = bp.QUARTERS[quarter][0]
+        rows.append({"매출액": million * 1_000_000, "매출일_dt": f"2026-{month:02d}-10"})
+    rows.append({"매출액": 5435 * 1_000_000, "매출일_dt": "2025-07-10"})
+    lines = bp.sales_goal_lines(2026, 3, 21461, pd.DataFrame(rows))
+    assert "21,461백만" in lines[0] and "7,895백만" in lines[0] and "37% 달성" in lines[0]
+    assert "5,435백만" in lines[1] and "45% 상승" in lines[1]
+    assert "4,148백만" in lines[2] and "5,100백만" in lines[2] and "7,895백만" in lines[2]
+    assert "80% 달성" in lines[3]
+
+
+def test_growth_top_keeps_the_largest_increase():
+    df = pd.DataFrame(
+        [
+            {"거래처": "가", "매출액": 50_000_000, "매출일_dt": "2026-07-01"},
+            {"거래처": "가", "매출액": 10_000_000, "매출일_dt": "2025-07-01"},
+            {"거래처": "나", "매출액": 80_000_000, "매출일_dt": "2026-08-01"},
+            {"거래처": "나", "매출액": 10_000_000, "매출일_dt": "2025-08-01"},
+            {"거래처": "다", "매출액": 1_000, "매출일_dt": "2026-09-01"},
+            {"거래처": "다", "매출액": 9_000_000, "매출일_dt": "2025-09-01"},
+        ]
+    )
+    top = bp.growth_top(df, 2026, 3, 30)
+    assert [name for name, *_rest in top] == ["나", "가"]
+    lines = bp.cause_lines(["나"], top, 2026, 3)
+    assert lines[0] == "2. 25년 3분기 대비 매출성장업체"
+    assert "나" in lines[1] and "7,000만" in lines[1]
+
+
+def test_notes_causes_and_outlook_land_in_the_form():
+    src = bp.find_template()
+    if src is None or not src.is_file():
+        return
+    with tempfile.TemporaryDirectory() as td:
+        dest = Path(td) / "q.xlsx"
+        shutil.copy(src, dest)
+        styles = zipfile.ZipFile(dest).read("xl/styles.xml")
+        sheet_before = zipfile.ZipFile(dest).read("xl/worksheets/sheet1.xml").decode("utf-8")
+        notes = ["1. 목표 문장", "    둘째", "    셋째", "    넷째", "2. 설치"]
+        causes = ["2. 성장", "      • 라쿨 : 939만"]
+        outlooks = ["1. 전망 한 줄"]
+        writes = bp.build_writes(
+            dest, 2026, 3, [1, 2, 3], bp.aggregate_quarter(pd.DataFrame(), 2026, 3), notes, causes, outlooks
+        )
+        bp.write_values(dest, writes)
+        assert zipfile.ZipFile(dest).read("xl/styles.xml") == styles
+        if "E6+G6+I6" in sheet_before:
+            sheet = zipfile.ZipFile(dest).read("xl/worksheets/sheet1.xml").decode("utf-8")
+            assert "E6+G6+I6" in sheet
+        info = bp.locate_sheet(dest)
+        try:
+            ws = info["ws"]
+            assert ws["C12"].value == "1. 목표 문장"
+            assert ws["C13"].value == "    둘째"
+            assert any("라쿨" in str(ws.cell(row, 3).value or "") for row in info["cause_rows"])
+            assert any("전망 한 줄" in str(ws.cell(row, 3).value or "") for row in info["outlook_rows"])
+        finally:
+            bp._close_located(info)
+
+
 def test_forms_under_prefers_nested_draft():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td) / "사업계획"
