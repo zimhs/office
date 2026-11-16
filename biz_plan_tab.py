@@ -71,6 +71,27 @@ def _scan_plan_root() -> Path | None:
     return None
 
 
+def _forms_under(root: Path) -> Path | None:
+    """사업계획 폴더 안의 양식, 없으면 이미 있는 분기 파일을 고른다."""
+    if not root.is_dir():
+        return None
+    drafts: list[Path] = []
+    quarters: list[Path] = []
+    for path in root.rglob("*.xlsx"):
+        if path.name.startswith("~$"):
+            continue
+        name = _nfc(path.name)
+        if "26Q3" in name and "draft" in name.lower():
+            drafts.append(path)
+        elif name.endswith("분기 사업계획.xlsx"):
+            quarters.append(path)
+    if drafts:
+        return sorted(drafts, key=lambda p: _nfc(str(p)))[0]
+    if quarters:
+        return sorted(quarters, key=lambda p: _nfc(str(p)))[0]
+    return None
+
+
 def find_template() -> Path | None:
     root = find_plan_root()
     cands = [Path.home() / "Desktop" / "26Q3 사업분석_draft 261016.xlsx"]
@@ -79,7 +100,69 @@ def find_template() -> Path | None:
     for path in cands:
         if path.is_file():
             return path
+    if root is not None:
+        found = _forms_under(root)
+        if found is not None:
+            return found
+    desktop_quarter = Path.home() / "Desktop" / "4분기 사업계획.xlsx"
+    if desktop_quarter.is_file():
+        return desktop_quarter
     return None
+
+
+def _create_quarter_book(path: Path, year: int, quarter: int) -> None:
+    """양식이 없을 때 같은 칸 구조의 통합문서를 그 경로에 만든다."""
+    import openpyxl
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"{str(int(year))[2:]}Q{int(quarter)}"
+    months = QUARTERS[int(quarter)]
+    yy = str(int(year))[2:]
+    py = str(int(year) - 1)[2:]
+    thin = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+    head_fill = PatternFill("solid", fgColor="1F4E79")
+    head_font = Font(color="FFFFFF", bold=True, name="맑은 고딕")
+    label_font = Font(name="맑은 고딕")
+    ws["C2"] = f"’{yy}년 {int(quarter)}분기 사업분석"
+    ws["C2"].font = Font(bold=True, size=16, name="맑은 고딕")
+    ws["C5"] = "구분"
+    ws["C5"].font = head_font
+    ws["C5"].fill = head_fill
+    for col, month in zip(MONEY_COLS, months):
+        cell = ws.cell(5, col, f"{month}월")
+        cell.font = head_font
+        cell.fill = head_fill
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = thin
+    for offset, label in enumerate(("목표", "실적", "달성율", "전년매출", "전년비교"), start=6):
+        ws.cell(offset, 4, label).font = label_font
+        for col in MONEY_COLS:
+            cell = ws.cell(offset, col, 0)
+            cell.border = thin
+            cell.alignment = Alignment(horizontal="right")
+    qty = 13
+    ws.cell(qty, 3, "구분").font = head_font
+    ws.cell(qty, 3).fill = head_fill
+    for col, month in zip(QTY_NOW_COLS, months):
+        ws.cell(qty, col, f"’{yy}년 {month}월")
+    for col, month in zip(QTY_PREV_COLS, months):
+        ws.cell(qty, col, f"’{py}년 {month}월")
+    for i, name in enumerate(("LO2", "LN2", "LAR", "LCO2", "LPG", "Gas Cylinder", "벌크 합계")):
+        row = qty + 1 + i
+        ws.cell(row, 3, name).font = label_font
+        for col in (*QTY_NOW_COLS, *QTY_PREV_COLS):
+            cell = ws.cell(row, col, 0)
+            cell.border = thin
+    wb.save(path)
+    wb.close()
 
 
 def quarter_path(year: int, quarter: int) -> Path | None:
@@ -463,12 +546,9 @@ def _patch_sheet(xml: str, writes: dict[str, object], strings: list[str], sst: s
         formula = "<f" in inner
         if isinstance(value, str) and not formula:
             sst, idx = _append_shared(sst, value, strings)
-            if 't="s"' not in open_tag:
-                open_tag = open_tag[:-1] + ' t="s">'
-            if re.search(r"<v>.*?</v>", inner):
-                inner = re.sub(r"<v>.*?</v>", f"<v>{idx}</v>", inner, count=1)
-            else:
-                inner = f"<v>{idx}</v>"
+            open_tag = re.sub(r'\s+t="[^"]*"', "", open_tag)
+            open_tag = open_tag[:-1] + ' t="s">'
+            inner = f"<v>{idx}</v>"
         else:
             number = int(round(float(value or 0)))
             if formula:
@@ -483,14 +563,46 @@ def _patch_sheet(xml: str, writes: dict[str, object], strings: list[str], sst: s
     return xml, sst
 
 
+def _empty_sst() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'count="0" uniqueCount="0"></sst>'
+    )
+
+
+def _ensure_sst_content_type(xml: bytes) -> bytes:
+    text = xml.decode("utf-8")
+    if "sharedStrings.xml" in text:
+        return xml
+    piece = (
+        '<Override PartName="/xl/sharedStrings.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+    )
+    return text.replace("</Types>", piece + "</Types>", 1).encode("utf-8")
+
+
+def _ensure_sst_rel(xml: bytes) -> bytes:
+    text = xml.decode("utf-8")
+    if "sharedStrings" in text:
+        return xml
+    piece = (
+        '<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" '
+        'Target="sharedStrings.xml" Id="rIdSST"/>'
+    )
+    return text.replace("</Relationships>", piece + "</Relationships>", 1).encode("utf-8")
+
+
 def write_values(path: Path, writes: dict[str, object]) -> None:
     """셀 값만 교체한다. styles.xml 바이트는 유지한다."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     with zipfile.ZipFile(path, "r") as zin:
         sheet_name = "xl/worksheets/sheet1.xml"
         sst_name = "xl/sharedStrings.xml"
+        names = set(zin.namelist())
+        had_sst = sst_name in names
         sheet = zin.read(sheet_name).decode("utf-8")
-        sst = zin.read(sst_name).decode("utf-8")
+        sst = zin.read(sst_name).decode("utf-8") if had_sst else _empty_sst()
         strings = _shared_strings(sst.encode("utf-8"))
         sheet, sst = _patch_sheet(sheet, writes, strings, sst)
         with zipfile.ZipFile(tmp, "w") as zout:
@@ -500,7 +612,13 @@ def write_values(path: Path, writes: dict[str, object]) -> None:
                     data = sheet.encode("utf-8")
                 elif item.filename == sst_name:
                     data = sst.encode("utf-8")
+                elif not had_sst and item.filename == "[Content_Types].xml":
+                    data = _ensure_sst_content_type(data)
+                elif not had_sst and item.filename == "xl/_rels/workbook.xml.rels":
+                    data = _ensure_sst_rel(data)
                 zout.writestr(item, data)
+            if not had_sst:
+                zout.writestr(sst_name, sst.encode("utf-8"))
     os.replace(tmp, path)
 
 
@@ -513,9 +631,10 @@ def save_quarter(year: int, quarter: int, targets: list[float], sales_df: pd.Dat
     dest = year_dir / f"{int(quarter)}분기 사업계획.xlsx"
     if not dest.is_file():
         template = find_template()
-        if template is None:
-            raise FileNotFoundError("사업분석 양식 파일을 찾지 못했습니다.")
-        shutil.copy(template, dest)
+        if template is not None and template.resolve() != dest.resolve():
+            shutil.copy(template, dest)
+        else:
+            _create_quarter_book(dest, year, quarter)
     agg = aggregate_quarter(sales_df, year, quarter)
     writes = build_writes(dest, year, quarter, targets, agg)
     write_values(dest, writes)

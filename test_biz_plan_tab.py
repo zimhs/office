@@ -106,6 +106,43 @@ def test_save_creates_year_folder_and_reuses_file(monkeypatch=None):
             bp.find_template = original_template
 
 
+def test_forms_under_prefers_nested_draft():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "사업계획"
+        nested = root / "2026" / "무제 폴더"
+        nested.mkdir(parents=True)
+        draft = nested / "26Q3 사업분석_draft 261016.xlsx"
+        draft.write_bytes(b"draft")
+        quarter = root / "2026" / "4분기 사업계획.xlsx"
+        quarter.write_bytes(b"quarter")
+        assert bp._forms_under(root) == draft
+
+
+def test_save_creates_book_when_template_missing():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "사업계획"
+        root.mkdir()
+        original_root = bp.find_plan_root
+        original_template = bp.find_template
+        bp.find_plan_root = lambda: root
+        bp.find_template = lambda: None
+        try:
+            saved = bp.save_quarter(2026, 1, [10, 20, 30], pd.DataFrame())
+            assert saved == root / "2026" / "1분기 사업계획.xlsx"
+            assert saved.is_file()
+            info = bp.locate_sheet(saved)
+            try:
+                assert info["roles"]["target"] == 6
+                assert info["title"] == "C2"
+            finally:
+                bp._close_located(info)
+            sheet = zipfile.ZipFile(saved).read("xl/worksheets/sheet1.xml").decode("utf-8")
+            assert '<v>10</v>' in sheet
+        finally:
+            bp.find_plan_root = original_root
+            bp.find_template = original_template
+
+
 def test_preview_writes_a_copy_and_leaves_the_source():
     src = Path.home() / "Desktop" / "4분기 사업계획.xlsx"
     if not src.is_file():
