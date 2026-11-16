@@ -1207,6 +1207,28 @@ def inject_custom_css():
                 }
             }
 
+            /* iPad 가로만: 사이드바 << 가 고정 헤더 뒤에 있지 않게.
+               맥 로컬·Cloud 데스크톱은 dashboard-touch-mode 가 없어 적용되지 않음. */
+            @media (orientation: landscape) and (hover: none) and (pointer: coarse) {
+                html.dashboard-touch-mode [data-testid="stSidebarHeader"] {
+                    margin-top: 2.75rem !important;
+                    display: flex !important;
+                    justify-content: flex-end !important;
+                    align-items: center !important;
+                    min-height: 2.25rem !important;
+                    background: #F1F5F9 !important;
+                    position: relative !important;
+                    z-index: 2 !important;
+                }
+                html.dashboard-touch-mode [data-testid="stSidebarCollapseButton"] {
+                    visibility: visible !important;
+                    opacity: 1 !important;
+                    display: flex !important;
+                    pointer-events: auto !important;
+                    position: relative !important;
+                }
+            }
+
             @media (orientation: portrait) and (max-width: 850px) {
                 html.dashboard-touch-mode .dashboard-filter-sticky-touch {
                     top: 2.75rem !important;
