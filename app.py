@@ -1210,6 +1210,39 @@ def inject_custom_css():
             /* iPad 가로만: 사이드바 << 가 고정 헤더 뒤에 있지 않게.
                맥 로컬·Cloud 데스크톱은 dashboard-touch-mode 가 없어 적용되지 않음. */
             @media (orientation: landscape) and (hover: none) and (pointer: coarse) {
+                html.dashboard-touch-mode .metric-box {
+                    padding: 10px 8px !important;
+                }
+                html.dashboard-touch-mode .metric-label {
+                    font-size: 12px !important;
+                    line-height: 1.3 !important;
+                }
+                html.dashboard-touch-mode .metric-value {
+                    font-size: 16px !important;
+                    line-height: 1.2 !important;
+                    white-space: nowrap !important;
+                }
+                html.dashboard-touch-mode .dashboard-filter-sticky,
+                html.dashboard-touch-mode .dashboard-tab-scroll {
+                    max-width: 100% !important;
+                    min-width: 0 !important;
+                    box-sizing: border-box !important;
+                }
+                html.dashboard-touch-mode .dashboard-filter-sticky [role="tablist"].dashboard-tabs-in-filter {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    min-width: 0 !important;
+                    overflow-x: auto !important;
+                    overflow-y: hidden !important;
+                }
+                html.dashboard-touch-mode [data-testid="stHorizontalBlock"]:has([data-testid="stDataFrame"]):has(.js-plotly-plot) {
+                    flex-direction: column !important;
+                }
+                html.dashboard-touch-mode [data-testid="stHorizontalBlock"]:has([data-testid="stDataFrame"]):has(.js-plotly-plot) > [data-testid="stColumn"] {
+                    width: 100% !important;
+                    flex: 1 1 auto !important;
+                    min-width: 0 !important;
+                }
                 html.dashboard-touch-mode [data-testid="stSidebarHeader"] {
                     margin-top: 2.75rem !important;
                     display: flex !important;
@@ -1264,6 +1297,21 @@ def inject_custom_css():
                 .dashboard-filter-sticky {
                     padding-left: max(10px, env(safe-area-inset-left)) !important;
                     padding-right: max(10px, env(safe-area-inset-right)) !important;
+                }
+            }
+
+            /* iPad 가로만: 오른쪽 여백 제거. 왼쪽과 맥 여백은 그대로. */
+            @media (orientation: landscape) and (hover: none) and (pointer: coarse) {
+                html.dashboard-touch-mode section.main .block-container,
+                html.dashboard-touch-mode [data-testid="stMainBlockContainer"],
+                html.dashboard-touch-mode .stMainBlockContainer {
+                    padding-right: 0 !important;
+                    max-width: 100% !important;
+                }
+                html.dashboard-touch-mode .dashboard-filter-sticky,
+                html.dashboard-touch-mode .dashboard-filter-sticky-touch {
+                    right: 0 !important;
+                    padding-right: 0 !important;
                 }
             }
 
