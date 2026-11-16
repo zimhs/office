@@ -17389,9 +17389,9 @@ def _dash_filter_and_tabs_fragment() -> None:
                                     if client_items:
                                         df_target_client = df_ind_detail[df_ind_detail["거래처"] == sel_ind_client]
                                         sub_item_pivot = cached_get_item_pivot(df_target_client, sel_ind_item, sel_ind_sub_metric, all_months, years)
-                                    if "매출액" in sel_ind_sub_metric:
-                                        sub_item_pivot = _scale_sales_money(sub_item_pivot)
-                    
+                                        if "매출액" in sel_ind_sub_metric:
+                                            sub_item_pivot = _scale_sales_money(sub_item_pivot)
+
                                         sc1, sc2 = st.columns([1, 1])
                                         with sc1:
                                             sub_item_pivot_disp = get_display_df_with_sum(sub_item_pivot, "연간 합계")
