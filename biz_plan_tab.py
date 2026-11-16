@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
+import tempfile
 import unicodedata
 import zipfile
 from datetime import date
@@ -602,6 +604,67 @@ def _qty_table(year: int, months: tuple[int, ...], agg: dict) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def _preview_source(year: int, quarter: int) -> Path | None:
+    dest = quarter_path(year, quarter)
+    if dest is not None and dest.is_file():
+        return dest
+    return find_template()
+
+
+def _preview_token(src: Path, year: int, quarter: int, targets: list[int], agg: dict) -> tuple:
+    return (
+        str(src),
+        int(src.stat().st_mtime_ns),
+        int(year),
+        int(quarter),
+        tuple(int(v) for v in targets),
+        tuple(int(v) for v in (agg.get("money_now") or [])),
+        tuple(int(v) for v in (agg.get("money_prev") or [])),
+    )
+
+
+def _ql_png(xlsx: Path) -> bytes:
+    """맥 미리보기로 엑셀 시트를 원본 모습 그대로 이미지로 만든다."""
+    with tempfile.TemporaryDirectory(prefix="bp_ql_") as td:
+        proc = subprocess.run(
+            ["qlmanage", "-t", "-s", "1800", "-o", td, str(xlsx)],
+            check=False,
+            timeout=40,
+            capture_output=True,
+        )
+        pngs = sorted(Path(td).glob("*.png"))
+        if proc.returncode != 0 or not pngs:
+            detail = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace").strip()
+            raise RuntimeError(detail or "엑셀 원본 이미지를 만들지 못했습니다.")
+        return pngs[0].read_bytes()
+
+
+def sheet_preview_png(year: int, quarter: int, targets: list[int], sales_df: pd.DataFrame) -> bytes | None:
+    """저장과 같은 숫자만 임시 파일에 넣고, 원본 서식 이미지를 돌려준다. 저장 파일은 그대로 둔다."""
+    src = _preview_source(year, quarter)
+    if src is None:
+        return None
+    frame = sales_df if isinstance(sales_df, pd.DataFrame) else pd.DataFrame()
+    agg = _cached_aggregate(frame, year, quarter)
+    token = _preview_token(src, year, quarter, targets, agg)
+    try:
+        cached = st.session_state.get("_bp_sheet_preview")
+    except Exception:
+        cached = None
+    if isinstance(cached, tuple) and len(cached) == 2 and cached[0] == token and isinstance(cached[1], (bytes, bytearray)):
+        return bytes(cached[1])
+    with tempfile.TemporaryDirectory(prefix="bp_fill_") as td:
+        copy = Path(td) / "preview.xlsx"
+        shutil.copy(src, copy)
+        write_values(copy, build_writes(copy, year, quarter, targets, agg))
+        png = _ql_png(copy)
+    try:
+        st.session_state["_bp_sheet_preview"] = (token, png)
+    except Exception:
+        pass
+    return png
+
+
 def _cached_targets(path: Path | None, year: int, quarter: int) -> list[int] | None:
     if path is None or not path.is_file():
         return None
@@ -662,55 +725,70 @@ def render_biz_plan_tab(sales_df: pd.DataFrame) -> None:
         st.session_state["bp_year"] = int(today.year)
     if "bp_quarter" not in st.session_state:
         st.session_state["bp_quarter"] = (today.month - 1) // 3 + 1
-    pick_year, pick_quarter = st.columns(2)
-    with pick_year:
-        year = int(st.number_input("연도", min_value=2000, max_value=2100, step=1, key="bp_year"))
-    with pick_quarter:
-        quarter = int(
-            st.selectbox(
-                "분기",
-                [1, 2, 3, 4],
-                format_func=lambda q: f"{q}분기 ({QUARTERS[q][0]}–{QUARTERS[q][2]}월)",
-                key="bp_quarter",
-            )
-        )
-    months = QUARTERS[quarter]
-    dest = quarter_path(year, quarter)
-    stored = _cached_targets(dest, year, quarter)
-    if stored is None:
-        template = find_template()
-        stored = _cached_targets(template, year, quarter) if template else None
-    if stored is None:
-        stored = [0, 0, 0]
-    boxes = st.columns(3)
-    targets: list[int] = []
-    for i, month in enumerate(months):
-        key = f"bp_tgt_{year}_{quarter}_{month}"
-        if key not in st.session_state:
-            st.session_state[key] = int(stored[i])
-        with boxes[i]:
-            targets.append(
-                int(
-                    st.number_input(
-                        f"{month}월 목표 (백만원, 부가세 별도)",
-                        min_value=0,
-                        step=1,
-                        key=key,
-                    )
+    frame = sales_df if isinstance(sales_df, pd.DataFrame) else pd.DataFrame()
+    edit_col, view_col = st.columns([1, 1.15])
+    with edit_col:
+        pick_year, pick_quarter = st.columns(2)
+        with pick_year:
+            year = int(st.number_input("연도", min_value=2000, max_value=2100, step=1, key="bp_year"))
+        with pick_quarter:
+            quarter = int(
+                st.selectbox(
+                    "분기",
+                    [1, 2, 3, 4],
+                    format_func=lambda q: f"{q}분기 ({QUARTERS[q][0]}–{QUARTERS[q][2]}월)",
+                    key="bp_quarter",
                 )
             )
-    agg = _cached_aggregate(sales_df if isinstance(sales_df, pd.DataFrame) else pd.DataFrame(), year, quarter)
-    st.markdown("**목표 / 달성**")
-    st.caption("단위: 백만원, 부가세 별도. 목표는 위 칸에서 바꿉니다.")
-    st.dataframe(_money_table(year, months, targets, agg), use_container_width=True, hide_index=True)
-    st.markdown("**실적 / 분석**")
-    st.caption("벌크는 톤, 벌크가 아닌 실린더는 병입니다.")
-    st.dataframe(_qty_table(year, months, agg), use_container_width=True, hide_index=True)
-    year_dir = root / str(year)
-    st.caption(f"저장 위치 {year_dir / f'{quarter}분기 사업계획.xlsx'}")
-    if st.button("저장", type="primary", key="bp_save"):
+        months = QUARTERS[quarter]
+        dest = quarter_path(year, quarter)
+        stored = _cached_targets(dest, year, quarter)
+        if stored is None:
+            template = find_template()
+            stored = _cached_targets(template, year, quarter) if template else None
+        if stored is None:
+            stored = [0, 0, 0]
+        boxes = st.columns(3)
+        targets: list[int] = []
+        for i, month in enumerate(months):
+            key = f"bp_tgt_{year}_{quarter}_{month}"
+            if key not in st.session_state:
+                st.session_state[key] = int(stored[i])
+            with boxes[i]:
+                targets.append(
+                    int(
+                        st.number_input(
+                            f"{month}월 목표 (백만원, 부가세 별도)",
+                            min_value=0,
+                            step=1,
+                            key=key,
+                        )
+                    )
+                )
+        agg = _cached_aggregate(frame, year, quarter)
+        st.markdown("**목표 / 달성**")
+        st.caption("단위: 백만원, 부가세 별도. 목표는 위 칸에서 바꿉니다.")
+        st.dataframe(_money_table(year, months, targets, agg), use_container_width=True, hide_index=True)
+        st.markdown("**실적 / 분석**")
+        st.caption("벌크는 톤, 벌크가 아닌 실린더는 병입니다.")
+        st.dataframe(_qty_table(year, months, agg), use_container_width=True, hide_index=True)
+        year_dir = root / str(year)
+        st.caption(f"저장 위치 {year_dir / f'{quarter}분기 사업계획.xlsx'}")
+        if st.button("저장", type="primary", key="bp_save"):
+            try:
+                saved = save_quarter(year, quarter, targets, frame)
+                st.success(f"저장했습니다. {saved}")
+            except Exception as exc:
+                st.error(f"저장하지 못했습니다. {exc}")
+    with view_col:
+        png = None
         try:
-            saved = save_quarter(year, quarter, targets, sales_df if isinstance(sales_df, pd.DataFrame) else pd.DataFrame())
-            st.success(f"저장했습니다. {saved}")
+            with st.spinner("엑셀 원본을 맞추고 있습니다."):
+                png = sheet_preview_png(year, quarter, targets, frame)
         except Exception as exc:
-            st.error(f"저장하지 못했습니다. {exc}")
+            st.caption(f"엑셀 원본을 보여 주지 못했습니다. {exc}")
+        if png:
+            st.image(png, use_container_width=True)
+            st.caption("엑셀 원본입니다. 오른쪽 숫자는 지금 입력과 같고, 저장을 누르면 파일에 남습니다.")
+        elif _preview_source(year, quarter) is None:
+            st.caption("보여 줄 엑셀 원본이 없습니다.")

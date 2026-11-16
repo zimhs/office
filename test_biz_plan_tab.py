@@ -106,6 +106,43 @@ def test_save_creates_year_folder_and_reuses_file(monkeypatch=None):
             bp.find_template = original_template
 
 
+def test_preview_writes_a_copy_and_leaves_the_source():
+    src = Path.home() / "Desktop" / "4분기 사업계획.xlsx"
+    if not src.is_file():
+        src = Path.home() / "Desktop" / "26Q3 사업분석_draft 261016.xlsx"
+    if not src.is_file():
+        return
+    before = src.read_bytes()
+    seen = {}
+
+    def fake_ql(path):
+        seen["path"] = Path(path)
+        seen["bytes"] = Path(path).read_bytes()
+        return b"png"
+
+    original_ql = bp._ql_png
+    original_source = bp._preview_source
+    bp._ql_png = fake_ql
+    bp._preview_source = lambda year, quarter: src
+    try:
+        png = bp.sheet_preview_png(2026, 4, [1, 2, 3], pd.DataFrame())
+    finally:
+        bp._ql_png = original_ql
+        bp._preview_source = original_source
+    assert png == b"png"
+    assert src.read_bytes() == before
+    assert seen["path"].name == "preview.xlsx"
+    assert seen["bytes"] != before
+
+
+def test_render_puts_form_left_and_excel_image_right():
+    src = Path("biz_plan_tab.py").read_text(encoding="utf-8")
+    assert "edit_col, view_col = st.columns([1, 1.15])" in src
+    assert "qlmanage" in src
+    assert "def save_quarter" in src
+    assert "styles.xml" in src
+
+
 def test_local_tab_only_in_app():
     app = Path("app.py").read_text(encoding="utf-8")
     assert "_biz_local = not _is_streamlit_cloud()" in app
