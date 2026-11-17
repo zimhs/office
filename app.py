@@ -8514,6 +8514,16 @@ def _dash_inactive_tab_keep(tab_idx: int) -> None:
     return None
 
 
+def _dash_repaint_advance(idx: int) -> None:
+    """이름 필터로 쌓아 둔 탭이 끝나면 다음 탭 번호만 남긴다."""
+    queue = [int(i) for i in (st.session_state.get("_dash_repaint_queue") or [])]
+    if not queue or queue[0] != int(idx):
+        return
+    queue = queue[1:]
+    st.session_state["_dash_repaint_queue"] = queue
+    st.session_state["_dash_repaint_emit"] = int(queue[0]) if queue else 0
+
+
 def _dash_mount_tab_paint(idx: int, render) -> None:
     """탭 본문을 조각으로 그린다. 이름 필터는 이 조각만 다시 연다."""
 
@@ -8522,8 +8532,14 @@ def _dash_mount_tab_paint(idx: int, render) -> None:
         st.button(
             "탭다시그리기",
             key=f"_dash_repaint_tab_{int(idx)}",
+            on_click=_dash_repaint_advance,
+            args=(int(idx),),
         )
         render()
+        if "_dash_repaint_emit" in st.session_state:
+            _emit = st.session_state.pop("_dash_repaint_emit")
+            if _emit:
+                _dash_click_repaint_tabs([int(_emit)])
 
     _dash_tab_paint()
 
@@ -8652,21 +8668,65 @@ def _dash_refresh_name_view(selected_staff, selected_client, selected_item) -> N
     )
 
 
-def _dash_replay_open_tab() -> None:
-    """이름 필터 뒤에, 보고 있는 탭 조각만 다시 연다."""
-    idx = _dash_active_tab_idx()
-    if idx is None:
-        idx = 0
-    idx = int(idx)
+def _dash_replay_open_tab(selected_staff, selected_client, selected_item) -> None:
+    """담당자·거래처·품목이 바뀌면 거래처·품목·상세·채권만 다시 그린다. 탭 클릭은 그대로다."""
+    client_now = selected_client or "전체 거래처"
+    item_now = tuple(selected_item or ())
+    staff_now = tuple(selected_staff or ())
+    sig = (staff_now, client_now, item_now)
+    prev = st.session_state.get("_dash_name_replay_prev")
+    st.session_state["_dash_name_replay_prev"] = sig
+    changed = not isinstance(prev, tuple) or len(prev) < 3
+    staff_changed = changed or tuple(prev[0] or ()) != staff_now
+    client_changed = changed or prev[1] != client_now
+    item_changed = changed or tuple(prev[2] or ()) != item_now
+    # 1 거래처 분석, 2 품목·단가, 3 담당자·거래상세, 4 채권. 요약·지도·재고는 다시 열지 않는다.
+    targets: list[int] = []
+    if staff_changed or client_changed or item_changed:
+        targets.extend((1, 2, 3, 4))
+    active = _dash_active_tab_idx()
+    if active in targets:
+        targets = [active] + [i for i in targets if i != active]
+    if not targets:
+        return
+    st.session_state["_dash_repaint_queue"] = [int(i) for i in targets]
+    _dash_click_repaint_tabs([int(targets[0])])
+
+
+def _dash_click_repaint_tabs(indices: list[int]) -> None:
+    """숨은 다시그리기 버튼을 한 탭씩 누른다. 번호가 바뀌면 스크립트가 다시 실행된다."""
+    ids = [int(i) for i in indices]
+    if not ids:
+        return
+    nonce = int(st.session_state.get("_dash_repaint_nonce") or 0) + 1
+    st.session_state["_dash_repaint_nonce"] = nonce
+    target_js = ",".join(str(i) for i in ids)
+    inner = (
+        "(function(){var ids=["
+        + target_js
+        + "];var gen=(window.__dashRepaintGen=(window.__dashRepaintGen||0)+1);"
+        "var i=0,tries=0;"
+        "function idle(){var st=document.querySelector('[data-test-script-state]');"
+        "return !st||st.getAttribute('data-test-script-state')!=='running';}"
+        "function go(){if(gen!==window.__dashRepaintGen||i>=ids.length)return;"
+        "if(!idle()){setTimeout(go,80);return;}"
+        "setTimeout(function(){if(gen!==window.__dashRepaintGen)return;"
+        "if(!idle()){setTimeout(go,80);return;}"
+        "var btn=document.querySelector('[class*=\"st-key-_dash_repaint_tab_'+ids[i]+'\"] button');"
+        "if(!btn){i+=1;tries=0;setTimeout(go,40);return;}"
+        "btn.click();var seen=false;"
+        "var watch=function(n){if(gen!==window.__dashRepaintGen)return;"
+        "if(!idle())seen=true;"
+        "if(seen&&idle()){i+=1;tries=0;setTimeout(go,160);return;}"
+        "if(!seen&&n>=8){tries+=1;if(tries<4){setTimeout(go,120);return;}"
+        "i+=1;tries=0;setTimeout(go,40);return;}"
+        "setTimeout(function(){watch(n+1);},80);};watch(0);},280);}"
+        "setTimeout(go,60);})();"
+    )
     components.html(
-        f"""<script>
-        (function() {{
-          var doc = window.parent.document;
-          var s = doc.createElement("script");
-          s.textContent = "(function(){{function go(n){{var st=document.querySelector('[data-test-script-state]');if(st&&st.getAttribute('data-test-script-state')==='running'&&n<50){{setTimeout(function(){{go(n+1);}},40);return;}}var btn=document.querySelector('[class*=\\"st-key-_dash_repaint_tab_{idx}\\"] button');if(btn)btn.click();}}setTimeout(function(){{go(0);}},40);}})();";
-          doc.documentElement.appendChild(s);
-        }})();
-        </script>""",
+        f"<script data-n=\"{nonce}\">(function(){{var s=window.parent.document.createElement('script');"
+        f"s.textContent={json.dumps(inner)};"
+        "window.parent.document.documentElement.appendChild(s);})();</script>",
         height=0,
     )
 
@@ -16930,7 +16990,15 @@ def _dash_filter_and_tabs_fragment() -> None:
                     _dash_refresh_name_view(
                         selected_staff, selected_client, selected_item
                     )
-                    _dash_replay_open_tab()
+                    _dash_replay_open_tab(
+                        selected_staff, selected_client, selected_item
+                    )
+                else:
+                    st.session_state["_dash_name_replay_prev"] = (
+                        tuple(selected_staff or ()),
+                        selected_client or "전체 거래처",
+                        tuple(selected_item or ()),
+                    )
                 return selected_staff, selected_client, selected_item, df_client_for_opts
 
             (
@@ -17176,7 +17244,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.sidebar.warning("PPT 내보내기: `pip install python-pptx kaleido` 설치 후 이용하세요.")
     except Exception as exc:
         st.sidebar.error(f"PPT 생성 오류: {exc}")
-    # 담당자·거래처 필터가 바뀌면 보고 있는 탭만 다시 그린다. 탭 이동은 이미 그린 화면을 연다.
+    # 담당자·거래처·품목 필터가 바뀌면 거래처·품목·상세·채권만 다시 그린다. 탭 이동은 이미 그린 화면을 연다.
     _dash_note_filter_change_for_heavy_tabs()
     _dash_mark_tabs_skipped(bool(st.session_state.get("_dash_filter_changed_flag")))
     _DASH_CLOUD_TABS = _dash_cloud_merged_tabs()
