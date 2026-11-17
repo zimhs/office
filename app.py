@@ -8652,54 +8652,21 @@ def _dash_refresh_name_view(selected_staff, selected_client, selected_item) -> N
     )
 
 
-def _dash_replay_open_tab(selected_staff, selected_client, selected_item) -> None:
-    """거래처가 바뀌면 거래처 분석만, 품목이 바뀌면 품목 탭만 다시 그린다. 탭 이동은 다시 열지 않는다."""
-    client_now = selected_client or "전체 거래처"
-    item_now = tuple(selected_item or ())
-    staff_now = tuple(selected_staff or ())
-    prev = st.session_state.get("_dash_name_replay_prev")
-    st.session_state["_dash_name_replay_prev"] = (staff_now, client_now, item_now)
-    client_changed = not isinstance(prev, tuple) or len(prev) < 3 or prev[1] != client_now
-    item_changed = not isinstance(prev, tuple) or len(prev) < 3 or tuple(prev[2] or ()) != item_now
-    targets: list[int] = []
-    if client_changed:
-        targets.append(1)
-    if item_changed:
-        targets.append(2)
+def _dash_replay_open_tab() -> None:
+    """이름 필터 뒤에, 보고 있는 탭 조각만 다시 연다."""
     idx = _dash_active_tab_idx()
-    if idx == 2 and client_changed and 2 not in targets:
-        targets.append(2)
-    if not targets:
-        return
-    nonce = int(st.session_state.get("_dash_repaint_nonce") or 0) + 1
-    st.session_state["_dash_repaint_nonce"] = nonce
-    target_js = ",".join(str(int(i)) for i in targets)
-    inner = (
-        "(function(){var ids=["
-        + target_js
-        + "];var gen=(window.__dashRepaintGen=(window.__dashRepaintGen||0)+1);"
-        "var i=0,tries=0;"
-        "function idle(){var st=document.querySelector('[data-test-script-state]');"
-        "return !st||st.getAttribute('data-test-script-state')!=='running';}"
-        "function go(){if(gen!==window.__dashRepaintGen||i>=ids.length)return;"
-        "if(!idle()){setTimeout(go,80);return;}"
-        "setTimeout(function(){if(gen!==window.__dashRepaintGen)return;"
-        "if(!idle()){setTimeout(go,80);return;}"
-        "var btn=document.querySelector('[class*=\"st-key-_dash_repaint_tab_'+ids[i]+'\"] button');"
-        "if(!btn){i+=1;tries=0;setTimeout(go,40);return;}"
-        "btn.click();var seen=false;"
-        "var watch=function(n){if(gen!==window.__dashRepaintGen)return;"
-        "if(!idle())seen=true;"
-        "if(seen&&idle()){i+=1;tries=0;setTimeout(go,160);return;}"
-        "if(!seen&&n>=8){tries+=1;if(tries<4){setTimeout(go,120);return;}"
-        "i+=1;tries=0;setTimeout(go,40);return;}"
-        "setTimeout(function(){watch(n+1);},80);};watch(0);},280);}"
-        "setTimeout(go,60);})();"
-    )
+    if idx is None:
+        idx = 0
+    idx = int(idx)
     components.html(
-        f"<script data-n=\"{nonce}\">(function(){{var s=window.parent.document.createElement('script');"
-        f"s.textContent={json.dumps(inner)};"
-        "window.parent.document.documentElement.appendChild(s);})();</script>",
+        f"""<script>
+        (function() {{
+          var doc = window.parent.document;
+          var s = doc.createElement("script");
+          s.textContent = "(function(){{function go(n){{var st=document.querySelector('[data-test-script-state]');if(st&&st.getAttribute('data-test-script-state')==='running'&&n<50){{setTimeout(function(){{go(n+1);}},40);return;}}var btn=document.querySelector('[class*=\\"st-key-_dash_repaint_tab_{idx}\\"] button');if(btn)btn.click();}}setTimeout(function(){{go(0);}},40);}})();";
+          doc.documentElement.appendChild(s);
+        }})();
+        </script>""",
         height=0,
     )
 
@@ -16963,15 +16930,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     _dash_refresh_name_view(
                         selected_staff, selected_client, selected_item
                     )
-                    _dash_replay_open_tab(
-                        selected_staff, selected_client, selected_item
-                    )
-                else:
-                    st.session_state["_dash_name_replay_prev"] = (
-                        tuple(selected_staff or ()),
-                        selected_client or "전체 거래처",
-                        tuple(selected_item or ()),
-                    )
+                    _dash_replay_open_tab()
                 return selected_staff, selected_client, selected_item, df_client_for_opts
 
             (
