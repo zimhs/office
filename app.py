@@ -20374,7 +20374,13 @@ def _dash_filter_and_tabs_fragment() -> None:
                     if tab8_date != tab8_default:
                         set_saved_date(TAB8_DATE_FILE, tab8_date)
     
-                if not df_integrated.empty:
+                _int_ready = (
+                    isinstance(df_integrated, pd.DataFrame)
+                    and not df_integrated.empty
+                    and "품목" in df_integrated.columns
+                    and "사용구분" in df_integrated.columns
+                )
+                if _int_ready:
                     int_col1, int_col2 = st.columns(2)
                     with int_col1:
                         items = ["전체 품목"] + sorted([str(x) for x in df_integrated['품목'].dropna().unique() if str(x).strip()])
@@ -20410,6 +20416,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                         file_name="T8_통합탱크상세.xlsx",
                     )
                     st.dataframe(df_display, use_container_width=True, height=600, hide_index=True)
+                elif isinstance(df_integrated, pd.DataFrame) and not df_integrated.empty:
+                    st.warning("통합 탱크 재고 파일에 '품목' 또는 '사용구분' 열이 없습니다. 재고 원본 csv를 다시 올려 주세요.")
                 else:
                     st.warning("통합 탱크 재고 데이터가 없습니다. 폴더에 '통합탱크재고.csv'를 넣거나 왼쪽 사이드바에서 업로드해주세요.")
             _dash_mount_tab_paint(7, _dash_body_7)
