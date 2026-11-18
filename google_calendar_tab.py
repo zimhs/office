@@ -5598,13 +5598,6 @@ div[class*="st-key-gc_vc_delivery_head"] div[class*="st-key-vc_strip_"] button p
   }
   fitEvTitles(document);
   fitEvTitles(doc);
-  var fitN = 0;
-  var fitTimer = app.setInterval(function () {
-    fitEvTitles(document);
-    fitEvTitles(doc);
-    fitN += 1;
-    if (fitN > 8) app.clearInterval(fitTimer);
-  }, 400);
   function bindDayPick(d) {
     if (!d || d.__gcDayPick) return;
     d.__gcDayPick = true;
