@@ -118,15 +118,16 @@ def _gc_ping_calendar() -> None:
     """날짜 있는 할 일은 달력 조각만 다시 연다. 화면 전체를 비우지 않는다."""
     import streamlit.components.v1 as components
 
+    nonce = secrets.token_hex(4)
     components.html(
-        """
-        <script>
-        (function () {
+        f"""
+        <script data-n="{nonce}">
+        (function () {{
           var doc;
-          try { doc = window.parent.document; } catch (e) { doc = document; }
+          try {{ doc = window.parent.document; }} catch (e) {{ doc = document; }}
           var btn = doc.querySelector('[class*="st-key-gc_cal_repaint"] button');
           if (btn) btn.click();
-        })();
+        }})();
         </script>
         """,
         height=0,
@@ -4498,7 +4499,7 @@ def _gc_with_task_chips(
 def _gc_cal_panel() -> None:
     """달력 월 이동·일정 저장만 이 조각을 다시 그린다."""
     st.markdown(
-        "<style>div[class*='st-key-gc_cal_repaint']{display:none !important;}</style>",
+        "<style>div[class*='st-key-gc_cal_repaint']{position:absolute!important;width:1px!important;height:1px!important;overflow:hidden!important;opacity:0!important;}</style>",
         unsafe_allow_html=True,
     )
     st.button("달력다시", key="gc_cal_repaint")
@@ -4799,6 +4800,14 @@ def _gc_take_mac_actions() -> None:
     pending_done = st.session_state.pop("_gc_mac_pending_done", None)
     if pending_done and lid:
         tid = str(pending_done)
+        rows = _gc_api_box().get(f"tk:{lid}") or []
+        if any(
+            isinstance(t, dict)
+            and str(t.get("id") or "") == tid
+            and _gc_task_due_day(t.get("due"))
+            for t in rows
+        ):
+            st.session_state["_gc_cal_refresh"] = True
         try:
             set_mac_reminder_done(tid, True)
             _gc_mac_patch(lid, tid, status="completed")
@@ -4807,6 +4816,14 @@ def _gc_take_mac_actions() -> None:
     pending_restore = st.session_state.pop("_gc_mac_pending_restore", None)
     if pending_restore and lid:
         tid = str(pending_restore)
+        rows = _gc_api_box().get(f"tk:{lid}") or []
+        if any(
+            isinstance(t, dict)
+            and str(t.get("id") or "") == tid
+            and _gc_task_due_day(t.get("due"))
+            for t in rows
+        ):
+            st.session_state["_gc_cal_refresh"] = True
         try:
             set_mac_reminder_done(tid, False)
             _gc_mac_patch(lid, tid, status="needsAction")
