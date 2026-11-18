@@ -19,6 +19,7 @@ import requests
 import streamlit as st
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
+_GC_LOADED_MTIME = os.path.getmtime(__file__)
 _HOME_GC = os.path.join(os.path.expanduser("~"), ".office-dashboard")
 _ST_GC = os.path.join(_ROOT, ".streamlit")
 GC_DIR = os.path.join(_ROOT, "uploaded_cache", "google_calendar")
@@ -3440,7 +3441,7 @@ div[class*="st-key-gc_evpick_"] button {
   cursor: pointer !important;
 }
 html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] p {
-  font-size: 9px !important;
+  font-size: 11px !important;
   line-height: 1.2 !important;
   font-weight: 400 !important;
   white-space: nowrap !important;
@@ -3657,12 +3658,12 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """일정 제목만 할 일 제목보다 작게. 월 이동마다 스크립트를 넣지 않는다."""
+    """일정 제목만 할 일 제목과 같은 11px. 월 이동마다 스크립트를 넣지 않는다."""
     st.markdown(
         "<style>html body div[class*='st-key-gc_evpick_'] button"
         "{font-size:10px!important;line-height:1.2!important;font-weight:400!important}"
         "html body div[class*='st-key-gc_evpick_'] button [data-testid='stMarkdownContainer'] p"
-        "{font-size:9px!important;line-height:1.15!important;font-weight:400!important}</style>",
+        "{font-size:11px!important;line-height:1.2!important;font-weight:400!important}</style>",
         unsafe_allow_html=True,
     )
 
@@ -5583,7 +5584,7 @@ div[class*="st-key-gc_vc_delivery_head"] div[class*="st-key-vc_strip_"] button p
     'html body div[class*="st-key-gc_evpick_"] button div' +
     '{font-size:10px!important;line-height:1.2!important;font-weight:400!important;}' +
     'html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] p' +
-    '{font-size:9px!important;line-height:1.15!important;font-weight:400!important;}';
+    '{font-size:11px!important;line-height:1.2!important;font-weight:400!important;}';
   function put(d) {
     if (!d) return;
     var s = d.getElementById(id);
@@ -5596,6 +5597,24 @@ div[class*="st-key-gc_vc_delivery_head"] div[class*="st-key-vc_strip_"] button p
   }
   put(document);
   put(doc);
+  function fitEvTitles(d) {
+    if (!d || !d.querySelectorAll) return;
+    var nodes = d.querySelectorAll('[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p');
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].style.setProperty("font-size", "11px", "important");
+      nodes[i].style.setProperty("line-height", "1.2", "important");
+      nodes[i].style.setProperty("font-weight", "400", "important");
+    }
+  }
+  fitEvTitles(document);
+  fitEvTitles(doc);
+  var fitN = 0;
+  var fitTimer = app.setInterval(function () {
+    fitEvTitles(document);
+    fitEvTitles(doc);
+    fitN += 1;
+    if (fitN > 8) app.clearInterval(fitTimer);
+  }, 400);
   function bindDayPick(d) {
     if (!d || d.__gcDayPick) return;
     d.__gcDayPick = true;

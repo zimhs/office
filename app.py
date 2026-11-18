@@ -21410,12 +21410,10 @@ def _dash_filter_and_tabs_fragment() -> None:
 
                         _gc_path = getattr(_gc_tab, "__file__", None) or ""
                         _gc_mtime = os.path.getmtime(_gc_path) if _gc_path and os.path.exists(_gc_path) else 0
-                        if "_gc_mod_mtime" not in st.session_state:
-                            st.session_state["_gc_mod_mtime"] = _gc_mtime
-                        elif st.session_state.get("_gc_mod_mtime") != _gc_mtime:
+                        if getattr(_gc_tab, "_GC_LOADED_MTIME", None) != _gc_mtime:
                             _gc_tab = importlib.reload(_gc_tab)
-                            st.session_state["_gc_mod_mtime"] = _gc_mtime
                             sys.modules["google_calendar_tab"] = _gc_tab
+                        st.session_state["_gc_mod_mtime"] = _gc_mtime
                         _vc_path = getattr(_vc_tab, "__file__", None) or ""
                         _vc_mtime = os.path.getmtime(_vc_path) if _vc_path and os.path.exists(_vc_path) else 0
                         if "_vc_mod_mtime" not in st.session_state:
