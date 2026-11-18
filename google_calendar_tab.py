@@ -3439,13 +3439,8 @@ div[class*="st-key-gc_evpick_"] button {
   text-overflow: ellipsis !important;
   cursor: pointer !important;
 }
-div[class*="st-key-gc_evpick_"] *,
-div[class*="st-key-gc_evpick_"] button p,
-div[class*="st-key-gc_evpick_"] button span,
-div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"],
-div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p,
-div[class*="st-key-gc_evpick_"] [data-testid^="stBaseButton"] p {
-  font-size: 10px !important;
+html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] p {
+  font-size: 11px !important;
   line-height: 1.2 !important;
   font-weight: 400 !important;
   white-space: nowrap !important;
@@ -3662,14 +3657,12 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """일정 제목만 10px. 월 이동마다 스크립트를 넣지 않는다."""
+    """일정 제목만 할 일 제목과 같은 11px. 월 이동마다 스크립트를 넣지 않는다."""
     st.markdown(
-        "<style>html body div[class*='st-key-gc_evpick_'] button,"
-        "html body div[class*='st-key-gc_evpick_'] button p,"
-        "html body div[class*='st-key-gc_evpick_'] button span,"
-        "html body div[class*='st-key-gc_evpick_'] button div,"
-        "html body div[class*='st-key-gc_evpick_'] [data-testid='stMarkdownContainer'] p"
-        "{font-size:10px!important;line-height:1.2!important;font-weight:400!important}</style>",
+        "<style>html body div[class*='st-key-gc_evpick_'] button"
+        "{font-size:10px!important;line-height:1.2!important;font-weight:400!important}"
+        "html body div[class*='st-key-gc_evpick_'] button [data-testid='stMarkdownContainer'] p"
+        "{font-size:11px!important;line-height:1.2!important;font-weight:400!important}</style>",
         unsafe_allow_html=True,
     )
 
@@ -5587,9 +5580,10 @@ div[class*="st-key-gc_vc_delivery_head"] div[class*="st-key-vc_strip_"] button p
   var css = 'html body div[class*="st-key-gc_evpick_"] button,' +
     'html body div[class*="st-key-gc_evpick_"] button p,' +
     'html body div[class*="st-key-gc_evpick_"] button span,' +
-    'html body div[class*="st-key-gc_evpick_"] button div,' +
-    'html body div[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p' +
-    '{font-size:10px!important;line-height:1.2!important;font-weight:400!important;}';
+    'html body div[class*="st-key-gc_evpick_"] button div' +
+    '{font-size:10px!important;line-height:1.2!important;font-weight:400!important;}' +
+    'html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] p' +
+    '{font-size:11px!important;line-height:1.2!important;font-weight:400!important;}';
   function put(d) {
     if (!d) return;
     var s = d.getElementById(id);
