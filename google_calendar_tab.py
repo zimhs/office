@@ -3440,7 +3440,7 @@ div[class*="st-key-gc_evpick_"] button {
   cursor: pointer !important;
 }
 html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] p {
-  font-size: 11px !important;
+  font-size: 9px !important;
   line-height: 1.2 !important;
   font-weight: 400 !important;
   white-space: nowrap !important;
@@ -3657,12 +3657,12 @@ div[class*="st-key-gc_cellpink"] {
 
 
 def _gc_shrink_event_titles() -> None:
-    """일정 제목만 할 일 제목과 같은 11px. 월 이동마다 스크립트를 넣지 않는다."""
+    """일정 제목만 할 일 제목보다 작게. 월 이동마다 스크립트를 넣지 않는다."""
     st.markdown(
         "<style>html body div[class*='st-key-gc_evpick_'] button"
         "{font-size:10px!important;line-height:1.2!important;font-weight:400!important}"
         "html body div[class*='st-key-gc_evpick_'] button [data-testid='stMarkdownContainer'] p"
-        "{font-size:11px!important;line-height:1.2!important;font-weight:400!important}</style>",
+        "{font-size:9px!important;line-height:1.15!important;font-weight:400!important}</style>",
         unsafe_allow_html=True,
     )
 
@@ -5583,7 +5583,7 @@ div[class*="st-key-gc_vc_delivery_head"] div[class*="st-key-vc_strip_"] button p
     'html body div[class*="st-key-gc_evpick_"] button div' +
     '{font-size:10px!important;line-height:1.2!important;font-weight:400!important;}' +
     'html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] p' +
-    '{font-size:11px!important;line-height:1.2!important;font-weight:400!important;}';
+    '{font-size:9px!important;line-height:1.15!important;font-weight:400!important;}';
   function put(d) {
     if (!d) return;
     var s = d.getElementById(id);
