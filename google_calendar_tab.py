@@ -3623,27 +3623,17 @@ div[class*="st-key-gc_cellpink"] {
                                         if len(lab) > 14:
                                             lab = lab[:13] + "…"
                                     with st.container(key=f"gc_chiprow_{stamp}_{idx}"):
-                                        if ev.get("task_chip"):
-                                            st.button(
-                                                lab,
-                                                key=f"gc_evpick_{stamp}_{idx}",
-                                                type="tertiary",
-                                                width="stretch",
-                                                on_click=_gc_set_sel_day,
-                                                args=(d,),
-                                            )
-                                        else:
-                                            st.button(
-                                                lab,
-                                                key=f"gc_evpick_{stamp}_{idx}",
-                                                type="tertiary",
-                                                width="stretch",
-                                                on_click=_gc_set_sel_event,
-                                                args=(d, eid or iso, f"{stamp}_{idx}"),
-                                            )
-                                            records[f"gc_evpick_{stamp}_{idx}"] = (
-                                                _gc_memo_record(ev, need_auth=need_auth)
-                                            )
+                                        st.button(
+                                            lab,
+                                            key=f"gc_evpick_{stamp}_{idx}",
+                                            type="tertiary",
+                                            width="stretch",
+                                            on_click=_gc_set_sel_day if ev.get("task_chip") else _gc_set_sel_event,
+                                            args=(d,) if ev.get("task_chip") else (d, eid or iso, f"{stamp}_{idx}"),
+                                        )
+                                        records[f"gc_evpick_{stamp}_{idx}"] = (
+                                            _gc_memo_record(ev, need_auth=need_auth)
+                                        )
                                         if ev.get("writable") and eid and cid:
                                             st.button(
                                                 "×",

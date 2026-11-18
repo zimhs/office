@@ -945,7 +945,7 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
                     {
                         "id": "t1",
                         "title": "방문",
-                        "notes": "",
+                        "notes": "부동침하검사. 안전변검사",
                         "status": "needsAction",
                         "due": "2026-11-20",
                         "position": "",
@@ -962,6 +962,9 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
         self.assertEqual(chip["title"], "방문")
         self.assertTrue(chip["task_chip"])
         self.assertFalse(chip["writable"])
+        rec = gc._gc_memo_record(chip)
+        self.assertEqual(rec["note"], "부동침하검사. 안전변검사")
+        self.assertFalse(rec["writable"])
 
     def test_set_sel_event_opens_memo(self):
         from datetime import date as d
