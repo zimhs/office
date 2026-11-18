@@ -110,7 +110,27 @@ def _gc_rerun_task() -> None:
     ctx = get_script_run_ctx()
     if ctx is not None and ctx.fragment_ids_this_run:
         st.rerun(scope="fragment")
+        return
     st.rerun()
+
+
+def _gc_ping_calendar() -> None:
+    """날짜 있는 할 일은 달력 조각만 다시 연다. 화면 전체를 비우지 않는다."""
+    import streamlit.components.v1 as components
+
+    components.html(
+        """
+        <script>
+        (function () {
+          var doc;
+          try { doc = window.parent.document; } catch (e) { doc = document; }
+          var btn = doc.querySelector('[class*="st-key-gc_cal_repaint"] button');
+          if (btn) btn.click();
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 
 def _gc_mark_done(key: str, pending_key: str, tid: str) -> None:
@@ -4477,6 +4497,11 @@ def _gc_with_task_chips(
 @st.fragment
 def _gc_cal_panel() -> None:
     """달력 월 이동·일정 저장만 이 조각을 다시 그린다."""
+    st.markdown(
+        "<style>div[class*='st-key-gc_cal_repaint']{display:none !important;}</style>",
+        unsafe_allow_html=True,
+    )
+    st.button("달력다시", key="gc_cal_repaint")
     _gc_take_memo_action()
     _gc_memo_action_box()
     _gc_take_sync_result()
@@ -5199,7 +5224,7 @@ def _gc_task_panel() -> None:
         save_local_tasks(lid, left)
     _gc_take_list_actions()
     if st.session_state.pop("_gc_cal_refresh", False):
-        st.rerun()
+        _gc_ping_calendar()
     try:
         tlists = _gc_cached_tlists()
     except Exception as e:
