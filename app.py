@@ -20458,7 +20458,16 @@ def _dash_filter_and_tabs_fragment() -> None:
                     and "사용구분" in df_int_src.columns
                 )
                 if _int_ready:
-                    int_col1, int_col2 = st.columns(2)
+                    int_col0, int_col1, int_col2 = st.columns(3)
+                    with int_col0:
+                        clients = ["전체 거래처"]
+                        if "현재 거래처" in df_int_src.columns:
+                            clients += sorted({
+                                str(x).strip()
+                                for x in df_int_src["현재 거래처"].dropna()
+                                if str(x).strip()
+                            })
+                        sel_client = st.selectbox("🏢 거래처", clients, key="int_client")
                     with int_col1:
                         items = ["전체 품목"] + sorted([str(x) for x in df_int_src['품목'].dropna().unique() if str(x).strip()])
                         sel_item = st.selectbox("📦 품목 선택", items, key="int_item")
@@ -20467,6 +20476,10 @@ def _dash_filter_and_tabs_fragment() -> None:
                         sel_status = st.selectbox("📌 사용구분", statuses, key="int_status")
                     st.markdown("---")
                     df_int_filtered = df_int_src.copy()
+                    if sel_client != "전체 거래처" and "현재 거래처" in df_int_filtered.columns:
+                        df_int_filtered = df_int_filtered[
+                            df_int_filtered["현재 거래처"].astype(str).str.strip() == sel_client
+                        ]
                     if sel_item != "전체 품목":
                         df_int_filtered = df_int_filtered[df_int_filtered['품목'].astype(str) == sel_item]
                     if sel_status != "전체 상태":
