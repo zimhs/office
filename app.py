@@ -8438,6 +8438,62 @@ def _dash_force_open_tab(tab_idx: int) -> None:
     st.session_state[f"_dash_force_tab_{int(tab_idx)}"] = True
 
 
+def _dash_local_doc_tab_wanted(tab_idx: int) -> bool:
+    """분기 사업분석·사업계획서는 그 탭을 연 실행에서만 그린다."""
+    if st.session_state.pop(f"_dash_force_tab_{int(tab_idx)}", None):
+        st.session_state["_dash_seen_tab"] = int(tab_idx)
+        return True
+    return _dash_active_tab_idx() == int(tab_idx)
+
+
+def _dash_install_local_doc_lazy() -> None:
+    """분기 사업분석·사업계획서 탭을 처음 누를 때만 본문을 연다."""
+    components.html(
+        """
+        <script>
+        (function () {
+          var doc = window.parent.document;
+          var win = window.parent;
+          if (doc.__dashLocalDocLazyVer === 2) return;
+          doc.__dashLocalDocLazyVer = 2;
+          doc.addEventListener("click", function (ev) {
+            try {
+              var t = ev.target && ev.target.closest && ev.target.closest('[role="tab"]');
+              if (!t) return;
+              var list = t.closest('[role="tablist"]');
+              if (!list) return;
+              var tabs = list.querySelectorAll('[role="tab"]');
+              if (tabs.length < 16) return;
+              var idx = -1, i;
+              for (i = 0; i < tabs.length; i++) if (tabs[i] === t) { idx = i; break; }
+              if (idx !== 14 && idx !== 15) return;
+              var host = doc.querySelector('[data-testid="stTabs"]');
+              var wrap = host ? host.querySelector(':scope > div') : null;
+              var panels = [];
+              if (wrap) {
+                var ch = wrap.children;
+                for (var c = 0; c < ch.length; c++) {
+                  if (ch[c].getAttribute('data-testid') === 'stTabPanel') panels.push(ch[c]);
+                }
+              }
+              var panel = panels && panels[idx];
+              var n = ((panel && panel.innerText) || "").replace(/\\s+/g, "").length;
+              if (n > 40) return;
+              var btn = doc.querySelector('[class*="st-key-_dash_reload_tab_' + idx + '"] button');
+              if (!btn) return;
+              var prev = win.__dashTabsSkipped;
+              win.__dashTabsSkipped = true;
+              try { btn.click(); } catch (eClick) {}
+              win.__dashTabsSkipped = prev;
+            } catch (e) {}
+          }, true);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def _dash_remember_tab(tab_idx: int) -> None:
     """탭을 옮긴 번호만 남긴다. 화면은 다시 그리지 않는다."""
     st.session_state["_dash_seen_tab"] = int(tab_idx)
@@ -17275,6 +17331,8 @@ def _dash_filter_and_tabs_fragment() -> None:
             on_click=_dash_force_open_tab,
             args=(_dash_i,),
         )
+    if _biz_local:
+        _dash_install_local_doc_lazy()
     _dash_tab_objs = st.tabs(_dash_tab_labels)
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = _dash_tab_objs[:13]
     tab_quote = _dash_tab_objs[13] if _biz_local else None
@@ -21342,7 +21400,7 @@ def _dash_filter_and_tabs_fragment() -> None:
 
     if tab_biz is not None:
         with tab_biz:
-            if _dash_skip_inactive_on_filter(14):
+            if (not _dash_local_doc_tab_wanted(14)) or _dash_skip_inactive_on_filter(14):
                 _dash_inactive_tab_keep(14)
             else:
                 try:
@@ -21380,7 +21438,7 @@ def _dash_filter_and_tabs_fragment() -> None:
 
     if tab_proposal is not None:
         with tab_proposal:
-            if _dash_skip_inactive_on_filter(15):
+            if (not _dash_local_doc_tab_wanted(15)) or _dash_skip_inactive_on_filter(15):
                 _dash_inactive_tab_keep(15)
             else:
                 try:
