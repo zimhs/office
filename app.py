@@ -20356,13 +20356,90 @@ def _dash_filter_and_tabs_fragment() -> None:
         if _defer_tab8:
             _dash_defer_light_tab_stub("🛢️ 통합 탱크 재고", 7)
         if not _defer_tab8:
+            def _dash_integrated_view(src):
+                """제목행이 있는 통합탱크 표는 가스품목 줄을 열로 맞춘다. 이 탭에서만 쓴다."""
+                if isinstance(src, pd.DataFrame) and "품목" in src.columns and "사용구분" in src.columns:
+                    return src
+
+                def _promote(frame):
+                    if not isinstance(frame, pd.DataFrame) or frame.empty:
+                        return None
+                    header_pos = None
+                    for pos in range(len(frame)):
+                        vals = [
+                            str(v).strip()
+                            for v in frame.iloc[pos].tolist()
+                            if pd.notna(v) and str(v).strip()
+                        ]
+                        if "가스품목" in vals and "사용구분" in vals:
+                            header_pos = pos
+                            break
+                    if header_pos is None:
+                        return None
+                    names = []
+                    seen = {}
+                    for v in frame.iloc[header_pos].tolist():
+                        name = str(v).strip() if pd.notna(v) else ""
+                        if not name or name.lower().startswith("unnamed"):
+                            names.append("")
+                            continue
+                        n = seen.get(name, 0)
+                        seen[name] = n + 1
+                        names.append(name if n == 0 else f"{name}.{n}")
+                    body = frame.iloc[header_pos + 1 :].copy()
+                    body.columns = names
+                    body = body.loc[:, [c for c in body.columns if c]]
+                    body = body.dropna(how="all")
+                    if "가스품목" in body.columns and "품목" not in body.columns:
+                        body = body.rename(columns={"가스품목": "품목"})
+                    if "품목" in body.columns:
+                        item = body["품목"].astype(str).str.strip()
+                        body = body[item.ne("") & ~item.isin(["nan", "None"])]
+                    if "현재 거래처" in body.columns:
+                        client = body["현재 거래처"].astype(str).str.strip()
+                        body = body[client.ne("") & ~client.isin(["nan", "None"])]
+                    return body.reset_index(drop=True)
+
+                parsed = None
+                raw_bytes = int_bytes if isinstance(int_bytes, (bytes, bytearray)) else None
+                if raw_bytes:
+                    decoded = None
+                    for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+                        try:
+                            decoded = raw_bytes.decode(enc)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    if decoded is None:
+                        decoded = raw_bytes.decode("utf-8", errors="replace")
+                    try:
+                        parsed = _promote(
+                            pd.read_csv(
+                                io.StringIO(decoded),
+                                header=None,
+                                dtype=str,
+                                keep_default_na=False,
+                                on_bad_lines="skip",
+                                engine="python",
+                            )
+                        )
+                    except Exception:
+                        parsed = None
+                if isinstance(parsed, pd.DataFrame) and not parsed.empty:
+                    return parsed
+                promoted = _promote(src)
+                if isinstance(promoted, pd.DataFrame):
+                    return promoted
+                return src if isinstance(src, pd.DataFrame) else pd.DataFrame()
+
             def _dash_body_7():
+                df_int_src = _dash_integrated_view(df_integrated)
                 t8_c1, t8_c2 = st.columns([4, 1])
                 with t8_c1:
                     _dash_label_with_xlsx(
                         "<div class='sub-header dashboard-tab-panel-head'>🛢️ 통합 고압가스 탱크 재고 현황</div>",
                         key="t8_head",
-                        df=df_integrated if isinstance(df_integrated, pd.DataFrame) and not df_integrated.empty else None,
+                        df=df_int_src if isinstance(df_int_src, pd.DataFrame) and not df_int_src.empty else None,
                         hide_index=True,
                         sheet="통합탱크",
                         file_name="T8_통합탱크재고.xlsx",
@@ -20375,21 +20452,21 @@ def _dash_filter_and_tabs_fragment() -> None:
                         set_saved_date(TAB8_DATE_FILE, tab8_date)
     
                 _int_ready = (
-                    isinstance(df_integrated, pd.DataFrame)
-                    and not df_integrated.empty
-                    and "품목" in df_integrated.columns
-                    and "사용구분" in df_integrated.columns
+                    isinstance(df_int_src, pd.DataFrame)
+                    and not df_int_src.empty
+                    and "품목" in df_int_src.columns
+                    and "사용구분" in df_int_src.columns
                 )
                 if _int_ready:
                     int_col1, int_col2 = st.columns(2)
                     with int_col1:
-                        items = ["전체 품목"] + sorted([str(x) for x in df_integrated['품목'].dropna().unique() if str(x).strip()])
+                        items = ["전체 품목"] + sorted([str(x) for x in df_int_src['품목'].dropna().unique() if str(x).strip()])
                         sel_item = st.selectbox("📦 품목 선택", items, key="int_item")
                     with int_col2:
-                        statuses = ["전체 상태"] + sorted([str(x) for x in df_integrated['사용구분'].dropna().unique() if str(x).strip()])
+                        statuses = ["전체 상태"] + sorted([str(x) for x in df_int_src['사용구분'].dropna().unique() if str(x).strip()])
                         sel_status = st.selectbox("📌 사용구분", statuses, key="int_status")
                     st.markdown("---")
-                    df_int_filtered = df_integrated.copy()
+                    df_int_filtered = df_int_src.copy()
                     if sel_item != "전체 품목":
                         df_int_filtered = df_int_filtered[df_int_filtered['품목'].astype(str) == sel_item]
                     if sel_status != "전체 상태":
@@ -20416,7 +20493,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                         file_name="T8_통합탱크상세.xlsx",
                     )
                     st.dataframe(df_display, use_container_width=True, height=600, hide_index=True)
-                elif isinstance(df_integrated, pd.DataFrame) and not df_integrated.empty:
+                elif isinstance(df_int_src, pd.DataFrame) and not df_int_src.empty:
                     st.warning("통합 탱크 재고 파일에 '품목' 또는 '사용구분' 열이 없습니다. 재고 원본 csv를 다시 올려 주세요.")
                 else:
                     st.warning("통합 탱크 재고 데이터가 없습니다. 폴더에 '통합탱크재고.csv'를 넣거나 왼쪽 사이드바에서 업로드해주세요.")
