@@ -10,6 +10,7 @@ import json
 import os
 import re
 import smtplib
+import unicodedata
 import ssl
 from copy import copy
 from datetime import date, datetime
@@ -2582,6 +2583,113 @@ def _apply_amount_to_items(items: list[dict], amount: float, *, only_selected: b
 
 def _default_letter_title() -> str:
     return "액체탄산 공급단가 인상 협조 요청의 건"
+
+
+_PI_LETTER_BOOK_NAME = "26년 가격조정공문_20261119.xlsx"
+
+
+def _pi_nfc(text: str) -> str:
+    return unicodedata.normalize("NFC", str(text or ""))
+
+
+def _pi_dir_child(parent: str, want: str) -> str:
+    if not parent or not os.path.isdir(parent):
+        return ""
+    want_n = _pi_nfc(want)
+    for name in os.listdir(parent):
+        if _pi_nfc(name) == want_n:
+            return os.path.join(parent, name)
+    return ""
+
+
+def _pi_price_letter_book_path() -> str:
+    """구글 드라이브의 26년 가격조정 공문 파일."""
+    cloud = os.path.expanduser("~/Library/CloudStorage")
+    if not os.path.isdir(cloud):
+        return ""
+    for name in os.listdir(cloud):
+        if not name.startswith("GoogleDrive-"):
+            continue
+        root = os.path.join(cloud, name)
+        path = root
+        for part in ("다른 컴퓨터", "내 컴퓨터 (1)", "Desktop", "업무", "공문"):
+            path = _pi_dir_child(path, part)
+            if not path:
+                break
+        if not path:
+            continue
+        found = _pi_dir_child(path, _PI_LETTER_BOOK_NAME)
+        if found and os.path.isfile(found):
+            return found
+    return ""
+
+
+def _pi_letter_title_from_line(text: str) -> str:
+    raw = _pi_nfc(text).replace("\xa0", " ").strip()
+    if "제" not in raw or "목" not in raw or ":" not in raw:
+        return ""
+    head = raw.split(":", 1)[0].replace(" ", "")
+    if head != "제목":
+        return ""
+    return raw.split(":", 1)[1].strip()
+
+
+def _pi_read_price_letters(path: str) -> list[dict[str, str]]:
+    """시트별 제목과 공문 본문. 단가표(- 아래 -) 앞까지만."""
+    if not path or not os.path.isfile(path) or load_workbook is None:
+        return []
+    wb = load_workbook(path, data_only=True, read_only=False)
+    out: list[dict[str, str]] = []
+    try:
+        for sheet in wb.sheetnames:
+            ws = wb[sheet]
+            title = ""
+            lines: list[str] = []
+            last = min(int(ws.max_row or 1), 80)
+            for row in range(1, last + 1):
+                raw = ws.cell(row, 3).value
+                text = _pi_nfc(raw).replace("\xa0", " ").strip()
+                if not text:
+                    continue
+                found = _pi_letter_title_from_line(text)
+                if found and not title:
+                    title = found
+                    continue
+                if not title:
+                    continue
+                compact = text.replace(" ", "")
+                if compact.startswith("-") and "아래" in compact:
+                    break
+                if compact == "품명":
+                    break
+                lines.append(text)
+            if not title:
+                continue
+            label = f"{_pi_nfc(sheet)} · {title}"
+            out.append({"label": label, "title": title, "body": "\n".join(lines)})
+    finally:
+        wb.close()
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def _pi_cached_price_letters(path: str, mtime: float) -> list[dict[str, str]]:
+    del mtime
+    return _pi_read_price_letters(path)
+
+
+def _pi_price_letter_choices() -> list[dict[str, str]]:
+    path = _pi_price_letter_book_path()
+    if not path:
+        return []
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return []
+    try:
+        return list(_pi_cached_price_letters(path, mtime))
+    except Exception:
+        return []
 
 
 def _default_doc_no(client: str = "") -> str:
@@ -5371,7 +5479,24 @@ def _render_pi_right_letter_form() -> None:
         st.date_input("발송일자", value=date.today(), key="pi_letter_send_date")
     m3, m4, m5 = st.columns([2, 1, 1])
     with m3:
-        st.text_input("제목", value=_default_letter_title(), key="pi_single_title")
+        letters = _pi_price_letter_choices()
+        by_label = {row["label"]: row for row in letters}
+        if by_label:
+            picked = st.selectbox(
+                "제목",
+                list(by_label),
+                key="pi_letter_src",
+                index=None,
+                placeholder="공문 제목을 검색하거나 선택하세요",
+            )
+            chosen = by_label.get(str(picked or ""))
+            if chosen and st.session_state.get("_pi_letter_src_applied") != picked:
+                st.session_state["pi_single_title"] = chosen["title"]
+                if body_key:
+                    st.session_state[body_key] = chosen["body"]
+                st.session_state["_pi_letter_src_applied"] = picked
+        else:
+            st.text_input("제목", value=_default_letter_title(), key="pi_single_title")
     with m4:
         st.date_input("시행일", value=date.today().replace(day=1), key="pi_single_eff")
     with m5:

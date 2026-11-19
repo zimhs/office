@@ -389,6 +389,36 @@ def test_sent_log_stores_body_and_client_search():
         assert list(show.columns)[:4] == ["발송일", "거래처", "제목", "이메일"]
 
 
+def test_price_letter_book_title_fills_body():
+    import os
+    import tempfile
+    from openpyxl import Workbook
+
+    from price_increase_tab import _pi_letter_title_from_line, _pi_read_price_letters
+
+    assert _pi_letter_title_from_line("제    목 : 제품가격 조정의 건") == "제품가격 조정의 건"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "공문261119"
+    ws["C12"] = "제    목 : 제품가격 조정의 건"
+    ws["C16"] = "1. 귀사의 일익 번창하심을 기원합니다."
+    ws["C18"] = "2. 질소가스 공급부족으로 가격을 조정합니다."
+    ws["C29"] = "- 아     래 -"
+    ws["C31"] = "품명"
+    fd, path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    try:
+        wb.save(path)
+        rows = _pi_read_price_letters(path)
+    finally:
+        os.remove(path)
+    assert len(rows) == 1
+    assert rows[0]["title"] == "제품가격 조정의 건"
+    assert "질소가스" in rows[0]["body"]
+    assert "품명" not in rows[0]["body"]
+    assert "아래" not in rows[0]["body"]
+
+
 def test_sent_history_opens_body_from_row():
     src = open("price_increase_tab.py", encoding="utf-8").read()
     hist = src.split("def _render_pi_sent_history", 1)[1].split("\ndef ", 1)[0]
