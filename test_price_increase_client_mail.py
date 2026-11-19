@@ -389,6 +389,32 @@ def test_sent_log_stores_body_and_client_search():
         assert list(show.columns)[:4] == ["발송일", "거래처", "제목", "이메일"]
 
 
+def test_picked_letter_body_stays_when_client_changes():
+    from price_increase_tab import _pi_keep_letter_body
+
+    chosen = "1. 질소가스 공급부족으로 가격을 조정합니다."
+    bodies = {
+        "pi_letter_body_갑": chosen,
+        "pi_letter_body_을": "1.귀사의 무궁한 발전을 기원하며",
+    }
+    kept = _pi_keep_letter_body(
+        client="을",
+        body_key="pi_letter_body_을",
+        prev_client="갑",
+        pinned=True,
+        bodies=bodies,
+    )
+    assert kept == chosen
+    fresh = _pi_keep_letter_body(
+        client="을",
+        body_key="pi_letter_body_을",
+        prev_client="갑",
+        pinned=False,
+        bodies=bodies,
+    )
+    assert fresh == "1.귀사의 무궁한 발전을 기원하며"
+
+
 def test_price_letter_book_title_fills_body():
     import os
     import tempfile

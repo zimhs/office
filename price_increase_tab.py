@@ -2678,6 +2678,25 @@ def _pi_cached_price_letters(path: str, mtime: float) -> list[dict[str, str]]:
     return _pi_read_price_letters(path)
 
 
+def _pi_keep_letter_body(
+    *,
+    client: str,
+    body_key: str,
+    prev_client: str,
+    pinned: bool,
+    bodies: dict,
+) -> str:
+    """제목으로 지정한 공문 본문은 거래처를 바꿔도 유지한다."""
+    if pinned and str(prev_client or "") != str(client or ""):
+        prev_key = f"pi_letter_body_{_norm_name(prev_client)}"
+        kept = str(bodies.get(prev_key) or "")
+        if kept:
+            return kept
+    if body_key in bodies:
+        return str(bodies.get(body_key) or "")
+    return _default_letter_body_text()
+
+
 def _pi_price_letter_choices() -> list[dict[str, str]]:
     path = _pi_price_letter_book_path()
     if not path:
@@ -5605,14 +5624,17 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     st.session_state[flag] = True
             st.session_state["pi_last_client"] = client
 
-            # 공문 본문 키 (거래처별)
+            # 공문 본문 키 (거래처별). 제목으로 지정한 본문은 거래처를 바꿔도 유지.
             body_key = f"pi_letter_body_{_norm_name(client)}"
-            if body_key not in st.session_state:
-                st.session_state[body_key] = _default_letter_body_text()
-            if st.session_state.get("pi_body_client") != client:
-                st.session_state["pi_body_client"] = client
-                if body_key not in st.session_state:
-                    st.session_state[body_key] = _default_letter_body_text()
+            prev_client = str(st.session_state.get("pi_body_client") or "")
+            st.session_state[body_key] = _pi_keep_letter_body(
+                client=client,
+                body_key=body_key,
+                prev_client=prev_client,
+                pinned=bool(st.session_state.get("_pi_letter_src_applied")),
+                bodies=st.session_state,
+            )
+            st.session_state["pi_body_client"] = client
 
             col_left, col_right = st.columns([1, 1], gap="medium")
 
