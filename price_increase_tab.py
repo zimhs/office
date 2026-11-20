@@ -1393,6 +1393,9 @@ def _pi_flow_letter_body(text: str) -> str:
 _PI_LINE_H = 5.2
 _PI_TIGHT_GAP = 0.6
 _PI_SECTION_GAP = 2.4
+# 남는 세로 칸을 항목 사이·표 앞에 나누되, 표는 그보다 위에 둔다.
+_PI_SECTION_EXTRA = 0.72
+_PI_TABLE_EXTRA = 0.48
 
 
 def _pi_letter_block_spacing(
@@ -1404,7 +1407,7 @@ def _pi_letter_block_spacing(
     room: float,
     has_table: bool,
 ) -> tuple[float, float, float, bool]:
-    """문단 안 줄간격은 고정. 1·2·3·4와 단가표 사이만 넓혀 하단에 맞춘다.
+    """문단 안 줄간격은 고정. 항목 간격은 조금 좁히고 단가표는 그 위에 둔다.
 
     반환: (줄높이, 항목 간격, 표 앞 간격, 한 장에 들어감)
     """
@@ -1422,8 +1425,8 @@ def _pi_letter_block_spacing(
     extra = room - min_h
     slots = n_section_gaps + (1 if has_table else 0)
     add = (extra / slots) if slots else 0.0
-    section_gap = _PI_SECTION_GAP + add
-    table_gap = _PI_SECTION_GAP + add if has_table else _PI_SECTION_GAP
+    section_gap = _PI_SECTION_GAP + add * _PI_SECTION_EXTRA
+    table_gap = _PI_SECTION_GAP + add * _PI_TABLE_EXTRA if has_table else _PI_SECTION_GAP
     return _PI_LINE_H, section_gap, table_gap, True
 
 

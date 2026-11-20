@@ -428,8 +428,10 @@ def test_letter_spacing_fills_the_page_gap():
     )
     assert fits
     assert abs(line_h - _PI_LINE_H) < 0.01
+    assert table_gap < section_gap
     used = 10 * line_h + 2 * 0.6 + 3 * section_gap + table_gap + 40.0
-    assert abs(used - 150.0) < 0.2
+    assert used < 150.0
+    assert used > 120.0
     tight = _pi_letter_block_spacing(
         n_lines=40,
         n_section_gaps=8,
