@@ -415,18 +415,6 @@ def test_picked_letter_body_stays_when_client_changes():
     assert fresh == "1.귀사의 무궁한 발전을 기원하며"
 
 
-def test_user_letter_lines_stay_and_table_sits_below():
-    from price_increase_tab import _pi_keep_user_lines, _pi_table_gap_below
-
-    assert _pi_keep_user_lines("1. 가\n\n2. 나") == ["1. 가", "", "2. 나"]
-    gap, fits = _pi_table_gap_below(40.0, 30.0, 120.0)
-    assert fits
-    assert abs((40.0 + gap + 30.0) - 120.0) < 0.2
-    tight_gap, tight_fits = _pi_table_gap_below(90.0, 40.0, 100.0)
-    assert tight_fits is False
-    assert tight_gap == 3.0
-
-
 def test_letter_spacing_fills_the_page_gap():
     from price_increase_tab import _PI_LINE_H, _pi_letter_block_spacing
 

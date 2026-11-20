@@ -313,106 +313,6 @@ def _pi_rerun(*, full: bool = False) -> None:
         st.rerun()
 
 
-def _pi_preview_sig(letter_body: str, items: list) -> tuple:
-    return (
-        str(letter_body or ""),
-        tuple(
-            (
-                str(it.get("품목명") or ""),
-                str(it.get("기존단가") or ""),
-                str(it.get("인상적용단가") or ""),
-                str(it.get("비고") or ""),
-            )
-            for it in items
-            if isinstance(it, dict)
-        ),
-    )
-
-
-def _pi_sync_body_into_pack(body_key: str) -> str:
-    """공문 본문만 왼쪽 미리보기 묶음에 반영한다. 단가표는 다시 읽지 않는다."""
-    body = str(st.session_state.get(body_key) or "")
-    pack = dict(st.session_state.get("_pi_left_pack") or {})
-    if not pack:
-        return body
-    if not st.session_state.get("pi_include_letter_body", True):
-        shown = ""
-    else:
-        shown = body
-    kwargs = dict(pack.get("letter_kwargs") or {})
-    kwargs["letter_text"] = shown
-    kwargs["letter_paras"] = _body_text_to_paras(shown) if shown else {}
-    pack["letter_body"] = shown
-    pack["letter_kwargs"] = kwargs
-    st.session_state["_pi_left_pack"] = pack
-    return shown
-
-
-def _pi_bind_letter_preview_live() -> None:
-    """업무일지처럼 공문 본문을 서버 재실행 없이 엑셀 미리보기에 바로 그린다."""
-    import secrets
-
-    nonce = secrets.token_hex(4)
-    st.components.v1.html(
-        f"""<div data-n="{nonce}"></div><script>
-        (function(){{
-          var d = window.parent.document;
-          function paint(text){{
-            var box = d.getElementById('pi-letter-live');
-            if (!box) return;
-            box.textContent = '';
-            String(text || '').split(/\\n/).forEach(function(line){{
-              var row = d.createElement('div');
-              row.style.lineHeight = '1.45';
-              row.style.minHeight = '1.45em';
-              row.style.whiteSpace = 'pre-wrap';
-              row.textContent = line.length ? line : '\\u00a0';
-              box.appendChild(row);
-            }});
-          }}
-          function fromArea(){{
-            var areas = d.querySelectorAll('textarea');
-            for (var i = 0; i < areas.length; i++) {{
-              if ((areas[i].getAttribute('aria-label') || '') === '공문 본문') {{
-                paint(areas[i].value);
-                return;
-              }}
-            }}
-          }}
-          if (!d.__piLetterLive) {{
-            d.__piLetterLive = 1;
-            d.addEventListener('input', function(ev){{
-              var t = ev.target;
-              if (!t || t.tagName !== 'TEXTAREA') return;
-              if ((t.getAttribute('aria-label') || '') !== '공문 본문') return;
-              paint(t.value);
-            }}, true);
-          }}
-          fromArea();
-        }})();
-        </script>""",
-        height=0,
-    )
-
-
-def _pi_refresh_excel_preview() -> None:
-    """엑셀 미리보기가 열려 있을 때만 그 칸을 다시 그린다."""
-    import secrets
-
-    nonce = secrets.token_hex(4)
-    st.components.v1.html(
-        f"""<div data-n="{nonce}"></div><script>
-        setTimeout(function(){{
-          try {{
-            var b=window.parent.document.querySelector('[class*="st-key-pi_excel_repaint"] button');
-            if(b) b.click();
-          }} catch(e) {{}}
-        }}, 60);
-        </script>""",
-        height=0,
-    )
-
-
 def _secret_get(*keys: str) -> str:
     """secrets.toml / Cloud secrets / env / 로컬 smtp_local.toml 조회.
 
@@ -1525,19 +1425,6 @@ def _pi_letter_block_spacing(
     section_gap = _PI_SECTION_GAP + add
     table_gap = _PI_SECTION_GAP + add if has_table else _PI_SECTION_GAP
     return _PI_LINE_H, section_gap, table_gap, True
-
-
-def _pi_keep_user_lines(text: str) -> list[str]:
-    """입력한 줄바꿈·빈 줄은 그대로 둔다."""
-    return str(text or "").replace("\xa0", " ").splitlines()
-
-
-def _pi_table_gap_below(body_h: float, table_h: float, room: float) -> tuple[float, bool]:
-    """수정한 본문 아래 남은 칸에 단가표를 붙인다. 넘치면 2페이지."""
-    base = 3.0
-    if body_h + base + table_h > room + 0.4:
-        return base, False
-    return max(base, room - body_h - table_h), True
 
 
 def _body_text_to_paras(text: str) -> dict[str, str]:
@@ -3651,23 +3538,40 @@ def build_letter_pdf(
         n = max(len(clean), 1)
         return 7.0 + 1.5 + 7.0 + 7.0 * n + 2.0 + 6.0 + 2.0
 
-    # ── 1장: 고친 본문 그대로. 단가표는 아래 남은 칸에 붙인다 ──
+    # ── 1장: 헤더 + 본문. 빈 줄은 붙이고, 넘치면 기존처럼 2페이지 ──
     _draw_letterhead(include_meta=True)
     pdf.set_font("kr", "", 10)
     pdf.set_text_color(15, 23, 42)
-    letter_text = _extra.get("letter_text")
-    if letter_text is None:
-        letter_text = "\n".join(str(paras.get(coord) or "") for coord in _BODY_CELL_ORDER)
-    visual: list[str] = []
-    for raw in _pi_keep_user_lines(str(letter_text)):
-        if not str(raw).strip():
-            visual.append("")
-            continue
-        visual.extend(_pdf_wrap_lines(pdf, str(raw).strip(), usable))
-    line_h = _PI_LINE_H
+    flowed = _pi_flow_letter_body(
+        "\n".join(str(paras.get(coord) or "") for coord in _BODY_CELL_ORDER)
+    )
+    paragraphs = [p for p in flowed.splitlines() if p.strip()]
+    wrapped = [
+        [ln for ln in _pdf_wrap_lines(pdf, para, usable) if ln.strip()]
+        for para in paragraphs
+    ]
+    wrapped = [lines for lines in wrapped if lines]
+    n_lines = sum(len(lines) for lines in wrapped)
+
+    def _numbered_block(text: str) -> bool:
+        return bool(re.match(r"^\d+\.", str(text or "").strip()))
+
+    n_section_gaps = sum(
+        1
+        for i in range(1, len(wrapped))
+        if _numbered_block(wrapped[i][0])
+    )
+    n_tight_gaps = max(len(wrapped) - 1 - n_section_gaps, 0)
     table_h = _price_block_height() if clean else 0.0
     room = max(0.0, content_max - pdf.get_y() - 2.0)
-    table_gap, fits_one = _pi_table_gap_below(len(visual) * line_h, table_h, room)
+    line_h, para_gap, table_gap, fits_one = _pi_letter_block_spacing(
+        n_lines=n_lines,
+        n_section_gaps=n_section_gaps,
+        n_tight_gaps=n_tight_gaps,
+        table_h=table_h,
+        room=room,
+        has_table=bool(clean),
+    )
 
     def _continue_page() -> None:
         _draw_page_footer()
@@ -3682,8 +3586,13 @@ def build_letter_pdf(
         pdf.set_x(left)
         pdf.cell(usable, line_h, text, new_x="LMARGIN", new_y="NEXT")
 
-    for ln in visual:
-        _draw_fit_line(ln)
+    for pi, lines in enumerate(wrapped):
+        for ln in lines:
+            _draw_fit_line(ln)
+        if pi < len(wrapped) - 1:
+            gap = para_gap if _numbered_block(wrapped[pi + 1][0]) else _PI_TIGHT_GAP
+            if fits_one or pdf.get_y() + gap <= content_max:
+                pdf.ln(gap)
 
     attach_to_back = False
     if clean:
@@ -3833,10 +3742,6 @@ def _prepare_letter_preview(
     st.session_state["pi_mail_letter_token"] = _mail_letter_sync_token(
         letter_kwargs, attach_letter=True
     )
-    items_now = list(letter_kwargs.get("items") or [])
-    baked = _pi_preview_sig(letter_body, items_now)
-    st.session_state["_pi_pdf_sig"] = baked
-    st.session_state["_pi_excel_sig"] = baked
     st.session_state["pi_preview_meta"] = {
         "client": letter_kwargs.get("client") or "",
         "title": letter_kwargs.get("title") or "",
@@ -3844,7 +3749,7 @@ def _prepare_letter_preview(
         "send_date": letter_kwargs.get("send_date") or date.today(),
         "effective": letter_kwargs.get("effective") or "",
         "letter_body": letter_body,
-        "items": items_now,
+        "items": list(letter_kwargs.get("items") or []),
     }
     st.session_state.pop("pi_preview_force", None)
 
@@ -4355,7 +4260,6 @@ def _render_items_table(
         use_container_width=True,
         key=_editor_widget_key(editor_key),
     )
-    st.session_state["_pi_live_items"] = _items_from_editor_df(edited)
 
     b1, b2, b3 = st.columns(3)
     with b1:
@@ -4369,10 +4273,7 @@ def _render_items_table(
             _bump_editor_widget(editor_key)
     with b3:
         if st.button("표 내용 저장", key=f"{editor_key}_save", type="primary", use_container_width=True):
-            saved_items = _items_from_editor_df(edited)
-            st.session_state[editor_key] = saved_items
-            st.session_state["_pi_live_items"] = saved_items
-            st.session_state.pop("_pi_excel_sig", None)
+            st.session_state[editor_key] = _items_from_editor_df(edited)
             st.success("품목표 저장됨 (거래처별 유지)")
 
     touched = any(
@@ -4455,24 +4356,6 @@ def _render_pi_left_summary(
         st.text(letter_body or "(본문 없음)")
 
 
-def _pi_data_uri(path: str) -> str:
-    """인쇄 미리보기 로고. 파일이 없으면 빈 문자열."""
-    import base64
-
-    try:
-        if not path or not os.path.isfile(path):
-            return ""
-        ext = os.path.splitext(path)[1].lower()
-        mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
-        with open(path, "rb") as f:
-            raw = f.read()
-        if not raw or len(raw) > 1_500_000:
-            return ""
-        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-    except Exception:
-        return ""
-
-
 def _render_letter_form_preview(
     *,
     client: str,
@@ -4483,31 +4366,31 @@ def _render_letter_form_preview(
     letter_body: str,
     items: list[dict],
 ) -> None:
-    """인쇄될 공문 한 장을 왼쪽 칸에 통째로 보여 줌."""
+    """엑셀 양식 적용 결과를 왼쪽 칸에 바로 보여 줌."""
     rows_html = ""
     for it in items:
-        name = html_lib.escape(str(it.get("품목명") or ""))
+        name = str(it.get("품목명") or "")
         old = float(it.get("기존단가") or 0)
         new = float(it.get("인상적용단가") or 0)
-        note = html_lib.escape(str(it.get("비고") or ""))
+        note = str(it.get("비고") or "")
         rows_html += (
-            f"<tr><td style='padding:4px 6px;border:1px solid #94A3B8;'>{name}</td>"
-            f"<td style='padding:4px 6px;border:1px solid #94A3B8;text-align:center'>{old:,.0f}</td>"
-            f"<td style='padding:4px 6px;border:1px solid #94A3B8;text-align:center'>{new:,.0f}</td>"
-            f"<td style='padding:4px 6px;border:1px solid #94A3B8;'>{note}</td></tr>"
+            f"<tr><td>{name}</td><td style='text-align:right'>{old:,.0f}</td>"
+            f"<td style='text-align:right'>{new:,.0f}</td><td>{note}</td></tr>"
         )
+    if not rows_html:
+        rows_html = "<tr><td colspan='4'>(품목 없음)</td></tr>"
+    flowed_body = _pi_flow_letter_body(letter_body)
     body_html = "".join(
-        "<div style='min-height:1.45em;line-height:1.45;'>&nbsp;</div>"
-        if not line.strip()
-        else f"<div style='line-height:1.45;white-space:pre-wrap;'>{html_lib.escape(line)}</div>"
-        for line in _pi_keep_user_lines(letter_body)
+        f"<p style='margin:0 0 0.7em 0;text-align:left;line-height:1.45;'>{html_lib.escape(line)}</p>"
+        for line in flowed_body.splitlines()
+        if line.strip()
     )
     send_s = send_date.strftime("%Y.%m.%d") if hasattr(send_date, "strftime") else str(send_date)
     price_block = ""
     if any(str(it.get("품목명") or "").strip() for it in items):
         price_block = f"""
-  <div style="margin-top:auto;padding-top:18px;font-weight:700;text-align:center;font-size:15px;">단가 조정 내용</div>
-  <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px;">
+  <div style="margin-top:14px;font-weight:700;text-align:center;">단가 조정 내용</div>
+  <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;">
     <thead>
       <tr style="background:#0F766E;color:#fff;">
         <th style="padding:6px;border:1px solid #0F766E;">제품명</th>
@@ -4518,88 +4401,30 @@ def _render_letter_form_preview(
     </thead>
     <tbody>{rows_html}</tbody>
   </table>
-  <div style="margin-top:10px;font-size:14px;">• 시행 일자 : {html_lib.escape(_format_korean_effective(effective_s))}</div>
+  <div style="margin-top:10px;font-size:13px;">• 시행 일자 : {_format_korean_effective(effective_s)}</div>
 """
-    imgs = _extract_template_images(ensure_default_template())
-    header_src = _pi_data_uri(str(imgs.get("header") or ""))
-    footer_src = _pi_data_uri(str(imgs.get("footer") or imgs.get("header") or ""))
-    stamp_src = _pi_data_uri(str(imgs.get("stamp") or ""))
-    header_html = (
-        f'<img src="{header_src}" alt="" style="display:block;width:260px;height:auto;margin:0 auto 8px;">'
-        if header_src
-        else ""
+    st.markdown(
+        f"""
+<div style="border:1px solid #CBD5E1;border-radius:10px;padding:14px 16px;background:#fff;max-height:640px;overflow:auto;">
+  <div style="text-align:center;font-weight:800;font-size:16px;color:#0F766E;margin-bottom:8px;">공문 미리보기</div>
+  <div style="height:2px;background:#D1D5DB;margin:6px 0;"></div>
+  <div style="text-align:center;font-size:11px;color:#475569;padding:4px 0;">
+    우 18524 경기도 화성시 팔탄면 서해로 1327-17 &nbsp;/&nbsp; 전화 031-366-0799 &nbsp;/&nbsp; FAX 031-366-5633
+  </div>
+  <div style="height:2px;background:#D1D5DB;margin:6px 0 10px;"></div>
+  <div style="font-size:14px;line-height:1.7;color:#0F172A;">
+    <div>문서번호 : {doc_no}</div>
+    <div>발송일자 : {send_s}</div>
+    <div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {client}</div>
+    <div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {title}</div>
+  </div>
+  <div style="height:2px;background:#C4C4C4;margin:12px 0;"></div>
+  <div style="font-size:13px;line-height:1.55;color:#1E293B;white-space:normal;">{body_html}</div>
+  {price_block}
+</div>
+""",
+        unsafe_allow_html=True,
     )
-    footer_logo = (
-        f'<img src="{footer_src}" alt="" style="width:220px;height:auto;">'
-        if footer_src
-        else ""
-    )
-    stamp_html = (
-        f'<img src="{stamp_src}" alt="" style="width:68px;height:auto;margin-left:6px;vertical-align:middle;">'
-        if stamp_src
-        else ""
-    )
-    page = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#F8FAFC;">
-<div style="box-sizing:border-box;background:#fff;border:1px solid #94A3B8;min-height:1040px;display:flex;flex-direction:column;padding:22px 28px 18px;color:#111;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;">
-{header_html}
-<div style="height:3px;background:#D1D5DB;"></div>
-<div style="text-align:center;font-size:12px;padding:6px 0;">우 18524 경기도 화성시 팔탄면 서해로 1327-17 / 전화 031-366-0799 / FAX 031-366-5633</div>
-<div style="height:3px;background:#D1D5DB;margin-bottom:12px;"></div>
-<div style="font-size:15px;line-height:1.7;">
-<div>문서번호 : {html_lib.escape(doc_no)}</div>
-<div>발송일자 : {html_lib.escape(send_s)}</div>
-<div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {html_lib.escape(client)}</div>
-<div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {html_lib.escape(title)}</div>
-</div>
-<div style="height:3px;background:#B0B0B0;margin:12px 0;"></div>
-<div id="pi-letter-live" style="font-size:14px;line-height:1.55;">{body_html}</div>
-<div id="pi-letter-price">{price_block}</div>
-<div style="margin-top:18px;">
-<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;">
-<div>{footer_logo}</div>
-<div style="font-weight:700;font-size:16px;white-space:nowrap;">대표자 : 유 봉 래{stamp_html}</div>
-</div>
-<div style="height:1px;background:#B4B4B4;margin:10px 0 8px;"></div>
-<div style="text-align:center;font-weight:700;font-size:16px;letter-spacing:0.2em;">(주) 신 일 가 스</div>
-</div>
-</div>
-<script>
-(function(){{
-  var d = window.parent.document;
-  function paint(text){{
-    var box = document.getElementById('pi-letter-live');
-    if (!box) return;
-    box.textContent = '';
-    String(text || '').split(/\\n/).forEach(function(line){{
-      var row = document.createElement('div');
-      row.style.lineHeight = '1.45';
-      row.style.minHeight = '1.45em';
-      row.style.whiteSpace = 'pre-wrap';
-      row.textContent = line.length ? line : '\\u00a0';
-      box.appendChild(row);
-    }});
-  }}
-  d.__piLetterPaint = paint;
-  if (!d.__piLetterLive) {{
-    d.__piLetterLive = 1;
-    d.addEventListener('input', function(ev){{
-      var t = ev.target;
-      if (!t || t.tagName !== 'TEXTAREA') return;
-      if ((t.getAttribute('aria-label') || '') !== '공문 본문') return;
-      if (typeof d.__piLetterPaint === 'function') d.__piLetterPaint(t.value);
-    }}, true);
-  }}
-  var areas = d.querySelectorAll('textarea');
-  for (var i = 0; i < areas.length; i++) {{
-    if ((areas[i].getAttribute('aria-label') || '') === '공문 본문') {{
-      paint(areas[i].value);
-      break;
-    }}
-  }}
-}})();
-</script>
-</body></html>"""
-    st.components.v1.html(page, height=980, scrolling=True)
 
 
 def _collect_letter_kwargs(
@@ -4621,11 +4446,7 @@ def _collect_letter_kwargs(
     if not isinstance(send_date, date):
         send_date = date.today()
     letter_body = str(st.session_state.get(body_key) or _default_letter_body_text())
-    live_items = st.session_state.get("_pi_live_items")
-    if isinstance(live_items, list):
-        items_all = _normalize_items_selection(live_items)
-    else:
-        items_all = _normalize_items_selection(list(st.session_state.get(items_key) or []))
+    items_all = _normalize_items_selection(list(st.session_state.get(items_key) or []))
     items = _selected_items(items_all)
     letter_paras = _body_text_to_paras(letter_body)
     mail_body = _default_mail_body(client, effective_s, items)
@@ -4640,7 +4461,6 @@ def _collect_letter_kwargs(
         doc_no=doc_no,
         send_date=send_date,
         letter_paras=letter_paras,
-        letter_text=letter_body,
     )
     return kwargs, letter_body, items, effective_s
 
@@ -5572,32 +5392,6 @@ def _ensure_mail_compose_first_screen(pack: dict) -> None:
 
 
 @st.fragment
-def _render_pi_excel_preview_pane() -> None:
-    """인쇄될 공문 전체를 그린다. PDF는 만들지 않는다."""
-    pack = dict(st.session_state.get("_pi_left_pack") or {})
-    letter_kwargs = dict(pack.get("letter_kwargs") or {})
-    letter_body = str(pack.get("letter_body") or "")
-    items_now = list(pack.get("items_now") or letter_kwargs.get("items") or [])
-    client = str(pack.get("client") or "")
-    title = str(pack.get("title") or "")
-    effective_s = str(pack.get("effective_s") or "")
-    st.markdown(
-        """<style>[class*="st-key-pi_excel_repaint"]{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;}</style>""",
-        unsafe_allow_html=True,
-    )
-    st.button("엑셀갱신", key="pi_excel_repaint")
-    _render_letter_form_preview(
-        client=client,
-        title=title or str(letter_kwargs.get("title") or ""),
-        doc_no=str(letter_kwargs.get("doc_no") or ""),
-        send_date=letter_kwargs.get("send_date") or date.today(),
-        effective_s=effective_s,
-        letter_body=letter_body,
-        items=items_now,
-    )
-
-
-@st.fragment
 def _render_pi_left_panel() -> None:
     """미리보기·메일보내기·요약. 단가표는 부모에 두고 이 칸만 다시 그린다."""
     pack = dict(st.session_state.get("_pi_left_pack") or {})
@@ -5654,6 +5448,12 @@ def _render_pi_left_panel() -> None:
 
     if do_preview:
         _pi_clear_mail_stay_flags()
+        _prepare_letter_preview(
+            letter_kwargs=letter_kwargs,
+            letter_body=letter_body,
+            pdf_name=pdf_name,
+            xlsx_name=xlsx_name,
+        )
         mode = "pdf"
         st.session_state["pi_left_mode"] = "pdf"
 
@@ -5682,7 +5482,81 @@ def _render_pi_left_panel() -> None:
                     st.error(f"첨부 PDF 생성 실패: {st.session_state.get('pi_pdf_error')}")
         _render_pi_left_mail_compose(smtp_cfg=smtp_cfg)
     elif mode in ("pdf", "excel"):
-        _render_pi_excel_preview_pane()
+        pdf_bytes = st.session_state.get("pi_pdf_bytes")
+        xlsx = st.session_state.get("pi_dl_bytes")
+        if not pdf_bytes:
+            try:
+                pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+                st.session_state["pi_pdf_bytes"] = pdf_bytes
+                st.session_state["pi_pdf_name"] = pdf_name
+                st.session_state.pop("pi_pdf_error", None)
+            except Exception as e:
+                st.session_state["pi_pdf_error"] = (
+                    "PDF 생성 라이브러리(fpdf2)가 현재 서버에 없어 PDF를 만들지 못했습니다. "
+                    "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
+                    f"(원인: {e})"
+                )
+                pdf_bytes = None
+        if not xlsx:
+            try:
+                xlsx = _build_letter_bytes(**letter_kwargs)
+                st.session_state["pi_dl_bytes"] = xlsx
+                st.session_state["pi_dl_name"] = xlsx_name
+            except Exception:
+                xlsx = st.session_state.get("pi_dl_bytes")
+        b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
+        with b_big:
+            if pdf_bytes:
+                if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
+                    try:
+                        _open_letter_preview_dialog(
+                            letter_kwargs=letter_kwargs,
+                            letter_body=letter_body,
+                            pdf_name=pdf_name,
+                            xlsx_name=xlsx_name,
+                        )
+                    except Exception as e:
+                        st.error(f"크게 보기 실패: {e}")
+            elif st.session_state.get("pi_pdf_error"):
+                if st.button("설치 가이드 보기", use_container_width=True, key="pi_pdf_help"):
+                    st.info("로컬: python3 -m pip install -r requirements.txt / Cloud: 재배포")
+        with b_dl1:
+            if pdf_bytes:
+                st.download_button(
+                    "📥 PDF",
+                    data=pdf_bytes,
+                    file_name=pdf_name,
+                    mime="application/pdf",
+                    key="pi_single_dl_pdf",
+                    use_container_width=True,
+                )
+        with b_dl2:
+            if xlsx:
+                st.download_button(
+                    "📥 엑셀",
+                    data=xlsx,
+                    file_name=xlsx_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="pi_single_dl_xlsx",
+                    use_container_width=True,
+                )
+        if pdf_bytes:
+            _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
+        else:
+            if st.session_state.get("pi_pdf_error"):
+                st.error(str(st.session_state.get("pi_pdf_error")))
+            st.info("PDF 대신 화면 양식으로 미리봅니다.")
+            _render_letter_form_preview(
+                client=client,
+                title=title,
+                doc_no=str(letter_kwargs.get("doc_no") or ""),
+                send_date=letter_kwargs.get("send_date") or date.today(),
+                effective_s=effective_s,
+                letter_body=letter_body,
+                items=items_now,
+            )
+            if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
+                _pi_letter_preview_dialog()
     else:
         _render_pi_left_summary(
             client=client,
@@ -5693,22 +5567,15 @@ def _render_pi_left_panel() -> None:
             last=last if isinstance(last, dict) else None,
             letter_body=letter_body,
         )
-
-
-@st.fragment
-def _render_pi_letter_body_box(body_key: str) -> None:
-    """공문 본문만 다시 그린다. 단가표·메일 칸은 같이 로딩하지 않는다."""
-    st.markdown("**1. 공문내용**")
-    if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
-        if body_key:
-            st.session_state[body_key] = _default_letter_body_text()
-    st.text_area(
-        "공문 본문",
-        height=300,
-        key=body_key or "pi_letter_body_none",
-        label_visibility="collapsed",
-    )
-    _pi_sync_body_into_pack(body_key)
+        if st.session_state.get("pi_pdf_bytes"):
+            st.download_button(
+                "📥 최근 생성 PDF 다운로드",
+                data=st.session_state["pi_pdf_bytes"],
+                file_name=st.session_state.get("pi_pdf_name") or pdf_name,
+                mime="application/pdf",
+                key="pi_single_dl_pdf_keep",
+                use_container_width=True,
+            )
 
 
 @st.fragment
@@ -5722,6 +5589,9 @@ def _render_pi_right_letter_form() -> None:
     price_df = pack.get("price_df")
     if not isinstance(price_df, pd.DataFrame):
         price_df = pd.DataFrame()
+
+    if st.session_state.pop("pi_body_reset_now", None) and body_key:
+        st.session_state[body_key] = _default_letter_body_text()
 
     st.markdown("##### 공문 입력")
     _render_include_letter_body_fields()
@@ -5755,7 +5625,16 @@ def _render_pi_right_letter_form() -> None:
     with m5:
         st.text_input("문의", value="031-366-0799", key="pi_single_contact")
 
-    _render_pi_letter_body_box(body_key)
+    st.markdown("**1. 공문내용**")
+    if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
+        st.session_state["pi_body_reset_now"] = True
+        _pi_rerun()
+    st.text_area(
+        "공문 본문",
+        height=300,
+        key=body_key or "pi_letter_body_none",
+        label_visibility="collapsed",
+    )
 
     include_price = st.checkbox(
         "2. 단가적용 포함 (선택)",
@@ -5789,13 +5668,6 @@ def _render_pi_right_letter_form() -> None:
             items_key=items_key,
             last=prev.get("last"),
         )
-        if st.session_state.get("pi_left_mode") == "pdf":
-            body_now = str(st.session_state.get(body_key) or "")
-            live_now = st.session_state.get("_pi_live_items") or []
-            sig = _pi_preview_sig(body_now, live_now if isinstance(live_now, list) else [])
-            if st.session_state.get("_pi_excel_sig") != sig:
-                st.session_state["_pi_excel_sig"] = sig
-                _pi_refresh_excel_preview()
 
 
 @st.fragment
