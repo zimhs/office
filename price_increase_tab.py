@@ -4558,6 +4558,55 @@ _PI_LETTER_BIND_JS = r"""
 """
 
 
+def _pi_release_preview_slot_height() -> None:
+    """엑셀 미리보기가 남긴 칸 높이를 지운다. 메일 작성 입력칸이 아래로 밀리지 않게."""
+    st.components.v1.html(
+        """<script>
+        (function(){
+          try {
+            var d = window.parent.document;
+            function release(el) {
+              if (!el) return;
+              el.style.height = '';
+              el.style.minHeight = '';
+              el.removeAttribute('data-pi-a4-host');
+            }
+            var frames = d.querySelectorAll('iframe');
+            for (var i = 0; i < frames.length; i++) {
+              var frame = frames[i];
+              var doc = null;
+              try { doc = frame.contentDocument; } catch (e1) {}
+              if (doc && doc.getElementById('pi-a4')) continue;
+              var host = frame.parentElement;
+              var h = host ? parseFloat(host.style.height || '0') : 0;
+              if (host && (host.getAttribute('data-pi-a4-host') || h > 500)) {
+                release(host);
+                frame.style.height = '';
+              }
+            }
+            var nodes = d.querySelectorAll('[data-pi-a4-host]');
+            for (var j = 0; j < nodes.length; j++) {
+              var el = nodes[j];
+              var idoc = null;
+              var ifr = el.querySelector('iframe');
+              try { idoc = ifr && ifr.contentDocument; } catch (e2) {}
+              if (idoc && idoc.getElementById('pi-a4')) continue;
+              release(el);
+            }
+            var heads = d.querySelectorAll('h5');
+            for (var k = 0; k < heads.length; k++) {
+              if ((heads[k].textContent || '').trim() !== '메일 작성') continue;
+              var box = heads[k].closest('.stElementContainer');
+              var bh = box ? parseFloat(box.style.height || '0') : 0;
+              if (bh > 200) release(box);
+            }
+          } catch (e) {}
+        })();
+        </script>""",
+        height=0,
+    )
+
+
 def _pi_push_letter_body_to_preview() -> None:
     """공문 본문 칸의 글자·띄어쓰기를 엑셀 미리보기에 바로 넣는다."""
     st.components.v1.html(
@@ -4680,7 +4729,11 @@ def _render_pi_live_letter_page(
     if (frame) {{
       frame.style.height = px + 'px';
       frame.setAttribute('height', String(px));
-      if (frame.parentElement) frame.parentElement.style.height = px + 'px';
+      var host = frame.parentElement;
+      if (host) {{
+        host.style.height = px + 'px';
+        host.setAttribute('data-pi-a4-host', '1');
+      }}
     }}
     fillPage();
   }}
@@ -5820,6 +5873,9 @@ def _render_pi_left_panel() -> None:
         _pi_clear_mail_stay_flags()
         mode = "summary"
         st.session_state["pi_left_mode"] = "summary"
+
+    if mode not in ("pdf", "excel"):
+        _pi_release_preview_slot_height()
 
     if mode == "mail":
         if st.session_state.get("pi_mail_draft"):
