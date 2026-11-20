@@ -415,6 +415,29 @@ def test_picked_letter_body_stays_when_client_changes():
     assert fresh == "1.귀사의 무궁한 발전을 기원하며"
 
 
+def test_letter_spacing_fills_the_page_gap():
+    from price_increase_tab import _pi_letter_block_spacing
+
+    line_h, para_gap, table_gap, fits = _pi_letter_block_spacing(
+        n_lines=10,
+        n_gaps=3,
+        table_h=40.0,
+        room=150.0,
+        has_table=True,
+    )
+    assert fits
+    used = 10 * line_h + 3 * para_gap + table_gap + 40.0
+    assert abs(used - 150.0) < 0.2
+    tight = _pi_letter_block_spacing(
+        n_lines=40,
+        n_gaps=8,
+        table_h=40.0,
+        room=80.0,
+        has_table=True,
+    )
+    assert tight[3] is False
+
+
 def test_flow_letter_body_removes_blank_gaps():
     from price_increase_tab import _pi_flow_letter_body
 

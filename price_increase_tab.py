@@ -1390,6 +1390,44 @@ def _pi_flow_letter_body(text: str) -> str:
     return "\n".join(paragraphs)
 
 
+def _pi_letter_block_spacing(
+    *,
+    n_lines: int,
+    n_gaps: int,
+    table_h: float,
+    room: float,
+    has_table: bool,
+) -> tuple[float, float, float, bool]:
+    """한 장에 들어가면 하단 빈칸을 줄간격으로 채운다.
+
+    반환: (줄높이, 문단간격, 표 앞 간격, 한 장에 들어감)
+    """
+    base_line, base_gap, base_before = 5.2, 1.8, 3.0
+    if n_lines <= 0:
+        return base_line, base_gap, base_before, False
+    min_h = n_lines * base_line + n_gaps * base_gap
+    if has_table:
+        min_h += base_before + table_h
+    if min_h > room + 0.4:
+        return base_line, base_gap, base_before, False
+    para_gap = base_gap
+    table_gap = base_before
+    fixed = n_gaps * para_gap + table_h
+    if has_table:
+        fixed += table_gap
+    line_h = (room - fixed) / n_lines
+    if line_h > 13.0:
+        line_h = 13.0
+        remain = room - (n_lines * line_h + fixed)
+        slots = n_gaps + (1 if has_table else 0)
+        if slots > 0 and remain > 0:
+            add = remain / slots
+            para_gap += add
+            if has_table:
+                table_gap += add
+    return max(line_h, base_line), para_gap, table_gap, True
+
+
 def _body_text_to_paras(text: str) -> dict[str, str]:
     """한 칸 본문 → 양식 셀 dict. 기본 양식 제목(C35)은 유지."""
     paras = dict(_DEFAULT_LETTER_PARAS)
@@ -3509,7 +3547,22 @@ def build_letter_pdf(
         "\n".join(str(paras.get(coord) or "") for coord in _BODY_CELL_ORDER)
     )
     paragraphs = [p for p in flowed.splitlines() if p.strip()]
-    line_h = 5.2
+    wrapped = [
+        [ln for ln in _pdf_wrap_lines(pdf, para, usable) if ln.strip()]
+        for para in paragraphs
+    ]
+    wrapped = [lines for lines in wrapped if lines]
+    n_lines = sum(len(lines) for lines in wrapped)
+    n_gaps = max(len(wrapped) - 1, 0)
+    table_h = _price_block_height() if clean else 0.0
+    room = max(0.0, content_max - pdf.get_y() - 2.0)
+    line_h, para_gap, table_gap, fits_one = _pi_letter_block_spacing(
+        n_lines=n_lines,
+        n_gaps=n_gaps,
+        table_h=table_h,
+        room=room,
+        has_table=bool(clean),
+    )
 
     def _continue_page() -> None:
         _draw_page_footer()
@@ -3519,7 +3572,7 @@ def build_letter_pdf(
         pdf.set_text_color(15, 23, 42)
 
     def _draw_fit_line(text: str, *, justify: bool) -> None:
-        if pdf.get_y() + line_h > content_max:
+        if not fits_one and pdf.get_y() + line_h > content_max:
             _continue_page()
         pdf.set_x(left)
         slack = usable - pdf.get_string_width(text)
@@ -3537,16 +3590,15 @@ def build_letter_pdf(
             x += widths[i] + (gap if i < len(words) - 1 else 0)
         pdf.set_y(y + line_h)
 
-    for pi, para in enumerate(paragraphs):
-        lines = [ln for ln in _pdf_wrap_lines(pdf, para, usable) if ln.strip()]
+    for pi, lines in enumerate(wrapped):
         for li, ln in enumerate(lines):
             _draw_fit_line(ln, justify=li < len(lines) - 1)
-        if pi < len(paragraphs) - 1 and pdf.get_y() + 1.6 <= content_max:
-            pdf.ln(1.6)
+        if pi < len(wrapped) - 1 and (fits_one or pdf.get_y() + para_gap <= content_max):
+            pdf.ln(para_gap)
 
     attach_to_back = False
     if clean:
-        pdf.ln(3)
+        pdf.ln(table_gap if fits_one else 3.0)
         need = _price_block_height()
         # 본문이 이미 2페이지로 넘어갔으면 그 장에 표를 두고, 1장에 안 들어가면 후면첨부
         if pdf.page_no() == 1 and pdf.get_y() + need > content_max:
