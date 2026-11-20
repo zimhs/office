@@ -4476,7 +4476,8 @@ def _render_pi_live_letter_page(
     )
     page = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="margin:0;background:#F8FAFC;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;">
-<div style="box-sizing:border-box;background:#fff;border:1px solid #94A3B8;min-height:980px;display:flex;flex-direction:column;padding:18px 24px 16px;color:#111;">
+<div style="zoom:0.65;width:fit-content;">
+<div style="box-sizing:border-box;width:680px;background:#fff;border:1px solid #94A3B8;min-height:720px;display:flex;flex-direction:column;padding:16px 20px 14px;color:#111;">
 {header_html}
 <div style="height:2px;background:#D1D5DB;"></div>
 <div style="text-align:center;font-size:12px;padding:5px 0;">우 18524 경기도 화성시 팔탄면 서해로 1327-17 / 전화 031-366-0799 / FAX 031-366-5633</div>
@@ -4497,6 +4498,7 @@ def _render_pi_live_letter_page(
 </div>
 <div style="height:1px;background:#B4B4B4;margin:8px 0;"></div>
 <div style="text-align:center;font-weight:700;font-size:16px;letter-spacing:0.18em;">(주) 신 일 가 스</div>
+</div>
 </div>
 </div>
 <script>
@@ -4535,7 +4537,7 @@ def _render_pi_live_letter_page(
 }})();
 </script>
 </body></html>"""
-    st.components.v1.html(page, height=920, scrolling=True)
+    st.components.v1.html(page, height=520, scrolling=True)
 
 
 def _render_letter_form_preview(
