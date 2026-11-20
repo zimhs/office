@@ -4369,7 +4369,10 @@ def _render_items_table(
             _bump_editor_widget(editor_key)
     with b3:
         if st.button("표 내용 저장", key=f"{editor_key}_save", type="primary", use_container_width=True):
-            st.session_state[editor_key] = _items_from_editor_df(edited)
+            saved_items = _items_from_editor_df(edited)
+            st.session_state[editor_key] = saved_items
+            st.session_state["_pi_live_items"] = saved_items
+            st.session_state.pop("_pi_excel_sig", None)
             st.success("품목표 저장됨 (거래처별 유지)")
 
     touched = any(
@@ -4522,54 +4525,81 @@ def _render_letter_form_preview(
     footer_src = _pi_data_uri(str(imgs.get("footer") or imgs.get("header") or ""))
     stamp_src = _pi_data_uri(str(imgs.get("stamp") or ""))
     header_html = (
-        f"<img src='{header_src}' alt='' style='display:block;width:280px;height:auto;margin:0 auto 8px;'/>"
+        f'<img src="{header_src}" alt="" style="display:block;width:260px;height:auto;margin:0 auto 8px;">'
         if header_src
         else ""
     )
     footer_logo = (
-        f"<img src='{footer_src}' alt='' style='width:250px;height:auto;'/>"
+        f'<img src="{footer_src}" alt="" style="width:220px;height:auto;">'
         if footer_src
         else ""
     )
     stamp_html = (
-        f"<img src='{stamp_src}' alt='' style='width:72px;height:auto;margin-left:8px;vertical-align:middle;'/>"
+        f'<img src="{stamp_src}" alt="" style="width:68px;height:auto;margin-left:6px;vertical-align:middle;">'
         if stamp_src
         else ""
     )
-    st.markdown(
-        f"""
-<div style="width:100%;overflow:auto;background:#F8FAFC;padding:8px 0 16px;">
-  <div style="width:794px;zoom:0.72;">
-    <div style="width:794px;min-height:1123px;box-sizing:border-box;background:#fff;border:1px solid #94A3B8;display:flex;flex-direction:column;padding:28px 40px 22px;color:#111;">
-      {header_html}
-      <div style="height:3px;background:#D1D5DB;"></div>
-      <div style="text-align:center;font-size:12px;padding:6px 0;">
-        우 18524 경기도 화성시 팔탄면 서해로 1327-17 &nbsp;/&nbsp; 전화 031-366-0799 &nbsp;/&nbsp; FAX 031-366-5633
-      </div>
-      <div style="height:3px;background:#D1D5DB;margin-bottom:14px;"></div>
-      <div style="font-size:15px;line-height:1.7;">
-        <div>문서번호 : {html_lib.escape(doc_no)}</div>
-        <div>발송일자 : {html_lib.escape(send_s)}</div>
-        <div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {html_lib.escape(client)}</div>
-        <div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {html_lib.escape(title)}</div>
-      </div>
-      <div style="height:3px;background:#B0B0B0;margin:12px 0;"></div>
-      <div id="pi-letter-live" style="font-size:14px;line-height:1.55;">{body_html}</div>
-      {price_block}
-      <div style="margin-top:16px;">
-        <div style="display:flex;justify-content:space-between;align-items:flex-end;">
-          <div>{footer_logo}</div>
-          <div style="font-weight:700;font-size:16px;">대표자 : 유 봉 래{stamp_html}</div>
-        </div>
-        <div style="height:1px;background:#B4B4B4;margin:10px 0 8px;"></div>
-        <div style="text-align:center;font-weight:700;font-size:16px;letter-spacing:0.2em;">(주) 신 일 가 스</div>
-      </div>
-    </div>
-  </div>
+    page = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#F8FAFC;">
+<div style="box-sizing:border-box;background:#fff;border:1px solid #94A3B8;min-height:1040px;display:flex;flex-direction:column;padding:22px 28px 18px;color:#111;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;">
+{header_html}
+<div style="height:3px;background:#D1D5DB;"></div>
+<div style="text-align:center;font-size:12px;padding:6px 0;">우 18524 경기도 화성시 팔탄면 서해로 1327-17 / 전화 031-366-0799 / FAX 031-366-5633</div>
+<div style="height:3px;background:#D1D5DB;margin-bottom:12px;"></div>
+<div style="font-size:15px;line-height:1.7;">
+<div>문서번호 : {html_lib.escape(doc_no)}</div>
+<div>발송일자 : {html_lib.escape(send_s)}</div>
+<div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {html_lib.escape(client)}</div>
+<div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {html_lib.escape(title)}</div>
 </div>
-""",
-        unsafe_allow_html=True,
-    )
+<div style="height:3px;background:#B0B0B0;margin:12px 0;"></div>
+<div id="pi-letter-live" style="font-size:14px;line-height:1.55;">{body_html}</div>
+<div id="pi-letter-price">{price_block}</div>
+<div style="margin-top:18px;">
+<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;">
+<div>{footer_logo}</div>
+<div style="font-weight:700;font-size:16px;white-space:nowrap;">대표자 : 유 봉 래{stamp_html}</div>
+</div>
+<div style="height:1px;background:#B4B4B4;margin:10px 0 8px;"></div>
+<div style="text-align:center;font-weight:700;font-size:16px;letter-spacing:0.2em;">(주) 신 일 가 스</div>
+</div>
+</div>
+<script>
+(function(){{
+  var d = window.parent.document;
+  function paint(text){{
+    var box = document.getElementById('pi-letter-live');
+    if (!box) return;
+    box.textContent = '';
+    String(text || '').split(/\\n/).forEach(function(line){{
+      var row = document.createElement('div');
+      row.style.lineHeight = '1.45';
+      row.style.minHeight = '1.45em';
+      row.style.whiteSpace = 'pre-wrap';
+      row.textContent = line.length ? line : '\\u00a0';
+      box.appendChild(row);
+    }});
+  }}
+  d.__piLetterPaint = paint;
+  if (!d.__piLetterLive) {{
+    d.__piLetterLive = 1;
+    d.addEventListener('input', function(ev){{
+      var t = ev.target;
+      if (!t || t.tagName !== 'TEXTAREA') return;
+      if ((t.getAttribute('aria-label') || '') !== '공문 본문') return;
+      if (typeof d.__piLetterPaint === 'function') d.__piLetterPaint(t.value);
+    }}, true);
+  }}
+  var areas = d.querySelectorAll('textarea');
+  for (var i = 0; i < areas.length; i++) {{
+    if ((areas[i].getAttribute('aria-label') || '') === '공문 본문') {{
+      paint(areas[i].value);
+      break;
+    }}
+  }}
+}})();
+</script>
+</body></html>"""
+    st.components.v1.html(page, height=980, scrolling=True)
 
 
 def _collect_letter_kwargs(
@@ -5565,7 +5595,6 @@ def _render_pi_excel_preview_pane() -> None:
         letter_body=letter_body,
         items=items_now,
     )
-    _pi_bind_letter_preview_live()
 
 
 @st.fragment
