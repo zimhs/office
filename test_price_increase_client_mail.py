@@ -416,21 +416,24 @@ def test_picked_letter_body_stays_when_client_changes():
 
 
 def test_letter_spacing_fills_the_page_gap():
-    from price_increase_tab import _pi_letter_block_spacing
+    from price_increase_tab import _PI_LINE_H, _pi_letter_block_spacing
 
-    line_h, para_gap, table_gap, fits = _pi_letter_block_spacing(
+    line_h, section_gap, table_gap, fits = _pi_letter_block_spacing(
         n_lines=10,
-        n_gaps=3,
+        n_section_gaps=3,
+        n_tight_gaps=2,
         table_h=40.0,
         room=150.0,
         has_table=True,
     )
     assert fits
-    used = 10 * line_h + 3 * para_gap + table_gap + 40.0
+    assert abs(line_h - _PI_LINE_H) < 0.01
+    used = 10 * line_h + 2 * 0.6 + 3 * section_gap + table_gap + 40.0
     assert abs(used - 150.0) < 0.2
     tight = _pi_letter_block_spacing(
         n_lines=40,
-        n_gaps=8,
+        n_section_gaps=8,
+        n_tight_gaps=0,
         table_h=40.0,
         room=80.0,
         has_table=True,

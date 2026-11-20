@@ -1390,42 +1390,41 @@ def _pi_flow_letter_body(text: str) -> str:
     return "\n".join(paragraphs)
 
 
+_PI_LINE_H = 5.2
+_PI_TIGHT_GAP = 0.6
+_PI_SECTION_GAP = 2.4
+
+
 def _pi_letter_block_spacing(
     *,
     n_lines: int,
-    n_gaps: int,
+    n_section_gaps: int,
+    n_tight_gaps: int,
     table_h: float,
     room: float,
     has_table: bool,
 ) -> tuple[float, float, float, bool]:
-    """한 장에 들어가면 하단 빈칸을 줄간격으로 채운다.
+    """문단 안 줄간격은 고정. 1·2·3·4와 단가표 사이만 넓혀 하단에 맞춘다.
 
-    반환: (줄높이, 문단간격, 표 앞 간격, 한 장에 들어감)
+    반환: (줄높이, 항목 간격, 표 앞 간격, 한 장에 들어감)
     """
-    base_line, base_gap, base_before = 5.2, 1.8, 3.0
     if n_lines <= 0:
-        return base_line, base_gap, base_before, False
-    min_h = n_lines * base_line + n_gaps * base_gap
+        return _PI_LINE_H, _PI_SECTION_GAP, _PI_SECTION_GAP, False
+    min_h = (
+        n_lines * _PI_LINE_H
+        + n_tight_gaps * _PI_TIGHT_GAP
+        + n_section_gaps * _PI_SECTION_GAP
+    )
     if has_table:
-        min_h += base_before + table_h
+        min_h += _PI_SECTION_GAP + table_h
     if min_h > room + 0.4:
-        return base_line, base_gap, base_before, False
-    para_gap = base_gap
-    table_gap = base_before
-    fixed = n_gaps * para_gap + table_h
-    if has_table:
-        fixed += table_gap
-    line_h = (room - fixed) / n_lines
-    if line_h > 13.0:
-        line_h = 13.0
-        remain = room - (n_lines * line_h + fixed)
-        slots = n_gaps + (1 if has_table else 0)
-        if slots > 0 and remain > 0:
-            add = remain / slots
-            para_gap += add
-            if has_table:
-                table_gap += add
-    return max(line_h, base_line), para_gap, table_gap, True
+        return _PI_LINE_H, _PI_SECTION_GAP, _PI_SECTION_GAP, False
+    extra = room - min_h
+    slots = n_section_gaps + (1 if has_table else 0)
+    add = (extra / slots) if slots else 0.0
+    section_gap = _PI_SECTION_GAP + add
+    table_gap = _PI_SECTION_GAP + add if has_table else _PI_SECTION_GAP
+    return _PI_LINE_H, section_gap, table_gap, True
 
 
 def _body_text_to_paras(text: str) -> dict[str, str]:
@@ -3553,12 +3552,22 @@ def build_letter_pdf(
     ]
     wrapped = [lines for lines in wrapped if lines]
     n_lines = sum(len(lines) for lines in wrapped)
-    n_gaps = max(len(wrapped) - 1, 0)
+
+    def _numbered_block(text: str) -> bool:
+        return bool(re.match(r"^\d+\.", str(text or "").strip()))
+
+    n_section_gaps = sum(
+        1
+        for i in range(1, len(wrapped))
+        if _numbered_block(wrapped[i][0])
+    )
+    n_tight_gaps = max(len(wrapped) - 1 - n_section_gaps, 0)
     table_h = _price_block_height() if clean else 0.0
     room = max(0.0, content_max - pdf.get_y() - 2.0)
     line_h, para_gap, table_gap, fits_one = _pi_letter_block_spacing(
         n_lines=n_lines,
-        n_gaps=n_gaps,
+        n_section_gaps=n_section_gaps,
+        n_tight_gaps=n_tight_gaps,
         table_h=table_h,
         room=room,
         has_table=bool(clean),
@@ -3571,30 +3580,19 @@ def build_letter_pdf(
         pdf.set_font("kr", "", 10)
         pdf.set_text_color(15, 23, 42)
 
-    def _draw_fit_line(text: str, *, justify: bool) -> None:
+    def _draw_fit_line(text: str) -> None:
         if not fits_one and pdf.get_y() + line_h > content_max:
             _continue_page()
         pdf.set_x(left)
-        slack = usable - pdf.get_string_width(text)
-        words = text.split(" ")
-        if not justify or len(words) < 2 or slack <= 0.3 or slack > 6.0:
-            pdf.cell(usable, line_h, text, new_x="LMARGIN", new_y="NEXT")
-            return
-        widths = [pdf.get_string_width(word) for word in words]
-        gap = slack / (len(words) - 1)
-        x = left
-        y = pdf.get_y()
-        for i, word in enumerate(words):
-            pdf.set_xy(x, y)
-            pdf.cell(widths[i], line_h, word)
-            x += widths[i] + (gap if i < len(words) - 1 else 0)
-        pdf.set_y(y + line_h)
+        pdf.cell(usable, line_h, text, new_x="LMARGIN", new_y="NEXT")
 
     for pi, lines in enumerate(wrapped):
-        for li, ln in enumerate(lines):
-            _draw_fit_line(ln, justify=li < len(lines) - 1)
-        if pi < len(wrapped) - 1 and (fits_one or pdf.get_y() + para_gap <= content_max):
-            pdf.ln(para_gap)
+        for ln in lines:
+            _draw_fit_line(ln)
+        if pi < len(wrapped) - 1:
+            gap = para_gap if _numbered_block(wrapped[pi + 1][0]) else _PI_TIGHT_GAP
+            if fits_one or pdf.get_y() + gap <= content_max:
+                pdf.ln(gap)
 
     attach_to_back = False
     if clean:
@@ -4383,7 +4381,7 @@ def _render_letter_form_preview(
         rows_html = "<tr><td colspan='4'>(품목 없음)</td></tr>"
     flowed_body = _pi_flow_letter_body(letter_body)
     body_html = "".join(
-        f"<p style='margin:0 0 0.45em 0;text-align:justify;'>{html_lib.escape(line)}</p>"
+        f"<p style='margin:0 0 0.7em 0;text-align:left;line-height:1.45;'>{html_lib.escape(line)}</p>"
         for line in flowed_body.splitlines()
         if line.strip()
     )
