@@ -313,6 +313,41 @@ def _pi_rerun(*, full: bool = False) -> None:
         st.rerun()
 
 
+def _pi_preview_sig(letter_body: str, items: list) -> tuple:
+    return (
+        str(letter_body or ""),
+        tuple(
+            (
+                str(it.get("품목명") or ""),
+                str(it.get("기존단가") or ""),
+                str(it.get("인상적용단가") or ""),
+                str(it.get("비고") or ""),
+            )
+            for it in items
+            if isinstance(it, dict)
+        ),
+    )
+
+
+def _pi_sync_body_into_pack(body_key: str) -> str:
+    """공문 본문만 왼쪽 미리보기 묶음에 반영한다. 단가표는 다시 읽지 않는다."""
+    body = str(st.session_state.get(body_key) or "")
+    pack = dict(st.session_state.get("_pi_left_pack") or {})
+    if not pack:
+        return body
+    if not st.session_state.get("pi_include_letter_body", True):
+        shown = ""
+    else:
+        shown = body
+    kwargs = dict(pack.get("letter_kwargs") or {})
+    kwargs["letter_text"] = shown
+    kwargs["letter_paras"] = _body_text_to_paras(shown) if shown else {}
+    pack["letter_body"] = shown
+    pack["letter_kwargs"] = kwargs
+    st.session_state["_pi_left_pack"] = pack
+    return shown
+
+
 def _pi_refresh_excel_preview() -> None:
     """엑셀 미리보기가 열려 있을 때만 그 칸을 다시 그린다."""
     import secrets
@@ -3751,6 +3786,10 @@ def _prepare_letter_preview(
     st.session_state["pi_mail_letter_token"] = _mail_letter_sync_token(
         letter_kwargs, attach_letter=True
     )
+    items_now = list(letter_kwargs.get("items") or [])
+    baked = _pi_preview_sig(letter_body, items_now)
+    st.session_state["_pi_pdf_sig"] = baked
+    st.session_state["_pi_excel_sig"] = baked
     st.session_state["pi_preview_meta"] = {
         "client": letter_kwargs.get("client") or "",
         "title": letter_kwargs.get("title") or "",
@@ -3758,7 +3797,7 @@ def _prepare_letter_preview(
         "send_date": letter_kwargs.get("send_date") or date.today(),
         "effective": letter_kwargs.get("effective") or "",
         "letter_body": letter_body,
-        "items": list(letter_kwargs.get("items") or []),
+        "items": items_now,
     }
     st.session_state.pop("pi_preview_force", None)
 
@@ -5407,6 +5446,108 @@ def _ensure_mail_compose_first_screen(pack: dict) -> None:
 
 
 @st.fragment
+def _render_pi_excel_preview_pane() -> None:
+    """엑셀 미리보기 PDF만 다시 그린다. 메일 칸·단가표는 그대로 둔다."""
+    pack = dict(st.session_state.get("_pi_left_pack") or {})
+    letter_kwargs = dict(pack.get("letter_kwargs") or {})
+    letter_body = str(pack.get("letter_body") or "")
+    items_now = list(pack.get("items_now") or letter_kwargs.get("items") or [])
+    client = str(pack.get("client") or "")
+    title = str(pack.get("title") or "")
+    effective_s = str(pack.get("effective_s") or "")
+    pdf_name = str(pack.get("pdf_name") or "공문.pdf")
+    xlsx_name = str(pack.get("xlsx_name") or "공문.xlsx")
+    st.markdown(
+        """<style>[class*="st-key-pi_excel_repaint"]{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;}</style>""",
+        unsafe_allow_html=True,
+    )
+    st.button("엑셀갱신", key="pi_excel_repaint")
+    fresh_sig = _pi_preview_sig(letter_body, items_now)
+    pdf_bytes = st.session_state.get("pi_pdf_bytes")
+    xlsx = st.session_state.get("pi_dl_bytes")
+    if st.session_state.get("_pi_pdf_sig") != fresh_sig:
+        pdf_bytes = None
+    if not pdf_bytes:
+        try:
+            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
+            st.session_state["pi_pdf_bytes"] = pdf_bytes
+            st.session_state["pi_pdf_name"] = pdf_name
+            st.session_state["_pi_pdf_sig"] = fresh_sig
+            st.session_state.pop("pi_pdf_error", None)
+        except Exception as e:
+            st.session_state["pi_pdf_error"] = (
+                "PDF 생성 라이브러리(fpdf2)가 현재 서버에 없어 PDF를 만들지 못했습니다. "
+                "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
+                f"(원인: {e})"
+            )
+            pdf_bytes = None
+    if not xlsx:
+        try:
+            xlsx = _build_letter_bytes(**letter_kwargs)
+            st.session_state["pi_dl_bytes"] = xlsx
+            st.session_state["pi_dl_name"] = xlsx_name
+        except Exception:
+            xlsx = st.session_state.get("pi_dl_bytes")
+    b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
+    with b_big:
+        if pdf_bytes:
+            if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
+                try:
+                    _open_letter_preview_dialog(
+                        letter_kwargs=letter_kwargs,
+                        letter_body=letter_body,
+                        pdf_name=pdf_name,
+                        xlsx_name=xlsx_name,
+                    )
+                except Exception as e:
+                    st.error(f"크게 보기 실패: {e}")
+        elif st.session_state.get("pi_pdf_error"):
+            if st.button("설치 가이드 보기", use_container_width=True, key="pi_pdf_help"):
+                st.info("로컬: python3 -m pip install -r requirements.txt / Cloud: 재배포")
+    with b_dl1:
+        if pdf_bytes:
+            st.download_button(
+                "📥 PDF",
+                data=pdf_bytes,
+                file_name=pdf_name,
+                mime="application/pdf",
+                key="pi_single_dl_pdf",
+                use_container_width=True,
+            )
+    with b_dl2:
+        if xlsx:
+            st.download_button(
+                "📥 엑셀",
+                data=xlsx,
+                file_name=xlsx_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="pi_single_dl_xlsx",
+                use_container_width=True,
+            )
+    if pdf_bytes:
+        _show_pdf_preview(
+            pdf_bytes,
+            height=520,
+            key=f"pi_pdf_preview_left_{hash(pdf_bytes) & 0xffffffff:x}",
+        )
+    else:
+        if st.session_state.get("pi_pdf_error"):
+            st.error(str(st.session_state.get("pi_pdf_error")))
+        st.info("PDF 대신 화면 양식으로 미리봅니다.")
+        _render_letter_form_preview(
+            client=client,
+            title=title,
+            doc_no=str(letter_kwargs.get("doc_no") or ""),
+            send_date=letter_kwargs.get("send_date") or date.today(),
+            effective_s=effective_s,
+            letter_body=letter_body,
+            items=items_now,
+        )
+        if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
+            _pi_letter_preview_dialog()
+
+
+@st.fragment
 def _render_pi_left_panel() -> None:
     """미리보기·메일보내기·요약. 단가표는 부모에 두고 이 칸만 다시 그린다."""
     pack = dict(st.session_state.get("_pi_left_pack") or {})
@@ -5497,107 +5638,7 @@ def _render_pi_left_panel() -> None:
                     st.error(f"첨부 PDF 생성 실패: {st.session_state.get('pi_pdf_error')}")
         _render_pi_left_mail_compose(smtp_cfg=smtp_cfg)
     elif mode in ("pdf", "excel"):
-        st.markdown(
-            """<style>[class*="st-key-pi_excel_repaint"]{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;}</style>""",
-            unsafe_allow_html=True,
-        )
-        st.button("엑셀갱신", key="pi_excel_repaint")
-        fresh_sig = (
-            letter_body,
-            tuple(
-                (
-                    str(it.get("품목명") or ""),
-                    str(it.get("기존단가") or ""),
-                    str(it.get("인상적용단가") or ""),
-                    str(it.get("비고") or ""),
-                )
-                for it in items_now
-                if isinstance(it, dict)
-            ),
-        )
-        pdf_bytes = st.session_state.get("pi_pdf_bytes")
-        xlsx = st.session_state.get("pi_dl_bytes")
-        if st.session_state.get("_pi_pdf_sig") != fresh_sig:
-            pdf_bytes = None
-            xlsx = None
-        if not pdf_bytes:
-            try:
-                pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
-                st.session_state["pi_pdf_bytes"] = pdf_bytes
-                st.session_state["pi_pdf_name"] = pdf_name
-                st.session_state["_pi_pdf_sig"] = fresh_sig
-                st.session_state.pop("pi_pdf_error", None)
-            except Exception as e:
-                st.session_state["pi_pdf_error"] = (
-                    "PDF 생성 라이브러리(fpdf2)가 현재 서버에 없어 PDF를 만들지 못했습니다. "
-                    "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
-                    f"(원인: {e})"
-                )
-                pdf_bytes = None
-        if not xlsx:
-            try:
-                xlsx = _build_letter_bytes(**letter_kwargs)
-                st.session_state["pi_dl_bytes"] = xlsx
-                st.session_state["pi_dl_name"] = xlsx_name
-            except Exception:
-                xlsx = st.session_state.get("pi_dl_bytes")
-        b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
-        with b_big:
-            if pdf_bytes:
-                if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
-                    try:
-                        _open_letter_preview_dialog(
-                            letter_kwargs=letter_kwargs,
-                            letter_body=letter_body,
-                            pdf_name=pdf_name,
-                            xlsx_name=xlsx_name,
-                        )
-                    except Exception as e:
-                        st.error(f"크게 보기 실패: {e}")
-            elif st.session_state.get("pi_pdf_error"):
-                if st.button("설치 가이드 보기", use_container_width=True, key="pi_pdf_help"):
-                    st.info("로컬: python3 -m pip install -r requirements.txt / Cloud: 재배포")
-        with b_dl1:
-            if pdf_bytes:
-                st.download_button(
-                    "📥 PDF",
-                    data=pdf_bytes,
-                    file_name=pdf_name,
-                    mime="application/pdf",
-                    key="pi_single_dl_pdf",
-                    use_container_width=True,
-                )
-        with b_dl2:
-            if xlsx:
-                st.download_button(
-                    "📥 엑셀",
-                    data=xlsx,
-                    file_name=xlsx_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="pi_single_dl_xlsx",
-                    use_container_width=True,
-                )
-        if pdf_bytes:
-            _show_pdf_preview(
-                pdf_bytes,
-                height=520,
-                key=f"pi_pdf_preview_left_{hash(pdf_bytes) & 0xffffffff:x}",
-            )
-        else:
-            if st.session_state.get("pi_pdf_error"):
-                st.error(str(st.session_state.get("pi_pdf_error")))
-            st.info("PDF 대신 화면 양식으로 미리봅니다.")
-            _render_letter_form_preview(
-                client=client,
-                title=title,
-                doc_no=str(letter_kwargs.get("doc_no") or ""),
-                send_date=letter_kwargs.get("send_date") or date.today(),
-                effective_s=effective_s,
-                letter_body=letter_body,
-                items=items_now,
-            )
-            if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
-                _pi_letter_preview_dialog()
+        _render_pi_excel_preview_pane()
     else:
         _render_pi_left_summary(
             client=client,
@@ -5620,6 +5661,30 @@ def _render_pi_left_panel() -> None:
 
 
 @st.fragment
+def _render_pi_letter_body_box(body_key: str) -> None:
+    """공문 본문만 다시 그린다. 단가표·메일 칸은 같이 로딩하지 않는다."""
+    st.markdown("**1. 공문내용**")
+    if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
+        if body_key:
+            st.session_state[body_key] = _default_letter_body_text()
+    st.text_area(
+        "공문 본문",
+        height=300,
+        key=body_key or "pi_letter_body_none",
+        label_visibility="collapsed",
+    )
+    shown = _pi_sync_body_into_pack(body_key)
+    if st.session_state.get("pi_left_mode") != "pdf":
+        return
+    live_now = st.session_state.get("_pi_live_items") or []
+    sig = _pi_preview_sig(shown, live_now if isinstance(live_now, list) else [])
+    if st.session_state.get("_pi_excel_sig") == sig:
+        return
+    st.session_state["_pi_excel_sig"] = sig
+    _pi_refresh_excel_preview()
+
+
+@st.fragment
 def _render_pi_right_letter_form() -> None:
     """공문 입력·단가표만 다시 그린다. 왼쪽 메일 칸은 건드리지 않는다."""
     pack = dict(st.session_state.get("_pi_right_pack") or {})
@@ -5630,9 +5695,6 @@ def _render_pi_right_letter_form() -> None:
     price_df = pack.get("price_df")
     if not isinstance(price_df, pd.DataFrame):
         price_df = pd.DataFrame()
-
-    if st.session_state.pop("pi_body_reset_now", None) and body_key:
-        st.session_state[body_key] = _default_letter_body_text()
 
     st.markdown("##### 공문 입력")
     _render_include_letter_body_fields()
@@ -5666,16 +5728,7 @@ def _render_pi_right_letter_form() -> None:
     with m5:
         st.text_input("문의", value="031-366-0799", key="pi_single_contact")
 
-    st.markdown("**1. 공문내용**")
-    if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
-        st.session_state["pi_body_reset_now"] = True
-        _pi_rerun()
-    st.text_area(
-        "공문 본문",
-        height=300,
-        key=body_key or "pi_letter_body_none",
-        label_visibility="collapsed",
-    )
+    _render_pi_letter_body_box(body_key)
 
     include_price = st.checkbox(
         "2. 단가적용 포함 (선택)",
@@ -5712,19 +5765,7 @@ def _render_pi_right_letter_form() -> None:
         if st.session_state.get("pi_left_mode") == "pdf":
             body_now = str(st.session_state.get(body_key) or "")
             live_now = st.session_state.get("_pi_live_items") or []
-            sig = (
-                body_now,
-                tuple(
-                    (
-                        str(it.get("품목명") or ""),
-                        str(it.get("기존단가") or ""),
-                        str(it.get("인상적용단가") or ""),
-                        str(it.get("비고") or ""),
-                    )
-                    for it in live_now
-                    if isinstance(it, dict)
-                ),
-            )
+            sig = _pi_preview_sig(body_now, live_now if isinstance(live_now, list) else [])
             if st.session_state.get("_pi_excel_sig") != sig:
                 st.session_state["_pi_excel_sig"] = sig
                 _pi_refresh_excel_preview()
