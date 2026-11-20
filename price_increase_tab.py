@@ -348,6 +348,53 @@ def _pi_sync_body_into_pack(body_key: str) -> str:
     return shown
 
 
+def _pi_bind_letter_preview_live() -> None:
+    """업무일지처럼 공문 본문을 서버 재실행 없이 엑셀 미리보기에 바로 그린다."""
+    import secrets
+
+    nonce = secrets.token_hex(4)
+    st.components.v1.html(
+        f"""<div data-n="{nonce}"></div><script>
+        (function(){{
+          var d = window.parent.document;
+          function paint(text){{
+            var box = d.getElementById('pi-letter-live');
+            if (!box) return;
+            box.textContent = '';
+            String(text || '').split(/\\n/).forEach(function(line){{
+              var row = d.createElement('div');
+              row.style.lineHeight = '1.45';
+              row.style.minHeight = '1.45em';
+              row.style.whiteSpace = 'pre-wrap';
+              row.textContent = line.length ? line : '\\u00a0';
+              box.appendChild(row);
+            }});
+          }}
+          function fromArea(){{
+            var areas = d.querySelectorAll('textarea');
+            for (var i = 0; i < areas.length; i++) {{
+              if ((areas[i].getAttribute('aria-label') || '') === '공문 본문') {{
+                paint(areas[i].value);
+                return;
+              }}
+            }}
+          }}
+          if (!d.__piLetterLive) {{
+            d.__piLetterLive = 1;
+            d.addEventListener('input', function(ev){{
+              var t = ev.target;
+              if (!t || t.tagName !== 'TEXTAREA') return;
+              if ((t.getAttribute('aria-label') || '') !== '공문 본문') return;
+              paint(t.value);
+            }}, true);
+          }}
+          fromArea();
+        }})();
+        </script>""",
+        height=0,
+    )
+
+
 def _pi_refresh_excel_preview() -> None:
     """엑셀 미리보기가 열려 있을 때만 그 칸을 다시 그린다."""
     import secrets
@@ -4405,6 +4452,24 @@ def _render_pi_left_summary(
         st.text(letter_body or "(본문 없음)")
 
 
+def _pi_data_uri(path: str) -> str:
+    """인쇄 미리보기 로고. 파일이 없으면 빈 문자열."""
+    import base64
+
+    try:
+        if not path or not os.path.isfile(path):
+            return ""
+        ext = os.path.splitext(path)[1].lower()
+        mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+        with open(path, "rb") as f:
+            raw = f.read()
+        if not raw or len(raw) > 1_500_000:
+            return ""
+        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+    except Exception:
+        return ""
+
+
 def _render_letter_form_preview(
     *,
     client: str,
@@ -4415,19 +4480,19 @@ def _render_letter_form_preview(
     letter_body: str,
     items: list[dict],
 ) -> None:
-    """엑셀 양식 적용 결과를 왼쪽 칸에 바로 보여 줌."""
+    """인쇄될 공문 한 장을 왼쪽 칸에 통째로 보여 줌."""
     rows_html = ""
     for it in items:
-        name = str(it.get("품목명") or "")
+        name = html_lib.escape(str(it.get("품목명") or ""))
         old = float(it.get("기존단가") or 0)
         new = float(it.get("인상적용단가") or 0)
-        note = str(it.get("비고") or "")
+        note = html_lib.escape(str(it.get("비고") or ""))
         rows_html += (
-            f"<tr><td>{name}</td><td style='text-align:right'>{old:,.0f}</td>"
-            f"<td style='text-align:right'>{new:,.0f}</td><td>{note}</td></tr>"
+            f"<tr><td style='padding:4px 6px;border:1px solid #94A3B8;'>{name}</td>"
+            f"<td style='padding:4px 6px;border:1px solid #94A3B8;text-align:center'>{old:,.0f}</td>"
+            f"<td style='padding:4px 6px;border:1px solid #94A3B8;text-align:center'>{new:,.0f}</td>"
+            f"<td style='padding:4px 6px;border:1px solid #94A3B8;'>{note}</td></tr>"
         )
-    if not rows_html:
-        rows_html = "<tr><td colspan='4'>(품목 없음)</td></tr>"
     body_html = "".join(
         "<div style='min-height:1.45em;line-height:1.45;'>&nbsp;</div>"
         if not line.strip()
@@ -4438,8 +4503,8 @@ def _render_letter_form_preview(
     price_block = ""
     if any(str(it.get("품목명") or "").strip() for it in items):
         price_block = f"""
-  <div style="margin-top:auto;padding-top:12px;font-weight:700;text-align:center;">단가 조정 내용</div>
-  <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;">
+  <div style="margin-top:auto;padding-top:18px;font-weight:700;text-align:center;font-size:15px;">단가 조정 내용</div>
+  <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px;">
     <thead>
       <tr style="background:#0F766E;color:#fff;">
         <th style="padding:6px;border:1px solid #0F766E;">제품명</th>
@@ -4450,26 +4515,57 @@ def _render_letter_form_preview(
     </thead>
     <tbody>{rows_html}</tbody>
   </table>
-  <div style="margin-top:10px;font-size:13px;">• 시행 일자 : {_format_korean_effective(effective_s)}</div>
+  <div style="margin-top:10px;font-size:14px;">• 시행 일자 : {html_lib.escape(_format_korean_effective(effective_s))}</div>
 """
+    imgs = _extract_template_images(ensure_default_template())
+    header_src = _pi_data_uri(str(imgs.get("header") or ""))
+    footer_src = _pi_data_uri(str(imgs.get("footer") or imgs.get("header") or ""))
+    stamp_src = _pi_data_uri(str(imgs.get("stamp") or ""))
+    header_html = (
+        f"<img src='{header_src}' alt='' style='display:block;width:280px;height:auto;margin:0 auto 8px;'/>"
+        if header_src
+        else ""
+    )
+    footer_logo = (
+        f"<img src='{footer_src}' alt='' style='width:250px;height:auto;'/>"
+        if footer_src
+        else ""
+    )
+    stamp_html = (
+        f"<img src='{stamp_src}' alt='' style='width:72px;height:auto;margin-left:8px;vertical-align:middle;'/>"
+        if stamp_src
+        else ""
+    )
     st.markdown(
         f"""
-<div style="border:1px solid #CBD5E1;border-radius:10px;padding:14px 16px;background:#fff;min-height:560px;max-height:720px;overflow:auto;display:flex;flex-direction:column;">
-  <div style="text-align:center;font-weight:800;font-size:16px;color:#0F766E;margin-bottom:8px;">공문 미리보기</div>
-  <div style="height:2px;background:#D1D5DB;margin:6px 0;"></div>
-  <div style="text-align:center;font-size:11px;color:#475569;padding:4px 0;">
-    우 18524 경기도 화성시 팔탄면 서해로 1327-17 &nbsp;/&nbsp; 전화 031-366-0799 &nbsp;/&nbsp; FAX 031-366-5633
+<div style="width:100%;overflow:auto;background:#F8FAFC;padding:8px 0 16px;">
+  <div style="width:794px;zoom:0.72;">
+    <div style="width:794px;min-height:1123px;box-sizing:border-box;background:#fff;border:1px solid #94A3B8;display:flex;flex-direction:column;padding:28px 40px 22px;color:#111;">
+      {header_html}
+      <div style="height:3px;background:#D1D5DB;"></div>
+      <div style="text-align:center;font-size:12px;padding:6px 0;">
+        우 18524 경기도 화성시 팔탄면 서해로 1327-17 &nbsp;/&nbsp; 전화 031-366-0799 &nbsp;/&nbsp; FAX 031-366-5633
+      </div>
+      <div style="height:3px;background:#D1D5DB;margin-bottom:14px;"></div>
+      <div style="font-size:15px;line-height:1.7;">
+        <div>문서번호 : {html_lib.escape(doc_no)}</div>
+        <div>발송일자 : {html_lib.escape(send_s)}</div>
+        <div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {html_lib.escape(client)}</div>
+        <div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {html_lib.escape(title)}</div>
+      </div>
+      <div style="height:3px;background:#B0B0B0;margin:12px 0;"></div>
+      <div id="pi-letter-live" style="font-size:14px;line-height:1.55;">{body_html}</div>
+      {price_block}
+      <div style="margin-top:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+          <div>{footer_logo}</div>
+          <div style="font-weight:700;font-size:16px;">대표자 : 유 봉 래{stamp_html}</div>
+        </div>
+        <div style="height:1px;background:#B4B4B4;margin:10px 0 8px;"></div>
+        <div style="text-align:center;font-weight:700;font-size:16px;letter-spacing:0.2em;">(주) 신 일 가 스</div>
+      </div>
+    </div>
   </div>
-  <div style="height:2px;background:#D1D5DB;margin:6px 0 10px;"></div>
-  <div style="font-size:14px;line-height:1.7;color:#0F172A;">
-    <div>문서번호 : {doc_no}</div>
-    <div>발송일자 : {send_s}</div>
-    <div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {client}</div>
-    <div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {title}</div>
-  </div>
-  <div style="height:2px;background:#C4C4C4;margin:12px 0;"></div>
-  <div id="pi-letter-live" style="font-size:13px;line-height:1.55;color:#1E293B;white-space:pre-wrap;">{body_html}</div>
-  {price_block}
 </div>
 """,
         unsafe_allow_html=True,
@@ -5447,7 +5543,7 @@ def _ensure_mail_compose_first_screen(pack: dict) -> None:
 
 @st.fragment
 def _render_pi_excel_preview_pane() -> None:
-    """엑셀 미리보기 PDF만 다시 그린다. 메일 칸·단가표는 그대로 둔다."""
+    """인쇄될 공문 전체를 그린다. PDF는 만들지 않는다."""
     pack = dict(st.session_state.get("_pi_left_pack") or {})
     letter_kwargs = dict(pack.get("letter_kwargs") or {})
     letter_body = str(pack.get("letter_body") or "")
@@ -5455,96 +5551,21 @@ def _render_pi_excel_preview_pane() -> None:
     client = str(pack.get("client") or "")
     title = str(pack.get("title") or "")
     effective_s = str(pack.get("effective_s") or "")
-    pdf_name = str(pack.get("pdf_name") or "공문.pdf")
-    xlsx_name = str(pack.get("xlsx_name") or "공문.xlsx")
     st.markdown(
         """<style>[class*="st-key-pi_excel_repaint"]{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;}</style>""",
         unsafe_allow_html=True,
     )
     st.button("엑셀갱신", key="pi_excel_repaint")
-    fresh_sig = _pi_preview_sig(letter_body, items_now)
-    pdf_bytes = st.session_state.get("pi_pdf_bytes")
-    xlsx = st.session_state.get("pi_dl_bytes")
-    if st.session_state.get("_pi_pdf_sig") != fresh_sig:
-        pdf_bytes = None
-    if not pdf_bytes:
-        try:
-            pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
-            st.session_state["pi_pdf_bytes"] = pdf_bytes
-            st.session_state["pi_pdf_name"] = pdf_name
-            st.session_state["_pi_pdf_sig"] = fresh_sig
-            st.session_state.pop("pi_pdf_error", None)
-        except Exception as e:
-            st.session_state["pi_pdf_error"] = (
-                "PDF 생성 라이브러리(fpdf2)가 현재 서버에 없어 PDF를 만들지 못했습니다. "
-                "requirements 반영 후 재배포하거나, 로컬에서 `pip install -r requirements.txt`를 실행하세요. "
-                f"(원인: {e})"
-            )
-            pdf_bytes = None
-    if not xlsx:
-        try:
-            xlsx = _build_letter_bytes(**letter_kwargs)
-            st.session_state["pi_dl_bytes"] = xlsx
-            st.session_state["pi_dl_name"] = xlsx_name
-        except Exception:
-            xlsx = st.session_state.get("pi_dl_bytes")
-    b_big, b_dl1, b_dl2 = st.columns([1, 1, 1])
-    with b_big:
-        if pdf_bytes:
-            if st.button("크게 보기", use_container_width=True, key="pi_left_big"):
-                try:
-                    _open_letter_preview_dialog(
-                        letter_kwargs=letter_kwargs,
-                        letter_body=letter_body,
-                        pdf_name=pdf_name,
-                        xlsx_name=xlsx_name,
-                    )
-                except Exception as e:
-                    st.error(f"크게 보기 실패: {e}")
-        elif st.session_state.get("pi_pdf_error"):
-            if st.button("설치 가이드 보기", use_container_width=True, key="pi_pdf_help"):
-                st.info("로컬: python3 -m pip install -r requirements.txt / Cloud: 재배포")
-    with b_dl1:
-        if pdf_bytes:
-            st.download_button(
-                "📥 PDF",
-                data=pdf_bytes,
-                file_name=pdf_name,
-                mime="application/pdf",
-                key="pi_single_dl_pdf",
-                use_container_width=True,
-            )
-    with b_dl2:
-        if xlsx:
-            st.download_button(
-                "📥 엑셀",
-                data=xlsx,
-                file_name=xlsx_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="pi_single_dl_xlsx",
-                use_container_width=True,
-            )
-    if pdf_bytes:
-        _show_pdf_preview(
-            pdf_bytes,
-            height=520,
-            key=f"pi_pdf_preview_left_{hash(pdf_bytes) & 0xffffffff:x}",
-        )
-    else:
-        if st.session_state.get("pi_pdf_error"):
-            st.error(str(st.session_state.get("pi_pdf_error")))
-        st.info("PDF 대신 화면 양식으로 미리봅니다.")
-        _render_letter_form_preview(
-            client=client,
-            title=title,
-            doc_no=str(letter_kwargs.get("doc_no") or ""),
-            send_date=letter_kwargs.get("send_date") or date.today(),
-            effective_s=effective_s,
-            letter_body=letter_body,
-            items=items_now,
-        )
-        if st.button("보조 양식 크게 보기", use_container_width=True, key="pi_left_big_fallback"):
-            _pi_letter_preview_dialog()
+    _render_letter_form_preview(
+        client=client,
+        title=title or str(letter_kwargs.get("title") or ""),
+        doc_no=str(letter_kwargs.get("doc_no") or ""),
+        send_date=letter_kwargs.get("send_date") or date.today(),
+        effective_s=effective_s,
+        letter_body=letter_body,
+        items=items_now,
+    )
+    _pi_bind_letter_preview_live()
 
 
 @st.fragment
@@ -5604,12 +5625,6 @@ def _render_pi_left_panel() -> None:
 
     if do_preview:
         _pi_clear_mail_stay_flags()
-        _prepare_letter_preview(
-            letter_kwargs=letter_kwargs,
-            letter_body=letter_body,
-            pdf_name=pdf_name,
-            xlsx_name=xlsx_name,
-        )
         mode = "pdf"
         st.session_state["pi_left_mode"] = "pdf"
 
@@ -5649,15 +5664,6 @@ def _render_pi_left_panel() -> None:
             last=last if isinstance(last, dict) else None,
             letter_body=letter_body,
         )
-        if st.session_state.get("pi_pdf_bytes"):
-            st.download_button(
-                "📥 최근 생성 PDF 다운로드",
-                data=st.session_state["pi_pdf_bytes"],
-                file_name=st.session_state.get("pi_pdf_name") or pdf_name,
-                mime="application/pdf",
-                key="pi_single_dl_pdf_keep",
-                use_container_width=True,
-            )
 
 
 @st.fragment
@@ -5673,15 +5679,7 @@ def _render_pi_letter_body_box(body_key: str) -> None:
         key=body_key or "pi_letter_body_none",
         label_visibility="collapsed",
     )
-    shown = _pi_sync_body_into_pack(body_key)
-    if st.session_state.get("pi_left_mode") != "pdf":
-        return
-    live_now = st.session_state.get("_pi_live_items") or []
-    sig = _pi_preview_sig(shown, live_now if isinstance(live_now, list) else [])
-    if st.session_state.get("_pi_excel_sig") == sig:
-        return
-    st.session_state["_pi_excel_sig"] = sig
-    _pi_refresh_excel_preview()
+    _pi_sync_body_into_pack(body_key)
 
 
 @st.fragment
