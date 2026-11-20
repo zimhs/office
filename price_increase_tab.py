@@ -4490,8 +4490,8 @@ def _render_pi_live_letter_page(
 </div>
 <div style="height:2px;background:#B0B0B0;margin:10px 0;"></div>
 <div id="pi-letter-live" style="font-size:14px;">{body_html}</div>
-<div id="pi-letter-price" style="margin-top:8px;">{price_block}</div>
-<div style="margin-top:14px;">
+<div id="pi-letter-price">{price_block}</div>
+<div id="pi-letter-foot" style="margin-top:auto;">
 <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;">
 <div>{footer_logo}</div>
 <div style="font-weight:700;font-size:16px;white-space:nowrap;">대표자 : 유 봉 래{stamp_html}</div>
@@ -4514,10 +4514,12 @@ def _render_pi_live_letter_page(
       requestAnimationFrame(fitA4);
       return;
     }}
-    var w = Math.max(220, hostW - pad * 2);
+    var w = Math.max(220, (hostW - pad * 2) * 0.9);
     var h = w * (297 / 210);
     sheet.style.width = w + 'px';
     sheet.style.height = h + 'px';
+    sheet.style.marginLeft = 'auto';
+    sheet.style.marginRight = 'auto';
     wrap.style.padding = '2cm';
     wrap.style.width = '100%';
     var px = Math.ceil(h + pad * 2);
@@ -4526,6 +4528,36 @@ def _render_pi_live_letter_page(
       frame.setAttribute('height', String(px));
       if (frame.parentElement) frame.parentElement.style.height = px + 'px';
     }}
+    fillPage();
+  }}
+  function fillPage(){{
+    var sheet = document.getElementById('pi-a4');
+    var live = document.getElementById('pi-letter-live');
+    var price = document.getElementById('pi-letter-price');
+    var foot = document.getElementById('pi-letter-foot');
+    if (!sheet || !live || !foot) return;
+    var rows = live.children;
+    for (var i = 0; i < rows.length; i++) rows[i].style.marginTop = '0px';
+    if (price) price.style.marginTop = '0px';
+    foot.style.marginTop = 'auto';
+    var anchor = (price && price.offsetHeight) ? price : live;
+    var gap = foot.getBoundingClientRect().top - anchor.getBoundingClientRect().bottom;
+    if (gap < 8) {{
+      foot.style.marginTop = '10px';
+      return;
+    }}
+    var sections = [];
+    for (var j = 1; j < rows.length; j++) {{
+      var t = (rows[j].textContent || '').replace(/\\u00a0/g, ' ').trim();
+      if (/^\\d+\\./.test(t)) sections.push(rows[j]);
+    }}
+    var hasPrice = !!(price && (price.textContent || '').trim());
+    var slots = sections.length + (hasPrice ? 1 : 0);
+    foot.style.marginTop = '10px';
+    if (!slots) return;
+    var each = gap / slots;
+    for (var k = 0; k < sections.length; k++) sections[k].style.marginTop = each + 'px';
+    if (hasPrice) price.style.marginTop = each + 'px';
   }}
   fitA4();
   window.addEventListener('resize', fitA4);
@@ -4542,6 +4574,7 @@ def _render_pi_live_letter_page(
       row.textContent = line.length ? line : '\\u00a0';
       box.appendChild(row);
     }});
+    fillPage();
   }}
   d.__piLetterPaint = paint;
   if (!d.__piLetterLive) {{
