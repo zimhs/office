@@ -42,6 +42,7 @@ PI_SMTP_LOCAL = os.path.join(PI_DIR, "smtp_local.toml")
 PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
+PI_HOLD_MAIL = os.path.join(PI_DRAFTS, "hold_mail.json")
 PI_UI_BUILD = "2026-09-14 · 단가표안정"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 PI_MAIL_CARD = os.path.join(PI_FONTS_DIR, "mail_card.png")
@@ -2377,6 +2378,91 @@ def filter_sent_log_by_client(log_df: Optional[pd.DataFrame], query: str) -> pd.
     return log_df.loc[mask].reset_index(drop=True)
 
 
+def _pi_json_ready(value: Any) -> Any:
+    """임시저장 파일에 넣을 수 있는 값으로 바꾼다."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _pi_json_ready(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_pi_json_ready(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _pi_json_ready(item())
+        except Exception:
+            pass
+    return str(value)
+
+
+def _pi_restore_letter_kwargs(raw: Any) -> dict:
+    """임시저장에 넣어 둔 공문 인자를 발송용으로 되돌린다."""
+    if not isinstance(raw, dict):
+        return {}
+    out = dict(raw)
+    send_date = out.get("send_date")
+    if isinstance(send_date, str) and send_date.strip():
+        try:
+            out["send_date"] = date.fromisoformat(send_date.strip()[:10])
+        except ValueError:
+            out.pop("send_date", None)
+    return out
+
+
+def load_hold_mail(path: str | None = None) -> list[dict]:
+    """임시저장 메일. 최신 저장이 앞에 온다."""
+    target = path or PI_HOLD_MAIL
+    if not os.path.isfile(target):
+        return []
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    rows = [row for row in data if isinstance(row, dict) and str(row.get("id") or "").strip()]
+    rows.sort(key=lambda row: str(row.get("ts") or ""), reverse=True)
+    return rows
+
+
+def save_hold_mail(rows: list[dict], path: str | None = None) -> None:
+    """임시저장 목록을 덮어쓴다."""
+    target = path or PI_HOLD_MAIL
+    _ensure_dirs()
+    folder = os.path.dirname(target)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    clean = [_pi_json_ready(row) for row in rows if isinstance(row, dict)]
+    with open(target, "w", encoding="utf-8") as f:
+        json.dump(clean, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def append_hold_mail(row: dict, path: str | None = None) -> dict:
+    """작성 중인 메일을 임시저장 목록 맨 앞에 넣는다."""
+    saved = dict(row)
+    saved["id"] = str(saved.get("id") or datetime.now().strftime("%Y%m%d%H%M%S%f"))
+    saved["ts"] = str(saved.get("ts") or datetime.now().isoformat(timespec="seconds"))
+    saved["send"] = bool(saved.get("send", True))
+    rows = [saved] + [one for one in load_hold_mail(path) if str(one.get("id")) != saved["id"]]
+    save_hold_mail(rows[:200], path)
+    return saved
+
+
+def hold_mail_label(row: dict) -> str:
+    """임시저장 목록에서 제목과 수신자로 구분한다."""
+    subject = str(row.get("subject") or "").strip() or "(제목 없음)"
+    to_addr = str(row.get("to") or "").strip() or "(수신 없음)"
+    when = str(row.get("ts") or "")[:16].replace("T", " ")
+    label = f"{subject} · {to_addr}"
+    if when:
+        label = f"{label} · {when}"
+    return label
+
+
 def _sent_log_body_text(value) -> str:
     if value is None:
         return ""
@@ -2468,6 +2554,145 @@ def _render_pi_sent_history() -> None:
         disabled=True,
         key=f"pi_hist_body_{rec.get('ts')}",
     )
+
+
+def _hold_mail_table(rows: list[dict]) -> pd.DataFrame:
+    """발송 선택과 제목·수신자가 한 줄에 보이게 한다."""
+    data = []
+    for row in rows:
+        data.append(
+            {
+                "id": str(row.get("id") or ""),
+                "발송": bool(row.get("send", True)),
+                "메일 제목": str(row.get("subject") or "(제목 없음)"),
+                "수신자": str(row.get("to") or "(수신 없음)"),
+                "저장시각": str(row.get("ts") or "")[:16].replace("T", " "),
+            }
+        )
+    return pd.DataFrame(data)
+
+
+def _render_pi_hold_mail(smtp_cfg: dict) -> None:
+    """임시저장 목록. 제목·수신자로 구분하고, 고른 메일만 발송한다."""
+    rows = load_hold_mail()
+    st.caption("메일 제목과 수신자로 구분합니다. 발송을 끄면 선택 발송에서 빠집니다.")
+    if not rows:
+        st.info("임시저장된 메일이 없습니다. 개별 발송에서 임시저장을 누르세요.")
+        return
+    table = _hold_mail_table(rows).set_index("id")
+    edited = st.data_editor(
+        table,
+        column_config={
+            "발송": st.column_config.CheckboxColumn("발송", default=True, help="켜면 선택 발송에 포함"),
+            "메일 제목": st.column_config.TextColumn("메일 제목", disabled=True),
+            "수신자": st.column_config.TextColumn("수신자", disabled=True),
+            "저장시각": st.column_config.TextColumn("저장시각", disabled=True),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=f"pi_hold_editor_v{int(st.session_state.get('pi_hold_rev') or 0)}",
+    )
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    labels: dict[str, str] = {}
+    for row in rows:
+        label = hold_mail_label(row)
+        if label in labels:
+            label = f"{label} · {str(row.get('id') or '')[-4:]}"
+        labels[label] = str(row.get("id") or "")
+    opened = st.selectbox(
+        "메일 열기",
+        [""] + list(labels),
+        format_func=lambda name: "메일을 선택하면 내용이 열립니다" if not name else name,
+        key=f"pi_hold_open_v{int(st.session_state.get('pi_hold_rev') or 0)}",
+    )
+    opened_id = labels.get(str(opened or ""))
+    if opened_id and opened_id in by_id:
+        one = by_id[opened_id]
+        st.markdown(f"**제목** {one.get('subject') or '(제목 없음)'}")
+        st.markdown(f"**수신** {one.get('to') or '(수신 없음)'}")
+        st.markdown(f"**참조** {one.get('cc') or '—'}")
+        st.text_area(
+            "메일 내용",
+            value=str(one.get("body") or ""),
+            height=260,
+            disabled=True,
+            key=f"pi_hold_body_{opened_id}",
+        )
+    send_col, drop_col = st.columns(2)
+    with send_col:
+        do_send = st.button("선택 발송", type="primary", use_container_width=True, key="pi_hold_send")
+    with drop_col:
+        do_drop = st.button("연 메일 삭제", use_container_width=True, key="pi_hold_drop")
+    chosen_ids = [
+        str(hold_id)
+        for hold_id, row in edited.iterrows()
+        if bool(row.get("발송"))
+    ]
+    if do_drop:
+        if not opened_id:
+            st.warning("삭제할 메일을 먼저 여세요.")
+        else:
+            remain = [row for row in rows if str(row.get("id") or "") != opened_id]
+            save_hold_mail(remain)
+            st.session_state["pi_hold_rev"] = int(st.session_state.get("pi_hold_rev") or 0) + 1
+            st.success("연 메일을 임시저장에서 삭제했습니다.")
+            _pi_rerun()
+    if not do_send:
+        return
+    if not chosen_ids:
+        st.warning("발송할 메일을 선택하세요.")
+        return
+    if not smtp_cfg.get("ready"):
+        st.error("SMTP가 연결되지 않아 발송할 수 없습니다.")
+        return
+    sent_ids: set[str] = set()
+    for hold_id in chosen_ids:
+        one = by_id.get(hold_id)
+        if not one:
+            continue
+        to_addr = str(one.get("to") or "").strip()
+        subject = str(one.get("subject") or "").strip()
+        if not to_addr or not subject or subject == "(제목 없음)":
+            st.error(f"수신자 또는 제목이 없어 보내지 않았습니다. {hold_mail_label(one)}")
+            continue
+        attach_letter = bool(one.get("attach_letter"))
+        pdf_bytes = None
+        pdf_name = str(one.get("pdf_name") or "공문.pdf")
+        try:
+            if attach_letter:
+                with st.spinner("공문 PDF 준비 중…"):
+                    pdf_bytes = _build_letter_pdf_bytes(**_pi_restore_letter_kwargs(one.get("letter_kwargs")))
+            with st.spinner("메일 발송 중…"):
+                ok, msg = send_mail_smtp(
+                    to_addr=to_addr,
+                    subject=subject,
+                    body=str(one.get("body") or ""),
+                    attachment_bytes=pdf_bytes,
+                    attachment_name=pdf_name if pdf_bytes else "",
+                    cc=cc_for_plain_mail(str(one.get("cc") or ""), attach_letter=attach_letter),
+                )
+        except Exception as e:
+            ok, msg = False, str(e)
+        append_sent_log(
+            client=str(one.get("client") or ""),
+            email=to_addr,
+            subject=subject,
+            ok=ok,
+            mode="hold",
+            staff=str(one.get("staff") or ""),
+            items=0,
+            msg=msg,
+            body=str(one.get("body") or ""),
+        )
+        if ok:
+            sent_ids.add(hold_id)
+            st.success(f"발송됨 · {hold_mail_label(one)}")
+        else:
+            st.error(f"발송 실패 · {hold_mail_label(one)} · {msg}")
+    if sent_ids:
+        save_hold_mail([row for row in rows if str(row.get("id") or "") not in sent_ids])
+        st.session_state["pi_hold_rev"] = int(st.session_state.get("pi_hold_rev") or 0) + 1
+        _pi_rerun()
 
 
 def _items_key(client: str) -> str:
@@ -4237,10 +4462,12 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
     _render_mail_signature_preview()
     extra_files = _render_mail_attachments(pdf_name=pdf_name, pdf_bytes=pdf_bytes)
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         do_cancel = st.button("작성 취소", use_container_width=True, key="pi_mail_inline_cancel")
     with c2:
+        do_hold = st.button("임시저장", use_container_width=True, key="pi_mail_inline_hold")
+    with c3:
         can_send = bool(to_addr and smtp_cfg.get("ready"))
         do_final = st.button(
             "최종 발송",
@@ -4252,6 +4479,7 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
     if st.session_state.get("_pi_nav_blocked_now"):
         do_final = False
         do_cancel = False
+        do_hold = False
         st.session_state["pi_left_mode"] = "mail"
     if do_final:
         do_cancel = False
@@ -4313,6 +4541,30 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                     )
             except Exception as e:
                 _set_pi_send_flash(ok=False, msg=f"발송 오류: {e}", to_addr=to_addr)
+    elif do_hold and not st.session_state.get("_pi_nav_blocked_now"):
+        subject = str(st.session_state.get("pi_mail_compose_subject") or "").strip()
+        body = _with_mail_signature(str(st.session_state.get("pi_mail_compose_body") or ""))
+        if not subject and not to_addr:
+            st.error("임시저장하려면 메일 제목 또는 수신자를 입력하세요.")
+        else:
+            pack = dict(st.session_state.get("_pi_left_pack") or {})
+            letter_kwargs = _pi_json_ready(dict(pack.get("letter_kwargs") or {}))
+            saved = append_hold_mail(
+                {
+                    "to": to_addr,
+                    "cc": str(draft.get("cc") or ""),
+                    "subject": subject or "(제목 없음)",
+                    "body": body,
+                    "client": client,
+                    "staff": staff,
+                    "attach_letter": bool(attach_letter),
+                    "pdf_name": str(pack.get("pdf_name") or pdf_name or "공문.pdf"),
+                    "letter_kwargs": letter_kwargs if attach_letter else {},
+                    "send": True,
+                }
+            )
+            st.session_state["pi_hold_rev"] = int(st.session_state.get("pi_hold_rev") or 0) + 1
+            st.success(f"임시저장됨 · {hold_mail_label(saved)}")
     elif do_cancel and not st.session_state.get("_pi_nav_blocked_now"):
         _pi_clear_mail_stay_flags()
         st.session_state["pi_left_mode"] = "summary"
@@ -5193,6 +5445,7 @@ def _pi_chip_btn_css() -> None:
         "div[class*='st-key-pi_left_send'] button,"
         "div[class*='st-key-pi_left_summary'] button,"
         "div[class*='st-key-pi_mail_inline_cancel'] button,"
+        "div[class*='st-key-pi_mail_inline_hold'] button,"
         "div[class*='st-key-pi_mail_inline_send'] button{"
         "white-space:normal!important;height:auto!important;min-height:2.4rem!important;"
         "line-height:1.25!important;padding:0.35rem 0.35rem!important;}"
@@ -6138,7 +6391,9 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     st.session_state["_pi_mail_df_cache"] = mail_df
     smtp_cfg = smtp_settings()
 
-    tab_single, tab_bulk, tab_hist = st.tabs(["개별 발송", "일괄 발송", "발송 이력"])
+    tab_single, tab_bulk, tab_hold, tab_hist = st.tabs(
+        ["개별 발송", "일괄 발송", "임시저장", "발송 이력"]
+    )
 
     # ── 개별 발송 (업무일지형: 왼쪽 요약·미리보기·메일 / 오른쪽 공문·단가) ──
     with tab_single:
@@ -6401,6 +6656,10 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                     for line in results:
                         st.write(line)
                     st.success(f"담당자 [{b_staff}] 거래처별 개별 발송 완료 ({n}건)")
+
+    # ── 임시저장 (일괄 발송과 발송 이력 사이) ──
+    with tab_hold:
+        _render_pi_hold_mail(smtp_cfg)
 
     # ── 발송 이력 ──
     with tab_hist:

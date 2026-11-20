@@ -599,6 +599,57 @@ def test_price_preview_html_lists_saved_rows():
     assert _pi_price_preview_html([], "2026-11-01") == ""
 
 
+def test_hold_mail_keeps_subject_and_recipient():
+    import os
+    import tempfile
+    from datetime import date
+
+    from price_increase_tab import (
+        append_hold_mail,
+        hold_mail_label,
+        load_hold_mail,
+        _pi_restore_letter_kwargs,
+    )
+
+    folder = tempfile.mkdtemp()
+    path = os.path.join(folder, "hold_mail.json")
+    try:
+        saved = append_hold_mail(
+            {
+                "to": "buyer@example.com",
+                "cc": "",
+                "subject": "제품가격 조정의 건",
+                "body": "본문입니다.",
+                "client": "경민산업",
+                "attach_letter": True,
+                "pdf_name": "공문.pdf",
+                "letter_kwargs": {"send_date": date(2026, 11, 1), "title": "제품가격 조정의 건"},
+                "send": True,
+            },
+            path,
+        )
+        rows = load_hold_mail(path)
+        assert len(rows) == 1
+        assert rows[0]["id"] == saved["id"]
+        assert rows[0]["subject"] == "제품가격 조정의 건"
+        assert rows[0]["to"] == "buyer@example.com"
+        assert "제품가격 조정의 건 · buyer@example.com" in hold_mail_label(rows[0])
+        restored = _pi_restore_letter_kwargs(rows[0]["letter_kwargs"])
+        assert restored["send_date"] == date(2026, 11, 1)
+    finally:
+        if os.path.isfile(path):
+            os.remove(path)
+        os.rmdir(folder)
+
+
+def test_hold_tab_sits_between_bulk_and_history():
+    src = open("price_increase_tab.py", encoding="utf-8").read()
+    tabs = src.split('["개별 발송", "일괄 발송", "임시저장", "발송 이력"]', 1)
+    assert len(tabs) == 2
+    compose = src.split("def _render_pi_left_mail_compose", 1)[1].split("\ndef ", 1)[0]
+    assert compose.index('st.button("임시저장"') < compose.index('"최종 발송"')
+
+
 def test_sent_history_opens_body_from_row():
     src = open("price_increase_tab.py", encoding="utf-8").read()
     hist = src.split("def _render_pi_sent_history", 1)[1].split("\ndef ", 1)[0]
