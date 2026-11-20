@@ -530,9 +530,56 @@ def test_price_letter_book_title_fills_body():
         os.remove(path)
     assert len(rows) == 1
     assert rows[0]["title"] == "제품가격 조정의 건"
+    assert rows[0]["label"].endswith("· 제품가격 조정의 건")
     assert "질소가스" in rows[0]["body"]
     assert "품명" not in rows[0]["body"]
     assert "아래" not in rows[0]["body"]
+
+
+def test_letter_folder_lists_every_xlsx():
+    import os
+    import tempfile
+
+    from price_increase_tab import _pi_letter_book_paths_in, _pi_read_price_letter_files
+
+    folder = tempfile.mkdtemp()
+    names = [
+        "수소솟테이지 공문.xlsx",
+        "채권독촉공문.xlsx",
+        "탄산단가인상공문.xlsx",
+        "26년 가격조정공문_20261119.xlsx",
+        "26년 가격조정공문_20261119(최종).xlsx",
+        "~$채권독촉공문.xlsx",
+    ]
+    try:
+        from openpyxl import Workbook
+
+        for i, name in enumerate(names):
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "본문"
+            ws["C12"] = f"제    목 : 안내 {i}"
+            ws["C16"] = "1. 본문입니다."
+            if "채권" in name:
+                ws["C18"] = "- 아 래 -"
+                ws["C20"] = "미수 총액 : 금 1원"
+            path = os.path.join(folder, name)
+            wb.save(path)
+            os.utime(path, (1_700_000_000 + i, 1_700_000_000 + i))
+        paths = _pi_letter_book_paths_in(folder)
+        assert [os.path.basename(p) for p in paths] == list(reversed(names[:-1]))
+        rows = _pi_read_price_letter_files(paths)
+        labels = [row["label"] for row in rows]
+        assert len(labels) == 5
+        assert any("수소솟테이지 공문 · 안내" in label for label in labels)
+        assert any("채권독촉공문 · 안내" in label for label in labels)
+        assert any("가격조정공문_20261119(최종) · 안내" in label for label in labels)
+        bond = next(row for row in rows if row["label"].startswith("채권독촉공문"))
+        assert "미수 총액" in bond["body"]
+    finally:
+        for name in os.listdir(folder):
+            os.remove(os.path.join(folder, name))
+        os.rmdir(folder)
 
 
 def test_sent_history_opens_body_from_row():

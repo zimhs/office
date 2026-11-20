@@ -2656,9 +2656,6 @@ def _default_letter_title() -> str:
     return "제품가격 조정의 건"
 
 
-_PI_LETTER_BOOK_NAME = "26년 가격조정공문_20261119.xlsx"
-
-
 def _pi_nfc(text: str) -> str:
     return unicodedata.normalize("NFC", str(text or ""))
 
@@ -2691,23 +2688,26 @@ def _pi_price_letter_dir() -> str:
     return ""
 
 
-def _pi_price_letter_book_paths() -> list[str]:
-    """공문 폴더의 가격조정 공문 파일. 새로 저장되면 목록에 바로 포함된다."""
-    folder = _pi_price_letter_dir()
-    if not folder:
+def _pi_letter_book_paths_in(folder: str) -> list[str]:
+    """폴더 안의 공문 xlsx. 이름에 가격조정이 없어도 포함한다."""
+    if not folder or not os.path.isdir(folder):
         return []
     found: list[str] = []
     for name in os.listdir(folder):
-        if name.startswith("~$") or not name.lower().endswith(".xlsx"):
+        if name.startswith("~$") or name.startswith("."):
             continue
-        nfc = _pi_nfc(name)
-        if "가격조정공문" not in nfc and nfc != _pi_nfc(_PI_LETTER_BOOK_NAME):
+        if not name.lower().endswith(".xlsx"):
             continue
         path = os.path.join(folder, name)
         if os.path.isfile(path):
             found.append(path)
     found.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return found
+
+
+def _pi_price_letter_book_paths() -> list[str]:
+    """공문 폴더의 xlsx. 새로 저장되거나 파일이 늘면 목록에 포함된다."""
+    return _pi_letter_book_paths_in(_pi_price_letter_dir())
 
 
 def _pi_price_letter_book_path() -> str:
@@ -2741,38 +2741,72 @@ def _pi_letter_title_from_line(text: str) -> str:
     return raw.split(":", 1)[1].strip()
 
 
+def _pi_compact_letter_line(text: str) -> str:
+    return re.sub(r"\s+", "", _pi_nfc(text).replace("\xa0", " "))
+
+
+def _pi_is_price_table_break(text: str) -> bool:
+    compact = _pi_compact_letter_line(text)
+    return compact in {"품명", "단가조정내용", "단가조정내역"}
+
+
+def _pi_is_below_marker(text: str) -> bool:
+    compact = _pi_compact_letter_line(text)
+    return compact.startswith("-") and "아래" in compact
+
+
+def _pi_is_letter_signoff(text: str) -> bool:
+    compact = re.sub(r"[\s()（）]", "", _pi_nfc(text).replace("\xa0", " "))
+    return compact in {"주신일가스", "신일가스주식회사", "주식회사신일가스"}
+
+
+def _pi_letter_choice_label(path: str, sheet: str, title: str, *, multi_sheet: bool) -> str:
+    """파일마다 제목이 겹쳐도 목록에서 빠지지 않게 파일명을 붙인다."""
+    stem = _pi_nfc(os.path.splitext(os.path.basename(path))[0])
+    title_n = _pi_nfc(title).strip()
+    if multi_sheet:
+        return f"{stem} · {_pi_nfc(sheet)} · {title_n}"
+    return f"{stem} · {title_n}"
+
+
 def _pi_read_price_letters(path: str) -> list[dict[str, str]]:
-    """시트별 제목과 공문 본문. 단가표(- 아래 -) 앞까지만."""
+    """시트별 제목과 공문 본문. 단가표 앞까지, 그 아래가 본문이면 본문까지."""
     if not path or not os.path.isfile(path) or load_workbook is None:
         return []
     wb = load_workbook(path, data_only=True, read_only=False)
     out: list[dict[str, str]] = []
     try:
+        multi = len(wb.sheetnames) > 1
         for sheet in wb.sheetnames:
             ws = wb[sheet]
-            title = ""
-            lines: list[str] = []
+            texts: list[str] = []
             last = min(int(ws.max_row or 1), 80)
             for row in range(1, last + 1):
                 raw = ws.cell(row, 3).value
                 text = _pi_nfc(raw).replace("\xa0", " ").strip()
-                if not text:
-                    continue
+                if text:
+                    texts.append(text)
+            title = ""
+            title_at = -1
+            for i, text in enumerate(texts):
                 found = _pi_letter_title_from_line(text)
-                if found and not title:
+                if found:
                     title = found
-                    continue
-                if not title:
-                    continue
-                compact = text.replace(" ", "")
-                if compact.startswith("-") and "아래" in compact:
+                    title_at = i
                     break
-                if compact == "품명":
+            if title_at < 0:
+                continue
+            lines: list[str] = []
+            rest = texts[title_at + 1 :]
+            for i, text in enumerate(rest):
+                if _pi_is_price_table_break(text) or _pi_is_letter_signoff(text):
+                    break
+                if _pi_is_below_marker(text) and any(
+                    _pi_is_price_table_break(ahead) for ahead in rest[i + 1 : i + 13]
+                ):
                     break
                 lines.append(text)
-            if not title:
-                continue
-            label = f"{_pi_nfc(sheet)} · {title}"
+            label = _pi_letter_choice_label(path, sheet, title, multi_sheet=multi)
             out.append({"label": label, "title": title, "body": _pi_flow_letter_body("\n".join(lines))})
     finally:
         wb.close()
@@ -2780,7 +2814,7 @@ def _pi_read_price_letters(path: str) -> list[dict[str, str]]:
 
 
 def _pi_read_price_letter_files(paths: list[str]) -> list[dict[str, str]]:
-    """여러 공문 파일의 제목. 같은 제목은 더 최근 파일을 쓴다."""
+    """여러 공문 파일의 제목. 같은 표시 이름은 더 최근 파일을 쓴다."""
     seen: set[str] = set()
     out: list[dict[str, str]] = []
     for path in paths:
