@@ -313,34 +313,19 @@ def _pi_rerun(*, full: bool = False) -> None:
         st.rerun()
 
 
-def _pi_bind_letter_preview_live() -> None:
-    """공문 본문 띄어쓰기를 서버 재실행 없이 인쇄 미리보기에 바로 그린다."""
+def _pi_refresh_excel_preview() -> None:
+    """엑셀 미리보기가 열려 있을 때만 그 칸을 다시 그린다."""
+    import secrets
+
+    nonce = secrets.token_hex(4)
     st.components.v1.html(
-        """<script>
-        (function(){
-          var d = window.parent.document;
-          if (d.__piLetterLive) return;
-          d.__piLetterLive = 1;
-          function paint(text){
-            var box = d.getElementById('pi-letter-live');
-            if (!box) return;
-            box.textContent = '';
-            String(text || '').split(/\\n/).forEach(function(line){
-              var row = d.createElement('div');
-              row.style.lineHeight = '1.45';
-              row.style.minHeight = '1.45em';
-              row.style.whiteSpace = 'pre-wrap';
-              row.textContent = line.length ? line : '\\u00a0';
-              box.appendChild(row);
-            });
-          }
-          d.addEventListener('input', function(ev){
-            var t = ev.target;
-            if (!t || t.tagName !== 'TEXTAREA') return;
-            if ((t.getAttribute('aria-label') || '') !== '공문 본문') return;
-            paint(t.value);
-          }, true);
-        })();
+        f"""<div data-n="{nonce}"></div><script>
+        setTimeout(function(){{
+          try {{
+            var b=window.parent.document.querySelector('[class*="st-key-pi_excel_repaint"] button');
+            if(b) b.click();
+          }} catch(e) {{}}
+        }}, 60);
         </script>""",
         height=0,
     )
@@ -4450,7 +4435,6 @@ def _render_letter_form_preview(
 """,
         unsafe_allow_html=True,
     )
-    _pi_bind_letter_preview_live()
 
 
 def _collect_letter_kwargs(
@@ -5442,15 +5426,6 @@ def _render_pi_left_panel() -> None:
     ignore_nav = _pi_consume_left_nav_block()
     st.session_state["_pi_nav_blocked_now"] = ignore_nav
     _ensure_mail_compose_first_screen(pack)
-    _render_letter_form_preview(
-        client=client,
-        title=title or str(letter_kwargs.get("title") or ""),
-        doc_no=str(letter_kwargs.get("doc_no") or ""),
-        send_date=letter_kwargs.get("send_date") or date.today(),
-        effective_s=effective_s,
-        letter_body=letter_body,
-        items=items_now,
-    )
     _pi_chip_btn_css()
     _render_email_addr_fields()
 
@@ -5522,13 +5497,35 @@ def _render_pi_left_panel() -> None:
                     st.error(f"첨부 PDF 생성 실패: {st.session_state.get('pi_pdf_error')}")
         _render_pi_left_mail_compose(smtp_cfg=smtp_cfg)
     elif mode in ("pdf", "excel"):
+        st.markdown(
+            """<style>[class*="st-key-pi_excel_repaint"]{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;}</style>""",
+            unsafe_allow_html=True,
+        )
+        st.button("엑셀갱신", key="pi_excel_repaint")
+        fresh_sig = (
+            letter_body,
+            tuple(
+                (
+                    str(it.get("품목명") or ""),
+                    str(it.get("기존단가") or ""),
+                    str(it.get("인상적용단가") or ""),
+                    str(it.get("비고") or ""),
+                )
+                for it in items_now
+                if isinstance(it, dict)
+            ),
+        )
         pdf_bytes = st.session_state.get("pi_pdf_bytes")
         xlsx = st.session_state.get("pi_dl_bytes")
+        if st.session_state.get("_pi_pdf_sig") != fresh_sig:
+            pdf_bytes = None
+            xlsx = None
         if not pdf_bytes:
             try:
                 pdf_bytes = _build_letter_pdf_bytes(**letter_kwargs)
                 st.session_state["pi_pdf_bytes"] = pdf_bytes
                 st.session_state["pi_pdf_name"] = pdf_name
+                st.session_state["_pi_pdf_sig"] = fresh_sig
                 st.session_state.pop("pi_pdf_error", None)
             except Exception as e:
                 st.session_state["pi_pdf_error"] = (
@@ -5581,7 +5578,11 @@ def _render_pi_left_panel() -> None:
                     use_container_width=True,
                 )
         if pdf_bytes:
-            _show_pdf_preview(pdf_bytes, height=520, key="pi_pdf_preview_left")
+            _show_pdf_preview(
+                pdf_bytes,
+                height=520,
+                key=f"pi_pdf_preview_left_{hash(pdf_bytes) & 0xffffffff:x}",
+            )
         else:
             if st.session_state.get("pi_pdf_error"):
                 st.error(str(st.session_state.get("pi_pdf_error")))
@@ -5708,6 +5709,25 @@ def _render_pi_right_letter_form() -> None:
             items_key=items_key,
             last=prev.get("last"),
         )
+        if st.session_state.get("pi_left_mode") == "pdf":
+            body_now = str(st.session_state.get(body_key) or "")
+            live_now = st.session_state.get("_pi_live_items") or []
+            sig = (
+                body_now,
+                tuple(
+                    (
+                        str(it.get("품목명") or ""),
+                        str(it.get("기존단가") or ""),
+                        str(it.get("인상적용단가") or ""),
+                        str(it.get("비고") or ""),
+                    )
+                    for it in live_now
+                    if isinstance(it, dict)
+                ),
+            )
+            if st.session_state.get("_pi_excel_sig") != sig:
+                st.session_state["_pi_excel_sig"] = sig
+                _pi_refresh_excel_preview()
 
 
 @st.fragment
