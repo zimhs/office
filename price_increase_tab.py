@@ -4950,59 +4950,62 @@ def _render_addr_chip_buttons(addrs: list[str], *, key_prefix: str) -> str | Non
 
 
 def _render_email_addr_fields() -> None:
-    """수신·참조 입력. 메일 작성 fragment 안에서만 다시 그린다."""
+    """수신·참조를 나란히. 미리보기·공문 입력보다 위에 둔다."""
     _apply_pending_addr_drops()
     _consume_typed_addr_commit("pi_to_add", "pi_single_email")
     _consume_typed_addr_commit("pi_cc_add", "pi_single_cc")
     _pi_chip_btn_css()
-    to_addrs = split_email_addrs(st.session_state.get("pi_single_email") or "")
-    st.markdown("수신 이메일")
-    drop_to = _render_addr_chip_buttons(to_addrs, key_prefix="pi_to_rm")
-    if drop_to:
-        _drop_to_addr(drop_to)
-        _pi_rerun()
-    with st.form("pi_to_add_form", clear_on_submit=True, border=False):
-        add_c1, add_c2 = st.columns([5, 1])
-        with add_c1:
-            raw_to = st.text_input(
-                "수신 이메일",
-                key="pi_to_add",
-                placeholder="받는곳@메일.com, 다음@메일.com",
-                label_visibility="collapsed",
-            )
-        with add_c2:
-            add_to = st.form_submit_button(
-                "추가",
-                use_container_width=True,
-                on_click=_on_to_add_change,
-            )
-    if add_to:
-        if _flush_typed_addr("pi_to_add", "pi_single_email", raw_to):
+    to_col, cc_col = st.columns(2, gap="medium")
+    with to_col:
+        to_addrs = split_email_addrs(st.session_state.get("pi_single_email") or "")
+        st.markdown("수신 이메일")
+        drop_to = _render_addr_chip_buttons(to_addrs, key_prefix="pi_to_rm")
+        if drop_to:
+            _drop_to_addr(drop_to)
             _pi_rerun()
-    cc_addrs = split_email_addrs(st.session_state.get("pi_single_cc") or "")
-    st.markdown("참조 이메일")
-    drop_cc = _render_addr_chip_buttons(cc_addrs, key_prefix="pi_cc_rm")
-    if drop_cc:
-        _drop_cc_addr(drop_cc)
-        _pi_rerun()
-    with st.form("pi_cc_add_form", clear_on_submit=True, border=False):
-        cc_c1, cc_c2 = st.columns([5, 1])
-        with cc_c1:
-            raw_cc = st.text_input(
-                "참조 이메일",
-                key="pi_cc_add",
-                placeholder="참조@메일.com, 다음@메일.com",
-                label_visibility="collapsed",
-            )
-        with cc_c2:
-            add_cc = st.form_submit_button(
-                "추가",
-                use_container_width=True,
-                on_click=_on_cc_add_change,
-            )
-    if add_cc:
-        if _flush_typed_addr("pi_cc_add", "pi_single_cc", raw_cc):
+        with st.form("pi_to_add_form", clear_on_submit=True, border=False):
+            add_c1, add_c2 = st.columns([5, 1])
+            with add_c1:
+                raw_to = st.text_input(
+                    "수신 이메일",
+                    key="pi_to_add",
+                    placeholder="받는곳@메일.com, 다음@메일.com",
+                    label_visibility="collapsed",
+                )
+            with add_c2:
+                add_to = st.form_submit_button(
+                    "추가",
+                    use_container_width=True,
+                    on_click=_on_to_add_change,
+                )
+        if add_to:
+            if _flush_typed_addr("pi_to_add", "pi_single_email", raw_to):
+                _pi_rerun()
+    with cc_col:
+        cc_addrs = split_email_addrs(st.session_state.get("pi_single_cc") or "")
+        st.markdown("참조 이메일")
+        drop_cc = _render_addr_chip_buttons(cc_addrs, key_prefix="pi_cc_rm")
+        if drop_cc:
+            _drop_cc_addr(drop_cc)
             _pi_rerun()
+        with st.form("pi_cc_add_form", clear_on_submit=True, border=False):
+            cc_c1, cc_c2 = st.columns([5, 1])
+            with cc_c1:
+                raw_cc = st.text_input(
+                    "참조 이메일",
+                    key="pi_cc_add",
+                    placeholder="참조@메일.com, 다음@메일.com",
+                    label_visibility="collapsed",
+                )
+            with cc_c2:
+                add_cc = st.form_submit_button(
+                    "추가",
+                    use_container_width=True,
+                    on_click=_on_cc_add_change,
+                )
+        if add_cc:
+            if _flush_typed_addr("pi_cc_add", "pi_single_cc", raw_cc):
+                _pi_rerun()
     missing = list(st.session_state.get("_pi_mail_missing") or [])
     auto_email = str(st.session_state.get("_pi_mail_auto_cap") or "")
     picked_n = int(st.session_state.get("_pi_mail_picked_n") or 0)
@@ -5655,7 +5658,6 @@ def _render_pi_left_panel() -> None:
     st.session_state["_pi_nav_blocked_now"] = ignore_nav
     _ensure_mail_compose_first_screen(pack)
     _pi_chip_btn_css()
-    _render_email_addr_fields()
 
     st.markdown("##### 미리보기")
     mode_hint = st.session_state.get("pi_left_mode") or "mail"
@@ -5916,6 +5918,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             )
             st.session_state["pi_body_client"] = client
 
+            _render_email_addr_fields()
             col_left, col_right = st.columns([1, 1], gap="medium")
 
             # 오른쪽 입력을 먼저 실행해 session_state를 갱신한 뒤 왼쪽 미리보기에 반영
