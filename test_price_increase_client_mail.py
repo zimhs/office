@@ -415,6 +415,25 @@ def test_picked_letter_body_stays_when_client_changes():
     assert fresh == "1.귀사의 무궁한 발전을 기원하며"
 
 
+def test_flow_letter_body_removes_blank_gaps():
+    from price_increase_tab import _pi_flow_letter_body
+
+    raw = (
+        "1. 귀사의 일익 번창하심을 기원합니다.\n"
+        "\n"
+        "2. 당사는 안정적인 가스공급에 최선을\n"
+        "다해왔으나 수급이 불안정합니다.\n"
+        "3. 이에 공급가격을 조정합니다."
+    )
+    out = _pi_flow_letter_body(raw)
+    assert "\n\n" not in out
+    assert out.splitlines() == [
+        "1. 귀사의 일익 번창하심을 기원합니다.",
+        "2. 당사는 안정적인 가스공급에 최선을 다해왔으나 수급이 불안정합니다.",
+        "3. 이에 공급가격을 조정합니다.",
+    ]
+
+
 def test_price_letter_book_title_fills_body():
     import os
     import tempfile

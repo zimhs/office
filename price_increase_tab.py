@@ -1368,12 +1368,34 @@ def _default_letter_body_text() -> str:
     return "\n".join(_DEFAULT_LETTER_PARAS[c] for c in _BODY_CELL_ORDER if c in _DEFAULT_LETTER_PARAS)
 
 
+_PI_PARA_START_RE = re.compile(r"^\s*(?:\d+\.\s*|[-•ㆍ]\s*)")
+
+
+def _pi_flow_letter_body(text: str) -> str:
+    """끊긴 줄은 띄어 붙여 빈칸을 없앤다. 번호·항목만 문단으로 나눈다."""
+    paragraphs: list[str] = []
+    buf = ""
+    for raw in str(text or "").replace("\xa0", " ").splitlines():
+        line = re.sub(r"[ \t]+", " ", raw).strip()
+        if not line:
+            continue
+        if buf and not _PI_PARA_START_RE.match(line):
+            buf = f"{buf} {line}".strip()
+            continue
+        if buf:
+            paragraphs.append(buf)
+        buf = line
+    if buf:
+        paragraphs.append(buf)
+    return "\n".join(paragraphs)
+
+
 def _body_text_to_paras(text: str) -> dict[str, str]:
     """한 칸 본문 → 양식 셀 dict. 기본 양식 제목(C35)은 유지."""
     paras = dict(_DEFAULT_LETTER_PARAS)
     for c in _BODY_CELL_ORDER:
         paras[c] = ""
-    lines = [ln.rstrip() for ln in str(text or "").splitlines()]
+    lines = [ln.rstrip() for ln in _pi_flow_letter_body(text).splitlines()]
     if not any(ln.strip() for ln in lines):
         return dict(_DEFAULT_LETTER_PARAS)
     for i, line in enumerate(lines):
@@ -2666,7 +2688,7 @@ def _pi_read_price_letters(path: str) -> list[dict[str, str]]:
             if not title:
                 continue
             label = f"{_pi_nfc(sheet)} · {title}"
-            out.append({"label": label, "title": title, "body": "\n".join(lines)})
+            out.append({"label": label, "title": title, "body": _pi_flow_letter_body("\n".join(lines))})
     finally:
         wb.close()
     return out
@@ -3479,44 +3501,74 @@ def build_letter_pdf(
         n = max(len(clean), 1)
         return 7.0 + 1.5 + 7.0 + 7.0 * n + 2.0 + 6.0 + 2.0
 
-    # ── 1장: 헤더 + 본문 ──
+    # ── 1장: 헤더 + 본문. 빈 줄은 붙이고, 넘치면 기존처럼 2페이지 ──
     _draw_letterhead(include_meta=True)
     pdf.set_font("kr", "", 10)
     pdf.set_text_color(15, 23, 42)
-    body_order = list(_BODY_CELL_ORDER)
-    for coord in body_order:
-        text = str(paras.get(coord) or "")
-        if not text.strip():
-            pdf.set_y(pdf.get_y() + 1.5)
-            continue
-        lines = _pdf_wrap_lines(pdf, text, usable)
-        for ln in lines:
-            if pdf.get_y() + 5.0 > content_max:
-                break
-            pdf.set_x(left)
-            pdf.cell(usable, 5.0, ln, new_x="LMARGIN", new_y="NEXT")
-        if coord in ("C16", "C19", "C24", "C26", "C27", "C29", "C31"):
-            pdf.ln(1.2)
+    flowed = _pi_flow_letter_body(
+        "\n".join(str(paras.get(coord) or "") for coord in _BODY_CELL_ORDER)
+    )
+    paragraphs = [p for p in flowed.splitlines() if p.strip()]
+    line_h = 5.2
+
+    def _continue_page() -> None:
+        _draw_page_footer()
+        pdf.add_page()
+        _draw_letterhead(include_meta=True)
+        pdf.set_font("kr", "", 10)
+        pdf.set_text_color(15, 23, 42)
+
+    def _draw_fit_line(text: str, *, justify: bool) -> None:
+        if pdf.get_y() + line_h > content_max:
+            _continue_page()
+        pdf.set_x(left)
+        slack = usable - pdf.get_string_width(text)
+        words = text.split(" ")
+        if not justify or len(words) < 2 or slack <= 0.3 or slack > 6.0:
+            pdf.cell(usable, line_h, text, new_x="LMARGIN", new_y="NEXT")
+            return
+        widths = [pdf.get_string_width(word) for word in words]
+        gap = slack / (len(words) - 1)
+        x = left
+        y = pdf.get_y()
+        for i, word in enumerate(words):
+            pdf.set_xy(x, y)
+            pdf.cell(widths[i], line_h, word)
+            x += widths[i] + (gap if i < len(words) - 1 else 0)
+        pdf.set_y(y + line_h)
+
+    for pi, para in enumerate(paragraphs):
+        lines = [ln for ln in _pdf_wrap_lines(pdf, para, usable) if ln.strip()]
+        for li, ln in enumerate(lines):
+            _draw_fit_line(ln, justify=li < len(lines) - 1)
+        if pi < len(paragraphs) - 1 and pdf.get_y() + 1.6 <= content_max:
+            pdf.ln(1.6)
 
     attach_to_back = False
     if clean:
         pdf.ln(3)
         need = _price_block_height()
-        if pdf.get_y() + need > content_max:
-            attach_to_back = True
-            pdf.set_font("kr", "B", 12)
-            pdf.set_x(left)
-            pdf.cell(usable, 8, "※ 단가 조정 내용 : 후면첨부", align="C", new_x="LMARGIN", new_y="NEXT")
-            pdf.ln(1)
-            pdf.set_font("kr", "", 10)
-            pdf.set_x(left)
-            pdf.cell(
-                usable,
-                6,
-                f"                           • 시행 일자 : {_format_korean_effective(effective)}",
-                new_x="LMARGIN",
-                new_y="NEXT",
-            )
+        # 본문이 이미 2페이지로 넘어갔으면 그 장에 표를 두고, 1장에 안 들어가면 후면첨부
+        if pdf.page_no() == 1 and pdf.get_y() + need > content_max:
+            if pdf.get_y() + 16 > content_max:
+                _continue_page()
+                _draw_price_table()
+            else:
+                attach_to_back = True
+            if attach_to_back:
+                pdf.set_font("kr", "B", 12)
+                pdf.set_x(left)
+                pdf.cell(usable, 8, "※ 단가 조정 내용 : 후면첨부", align="C", new_x="LMARGIN", new_y="NEXT")
+                pdf.ln(1)
+                pdf.set_font("kr", "", 10)
+                pdf.set_x(left)
+                pdf.cell(
+                    usable,
+                    6,
+                    f"                           • 시행 일자 : {_format_korean_effective(effective)}",
+                    new_x="LMARGIN",
+                    new_y="NEXT",
+                )
         else:
             _draw_price_table()
 
@@ -4277,9 +4329,11 @@ def _render_letter_form_preview(
         )
     if not rows_html:
         rows_html = "<tr><td colspan='4'>(품목 없음)</td></tr>"
-    body_html = "<br/>".join(
-        line.replace(" ", "&nbsp;") if line.strip() == "" else line
-        for line in str(letter_body or "").splitlines()
+    flowed_body = _pi_flow_letter_body(letter_body)
+    body_html = "".join(
+        f"<p style='margin:0 0 0.45em 0;text-align:justify;'>{html_lib.escape(line)}</p>"
+        for line in flowed_body.splitlines()
+        if line.strip()
     )
     send_s = send_date.strftime("%Y.%m.%d") if hasattr(send_date, "strftime") else str(send_date)
     price_block = ""
