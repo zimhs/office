@@ -462,6 +462,49 @@ def test_flow_letter_body_removes_blank_gaps():
     ]
 
 
+def test_default_letter_body_matches_price_adjustment_form():
+    from price_increase_tab import _default_letter_body_text, _default_letter_title
+
+    body = _default_letter_body_text()
+    assert _default_letter_title() == "제품가격 조정의 건"
+    assert body.startswith("1. 귀사의 일익 번창하심을 기원하며")
+    assert "\n\n2. 당사는 안정적인 가스공급에 최선을 다해왔으나" in body
+    assert "\n\n4. 다시 한번 귀사의 일익 번창하심을 기원하며" in body
+    assert "무궁한 발전" not in body
+
+
+def test_take_letter_file_body_keeps_manual_edits():
+    from price_increase_tab import _pi_take_letter_file_body
+
+    assert _pi_take_letter_file_body(
+        picked="공문261119 · 제품가격 조정의 건",
+        applied="",
+        token="b",
+        applied_token="",
+        current="옛 문장",
+        previous_file_body="",
+        new_body="1. 새 문장",
+    )
+    assert _pi_take_letter_file_body(
+        picked="공문261119 · 제품가격 조정의 건",
+        applied="공문261119 · 제품가격 조정의 건",
+        token="new",
+        applied_token="old",
+        current="1. 파일 문장",
+        previous_file_body="1. 파일 문장",
+        new_body="1. 고친 파일 문장",
+    )
+    assert not _pi_take_letter_file_body(
+        picked="공문261119 · 제품가격 조정의 건",
+        applied="공문261119 · 제품가격 조정의 건",
+        token="new",
+        applied_token="old",
+        current="1. 내가 고친 문장",
+        previous_file_body="1. 파일 문장",
+        new_body="1. 고친 파일 문장",
+    )
+
+
 def test_price_letter_book_title_fills_body():
     import os
     import tempfile

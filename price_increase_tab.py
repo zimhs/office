@@ -13,7 +13,7 @@ import smtplib
 import unicodedata
 import ssl
 from copy import copy
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from email.header import Header
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -1330,20 +1330,24 @@ def apply_increase_by_amount(old: float, amount: float) -> float:
         return float(old or 0)
 
 
-# 탄산단가인상공문 기본 본문 (양식 셀 유지, 내용만 편집)
+# 기본 공문 본문. 번호 문단 사이 빈 줄은 입력칸과 같게 둔다.
 _DEFAULT_LETTER_PARAS: dict[str, str] = {
-    "C16": "1.귀사의 무궁한 발전을 기원하며, 평소 당사에 보내주시는 신뢰와 협력에 깊은 감사를 드립니다.",
-    "C18": "2.당사는 귀사와의 지속적인 파트너십 유지를 최우선 가치로 삼아, 대내외적인 원가 상승 압박 속에서도 경영 ",
-    "C19": "효율화를 통해 단가 인상을 최대한 억제해 왔습니다.",
-    "C21": "3.그러나 최근 지정학적 리스크 심화와 글로벌 에너지 공급망의 불안정성으로 인해 당사가 감내할 수 있는 . ",
-    "C22": "임계치를 상회하는 제조 원가 상승이 발생하였습니다.",
-    "C23": "이에 안정적인 품질 유지와 지속 가능한 공급 체계 확보를 위해 부득이하게 아래와 같이 단가 인상을 요청드리오니 널리 양해하여 ",
-    "C24": "양해하여 주시기 바랍니다. ",
-    "C26": "4. 주요 인상 요인 분석",
-    "C27": "• 중동 분쟁 장기화에 따른 에너지 비용 급등: 중동 지역의 지정학적 불안정 지속으로 국제 유가 및 천연가스 가격의 변동성이 확대되었으며, 탄산 원료 가스(Raw Gas) 수급 비용 및 생산 설비 가동 에너지 비용이 급격히 상승함.",
-    "C29": "• 원료 가스 확보 단가 및 제조 원가 상승: 석유화학 플랜트 가동률 변화와 원료 공급원의 제한적 수급 상황이 맞물려 원료 가스 매입 단가가 폭등하였으며, 정제 및 액화 과정의 부자재 가격 상승이 직접적인 원가 부담으로 작용함.",
-    "C31": "• 물류망 불안정에 따른 운반비 가중: 유가 상승 및 요소수 등 차량 유지비 증가로 인해 내륙 운송 단가가 상향 평준화되었으며, 특히 특수 고압 탱크로리 운영비용 상승이 전체 공급가에 심대한 영향을 미침.",
-    "C33": "5. 당사는 이번 조정을 바탕으로 더욱 철저한 품질 관리와 원활한 공급 체계를 구축하여 귀사의 기대에 보답할 것을 약속드립니다.",
+    "C16": "1. 귀사의 일익 번창하심을 기원하며, 항상 폐사에 베풀어 주신 후의에 감사드립니다.",
+    "C18": (
+        "2. 당사는 안정적인 가스공급에 최선을 다해왔으나, 액메이커의 플랜트 정기/비정기 보수 및 "
+        "생산량 감소로 인한 수급 불안정에 따른 질소가스 공급부족이 연이어지고 있는 가운데 "
+        "물량 확보를 위한 고단가 구매 및 전북, 울산, 경남북 지역등 외부에서 제품을 조달하고 있어 "
+        "운송비의 상승이 이어지고 있는 가운데, 액메이커의 제품 가격 조정으로 기존 공급가격을 "
+        "유지하기 어려운 상황에 이르렀습니다."
+    ),
+    "C19": (
+        "3. 이에 당사는 부득이하게 공급가격을 아래와 같이 조정하고자 하오니, 제품의 안정적인 공급과 "
+        "어려운 상황을 극복하기 위한 불가피한 조치임을 감안하시어 깊은 이해를 부탁드립니다."
+    ),
+    "C21": (
+        "4. 다시 한번 귀사의 일익 번창하심을 기원하며, 앞으로도 당사는 배전의 노력과 안전을 "
+        "최우선으로 최상의 제품과 서비스를 제공해 드릴 것을 약속드립니다."
+    ),
     "C35": "                                      단가 조정 내용",
 }
 
@@ -1365,7 +1369,12 @@ _BODY_CELL_ORDER = [
 
 
 def _default_letter_body_text() -> str:
-    return "\n".join(_DEFAULT_LETTER_PARAS[c] for c in _BODY_CELL_ORDER if c in _DEFAULT_LETTER_PARAS)
+    lines = [
+        _DEFAULT_LETTER_PARAS[c]
+        for c in ("C16", "C18", "C19", "C21")
+        if str(_DEFAULT_LETTER_PARAS.get(c) or "").strip()
+    ]
+    return "\n\n".join(lines)
 
 
 _PI_PARA_START_RE = re.compile(r"^\s*(?:\d+\.\s*|[-•ㆍ]\s*)")
@@ -2644,7 +2653,7 @@ def _apply_amount_to_items(items: list[dict], amount: float, *, only_selected: b
 
 
 def _default_letter_title() -> str:
-    return "액체탄산 공급단가 인상 협조 요청의 건"
+    return "제품가격 조정의 건"
 
 
 _PI_LETTER_BOOK_NAME = "26년 가격조정공문_20261119.xlsx"
@@ -2664,26 +2673,62 @@ def _pi_dir_child(parent: str, want: str) -> str:
     return ""
 
 
-def _pi_price_letter_book_path() -> str:
-    """구글 드라이브의 26년 가격조정 공문 파일."""
+def _pi_price_letter_dir() -> str:
+    """구글 드라이브 공문 폴더. 제목 파일은 이 경로를 본다."""
     cloud = os.path.expanduser("~/Library/CloudStorage")
     if not os.path.isdir(cloud):
         return ""
     for name in os.listdir(cloud):
         if not name.startswith("GoogleDrive-"):
             continue
-        root = os.path.join(cloud, name)
-        path = root
+        path = os.path.join(cloud, name)
         for part in ("다른 컴퓨터", "내 컴퓨터 (1)", "Desktop", "업무", "공문"):
             path = _pi_dir_child(path, part)
             if not path:
                 break
-        if not path:
-            continue
-        found = _pi_dir_child(path, _PI_LETTER_BOOK_NAME)
-        if found and os.path.isfile(found):
-            return found
+        if path and os.path.isdir(path):
+            return path
     return ""
+
+
+def _pi_price_letter_book_paths() -> list[str]:
+    """공문 폴더의 가격조정 공문 파일. 새로 저장되면 목록에 바로 포함된다."""
+    folder = _pi_price_letter_dir()
+    if not folder:
+        return []
+    found: list[str] = []
+    for name in os.listdir(folder):
+        if name.startswith("~$") or not name.lower().endswith(".xlsx"):
+            continue
+        nfc = _pi_nfc(name)
+        if "가격조정공문" not in nfc and nfc != _pi_nfc(_PI_LETTER_BOOK_NAME):
+            continue
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            found.append(path)
+    found.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return found
+
+
+def _pi_price_letter_book_path() -> str:
+    """가장 최근 가격조정 공문 파일."""
+    paths = _pi_price_letter_book_paths()
+    return paths[0] if paths else ""
+
+
+def _pi_letter_book_token(paths: list[str] | None = None) -> str:
+    """파일 경로·수정시각·크기. 저장되면 토큰이 바뀐다."""
+    if paths is None:
+        paths = _pi_price_letter_book_paths()
+    bits: list[str] = []
+    for path in paths:
+        try:
+            mtime = f"{os.path.getmtime(path):.3f}"
+            size = str(os.path.getsize(path))
+        except OSError:
+            continue
+        bits.append(f"{path}|{mtime}|{size}")
+    return "\n".join(bits)
 
 
 def _pi_letter_title_from_line(text: str) -> str:
@@ -2734,10 +2779,44 @@ def _pi_read_price_letters(path: str) -> list[dict[str, str]]:
     return out
 
 
+def _pi_read_price_letter_files(paths: list[str]) -> list[dict[str, str]]:
+    """여러 공문 파일의 제목. 같은 제목은 더 최근 파일을 쓴다."""
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for path in paths:
+        for row in _pi_read_price_letters(path):
+            label = str(row.get("label") or "")
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            out.append(row)
+    return out
+
+
+def _pi_take_letter_file_body(
+    *,
+    picked: str,
+    applied: str,
+    token: str,
+    applied_token: str,
+    current: str,
+    previous_file_body: str,
+    new_body: str,
+) -> bool:
+    """파일 제목을 본문에 넣을지. 직접 고친 문장은 파일 갱신으로 덮지 않는다."""
+    if not picked or not str(new_body or "").strip():
+        return False
+    if applied != picked:
+        return True
+    if applied_token == token:
+        return False
+    return current == previous_file_body
+
+
 @st.cache_data(show_spinner=False)
-def _pi_cached_price_letters(path: str, mtime: float) -> list[dict[str, str]]:
-    del mtime
-    return _pi_read_price_letters(path)
+def _pi_cached_price_letters(token: str) -> list[dict[str, str]]:
+    paths = [bit.rsplit("|", 2)[0] for bit in str(token or "").splitlines() if bit]
+    return _pi_read_price_letter_files(paths)
 
 
 def _pi_keep_letter_body(
@@ -2760,17 +2839,53 @@ def _pi_keep_letter_body(
 
 
 def _pi_price_letter_choices() -> list[dict[str, str]]:
-    path = _pi_price_letter_book_path()
-    if not path:
+    token = _pi_letter_book_token()
+    if not token:
         return []
     try:
-        mtime = os.path.getmtime(path)
-    except OSError:
-        return []
-    try:
-        return list(_pi_cached_price_letters(path, mtime))
+        return list(_pi_cached_price_letters(token))
     except Exception:
         return []
+
+
+def _pi_apply_open_letter_file(body_key: str, letters: list[dict[str, str]], token: str) -> bool:
+    """선택한 제목의 파일 본문이 바뀌었고 입력칸을 그대로 두면 본문을 맞춘다."""
+    picked = str(st.session_state.get("pi_letter_src") or "")
+    chosen = next((row for row in letters if row.get("label") == picked), None)
+    if not chosen or not body_key:
+        return False
+    new_body = str(chosen.get("body") or "")
+    if not _pi_take_letter_file_body(
+        picked=picked,
+        applied=str(st.session_state.get("_pi_letter_src_applied") or ""),
+        token=token,
+        applied_token=str(st.session_state.get("_pi_letter_src_token") or ""),
+        current=str(st.session_state.get(body_key) or ""),
+        previous_file_body=str(st.session_state.get("_pi_letter_src_body") or ""),
+        new_body=new_body,
+    ):
+        return False
+    st.session_state["pi_single_title"] = chosen.get("title") or _default_letter_title()
+    st.session_state[body_key] = new_body
+    st.session_state["_pi_letter_src_applied"] = picked
+    st.session_state["_pi_letter_src_token"] = token
+    st.session_state["_pi_letter_src_body"] = new_body
+    return True
+
+
+@st.fragment(run_every=timedelta(seconds=3))
+def _pi_watch_letter_book(body_key: str) -> None:
+    """제목 파일이 저장되면 대시보드 제목·본문을 다시 읽는다."""
+    token = _pi_letter_book_token()
+    prev = st.session_state.get("_pi_letter_book_seen")
+    if prev == token:
+        return
+    st.session_state["_pi_letter_book_seen"] = token
+    if prev is None:
+        return
+    letters = _pi_price_letter_choices()
+    _pi_apply_open_letter_file(body_key, letters, token)
+    st.rerun()
 
 
 def _default_doc_no(client: str = "") -> str:
@@ -5771,6 +5886,7 @@ def _render_pi_right_letter_form() -> None:
         price_df = pd.DataFrame()
 
     st.markdown("##### 공문 입력")
+    _pi_watch_letter_book(body_key)
     _render_include_letter_body_fields()
     m1, m2 = st.columns(2)
     with m1:
@@ -5782,6 +5898,9 @@ def _render_pi_right_letter_form() -> None:
         letters = _pi_price_letter_choices()
         by_label = {row["label"]: row for row in letters}
         if by_label:
+            cur_src = st.session_state.get("pi_letter_src")
+            if cur_src not in (None, "") and cur_src not in by_label:
+                st.session_state["pi_letter_src"] = None
             picked = st.selectbox(
                 "제목",
                 list(by_label),
@@ -5790,11 +5909,8 @@ def _render_pi_right_letter_form() -> None:
                 placeholder="공문 제목을 검색하거나 선택하세요",
             )
             chosen = by_label.get(str(picked or ""))
-            if chosen and st.session_state.get("_pi_letter_src_applied") != picked:
-                st.session_state["pi_single_title"] = chosen["title"]
-                if body_key:
-                    st.session_state[body_key] = chosen["body"]
-                st.session_state["_pi_letter_src_applied"] = picked
+            if chosen:
+                _pi_apply_open_letter_file(body_key, letters, _pi_letter_book_token())
         else:
             st.text_input("제목", value=_default_letter_title(), key="pi_single_title")
     with m4:
