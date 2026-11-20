@@ -4570,33 +4570,14 @@ def _render_pi_live_letter_page(
     fillPage();
   }}
   function fillPage(){{
-    var sheet = document.getElementById('pi-a4');
     var live = document.getElementById('pi-letter-live');
     var price = document.getElementById('pi-letter-price');
     var foot = document.getElementById('pi-letter-foot');
-    if (!sheet || !live || !foot) return;
+    if (!live || !foot) return;
     var rows = live.children;
     for (var i = 0; i < rows.length; i++) rows[i].style.marginTop = '0px';
     if (price) price.style.marginTop = '0px';
     foot.style.marginTop = 'auto';
-    var anchor = (price && price.offsetHeight) ? price : live;
-    var gap = foot.getBoundingClientRect().top - anchor.getBoundingClientRect().bottom;
-    if (gap < 8) {{
-      foot.style.marginTop = '10px';
-      return;
-    }}
-    var sections = [];
-    for (var j = 1; j < rows.length; j++) {{
-      var t = (rows[j].textContent || '').replace(/\\u00a0/g, ' ').trim();
-      if (/^\\d+\\./.test(t)) sections.push(rows[j]);
-    }}
-    var hasPrice = !!(price && (price.textContent || '').trim());
-    var slots = sections.length + (hasPrice ? 1 : 0);
-    foot.style.marginTop = '10px';
-    if (!slots) return;
-    var each = gap / slots;
-    for (var k = 0; k < sections.length; k++) sections[k].style.marginTop = each + 'px';
-    if (hasPrice) price.style.marginTop = each + 'px';
   }}
   window.__piFillPage = fillPage;
   try {{ fitA4(); }} catch (eFit) {{}}
