@@ -576,6 +576,20 @@ def test_letter_folder_lists_every_xlsx():
         assert any("가격조정공문_20261119(최종) · 안내" in label for label in labels)
         bond = next(row for row in rows if row["label"].startswith("채권독촉공문"))
         assert "미수 총액" in bond["body"]
+        older = os.path.join(folder, "26년 가격조정공문_20261119.xlsx")
+        newer = os.path.join(folder, "26년 가격조정공문_20261119(최종).xlsx")
+        from openpyxl import load_workbook as _load
+
+        for path, line in ((older, "1. 예전 문장"), (newer, "1. 최종 문장")):
+            book = _load(path)
+            book.active["C16"] = line
+            book.save(path)
+            book.close()
+        merged = _pi_read_price_letter_files([newer, older])
+        same = [row for row in merged if row.get("key") == "본문|안내 4"]
+        assert len(same) == 1
+        assert "최종 문장" in same[0]["body"]
+        assert "예전 문장" not in same[0]["body"]
     finally:
         for name in os.listdir(folder):
             os.remove(os.path.join(folder, name))

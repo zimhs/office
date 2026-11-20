@@ -2993,8 +2993,13 @@ def _pi_is_letter_signoff(text: str) -> bool:
     return compact in {"주신일가스", "신일가스주식회사", "주식회사신일가스"}
 
 
+def _pi_letter_identity(sheet: str, title: str) -> str:
+    """같은 시트·제목은 파일명이 달라도 한 건으로 본다."""
+    return f"{_pi_nfc(sheet).strip()}|{_pi_nfc(title).strip()}"
+
+
 def _pi_letter_choice_label(path: str, sheet: str, title: str, *, multi_sheet: bool) -> str:
-    """파일마다 제목이 겹쳐도 목록에서 빠지지 않게 파일명을 붙인다."""
+    """목록에 보이는 이름. 시트가 여러 개면 시트명을 붙인다."""
     stem = _pi_nfc(os.path.splitext(os.path.basename(path))[0])
     title_n = _pi_nfc(title).strip()
     if multi_sheet:
@@ -3040,22 +3045,30 @@ def _pi_read_price_letters(path: str) -> list[dict[str, str]]:
                     break
                 lines.append(text)
             label = _pi_letter_choice_label(path, sheet, title, multi_sheet=multi)
-            out.append({"label": label, "title": title, "body": _pi_flow_letter_body("\n".join(lines))})
+            out.append(
+                {
+                    "label": label,
+                    "title": title,
+                    "body": _pi_flow_letter_body("\n".join(lines)),
+                    "key": _pi_letter_identity(sheet, title),
+                }
+            )
     finally:
         wb.close()
     return out
 
 
 def _pi_read_price_letter_files(paths: list[str]) -> list[dict[str, str]]:
-    """여러 공문 파일의 제목. 같은 표시 이름은 더 최근 파일을 쓴다."""
+    """여러 공문 파일의 제목. 시트와 제목이 같으면 더 최근 파일만 남긴다."""
     seen: set[str] = set()
     out: list[dict[str, str]] = []
     for path in paths:
         for row in _pi_read_price_letters(path):
             label = str(row.get("label") or "")
-            if not label or label in seen:
+            key = str(row.get("key") or label)
+            if not label or key in seen:
                 continue
-            seen.add(label)
+            seen.add(key)
             out.append(row)
     return out
 
