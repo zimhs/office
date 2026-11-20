@@ -4476,8 +4476,8 @@ def _render_pi_live_letter_page(
     )
     page = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="margin:0;background:#F8FAFC;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;">
-<div style="zoom:0.65;width:fit-content;">
-<div style="box-sizing:border-box;width:680px;background:#fff;border:1px solid #94A3B8;min-height:720px;display:flex;flex-direction:column;padding:16px 20px 14px;color:#111;">
+<div id="pi-a4-wrap" style="box-sizing:border-box;padding:2cm;width:100%;">
+<div id="pi-a4" style="box-sizing:border-box;width:100%;aspect-ratio:210/297;margin:0 auto;background:#fff;border:1px solid #94A3B8;display:flex;flex-direction:column;padding:12px 14px 10px;color:#111;overflow:auto;">
 {header_html}
 <div style="height:2px;background:#D1D5DB;"></div>
 <div style="text-align:center;font-size:12px;padding:5px 0;">우 18524 경기도 화성시 팔탄면 서해로 1327-17 / 전화 031-366-0799 / FAX 031-366-5633</div>
@@ -4503,6 +4503,32 @@ def _render_pi_live_letter_page(
 </div>
 <script>
 (function(){{
+  function fitA4(){{
+    var sheet = document.getElementById('pi-a4');
+    var wrap = document.getElementById('pi-a4-wrap');
+    if (!sheet || !wrap) return;
+    var pad = (96 / 2.54) * 2;
+    var frame = window.frameElement;
+    var hostW = (frame && frame.clientWidth) ? frame.clientWidth : document.documentElement.clientWidth;
+    if (!hostW || hostW < 80) {{
+      requestAnimationFrame(fitA4);
+      return;
+    }}
+    var w = Math.max(220, hostW - pad * 2);
+    var h = w * (297 / 210);
+    sheet.style.width = w + 'px';
+    sheet.style.height = h + 'px';
+    wrap.style.padding = '2cm';
+    wrap.style.width = '100%';
+    var px = Math.ceil(h + pad * 2);
+    if (frame) {{
+      frame.style.height = px + 'px';
+      frame.setAttribute('height', String(px));
+      if (frame.parentElement) frame.parentElement.style.height = px + 'px';
+    }}
+  }}
+  fitA4();
+  window.addEventListener('resize', fitA4);
   var d = window.parent.document;
   function paint(text){{
     var box = document.getElementById('pi-letter-live');
@@ -4537,7 +4563,7 @@ def _render_pi_live_letter_page(
 }})();
 </script>
 </body></html>"""
-    st.components.v1.html(page, height=520, scrolling=True)
+    st.components.v1.html(page, height=780, scrolling=False)
 
 
 def _render_letter_form_preview(
