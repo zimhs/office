@@ -313,20 +313,34 @@ def _pi_rerun(*, full: bool = False) -> None:
         st.rerun()
 
 
-def _pi_ping_left_preview() -> None:
-    """오른쪽 수정이 왼쪽 공문 미리보기에 바로 보이게 한다."""
-    import secrets
-
-    nonce = secrets.token_hex(4)
+def _pi_bind_letter_preview_live() -> None:
+    """공문 본문 띄어쓰기를 서버 재실행 없이 인쇄 미리보기에 바로 그린다."""
     st.components.v1.html(
-        f"""<div data-n="{nonce}"></div><script>
-        setTimeout(function(){{
-          try {{
-            var d=window.parent.document;
-            var b=d.querySelector('[class*="st-key-pi_left_repaint"] button');
-            if(b) b.click();
-          }} catch(e) {{}}
-        }}, 80);
+        """<script>
+        (function(){
+          var d = window.parent.document;
+          if (d.__piLetterLive) return;
+          d.__piLetterLive = 1;
+          function paint(text){
+            var box = d.getElementById('pi-letter-live');
+            if (!box) return;
+            box.textContent = '';
+            String(text || '').split(/\\n/).forEach(function(line){
+              var row = d.createElement('div');
+              row.style.lineHeight = '1.45';
+              row.style.minHeight = '1.45em';
+              row.style.whiteSpace = 'pre-wrap';
+              row.textContent = line.length ? line : '\\u00a0';
+              box.appendChild(row);
+            });
+          }
+          d.addEventListener('input', function(ev){
+            var t = ev.target;
+            if (!t || t.tagName !== 'TEXTAREA') return;
+            if ((t.getAttribute('aria-label') || '') !== '공문 본문') return;
+            paint(t.value);
+          }, true);
+        })();
         </script>""",
         height=0,
     )
@@ -4430,12 +4444,13 @@ def _render_letter_form_preview(
     <div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {title}</div>
   </div>
   <div style="height:2px;background:#C4C4C4;margin:12px 0;"></div>
-  <div style="font-size:13px;line-height:1.55;color:#1E293B;white-space:normal;">{body_html}</div>
+  <div id="pi-letter-live" style="font-size:13px;line-height:1.55;color:#1E293B;white-space:pre-wrap;">{body_html}</div>
   {price_block}
 </div>
 """,
         unsafe_allow_html=True,
     )
+    _pi_bind_letter_preview_live()
 
 
 def _collect_letter_kwargs(
@@ -5427,11 +5442,6 @@ def _render_pi_left_panel() -> None:
     ignore_nav = _pi_consume_left_nav_block()
     st.session_state["_pi_nav_blocked_now"] = ignore_nav
     _ensure_mail_compose_first_screen(pack)
-    st.markdown(
-        """<style>[class*="st-key-pi_left_repaint"]{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;}</style>""",
-        unsafe_allow_html=True,
-    )
-    st.button("공문갱신", key="pi_left_repaint")
     _render_letter_form_preview(
         client=client,
         title=title or str(letter_kwargs.get("title") or ""),
@@ -5698,21 +5708,6 @@ def _render_pi_right_letter_form() -> None:
             items_key=items_key,
             last=prev.get("last"),
         )
-        body_now = str(st.session_state.get(body_key) or "")
-        live_now = st.session_state.get("_pi_live_items") or []
-        sig = (body_now, tuple(
-            (
-                str(it.get("품목명") or ""),
-                str(it.get("기존단가") or ""),
-                str(it.get("인상적용단가") or ""),
-                str(it.get("비고") or ""),
-            )
-            for it in live_now
-            if isinstance(it, dict)
-        ))
-        if st.session_state.get("_pi_preview_sig") != sig:
-            st.session_state["_pi_preview_sig"] = sig
-            _pi_ping_left_preview()
 
 
 @st.fragment
