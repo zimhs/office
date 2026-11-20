@@ -313,6 +313,25 @@ def _pi_rerun(*, full: bool = False) -> None:
         st.rerun()
 
 
+def _pi_ping_left_preview() -> None:
+    """오른쪽 수정이 왼쪽 공문 미리보기에 바로 보이게 한다."""
+    import secrets
+
+    nonce = secrets.token_hex(4)
+    st.components.v1.html(
+        f"""<div data-n="{nonce}"></div><script>
+        setTimeout(function(){{
+          try {{
+            var d=window.parent.document;
+            var b=d.querySelector('[class*="st-key-pi_left_repaint"] button');
+            if(b) b.click();
+          }} catch(e) {{}}
+        }}, 80);
+        </script>""",
+        height=0,
+    )
+
+
 def _secret_get(*keys: str) -> str:
     """secrets.toml / Cloud secrets / env / 로컬 smtp_local.toml 조회.
 
@@ -1425,6 +1444,19 @@ def _pi_letter_block_spacing(
     section_gap = _PI_SECTION_GAP + add
     table_gap = _PI_SECTION_GAP + add if has_table else _PI_SECTION_GAP
     return _PI_LINE_H, section_gap, table_gap, True
+
+
+def _pi_keep_user_lines(text: str) -> list[str]:
+    """입력한 줄바꿈·빈 줄은 그대로 둔다."""
+    return str(text or "").replace("\xa0", " ").splitlines()
+
+
+def _pi_table_gap_below(body_h: float, table_h: float, room: float) -> tuple[float, bool]:
+    """수정한 본문 아래 남은 칸에 단가표를 붙인다. 넘치면 2페이지."""
+    base = 3.0
+    if body_h + base + table_h > room + 0.4:
+        return base, False
+    return max(base, room - body_h - table_h), True
 
 
 def _body_text_to_paras(text: str) -> dict[str, str]:
@@ -3538,40 +3570,23 @@ def build_letter_pdf(
         n = max(len(clean), 1)
         return 7.0 + 1.5 + 7.0 + 7.0 * n + 2.0 + 6.0 + 2.0
 
-    # ── 1장: 헤더 + 본문. 빈 줄은 붙이고, 넘치면 기존처럼 2페이지 ──
+    # ── 1장: 고친 본문 그대로. 단가표는 아래 남은 칸에 붙인다 ──
     _draw_letterhead(include_meta=True)
     pdf.set_font("kr", "", 10)
     pdf.set_text_color(15, 23, 42)
-    flowed = _pi_flow_letter_body(
-        "\n".join(str(paras.get(coord) or "") for coord in _BODY_CELL_ORDER)
-    )
-    paragraphs = [p for p in flowed.splitlines() if p.strip()]
-    wrapped = [
-        [ln for ln in _pdf_wrap_lines(pdf, para, usable) if ln.strip()]
-        for para in paragraphs
-    ]
-    wrapped = [lines for lines in wrapped if lines]
-    n_lines = sum(len(lines) for lines in wrapped)
-
-    def _numbered_block(text: str) -> bool:
-        return bool(re.match(r"^\d+\.", str(text or "").strip()))
-
-    n_section_gaps = sum(
-        1
-        for i in range(1, len(wrapped))
-        if _numbered_block(wrapped[i][0])
-    )
-    n_tight_gaps = max(len(wrapped) - 1 - n_section_gaps, 0)
+    letter_text = _extra.get("letter_text")
+    if letter_text is None:
+        letter_text = "\n".join(str(paras.get(coord) or "") for coord in _BODY_CELL_ORDER)
+    visual: list[str] = []
+    for raw in _pi_keep_user_lines(str(letter_text)):
+        if not str(raw).strip():
+            visual.append("")
+            continue
+        visual.extend(_pdf_wrap_lines(pdf, str(raw).strip(), usable))
+    line_h = _PI_LINE_H
     table_h = _price_block_height() if clean else 0.0
     room = max(0.0, content_max - pdf.get_y() - 2.0)
-    line_h, para_gap, table_gap, fits_one = _pi_letter_block_spacing(
-        n_lines=n_lines,
-        n_section_gaps=n_section_gaps,
-        n_tight_gaps=n_tight_gaps,
-        table_h=table_h,
-        room=room,
-        has_table=bool(clean),
-    )
+    table_gap, fits_one = _pi_table_gap_below(len(visual) * line_h, table_h, room)
 
     def _continue_page() -> None:
         _draw_page_footer()
@@ -3586,13 +3601,8 @@ def build_letter_pdf(
         pdf.set_x(left)
         pdf.cell(usable, line_h, text, new_x="LMARGIN", new_y="NEXT")
 
-    for pi, lines in enumerate(wrapped):
-        for ln in lines:
-            _draw_fit_line(ln)
-        if pi < len(wrapped) - 1:
-            gap = para_gap if _numbered_block(wrapped[pi + 1][0]) else _PI_TIGHT_GAP
-            if fits_one or pdf.get_y() + gap <= content_max:
-                pdf.ln(gap)
+    for ln in visual:
+        _draw_fit_line(ln)
 
     attach_to_back = False
     if clean:
@@ -4260,6 +4270,7 @@ def _render_items_table(
         use_container_width=True,
         key=_editor_widget_key(editor_key),
     )
+    st.session_state["_pi_live_items"] = _items_from_editor_df(edited)
 
     b1, b2, b3 = st.columns(3)
     with b1:
@@ -4379,17 +4390,17 @@ def _render_letter_form_preview(
         )
     if not rows_html:
         rows_html = "<tr><td colspan='4'>(품목 없음)</td></tr>"
-    flowed_body = _pi_flow_letter_body(letter_body)
     body_html = "".join(
-        f"<p style='margin:0 0 0.7em 0;text-align:left;line-height:1.45;'>{html_lib.escape(line)}</p>"
-        for line in flowed_body.splitlines()
-        if line.strip()
+        "<div style='min-height:1.45em;line-height:1.45;'>&nbsp;</div>"
+        if not line.strip()
+        else f"<div style='line-height:1.45;white-space:pre-wrap;'>{html_lib.escape(line)}</div>"
+        for line in _pi_keep_user_lines(letter_body)
     )
     send_s = send_date.strftime("%Y.%m.%d") if hasattr(send_date, "strftime") else str(send_date)
     price_block = ""
     if any(str(it.get("품목명") or "").strip() for it in items):
         price_block = f"""
-  <div style="margin-top:14px;font-weight:700;text-align:center;">단가 조정 내용</div>
+  <div style="margin-top:auto;padding-top:12px;font-weight:700;text-align:center;">단가 조정 내용</div>
   <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;">
     <thead>
       <tr style="background:#0F766E;color:#fff;">
@@ -4405,7 +4416,7 @@ def _render_letter_form_preview(
 """
     st.markdown(
         f"""
-<div style="border:1px solid #CBD5E1;border-radius:10px;padding:14px 16px;background:#fff;max-height:640px;overflow:auto;">
+<div style="border:1px solid #CBD5E1;border-radius:10px;padding:14px 16px;background:#fff;min-height:560px;max-height:720px;overflow:auto;display:flex;flex-direction:column;">
   <div style="text-align:center;font-weight:800;font-size:16px;color:#0F766E;margin-bottom:8px;">공문 미리보기</div>
   <div style="height:2px;background:#D1D5DB;margin:6px 0;"></div>
   <div style="text-align:center;font-size:11px;color:#475569;padding:4px 0;">
@@ -4446,7 +4457,11 @@ def _collect_letter_kwargs(
     if not isinstance(send_date, date):
         send_date = date.today()
     letter_body = str(st.session_state.get(body_key) or _default_letter_body_text())
-    items_all = _normalize_items_selection(list(st.session_state.get(items_key) or []))
+    live_items = st.session_state.get("_pi_live_items")
+    if isinstance(live_items, list):
+        items_all = _normalize_items_selection(live_items)
+    else:
+        items_all = _normalize_items_selection(list(st.session_state.get(items_key) or []))
     items = _selected_items(items_all)
     letter_paras = _body_text_to_paras(letter_body)
     mail_body = _default_mail_body(client, effective_s, items)
@@ -4461,6 +4476,7 @@ def _collect_letter_kwargs(
         doc_no=doc_no,
         send_date=send_date,
         letter_paras=letter_paras,
+        letter_text=letter_body,
     )
     return kwargs, letter_body, items, effective_s
 
@@ -5411,6 +5427,20 @@ def _render_pi_left_panel() -> None:
     ignore_nav = _pi_consume_left_nav_block()
     st.session_state["_pi_nav_blocked_now"] = ignore_nav
     _ensure_mail_compose_first_screen(pack)
+    st.markdown(
+        """<style>[class*="st-key-pi_left_repaint"]{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;}</style>""",
+        unsafe_allow_html=True,
+    )
+    st.button("공문갱신", key="pi_left_repaint")
+    _render_letter_form_preview(
+        client=client,
+        title=title or str(letter_kwargs.get("title") or ""),
+        doc_no=str(letter_kwargs.get("doc_no") or ""),
+        send_date=letter_kwargs.get("send_date") or date.today(),
+        effective_s=effective_s,
+        letter_body=letter_body,
+        items=items_now,
+    )
     _pi_chip_btn_css()
     _render_email_addr_fields()
 
@@ -5668,6 +5698,21 @@ def _render_pi_right_letter_form() -> None:
             items_key=items_key,
             last=prev.get("last"),
         )
+        body_now = str(st.session_state.get(body_key) or "")
+        live_now = st.session_state.get("_pi_live_items") or []
+        sig = (body_now, tuple(
+            (
+                str(it.get("품목명") or ""),
+                str(it.get("기존단가") or ""),
+                str(it.get("인상적용단가") or ""),
+                str(it.get("비고") or ""),
+            )
+            for it in live_now
+            if isinstance(it, dict)
+        ))
+        if st.session_state.get("_pi_preview_sig") != sig:
+            st.session_state["_pi_preview_sig"] = sig
+            _pi_ping_left_preview()
 
 
 @st.fragment
