@@ -4599,7 +4599,7 @@ def _render_pi_live_letter_page(
     price_block = ""
     if any(str(it.get("품목명") or "").strip() for it in items):
         price_block = (
-            "<div style='margin-top:10px;font-weight:700;text-align:center;font-size:15px;'>단가 조정 내용</div>"
+            "<div style='font-weight:700;text-align:center;font-size:15px;'>단가 조정 내용</div>"
             "<table style='width:100%;border-collapse:collapse;margin-top:6px;font-size:13px;'>"
             "<thead><tr style='background:#0F766E;color:#fff;'>"
             "<th style='padding:6px;border:1px solid #0F766E;'>제품명</th>"
@@ -4691,8 +4691,18 @@ def _render_pi_live_letter_page(
     if (!live || !foot) return;
     var rows = live.children;
     for (var i = 0; i < rows.length; i++) rows[i].style.marginTop = '0px';
-    if (price) price.style.marginTop = '0px';
+    var hasPrice = !!(price && (price.textContent || '').trim());
+    if (!hasPrice) {{
+      if (price) price.style.marginTop = '0px';
+      foot.style.marginTop = 'auto';
+      return;
+    }}
+    price.style.marginTop = '0px';
     foot.style.marginTop = 'auto';
+    var gap = foot.getBoundingClientRect().top - price.getBoundingClientRect().bottom;
+    var half = gap > 8 ? gap / 2 : 16;
+    price.style.marginTop = half + 'px';
+    foot.style.marginTop = half + 'px';
   }}
   window.__piFillPage = fillPage;
   try {{ fitA4(); }} catch (eFit) {{}}
