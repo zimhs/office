@@ -582,6 +582,23 @@ def test_letter_folder_lists_every_xlsx():
         os.rmdir(folder)
 
 
+def test_price_preview_html_lists_saved_rows():
+    from price_increase_tab import _pi_price_preview_html
+
+    html = _pi_price_preview_html(
+        [
+            {"품목명": "N2", "기존단가": 200, "인상적용단가": 220, "비고": "A"},
+            {"품목명": "  ", "기존단가": 1, "인상적용단가": 1, "비고": ""},
+        ],
+        "2026-11-01",
+    )
+    assert "단가 조정 내용" in html
+    assert "N2" in html
+    assert "220" in html
+    assert "2026년 11월 01일" in html
+    assert _pi_price_preview_html([], "2026-11-01") == ""
+
+
 def test_sent_history_opens_body_from_row():
     src = open("price_increase_tab.py", encoding="utf-8").read()
     hist = src.split("def _render_pi_sent_history", 1)[1].split("\ndef ", 1)[0]

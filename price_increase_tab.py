@@ -2610,6 +2610,14 @@ def _editor_widget_key(editor_key: str) -> str:
     return f"{editor_key}_editor_v{ver}"
 
 
+def _pi_live_editor_items(editor_key: str, fallback: list[dict]) -> list[dict]:
+    """편집중인 표. 위젯에 남은 수정만 읽고, 원본 목록은 바꾸지 않는다."""
+    live = st.session_state.get(_editor_widget_key(editor_key))
+    if isinstance(live, pd.DataFrame):
+        return _normalize_items_selection(_items_from_editor_df(live))
+    return _normalize_items_selection(list(fallback or []))
+
+
 def _bump_editor_widget(editor_key: str) -> None:
     """data_editor 위젯 상태를 강제로 갱신 (일괄적용·삭제·재불러오기)."""
     vk = f"{editor_key}_ver"
@@ -4355,7 +4363,7 @@ def _render_items_table(
     c_apply, c_reload = st.columns(2)
     with c_apply:
         if st.button("인상단가에 적용", key=f"{editor_key}_apply", use_container_width=True, type="primary"):
-            base = _normalize_items_selection(st.session_state.get(editor_key, items))
+            base = _pi_live_editor_items(editor_key, st.session_state.get(editor_key, items))
             if is_pct:
                 st.session_state[editor_key] = _apply_pct_to_items(
                     base, float(pct_val), only_selected=True
@@ -4425,8 +4433,12 @@ def _render_items_table(
             _bump_editor_widget(editor_key)
     with b3:
         if st.button("표 내용 저장", key=f"{editor_key}_save", type="primary", use_container_width=True):
-            st.session_state[editor_key] = _items_from_editor_df(edited)
-            st.success("품목표 저장됨 (거래처별 유지)")
+            saved = _normalize_items_selection(_items_from_editor_df(edited))
+            st.session_state[editor_key] = saved
+            _bump_editor_widget(editor_key)
+            shown = _pi_sync_saved_items_into_pack(saved)
+            _pi_push_price_table_to_preview(shown[0], shown[1])
+            st.success("품목표 저장됨 · 인쇄 미리보기에 반영")
 
     touched = any(
         st.session_state.get(k)
@@ -4435,13 +4447,14 @@ def _render_items_table(
             f"{editor_key}_reload",
             f"{editor_key}_drop_empty",
             f"{editor_key}_clear",
+            f"{editor_key}_save",
         )
     )
     if touched:
         result = _normalize_items_selection(list(st.session_state.get(editor_key) or []))
     else:
+        # 선택 해제를 세션에 다시 넣지 않는다. 넣으면 같은 클릭이 한 번 더 해제된다.
         result = _normalize_items_selection(_items_from_editor_df(edited))
-        st.session_state[editor_key] = result
     apply_note = str(st.session_state.get(f"{editor_key}_apply_note") or "").strip()
     chosen = _selected_items(result)
     if result:
@@ -4641,6 +4654,76 @@ def _pi_release_preview_slot_height() -> None:
     )
 
 
+def _pi_price_preview_html(items: list[dict], effective_s: str) -> str:
+    """인쇄 미리보기 단가표. 품목이 없으면 빈 문자열."""
+    rows_html = ""
+    for it in items or []:
+        name_raw = str(it.get("품목명") or "").strip()
+        if not name_raw:
+            continue
+        name = html_lib.escape(name_raw)
+        old = float(it.get("기존단가") or 0)
+        new = float(it.get("인상적용단가") or 0)
+        note = html_lib.escape(str(it.get("비고") or ""))
+        rows_html += (
+            f"<tr><td style='padding:4px 6px;border:1px solid #94A3B8;'>{name}</td>"
+            f"<td style='padding:4px 6px;border:1px solid #94A3B8;text-align:center'>{old:,.0f}</td>"
+            f"<td style='padding:4px 6px;border:1px solid #94A3B8;text-align:center'>{new:,.0f}</td>"
+            f"<td style='padding:4px 6px;border:1px solid #94A3B8;'>{note}</td></tr>"
+        )
+    if not rows_html:
+        return ""
+    return (
+        "<div style='font-weight:700;text-align:center;font-size:15px;'>단가 조정 내용</div>"
+        "<table style='width:100%;border-collapse:collapse;margin-top:6px;font-size:13px;'>"
+        "<thead><tr style='background:#0F766E;color:#fff;'>"
+        "<th style='padding:6px;border:1px solid #0F766E;'>제품명</th>"
+        "<th style='padding:6px;border:1px solid #0F766E;'>기존단가</th>"
+        "<th style='padding:6px;border:1px solid #0F766E;'>인상단가</th>"
+        "<th style='padding:6px;border:1px solid #0F766E;'>비고</th>"
+        f"</tr></thead><tbody>{rows_html}</tbody></table>"
+        f"<div style='margin-top:8px;font-size:14px;'>• 시행 일자 : {html_lib.escape(_format_korean_effective(effective_s))}</div>"
+    )
+
+
+def _pi_sync_saved_items_into_pack(items: list[dict]) -> tuple[list[dict], str]:
+    """저장한 단가표를 미리보기 데이터에 넣는다. 선택 해제된 행은 표에서 뺀다."""
+    pack = dict(st.session_state.get("_pi_left_pack") or {})
+    shown = _selected_items(items) if st.session_state.get("pi_include_price", True) else []
+    eff = st.session_state.get("pi_single_eff")
+    effective_s = eff.strftime("%Y-%m-%d") if hasattr(eff, "strftime") else str(pack.get("effective_s") or "")
+    kwargs = dict(pack.get("letter_kwargs") or {})
+    kwargs["items"] = shown
+    if effective_s:
+        kwargs["effective"] = effective_s
+    pack["items_now"] = shown
+    pack["effective_s"] = effective_s
+    pack["letter_kwargs"] = kwargs
+    st.session_state["_pi_left_pack"] = pack
+    return shown, effective_s
+
+
+def _pi_push_price_table_to_preview(items: list[dict], effective_s: str) -> None:
+    """열려 있는 인쇄 미리보기의 단가표만 바로 바꾼다."""
+    payload = json.dumps(_pi_price_preview_html(items, effective_s)).replace("<", "\\u003c")
+    st.components.v1.html(
+        "<script>(function(){try{"
+        "var d=window.parent.document;"
+        f"var html={payload};"
+        "var frames=d.querySelectorAll('iframe');"
+        "for(var i=0;i<frames.length;i++){"
+        "var doc=null;try{doc=frames[i].contentDocument;}catch(e1){continue;}"
+        "if(!doc)continue;"
+        "var box=doc.getElementById('pi-letter-price');"
+        "if(!box)continue;"
+        "box.innerHTML=html;"
+        "try{var w=frames[i].contentWindow;if(w&&typeof w.__piFillPage==='function')w.__piFillPage();}catch(e2){}"
+        "}"
+        "}catch(e){}})();</script>",
+        height=0,
+    )
+
+
 def _pi_push_letter_body_to_preview() -> None:
     """공문 본문 칸의 글자·띄어쓰기를 엑셀 미리보기에 바로 넣는다."""
     st.components.v1.html(
@@ -4660,18 +4743,6 @@ def _render_pi_live_letter_page(
     items: list[dict],
 ) -> None:
     """엑셀 미리보기. 본문 수정은 이 페이지 안에서만 바로 그린다."""
-    rows_html = ""
-    for it in items:
-        name = html_lib.escape(str(it.get("품목명") or ""))
-        old = float(it.get("기존단가") or 0)
-        new = float(it.get("인상적용단가") or 0)
-        note = html_lib.escape(str(it.get("비고") or ""))
-        rows_html += (
-            f"<tr><td style='padding:4px 6px;border:1px solid #94A3B8;'>{name}</td>"
-            f"<td style='padding:4px 6px;border:1px solid #94A3B8;text-align:center'>{old:,.0f}</td>"
-            f"<td style='padding:4px 6px;border:1px solid #94A3B8;text-align:center'>{new:,.0f}</td>"
-            f"<td style='padding:4px 6px;border:1px solid #94A3B8;'>{note}</td></tr>"
-        )
     body_html = "".join(
         "<div style='min-height:1.35em;line-height:1.35;'>&nbsp;</div>"
         if not line.strip()
@@ -4679,19 +4750,7 @@ def _render_pi_live_letter_page(
         for line in str(letter_body or "").splitlines()
     )
     send_s = send_date.strftime("%Y.%m.%d") if hasattr(send_date, "strftime") else str(send_date)
-    price_block = ""
-    if any(str(it.get("품목명") or "").strip() for it in items):
-        price_block = (
-            "<div style='font-weight:700;text-align:center;font-size:15px;'>단가 조정 내용</div>"
-            "<table style='width:100%;border-collapse:collapse;margin-top:6px;font-size:13px;'>"
-            "<thead><tr style='background:#0F766E;color:#fff;'>"
-            "<th style='padding:6px;border:1px solid #0F766E;'>제품명</th>"
-            "<th style='padding:6px;border:1px solid #0F766E;'>기존단가</th>"
-            "<th style='padding:6px;border:1px solid #0F766E;'>인상단가</th>"
-            "<th style='padding:6px;border:1px solid #0F766E;'>비고</th>"
-            f"</tr></thead><tbody>{rows_html}</tbody></table>"
-            f"<div style='margin-top:8px;font-size:14px;'>• 시행 일자 : {html_lib.escape(_format_korean_effective(effective_s))}</div>"
-        )
+    price_block = _pi_price_preview_html(items, effective_s)
     imgs = _extract_template_images(ensure_default_template())
     header_src = _pi_data_uri(str(imgs.get("header") or ""))
     footer_src = _pi_data_uri(str(imgs.get("footer") or imgs.get("header") or ""))
