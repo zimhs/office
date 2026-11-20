@@ -4390,24 +4390,63 @@ def _pi_sync_body_into_pack(body_key: str) -> None:
     st.session_state["_pi_left_pack"] = pack
 
 
+_PI_LETTER_BIND_JS = r"""
+(function(){
+  var d;
+  try { d = window.parent.document; } catch (e) { return; }
+  if (!d) return;
+  function paintLetter(text){
+    var frames = d.querySelectorAll('iframe');
+    for (var i = 0; i < frames.length; i++) {
+      var doc = null;
+      try { doc = frames[i].contentDocument; } catch (e1) { continue; }
+      if (!doc) continue;
+      var box = doc.getElementById('pi-letter-live');
+      if (!box) continue;
+      box.textContent = '';
+      var lines = String(text == null ? '' : text).split('\n');
+      for (var j = 0; j < lines.length; j++) {
+        var row = doc.createElement('div');
+        row.style.lineHeight = '1.35';
+        row.style.minHeight = '1.35em';
+        row.style.whiteSpace = 'pre-wrap';
+        row.textContent = lines[j].length ? lines[j] : '\u00a0';
+        box.appendChild(row);
+      }
+      try {
+        var win = frames[i].contentWindow;
+        if (win && typeof win.__piFillPage === 'function') win.__piFillPage();
+      } catch (e2) {}
+    }
+  }
+  d.__piLetterPaint = paintLetter;
+  if (d.__piLetterOnInput) {
+    d.removeEventListener('input', d.__piLetterOnInput, true);
+    d.removeEventListener('keyup', d.__piLetterOnInput, true);
+  }
+  d.__piLetterOnInput = function(ev){
+    var t = ev.target;
+    if (!t || t.tagName !== 'TEXTAREA') return;
+    if ((t.getAttribute('aria-label') || '') !== '공문 본문') return;
+    paintLetter(t.value);
+  };
+  d.addEventListener('input', d.__piLetterOnInput, true);
+  d.addEventListener('keyup', d.__piLetterOnInput, true);
+  var areas = d.querySelectorAll('textarea');
+  for (var k = 0; k < areas.length; k++) {
+    if ((areas[k].getAttribute('aria-label') || '') === '공문 본문') {
+      paintLetter(areas[k].value);
+      break;
+    }
+  }
+})();
+"""
+
+
 def _pi_push_letter_body_to_preview() -> None:
-    """열린 엑셀 미리보기의 본문만 바꾼다."""
+    """공문 본문 칸의 글자·띄어쓰기를 엑셀 미리보기에 바로 넣는다."""
     st.components.v1.html(
-        """<script>
-        (function(){
-          try {
-            var d = window.parent.document;
-            if (typeof d.__piLetterPaint !== 'function') return;
-            var areas = d.querySelectorAll('textarea');
-            for (var i = 0; i < areas.length; i++) {
-              if ((areas[i].getAttribute('aria-label') || '') === '공문 본문') {
-                d.__piLetterPaint(areas[i].value);
-                return;
-              }
-            }
-          } catch (e) {}
-        })();
-        </script>""",
+        "<script>" + _PI_LETTER_BIND_JS + "</script>",
         height=0,
     )
 
@@ -4559,40 +4598,10 @@ def _render_pi_live_letter_page(
     for (var k = 0; k < sections.length; k++) sections[k].style.marginTop = each + 'px';
     if (hasPrice) price.style.marginTop = each + 'px';
   }}
-  fitA4();
-  window.addEventListener('resize', fitA4);
-  var d = window.parent.document;
-  function paint(text){{
-    var box = document.getElementById('pi-letter-live');
-    if (!box) return;
-    box.textContent = '';
-    String(text || '').split(/\\n/).forEach(function(line){{
-      var row = document.createElement('div');
-      row.style.lineHeight = '1.35';
-      row.style.minHeight = '1.35em';
-      row.style.whiteSpace = 'pre-wrap';
-      row.textContent = line.length ? line : '\\u00a0';
-      box.appendChild(row);
-    }});
-    fillPage();
-  }}
-  d.__piLetterPaint = paint;
-  if (!d.__piLetterLive) {{
-    d.__piLetterLive = 1;
-    d.addEventListener('input', function(ev){{
-      var t = ev.target;
-      if (!t || t.tagName !== 'TEXTAREA') return;
-      if ((t.getAttribute('aria-label') || '') !== '공문 본문') return;
-      if (typeof d.__piLetterPaint === 'function') d.__piLetterPaint(t.value);
-    }}, true);
-  }}
-  var areas = d.querySelectorAll('textarea');
-  for (var i = 0; i < areas.length; i++) {{
-    if ((areas[i].getAttribute('aria-label') || '') === '공문 본문') {{
-      paint(areas[i].value);
-      break;
-    }}
-  }}
+  window.__piFillPage = fillPage;
+  try {{ fitA4(); }} catch (eFit) {{}}
+  window.addEventListener('resize', function(){{ try {{ fitA4(); }} catch (eFit2) {{}} }});
+{_PI_LETTER_BIND_JS}
 }})();
 </script>
 </body></html>"""
