@@ -1043,6 +1043,54 @@ def list_gmail_message_ids(
     return out
 
 
+_MAIL_SUBJ: dict[str, str] = {}
+
+
+def _gmail_thread_subject(thread_id: str) -> str:
+    tid = str(thread_id or "").strip()
+    if not tid:
+        return ""
+    data = _gmail_get(
+        f"threads/{urllib.parse.quote(tid, safe='')}",
+        {
+            "format": "metadata",
+            "metadataHeaders": ["Subject"],
+            "fields": "messages(payload/headers)",
+        },
+    )
+    for msg in data.get("messages") or []:
+        headers = list(((msg or {}).get("payload") or {}).get("headers") or [])
+        subject = _gmail_header(headers, "Subject")
+        if subject:
+            return subject
+    return ""
+
+
+def gmail_subject_for_event(ev: dict | None) -> str:
+    """메모에 제목이 없으면 메일 스레드에서 제목을 한 번만 가져온다."""
+    found = mail_subject_from_event(ev)
+    if found:
+        return found
+    ids = gmail_ids_from_event(ev)
+    key = str(ids.get("thread") or ids.get("msg") or "").strip()
+    if not key:
+        return ""
+    if key in _MAIL_SUBJ:
+        return _MAIL_SUBJ[key]
+    subject = ""
+    try:
+        if ids.get("msg"):
+            subject = str((gmail_message_meta(str(ids.get("msg") or "")) or {}).get("subject") or "").strip()
+        if not subject:
+            subject = _gmail_thread_subject(key).strip()
+        if not subject:
+            subject = str((gmail_message_meta(key) or {}).get("subject") or "").strip()
+    except Exception:
+        subject = ""
+    _MAIL_SUBJ[key] = subject
+    return subject
+
+
 def gmail_message_meta(msg_id: str) -> dict:
     mid = str(msg_id or "").strip()
     if not mid:
@@ -3667,15 +3715,20 @@ def _render_event_memo_pop(ev: dict) -> None:
     eid = str(ev.get("id") or "")
     cid = str(ev.get("cal_id") or "")
     note = str(ev.get("description") or "")
+    sub = ""
     if is_mail_calendar_event(ev):
         title = GC_MAIL_CHIP_TITLE
-        sub = mail_subject_from_event(ev)
+        sub = gmail_subject_for_event(ev)
         if sub and f"제목: {sub}" not in note:
             note = f"제목: {sub}\n" + note.lstrip()
     writable = bool(ev.get("writable"))
     nk = "gc_pop_note_" + (eid[-24:] if eid else "x")
     if nk not in st.session_state:
         st.session_state[nk] = note
+    elif sub and "제목:" not in str(st.session_state.get(nk) or ""):
+        raw = str(ev.get("description") or "").strip()
+        if str(st.session_state.get(nk) or "").strip() == raw:
+            st.session_state[nk] = note
     with st.container(key="gc_memo_pop"):
         st.markdown(f"**{html.escape(title)}**")
         meta = " · ".join(

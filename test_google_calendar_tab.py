@@ -556,6 +556,25 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
         )
         self.assertEqual(gc.calendar_chip_label({"title": "미팅", "hhmm": "09:00"}), "09:00 미팅")
 
+    def test_mail_memo_subject_comes_from_thread(self):
+        ev = {
+            "title": "메일",
+            "description": "메일 열기:\nhttps://mail.google.com/mail/u/0/#all/1a17bb8d0d9624df",
+        }
+        gc._MAIL_SUBJ.clear()
+        with patch.object(
+            gc,
+            "_gmail_get",
+            return_value={
+                "messages": [
+                    {"payload": {"headers": [{"name": "Subject", "value": "방문예정"}]}}
+                ]
+            },
+        ) as got:
+            self.assertEqual(gc.gmail_subject_for_event(ev), "방문예정")
+            self.assertEqual(gc.gmail_subject_for_event(ev), "방문예정")
+            self.assertEqual(got.call_count, 1)
+
     def test_mail_move_and_trash_helpers(self):
         ids = gc.gmail_ids_from_event(
             {
