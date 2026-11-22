@@ -2781,17 +2781,20 @@ def _gc_due_text(value: Any) -> str:
 
 
 def _gc_cached_tasks(list_id: str, *, force: bool = False) -> list[dict]:
+    """이미 받아 둔 할 일은 그대로 쓴다. 목록 추가처럼 화면만 바꿀 때 구글을 다시 부르지 않는다."""
     if _is_mac_rem_list(list_id):
         return _gc_cached_mac_tasks(list_id, force=force)
     if not list_id:
         return []
     box = _gc_api_box()
-    now = datetime.now(timezone.utc).timestamp()
-    age = now - float(box.get(f"tk_at:{list_id}") or 0)
+    cached = box.get(f"tk:{list_id}")
+    if not force and isinstance(cached, list):
+        return list(cached)
     lists = load_local_task_lists().get("lists") or {}
-    if not force and list_id in lists and age < 20:
+    if not force and list_id in lists:
         local = [_slim_task(t) for t in (lists.get(list_id) or []) if isinstance(t, dict)]
         _gc_set_tasks(list_id, local)
+        box[f"tk_at:{list_id}"] = datetime.now(timezone.utc).timestamp()
         return local
     return merge_tasks_with_google(list_id)
 
@@ -4854,12 +4857,18 @@ def _gc_take_list_actions() -> None:
     if isinstance(new_name, str) and new_name.strip():
         try:
             created = add_tasklist(new_name.strip())
-            _gc_api_box().pop("tlists", None)
-            st.session_state["_gc_pick_tlist"] = str(created.get("id") or "")
-            st.session_state["_gc_new_tlist"] = {
-                "id": created.get("id") or "",
-                "title": created.get("title") or new_name.strip(),
-            }
+            cid = str(created.get("id") or "")
+            title = str(created.get("title") or new_name.strip())
+            box = _gc_api_box()
+            rows = [dict(item) for item in (box.get("tlists") or []) if isinstance(item, dict)]
+            if cid and not any(str(item.get("id") or "") == cid for item in rows):
+                rows.append({"id": cid, "title": title})
+            box["tlists"] = rows
+            if cid:
+                box[f"tk:{cid}"] = []
+                box[f"tk_at:{cid}"] = datetime.now(timezone.utc).timestamp()
+            st.session_state["_gc_pick_tlist"] = cid
+            st.session_state["_gc_new_tlist"] = {"id": cid, "title": title}
         except Exception as exc:
             st.warning(f"할 일 목록을 만들지 못했습니다: {exc}")
     del_id = st.session_state.pop("_gc_pending_tlist_del", None)
@@ -4872,7 +4881,11 @@ def _gc_take_list_actions() -> None:
             data["lists"] = lists
             save_local_task_lists(data)
             box = _gc_api_box()
-            box.pop("tlists", None)
+            box["tlists"] = [
+                item
+                for item in (box.get("tlists") or [])
+                if isinstance(item, dict) and str(item.get("id") or "") != str(del_id)
+            ]
             box.pop(f"tk:{del_id}", None)
             box.pop(f"tk_at:{del_id}", None)
             st.session_state["gc_tlist"] = 0
@@ -4980,7 +4993,16 @@ def _gc_render_mac_box() -> None:
         done_tasks = [t for t in tasks if str(t.get("status") or "") == "completed"]
         for task in open_tasks:
             _gc_render_mac_task(task, edit_id, done=False)
-        with st.expander(f"완료된 미리 알림 ({len(done_tasks)})", expanded=False):
+        mac_done_key = "_gc_mac_done_open"
+        mac_done_open = bool(st.session_state.get(mac_done_key))
+        if st.button(
+            f"{'▼' if mac_done_open else '▶'} 완료된 미리 알림 ({len(done_tasks)})",
+            key="gc_mac_done_toggle",
+            type="tertiary",
+        ):
+            st.session_state[mac_done_key] = not mac_done_open
+            _gc_rerun_task()
+        if mac_done_open:
             if not done_tasks:
                 st.caption("완료된 미리 알림이 없습니다.")
             for task in done_tasks:
@@ -5373,7 +5395,16 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                 else:
                     st.session_state["_gc_note_edit"] = tid
                 _gc_rerun_task()
-    with st.expander(f"완료된 할 일 ({len(done_tasks)})", expanded=False):
+    done_key = "_gc_done_open"
+    done_open = bool(st.session_state.get(done_key))
+    if st.button(
+        f"{'▼' if done_open else '▶'} 완료된 할 일 ({len(done_tasks)})",
+        key="gc_done_toggle",
+        type="tertiary",
+    ):
+        st.session_state[done_key] = not done_open
+        _gc_rerun_task()
+    if done_open:
         if not done_tasks:
             st.caption("완료된 할 일이 없습니다.")
         for t in done_tasks:

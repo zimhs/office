@@ -828,6 +828,31 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
         merged.assert_not_called()
         self.assertEqual(gc._tlist_label({"id": "macrem:list-1", "title": "미리 알림"}), "맥 미리알림 · 미리 알림")
 
+    def test_cached_tasks_do_not_call_google_again(self):
+        state = {
+            "_gc_api": {
+                "tk:list-1": [
+                    {
+                        "id": "a",
+                        "title": "기존",
+                        "notes": "",
+                        "status": "needsAction",
+                        "due": "",
+                        "position": "",
+                        "local_only": False,
+                    }
+                ],
+                "tk_at:list-1": 1,
+            }
+        }
+        with patch.object(gc.st, "session_state", state), patch.object(
+            gc, "merge_tasks_with_google"
+        ) as merged, patch.object(gc, "list_tasks") as listed:
+            out = gc._gc_cached_tasks("list-1")
+        self.assertEqual(out[0]["title"], "기존")
+        merged.assert_not_called()
+        listed.assert_not_called()
+
     def test_task_lists_leave_reminders_separate(self):
         state: dict = {}
         with patch.object(gc.st, "session_state", state), patch.object(
