@@ -53,6 +53,9 @@ class DashExcelExportSourceTest(unittest.TestCase):
             'key="t8_detail"',
         ):
             self.assertIn(key, src)
+        self.assertIn("sheets=head_sheets", src)
+        self.assertIn("def _tab3_client_detail_sheet_specs", src)
+        self.assertIn('key=f"t3_cli_{metric}_{idx}"', src)
 
     def test_graph_download_helper_uses_png(self):
         src = self._src()
@@ -111,6 +114,60 @@ class DashExcelConvertTest(unittest.TestCase):
         ws = wb["T1_연도별월매출"]
         self.assertEqual(ws.cell(4, 1).value, "연간 합계")
         self.assertEqual(ws.cell(4, 2).value, 210)
+
+    def test_tab3_client_detail_sheet_matches_screen_rows(self):
+        from openpyxl import load_workbook
+
+        df = pd.DataFrame(
+            {
+                "품목명": ["AR (kg, Bulk)", "AR (kg, Bulk)"],
+                "거래처": ["케이디피", "한기"],
+                "연도월_정렬": ["26년 12월", "26년 12월"],
+                "매출액": [5_030_000.0, 16_800_000.0],
+            }
+        )
+        self.app.st.session_state["dash_vat_mode"] = "exclusive"
+        specs = self.app._tab3_client_detail_sheet_specs(
+            df,
+            ["AR (kg, Bulk)"],
+            "sales",
+            ["2026"],
+            ["12월"],
+            ["26"],
+        )
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["sum_label"], "합계")
+        self.assertEqual(specs[0]["cmap"], "Blues")
+        screen = self.app.get_display_df_with_sum(specs[0]["df"], "합계")
+        screen.index.name = "거래처"
+        self.assertEqual(list(screen.index), ["한기", "케이디피", "합계"])
+        self.assertEqual(float(screen.loc["한기", "26년 12월"]), 1680.0)
+        self.assertEqual(float(screen.loc["합계", "26년 12월"]), 2183.0)
+        raw = self.app.convert_dash_excel_sheets(
+            [
+                {
+                    "sheet": "품목실적",
+                    "df": pd.DataFrame({"품목명": ["AR (kg, Bulk)"]}),
+                    "use_index": False,
+                },
+                specs[0],
+            ]
+        )
+        wb = load_workbook(io.BytesIO(raw))
+        self.assertEqual(wb.sheetnames[0], "품목실적")
+        self.assertIn("AR (kg, Bulk) 매출", wb.sheetnames)
+        ws = wb["AR (kg, Bulk) 매출"]
+        self.assertEqual(ws.cell(1, 1).value, "거래처")
+        self.assertEqual(ws.cell(1, 2).value, "26년 12월")
+        self.assertEqual(ws.cell(2, 1).value, "한기")
+        self.assertEqual(ws.cell(2, 2).value, 1680)
+        self.assertEqual(ws.cell(4, 1).value, "합계")
+        self.assertEqual(ws.cell(4, 2).value, 2183)
+        styled = self.app.style_with_sum(screen, "{:,.0f}", "Blues", axis=None)
+        one = self.app._dash_xlsx_from_styler(styled, sheet="AR상세", hide_index=False)
+        one_ws = load_workbook(io.BytesIO(one))["AR상세"]
+        self.assertEqual(one_ws.cell(2, 1).value, "한기")
+        self.assertEqual(one_ws.cell(4, 1).value, "합계")
 
     def test_png_from_fig_is_png(self):
         import plotly.graph_objects as go

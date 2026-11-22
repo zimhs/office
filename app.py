@@ -1691,6 +1691,10 @@ def convert_dash_excel_sheets(items):
         add_sum = bool(spec.get("add_sum"))
         if add_sum:
             work = get_display_df_with_sum(work, spec.get("sum_label") or "합계")
+        index_name = spec.get("index_name")
+        if index_name and getattr(work.index, "nlevels", 1) == 1 and work.index.name != index_name:
+            work = work.copy()
+            work.index.name = index_name
         use_index = bool(spec.get("use_index", True))
         num_fmt = spec.get("num_fmt") or "#,##0"
         cmap = spec.get("cmap")
@@ -2047,14 +2051,25 @@ def _dash_label_with_xlsx(
     fig=None,
     graph_name: str | None = None,
     df=None,
+    sheets=None,
 ) -> None:
     """라벨 제목 옆에 작은 엑셀·그래프 버튼.
 
     파일은 클릭 시에만 만들고, fragment라서 앱 전체를 다시 돌리지 않는다.
+    sheets가 있으면 그 시트들을 한 파일로 저장한다. 없으면 기존 단일 표 경로.
     """
+    sheet_items = [
+        s
+        for s in (sheets or [])
+        if isinstance(s, dict)
+        and s.get("df") is not None
+        and not getattr(s.get("df"), "empty", True)
+    ]
     _dash_xlsx_btn_css()
     has_table = False
-    if styler is not None:
+    if sheet_items:
+        has_table = True
+    elif styler is not None:
         has_table = not (hasattr(styler, "data") and getattr(styler.data, "empty", False))
     elif df is not None and not getattr(df, "empty", True):
         has_table = True
@@ -2066,7 +2081,13 @@ def _dash_label_with_xlsx(
     gname = graph_name or (str(file_name).rsplit(".", 1)[0] + ".png")
     if not str(gname).lower().endswith(".png"):
         gname = str(gname).rsplit(".", 1)[0] + ".png"
-    x_sig = _dash_table_shape_sig(styler, df)
+    if sheet_items:
+        x_sig = tuple(
+            (str(s.get("sheet") or ""), tuple(getattr(s.get("df"), "shape", ())))
+            for s in sheet_items
+        )
+    else:
+        x_sig = _dash_table_shape_sig(styler, df)
     x_key = f"_dash_xlsx_bytes_{key}"
     x_sig_key = f"_dash_xlsx_sig_{key}"
     xbytes = st.session_state.get(x_key)
@@ -2095,9 +2116,12 @@ def _dash_label_with_xlsx(
                     width="content",
                 ):
                     try:
-                        xbytes = _dash_build_xlsx_bytes(
-                            styler, df, sheet=sheet, hide_index=hide_index
-                        )
+                        if sheet_items:
+                            xbytes = convert_dash_excel_sheets(sheet_items)
+                        else:
+                            xbytes = _dash_build_xlsx_bytes(
+                                styler, df, sheet=sheet, hide_index=hide_index
+                            )
                     except Exception:
                         xbytes = None
                     if xbytes:
@@ -10513,6 +10537,64 @@ def cached_tab3_item_client_detail(
     if sort_col:
         pvt = pvt.sort_values(by=sort_col, ascending=False)
     return pvt
+
+
+def _tab3_xlsx_name_part(name: str) -> str:
+    s = re.sub(r'[\\/:*?"<>|]+', "_", str(name or "")).strip()
+    return s[:40] or "품목"
+
+
+def _tab3_client_detail_view(df_src, item, metric, years, all_months, selected_years_short):
+    """펼침 표와 같은 거래처 상세. 화면 합계행·부가세 배수를 그대로 쓴다."""
+    pvt = cached_tab3_item_client_detail(
+        df_src,
+        item,
+        metric,
+        tuple(years),
+        tuple(all_months),
+        tuple(sorted(selected_years_short)),
+    )
+    if pvt is None or pvt.empty:
+        return None
+    work = pvt.copy()
+    if metric == "sales":
+        work = _scale_sales_money(work)
+    if work.index.name is None:
+        work.index.name = "거래처"
+    return work
+
+
+def _tab3_client_detail_sheet_specs(df_src, items, metric, years, all_months, selected_years_short):
+    """품목별 실적 엑셀에 넣을 거래처 상세 시트. 합계행·그라디언트는 화면과 같다."""
+    specs = []
+    if not items:
+        return specs
+    cmap = "Blues" if metric == "sales" else "Greens"
+    bulk = ("CO2 (kg, Bulk)", "N2 (kg, Bulk)", "O2 (kg, Bulk)", "AR (kg, Bulk)")
+    kind = "매출" if metric == "sales" else "출고"
+    for item in items:
+        work = _tab3_client_detail_view(
+            df_src, item, metric, years, all_months, selected_years_short
+        )
+        if work is None or work.empty:
+            continue
+        num_fmt = "#,##0.0" if metric == "qty" and item in bulk else "#,##0"
+        specs.append(
+            {
+                "sheet": f"{item} {kind}",
+                "df": work,
+                "use_index": True,
+                "add_sum": True,
+                "sum_label": "합계",
+                "index_name": "거래처",
+                "cmap": cmap,
+                "axis": None,
+                "num_fmt": num_fmt,
+            }
+        )
+    return specs
+
+
 def render_tab3_item_client_expanders(df_src, items, metric, years, all_months, selected_years_short):
     """상단에서 선택한 품목의 거래처별 상세 — 클릭 펼침 (매출/출고 각각)."""
     if not items:
@@ -10522,28 +10604,35 @@ def render_tab3_item_client_expanders(df_src, items, metric, years, all_months, 
     )
     cmap = "Blues" if metric == "sales" else "Greens"
     bulk = ("CO2 (kg, Bulk)", "N2 (kg, Bulk)", "O2 (kg, Bulk)", "AR (kg, Bulk)")
-    for item in items:
+    kind = "매출" if metric == "sales" else "출고"
+    for idx, item in enumerate(items):
         with st.expander(
             f"📂 [{item}] 거래처별 {label_metric} 상세 데이터 파보기 (클릭하여 펼치기)",
             expanded=False,
         ):
-            pvt = cached_tab3_item_client_detail(
-                df_src,
-                item,
-                metric,
-                tuple(years),
-                tuple(all_months),
-                tuple(sorted(selected_years_short)),
+            work = _tab3_client_detail_view(
+                df_src, item, metric, years, all_months, selected_years_short
             )
-            if pvt is None or pvt.empty:
+            if work is None or work.empty:
                 st.info(f"선택한 조건에서 [{item}] 거래처 상세 데이터가 없습니다.")
                 continue
-            if metric == "sales":
-                pvt = _scale_sales_money(pvt)
-            pvt_disp = get_display_df_with_sum(pvt, "합계")
+            pvt_disp = get_display_df_with_sum(work, "합계")
+            pvt_disp.index.name = work.index.name or "거래처"
             fmt = "{:,.1f}" if metric == "qty" and item in bulk else "{:,.0f}"
+            styled = style_with_sum(pvt_disp, fmt, cmap, axis=None)
+            _dash_label_with_xlsx(
+                (
+                    "<div style='font-size:13px;font-weight:700;color:#334155;margin:0'>"
+                    f"{html.escape(str(item))} 거래처별 {html.escape(label_metric)}</div>"
+                ),
+                key=f"t3_cli_{metric}_{idx}",
+                styler=styled,
+                file_name=f"T3_{_tab3_xlsx_name_part(item)}_거래처{kind}.xlsx",
+                hide_index=False,
+                sheet=str(item)[:31] or "상세",
+            )
             st.dataframe(
-                style_with_sum(pvt_disp, fmt, cmap, axis=None),
+                styled,
                 use_container_width=True,
                 height=min(420, 80 + 28 * min(len(pvt_disp), 12)),
             )
@@ -18891,10 +18980,38 @@ def _dash_filter_and_tabs_fragment() -> None:
                 def _tab3_vat_main() -> None:
                     t3_c1, t3_c2 = st.columns([1.2, 1.8], vertical_alignment="center")
                     with t3_c1:
+                        head_df = (
+                            sales_p.reset_index()
+                            if isinstance(sales_p, pd.DataFrame) and not sales_p.empty
+                            else None
+                        )
+                        detail_specs = []
+                        if selected_staff and selected_item:
+                            detail_specs = _tab3_client_detail_sheet_specs(
+                                df_f,
+                                list(selected_item),
+                                "sales",
+                                years,
+                                all_months,
+                                selected_detail_years,
+                            )
+                        head_sheets = None
+                        if detail_specs:
+                            head_sheets = []
+                            if head_df is not None and not head_df.empty:
+                                head_sheets.append(
+                                    {
+                                        "sheet": "품목실적",
+                                        "df": head_df,
+                                        "use_index": False,
+                                    }
+                                )
+                            head_sheets.extend(detail_specs)
                         _dash_label_with_xlsx(
                             f"<div class='sub-header dashboard-tab-panel-head'>📦 [{html.escape(str(selected_client))}] 품목별 실적 분석</div>",
                             key="t3_head",
-                            df=sales_p.reset_index() if isinstance(sales_p, pd.DataFrame) and not sales_p.empty else None,
+                            df=head_df,
+                            sheets=head_sheets,
                             file_name="T3_품목별실적분석.xlsx",
                             hide_index=True,
                             sheet="품목실적",
