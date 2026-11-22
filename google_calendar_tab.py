@@ -5314,7 +5314,6 @@ div[class*="st-key-gc_mr_ne_"] button,
 div[class*="st-key-gc_mr_tr_"] button,
 div[class*="st-key-gc_mr_add"] button,
 div[class*="st-key-gc_mr_toggle_note"] button,
-div[class*="st-key-gc_toggle_new_note"] button,
 div[class*="st-key-gc_ns_"] button,
 div[class*="st-key-gc_tr_"] button {
   min-height: 1.55rem !important;
@@ -5490,7 +5489,7 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                 ):
                     st.session_state["_gc_pending_restore"] = tid
                     _gc_rerun_task()
-    add_row = st.columns([6.4, 1.1, 1.15], gap="small", vertical_alignment="bottom")
+    add_row = st.columns([7.5, 1.15], gap="small", vertical_alignment="bottom")
     with add_row[0]:
         nt = st.text_input(
             "새 할 일",
@@ -5499,26 +5498,13 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
             label_visibility="collapsed",
         )
     with add_row[1]:
-        if st.button(
-            "메모",
-            key="gc_toggle_new_note",
-            type="tertiary",
-            width="content",
-        ):
-            st.session_state["_gc_show_new_note"] = not bool(
-                st.session_state.get("_gc_show_new_note")
-            )
-            _gc_rerun_task()
-    with add_row[2]:
         add_clicked = st.button("추가", key="gc_add_task", width="content")
-    nn = ""
-    if st.session_state.get("_gc_show_new_note"):
-        nn = st.text_input(
-            "새 메모",
-            key="gc_new_note",
-            placeholder="할 일 아래 메모",
-            label_visibility="collapsed",
-        )
+    nn = st.text_input(
+        "새 메모",
+        key="gc_new_note",
+        placeholder="할 일 아래 메모",
+        label_visibility="collapsed",
+    )
     due_new = st.date_input("날짜", value=None, key="gc_new_due")
     if add_clicked:
         title = (nt or "").strip()
@@ -5530,7 +5516,6 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                 "notes": nn or "",
                 "due": _gc_due_text(due_new),
             }
-            st.session_state["_gc_show_new_note"] = False
             _gc_rerun_task()
     _gc_render_mac_box()
 
