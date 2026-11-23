@@ -3491,7 +3491,10 @@ div[class*="st-key-gc_evpick_"] button {
   text-overflow: ellipsis !important;
   cursor: pointer !important;
 }
-html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] p {
+html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"],
+html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] p,
+html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] span,
+html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] div {
   font-size: 11px !important;
   line-height: 1.2 !important;
   font-weight: 400 !important;
@@ -3703,7 +3706,10 @@ def _gc_shrink_event_titles() -> None:
     st.markdown(
         "<style>html body div[class*='st-key-gc_evpick_'] button"
         "{font-size:10px!important;line-height:1.2!important;font-weight:400!important}"
-        "html body div[class*='st-key-gc_evpick_'] button [data-testid='stMarkdownContainer'] p"
+        "html body div[class*='st-key-gc_evpick_'] button [data-testid='stMarkdownContainer'],"
+        "html body div[class*='st-key-gc_evpick_'] button [data-testid='stMarkdownContainer'] p,"
+        "html body div[class*='st-key-gc_evpick_'] button [data-testid='stMarkdownContainer'] span,"
+        "html body div[class*='st-key-gc_evpick_'] button [data-testid='stMarkdownContainer'] div"
         "{font-size:11px!important;line-height:1.2!important;font-weight:400!important}</style>",
         unsafe_allow_html=True,
     )
@@ -5642,7 +5648,10 @@ div[class*="st-key-gc_vc_delivery_head"] div[class*="st-key-vc_strip_"] button p
     'html body div[class*="st-key-gc_evpick_"] button span,' +
     'html body div[class*="st-key-gc_evpick_"] button div' +
     '{font-size:10px!important;line-height:1.2!important;font-weight:400!important;}' +
-    'html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] p' +
+    'html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"],' +
+    'html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] p,' +
+    'html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] span,' +
+    'html body div[class*="st-key-gc_evpick_"] button [data-testid="stMarkdownContainer"] div' +
     '{font-size:11px!important;line-height:1.2!important;font-weight:400!important;}';
   function put(d) {
     if (!d) return;
@@ -5658,7 +5667,7 @@ div[class*="st-key-gc_vc_delivery_head"] div[class*="st-key-vc_strip_"] button p
   put(doc);
   function fitEvTitles(d) {
     if (!d || !d.querySelectorAll) return;
-    var nodes = d.querySelectorAll('[class*="st-key-gc_evpick_"] [data-testid="stMarkdownContainer"] p');
+    var nodes = d.querySelectorAll('[class*="st-key-gc_evpick_"] button, [class*="st-key-gc_evpick_"] button *');
     for (var i = 0; i < nodes.length; i++) {
       nodes[i].style.setProperty("font-size", "11px", "important");
       nodes[i].style.setProperty("line-height", "1.2", "important");
@@ -5667,6 +5676,12 @@ div[class*="st-key-gc_vc_delivery_head"] div[class*="st-key-vc_strip_"] button p
   }
   fitEvTitles(document);
   fitEvTitles(doc);
+  if (!app.__gcEvFit) {
+    app.__gcEvFit = setInterval(function () {
+      fitEvTitles(document);
+      fitEvTitles(doc);
+    }, 800);
+  }
   function bindDayPick(d) {
     if (!d || d.__gcDayPick) return;
     d.__gcDayPick = true;
