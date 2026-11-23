@@ -104,6 +104,15 @@ class SalesNoiseFilterTest(unittest.TestCase):
         self.assertIn("가스코아산.", opts)
         self.assertIn("가스코아산(동희)", opts)
         self.assertIn("가스코아산(성우하이텍)", opts)
+        both = filter_df_by_selected_client(
+            sales_df, ["가스코아산.", "가스코아산(동희)"]
+        )
+        self.assertEqual(len(both), 3)
+        self.assertEqual(float(both["출고량"].sum()), 160.0)
+        one = filter_df_by_selected_client(sales_df, ["가스코아산(동희)"])
+        self.assertEqual(len(one), 1)
+        self.assertEqual(float(one["출고량"].sum()), 100.0)
+        self.assertEqual(len(filter_df_by_selected_client(sales_df, [])), len(sales_df))
 
 
 class IndustryStaffMapTest(unittest.TestCase):

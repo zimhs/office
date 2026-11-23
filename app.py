@@ -7319,12 +7319,45 @@ def _dash_series_eq(series, value):
     return stripped.eq(value)
 
 
+def _filter_df_by_many_clients(df, names):
+    """고른 거래처를 한 번에 합친다. 부모·종속이 겹치면 행은 한 번만."""
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    clean = []
+    seen = set()
+    for raw in names or []:
+        name = str(raw or "").strip()
+        if not name or name == "전체 거래처" or name in seen:
+            continue
+        seen.add(name)
+        clean.append(name)
+    if not clean:
+        return df
+    if len(clean) == 1:
+        return filter_df_by_selected_client(df, clean[0])
+    mask = pd.Series(False, index=df.index)
+    hit = False
+    for name in clean:
+        part = filter_df_by_selected_client(df, name)
+        if part is None or part.empty:
+            continue
+        mask.loc[part.index] = True
+        hit = True
+    if not hit:
+        return df.iloc[0:0].copy()
+    return df.loc[mask].copy()
+
+
 def filter_df_by_selected_client(df, selected_client):
     """거래처 필터.
 
-    - 종속처(부모(비고)) 선택 → 해당 행만
-    - 부모(거래처_원본) 선택 → 부모 + 모든 종속 합산(총매출)
+    - 비우면 전체
+    - 여러 곳이면 합산(겹치는 부모·종속은 한 번)
+    - 종속처(부모(비고)) 한 곳 → 해당 행만
+    - 부모(거래처_원본) 한 곳 → 부모 + 모든 종속 합산(총매출)
     """
+    if isinstance(selected_client, (list, tuple, set)):
+        return _filter_df_by_many_clients(df, selected_client)
     if df is None or df.empty:
         return df if df is not None else pd.DataFrame()
     if not selected_client or selected_client == "전체 거래처":
@@ -7807,6 +7840,92 @@ def _dash_reset_select_if_invalid(key: str, valid, all_label: str) -> None:
         st.session_state[key] = None
 
 
+def _dash_clean_multi(raw, all_label: str) -> list[str]:
+    if raw is None or raw == "" or raw == all_label:
+        return []
+    if isinstance(raw, str):
+        name = raw.strip()
+        return [] if not name or name == all_label else [name]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out = []
+    seen = set()
+    for item in raw:
+        name = str(item or "").strip()
+        if not name or name == all_label or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _dash_client_label(names) -> str:
+    clean = _dash_clean_multi(names, _DASH_FILTER_ALL_CLIENT)
+    if not clean:
+        return _DASH_FILTER_ALL_CLIENT
+    if len(clean) == 1:
+        return clean[0]
+    return ", ".join(clean)
+
+
+def _dash_client_cache_token(names):
+    """한 곳이면 기존 문자열 키. 여러 곳이면 이름 묶음."""
+    clean = _dash_clean_multi(names, _DASH_FILTER_ALL_CLIENT)
+    if not clean:
+        return _DASH_FILTER_ALL_CLIENT
+    if len(clean) == 1:
+        return clean[0]
+    return tuple(clean)
+
+
+def _dash_coerce_multi_value(key: str, all_label: str, valid=None) -> list[str]:
+    """multiselect 세션은 리스트. 예전 한 줄 선택도 리스트로 넘긴다."""
+    names = _dash_clean_multi(st.session_state.get(key), all_label)
+    if valid is not None:
+        ok = set(valid)
+        names = [n for n in names if n in ok]
+    if st.session_state.get(key) != names:
+        st.session_state[key] = names
+    return names
+
+
+def _dash_active_client_names() -> list[str]:
+    return _dash_clean_multi(
+        st.session_state.get("dash_filter_clients"), _DASH_FILTER_ALL_CLIENT
+    )
+
+
+def _dash_one_selected_client() -> str:
+    names = _dash_active_client_names()
+    return names[0] if len(names) == 1 else ""
+
+
+def _dash_slice_debt(staff_debt_df, names):
+    names = _dash_clean_multi(names, _DASH_FILTER_ALL_CLIENT)
+    if staff_debt_df is None or getattr(staff_debt_df, "empty", True) or not names:
+        return staff_debt_df if staff_debt_df is not None else pd.DataFrame()
+    if "거래처" not in staff_debt_df.columns:
+        return staff_debt_df
+    if len(names) == 1:
+        return staff_debt_df[staff_debt_df["거래처"] == names[0]]
+    return staff_debt_df[staff_debt_df["거래처"].isin(names)]
+
+
+def _dash_format_client_address(names, addr_dict) -> str:
+    names = _dash_clean_multi(names, _DASH_FILTER_ALL_CLIENT)
+    missing = "등록된 주소 정보가 없습니다."
+    if len(names) == 1:
+        raw = resolve_client_address(names[0], addr_dict)
+        return str(raw) if raw else missing
+    if not names:
+        return missing
+    parts = []
+    for name in names:
+        raw = resolve_client_address(name, addr_dict)
+        parts.append(f"{name}: {raw if raw else '주소 없음'}")
+    return " · ".join(parts)
+
+
 def _dash_norm_filter_input(raw, all_label: str) -> str:
     s = str(raw or "").strip()
     if not s or s == all_label:
@@ -7856,8 +7975,9 @@ def _dash_clear_one_filter(changed_key: str) -> None:
         ):
             st.session_state.pop(k, None)
     elif changed_key == _DASH_FILTER_CLIENT_KEY:
-        st.session_state[_DASH_FILTER_CLIENT_KEY] = None
+        st.session_state[_DASH_FILTER_CLIENT_KEY] = []
         st.session_state["dash_filter_client"] = _DASH_FILTER_ALL_CLIENT
+        st.session_state["dash_filter_clients"] = []
         for k in (
             "_dash_item_opts_sig",
             "_dash_item_opts_tuple",
@@ -7866,7 +7986,7 @@ def _dash_clear_one_filter(changed_key: str) -> None:
         ):
             st.session_state.pop(k, None)
     elif changed_key == _DASH_FILTER_ITEM_KEY:
-        st.session_state[_DASH_FILTER_ITEM_KEY] = None
+        st.session_state[_DASH_FILTER_ITEM_KEY] = []
         st.session_state["dash_filter_items"] = []
 
 
@@ -8583,6 +8703,7 @@ def _dash_refresh_name_view(selected_staff, selected_client, selected_item) -> N
     globals()["selected_staff"] = list(selected_staff or [])
     globals()["selected_item"] = list(selected_item or [])
     globals()["selected_client"] = selected_client or "전체 거래처"
+    globals()["selected_client_names"] = _dash_active_client_names()
     df_base = st.session_state.get("_dash_date_slice_df", full_df)
     df_client_filtered = st.session_state.get("_dash_client_slice_df", df_base)
     if not isinstance(df_client_filtered, pd.DataFrame):
@@ -8607,7 +8728,7 @@ def _dash_refresh_name_view(selected_staff, selected_client, selected_item) -> N
             _base_store.pop(next(iter(_base_store)))
     _bb = _base_store[_base_ck]
     _pivot_ck = _dash_pivot_cache_key(
-        selected_client,
+        _dash_client_cache_token(_dash_active_client_names()),
         selected_staff,
         selected_item,
         start_date,
@@ -8673,23 +8794,18 @@ def _dash_refresh_name_view(selected_staff, selected_client, selected_item) -> N
         else:
             st.session_state["_dash_staff_debt_df"] = pd.DataFrame()
     staff_debt_df = st.session_state.get("_dash_staff_debt_df", pd.DataFrame())
-    _debt_filter_sig = (_debt_staff_sig, selected_client)
+    _client_names_now = _dash_active_client_names()
+    _debt_filter_sig = (_debt_staff_sig, tuple(_client_names_now))
     if (
         st.session_state.get("_dash_debt_filter_sig") != _debt_filter_sig
         or "_dash_filtered_debt_df" not in st.session_state
     ):
         st.session_state["_dash_debt_filter_sig"] = _debt_filter_sig
-        if selected_client != "전체 거래처" and not staff_debt_df.empty:
-            st.session_state["_dash_filtered_debt_df"] = staff_debt_df[
-                staff_debt_df["거래처"] == selected_client
-            ]
-        else:
-            st.session_state["_dash_filtered_debt_df"] = staff_debt_df
+        st.session_state["_dash_filtered_debt_df"] = _dash_slice_debt(
+            staff_debt_df, _client_names_now
+        )
     filtered_debt_df = st.session_state.get("_dash_filtered_debt_df", pd.DataFrame())
-    client_addr_raw = resolve_client_address(selected_client, addr_dict)
-    client_addr = (
-        str(client_addr_raw) if client_addr_raw else "등록된 주소 정보가 없습니다."
-    )
+    client_addr = _dash_format_client_address(_client_names_now, addr_dict)
 
 
 def _dash_replay_open_tab(selected_staff, selected_client, selected_item) -> None:
@@ -10761,6 +10877,7 @@ def render_tab4_item_client_section(
     all_months,
     *,
     selected_staff=None,
+    key_suffix: str = "",
 ):
     """Tab4 — 상단 품목 선택 시 거래처별 월별 사용량·단가·매출."""
     avail_years_short = [y[2:] for y in years]
@@ -10770,7 +10887,7 @@ def render_tab4_item_client_section(
         options=avail_years_short,
         default=default_years,
         format_func=lambda x: f"20{x}년",
-        key="tab4_item_client_years",
+        key="tab4_item_client_years" + (key_suffix or ""),
     )
     if not sel_years:
         st.warning("연도를 1개 이상 선택하세요.")
@@ -10809,7 +10926,7 @@ def render_tab4_item_client_section(
     _dash_label_with_xlsx(
         "<div style='font-size:14px;font-weight:600;color:#334155;margin:12px 0 6px;'>"
         f"1️⃣ 매출액 ({_dash_vat_lbl()}, 만원)</div>",
-        key="t4_item_sales",
+        key="t4_item_sales" + (key_suffix or ""),
         styler=_t4_sales_st,
         file_name=f"T4_{item_name}_매출.xlsx",
         sheet="매출",
@@ -10818,7 +10935,7 @@ def render_tab4_item_client_section(
     _dash_label_with_xlsx(
         "<div style='font-size:14px;font-weight:600;color:#334155;margin:16px 0 6px;'>"
         f"2️⃣ 사용량 ({'ton' if item_name in _TAB4_BULK_ITEMS else '출고량'})</div>",
-        key="t4_item_qty",
+        key="t4_item_qty" + (key_suffix or ""),
         styler=_t4_qty_st,
         file_name=f"T4_{item_name}_사용량.xlsx",
         sheet="사용량",
@@ -10827,7 +10944,7 @@ def render_tab4_item_client_section(
     _dash_label_with_xlsx(
         "<div style='font-size:14px;font-weight:600;color:#334155;margin:16px 0 6px;'>"
         "3️⃣ 적용 단가 (원)</div>",
-        key="t4_item_price",
+        key="t4_item_price" + (key_suffix or ""),
         styler=_t4_price_st,
         file_name=f"T4_{item_name}_단가.xlsx",
         sheet="단가",
@@ -16860,6 +16977,7 @@ latest_update_str = "데이터 없음"
 selected_staff = []
 selected_item = []
 selected_client = "전체 거래처"
+selected_client_names = []
 df_base = pd.DataFrame()
 df_client_filtered = pd.DataFrame()
 df_f = pd.DataFrame()
@@ -16876,7 +16994,7 @@ years = ["2026"]
 def _dash_filter_and_tabs_fragment() -> None:
     """Top filter + tabs; fragment rerun skips file/Drive reload."""
     _dash_vat_chip_css()
-    global latest_update_str, selected_staff, selected_item, selected_client
+    global latest_update_str, selected_staff, selected_item, selected_client, selected_client_names
     global df_base, df_client_filtered, df_f
     global pivot_m_total, client_item_qty_pivot, sales_p, qty_p, unit_price_p
     global staff_pivot, df_detail, years, desired_order
@@ -16982,7 +17100,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             @st.fragment
             def _dash_name_filter_fragment():
                 """담당자·거래처·품목만 고친다. 보고 있는 탭 숫자만 다시 맞춘다."""
-                global selected_staff, selected_client, selected_item
+                global selected_staff, selected_client, selected_item, selected_client_names
                 _dash_prepare_filter_widgets()
                 _dash_reset_select_if_invalid(
                     _DASH_FILTER_STAFF_KEY, set(_staff_opts), _DASH_FILTER_ALL_STAFF
@@ -17028,30 +17146,37 @@ def _dash_filter_and_tabs_fragment() -> None:
                             _client_opts = sorted(set(_client_opts) | _ind_clients)
                     st.session_state["_dash_client_opts_tuple"] = tuple(_client_opts)
                 all_clients = st.session_state.get("_dash_client_opts_tuple") or ()
-                _dash_reset_select_if_invalid(
-                    _DASH_FILTER_CLIENT_KEY, all_clients, _DASH_FILTER_ALL_CLIENT
+                _dash_coerce_multi_value(
+                    _DASH_FILTER_CLIENT_KEY, _DASH_FILTER_ALL_CLIENT, all_clients
                 )
-                selected_client_raw = fc4.selectbox(
+                selected_client_raw = fc4.multiselect(
                     "🏢 거래처",
-                    options=list(all_clients) or [""],
-                    index=None,
+                    options=list(all_clients),
                     placeholder="거래처명 입력",
                     key=_DASH_FILTER_CLIENT_KEY,
-                    help="목록에서 고르세요. X로 지웁니다.",
+                    help="여러 곳이면 합산합니다. 비우면 전체. 영업 종합 요약은 전체 그대로입니다.",
                 )
-                selected_client = selected_client_raw or _DASH_FILTER_ALL_CLIENT
+                selected_client_names = _dash_clean_multi(
+                    selected_client_raw, _DASH_FILTER_ALL_CLIENT
+                )
+                selected_client = _dash_client_label(selected_client_names)
                 st.session_state["dash_filter_client"] = selected_client
-                _client_slice_sig = (_staff_slice_sig, selected_client)
+                st.session_state["dash_filter_clients"] = list(selected_client_names)
+                _client_slice_sig = (_staff_slice_sig, tuple(selected_client_names))
                 if st.session_state.get("_dash_client_slice_sig") != _client_slice_sig:
                     st.session_state["_dash_client_slice_sig"] = _client_slice_sig
                     st.session_state["_dash_client_slice_df"] = (
-                        filter_df_by_selected_client(df_staff_for_opts, selected_client)
-                        if selected_client != "전체 거래처"
+                        filter_df_by_selected_client(df_staff_for_opts, selected_client_names)
+                        if selected_client_names
                         else df_staff_for_opts
                     )
                 df_client_for_opts = st.session_state.get("_dash_client_slice_df", df_staff_for_opts)
                 # 품목 옵션 캐시 (담당자+거래처+행수)
-                _item_opts_sig = (_client_opts_sig, selected_client, int(len(df_client_for_opts)))
+                _item_opts_sig = (
+                    _client_opts_sig,
+                    tuple(selected_client_names),
+                    int(len(df_client_for_opts)),
+                )
                 if st.session_state.get("_dash_item_opts_sig") != _item_opts_sig:
                     st.session_state["_dash_item_opts_sig"] = _item_opts_sig
                     if df_client_for_opts.empty or "품목명" not in df_client_for_opts.columns:
@@ -17061,22 +17186,17 @@ def _dash_filter_and_tabs_fragment() -> None:
                             sorted(df_client_for_opts["품목명"].astype(str).unique())
                         )
                 available_items = list(st.session_state.get("_dash_item_opts_tuple", ()))
-                _dash_reset_select_if_invalid(
-                    _DASH_FILTER_ITEM_KEY, available_items, _DASH_FILTER_ALL_ITEM
+                _dash_coerce_multi_value(
+                    _DASH_FILTER_ITEM_KEY, _DASH_FILTER_ALL_ITEM, available_items
                 )
-                _item_picked = fc5.selectbox(
+                _item_picked = fc5.multiselect(
                     "📦 품목명",
-                    options=available_items or [""],
-                    index=None,
+                    options=available_items,
                     placeholder="품목명 입력",
                     key=_DASH_FILTER_ITEM_KEY,
-                    help="목록에서 고르세요. X로 지웁니다.",
+                    help="여러 품목이면 합산합니다. 비우면 전체. 영업 종합 요약은 전체 그대로입니다.",
                 )
-                selected_item = (
-                    []
-                    if not _item_picked or _item_picked == _DASH_FILTER_ALL_ITEM
-                    else [_item_picked]
-                )
+                selected_item = _dash_clean_multi(_item_picked, _DASH_FILTER_ALL_ITEM)
                 st.session_state["dash_filter_items"] = list(selected_item)
                 try:
                     from streamlit.runtime.scriptrunner_utils.script_run_context import (
@@ -17120,6 +17240,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                 )
 
             df_base = df_base_opts
+            # 영업 종합 요약은 df_base(날짜만)와 공통 피벗을 쓴다. 거래처·품목 다중 선택은 넣지 않는다.
             # df_staff_for_opts 와 동일 조건 → 거래처 필터 1회만 (중복 연산 제거, 결과 동일)
             df_client_filtered = df_client_for_opts
             df_f = (
@@ -17142,7 +17263,7 @@ def _dash_filter_and_tabs_fragment() -> None:
             _bb = _base_store[_base_ck]
             # 거래처·품목 피벗만 필터 조합별 캐시
             _pivot_ck = _dash_pivot_cache_key(
-                selected_client,
+                _dash_client_cache_token(selected_client_names),
                 selected_staff,
                 selected_item,
                 start_date,
@@ -17216,25 +17337,18 @@ def _dash_filter_and_tabs_fragment() -> None:
         else:
             st.session_state["_dash_staff_debt_df"] = pd.DataFrame()
     staff_debt_df = st.session_state.get("_dash_staff_debt_df", pd.DataFrame())
-    _debt_filter_sig = (_debt_staff_sig, selected_client)
+    _debt_filter_sig = (_debt_staff_sig, tuple(selected_client_names or ()))
     _debt_filter_missing = "_dash_filtered_debt_df" not in st.session_state
     if (
         st.session_state.get("_dash_debt_filter_sig") != _debt_filter_sig
         or _debt_filter_missing
     ):
         st.session_state["_dash_debt_filter_sig"] = _debt_filter_sig
-        if selected_client != "전체 거래처" and not staff_debt_df.empty:
-            st.session_state["_dash_filtered_debt_df"] = staff_debt_df[
-                staff_debt_df["거래처"] == selected_client
-            ]
-        else:
-            st.session_state["_dash_filtered_debt_df"] = staff_debt_df
+        st.session_state["_dash_filtered_debt_df"] = _dash_slice_debt(
+            staff_debt_df, selected_client_names
+        )
     filtered_debt_df = st.session_state.get("_dash_filtered_debt_df", pd.DataFrame())
-    client_addr_raw = resolve_client_address(selected_client, addr_dict)
-    if not client_addr_raw:
-        client_addr = "등록된 주소 정보가 없습니다."
-    else:
-        client_addr = str(client_addr_raw)
+    client_addr = _dash_format_client_address(selected_client_names, addr_dict)
     st.sidebar.markdown("---")
     st.sidebar.subheader("📥 엑셀 내보내기")
     _excel_sig = (
@@ -18077,11 +18191,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                     import visit_calendar_tab as _t2_vc
 
                     _t2_staff = selected_staff[0] if selected_staff else ""
-                    _t2_cli = (
-                        ""
-                        if (not selected_client or selected_client == "전체 거래처")
-                        else str(selected_client)
-                    )
+                    _t2_cli = _dash_one_selected_client()
                     _t2_df = (
                         df_client_filtered
                         if _t2_cli and isinstance(df_client_filtered, pd.DataFrame)
@@ -18103,7 +18213,7 @@ def _dash_filter_and_tabs_fragment() -> None:
                                 if client_addr and client_addr != "등록된 주소 정보가 없습니다."
                                 else None
                             )
-                            _notes_disabled = selected_client == "전체 거래처"
+                            _notes_disabled = not _dash_one_selected_client()
                             if _is_local_macos():
                                 if st.button(
                                     "📝 macOS 메모에서 노트 열기/생성",
@@ -18198,8 +18308,9 @@ def _dash_filter_and_tabs_fragment() -> None:
                             )
                         with btn_c3:
                             # 주소록 주소 우선, 없으면 거래처명으로 카카오맵 검색
-                            if selected_client and selected_client != "전체 거래처":
-                                kakao_q = client_addr if client_addr != "등록된 주소 정보가 없습니다." else selected_client
+                            _one_cli = _dash_one_selected_client()
+                            if _one_cli:
+                                kakao_q = client_addr if client_addr != "등록된 주소 정보가 없습니다." else _one_cli
                                 kakao_url = f"https://map.kakao.com/link/search/{urllib.parse.quote(kakao_q)}"
                                 st.link_button("🗺️ 카카오맵에서 주소 보기", kakao_url, width="stretch")
                             else:
@@ -18219,15 +18330,16 @@ def _dash_filter_and_tabs_fragment() -> None:
                             )
                             if (
                                 client_addr == "등록된 주소 정보가 없습니다."
-                                and selected_client
-                                and selected_client != "전체 거래처"
+                                and _dash_one_selected_client()
                             ):
                                 st.caption(
                                     f"주소록 {len(addr_dict):,}곳 로드 · "
                                     f"「{selected_client}」 항목 없음. "
                                     "사이드바 주소.csv를 업로드하거나 「불러오기」 하세요."
                                 )
-                            _render_tab2_extra_addr_box(selected_client)
+                            _render_tab2_extra_addr_box(
+                                _dash_one_selected_client() or "전체 거래처"
+                            )
 
                     # 목록에 없는 거래처도 기업정보만 조회 가능 (상단 필터·매출 집계는 변경 없음)
                     _ov_c1, _ov_c2 = st.columns([1.4, 1], gap="small")
@@ -18245,8 +18357,8 @@ def _dash_filter_and_tabs_fragment() -> None:
                             placeholder="동명 구분 · 예: 평택시 서탄면",
                         )
                     _corp_query_name = str(_corp_name_override or "").strip()
-                    if not _corp_query_name and selected_client and selected_client != "전체 거래처":
-                        _corp_query_name = str(selected_client).strip()
+                    if not _corp_query_name and _dash_one_selected_client():
+                        _corp_query_name = _dash_one_selected_client()
                     _corp_query_is_override = bool(str(_corp_name_override or "").strip())
 
                     if st.session_state.show_corp_info:
@@ -19491,18 +19603,19 @@ def _dash_filter_and_tabs_fragment() -> None:
                         "💡 상단 고정바에서 **품목명**을 선택하면, 해당 품목을 거래하는 거래처별 "
                         "월별 **사용량 · 단가 · 매출**이 **매출순위(순번) 내림차순**으로 표시됩니다."
                     )
-                elif len(selected_item) > 1:
-                    st.info("품목별 상세는 **품목 1개** 선택 시 표시됩니다.")
                 elif df_f.empty:
                     st.info("선택한 담당자·거래처·기간에 해당 품목 데이터가 없습니다.")
                 else:
-                    render_tab4_item_client_section(
-                        df_f,
-                        selected_item[0],
-                        years,
-                        all_months,
-                        selected_staff=selected_staff or None,
-                    )
+                    _one_item = len(selected_item) == 1
+                    for _i, _it in enumerate(selected_item):
+                        render_tab4_item_client_section(
+                            df_f,
+                            _it,
+                            years,
+                            all_months,
+                            selected_staff=selected_staff or None,
+                            key_suffix="" if _one_item else f"_{_i}",
+                        )
 
                 if not df_base.empty:
                     with st.expander("⚠️ 담당자 미지정 신규/누락 거래처 (직접 지정) 열기/닫기", expanded=True):

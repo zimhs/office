@@ -198,7 +198,10 @@ class CloudClipFixIsolationTest(unittest.TestCase):
         self.assertIn('placeholder="담당자명 입력"', filt)
         self.assertIn('placeholder="거래처명 입력"', filt)
         self.assertIn('placeholder="품목명 입력"', filt)
-        self.assertGreaterEqual(filt.count("index=None"), 3)
+        self.assertIn("fc3.selectbox(", filt)
+        self.assertIn("fc4.multiselect(", filt)
+        self.assertIn("fc5.multiselect(", filt)
+        self.assertEqual(filt.count("index=None"), 1)
         self.assertNotIn("accept_new_options=True", filt)
 
 
