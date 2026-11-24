@@ -3388,10 +3388,30 @@ def keep_existing_mail_compose(
     return subj, bod
 
 
+def _remember_mail_compose_text() -> None:
+    """지금 칸의 제목·본문을 초안에 남긴다. 다른 칸·다른 탭을 다녀와도 이 값으로 돌아온다."""
+    draft = st.session_state.get("pi_mail_draft")
+    if not isinstance(draft, dict):
+        return
+    subj_key = "pi_mail_compose_subject"
+    body_key = "pi_mail_compose_body"
+    if subj_key not in st.session_state and body_key not in st.session_state:
+        return
+    draft = dict(draft)
+    if subj_key in st.session_state:
+        draft["subject"] = str(st.session_state.get(subj_key) or "")
+    if body_key in st.session_state:
+        draft["body"] = _strip_mail_signature(str(st.session_state.get(body_key) or ""))
+    st.session_state["pi_mail_draft"] = draft
+    st.session_state["pi_mail_text_edited"] = True
+
+
 def _mail_compose_in_progress() -> bool:
-    """왼쪽 메일 작성 초안이 있으면 True(미리보기 다녀와도 유지)."""
+    """왼쪽 메일 작성 초안이 있으면 True(미리보기·다른 탭을 다녀와도 유지)."""
     if not st.session_state.get("pi_mail_draft"):
         return False
+    if st.session_state.get("pi_mail_text_edited"):
+        return True
     return "pi_mail_compose_subject" in st.session_state or "pi_mail_compose_body" in st.session_state
 
 
@@ -4209,8 +4229,18 @@ def _pi_mail_compose_dialog() -> None:
     stripped = _strip_mail_signature(cur_body)
     if stripped != cur_body:
         st.session_state["pi_mail_compose_body"] = stripped
-    st.text_input("메일 제목", key="pi_mail_compose_subject")
-    st.text_area("메일 본문", height=260, key="pi_mail_compose_body")
+    st.text_input(
+        "메일 제목",
+        key="pi_mail_compose_subject",
+        on_change=_remember_mail_compose_text,
+    )
+    st.text_area(
+        "메일 본문",
+        height=260,
+        key="pi_mail_compose_body",
+        on_change=_remember_mail_compose_text,
+    )
+    _remember_mail_compose_text()
     _render_mail_signature_preview()
     extra_files = _render_mail_attachments(pdf_name=pdf_name, pdf_bytes=pdf_bytes)
 
@@ -4312,8 +4342,13 @@ def _open_mail_compose_dialog(
         st.session_state.pop("pi_pdf_bytes", None)
         st.session_state.pop("pi_pdf_error", None)
         st.session_state["pi_pdf_name"] = ""
+    prev_draft = dict(st.session_state.get("pi_mail_draft") or {})
     live_subj = st.session_state.get("pi_mail_compose_subject")
     live_body = st.session_state.get("pi_mail_compose_body")
+    if keep and live_subj is None:
+        live_subj = prev_draft.get("subject")
+    if keep and live_body is None:
+        live_body = prev_draft.get("body")
     title, body = keep_existing_mail_compose(
         title=title,
         body=body,
@@ -4414,6 +4449,7 @@ def _clear_pi_mail_compose_state() -> None:
     st.session_state.pop("pi_mail_draft", None)
     st.session_state.pop("pi_mail_extra_files", None)
     st.session_state.pop("pi_mail_compose_cc", None)
+    st.session_state.pop("pi_mail_text_edited", None)
 
 
 def _finish_pi_mail_send(*, ok: bool, msg: str, to_addr: str) -> None:
@@ -4470,8 +4506,18 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
     stripped = _strip_mail_signature(cur_body)
     if stripped != cur_body:
         st.session_state["pi_mail_compose_body"] = stripped
-    st.text_input("메일 제목", key="pi_mail_compose_subject")
-    st.text_area("메일 본문", height=260, key="pi_mail_compose_body")
+    st.text_input(
+        "메일 제목",
+        key="pi_mail_compose_subject",
+        on_change=_remember_mail_compose_text,
+    )
+    st.text_area(
+        "메일 본문",
+        height=260,
+        key="pi_mail_compose_body",
+        on_change=_remember_mail_compose_text,
+    )
+    _remember_mail_compose_text()
     _render_mail_signature_preview()
     extra_files = _render_mail_attachments(pdf_name=pdf_name, pdf_bytes=pdf_bytes)
 

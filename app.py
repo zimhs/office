@@ -7718,6 +7718,9 @@ _DASH_PI_WIDGET_PREFIXES = (
 
 
 def _dash_is_pi_widget_key(key: str) -> bool:
+    """메일 제목·본문은 다른 칸·다른 탭으로 가도 지우지 않는다."""
+    if key in ("pi_mail_compose_subject", "pi_mail_compose_body"):
+        return False
     return isinstance(key, str) and key.startswith(_DASH_PI_WIDGET_PREFIXES)
 
 

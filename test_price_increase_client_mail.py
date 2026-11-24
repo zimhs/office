@@ -289,6 +289,36 @@ def test_finish_mail_send_stays_on_compose():
         assert m._pi_consume_left_nav_block() is False
 
 
+def test_remember_mail_compose_text_keeps_subject_and_body():
+    from unittest import mock
+
+    import price_increase_tab as m
+
+    ss = {
+        "pi_mail_draft": {"subject": "옛 제목", "body": "옛 본문", "to": "a@b.com"},
+        "pi_mail_compose_subject": "방문 안내",
+        "pi_mail_compose_body": "내일 오전 미팅입니다.",
+    }
+    with mock.patch.object(m.st, "session_state", ss):
+        m._remember_mail_compose_text()
+        assert ss["pi_mail_draft"]["subject"] == "방문 안내"
+        assert ss["pi_mail_draft"]["body"] == "내일 오전 미팅입니다."
+        assert ss["pi_mail_draft"]["to"] == "a@b.com"
+        assert ss["pi_mail_text_edited"] is True
+        assert m._mail_compose_in_progress() is True
+        ss.pop("pi_mail_compose_subject")
+        ss.pop("pi_mail_compose_body")
+        assert m._mail_compose_in_progress() is True
+
+
+def test_mail_subject_body_not_wiped_on_tab_restore():
+    src = open("app.py", encoding="utf-8").read()
+    fn = src.split("def _dash_is_pi_widget_key", 1)[1].split("def ", 1)[0]
+    assert "pi_mail_compose_subject" in fn
+    assert "pi_mail_compose_body" in fn
+    assert "return False" in fn
+
+
 def test_keep_mail_compose_when_letter_reattached():
     title, body = keep_existing_mail_compose(
         title="단가인상 안내",
