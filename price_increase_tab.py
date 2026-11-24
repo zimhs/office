@@ -2572,13 +2572,34 @@ def _hold_mail_table(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _pi_focus_hold_tab() -> None:
+    """저장 직후 임시저장 탭을 연다. 목록은 이미 이 실행에서 그려 둔다."""
+    st.html(
+        """<script>
+        setTimeout(function () {
+          var nodes = document.querySelectorAll('[role="tab"]');
+          for (var i = 0; i < nodes.length; i++) {
+            var t = (nodes[i].innerText || '').replace(/\\s+/g, '');
+            if (t.indexOf('임시저장') >= 0) { nodes[i].click(); break; }
+          }
+        }, 80);
+        </script>""",
+        unsafe_allow_javascript=True,
+    )
+
+
 def _render_pi_hold_mail(smtp_cfg: dict) -> None:
     """임시저장 목록. 제목·수신자로 구분하고, 고른 메일만 발송한다."""
     rows = load_hold_mail()
+    flash = st.session_state.pop("pi_hold_flash", None)
+    if flash:
+        st.success(f"임시저장됨 · {flash}")
     st.caption("메일 제목과 수신자로 구분합니다. 발송을 끄면 선택 발송에서 빠집니다.")
     if not rows:
         st.info("임시저장된 메일이 없습니다. 개별 발송에서 임시저장을 누르세요.")
         return
+    for row in rows:
+        st.markdown(f"- {hold_mail_label(row)}")
     table = _hold_mail_table(rows).set_index("id")
     edited = st.data_editor(
         table,
@@ -4623,7 +4644,9 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                 }
             )
             st.session_state["pi_hold_rev"] = int(st.session_state.get("pi_hold_rev") or 0) + 1
-            st.success(f"임시저장됨 · {hold_mail_label(saved)}")
+            st.session_state["pi_hold_flash"] = hold_mail_label(saved)
+            st.session_state["pi_hold_show"] = True
+            _pi_rerun(full=True)
     elif do_cancel and not st.session_state.get("_pi_nav_blocked_now"):
         _pi_clear_mail_stay_flags()
         st.session_state["pi_left_mode"] = "summary"
@@ -6719,6 +6742,8 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     # ── 임시저장 (일괄 발송과 발송 이력 사이) ──
     with tab_hold:
         _render_pi_hold_mail(smtp_cfg)
+    if st.session_state.pop("pi_hold_show", None):
+        _pi_focus_hold_tab()
 
     # ── 발송 이력 ──
     with tab_hist:

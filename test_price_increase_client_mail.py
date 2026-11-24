@@ -311,6 +311,15 @@ def test_remember_mail_compose_text_keeps_subject_and_body():
         assert m._mail_compose_in_progress() is True
 
 
+def test_hold_save_refreshes_hold_list():
+    src = open("price_increase_tab.py", encoding="utf-8").read()
+    hold = src.split("elif do_hold", 1)[1].split("elif do_cancel", 1)[0]
+    assert "pi_hold_flash" in hold
+    assert "pi_hold_show" in hold
+    assert "_pi_rerun(full=True)" in hold
+    assert "def _pi_focus_hold_tab" in src
+
+
 def test_mail_subject_body_not_wiped_on_tab_restore():
     src = open("app.py", encoding="utf-8").read()
     fn = src.split("def _dash_is_pi_widget_key", 1)[1].split("def ", 1)[0]
