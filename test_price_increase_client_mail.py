@@ -311,6 +311,36 @@ def test_remember_mail_compose_text_keeps_subject_and_body():
         assert m._mail_compose_in_progress() is True
 
 
+def test_compose_live_survives_reload():
+    import os
+    import tempfile
+    from unittest import mock
+
+    import price_increase_tab as m
+
+    folder = tempfile.mkdtemp()
+    path = os.path.join(folder, "compose_live.json")
+    m.save_compose_live(
+        {"subject": "제품가격 조정의 건", "body": "내일 방문합니다.", "to": "a@b.com", "cc": "", "client": "경민"},
+        path,
+    )
+    loaded = m.load_compose_live(path)
+    assert loaded["subject"] == "제품가격 조정의 건"
+    assert loaded["body"] == "내일 방문합니다."
+    ss = {}
+    with mock.patch.object(m, "PI_COMPOSE_LIVE", path), mock.patch.object(m.st, "session_state", ss):
+        m._restore_compose_live()
+        assert ss["pi_mail_compose_subject"] == "제품가격 조정의 건"
+        assert ss["pi_mail_compose_body"] == "내일 방문합니다."
+        assert ss["pi_mail_draft"]["subject"] == "제품가격 조정의 건"
+        m._restore_compose_live()
+        ss["pi_mail_compose_subject"] = "수정한 제목"
+        m._restore_compose_live()
+        assert ss["pi_mail_compose_subject"] == "수정한 제목"
+    m.clear_compose_live(path)
+    assert m.load_compose_live(path) == {}
+
+
 def test_hold_save_refreshes_hold_list():
     src = open("price_increase_tab.py", encoding="utf-8").read()
     hold = src.split("elif do_hold", 1)[1].split("elif do_cancel", 1)[0]

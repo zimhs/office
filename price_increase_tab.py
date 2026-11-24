@@ -43,6 +43,7 @@ PI_TEMPLATE = os.path.join(PI_DIR, "공문양식.xlsx")
 PI_DRAFTS = os.path.join(PI_DIR, "drafts")
 PI_SENT_LOG = os.path.join(PI_DRAFTS, "sent_log.jsonl")
 PI_HOLD_MAIL = os.path.join(PI_DRAFTS, "hold_mail.json")
+PI_COMPOSE_LIVE = os.path.join(PI_DRAFTS, "compose_live.json")
 PI_UI_BUILD = "2026-09-14 · 단가표안정"
 PI_FONTS_DIR = os.path.join(PI_DIR, "fonts")
 PI_MAIL_CARD = os.path.join(PI_FONTS_DIR, "mail_card.png")
@@ -3409,8 +3410,59 @@ def keep_existing_mail_compose(
     return subj, bod
 
 
+def _compose_live_payload(draft: dict) -> dict:
+    """새로고침 후에도 남길 메일 제목·본문."""
+    return {
+        "subject": str(draft.get("subject") or ""),
+        "body": _strip_mail_signature(str(draft.get("body") or "")),
+        "to": str(draft.get("to") or ""),
+        "cc": str(draft.get("cc") or ""),
+        "client": str(draft.get("client") or ""),
+    }
+
+
+def save_compose_live(draft: dict | None, path: str | None = None) -> None:
+    """마지막 메일 작성을 파일에 남긴다."""
+    if not isinstance(draft, dict):
+        return
+    target = path or PI_COMPOSE_LIVE
+    payload = _compose_live_payload(draft)
+    try:
+        _ensure_dirs()
+        folder = os.path.dirname(target)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+    except OSError:
+        return
+
+
+def load_compose_live(path: str | None = None) -> dict:
+    """저장된 마지막 메일 작성. 없으면 빈 dict."""
+    target = path or PI_COMPOSE_LIVE
+    if not os.path.isfile(target):
+        return {}
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def clear_compose_live(path: str | None = None) -> None:
+    target = path or PI_COMPOSE_LIVE
+    try:
+        if os.path.isfile(target):
+            os.remove(target)
+    except OSError:
+        return
+
+
 def _remember_mail_compose_text() -> None:
-    """지금 칸의 제목·본문을 초안에 남긴다. 다른 칸·다른 탭을 다녀와도 이 값으로 돌아온다."""
+    """지금 칸의 제목·본문을 초안과 파일에 남긴다. 새로고침해도 돌아온다."""
     draft = st.session_state.get("pi_mail_draft")
     if not isinstance(draft, dict):
         return
@@ -3425,6 +3477,36 @@ def _remember_mail_compose_text() -> None:
         draft["body"] = _strip_mail_signature(str(st.session_state.get(body_key) or ""))
     st.session_state["pi_mail_draft"] = draft
     st.session_state["pi_mail_text_edited"] = True
+    save_compose_live(draft)
+
+
+def _restore_compose_live() -> None:
+    """세션이 비면 파일의 마지막 제목·본문을 메일 작성에 넣는다."""
+    if st.session_state.get("pi_mail_draft") or st.session_state.get("_pi_compose_live_restored"):
+        return
+    st.session_state["_pi_compose_live_restored"] = True
+    saved = load_compose_live()
+    subject = str(saved.get("subject") or "")
+    body = _strip_mail_signature(str(saved.get("body") or ""))
+    if not subject.strip() and not body.strip():
+        return
+    st.session_state["pi_mail_draft"] = {
+        "to": str(saved.get("to") or ""),
+        "cc": str(saved.get("cc") or ""),
+        "subject": subject,
+        "body": body,
+        "pdf_name": "",
+        "client": str(saved.get("client") or ""),
+        "staff": "",
+        "items": 0,
+        "plain": True,
+    }
+    if "pi_mail_compose_subject" not in st.session_state:
+        st.session_state["pi_mail_compose_subject"] = subject
+    if "pi_mail_compose_body" not in st.session_state:
+        st.session_state["pi_mail_compose_body"] = body
+    st.session_state["pi_mail_text_edited"] = True
+    st.session_state["pi_left_mode"] = "mail"
 
 
 def _mail_compose_in_progress() -> bool:
@@ -4395,6 +4477,7 @@ def _open_mail_compose_dialog(
         st.session_state.pop("pi_mail_extra_files", None)
     st.session_state.pop("pi_mail_compose_cc", None)
     st.session_state["pi_left_mode"] = "mail"
+    save_compose_live(st.session_state.get("pi_mail_draft"))
 
 
 def compose_addrs_from_fields(live_to: str, live_cc: str) -> tuple[str, str]:
@@ -4471,6 +4554,8 @@ def _clear_pi_mail_compose_state() -> None:
     st.session_state.pop("pi_mail_extra_files", None)
     st.session_state.pop("pi_mail_compose_cc", None)
     st.session_state.pop("pi_mail_text_edited", None)
+    st.session_state.pop("_pi_compose_live_restored", None)
+    clear_compose_live()
 
 
 def _finish_pi_mail_send(*, ok: bool, msg: str, to_addr: str) -> None:
@@ -6218,6 +6303,7 @@ def _fill_mail_compose_from_pack(pack: dict, *, keep: bool = False) -> None:
 
 def _ensure_mail_compose_first_screen(pack: dict) -> None:
     """메일 탭 첫 화면은 작성. 요약/엑셀을 누른 뒤에는 그 화면을 유지."""
+    _restore_compose_live()
     if _pi_stay_on_mail_after_send():
         st.session_state["pi_left_mode"] = "mail"
     if not st.session_state.get("pi_left_opened"):
