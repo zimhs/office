@@ -376,6 +376,11 @@ class WorklogButtonRestoreTest(unittest.TestCase):
         self.assertIn("def _pin_worklog_scroll", src)
         self.assertIn('"worklog_scroll_lock_v3"', src)
         self.assertIn("keep_editor", src)
+        self.assertIn('"keep_editor": True', src)
+        self.assertIn("def _schedule_worklog_drive_copies", src)
+        self.assertIn("_schedule_worklog_drive_copies(", src)
+        rem = src[src.index("def _remember_calendar_saved_date") : src.index("def _drop_saved_date_from_cache")]
+        self.assertNotIn("list_saved_worklog_dates()", rem)
         self.assertIn("st-key-wl_del_", src)
         self.assertIn("__wlScrollSnap", src)
         self.assertIn("wl_enter_hook_nav", src)

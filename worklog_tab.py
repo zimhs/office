@@ -312,11 +312,15 @@ def _invalidate_saved_dates_cache() -> None:
 
 
 def _remember_calendar_saved_date(d: date) -> None:
-    """저장한 날짜를 달력 • 캐시에 바로 넣는다. 빈 캐시 때문에 점이 빠지지 않게 한다."""
+    """저장한 날짜를 달력 • 캐시에 바로 넣는다.
+
+    캐시가 비어 있어도 월별 엑셀 전체 재스캔을 하지 않는다.
+    (저장 버튼이 Drive 일지 폴더를 다시 훑으며 수 초~무한 로딩처럼 보이던 원인)
+    """
     iso = d.isoformat()
     cached = st.session_state.get("wl_saved_dates_cache")
     if not isinstance(cached, set):
-        cached = set(list_saved_worklog_dates())
+        cached = set()
     cached.add(iso)
     st.session_state["wl_saved_dates_cache"] = cached
 
@@ -3095,8 +3099,11 @@ def _find_month_xlsx_in_dir(year_dir: str, month: int) -> str | None:
     return hits[0]
 
 
-def _replace_file_retry(src: str, dest: str, *, attempts: int = 8) -> None:
-    """Drive·엑셀이 파일을 잡고 있어도 몇 번 재시도한 뒤 복사로 저장한다."""
+def _replace_file_retry(src: str, dest: str, *, attempts: int = 3) -> None:
+    """Drive·엑셀이 파일을 잡고 있어도 몇 번 재시도한 뒤 복사로 저장한다.
+
+    시도 횟수를 짧게 둔다. Drive 잠금에 오래 걸리면 저장 버튼이 무한 로딩처럼 보인다.
+    """
     last: Exception | None = None
     for i in range(max(1, attempts)):
         try:
@@ -3105,7 +3112,7 @@ def _replace_file_retry(src: str, dest: str, *, attempts: int = 8) -> None:
         except OSError as e:
             last = e
             if i + 1 < attempts:
-                time.sleep(0.15 * (i + 1))
+                time.sleep(0.12 * (i + 1))
     try:
         shutil.copy2(src, dest)
         try:
@@ -4590,8 +4597,24 @@ def write_cells_to_path(path: str, d: date, cells: dict, *, force_template: bool
         except Exception:
             pass
 
+def _schedule_worklog_drive_copies(d: date, path: str, archive: str | None, *, force: bool) -> None:
+    """일자·월별 파일을 Drive 미러로 복사. 저장 UI와 분리해 백그라운드에서 돈다."""
+
+    def _job() -> None:
+        try:
+            from drive_autoload import push_worklog_day_to_drive, push_worklog_month_archive_to_drive
+
+            push_worklog_day_to_drive(path, WORKLOG_DIR, force=force)
+            if archive and os.path.isfile(archive):
+                push_worklog_month_archive_to_drive(archive, year=d.year, force=force)
+        except Exception:
+            pass
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
 def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overwrite: bool = False) -> str:
-    """저장: 로컬 캐시 + 월별 일지 + Drive + (가능하면) Cloud Gist.
+    """저장: 로컬 캐시 + 월별 일지. Drive 미러 복사는 백그라운드.
 
     allow_overwrite=False(기본) — 해당 날짜가 이미 있으면 후입력 저장 차단.
     force=True — Drive/Cloud push 시 원격 덮어쓰기(기존 일지 수정 시).
@@ -4606,7 +4629,7 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
         _wl_embed_captures_xlsx(path, d)
     except Exception:
         pass
-    _invalidate_saved_dates_cache()
+    # 전체 캐시 무효화 후 재스캔하지 않는다 — 저장한 날만 • 캐시에 추가.
     _remember_calendar_saved_date(d)
     _invalidate_worklog_presence_cache(d)
     try:
@@ -4624,6 +4647,7 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
     st.session_state.pop("wl_last_cloud_err", None)
     st.session_state.pop("wl_last_archive_sheet", None)
     st.session_state.pop("wl_last_archive_target", None)
+    archive = None
     try:
         archive = upsert_worklog_archive_sheet(d, path, allow_overwrite=allow_overwrite or force)
         if archive:
@@ -4633,20 +4657,7 @@ def save_worklog_cells(d: date, cells: dict, *, force: bool = False, allow_overw
     except Exception as e:
         st.session_state["wl_last_archive_err"] = str(e)
     try:
-        from drive_autoload import push_worklog_day_to_drive, push_worklog_month_archive_to_drive
-
-        drv = push_worklog_day_to_drive(path, WORKLOG_DIR, force=force)
-        if drv:
-            st.session_state["wl_last_drive_path"] = drv
-        elif not force:
-            pres = detect_worklog_date_presence(d)
-            if pres.get("drive"):
-                st.session_state["wl_last_drive_conflict"] = d.isoformat()
-        arch_path = st.session_state.get("wl_last_archive_path")
-        if arch_path and os.path.isfile(arch_path):
-            mdrv = push_worklog_month_archive_to_drive(arch_path, year=d.year, force=force)
-            if mdrv:
-                st.session_state["wl_last_drive_month_path"] = mdrv
+        _schedule_worklog_drive_copies(d, path, archive, force=force)
     except Exception:
         pass
     return path
@@ -5461,7 +5472,6 @@ def commit_worklog_date_save(source: date, target: date, cells: dict) -> str:
     st.session_state.pop("wl_date_retarget_from", None)
     st.session_state.pop("wl_purge_dates", None)
     st.session_state.pop("wl_pending_date_change", None)
-    _invalidate_saved_dates_cache()
     _remember_calendar_saved_date(target)
     _invalidate_worklog_presence_cache(target)
     return path
@@ -8571,11 +8581,8 @@ def _render_worklog_input_panel(selected: date) -> None:
                         arch = (st.session_state.get("wl_last_archive_path") or "")
                         arch_target = st.session_state.get("wl_last_archive_target") or describe_worklog_archive_target(d)
                         arch_err = st.session_state.get("wl_last_archive_err") or ""
-                        drv = st.session_state.get("wl_last_drive_path") or ""
-                        mdrv = st.session_state.get("wl_last_drive_month_path") or ""
                         gist = st.session_state.get("wl_last_cloud_gist") or ""
                         cerr = st.session_state.get("wl_last_cloud_err") or ""
-                        drv_cf = st.session_state.get("wl_last_drive_conflict") or ""
                         msg = f"저장 완료: {os.path.basename(path)}"
                         if arch_err:
                             msg += f" · 월별엑셀 실패: {arch_err}"
@@ -8584,20 +8591,14 @@ def _render_worklog_input_panel(selected: date) -> None:
                         elif arch and not _wl_quiet_ui():
                             _sh = st.session_state.get("wl_last_archive_sheet") or worklog_archive_sheet_title(d)
                             msg += f" · 일지/{d.year}/{os.path.basename(arch)}#{_sh}"
-                        if drv:
-                            msg += " · Drive"
-                        if mdrv and not _wl_quiet_ui():
-                            msg += f" · Drive일지/{d.year}"
+                        if not _wl_quiet_ui():
+                            msg += " · Drive 반영 중"
                         if gist:
                             msg += f" · Cloud OK (gist `{gist}`)"
                         elif cerr == "duplicate_date":
                             msg += " · Cloud: 선입력본 유지(덮어쓰기 안 함)"
                         elif cerr:
                             msg += f" · Cloud 실패: {cerr}"
-                        elif not _wl_quiet_ui():
-                            msg += " · Cloud미연동: secrets에 github_token"
-                        if drv_cf and not drv:
-                            msg += f" · Drive: 선입력본 유지({drv_cf})"
                         st.session_state[f"wl_pending_sync_{iso2}"] = {
                             "entries": seed_entries,
                             "extra_pages": seed_extras,
@@ -8605,8 +8606,10 @@ def _render_worklog_input_panel(selected: date) -> None:
                             "notes": notes_txt,
                             "msg": msg,
                             "cloud_err": cerr,
+                            # 저장 직후 CCv2 재마운트는 트리거 폭주·무한 로딩을 만든다.
+                            "keep_editor": True,
                         }
-                        # 저장 직후 강제 pull은 구 원격본이 로컬을 덮을 수 있음 — push는 save_worklog_cells에서 이미 함
+                        # 저장 직후 강제 pull은 구 원격본이 로컬을 덮을 수 있음 — 월별/Drive는 백그라운드
                         st.session_state["_wl_drive_sync_ts"] = time.time()
                         _pin_worklog_scroll()
                         _wl_rerun()
