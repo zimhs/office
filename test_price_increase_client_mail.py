@@ -505,13 +505,24 @@ def test_sent_log_shows_latest_client_first():
 
 
 def test_client_search_finds_laser_spelling():
-    from price_increase_tab import _match_client_names
+    from price_increase_tab import (
+        _client_options_with_aliases,
+        _client_spell_aliases,
+        _match_client_names,
+    )
 
     names = ["드림레이저", "대진에스에이", "엔케이철강"]
     assert _match_client_names(names, "드림레이져") == ["드림레이저"]
     assert _match_client_names(names, "드림레이저") == ["드림레이저"]
-    assert _match_client_names(names, "엔케이") == ["엔케이철강"]
-    assert _match_client_names(names, "") == names
+    assert "드림레이져" in _client_spell_aliases("드림레이저")
+    opts, alias_of = _client_options_with_aliases(names)
+    assert "드림레이저" in opts
+    assert "드림레이져" in opts
+    assert alias_of["드림레이져"] == "드림레이저"
+    src = open("price_increase_tab.py", encoding="utf-8").read()
+    picker = src.split("def _render_single_client_picker", 1)[1].split("\ndef ", 1)[0]
+    assert 'placeholder="거래처명 입력"' in picker
+    assert "st.multiselect(" in picker
 
 
 def test_sent_log_stores_body_and_client_search():

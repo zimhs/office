@@ -437,6 +437,58 @@ def _match_client_names(names: list[str], query: str) -> list[str]:
     return [name for name in names if q in _client_search_key(name)]
 
 
+_CLIENT_ALIAS_PAIRS = (
+    ("이저", "이져"),
+    ("이처", "이쳐"),
+    ("이서", "이셔"),
+    ("이너", "이녀"),
+    ("이러", "이려"),
+    ("이거", "이겨"),
+    ("이머", "이며"),
+    ("이버", "이벼"),
+    ("이퍼", "이펴"),
+    ("이허", "이혀"),
+    ("이커", "이켜"),
+)
+
+
+def _client_spell_aliases(name: str) -> list[str]:
+    """목록 검색용 다른 표기. 드림레이저 ↔ 드림레이져."""
+    src = str(name or "")
+    found: list[str] = []
+    for a, b in _CLIENT_ALIAS_PAIRS:
+        if a in src:
+            found.append(src.replace(a, b))
+        if b in src:
+            found.append(src.replace(b, a))
+    out: list[str] = []
+    seen = {src}
+    for one in found:
+        if one and one not in seen:
+            seen.add(one)
+            out.append(one)
+    return out
+
+
+def _client_options_with_aliases(names: list[str]) -> tuple[list[str], dict[str, str]]:
+    """선택 목록과 다른 표기 → 원래 이름."""
+    opts: list[str] = []
+    alias_of: dict[str, str] = {}
+    seen: set[str] = set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        opts.append(name)
+        for alias in _client_spell_aliases(name):
+            if alias in seen:
+                continue
+            seen.add(alias)
+            opts.append(alias)
+            alias_of[alias] = name
+    return opts, alias_of
+
+
 # 연락처 직함·호칭 (김도엽이사님 ↔ 김도엽이사)
 _CONTACT_TITLE_RE = re.compile(
     r"(님|이사님|이사|과장|차장|부장|대리|사원|주임|계장|실장|팀장|"
@@ -5701,10 +5753,25 @@ def _apply_merged_to_emails(auto_email: str, matched: list[str], *, client_token
     _pi_on_email_change()
 
 
+def _pi_canonicalize_selected_clients() -> list[str]:
+    """다른 표기로 고른 이름을 원장 이름으로 되돌린다."""
+    raw = _norm_client_list(st.session_state.get("pi_single_clients"))
+    alias = st.session_state.get("_pi_client_alias") or {}
+    picked: list[str] = []
+    for name in raw:
+        canon = str(alias.get(name) or name)
+        if canon not in picked:
+            picked.append(canon)
+    if picked != raw:
+        st.session_state["pi_single_clients"] = picked
+    st.session_state["pi_single_client"] = picked[0] if picked else ""
+    return picked
+
+
 def _pi_on_clients_change() -> None:
     """거래처 다중 선택 변경 시 수신메일을 반영. 직접 입력한 주소는 유지·병합."""
     st.session_state.pop("pi_skip_email_fill", None)
-    picked = _norm_client_list(st.session_state.get("pi_single_clients"))
+    picked = _pi_canonicalize_selected_clients()
     st.session_state["pi_single_client"] = picked[0] if picked else ""
     mail_df = st.session_state.get("_pi_mail_df_cache")
     joined, matched, _missing = lookup_emails_for_clients(
@@ -5975,16 +6042,22 @@ def _render_single_client_picker(sales_df: pd.DataFrame, mail_df: pd.DataFrame) 
     picked = _pi_selected_clients()
     names = _pi_letter_name_cache(sales_df, staff, mail_df, picked)
     with r1c2:
-        picked_set = set(picked)
-        opts = [n for n in names if n not in picked_set]
-        st.text_input("거래처", key="pi_client_q", placeholder="거래처명")
-        query = str(st.session_state.get("pi_client_q") or "").strip()
-        hits = _match_client_names(opts, query) if query else []
-        if query and not hits:
-            st.caption("해당하는 거래처가 없습니다.")
-        for i, name in enumerate(hits[:8]):
-            if st.button(name, key=f"pi_client_hit_{i}", on_click=_pi_choose_client_name, args=(name,)):
-                pass
+        opts, alias_of = _client_options_with_aliases(list(names))
+        st.session_state["_pi_client_alias"] = alias_of
+        cur = st.session_state.get("pi_single_clients")
+        if isinstance(cur, str):
+            st.session_state["pi_single_clients"] = [cur] if cur.strip() else []
+        elif not isinstance(cur, list):
+            st.session_state["pi_single_clients"] = list(picked)
+        _pi_canonicalize_selected_clients()
+        picked = st.multiselect(
+            "거래처",
+            options=opts,
+            placeholder="거래처명 입력",
+            key="pi_single_clients",
+            on_change=_pi_on_clients_change,
+        )
+        picked = _norm_client_list(picked)
     client = picked[0] if picked else ""
     with r1c3:
         if len(picked) > 1:
