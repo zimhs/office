@@ -2586,22 +2586,6 @@ def _render_pi_sent_history() -> None:
     )
 
 
-def _hold_mail_table(rows: list[dict]) -> pd.DataFrame:
-    """발송 선택과 제목·수신자가 한 줄에 보이게 한다."""
-    data = []
-    for row in rows:
-        data.append(
-            {
-                "id": str(row.get("id") or ""),
-                "발송": bool(row.get("send", True)),
-                "메일 제목": str(row.get("subject") or "(제목 없음)"),
-                "수신자": hold_recipient_label(row),
-                "저장시각": str(row.get("ts") or "")[:16].replace("T", " "),
-            }
-        )
-    return pd.DataFrame(data)
-
-
 def _consume_hold_edit_open() -> None:
     """임시저장 수정을 메일 작성 칸에 넣는다. 위젯보다 먼저 실행한다."""
     pending = st.session_state.pop("pi_hold_edit_pending", None)
@@ -2680,28 +2664,35 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
     if not rows:
         st.info("임시저장된 메일이 없습니다. 개별 발송에서 임시저장을 누르세요.")
         return
+    head = st.columns([0.7, 2.6, 2.4, 1.6, 0.8])
+    for col, title in zip(head, ("발송", "메일 제목", "수신자", "저장시각", "")):
+        col.markdown(f"**{title}**" if title else "&nbsp;", unsafe_allow_html=True)
+    chosen_ids: list[str] = []
     for row in rows:
         hold_id = str(row.get("id") or "")
-        name_col, edit_col = st.columns([6, 1])
-        with name_col:
-            st.markdown(hold_mail_label(row))
-        with edit_col:
+        send_key = f"pi_hold_chk_{hold_id}"
+        if send_key not in st.session_state:
+            st.session_state[send_key] = bool(row.get("send", True))
+        c1, c2, c3, c4, c5 = st.columns([0.7, 2.6, 2.4, 1.6, 0.8])
+        with c1:
+            checked = st.checkbox(
+                "발송",
+                key=send_key,
+                label_visibility="collapsed",
+                help="켜면 선택 발송에 포함",
+            )
+        with c2:
+            st.markdown(str(row.get("subject") or "(제목 없음)"))
+        with c3:
+            st.markdown(hold_recipient_label(row))
+        with c4:
+            st.markdown(str(row.get("ts") or "")[:16].replace("T", " "))
+        with c5:
             if st.button("수정", key=f"pi_hold_edit_{hold_id}", use_container_width=True):
                 st.session_state["pi_hold_edit_pending"] = dict(row)
                 _pi_rerun(full=True)
-    table = _hold_mail_table(rows).set_index("id")
-    edited = st.data_editor(
-        table,
-        column_config={
-            "발송": st.column_config.CheckboxColumn("발송", default=True, help="켜면 선택 발송에 포함"),
-            "메일 제목": st.column_config.TextColumn("메일 제목", disabled=True),
-            "수신자": st.column_config.TextColumn("수신자", disabled=True),
-            "저장시각": st.column_config.TextColumn("저장시각", disabled=True),
-        },
-        hide_index=True,
-        use_container_width=True,
-        key=f"pi_hold_editor_v{int(st.session_state.get('pi_hold_rev') or 0)}",
-    )
+        if checked and hold_id:
+            chosen_ids.append(hold_id)
     by_id = {str(row.get("id") or ""): row for row in rows}
     labels: dict[str, str] = {}
     for row in rows:
@@ -2734,11 +2725,6 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
         do_send = st.button("선택 발송", type="primary", use_container_width=True, key="pi_hold_send")
     with drop_col:
         do_drop = st.button("연 메일 삭제", use_container_width=True, key="pi_hold_drop")
-    chosen_ids = [
-        str(hold_id)
-        for hold_id, row in edited.iterrows()
-        if bool(row.get("발송"))
-    ]
     if do_drop:
         if not opened_id:
             st.warning("삭제할 메일을 먼저 여세요.")

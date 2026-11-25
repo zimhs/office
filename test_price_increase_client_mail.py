@@ -427,6 +427,8 @@ def test_hold_save_refreshes_hold_list():
     assert 'st.expander(hold_mail_label(one), expanded=True' in opened
     assert 'st.button("수정"' in hold_fn
     assert "pi_hold_edit_{hold_id}" in hold_fn
+    assert "저장시각" in hold_fn
+    assert "hold_mail_label(row)" not in hold_fn.split("if not rows", 1)[-1].split("by_id", 1)[0]
     assert "pi_hold_edit_pending" in hold_fn
     assert "update_hold_mail" in hold
     assert "다시 임시저장" in src
