@@ -7,6 +7,7 @@ from price_increase_tab import (
     _apply_pct_to_items,
     _items_df_for_editor,
     _increase_mode_is_pct,
+    _compute_latest_unit_prices,
     default_increase_price,
     _BODY_CELL_ORDER,
     _DEFAULT_LETTER_PARAS,
@@ -31,6 +32,7 @@ from price_increase_tab import (
     list_mail_contact_names,
     lookup_email_with_meta,
     lookup_emails_for_clients,
+    resolve_sales_client_name,
 )
 
 
@@ -83,6 +85,34 @@ def test_letter_options_include_contact_names():
     assert "국제산업가스" in opts
     assert "김도엽이사님" in opts
     assert "김명현이사" in opts
+
+
+def test_racool_alias_maps_to_sales_name_and_prices():
+    """연락처 '라쿨'은 상단 검색과 같은 매출 정식명으로 맞추고 품목이 나와야 한다."""
+    sales = pd.DataFrame(
+        {
+            "담당자": ["김명현", "김명현", "김명현"],
+            "거래처": ["라쿨 주식회사(구.신정우)"] * 3,
+            "품목명": ["N2", "O2", "Ar"],
+            "단가": [100.0, 200.0, 300.0],
+            "출고량": [10.0, 5.0, 1.0],
+            "매출일": ["2026-11-01", "2026-11-02", "2026-11-03"],
+        }
+    )
+    mail = pd.DataFrame(
+        {
+            "거래처": ["라쿨", "라쿨주식회사(구.신정우)", "김도엽이사님"],
+            "이메일": ["jwko@racool.co.kr", "kskim@racool.co.kr", "a@b.com"],
+        }
+    )
+    assert resolve_sales_client_name("라쿨", sales) == "라쿨 주식회사(구.신정우)"
+    assert resolve_sales_client_name("라쿨주식회사(구.신정우)", sales) == "라쿨 주식회사(구.신정우)"
+    opts = list_clients_for_letter(sales, "전체", mail)
+    assert "라쿨 주식회사(구.신정우)" in opts
+    assert "라쿨" not in opts
+    assert "라쿨주식회사(구.신정우)" not in opts
+    prices = _compute_latest_unit_prices(sales, "라쿨")
+    assert set(prices["품목명"]) == {"N2", "O2", "Ar"}
 
 
 def test_lookup_fills_email_for_title_variants():

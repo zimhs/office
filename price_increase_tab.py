@@ -505,6 +505,59 @@ def _core_name(s: Any) -> str:
     return t
 
 
+def _client_stem(s: Any) -> str:
+    """매출·메일 거래처를 같은 업체로 묶는 짧은 이름. 괄호·법인 표기를 뺀다."""
+    t = _norm_name(s)
+    t = re.sub(r"\([^)]*\)|\[[^\]]*\]", "", t)
+    t = re.sub(r"\(주\)|㈜|\(유\)", "", t)
+    t = t.replace("주식회사", "").replace("유한회사", "")
+    return t.strip()
+
+
+def _sales_client_names(sales_df: pd.DataFrame | None) -> list[str]:
+    """매출 원장의 거래처 정식 이름."""
+    if sales_df is None or getattr(sales_df, "empty", True):
+        return []
+    names: set[str] = set()
+    if "거래처" in sales_df.columns:
+        names |= {
+            _clean_client_label(n)
+            for n in sales_df["거래처"].dropna().astype(str).tolist()
+            if _clean_client_label(n)
+        }
+    if "거래처_원본" in sales_df.columns:
+        names |= {
+            _clean_client_label(n)
+            for n in sales_df["거래처_원본"].dropna().astype(str).tolist()
+            if _clean_client_label(n)
+        }
+    return sorted(names)
+
+
+def resolve_sales_client_name(client: str, sales_df: pd.DataFrame | None) -> str:
+    """연락처·짧은 표기를 상단 검색과 같은 매출 거래처명으로 맞춘다."""
+    want = _clean_client_label(client)
+    if not want:
+        return ""
+    names = _sales_client_names(sales_df)
+    if not names:
+        return want
+    nk = _norm_name(want)
+    for n in names:
+        if _norm_name(n) == nk:
+            return n
+    stem = _client_stem(want)
+    if len(stem) < 2:
+        return want
+    stem_hits = [n for n in names if _client_stem(n) == stem]
+    if len(stem_hits) == 1:
+        return stem_hits[0]
+    prefix_hits = [n for n in names if _norm_name(n).startswith(nk)]
+    if len(prefix_hits) == 1:
+        return prefix_hits[0]
+    return want
+
+
 def _person_key(s: Any) -> str:
     """사람 이름 매칭: 직함·님을 떼어 김도엽이사님 / 김도엽이사를 같게 봄."""
     t = _core_name(s)
@@ -1295,14 +1348,24 @@ def list_clients_for_letter(
     mail_df: pd.DataFrame | None = None,
     extra: str | list[str] = "",
 ) -> list[str]:
-    """개별 공문 거래처 검색: 매출 거래처 + 연락처 이름."""
-    names = set(list_clients_for_staff(sales_df, staff))
-    names |= set(list_mail_contact_names(mail_df if mail_df is not None else pd.DataFrame()))
+    """개별 공문 거래처 검색: 매출 정식명 우선. 연락처 짧은 이름은 매출명으로 흡수."""
+    sales_names = list_clients_for_staff(sales_df, staff)
+    names = set(sales_names)
+    for one in list_mail_contact_names(mail_df if mail_df is not None else pd.DataFrame()):
+        resolved = resolve_sales_client_name(one, sales_df)
+        # 라쿨 / 라쿨주식회사(구.신정우) → 매출의 라쿨 주식회사(구.신정우)만 남긴다.
+        if resolved and any(_norm_name(n) == _norm_name(resolved) for n in names):
+            continue
+        names.add(one)
     extras = extra if isinstance(extra, (list, tuple, set)) else [extra]
     for one in extras:
         one = _clean_client_label(one)
-        if one:
-            names.add(one)
+        if not one:
+            continue
+        resolved = resolve_sales_client_name(one, sales_df) or one
+        if any(_norm_name(n) == _norm_name(resolved) for n in names):
+            continue
+        names.add(resolved)
     return sorted({_clean_client_label(n) for n in names if _clean_client_label(n)})
 
 
@@ -1379,6 +1442,7 @@ def latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataFrame:
     )
     if sales_df is None or sales_df.empty or not client:
         return empty
+    client = resolve_sales_client_name(client, sales_df) or client
     token = str(st.session_state.get("pi_sales_cache_token") or "")
     bucket = st.session_state.setdefault("_pi_unit_price_cache", {})
     if bucket.get("_token") != token:
@@ -1416,13 +1480,18 @@ def _compute_latest_unit_prices(sales_df: pd.DataFrame, client: str) -> pd.DataF
         columns=["품목명", "기존단가", "최근매출일", "출고량합", "월평균사용량"]
     )
     df = sales_df
-    # 부모 선택 시 종속 포함
+    client = resolve_sales_client_name(client, df)
+    key = _norm_name(client)
+    # 부모 선택 시 종속 포함 · 공백 차이(라쿨주식회사 vs 라쿨 주식회사)도 같게 본다.
+    col = df["거래처"].astype(str)
+    m = col.map(_norm_name) == key
     if "거래처_원본" in df.columns:
-        m = (df["거래처"].astype(str).str.strip() == client) | (
-            df["거래처_원본"].astype(str).str.strip() == client
-        )
-    else:
-        m = df["거래처"].astype(str).str.strip() == client
+        m = m | (df["거래처_원본"].astype(str).map(_norm_name) == key)
+    if not m.any() and len(_client_stem(client)) >= 2:
+        stem = _client_stem(client)
+        m = col.map(_client_stem) == stem
+        if "거래처_원본" in df.columns:
+            m = m | (df["거래처_원본"].astype(str).map(_client_stem) == stem)
     sub = df.loc[m]
     if sub.empty:
         return empty
@@ -6145,7 +6214,7 @@ def _consume_typed_addr_commit(widget_key: str, dest_key: str) -> bool:
 
 
 def _pi_selected_clients() -> list[str]:
-    picked = _norm_client_list(st.session_state.get("pi_single_clients"))
+    picked = _pi_canonicalize_selected_clients()
     if picked:
         return picked
     one = str(st.session_state.get("pi_single_client") or "").strip()
@@ -6172,12 +6241,15 @@ def _apply_merged_to_emails(auto_email: str, matched: list[str], *, client_token
 
 
 def _pi_canonicalize_selected_clients() -> list[str]:
-    """다른 표기로 고른 이름을 원장 이름으로 되돌린다."""
+    """다른 표기로 고른 이름을 원장·매출 정식 이름으로 되돌린다."""
     raw = _norm_client_list(st.session_state.get("pi_single_clients"))
     alias = st.session_state.get("_pi_client_alias") or {}
+    sales_df = st.session_state.get("_pi_sales_df_cache")
     picked: list[str] = []
     for name in raw:
         canon = str(alias.get(name) or name)
+        if isinstance(sales_df, pd.DataFrame):
+            canon = resolve_sales_client_name(canon, sales_df) or canon
         if canon not in picked:
             picked.append(canon)
     if picked != raw:
@@ -6487,6 +6559,7 @@ def _render_include_letter_body_toggle() -> None:
 def _render_single_client_picker(sales_df: pd.DataFrame, mail_df: pd.DataFrame) -> None:
     """거래처 검색·추가·삭제. 수신칸과 같은 화면에서 메일을 바로 넣는다."""
     st.session_state["_pi_mail_df_cache"] = mail_df
+    st.session_state["_pi_sales_df_cache"] = sales_df
     staff_opts = ["전체"] + list_staff_options(sales_df)
     r1c1, r1c2, r1c3 = st.columns([1.0, 2.8, 1.0])
     with r1c1:
@@ -7266,6 +7339,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
 
     mail_df, _autoload_note = ensure_mail_contacts_autoload()
     st.session_state["_pi_mail_df_cache"] = mail_df
+    st.session_state["_pi_sales_df_cache"] = sales_df
     smtp_cfg = smtp_settings()
 
     tab_single, tab_bulk, tab_hold, tab_hist = st.tabs(
