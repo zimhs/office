@@ -570,6 +570,55 @@ def test_first_hold_appends_and_edit_updates_same_mail():
     assert rows[0]["body"] == "고친 본문"
 
 
+def test_hold_client_prefers_selected_over_stale_draft_name():
+    import os
+    import tempfile
+
+    from price_increase_tab import (
+        delete_hold_mail,
+        load_hold_mail,
+        resolve_hold_client,
+        save_compose_hold,
+    )
+
+    assert (
+        resolve_hold_client(
+            client="일광잉크페인트",
+            letter_kwargs={"client": "비엘티(구.에스앤케이)"},
+            to="3023526@gmail.com",
+            picked=["비엘티(구.에스앤케이)"],
+        )
+        == "비엘티(구.에스앤케이)"
+    )
+    assert (
+        resolve_hold_client(
+            client="일광잉크페인트",
+            letter_kwargs={"client": "비엘티(구.에스앤케이)"},
+            to="3023526@gmail.com",
+            picked=[],
+        )
+        == "비엘티(구.에스앤케이)"
+    )
+    folder = tempfile.mkdtemp()
+    path = os.path.join(folder, "hold_mail.json")
+    saved, updated = save_compose_hold(
+        subject="가격인상",
+        body="본문",
+        to="3023526@gmail.com",
+        client="일광잉크페인트",
+        letter_kwargs={"client": "비엘티(구.에스앤케이)"},
+        picked=["비엘티(구.에스앤케이)"],
+        path=path,
+    )
+    assert updated is False
+    assert saved["client"] == "비엘티(구.에스앤케이)"
+    assert delete_hold_mail(saved["id"], path) is True
+    assert load_hold_mail(path) == []
+    src = open("price_increase_tab.py", encoding="utf-8").read()
+    cancel = src.split("elif do_cancel", 1)[1].split("_render_pi_send_flash", 1)[0]
+    assert "delete_hold_mail" in cancel
+
+
 def test_mail_subject_body_not_wiped_on_tab_restore():
     src = open("app.py", encoding="utf-8").read()
     fn = src.split("def _dash_is_pi_widget_key", 1)[1].split("def ", 1)[0]

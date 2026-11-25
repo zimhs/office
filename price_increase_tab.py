@@ -2537,7 +2537,7 @@ def append_hold_mail(row: dict, path: str | None = None) -> dict:
 
 
 def update_hold_mail(hold_id: str, changes: dict, path: str | None = None) -> dict | None:
-    """연 임시저장의 제목·수신·본문만 바꾼다. 같은 메일이고, 새 줄은 만들지 않는다."""
+    """연 임시저장의 제목·수신·본문·거래처를 바꾼다. 같은 메일이고, 새 줄은 만들지 않는다."""
     target = str(hold_id or "").strip()
     if not target or not isinstance(changes, dict):
         return None
@@ -2548,12 +2548,52 @@ def update_hold_mail(hold_id: str, changes: dict, path: str | None = None) -> di
             break
     if found is None:
         return None
-    for key in ("subject", "body", "to", "cc"):
+    for key in ("subject", "body", "to", "cc", "client", "staff", "pdf_name"):
         if key in changes:
             found[key] = str(changes.get(key) or "")
+    if "attach_letter" in changes:
+        found["attach_letter"] = bool(changes.get("attach_letter"))
+    if "letter_kwargs" in changes and isinstance(changes.get("letter_kwargs"), dict):
+        found["letter_kwargs"] = dict(changes.get("letter_kwargs") or {})
     found["id"] = target
     found["ts"] = datetime.now().isoformat(timespec="microseconds")
     return append_hold_mail(found, path)
+
+
+def delete_hold_mail(hold_id: str, path: str | None = None) -> bool:
+    """임시저장 한 통을 목록에서 뺀다."""
+    target = str(hold_id or "").strip()
+    if not target:
+        return False
+    rows = load_hold_mail(path)
+    remain = [row for row in rows if str(row.get("id") or "") != target]
+    if len(remain) == len(rows):
+        return False
+    save_hold_mail(remain, path)
+    return True
+
+
+def resolve_hold_client(
+    *,
+    client: str = "",
+    letter_kwargs: dict | None = None,
+    to: str = "",
+    picked: list[str] | None = None,
+) -> str:
+    """임시저장 거래처명. 고른 거래처·공문 거래처를 우선하고, 없을 때만 수신메일로 찾는다."""
+    names = _norm_client_list(picked)
+    if names:
+        return ", ".join(names)
+    letter_who = str((letter_kwargs or {}).get("client") or "").strip()
+    if letter_who and letter_who != "일반메일":
+        return letter_who
+    who = str(client or "").strip()
+    if who and who != "일반메일":
+        return who
+    named = client_names_for_emails(to)
+    if named:
+        return named
+    return who or "일반메일"
 
 
 def save_compose_hold(
@@ -2568,37 +2608,33 @@ def save_compose_hold(
     attach_letter: bool = False,
     pdf_name: str = "",
     letter_kwargs: dict | None = None,
+    picked: list[str] | None = None,
     path: str | None = None,
 ) -> tuple[dict, bool]:
     """처음이면 새 임시저장, 수정 중이면 그 메일을 덮어쓴다."""
+    who = resolve_hold_client(
+        client=client,
+        letter_kwargs=letter_kwargs,
+        to=to,
+        picked=picked,
+    )
     fields = {
         "subject": str(subject or "").strip() or "(제목 없음)",
         "body": str(body or ""),
         "to": str(to or ""),
         "cc": str(cc or ""),
+        "client": who,
+        "staff": str(staff or ""),
+        "attach_letter": bool(attach_letter),
+        "pdf_name": str(pdf_name or "공문.pdf"),
+        "letter_kwargs": letter_kwargs or {},
     }
     target = str(edit_id or "").strip()
     if target:
         saved = update_hold_mail(target, fields, path)
         if saved is not None:
             return saved, True
-    who = str(client or "").strip()
-    if not who or who == "일반메일":
-        named = client_names_for_emails(fields["to"])
-        if named:
-            who = named
-    saved = append_hold_mail(
-        {
-            **fields,
-            "client": who,
-            "staff": str(staff or ""),
-            "attach_letter": bool(attach_letter),
-            "pdf_name": str(pdf_name or "공문.pdf"),
-            "letter_kwargs": letter_kwargs or {},
-            "send": True,
-        },
-        path,
-    )
+    saved = append_hold_mail({**fields, "send": True}, path)
     return saved, False
 
 
@@ -2765,6 +2801,7 @@ def _pi_apply_fresh_mail() -> None:
     if draft:
         draft["to"] = ""
         draft["cc"] = ""
+        draft["client"] = ""
         draft.pop("hold_id", None)
         st.session_state["pi_mail_draft"] = draft
         save_compose_live(draft)
@@ -2868,6 +2905,9 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
     flash = st.session_state.pop("pi_hold_flash", None)
     if flash:
         st.success(f"임시저장됨 · {flash}")
+    drop_flash = st.session_state.pop("pi_hold_drop_flash", None)
+    if drop_flash:
+        st.warning(str(drop_flash))
     edit_flash = st.session_state.pop("pi_hold_edit_flash", None)
     if edit_flash:
         st.info(f"개별 발송 탭에서 수정 중 · {edit_flash}")
@@ -5085,17 +5125,25 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
             pack = dict(st.session_state.get("_pi_left_pack") or {})
             letter_kwargs = _pi_json_ready(dict(pack.get("letter_kwargs") or {}))
             edit_id = str(st.session_state.get("pi_hold_editing_id") or "").strip()
+            picked_now = _pi_selected_clients() or _norm_client_list(pack.get("picked"))
+            hold_client = resolve_hold_client(
+                client=str(pack.get("client") or client or ""),
+                letter_kwargs=letter_kwargs,
+                to=to_addr,
+                picked=picked_now,
+            )
             saved, updated = save_compose_hold(
                 edit_id=edit_id,
                 subject=subject,
                 body=body,
                 to=to_addr,
                 cc=str(draft.get("cc") or ""),
-                client=client,
+                client=hold_client,
                 staff=staff,
                 attach_letter=bool(attach_letter),
                 pdf_name=str(pack.get("pdf_name") or pdf_name or "공문.pdf"),
                 letter_kwargs=letter_kwargs if attach_letter else {},
+                picked=picked_now,
             )
             if updated:
                 draft_now = dict(st.session_state.get("pi_mail_draft") or {})
@@ -5114,10 +5162,18 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
             st.session_state["pi_hold_show"] = True
             _pi_rerun(full=True)
     elif do_cancel and not st.session_state.get("_pi_nav_blocked_now"):
+        edit_id = str(st.session_state.get("pi_hold_editing_id") or "").strip()
+        dropped = False
+        if edit_id:
+            dropped = delete_hold_mail(edit_id)
+            if dropped:
+                st.session_state["pi_hold_rev"] = int(st.session_state.get("pi_hold_rev") or 0) + 1
+                st.session_state["pi_hold_show"] = True
+                st.session_state["pi_hold_drop_flash"] = "수정 중이던 임시저장 메일을 삭제했습니다."
         _pi_clear_mail_stay_flags()
         st.session_state["pi_left_mode"] = "summary"
         _clear_pi_mail_compose_state()
-        _pi_rerun()
+        _pi_rerun(full=True)
     _render_pi_send_flash()
 
 
@@ -5927,7 +5983,10 @@ def _pi_clear_recipients_for_new_clients(prev_token: str, picked: list[str]) -> 
     """거래처를 다른 곳으로 바꾸면 이전 수신 메일을 비운다."""
     prev_set = {x for x in str(prev_token or "").split("\n") if x}
     new_set = set(picked or [])
-    if not prev_set or not new_set or prev_set.intersection(new_set):
+    if not new_set:
+        return
+    # 이전 선택이 비어 있어도(임시저장 직후 등) 새로 고른 거래처 메일만 남긴다.
+    if prev_set and prev_set.intersection(new_set):
         return
     st.session_state["pi_single_email"] = ""
     st.session_state["pi_email_auto"] = ""
@@ -5938,6 +5997,15 @@ def _pi_clear_recipients_for_new_clients(prev_token: str, picked: list[str]) -> 
         st.session_state["pi_mail_draft"] = draft
 
 
+def _pi_sync_draft_client(picked: list[str]) -> None:
+    """고른 거래처를 메일 초안 client에 바로 맞춘다."""
+    draft = dict(st.session_state.get("pi_mail_draft") or {})
+    if not draft and not picked:
+        return
+    draft["client"] = ", ".join(picked) if picked else ""
+    st.session_state["pi_mail_draft"] = draft
+
+
 def _pi_on_clients_change() -> None:
     """거래처 다중 선택 변경 시 수신메일을 반영. 직접 입력한 주소는 유지·병합."""
     st.session_state.pop("pi_skip_email_fill", None)
@@ -5945,6 +6013,7 @@ def _pi_on_clients_change() -> None:
     prev_token = str(st.session_state.get("pi_email_client") or "")
     picked = _pi_canonicalize_selected_clients()
     st.session_state["pi_single_client"] = picked[0] if picked else ""
+    _pi_sync_draft_client(picked)
     _pi_clear_recipients_for_new_clients(prev_token, picked)
     mail_df = st.session_state.get("_pi_mail_df_cache")
     joined, matched, _missing = lookup_emails_for_clients(
