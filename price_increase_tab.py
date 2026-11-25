@@ -2840,6 +2840,33 @@ def hold_recipient_label(row: dict, mail_df: pd.DataFrame | None = None) -> str:
     return f"{client} · {email}"
 
 
+def hold_letter_preview_fields(row: dict) -> dict | None:
+    """임시저장 행에서 첨부 공문 미리보기용 필드. 공문이 없으면 None."""
+    if not isinstance(row, dict):
+        return None
+    kw = _pi_restore_letter_kwargs(row.get("letter_kwargs"))
+    paras = kw.get("letter_paras") if isinstance(kw.get("letter_paras"), dict) else {}
+    letter_body = _letter_paras_to_body_text(paras)
+    items = list(kw.get("items") or []) if isinstance(kw.get("items"), list) else []
+    has_letter = bool(row.get("attach_letter")) or bool(paras) or bool(items) or bool(
+        str(kw.get("title") or "").strip()
+    )
+    if not has_letter:
+        return None
+    send_date = kw.get("send_date")
+    if not isinstance(send_date, date):
+        send_date = date.today()
+    return {
+        "client": str(kw.get("client") or row.get("client") or "").strip(),
+        "title": str(kw.get("title") or "").strip(),
+        "doc_no": str(kw.get("doc_no") or "").strip(),
+        "send_date": send_date,
+        "effective_s": str(kw.get("effective") or "").strip(),
+        "letter_body": letter_body,
+        "items": items,
+    }
+
+
 def hold_mail_label(row: dict) -> str:
     """임시저장 목록에서 제목과 수신자로 구분한다."""
     subject = str(row.get("subject") or "").strip() or "(제목 없음)"
@@ -3203,26 +3230,32 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
             label = f"{label} · {str(row.get('id') or '')[-4:]}"
         labels[label] = str(row.get("id") or "")
     opened = st.selectbox(
-        "메일 열기",
+        "공문 미리보기",
         [""] + list(labels),
-        format_func=lambda name: "메일을 선택하면 내용이 열립니다" if not name else name,
+        format_func=lambda name: "메일을 선택하면 첨부 공문이 열립니다" if not name else name,
         key=f"pi_hold_open_v{int(st.session_state.get('pi_hold_rev') or 0)}",
     )
     opened_id = labels.get(str(opened or ""))
     if opened_id and opened_id in by_id:
         one = by_id[opened_id]
         with st.expander(hold_mail_label(one), expanded=True, key=f"pi_hold_fold_{opened_id}"):
-            st.markdown(f"**제목** {one.get('subject') or '(제목 없음)'}")
+            st.markdown(f"**메일 제목** {one.get('subject') or '(제목 없음)'}")
             st.markdown(f"**수신** {hold_recipient_label(one)}")
             st.markdown(f"**참조** {one.get('cc') or '—'}")
-            body_now = str(one.get("body") or "")
-            st.text_area(
-                "메일 내용",
-                value=body_now,
-                height=260,
-                disabled=True,
-                key=f"pi_hold_body_{opened_id}_{abs(hash(body_now)) % 100000000}",
-            )
+            preview = hold_letter_preview_fields(one)
+            if preview is None:
+                st.info("이 메일은 첨부 공문이 없습니다. 「수정」으로 열면 메일 본문을 확인할 수 있습니다.")
+            else:
+                st.caption("첨부 공문 (엑셀 미리보기와 동일)")
+                _render_pi_live_letter_page(
+                    client=str(preview.get("client") or ""),
+                    title=str(preview.get("title") or ""),
+                    doc_no=str(preview.get("doc_no") or ""),
+                    send_date=preview.get("send_date") or date.today(),
+                    effective_s=str(preview.get("effective_s") or ""),
+                    letter_body=str(preview.get("letter_body") or ""),
+                    items=list(preview.get("items") or []),
+                )
     send_col, drop_col = st.columns(2)
     with send_col:
         do_send = st.button("선택 발송", type="primary", use_container_width=True, key="pi_hold_send")

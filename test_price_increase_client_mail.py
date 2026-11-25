@@ -2,6 +2,8 @@
 
 import pandas as pd
 
+from datetime import date
+
 from price_increase_tab import (
     _apply_amount_to_items,
     _apply_pct_to_items,
@@ -24,6 +26,7 @@ from price_increase_tab import (
     exclude_blocked_emails,
     keep_existing_mail_compose,
     filter_letter_client_names,
+    hold_letter_preview_fields,
     join_recipient_emails,
     merge_keep_manual_emails,
     remove_email_addr,
@@ -595,6 +598,32 @@ def test_new_client_selection_drops_previous_recipients():
     assert "mskt2020@naver.com" not in ss["pi_single_email"]
 
 
+def test_hold_letter_preview_fields_from_kwargs():
+    assert hold_letter_preview_fields({"body": "메일만", "attach_letter": False}) is None
+    prev = hold_letter_preview_fields(
+        {
+            "client": "태광기업",
+            "attach_letter": True,
+            "letter_kwargs": {
+                "client": "태광기업",
+                "title": "제품가격 조정의 건",
+                "doc_no": "신일(1)-2611-0000",
+                "send_date": "2026-11-26",
+                "effective": "2026-12-01",
+                "letter_paras": {"C16": "1. 귀사의 일익 번창하심을 기원하며"},
+                "items": [{"품목명": "N2", "기존단가": 100, "인상적용단가": 110}],
+            },
+        }
+    )
+    assert prev is not None
+    assert prev["client"] == "태광기업"
+    assert prev["title"] == "제품가격 조정의 건"
+    assert prev["doc_no"] == "신일(1)-2611-0000"
+    assert prev["send_date"] == date(2026, 11, 26)
+    assert "1. 귀사의 일익 번창하심을 기원하며" in prev["letter_body"]
+    assert prev["items"][0]["품목명"] == "N2"
+
+
 def test_hold_save_refreshes_hold_list():
     src = open("price_increase_tab.py", encoding="utf-8").read()
     hold = src.split("elif do_hold", 1)[1].split("elif do_cancel", 1)[0]
@@ -605,6 +634,11 @@ def test_hold_save_refreshes_hold_list():
     opened = src.split("opened_id = labels.get", 1)[1].split("if do_drop", 1)[0]
     hold_fn = src.split("def _render_pi_hold_mail", 1)[1].split("\ndef ", 1)[0]
     assert 'st.expander(hold_mail_label(one), expanded=True' in opened
+    assert "_render_pi_live_letter_page" in opened
+    assert "hold_letter_preview_fields" in opened
+    assert "메일 내용" not in opened
+    assert "pi_hold_body_" not in opened
+    assert "메일을 선택하면 첨부 공문이 열립니다" in hold_fn
     assert 'st.button("수정"' in hold_fn
     assert "pi_hold_edit_{hold_id}" in hold_fn
     assert "저장시각" in hold_fn
