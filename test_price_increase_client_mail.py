@@ -631,14 +631,17 @@ def test_hold_save_refreshes_hold_list():
     assert "pi_hold_show" in hold
     assert "_pi_rerun(full=True)" in hold
     assert "def _pi_focus_hold_tab" in src
-    opened = src.split("opened_id = labels.get", 1)[1].split("if do_drop", 1)[0]
     hold_fn = src.split("def _render_pi_hold_mail", 1)[1].split("\ndef ", 1)[0]
-    assert 'st.expander(hold_mail_label(one), expanded=True' in opened
-    assert "_render_pi_live_letter_page" in opened
-    assert "hold_letter_preview_fields" in opened
-    assert "메일 내용" not in opened
-    assert "pi_hold_body_" not in opened
-    assert "메일을 선택하면 첨부 공문이 열립니다" in hold_fn
+    assert "pi_hold_open_" in hold_fn
+    assert "on_click=_pi_hold_open_subject" in hold_fn
+    assert "_render_pi_live_letter_page" in hold_fn
+    assert "hold_letter_preview_fields" in hold_fn
+    assert "메일 내용" not in hold_fn
+    assert "pi_hold_body_" not in hold_fn
+    assert "st.selectbox" not in hold_fn
+    assert "메일을 선택하면" not in hold_fn
+    assert "compact=True" in hold_fn
+    assert "제목을 누르면 첨부 공문이 열립니다" in hold_fn
     assert 'st.button("수정"' in hold_fn
     assert "pi_hold_edit_{hold_id}" in hold_fn
     assert "저장시각" in hold_fn

@@ -3177,8 +3177,17 @@ def _pi_focus_hold_tab() -> None:
     _pi_click_inner_tab("임시저장")
 
 
+def _pi_hold_open_subject(hold_id: str) -> None:
+    """목록에서 제목을 누르면 그 메일의 첨부 공문을 연다(다시 누르면 닫음)."""
+    hid = str(hold_id or "").strip()
+    if not hid:
+        return
+    cur = str(st.session_state.get("pi_hold_opened_id") or "").strip()
+    st.session_state["pi_hold_opened_id"] = "" if cur == hid else hid
+
+
 def _render_pi_hold_mail(smtp_cfg: dict) -> None:
-    """임시저장 목록. 제목·수신자로 구분하고, 고른 메일만 발송한다."""
+    """임시저장 목록. 제목을 누르면 첨부 공문이 열리고, 고른 메일만 발송한다."""
     rows = load_hold_mail()
     flash = st.session_state.pop("pi_hold_flash", None)
     if flash:
@@ -3189,20 +3198,51 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
     edit_flash = st.session_state.pop("pi_hold_edit_flash", None)
     if edit_flash:
         st.info(f"개별 발송 탭에서 수정 중 · {edit_flash}")
-    st.caption("메일 제목과 수신자로 구분합니다. 발송을 끄면 선택 발송에서 빠집니다.")
+    st.caption("제목을 누르면 첨부 공문이 열립니다. 발송을 끄면 선택 발송에서 빠집니다.")
     if not rows:
         st.info("임시저장된 메일이 없습니다. 개별 발송에서 임시저장을 누르세요.")
         return
-    head = st.columns([0.7, 2.6, 2.4, 1.6, 0.8])
+    # 제목 버튼을 목록처럼 보이게 해 가독성을 높인다.
+    st.markdown(
+        """
+        <style>
+        div[class*="st-key-pi_hold_open_"] button {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          color: #0F172A !important;
+          font-weight: 600 !important;
+          justify-content: flex-start !important;
+          padding-left: 0.15rem !important;
+          padding-right: 0.15rem !important;
+          text-align: left !important;
+        }
+        div[class*="st-key-pi_hold_open_"] button:hover {
+          color: #B91C1C !important;
+          text-decoration: underline !important;
+        }
+        div[class*="st-key-pi_hold_edit_"] button {
+          min-height: 2rem !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    head = st.columns([0.55, 3.1, 2.3, 1.4, 0.7])
     for col, title in zip(head, ("발송", "메일 제목", "수신자", "저장시각", "")):
         col.markdown(f"**{title}**" if title else "&nbsp;", unsafe_allow_html=True)
     chosen_ids: list[str] = []
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    opened_id = str(st.session_state.get("pi_hold_opened_id") or "").strip()
+    if opened_id and opened_id not in by_id:
+        opened_id = ""
+        st.session_state.pop("pi_hold_opened_id", None)
     for row in rows:
         hold_id = str(row.get("id") or "")
         send_key = f"pi_hold_chk_{hold_id}"
         if send_key not in st.session_state:
             st.session_state[send_key] = bool(row.get("send", True))
-        c1, c2, c3, c4, c5 = st.columns([0.7, 2.6, 2.4, 1.6, 0.8])
+        c1, c2, c3, c4, c5 = st.columns([0.55, 3.1, 2.3, 1.4, 0.7])
         with c1:
             checked = st.checkbox(
                 "발송",
@@ -3211,7 +3251,18 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
                 help="켜면 선택 발송에 포함",
             )
         with c2:
-            st.markdown(str(row.get("subject") or "(제목 없음)"))
+            subj = str(row.get("subject") or "(제목 없음)")
+            if hold_id == opened_id:
+                subj = f"▾ {subj}"
+            st.button(
+                subj,
+                key=f"pi_hold_open_{hold_id}",
+                use_container_width=True,
+                type="secondary",
+                help="첨부 공문 미리보기",
+                on_click=_pi_hold_open_subject,
+                args=(hold_id,),
+            )
         with c3:
             st.markdown(hold_recipient_label(row))
         with c4:
@@ -3222,31 +3273,18 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
                 _pi_rerun(full=True)
         if checked and hold_id:
             chosen_ids.append(hold_id)
-    by_id = {str(row.get("id") or ""): row for row in rows}
-    labels: dict[str, str] = {}
-    for row in rows:
-        label = hold_mail_label(row)
-        if label in labels:
-            label = f"{label} · {str(row.get('id') or '')[-4:]}"
-        labels[label] = str(row.get("id") or "")
-    opened = st.selectbox(
-        "공문 미리보기",
-        [""] + list(labels),
-        format_func=lambda name: "메일을 선택하면 첨부 공문이 열립니다" if not name else name,
-        key=f"pi_hold_open_v{int(st.session_state.get('pi_hold_rev') or 0)}",
-    )
-    opened_id = labels.get(str(opened or ""))
+    opened_id = str(st.session_state.get("pi_hold_opened_id") or "").strip()
     if opened_id and opened_id in by_id:
         one = by_id[opened_id]
-        with st.expander(hold_mail_label(one), expanded=True, key=f"pi_hold_fold_{opened_id}"):
-            st.markdown(f"**메일 제목** {one.get('subject') or '(제목 없음)'}")
-            st.markdown(f"**수신** {hold_recipient_label(one)}")
-            st.markdown(f"**참조** {one.get('cc') or '—'}")
-            preview = hold_letter_preview_fields(one)
-            if preview is None:
-                st.info("이 메일은 첨부 공문이 없습니다. 「수정」으로 열면 메일 본문을 확인할 수 있습니다.")
-            else:
-                st.caption("첨부 공문 (엑셀 미리보기와 동일)")
+        st.markdown("---")
+        st.markdown(f"**수신** {hold_recipient_label(one)} · **참조** {one.get('cc') or '—'}")
+        preview = hold_letter_preview_fields(one)
+        if preview is None:
+            st.info("이 메일은 첨부 공문이 없습니다. 「수정」으로 열면 메일 본문을 확인할 수 있습니다.")
+        else:
+            # 개별발송 왼쪽 인쇄 미리보기와 비슷한 폭
+            prev_col, _spacer = st.columns([1, 1.14])
+            with prev_col:
                 _render_pi_live_letter_page(
                     client=str(preview.get("client") or ""),
                     title=str(preview.get("title") or ""),
@@ -3255,6 +3293,7 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
                     effective_s=str(preview.get("effective_s") or ""),
                     letter_body=str(preview.get("letter_body") or ""),
                     items=list(preview.get("items") or []),
+                    compact=True,
                 )
     send_col, drop_col = st.columns(2)
     with send_col:
@@ -3263,10 +3302,11 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
         do_drop = st.button("연 메일 삭제", use_container_width=True, key="pi_hold_drop")
     if do_drop:
         if not opened_id:
-            st.warning("삭제할 메일을 먼저 여세요.")
+            st.warning("삭제할 메일을 먼저 제목으로 여세요.")
         else:
             remain = [row for row in rows if str(row.get("id") or "") != opened_id]
             save_hold_mail(remain)
+            st.session_state.pop("pi_hold_opened_id", None)
             st.session_state["pi_hold_rev"] = int(st.session_state.get("pi_hold_rev") or 0) + 1
             st.success("연 메일을 임시저장에서 삭제했습니다.")
             _pi_rerun()
@@ -5918,8 +5958,12 @@ def _render_pi_live_letter_page(
     effective_s: str,
     letter_body: str,
     items: list[dict],
+    compact: bool = False,
 ) -> None:
-    """엑셀 미리보기. 본문 수정은 이 페이지 안에서만 바로 그린다."""
+    """엑셀 미리보기. 본문 수정은 이 페이지 안에서만 바로 그린다.
+
+    compact=True 이면 개별발송 왼쪽 인쇄 미리보기와 비슷한 폭으로 맞춘다.
+    """
     body_html = "".join(
         "<div style='min-height:1.35em;line-height:1.35;'>&nbsp;</div>"
         if not line.strip()
@@ -5932,55 +5976,66 @@ def _render_pi_live_letter_page(
     header_src = _pi_data_uri(str(imgs.get("header") or ""))
     footer_src = _pi_data_uri(str(imgs.get("footer") or imgs.get("header") or ""))
     stamp_src = _pi_data_uri(str(imgs.get("stamp") or ""))
+    # 개별발송 왼쪽 칸과 비슷한 로고·여백
+    header_w = 180 if compact else 240
+    footer_w = 150 if compact else 200
+    stamp_w = 48 if compact else 64
+    pad_cm = "0.7cm" if compact else "2cm"
+    max_w = 420 if compact else 0
+    iframe_h = 620 if compact else 780
+    font_meta = "13px" if compact else "15px"
+    font_body = "12.5px" if compact else "14px"
     header_html = (
-        f'<img src="{header_src}" alt="" style="display:block;width:240px;height:auto;margin:0 auto 8px;">'
+        f'<img src="{header_src}" alt="" style="display:block;width:{header_w}px;height:auto;margin:0 auto 8px;">'
         if header_src
         else ""
     )
     footer_logo = (
-        f'<img src="{footer_src}" alt="" style="width:200px;height:auto;">'
+        f'<img src="{footer_src}" alt="" style="width:{footer_w}px;height:auto;">'
         if footer_src
         else ""
     )
     stamp_html = (
-        f'<img src="{stamp_src}" alt="" style="width:64px;height:auto;margin-left:6px;vertical-align:middle;">'
+        f'<img src="{stamp_src}" alt="" style="width:{stamp_w}px;height:auto;margin-left:6px;vertical-align:middle;">'
         if stamp_src
         else ""
     )
     page = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="margin:0;background:#F8FAFC;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;">
-<div id="pi-a4-wrap" style="box-sizing:border-box;padding:2cm;width:100%;">
+<div id="pi-a4-wrap" style="box-sizing:border-box;padding:{pad_cm};width:100%;">
 <div id="pi-a4" style="box-sizing:border-box;width:100%;aspect-ratio:210/297;margin:0 auto;background:#fff;border:1px solid #94A3B8;display:flex;flex-direction:column;padding:12px 14px 10px;color:#111;overflow:auto;">
 {header_html}
 <div style="height:2px;background:#D1D5DB;"></div>
-<div style="text-align:center;font-size:12px;padding:5px 0;">우 18524 경기도 화성시 팔탄면 서해로 1327-17 / 전화 031-366-0799 / FAX 031-366-5633</div>
+<div style="text-align:center;font-size:11px;padding:5px 0;">우 18524 경기도 화성시 팔탄면 서해로 1327-17 / 전화 031-366-0799 / FAX 031-366-5633</div>
 <div style="height:2px;background:#D1D5DB;margin-bottom:10px;"></div>
-<div style="font-size:15px;line-height:1.65;">
+<div style="font-size:{font_meta};line-height:1.65;">
 <div>문서번호 : {html_lib.escape(str(doc_no or ""))}</div>
 <div>발송일자 : {html_lib.escape(str(send_s or ""))}</div>
 <div>수&nbsp;&nbsp;&nbsp;&nbsp;신 : {html_lib.escape(str(client or ""))}</div>
 <div>제&nbsp;&nbsp;&nbsp;&nbsp;목 : {html_lib.escape(str(title or ""))}</div>
 </div>
 <div style="height:2px;background:#B0B0B0;margin:10px 0;"></div>
-<div id="pi-letter-live" style="font-size:14px;">{body_html}</div>
+<div id="pi-letter-live" style="font-size:{font_body};">{body_html}</div>
 <div id="pi-letter-price">{price_block}</div>
 <div id="pi-letter-foot" style="margin-top:auto;">
 <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;">
 <div>{footer_logo}</div>
-<div style="font-weight:700;font-size:16px;white-space:nowrap;">대표자 : 유 봉 래{stamp_html}</div>
+<div style="font-weight:700;font-size:15px;white-space:nowrap;">대표자 : 유 봉 래{stamp_html}</div>
 </div>
 <div style="height:1px;background:#B4B4B4;margin:8px 0;"></div>
-<div style="text-align:center;font-weight:700;font-size:16px;letter-spacing:0.18em;">(주) 신 일 가 스</div>
+<div style="text-align:center;font-weight:700;font-size:15px;letter-spacing:0.18em;">(주) 신 일 가 스</div>
 </div>
 </div>
 </div>
 <script>
 (function(){{
+  var MAX_W = {int(max_w)};
+  var PAD_CM = {0.7 if compact else 2.0};
   function fitA4(){{
     var sheet = document.getElementById('pi-a4');
     var wrap = document.getElementById('pi-a4-wrap');
     if (!sheet || !wrap) return;
-    var pad = (96 / 2.54) * 2;
+    var pad = (96 / 2.54) * PAD_CM;
     var frame = window.frameElement;
     var hostW = (frame && frame.clientWidth) ? frame.clientWidth : document.documentElement.clientWidth;
     if (!hostW || hostW < 80) {{
@@ -5988,12 +6043,13 @@ def _render_pi_live_letter_page(
       return;
     }}
     var w = Math.max(220, (hostW - pad * 2) * 0.9);
+    if (MAX_W > 0) w = Math.min(MAX_W, w);
     var h = w * (297 / 210);
     sheet.style.width = w + 'px';
     sheet.style.height = h + 'px';
     sheet.style.marginLeft = 'auto';
     sheet.style.marginRight = 'auto';
-    wrap.style.padding = '2cm';
+    wrap.style.padding = PAD_CM + 'cm';
     wrap.style.width = '100%';
     var px = Math.ceil(h + pad * 2);
     if (frame) {{
@@ -6030,11 +6086,11 @@ def _render_pi_live_letter_page(
   window.__piFillPage = fillPage;
   try {{ fitA4(); }} catch (eFit) {{}}
   window.addEventListener('resize', function(){{ try {{ fitA4(); }} catch (eFit2) {{}} }});
-{_PI_LETTER_BIND_JS}
+{_PI_LETTER_BIND_JS if not compact else ""}
 }})();
 </script>
 </body></html>"""
-    st.components.v1.html(page, height=780, scrolling=False)
+    st.components.v1.html(page, height=iframe_h, scrolling=False)
 
 
 def _render_letter_form_preview(
