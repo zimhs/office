@@ -7335,15 +7335,15 @@ def _filter_df_by_many_clients(df, names):
         return df
     if len(clean) == 1:
         return filter_df_by_selected_client(df, clean[0])
-    mask = pd.Series(False, index=df.index)
-    hit = False
-    for name in clean:
-        part = filter_df_by_selected_client(df, name)
-        if part is None or part.empty:
-            continue
-        mask.loc[part.index] = True
-        hit = True
-    if not hit:
+    # 거래처마다 filter를 반복하면 상단 다중 선택 때 느리다 → 집합 한 번으로 맞춘다.
+    want = set(clean)
+    want |= {n.rstrip(".") for n in clean}
+    col = df["거래처"].astype(str).str.strip()
+    mask = col.isin(want) | col.str.rstrip(".").isin(want)
+    if "거래처_원본" in df.columns:
+        orig = df["거래처_원본"].astype(str).str.strip()
+        mask = mask | orig.isin(want) | orig.str.rstrip(".").isin(want)
+    if not mask.any():
         return df.iloc[0:0].copy()
     return df.loc[mask].copy()
 
@@ -8812,7 +8812,11 @@ def _dash_refresh_name_view(selected_staff, selected_client, selected_item) -> N
 
 
 def _dash_replay_open_tab(selected_staff, selected_client, selected_item) -> None:
-    """담당자·거래처·품목이 바뀌면 거래처·품목·상세·채권만 다시 그린다. 탭 클릭은 그대로다."""
+    """담당자·거래처·품목이 바뀌면 지금 보고 있는 관련 탭만 다시 그린다.
+
+    예전에는 거래처·품목·상세·채권(1~4)을 연쇄로 눌러 상단 검색마다 로딩이 길었다.
+    안 보이는 탭은 다음에 열 때 remount 한다.
+    """
     client_now = selected_client or "전체 거래처"
     item_now = tuple(selected_item or ())
     staff_now = tuple(selected_staff or ())
@@ -8823,17 +8827,25 @@ def _dash_replay_open_tab(selected_staff, selected_client, selected_item) -> Non
     staff_changed = changed or tuple(prev[0] or ()) != staff_now
     client_changed = changed or prev[1] != client_now
     item_changed = changed or tuple(prev[2] or ()) != item_now
+    if not (staff_changed or client_changed or item_changed):
+        return
     # 1 거래처 분석, 2 품목·단가, 3 담당자·거래상세, 4 채권. 요약·지도·재고는 다시 열지 않는다.
-    targets: list[int] = []
-    if staff_changed or client_changed or item_changed:
-        targets.extend((1, 2, 3, 4))
-    active = _dash_active_tab_idx()
-    if active in targets:
-        targets = [active] + [i for i in targets if i != active]
+    targets: set[int] = set()
+    if staff_changed or client_changed:
+        targets.update((1, 2, 3, 4))
+    elif item_changed:
+        targets.update((1, 2))
     if not targets:
         return
-    st.session_state["_dash_repaint_queue"] = [int(i) for i in targets]
-    _dash_click_repaint_tabs([int(targets[0])])
+    # 다른 탭은 다음에 열 때 새 필터로 remount
+    st.session_state["_dash_filter_changed_flag"] = True
+    _dash_mark_tabs_skipped(True)
+    active = _dash_active_tab_idx()
+    if active is None or int(active) not in targets:
+        st.session_state.pop("_dash_repaint_queue", None)
+        return
+    st.session_state["_dash_repaint_queue"] = [int(active)]
+    _dash_click_repaint_tabs([int(active)])
 
 
 def _dash_click_repaint_tabs(indices: list[int]) -> None:
@@ -17464,7 +17476,7 @@ def _dash_filter_and_tabs_fragment() -> None:
         st.sidebar.warning("PPT 내보내기: `pip install python-pptx kaleido` 설치 후 이용하세요.")
     except Exception as exc:
         st.sidebar.error(f"PPT 생성 오류: {exc}")
-    # 담당자·거래처·품목 필터가 바뀌면 거래처·품목·상세·채권만 다시 그린다. 탭 이동은 이미 그린 화면을 연다.
+    # 담당자·거래처·품목 필터가 바뀌면 보고 있는 관련 탭만 다시 그린다. 나머지는 탭 이동 때 연다.
     _dash_note_filter_change_for_heavy_tabs()
     _dash_mark_tabs_skipped(bool(st.session_state.get("_dash_filter_changed_flag")))
     _DASH_CLOUD_TABS = _dash_cloud_merged_tabs()
