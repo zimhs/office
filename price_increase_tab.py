@@ -2630,16 +2630,17 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
     opened_id = labels.get(str(opened or ""))
     if opened_id and opened_id in by_id:
         one = by_id[opened_id]
-        st.markdown(f"**제목** {one.get('subject') or '(제목 없음)'}")
-        st.markdown(f"**수신** {one.get('to') or '(수신 없음)'}")
-        st.markdown(f"**참조** {one.get('cc') or '—'}")
-        st.text_area(
-            "메일 내용",
-            value=str(one.get("body") or ""),
-            height=260,
-            disabled=True,
-            key=f"pi_hold_body_{opened_id}",
-        )
+        with st.expander(hold_mail_label(one), expanded=True, key=f"pi_hold_fold_{opened_id}"):
+            st.markdown(f"**제목** {one.get('subject') or '(제목 없음)'}")
+            st.markdown(f"**수신** {one.get('to') or '(수신 없음)'}")
+            st.markdown(f"**참조** {one.get('cc') or '—'}")
+            st.text_area(
+                "메일 내용",
+                value=str(one.get("body") or ""),
+                height=260,
+                disabled=True,
+                key=f"pi_hold_body_{opened_id}",
+            )
     send_col, drop_col = st.columns(2)
     with send_col:
         do_send = st.button("선택 발송", type="primary", use_container_width=True, key="pi_hold_send")

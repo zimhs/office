@@ -348,6 +348,8 @@ def test_hold_save_refreshes_hold_list():
     assert "pi_hold_show" in hold
     assert "_pi_rerun(full=True)" in hold
     assert "def _pi_focus_hold_tab" in src
+    opened = src.split("opened_id = labels.get", 1)[1].split("send_col, drop_col", 1)[0]
+    assert 'st.expander(hold_mail_label(one), expanded=True' in opened
 
 
 def test_mail_subject_body_not_wiped_on_tab_restore():
