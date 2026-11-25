@@ -370,6 +370,10 @@ def test_hold_edit_opens_in_mail_compose():
     assert ss["pi_hold_editing_id"] == "hold1"
     assert ss["pi_mail_draft"]["hold_id"] == "hold1"
     assert ss["pi_single_email"] == "nksteel@hanmail.net"
+    assert ss["pi_single_clients"] == ["신일가스"]
+    assert ss["pi_hold_open_mail_tab"] is True
+    assert "pi_fresh_mail" not in ss
+    assert "def _pi_click_inner_tab" in open("price_increase_tab.py", encoding="utf-8").read()
     assert ss["pi_hold_open_mail_tab"] is True
     assert "pi_hold_edit_pending" not in ss
 

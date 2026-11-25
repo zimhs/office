@@ -2744,6 +2744,10 @@ def _render_pi_sent_history() -> None:
 
 def _pi_apply_fresh_mail() -> None:
     """임시저장·다시 임시저장 후 새 작성. 이전 거래처와 수신 메일은 비운다."""
+    # 수정 열기와 겹치면 수신·초안을 지우지 않는다.
+    if st.session_state.get("pi_hold_edit_pending"):
+        st.session_state.pop("pi_fresh_mail", None)
+        return
     if not st.session_state.pop("pi_fresh_mail", None):
         return
     st.session_state["pi_single_email"] = ""
@@ -2771,24 +2775,29 @@ def _consume_hold_edit_open() -> None:
     pending = st.session_state.pop("pi_hold_edit_pending", None)
     if not isinstance(pending, dict):
         return
+    st.session_state.pop("pi_fresh_mail", None)
     hold_id = str(pending.get("id") or "").strip()
     subject = str(pending.get("subject") or "")
     body = _strip_mail_signature(str(pending.get("body") or ""))
     to_addr = str(pending.get("to") or "")
     cc_addr = str(pending.get("cc") or "")
+    client = str(pending.get("client") or "").strip()
     draft = {
         "to": to_addr,
         "cc": cc_addr,
         "subject": subject,
         "body": body,
         "pdf_name": str(pending.get("pdf_name") or ""),
-        "client": str(pending.get("client") or ""),
+        "client": client,
         "staff": str(pending.get("staff") or ""),
         "items": 0,
         "plain": not bool(pending.get("attach_letter", True)),
         "hold_id": hold_id,
     }
     st.session_state["pi_mail_draft"] = draft
+    # persist_state 잔값이 덮지 않도록 키를 다시 심는다.
+    st.session_state.pop("pi_mail_compose_subject", None)
+    st.session_state.pop("pi_mail_compose_body", None)
     st.session_state["pi_mail_compose_subject"] = subject
     st.session_state["pi_mail_compose_body"] = body
     st.session_state["pi_mail_text_edited"] = True
@@ -2796,42 +2805,61 @@ def _consume_hold_edit_open() -> None:
     st.session_state["pi_hold_editing_id"] = hold_id
     st.session_state["pi_single_email"] = to_addr
     st.session_state["pi_single_cc"] = cc_addr
+    if client and client != "일반메일":
+        st.session_state["pi_single_clients"] = [client]
+        st.session_state["pi_single_client"] = client
+        st.session_state["pi_email_client"] = client
+    else:
+        st.session_state["pi_single_clients"] = []
+        st.session_state["pi_single_client"] = ""
+        st.session_state["pi_email_client"] = ""
+    st.session_state["pi_email_auto"] = to_addr
     st.session_state["pi_hold_addr_lock"] = True
     st.session_state["pi_skip_email_fill"] = True
+    st.session_state.pop("pi_hold_show", None)
     st.session_state["pi_hold_open_mail_tab"] = True
+    st.session_state["pi_hold_edit_flash"] = hold_mail_label(draft)
     save_compose_live(draft)
+
+
+def _pi_click_inner_tab(label: str) -> None:
+    """메일 안쪽 탭(개별 발송·임시저장)을 연다. parent 문서를 본다."""
+    want = str(label or "").replace(" ", "")
+    st.html(
+        f"""<script>
+        (function(){{
+          var want = {want!r};
+          var d;
+          try {{ d = window.parent.document; }} catch (e) {{ d = document; }}
+          function clickTab(){{
+            var nodes = d.querySelectorAll('[role="tab"]');
+            for (var i = 0; i < nodes.length; i++) {{
+              var t = (nodes[i].innerText || '').replace(/\\s+/g, '');
+              if (!t) continue;
+              if (t === want || t.indexOf(want) >= 0) {{
+                nodes[i].click();
+                return true;
+              }}
+            }}
+            return false;
+          }}
+          if (!clickTab()) setTimeout(clickTab, 120);
+          setTimeout(clickTab, 320);
+          setTimeout(clickTab, 700);
+        }})();
+        </script>""",
+        unsafe_allow_javascript=True,
+    )
 
 
 def _pi_focus_single_tab() -> None:
     """수정한 임시저장을 개별 발송 메일 작성에서 연다."""
-    st.html(
-        """<script>
-        setTimeout(function () {
-          var nodes = document.querySelectorAll('[role="tab"]');
-          for (var i = 0; i < nodes.length; i++) {
-            var t = (nodes[i].innerText || '').replace(/\\s+/g, '');
-            if (t === '개별발송') { nodes[i].click(); break; }
-          }
-        }, 80);
-        </script>""",
-        unsafe_allow_javascript=True,
-    )
+    _pi_click_inner_tab("개별발송")
 
 
 def _pi_focus_hold_tab() -> None:
     """저장 직후 임시저장 탭을 연다. 목록은 이미 이 실행에서 그려 둔다."""
-    st.html(
-        """<script>
-        setTimeout(function () {
-          var nodes = document.querySelectorAll('[role="tab"]');
-          for (var i = 0; i < nodes.length; i++) {
-            var t = (nodes[i].innerText || '').replace(/\\s+/g, '');
-            if (t.indexOf('임시저장') >= 0) { nodes[i].click(); break; }
-          }
-        }, 80);
-        </script>""",
-        unsafe_allow_javascript=True,
-    )
+    _pi_click_inner_tab("임시저장")
 
 
 def _render_pi_hold_mail(smtp_cfg: dict) -> None:
@@ -2840,6 +2868,9 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
     flash = st.session_state.pop("pi_hold_flash", None)
     if flash:
         st.success(f"임시저장됨 · {flash}")
+    edit_flash = st.session_state.pop("pi_hold_edit_flash", None)
+    if edit_flash:
+        st.info(f"개별 발송 탭에서 수정 중 · {edit_flash}")
     st.caption("메일 제목과 수신자로 구분합니다. 발송을 끄면 선택 발송에서 빠집니다.")
     if not rows:
         st.info("임시저장된 메일이 없습니다. 개별 발송에서 임시저장을 누르세요.")
@@ -4622,14 +4653,12 @@ def _pi_mail_compose_dialog() -> None:
         "메일 제목",
         key="pi_mail_compose_subject",
         on_change=_remember_mail_compose_text,
-        persist_state="session",
     )
     st.text_area(
         "메일 본문",
         height=260,
         key="pi_mail_compose_body",
         on_change=_remember_mail_compose_text,
-        persist_state="session",
     )
     _remember_mail_compose_text()
     _render_mail_signature_preview()
@@ -4949,14 +4978,12 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
         "메일 제목",
         key="pi_mail_compose_subject",
         on_change=_remember_mail_compose_text,
-        persist_state="session",
     )
     st.text_area(
         "메일 본문",
         height=260,
         key="pi_mail_compose_body",
         on_change=_remember_mail_compose_text,
-        persist_state="session",
     )
     _remember_mail_compose_text()
     _pi_keep_compose_on_tab_leave()
