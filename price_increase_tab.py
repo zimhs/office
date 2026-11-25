@@ -1613,6 +1613,15 @@ def _body_text_to_paras(text: str) -> dict[str, str]:
     return paras
 
 
+def _letter_paras_to_body_text(paras: dict | None) -> str:
+    """양식 셀 dict → 공문 입력칸 본문."""
+    if not isinstance(paras, dict):
+        return ""
+    lines = [str(paras.get(c) or "").strip() for c in _BODY_CELL_ORDER]
+    lines = [ln for ln in lines if ln]
+    return "\n\n".join(lines)
+
+
 def _strip_letter_body_from_kwargs(kwargs: dict) -> dict:
     """첨부파일용: 공문 본문 셀만 비움(헤더·단가표는 유지)."""
     out = dict(kwargs or {})
@@ -2879,6 +2888,83 @@ def _pi_apply_fresh_mail() -> None:
         save_compose_live(draft)
 
 
+def _pi_hold_letter_restore_payload(pending: dict) -> dict:
+    """수정 열 때 공문·단가표를 되돌릴 값."""
+    lk = _pi_restore_letter_kwargs(pending.get("letter_kwargs"))
+    client = str(pending.get("client") or lk.get("client") or "").strip()
+    paras = lk.get("letter_paras") if isinstance(lk.get("letter_paras"), dict) else {}
+    letter_body = _letter_paras_to_body_text(paras)
+    if not letter_body.strip():
+        letter_body = _strip_mail_signature(str(lk.get("body") or ""))
+    items = list(lk.get("items") or [])
+    return {
+        "client": client,
+        "title": str(lk.get("title") or "").strip(),
+        "doc_no": str(lk.get("doc_no") or "").strip(),
+        "contact": str(lk.get("contact") or "").strip(),
+        "effective": lk.get("effective"),
+        "send_date": lk.get("send_date"),
+        "letter_body": letter_body,
+        "items": items,
+        "attach_letter": bool(pending.get("attach_letter", True)),
+        "include_price": bool(items),
+    }
+
+
+def _apply_hold_letter_restore(*, client: str, body_key: str, items_key: str) -> None:
+    """임시저장에 있던 공문 본문·단가표를 오른쪽 입력에 넣는다."""
+    payload = st.session_state.pop("pi_hold_letter_restore", None)
+    if not isinstance(payload, dict):
+        return
+    want = str(payload.get("client") or "").strip()
+    if want and _norm_name(want) != _norm_name(client):
+        # 거래처 위젯이 아직 안 맞으면 다음 실행에 다시 시도
+        st.session_state["pi_hold_letter_restore"] = payload
+        return
+    title = str(payload.get("title") or "").strip()
+    if title:
+        st.session_state["pi_single_title"] = title
+        st.session_state.pop("pi_letter_src", None)
+        st.session_state.pop("_pi_letter_src_applied", None)
+        st.session_state.pop("_pi_letter_src_token", None)
+        st.session_state.pop("_pi_letter_src_body", None)
+    doc_no = str(payload.get("doc_no") or "").strip()
+    if doc_no:
+        st.session_state["pi_letter_doc_no"] = doc_no
+    contact = str(payload.get("contact") or "").strip()
+    if contact:
+        st.session_state["pi_single_contact"] = contact
+    effective = payload.get("effective")
+    if effective is not None and str(effective).strip():
+        if isinstance(effective, date):
+            st.session_state["pi_single_eff"] = effective
+        else:
+            try:
+                st.session_state["pi_single_eff"] = date.fromisoformat(str(effective).strip()[:10])
+            except ValueError:
+                pass
+    send_date = payload.get("send_date")
+    if isinstance(send_date, date):
+        st.session_state["pi_letter_send_date"] = send_date
+    elif send_date is not None and str(send_date).strip():
+        try:
+            st.session_state["pi_letter_send_date"] = date.fromisoformat(str(send_date).strip()[:10])
+        except ValueError:
+            pass
+    letter_body = str(payload.get("letter_body") or "")
+    if letter_body.strip() and body_key:
+        st.session_state[body_key] = letter_body
+    items = list(payload.get("items") or [])
+    if items_key and items:
+        st.session_state[items_key] = [dict(it) for it in items]
+        st.session_state[f"{items_key}_avg_col_v1"] = True
+        _bump_editor_widget(items_key)
+    st.session_state["pi_include_letter_body"] = bool(payload.get("attach_letter", True))
+    st.session_state["pi_mail_attach_letter"] = bool(payload.get("attach_letter", True))
+    st.session_state["pi_include_price"] = bool(payload.get("include_price", bool(items)))
+    st.session_state["pi_body_client"] = client
+
+
 def _consume_hold_edit_open() -> None:
     """임시저장 수정을 메일 작성 칸에 넣는다. 위젯보다 먼저 실행한다."""
     pending = st.session_state.pop("pi_hold_edit_pending", None)
@@ -2886,11 +2972,17 @@ def _consume_hold_edit_open() -> None:
         return
     st.session_state.pop("pi_fresh_mail", None)
     hold_id = str(pending.get("id") or "").strip()
-    subject = str(pending.get("subject") or "")
+    subject = str(pending.get("subject") or "").strip()
+    if subject == "(제목 없음)":
+        subject = ""
     body = _strip_mail_signature(str(pending.get("body") or ""))
     to_addr = str(pending.get("to") or "")
     cc_addr = str(pending.get("cc") or "")
     client = str(pending.get("client") or "").strip()
+    letter_restore = _pi_hold_letter_restore_payload(pending)
+    if not subject:
+        title = str(letter_restore.get("title") or "").strip()
+        subject = f"[신일가스] {title}" if title else ""
     draft = {
         "to": to_addr,
         "cc": cc_addr,
@@ -2899,12 +2991,13 @@ def _consume_hold_edit_open() -> None:
         "pdf_name": str(pending.get("pdf_name") or ""),
         "client": client,
         "staff": str(pending.get("staff") or ""),
-        "items": 0,
+        "items": len(letter_restore.get("items") or []),
         "plain": not bool(pending.get("attach_letter", True)),
         "hold_id": hold_id,
+        "letter_kwargs": _pi_json_ready(dict(pending.get("letter_kwargs") or {})),
     }
     st.session_state["pi_mail_draft"] = draft
-    # persist_state 잔값이 덮지 않도록 키를 다시 심는다.
+    # 이전 위젯 값이 덮지 않도록 키를 다시 심는다.
     st.session_state.pop("pi_mail_compose_subject", None)
     st.session_state.pop("pi_mail_compose_body", None)
     st.session_state["pi_mail_compose_subject"] = subject
@@ -2925,9 +3018,10 @@ def _consume_hold_edit_open() -> None:
     st.session_state["pi_email_auto"] = to_addr
     st.session_state["pi_hold_addr_lock"] = True
     st.session_state["pi_skip_email_fill"] = True
+    st.session_state["pi_hold_letter_restore"] = letter_restore
     st.session_state.pop("pi_hold_show", None)
     st.session_state["pi_hold_open_mail_tab"] = True
-    st.session_state["pi_hold_edit_flash"] = hold_mail_label(draft)
+    st.session_state["pi_hold_edit_flash"] = hold_mail_label({**draft, "subject": subject or "(제목 없음)"})
     save_compose_live(draft)
 
 
@@ -4880,11 +4974,14 @@ def _open_mail_compose_dialog(
     live_body = st.session_state.get("pi_mail_compose_body")
     saved_subj = str(saved_live.get("subject") or prev_draft.get("subject") or "")
     saved_body = _strip_mail_signature(str(saved_live.get("body") or prev_draft.get("body") or ""))
+    editing_hold = str(st.session_state.get("pi_hold_editing_id") or "").strip()
+    if editing_hold:
+        keep = True
     if not keep and (saved_subj.strip() or saved_body.strip() or st.session_state.get("pi_mail_text_edited")):
         keep = True
-    if keep and live_subj is None:
+    if keep and (live_subj is None or not str(live_subj).strip()):
         live_subj = saved_subj
-    if keep and live_body is None:
+    if keep and (live_body is None or not str(live_body).strip()):
         live_body = saved_body
     title, body = keep_existing_mail_compose(
         title=title,
@@ -4894,7 +4991,7 @@ def _open_mail_compose_dialog(
         keep=keep,
     )
     to_addr, cc_addr = compose_addrs_from_fields(email, cc)
-    hold_id = str(st.session_state.get("pi_hold_editing_id") or "") if keep else ""
+    hold_id = editing_hold if keep else ""
     if not keep:
         st.session_state.pop("pi_hold_editing_id", None)
     draft_now = {
@@ -6888,7 +6985,8 @@ def _ensure_mail_compose_first_screen(pack: dict) -> None:
         st.session_state["pi_left_mode"] = "mail"
     if st.session_state.get("pi_left_mode") != "mail":
         return
-    if st.session_state.get("pi_mail_draft"):
+    # 임시저장 수정 중이거나 이미 초안이 있으면 공문 기본문으로 덮지 않는다.
+    if st.session_state.get("pi_hold_editing_id") or st.session_state.get("pi_mail_draft"):
         return
     _fill_mail_compose_from_pack(pack)
 
@@ -7156,11 +7254,12 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             if pct_key not in st.session_state:
                 st.session_state[pct_key] = 5.0
             items_key = _items_key(client)
+            restoring_hold = isinstance(st.session_state.get("pi_hold_letter_restore"), dict)
             if items_key not in st.session_state:
                 st.session_state[items_key] = _init_items_from_prices(
                     client, price_df, st.session_state[pct_key]
                 )
-            else:
+            elif not restoring_hold:
                 # 기존 세션 품목에도 월평균 열 보강 · 에디터 한 번 갱신
                 st.session_state[items_key] = _enrich_items_monthly_avg(
                     st.session_state[items_key], price_df
@@ -7174,14 +7273,16 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             # 공문 본문 키 (거래처별). 제목으로 지정한 본문은 거래처를 바꿔도 유지.
             body_key = f"pi_letter_body_{_norm_name(client)}"
             prev_client = str(st.session_state.get("pi_body_client") or "")
-            st.session_state[body_key] = _pi_keep_letter_body(
-                client=client,
-                body_key=body_key,
-                prev_client=prev_client,
-                pinned=bool(st.session_state.get("_pi_letter_src_applied")),
-                bodies=st.session_state,
-            )
-            st.session_state["pi_body_client"] = client
+            if not restoring_hold:
+                st.session_state[body_key] = _pi_keep_letter_body(
+                    client=client,
+                    body_key=body_key,
+                    prev_client=prev_client,
+                    pinned=bool(st.session_state.get("_pi_letter_src_applied")),
+                    bodies=st.session_state,
+                )
+                st.session_state["pi_body_client"] = client
+            _apply_hold_letter_restore(client=client, body_key=body_key, items_key=items_key)
 
             _render_email_addr_fields()
             col_left, col_right = st.columns([1, 1], gap="medium")

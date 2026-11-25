@@ -361,6 +361,18 @@ def test_hold_edit_opens_in_mail_compose():
             "to": "nksteel@hanmail.net",
             "cc": "",
             "client": "신일가스",
+            "attach_letter": True,
+            "letter_kwargs": {
+                "client": "신일가스",
+                "title": "제품가격 조정의 건",
+                "items": [{"선택": True, "품목명": "N2", "기존단가": 100, "인상적용단가": 120}],
+                "letter_paras": {
+                    "C16": "1. 감사",
+                    "C18": "2. 안내",
+                    "C19": "3. 조정",
+                    "C21": "4. 부탁",
+                },
+            },
         }
     }
     with mock.patch.object(m, "PI_COMPOSE_LIVE", path), mock.patch.object(m.st, "session_state", ss):
@@ -373,6 +385,18 @@ def test_hold_edit_opens_in_mail_compose():
     assert ss["pi_single_clients"] == ["신일가스"]
     assert ss["pi_hold_open_mail_tab"] is True
     assert "pi_fresh_mail" not in ss
+    restore = ss["pi_hold_letter_restore"]
+    assert restore["items"][0]["인상적용단가"] == 120
+    assert "3. 조정" in restore["letter_body"]
+    with mock.patch.object(m.st, "session_state", ss):
+        m._apply_hold_letter_restore(
+            client="신일가스",
+            body_key="pi_letter_body_신일가스",
+            items_key="pi_items_신일가스",
+        )
+    assert ss["pi_items_신일가스"][0]["인상적용단가"] == 120
+    assert "3. 조정" in ss["pi_letter_body_신일가스"]
+    assert ss["pi_single_title"] == "제품가격 조정의 건"
     assert "def _pi_click_inner_tab" in open("price_increase_tab.py", encoding="utf-8").read()
     assert ss["pi_hold_open_mail_tab"] is True
     assert "pi_hold_edit_pending" not in ss
