@@ -423,9 +423,11 @@ def test_hold_save_refreshes_hold_list():
     assert "_pi_rerun(full=True)" in hold
     assert "def _pi_focus_hold_tab" in src
     opened = src.split("opened_id = labels.get", 1)[1].split("if do_drop", 1)[0]
+    hold_fn = src.split("def _render_pi_hold_mail", 1)[1].split("\ndef ", 1)[0]
     assert 'st.expander(hold_mail_label(one), expanded=True' in opened
-    assert 'st.button("수정"' in opened
-    assert "pi_hold_edit_pending" in opened
+    assert 'st.button("수정"' in hold_fn
+    assert "pi_hold_edit_{hold_id}" in hold_fn
+    assert "pi_hold_edit_pending" in hold_fn
     assert "update_hold_mail" in hold
     assert "다시 임시저장" in src
 

@@ -2681,7 +2681,14 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
         st.info("임시저장된 메일이 없습니다. 개별 발송에서 임시저장을 누르세요.")
         return
     for row in rows:
-        st.markdown(f"- {hold_mail_label(row)}")
+        hold_id = str(row.get("id") or "")
+        name_col, edit_col = st.columns([6, 1])
+        with name_col:
+            st.markdown(hold_mail_label(row))
+        with edit_col:
+            if st.button("수정", key=f"pi_hold_edit_{hold_id}", use_container_width=True):
+                st.session_state["pi_hold_edit_pending"] = dict(row)
+                _pi_rerun(full=True)
     table = _hold_mail_table(rows).set_index("id")
     edited = st.data_editor(
         table,
@@ -2722,19 +2729,11 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
                 disabled=True,
                 key=f"pi_hold_body_{opened_id}",
             )
-    edit_col, send_col, drop_col = st.columns(3)
-    with edit_col:
-        do_edit = st.button("수정", use_container_width=True, key="pi_hold_edit_open")
+    send_col, drop_col = st.columns(2)
     with send_col:
         do_send = st.button("선택 발송", type="primary", use_container_width=True, key="pi_hold_send")
     with drop_col:
         do_drop = st.button("연 메일 삭제", use_container_width=True, key="pi_hold_drop")
-    if do_edit:
-        if not opened_id or opened_id not in by_id:
-            st.warning("수정할 메일을 먼저 여세요.")
-        else:
-            st.session_state["pi_hold_edit_pending"] = dict(by_id[opened_id])
-            _pi_rerun(full=True)
     chosen_ids = [
         str(hold_id)
         for hold_id, row in edited.iterrows()
