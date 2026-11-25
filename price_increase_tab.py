@@ -406,6 +406,37 @@ def _norm_name(s: Any) -> str:
     return t.lower()
 
 
+# 레이져/레이저처럼 ㅓ 자리에 ㅕ를 넣은 표기를 같은 검색으로 본다.
+_CLIENT_SPELL_FOLD = str.maketrans(
+    {
+        "져": "저",
+        "쳐": "처",
+        "셔": "서",
+        "녀": "너",
+        "려": "러",
+        "겨": "거",
+        "며": "머",
+        "벼": "버",
+        "펴": "퍼",
+        "혀": "허",
+        "켜": "커",
+    }
+)
+
+
+def _client_search_key(s: Any) -> str:
+    """거래처 검색용. 공백과 져/저 같은 표기 차이를 접는다."""
+    return _norm_name(s).translate(_CLIENT_SPELL_FOLD)
+
+
+def _match_client_names(names: list[str], query: str) -> list[str]:
+    """검색어가 들어간 거래처. 비어 있으면 전체."""
+    q = _client_search_key(query)
+    if not q:
+        return list(names)
+    return [name for name in names if q in _client_search_key(name)]
+
+
 # 연락처 직함·호칭 (김도엽이사님 ↔ 김도엽이사)
 _CONTACT_TITLE_RE = re.compile(
     r"(님|이사님|이사|과장|차장|부장|대리|사원|주임|계장|실장|팀장|"
@@ -5716,6 +5747,12 @@ def _pi_set_selected_clients(picked: list[str]) -> bool:
     return new_p != old_p
 
 
+def _pi_choose_client_name(name: str) -> None:
+    """검색 결과에서 고른 거래처를 넣고 검색어는 비운다."""
+    _pi_add_selected_client(name)
+    st.session_state["pi_client_q"] = ""
+
+
 def _pi_add_selected_client(name: str) -> None:
     name = _clean_client_label(name)
     if not name:
@@ -5940,25 +5977,14 @@ def _render_single_client_picker(sales_df: pd.DataFrame, mail_df: pd.DataFrame) 
     with r1c2:
         picked_set = set(picked)
         opts = [n for n in names if n not in picked_set]
-        choice = str(st.session_state.get("pi_client_pick") or "").strip()
-        if choice:
-            st.session_state["pi_client_pick"] = None
-            _pi_add_selected_client(choice)
-        if opts:
-            try:
-                st.selectbox(
-                    "거래처",
-                    options=opts,
-                    index=None,
-                    placeholder="선택",
-                    key="pi_client_pick",
-                )
-            except TypeError:
-                st.selectbox(
-                    "거래처",
-                    options=[""] + opts,
-                    key="pi_client_pick",
-                )
+        st.text_input("거래처", key="pi_client_q", placeholder="거래처명")
+        query = str(st.session_state.get("pi_client_q") or "").strip()
+        hits = _match_client_names(opts, query) if query else []
+        if query and not hits:
+            st.caption("해당하는 거래처가 없습니다.")
+        for i, name in enumerate(hits[:8]):
+            if st.button(name, key=f"pi_client_hit_{i}", on_click=_pi_choose_client_name, args=(name,)):
+                pass
     client = picked[0] if picked else ""
     with r1c3:
         if len(picked) > 1:

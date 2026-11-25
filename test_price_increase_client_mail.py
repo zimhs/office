@@ -504,6 +504,16 @@ def test_sent_log_shows_latest_client_first():
         assert pit._sent_log_body_text(df.iloc[0].get("body")) == ""
 
 
+def test_client_search_finds_laser_spelling():
+    from price_increase_tab import _match_client_names
+
+    names = ["드림레이저", "대진에스에이", "엔케이철강"]
+    assert _match_client_names(names, "드림레이져") == ["드림레이저"]
+    assert _match_client_names(names, "드림레이저") == ["드림레이저"]
+    assert _match_client_names(names, "엔케이") == ["엔케이철강"]
+    assert _match_client_names(names, "") == names
+
+
 def test_sent_log_stores_body_and_client_search():
     import tempfile
     from pathlib import Path
