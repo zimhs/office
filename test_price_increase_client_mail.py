@@ -289,6 +289,33 @@ def test_finish_mail_send_stays_on_compose():
         assert m._pi_consume_left_nav_block() is False
 
 
+def test_seed_compose_widgets_restores_after_preview():
+    from unittest import mock
+
+    import price_increase_tab as m
+
+    ss = {
+        "pi_mail_draft": {
+            "subject": "[신일가스] 가스가격 조정의 건",
+            "body": "미리보기 전에 쓴 본문",
+            "to": "a@b.com",
+        },
+        "pi_mail_compose_subject": "",
+        "pi_mail_compose_body": "",
+        "pi_mail_text_edited": True,
+    }
+    with mock.patch.object(m.st, "session_state", ss):
+        assert m._mail_compose_in_progress() is True
+        m._pi_seed_compose_widgets_from_draft()
+    assert ss["pi_mail_compose_subject"] == "[신일가스] 가스가격 조정의 건"
+    assert ss["pi_mail_compose_body"] == "미리보기 전에 쓴 본문"
+    src = open("price_increase_tab.py", encoding="utf-8").read()
+    left = src.split("def _render_pi_left_panel", 1)[1].split("\ndef ", 1)[0]
+    assert "if do_preview:" in left
+    assert left.split("if do_preview:", 1)[1].split("if do_send:", 1)[0].count("_remember_mail_compose_text()") >= 1
+    assert left.split("if do_send:", 1)[1].split("if do_summary:", 1)[0].count("_remember_mail_compose_text()") >= 1
+
+
 def test_remember_mail_compose_text_keeps_subject_and_body():
     import os
     import tempfile

@@ -4034,11 +4034,34 @@ def _restore_compose_live() -> None:
 
 def _mail_compose_in_progress() -> bool:
     """왼쪽 메일 작성 초안이 있으면 True(미리보기·다른 탭을 다녀와도 유지)."""
-    if not st.session_state.get("pi_mail_draft"):
-        return False
+    if st.session_state.get("pi_hold_editing_id"):
+        return True
+    draft = st.session_state.get("pi_mail_draft")
+    if isinstance(draft, dict):
+        if str(draft.get("subject") or "").strip() or _strip_mail_signature(str(draft.get("body") or "")).strip():
+            return True
     if st.session_state.get("pi_mail_text_edited"):
         return True
-    return "pi_mail_compose_subject" in st.session_state or "pi_mail_compose_body" in st.session_state
+    if "pi_mail_compose_subject" in st.session_state or "pi_mail_compose_body" in st.session_state:
+        return True
+    saved = load_compose_live()
+    return bool(
+        str(saved.get("subject") or "").strip()
+        or _strip_mail_signature(str(saved.get("body") or "")).strip()
+    )
+
+
+def _pi_seed_compose_widgets_from_draft(draft: dict | None = None) -> None:
+    """미리보기 등으로 칸이 비었으면 초안 제목·본문을 다시 넣는다."""
+    draft = dict(draft or st.session_state.get("pi_mail_draft") or {})
+    subj = str(draft.get("subject") or "")
+    body = _strip_mail_signature(str(draft.get("body") or ""))
+    live_subj = str(st.session_state.get("pi_mail_compose_subject") or "")
+    live_body = _strip_mail_signature(str(st.session_state.get("pi_mail_compose_body") or ""))
+    if subj.strip() and not live_subj.strip():
+        st.session_state["pi_mail_compose_subject"] = subj
+    if body.strip() and not live_body.strip():
+        st.session_state["pi_mail_compose_body"] = body
 
 
 def _mail_letter_sync_token(letter_kwargs: dict, *, attach_letter: bool) -> tuple:
@@ -5008,9 +5031,10 @@ def _open_mail_compose_dialog(
     if hold_id:
         draft_now["hold_id"] = hold_id
     st.session_state["pi_mail_draft"] = draft_now
+    # 미리보기에서 돌아오면 위젯 키가 빈 문자열로 남아 본문이 안 보이는 경우가 있다.
+    st.session_state["pi_mail_compose_subject"] = str(title or "")
+    st.session_state["pi_mail_compose_body"] = _strip_mail_signature(body)
     if not keep:
-        st.session_state["pi_mail_compose_subject"] = title
-        st.session_state["pi_mail_compose_body"] = _strip_mail_signature(body)
         st.session_state.pop("pi_mail_extra_files", None)
     st.session_state.pop("pi_mail_compose_cc", None)
     st.session_state["pi_left_mode"] = "mail"
@@ -5177,12 +5201,18 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
     st.session_state.pop("_pi_compose_addr_ph", None)
     to_addr, cc_addr = _pi_apply_fields_to_compose()
     _render_compose_addr_lines(to_addr=to_addr, cc_addr=cc_addr)
+    _pi_seed_compose_widgets_from_draft(draft)
     if "pi_mail_compose_subject" not in st.session_state:
         st.session_state["pi_mail_compose_subject"] = str(draft.get("subject") or "")
+    if "pi_mail_compose_body" not in st.session_state:
+        st.session_state["pi_mail_compose_body"] = _strip_mail_signature(str(draft.get("body") or ""))
     cur_body = str(st.session_state.get("pi_mail_compose_body") or draft.get("body") or "")
     stripped = _strip_mail_signature(cur_body)
-    if stripped != cur_body:
-        st.session_state["pi_mail_compose_body"] = stripped
+    if stripped != cur_body or not str(st.session_state.get("pi_mail_compose_body") or "").strip():
+        if stripped.strip() or str(draft.get("body") or "").strip():
+            st.session_state["pi_mail_compose_body"] = stripped or _strip_mail_signature(
+                str(draft.get("body") or "")
+            )
     st.text_input(
         "메일 제목",
         key="pi_mail_compose_subject",
@@ -7046,16 +7076,20 @@ def _render_pi_left_panel() -> None:
     mode = st.session_state.get("pi_left_mode") or "mail"
 
     if do_preview:
+        # 미리보기로 나가기 전에 작성 칸을 초안에 남긴다.
+        _remember_mail_compose_text()
         _pi_clear_mail_stay_flags()
         mode = "pdf"
         st.session_state["pi_left_mode"] = "pdf"
 
     if do_send:
+        _remember_mail_compose_text()
         _fill_mail_compose_from_pack(pack, keep=_mail_compose_in_progress())
         mode = "mail"
         st.session_state["pi_left_mode"] = "mail"
 
     if do_summary:
+        _remember_mail_compose_text()
         _pi_clear_mail_stay_flags()
         mode = "summary"
         st.session_state["pi_left_mode"] = "summary"
