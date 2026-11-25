@@ -3717,14 +3717,12 @@ def clear_compose_live(path: str | None = None) -> None:
 
 def _remember_mail_compose_text() -> None:
     """지금 칸의 제목·본문을 초안과 파일에 남긴다. 새로고침해도 돌아온다."""
-    draft = st.session_state.get("pi_mail_draft")
-    if not isinstance(draft, dict):
-        return
     subj_key = "pi_mail_compose_subject"
     body_key = "pi_mail_compose_body"
     if subj_key not in st.session_state and body_key not in st.session_state:
         return
-    draft = dict(draft)
+    draft = st.session_state.get("pi_mail_draft")
+    draft = dict(draft) if isinstance(draft, dict) else {}
     if subj_key in st.session_state:
         draft["subject"] = str(st.session_state.get(subj_key) or "")
     if body_key in st.session_state:
@@ -3732,6 +3730,36 @@ def _remember_mail_compose_text() -> None:
     st.session_state["pi_mail_draft"] = draft
     st.session_state["pi_mail_text_edited"] = True
     save_compose_live(draft)
+
+
+def _rehydrate_compose_text() -> None:
+    """탭을 옮기거나 다시 열어도 마지막 메일 제목·본문을 칸에 되돌린다."""
+    subj_key = "pi_mail_compose_subject"
+    body_key = "pi_mail_compose_body"
+    if subj_key in st.session_state or body_key in st.session_state:
+        _remember_mail_compose_text()
+        return
+    saved = load_compose_live()
+    subject = str(saved.get("subject") or "")
+    body = _strip_mail_signature(str(saved.get("body") or ""))
+    draft = st.session_state.get("pi_mail_draft")
+    draft = dict(draft) if isinstance(draft, dict) else {}
+    if not subject.strip() and not body.strip():
+        subject = str(draft.get("subject") or "")
+        body = _strip_mail_signature(str(draft.get("body") or ""))
+    if not subject.strip() and not body.strip():
+        return
+    st.session_state[subj_key] = subject
+    st.session_state[body_key] = body
+    draft["subject"] = subject
+    draft["body"] = body
+    if "to" not in draft:
+        draft["to"] = str(saved.get("to") or "")
+    if "cc" not in draft:
+        draft["cc"] = str(saved.get("cc") or "")
+    st.session_state["pi_mail_draft"] = draft
+    st.session_state["pi_mail_text_edited"] = True
+    st.session_state["pi_left_mode"] = "mail"
 
 
 def _restore_compose_live() -> None:
@@ -4591,12 +4619,14 @@ def _pi_mail_compose_dialog() -> None:
         "메일 제목",
         key="pi_mail_compose_subject",
         on_change=_remember_mail_compose_text,
+        persist_state="session",
     )
     st.text_area(
         "메일 본문",
         height=260,
         key="pi_mail_compose_body",
         on_change=_remember_mail_compose_text,
+        persist_state="session",
     )
     _remember_mail_compose_text()
     _render_mail_signature_preview()
@@ -4701,12 +4731,17 @@ def _open_mail_compose_dialog(
         st.session_state.pop("pi_pdf_error", None)
         st.session_state["pi_pdf_name"] = ""
     prev_draft = dict(st.session_state.get("pi_mail_draft") or {})
+    saved_live = load_compose_live()
     live_subj = st.session_state.get("pi_mail_compose_subject")
     live_body = st.session_state.get("pi_mail_compose_body")
+    saved_subj = str(saved_live.get("subject") or prev_draft.get("subject") or "")
+    saved_body = _strip_mail_signature(str(saved_live.get("body") or prev_draft.get("body") or ""))
+    if not keep and (saved_subj.strip() or saved_body.strip() or st.session_state.get("pi_mail_text_edited")):
+        keep = True
     if keep and live_subj is None:
-        live_subj = prev_draft.get("subject")
+        live_subj = saved_subj
     if keep and live_body is None:
-        live_body = prev_draft.get("body")
+        live_body = saved_body
     title, body = keep_existing_mail_compose(
         title=title,
         body=body,
@@ -4814,6 +4849,8 @@ def _clear_pi_mail_compose_state() -> None:
     st.session_state.pop("pi_mail_draft", None)
     st.session_state.pop("pi_mail_extra_files", None)
     st.session_state.pop("pi_mail_compose_cc", None)
+    st.session_state.pop("pi_mail_compose_subject", None)
+    st.session_state.pop("pi_mail_compose_body", None)
     st.session_state.pop("pi_mail_text_edited", None)
     st.session_state.pop("pi_hold_editing_id", None)
     st.session_state.pop("_pi_compose_live_restored", None)
@@ -4858,6 +4895,32 @@ def _paint_live_compose_addrs() -> None:
     _pi_apply_fields_to_compose()
 
 
+def _pi_keep_compose_on_tab_leave() -> None:
+    """다른 탭을 누르기 전에 제목·본문 칸을 확정한다."""
+    st.html(
+        """<script>
+        (function(){
+          var d;
+          try { d = window.parent.document; } catch (e) { return; }
+          if (!d || d.__piComposeKeep) return;
+          d.__piComposeKeep = true;
+          function mailField(t){
+            if (!t) return false;
+            var label = t.getAttribute('aria-label') || '';
+            return label === '메일 제목' || label === '메일 본문';
+          }
+          d.addEventListener('pointerdown', function(ev){
+            var el = ev.target;
+            if (!el || !el.closest || !el.closest('[role="tab"]')) return;
+            var active = d.activeElement;
+            if (mailField(active) && typeof active.blur === 'function') active.blur();
+          }, true);
+        })();
+        </script>""",
+        unsafe_allow_javascript=True,
+    )
+
+
 def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
     """왼쪽 패널: 메일 제목·본문 작성 + 최종 발송."""
     draft, to_addr = _sync_mail_draft_to_addr(st.session_state.get("pi_mail_draft") or {})
@@ -4883,14 +4946,17 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
         "메일 제목",
         key="pi_mail_compose_subject",
         on_change=_remember_mail_compose_text,
+        persist_state="session",
     )
     st.text_area(
         "메일 본문",
         height=260,
         key="pi_mail_compose_body",
         on_change=_remember_mail_compose_text,
+        persist_state="session",
     )
     _remember_mail_compose_text()
+    _pi_keep_compose_on_tab_leave()
     _render_mail_signature_preview()
     extra_files = _render_mail_attachments(pdf_name=pdf_name, pdf_bytes=pdf_bytes)
 
@@ -6848,6 +6914,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     _ensure_dirs()
     _pi_apply_fresh_mail()
     _consume_hold_edit_open()
+    _rehydrate_compose_text()
     _pi_clear_widget_session_keys()
     # 매출 스냅샷 토큰 — 바뀌면 단가 캐시 무효화
     _n = 0 if sales_df is None else int(len(sales_df))

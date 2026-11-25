@@ -290,16 +290,19 @@ def test_finish_mail_send_stays_on_compose():
 
 
 def test_remember_mail_compose_text_keeps_subject_and_body():
+    import os
+    import tempfile
     from unittest import mock
 
     import price_increase_tab as m
 
+    path = os.path.join(tempfile.mkdtemp(), "compose_live.json")
     ss = {
         "pi_mail_draft": {"subject": "옛 제목", "body": "옛 본문", "to": "a@b.com"},
         "pi_mail_compose_subject": "방문 안내",
         "pi_mail_compose_body": "내일 오전 미팅입니다.",
     }
-    with mock.patch.object(m.st, "session_state", ss):
+    with mock.patch.object(m, "PI_COMPOSE_LIVE", path), mock.patch.object(m.st, "session_state", ss):
         m._remember_mail_compose_text()
         assert ss["pi_mail_draft"]["subject"] == "방문 안내"
         assert ss["pi_mail_draft"]["body"] == "내일 오전 미팅입니다."
@@ -413,6 +416,45 @@ def test_update_hold_mail_replaces_same_row():
     assert rows[1]["id"] == other["id"]
     assert rows[1]["body"] == "유지"
     assert update_hold_mail("없는id", {"subject": "x"}, path) is None
+
+
+def test_rehydrate_keeps_price_increase_subject_after_restart():
+    import os
+    import tempfile
+    from unittest import mock
+
+    import price_increase_tab as m
+
+    path = os.path.join(tempfile.mkdtemp(), "compose_live.json")
+    m.save_compose_live(
+        {
+            "subject": "[신일가스] 가격인상 조정의 건",
+            "body": "내일 방문합니다.",
+            "to": "dreamlaser@naver.com",
+            "cc": "",
+        },
+        path,
+    )
+    ss = {}
+    with mock.patch.object(m, "PI_COMPOSE_LIVE", path), mock.patch.object(m.st, "session_state", ss):
+        m._rehydrate_compose_text()
+    assert ss["pi_mail_compose_subject"] == "[신일가스] 가격인상 조정의 건"
+    assert ss["pi_mail_compose_body"] == "내일 방문합니다."
+    assert ss["pi_mail_draft"]["subject"] == "[신일가스] 가격인상 조정의 건"
+    ss.pop("pi_mail_compose_subject")
+    ss.pop("pi_mail_compose_body")
+    with mock.patch.object(m, "PI_COMPOSE_LIVE", path), mock.patch.object(m.st, "session_state", ss):
+        m._open_mail_compose_dialog(
+            client="드림레이저",
+            email="",
+            title="제품가격 조정의 건",
+            body="",
+            pdf_name="공문.pdf",
+            letter_kwargs={},
+            keep_compose=False,
+        )
+    assert ss["pi_mail_draft"]["subject"] == "[신일가스] 가격인상 조정의 건"
+    assert ss["pi_mail_draft"]["body"] == "내일 방문합니다."
 
 
 def test_fresh_mail_drops_previous_recipients():
