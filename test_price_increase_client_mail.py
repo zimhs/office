@@ -570,6 +570,42 @@ def test_first_hold_appends_and_edit_updates_same_mail():
     assert rows[0]["body"] == "고친 본문"
 
 
+def test_bind_manual_email_to_client_without_contact():
+    import os
+    import tempfile
+    from unittest import mock
+
+    import pandas as pd
+
+    import price_increase_tab as m
+
+    folder = tempfile.mkdtemp()
+    path = os.path.join(folder, "mail_contacts.csv")
+    empty = pd.DataFrame(columns=["거래처", "이메일", "비고"])
+    with mock.patch.object(m, "PI_MAIL_CSV", path), mock.patch.object(
+        m, "load_mail_contacts", return_value=empty
+    ):
+        df, saved = m.bind_manual_emails_to_clients(
+            "blt@example.com",
+            ["비엘티(구.에스앤케이)"],
+            mail_df=empty,
+            note="테스트",
+        )
+    assert saved == ["비엘티(구.에스앤케이)"]
+    assert os.path.isfile(path)
+    loaded = pd.read_csv(path)
+    assert list(loaded["거래처"]) == ["비엘티(구.에스앤케이)"]
+    assert list(loaded["이메일"]) == ["blt@example.com"]
+    # 이미 있으면 다시 안 덮음
+    df2, saved2 = m.bind_manual_emails_to_clients(
+        "other@example.com",
+        ["비엘티(구.에스앤케이)"],
+        mail_df=df,
+    )
+    assert saved2 == []
+    assert list(df2["이메일"]) == ["blt@example.com"]
+
+
 def test_hold_client_prefers_selected_over_stale_draft_name():
     import os
     import tempfile

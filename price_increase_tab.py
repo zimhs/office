@@ -833,9 +833,14 @@ def _normalize_mail_df(df: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-def save_mail_contacts(df: pd.DataFrame, path: str = PI_MAIL_CSV) -> None:
+def save_mail_contacts(df: pd.DataFrame, path: str | None = None) -> None:
+    target = path or PI_MAIL_CSV
     _ensure_dirs()
-    df.to_csv(path, index=False, encoding="utf-8-sig")
+    folder = os.path.dirname(target)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    df.to_csv(target, index=False, encoding="utf-8-sig")
+    _MAIL_INDEX_CACHE.clear()
     try:
         _load_mail_contacts_cached.clear()
     except Exception:
@@ -920,6 +925,73 @@ def upsert_mail_contact(
     out = out.drop_duplicates(subset=["거래처", "이메일"], keep="last").reset_index(drop=True)
     save_mail_contacts(out)
     return out
+
+
+def bind_manual_emails_to_clients(
+    emails: str,
+    clients: list[str] | None = None,
+    *,
+    mail_df: pd.DataFrame | None = None,
+    note: str = "수신칸 수동저장",
+) -> tuple[pd.DataFrame, list[str]]:
+    """메일 없는 거래처에 수동 수신 주소를 연락처로 넣는다. (mail_df, 저장된 거래처)."""
+    names = _norm_client_list(clients)
+    addrs = split_email_addrs(emails)
+    if not names or not addrs:
+        base = mail_df if isinstance(mail_df, pd.DataFrame) else pd.DataFrame()
+        return base, []
+    if mail_df is None or not isinstance(mail_df, pd.DataFrame):
+        try:
+            mail_df = load_mail_contacts()
+        except Exception:
+            mail_df = pd.DataFrame(columns=["거래처", "이메일", "비고"])
+    missing: list[str] = []
+    for name in names:
+        em, _as = lookup_email_with_meta(name, mail_df)
+        if not em:
+            missing.append(name)
+    if not missing:
+        return mail_df, []
+    saved: list[str] = []
+    # 거래처 하나면 첫 수신메일을, 여러 곳이면 메일 없는 곳부터 순서대로 붙인다.
+    pairs: list[tuple[str, str]]
+    if len(names) == 1 and names[0] in missing:
+        pairs = [(names[0], addrs[0])]
+    else:
+        pairs = list(zip(missing, addrs))
+    for client, email in pairs:
+        try:
+            mail_df = upsert_mail_contact(mail_df, client=client, email=email, note=note)
+            saved.append(client)
+        except ValueError:
+            continue
+    return mail_df, saved
+
+
+def _pi_bind_manual_emails_to_selected(
+    emails: str,
+    clients: list[str] | None = None,
+    *,
+    note: str = "수신칸 수동저장",
+) -> list[str]:
+    """세션의 선택 거래처에 수동 메일을 연락처로 반영한다."""
+    picked = _norm_client_list(clients if clients is not None else _pi_selected_clients())
+    mail_df = st.session_state.get("_pi_mail_df_cache")
+    if not isinstance(mail_df, pd.DataFrame):
+        mail_df = None
+    mail_df, saved = bind_manual_emails_to_clients(
+        emails, picked, mail_df=mail_df, note=note
+    )
+    if saved:
+        st.session_state["_pi_mail_df_cache"] = mail_df
+        joined, matched, missing = lookup_emails_for_clients(picked, mail_df)
+        st.session_state["pi_email_auto"] = joined
+        st.session_state["pi_email_matched_as"] = "; ".join(matched)
+        st.session_state["pi_email_client"] = "\n".join(picked)
+        st.session_state["_pi_mail_missing"] = list(missing or [])
+        st.session_state["_pi_mail_auto_cap"] = str(joined or "")
+        st.session_state["_pi_mail_bound_flash"] = ", ".join(saved)
+    return saved
 
 
 def delete_mail_contact(mail_df: pd.DataFrame, client: str, email: str = "") -> pd.DataFrame:
@@ -5126,6 +5198,10 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
             letter_kwargs = _pi_json_ready(dict(pack.get("letter_kwargs") or {}))
             edit_id = str(st.session_state.get("pi_hold_editing_id") or "").strip()
             picked_now = _pi_selected_clients() or _norm_client_list(pack.get("picked"))
+            if to_addr and picked_now:
+                _pi_bind_manual_emails_to_selected(
+                    to_addr, picked_now, note="임시저장 수동수신"
+                )
             hold_client = resolve_hold_client(
                 client=str(pack.get("client") or client or ""),
                 letter_kwargs=letter_kwargs,
@@ -5923,6 +5999,8 @@ def _flush_typed_addr(widget_key: str, dest_key: str, raw: str | None = None) ->
         return False
     st.session_state[widget_key] = ""
     st.session_state.pop(f"{widget_key}_commit", None)
+    if dest_key == "pi_single_email":
+        _pi_bind_manual_emails_to_selected(src, note="수신칸 추가")
     return True
 
 
@@ -5934,6 +6012,8 @@ def _consume_typed_addr_commit(widget_key: str, dest_key: str) -> bool:
     if not _take_typed_addrs(raw, dest_key):
         return False
     st.session_state[widget_key] = ""
+    if dest_key == "pi_single_email":
+        _pi_bind_manual_emails_to_selected(raw, note="수신칸 추가")
     return True
 
 
@@ -6176,11 +6256,14 @@ def _render_email_addr_fields() -> None:
         if add_cc:
             if _flush_typed_addr("pi_cc_add", "pi_single_cc", raw_cc):
                 _pi_rerun()
+    bound_flash = st.session_state.pop("_pi_mail_bound_flash", None)
+    if bound_flash:
+        st.success(f"연락처에 저장됨 · {bound_flash} (다음 선택부터 자동 반영)")
     missing = list(st.session_state.get("_pi_mail_missing") or [])
     auto_email = str(st.session_state.get("_pi_mail_auto_cap") or "")
     picked_n = int(st.session_state.get("_pi_mail_picked_n") or 0)
     if missing:
-        st.caption("메일 없음: " + ", ".join(missing[:8]))
+        st.caption("메일 없음: " + ", ".join(missing[:8]) + " · 수신칸에 넣고 추가·임시저장하면 연락처에 저장됩니다")
     elif not auto_email and picked_n:
         mail_df = st.session_state.get("_pi_mail_df_cache")
         if isinstance(mail_df, pd.DataFrame) and mail_df.empty:
