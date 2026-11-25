@@ -469,6 +469,8 @@ def test_fresh_mail_drops_previous_recipients():
         "pi_email_auto": "dreamlaser@naver.com",
         "pi_single_clients": ["드림레이저"],
         "pi_single_client": "드림레이저",
+        "pi_hold_editing_id": "hold1",
+        "pi_skip_email_fill": True,
         "pi_mail_draft": {"to": "dreamlaser@naver.com", "cc": "old@b.com", "subject": "제목", "body": "본문"},
     }
     with mock.patch.object(m.st, "session_state", ss), mock.patch.object(m, "save_compose_live"):
@@ -479,6 +481,33 @@ def test_fresh_mail_drops_previous_recipients():
     assert ss["pi_mail_draft"]["to"] == ""
     assert ss["pi_mail_draft"]["subject"] == "제목"
     assert "pi_fresh_mail" not in ss
+    assert "pi_hold_editing_id" not in ss
+    src = open("price_increase_tab.py", encoding="utf-8").read()
+    hold = src.split("elif do_hold", 1)[1].split("elif do_cancel", 1)[0]
+    assert 'st.session_state["pi_fresh_mail"] = True' in hold
+
+
+def test_new_client_selection_drops_previous_recipients():
+    from unittest import mock
+
+    import price_increase_tab as m
+
+    ss = {
+        "pi_email_client": "드림레이저",
+        "pi_single_email": "dreamlaser@naver.com, mskt2020@naver.com",
+        "pi_email_auto": "",
+        "pi_mail_draft": {"to": "dreamlaser@naver.com, mskt2020@naver.com"},
+        "pi_single_clients": ["엔케이철강"],
+        "_pi_client_alias": {},
+        "_pi_mail_df_cache": None,
+    }
+    with mock.patch.object(m.st, "session_state", ss), mock.patch.object(
+        m, "lookup_emails_for_clients", return_value=("nksteel@hanmail.net", ["엔케이철강"], [])
+    ):
+        m._pi_on_clients_change()
+    assert ss["pi_single_email"] == "nksteel@hanmail.net"
+    assert "dreamlaser@naver.com" not in ss["pi_single_email"]
+    assert "mskt2020@naver.com" not in ss["pi_single_email"]
 
 
 def test_hold_save_refreshes_hold_list():

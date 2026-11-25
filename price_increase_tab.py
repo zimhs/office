@@ -2743,7 +2743,7 @@ def _render_pi_sent_history() -> None:
 
 
 def _pi_apply_fresh_mail() -> None:
-    """임시저장 후 새 작성. 이전 거래처와 수신 메일은 비운다."""
+    """임시저장·다시 임시저장 후 새 작성. 이전 거래처와 수신 메일은 비운다."""
     if not st.session_state.pop("pi_fresh_mail", None):
         return
     st.session_state["pi_single_email"] = ""
@@ -2752,6 +2752,9 @@ def _pi_apply_fresh_mail() -> None:
     st.session_state["pi_email_matched_as"] = ""
     st.session_state["pi_email_client"] = ""
     st.session_state.pop("pi_blocked_auto_emails", None)
+    st.session_state.pop("pi_skip_email_fill", None)
+    st.session_state.pop("pi_hold_addr_lock", None)
+    st.session_state.pop("pi_hold_editing_id", None)
     st.session_state["pi_single_clients"] = []
     st.session_state["pi_single_client"] = ""
     draft = dict(st.session_state.get("pi_mail_draft") or {})
@@ -5077,7 +5080,8 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                 save_compose_live(draft_now)
             else:
                 st.session_state.pop("pi_hold_editing_id", None)
-                st.session_state["pi_fresh_mail"] = True
+            # 임시저장·다시 임시저장 뒤 거래처를 새로 고르면 이전 수신이 남지 않게 한다.
+            st.session_state["pi_fresh_mail"] = True
             st.session_state["pi_hold_rev"] = int(st.session_state.get("pi_hold_rev") or 0) + 1
             st.session_state["pi_hold_flash"] = hold_mail_label(saved)
             st.session_state["pi_hold_show"] = True
@@ -5892,11 +5896,29 @@ def _pi_canonicalize_selected_clients() -> list[str]:
     return picked
 
 
+def _pi_clear_recipients_for_new_clients(prev_token: str, picked: list[str]) -> None:
+    """거래처를 다른 곳으로 바꾸면 이전 수신 메일을 비운다."""
+    prev_set = {x for x in str(prev_token or "").split("\n") if x}
+    new_set = set(picked or [])
+    if not prev_set or not new_set or prev_set.intersection(new_set):
+        return
+    st.session_state["pi_single_email"] = ""
+    st.session_state["pi_email_auto"] = ""
+    st.session_state.pop("pi_blocked_auto_emails", None)
+    draft = dict(st.session_state.get("pi_mail_draft") or {})
+    if draft:
+        draft["to"] = ""
+        st.session_state["pi_mail_draft"] = draft
+
+
 def _pi_on_clients_change() -> None:
     """거래처 다중 선택 변경 시 수신메일을 반영. 직접 입력한 주소는 유지·병합."""
     st.session_state.pop("pi_skip_email_fill", None)
+    st.session_state.pop("pi_hold_addr_lock", None)
+    prev_token = str(st.session_state.get("pi_email_client") or "")
     picked = _pi_canonicalize_selected_clients()
     st.session_state["pi_single_client"] = picked[0] if picked else ""
+    _pi_clear_recipients_for_new_clients(prev_token, picked)
     mail_df = st.session_state.get("_pi_mail_df_cache")
     joined, matched, _missing = lookup_emails_for_clients(
         picked, mail_df if isinstance(mail_df, pd.DataFrame) else pd.DataFrame()
@@ -6224,6 +6246,8 @@ def _render_email_row(clients: str | list[str], mail_df: pd.DataFrame) -> str:
         should_fill = True
         st.session_state.pop("pi_skip_email_fill", None)
         skip_fill = False
+        _pi_clear_recipients_for_new_clients(str(prev_client or ""), picked)
+        cur_email = str(st.session_state.get("pi_single_email") or "").strip()
     if st.session_state.pop("pi_hold_addr_lock", None):
         should_fill = False
         st.session_state["pi_email_client"] = token
