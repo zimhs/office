@@ -308,7 +308,7 @@ def _pi_rerun(*, full: bool = False) -> None:
     dialog 닫기 등 앱 전역 상태가 필요할 때만 full=True.
     """
     if full:
-        st.rerun()
+        st.rerun(scope="app")
     try:
         st.rerun(scope="fragment")
     except TypeError:
@@ -2556,6 +2556,52 @@ def update_hold_mail(hold_id: str, changes: dict, path: str | None = None) -> di
     return append_hold_mail(found, path)
 
 
+def save_compose_hold(
+    *,
+    edit_id: str = "",
+    subject: str = "",
+    body: str = "",
+    to: str = "",
+    cc: str = "",
+    client: str = "",
+    staff: str = "",
+    attach_letter: bool = False,
+    pdf_name: str = "",
+    letter_kwargs: dict | None = None,
+    path: str | None = None,
+) -> tuple[dict, bool]:
+    """처음이면 새 임시저장, 수정 중이면 그 메일을 덮어쓴다."""
+    fields = {
+        "subject": str(subject or "").strip() or "(제목 없음)",
+        "body": str(body or ""),
+        "to": str(to or ""),
+        "cc": str(cc or ""),
+    }
+    target = str(edit_id or "").strip()
+    if target:
+        saved = update_hold_mail(target, fields, path)
+        if saved is not None:
+            return saved, True
+    who = str(client or "").strip()
+    if not who or who == "일반메일":
+        named = client_names_for_emails(fields["to"])
+        if named:
+            who = named
+    saved = append_hold_mail(
+        {
+            **fields,
+            "client": who,
+            "staff": str(staff or ""),
+            "attach_letter": bool(attach_letter),
+            "pdf_name": str(pdf_name or "공문.pdf"),
+            "letter_kwargs": letter_kwargs or {},
+            "send": True,
+        },
+        path,
+    )
+    return saved, False
+
+
 def client_names_for_emails(raw: str, mail_df: pd.DataFrame | None = None) -> str:
     """수신 메일로 연락처의 거래처 이름을 찾는다."""
     emails = {e.lower() for e in split_email_addrs(raw)}
@@ -2823,12 +2869,13 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
             st.markdown(f"**제목** {one.get('subject') or '(제목 없음)'}")
             st.markdown(f"**수신** {hold_recipient_label(one)}")
             st.markdown(f"**참조** {one.get('cc') or '—'}")
+            body_now = str(one.get("body") or "")
             st.text_area(
                 "메일 내용",
-                value=str(one.get("body") or ""),
+                value=body_now,
                 height=260,
                 disabled=True,
-                key=f"pi_hold_body_{opened_id}",
+                key=f"pi_hold_body_{opened_id}_{abs(hash(body_now)) % 100000000}",
             )
     send_col, drop_col = st.columns(2)
     with send_col:
@@ -3676,7 +3723,6 @@ def _restore_compose_live() -> None:
     body = _strip_mail_signature(str(saved.get("body") or ""))
     if not subject.strip() and not body.strip():
         return
-    hold_id = str(saved.get("hold_id") or "").strip()
     draft = {
         "to": str(saved.get("to") or ""),
         "cc": str(saved.get("cc") or ""),
@@ -3688,9 +3734,6 @@ def _restore_compose_live() -> None:
         "items": 0,
         "plain": True,
     }
-    if hold_id:
-        draft["hold_id"] = hold_id
-        st.session_state["pi_hold_editing_id"] = hold_id
     st.session_state["pi_mail_draft"] = draft
     if "pi_mail_compose_subject" not in st.session_state:
         st.session_state["pi_mail_compose_subject"] = subject
@@ -4925,35 +4968,28 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
             pack = dict(st.session_state.get("_pi_left_pack") or {})
             letter_kwargs = _pi_json_ready(dict(pack.get("letter_kwargs") or {}))
             edit_id = str(st.session_state.get("pi_hold_editing_id") or "").strip()
-            changes = {
-                "to": to_addr,
-                "cc": str(draft.get("cc") or ""),
-                "subject": subject or "(제목 없음)",
-                "body": body,
-            }
-            saved = update_hold_mail(edit_id, changes) if edit_id else None
-            if saved is None:
-                if not str(client or "").strip() or str(client).strip() == "일반메일":
-                    named = client_names_for_emails(to_addr)
-                    if named:
-                        client = named
-                saved = append_hold_mail(
-                    {
-                        **changes,
-                        "client": client,
-                        "staff": staff,
-                        "attach_letter": bool(attach_letter),
-                        "pdf_name": str(pack.get("pdf_name") or pdf_name or "공문.pdf"),
-                        "letter_kwargs": letter_kwargs if attach_letter else {},
-                        "send": True,
-                    }
-                )
-                st.session_state.pop("pi_hold_editing_id", None)
-            else:
+            saved, updated = save_compose_hold(
+                edit_id=edit_id,
+                subject=subject,
+                body=body,
+                to=to_addr,
+                cc=str(draft.get("cc") or ""),
+                client=client,
+                staff=staff,
+                attach_letter=bool(attach_letter),
+                pdf_name=str(pack.get("pdf_name") or pdf_name or "공문.pdf"),
+                letter_kwargs=letter_kwargs if attach_letter else {},
+            )
+            if updated:
                 draft_now = dict(st.session_state.get("pi_mail_draft") or {})
                 draft_now["hold_id"] = str(saved.get("id") or edit_id)
+                draft_now["subject"] = str(saved.get("subject") or "")
+                draft_now["body"] = _strip_mail_signature(str(saved.get("body") or ""))
                 st.session_state["pi_mail_draft"] = draft_now
+                st.session_state["pi_hold_editing_id"] = str(saved.get("id") or edit_id)
                 save_compose_live(draft_now)
+            else:
+                st.session_state.pop("pi_hold_editing_id", None)
             st.session_state["pi_hold_rev"] = int(st.session_state.get("pi_hold_rev") or 0) + 1
             st.session_state["pi_hold_flash"] = hold_mail_label(saved)
             st.session_state["pi_hold_show"] = True

@@ -430,8 +430,45 @@ def test_hold_save_refreshes_hold_list():
     assert "저장시각" in hold_fn
     assert "hold_mail_label(row)" not in hold_fn.split("if not rows", 1)[-1].split("by_id", 1)[0]
     assert "pi_hold_edit_pending" in hold_fn
-    assert "update_hold_mail" in hold
-    assert "다시 임시저장" in src
+    assert "save_compose_hold" in hold
+    compose = src.split("def _render_pi_left_mail_compose", 1)[1].split("\ndef ", 1)[0]
+    assert '"다시 임시저장" if editing_hold else "임시저장"' in compose
+
+
+def test_first_hold_appends_and_edit_updates_same_mail():
+    import os
+    import tempfile
+
+    from price_increase_tab import load_hold_mail, save_compose_hold
+
+    folder = tempfile.mkdtemp()
+    path = os.path.join(folder, "hold_mail.json")
+    first, updated = save_compose_hold(
+        subject="처음 제목",
+        body="처음 본문",
+        to="a@b.com",
+        client="경민산업",
+        path=path,
+    )
+    assert updated is False
+    rows = load_hold_mail(path)
+    assert len(rows) == 1
+    assert rows[0]["id"] == first["id"]
+    assert rows[0]["subject"] == "처음 제목"
+    again, updated = save_compose_hold(
+        edit_id=first["id"],
+        subject="고친 제목",
+        body="고친 본문",
+        to="a@b.com",
+        client="경민산업",
+        path=path,
+    )
+    rows = load_hold_mail(path)
+    assert updated is True
+    assert len(rows) == 1
+    assert again["id"] == first["id"]
+    assert rows[0]["subject"] == "고친 제목"
+    assert rows[0]["body"] == "고친 본문"
 
 
 def test_mail_subject_body_not_wiped_on_tab_restore():
