@@ -2742,6 +2742,27 @@ def _render_pi_sent_history() -> None:
     )
 
 
+def _pi_apply_fresh_mail() -> None:
+    """임시저장 후 새 작성. 이전 거래처와 수신 메일은 비운다."""
+    if not st.session_state.pop("pi_fresh_mail", None):
+        return
+    st.session_state["pi_single_email"] = ""
+    st.session_state["pi_single_cc"] = ""
+    st.session_state["pi_email_auto"] = ""
+    st.session_state["pi_email_matched_as"] = ""
+    st.session_state["pi_email_client"] = ""
+    st.session_state.pop("pi_blocked_auto_emails", None)
+    st.session_state["pi_single_clients"] = []
+    st.session_state["pi_single_client"] = ""
+    draft = dict(st.session_state.get("pi_mail_draft") or {})
+    if draft:
+        draft["to"] = ""
+        draft["cc"] = ""
+        draft.pop("hold_id", None)
+        st.session_state["pi_mail_draft"] = draft
+        save_compose_live(draft)
+
+
 def _consume_hold_edit_open() -> None:
     """임시저장 수정을 메일 작성 칸에 넣는다. 위젯보다 먼저 실행한다."""
     pending = st.session_state.pop("pi_hold_edit_pending", None)
@@ -4990,6 +5011,7 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                 save_compose_live(draft_now)
             else:
                 st.session_state.pop("pi_hold_editing_id", None)
+                st.session_state["pi_fresh_mail"] = True
             st.session_state["pi_hold_rev"] = int(st.session_state.get("pi_hold_rev") or 0) + 1
             st.session_state["pi_hold_flash"] = hold_mail_label(saved)
             st.session_state["pi_hold_show"] = True
@@ -6824,6 +6846,7 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
     fragment: 저장·버튼 클릭 시 공문 탭만 갱신(다른 탭·사이드바 전체 로딩 생략).
     """
     _ensure_dirs()
+    _pi_apply_fresh_mail()
     _consume_hold_edit_open()
     _pi_clear_widget_session_keys()
     # 매출 스냅샷 토큰 — 바뀌면 단가 캐시 무효화

@@ -415,6 +415,30 @@ def test_update_hold_mail_replaces_same_row():
     assert update_hold_mail("없는id", {"subject": "x"}, path) is None
 
 
+def test_fresh_mail_drops_previous_recipients():
+    from unittest import mock
+
+    import price_increase_tab as m
+
+    ss = {
+        "pi_fresh_mail": True,
+        "pi_single_email": "dreamlaser@naver.com, mskt2020@naver.com",
+        "pi_single_cc": "old@b.com",
+        "pi_email_auto": "dreamlaser@naver.com",
+        "pi_single_clients": ["드림레이저"],
+        "pi_single_client": "드림레이저",
+        "pi_mail_draft": {"to": "dreamlaser@naver.com", "cc": "old@b.com", "subject": "제목", "body": "본문"},
+    }
+    with mock.patch.object(m.st, "session_state", ss), mock.patch.object(m, "save_compose_live"):
+        m._pi_apply_fresh_mail()
+    assert ss["pi_single_email"] == ""
+    assert ss["pi_single_cc"] == ""
+    assert ss["pi_single_clients"] == []
+    assert ss["pi_mail_draft"]["to"] == ""
+    assert ss["pi_mail_draft"]["subject"] == "제목"
+    assert "pi_fresh_mail" not in ss
+
+
 def test_hold_save_refreshes_hold_list():
     src = open("price_increase_tab.py", encoding="utf-8").read()
     hold = src.split("elif do_hold", 1)[1].split("elif do_cancel", 1)[0]
