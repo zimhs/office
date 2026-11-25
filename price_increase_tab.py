@@ -515,23 +515,39 @@ def _client_stem(s: Any) -> str:
 
 
 def _sales_client_names(sales_df: pd.DataFrame | None) -> list[str]:
-    """매출 원장의 거래처 정식 이름."""
+    """매출 원장의 거래처 정식 이름(세션 캐시)."""
     if sales_df is None or getattr(sales_df, "empty", True):
         return []
+    token = ""
+    try:
+        token = str(st.session_state.get("pi_sales_cache_token") or "")
+    except Exception:
+        token = ""
+    key = (token, int(len(sales_df)), id(sales_df))
+    try:
+        box = st.session_state.setdefault("_pi_sales_name_cache", {})
+        if box.get("key") == key and isinstance(box.get("names"), list):
+            return list(box["names"])
+    except Exception:
+        box = None
     names: set[str] = set()
     if "거래처" in sales_df.columns:
         names |= {
             _clean_client_label(n)
-            for n in sales_df["거래처"].dropna().astype(str).tolist()
+            for n in sales_df["거래처"].dropna().astype(str).str.strip().unique().tolist()
             if _clean_client_label(n)
         }
     if "거래처_원본" in sales_df.columns:
         names |= {
             _clean_client_label(n)
-            for n in sales_df["거래처_원본"].dropna().astype(str).tolist()
+            for n in sales_df["거래처_원본"].dropna().astype(str).str.strip().unique().tolist()
             if _clean_client_label(n)
         }
-    return sorted(names)
+    out = sorted(names)
+    if isinstance(box, dict):
+        box["key"] = key
+        box["names"] = out
+    return out
 
 
 def resolve_sales_client_name(client: str, sales_df: pd.DataFrame | None) -> str:
@@ -6214,7 +6230,8 @@ def _consume_typed_addr_commit(widget_key: str, dest_key: str) -> bool:
 
 
 def _pi_selected_clients() -> list[str]:
-    picked = _pi_canonicalize_selected_clients()
+    """현재 선택 거래처(읽기 전용). 위젯 키를 건드리지 않는다."""
+    picked = _norm_client_list(st.session_state.get("pi_single_clients"))
     if picked:
         return picked
     one = str(st.session_state.get("pi_single_client") or "").strip()
@@ -6241,7 +6258,11 @@ def _apply_merged_to_emails(auto_email: str, matched: list[str], *, client_token
 
 
 def _pi_canonicalize_selected_clients() -> list[str]:
-    """다른 표기로 고른 이름을 원장·매출 정식 이름으로 되돌린다."""
+    """다른 표기로 고른 이름을 원장·매출 정식 이름으로 되돌린다.
+
+    multiselect 위젯 생성 전·on_change에서만 호출한다. 렌더 중 반복 호출하면
+    pi_single_clients 갱신으로 무한 로딩이 난다.
+    """
     raw = _norm_client_list(st.session_state.get("pi_single_clients"))
     alias = st.session_state.get("_pi_client_alias") or {}
     sales_df = st.session_state.get("_pi_sales_df_cache")
@@ -6254,7 +6275,9 @@ def _pi_canonicalize_selected_clients() -> list[str]:
             picked.append(canon)
     if picked != raw:
         st.session_state["pi_single_clients"] = picked
-    st.session_state["pi_single_client"] = picked[0] if picked else ""
+    one = picked[0] if picked else ""
+    if str(st.session_state.get("pi_single_client") or "") != one:
+        st.session_state["pi_single_client"] = one
     return picked
 
 
