@@ -341,6 +341,80 @@ def test_compose_live_survives_reload():
     assert m.load_compose_live(path) == {}
 
 
+def test_hold_edit_opens_in_mail_compose():
+    import os
+    import tempfile
+    from unittest import mock
+
+    import price_increase_tab as m
+
+    folder = tempfile.mkdtemp()
+    path = os.path.join(folder, "compose_live.json")
+    ss = {
+        "pi_hold_edit_pending": {
+            "id": "hold1",
+            "subject": "[신일가스] 단가조정의 건",
+            "body": "고칠 본문",
+            "to": "nksteel@hanmail.net",
+            "cc": "",
+            "client": "신일가스",
+        }
+    }
+    with mock.patch.object(m, "PI_COMPOSE_LIVE", path), mock.patch.object(m.st, "session_state", ss):
+        m._consume_hold_edit_open()
+    assert ss["pi_mail_compose_subject"] == "[신일가스] 단가조정의 건"
+    assert ss["pi_mail_compose_body"] == "고칠 본문"
+    assert ss["pi_hold_editing_id"] == "hold1"
+    assert ss["pi_mail_draft"]["hold_id"] == "hold1"
+    assert ss["pi_single_email"] == "nksteel@hanmail.net"
+    assert ss["pi_hold_open_mail_tab"] is True
+    assert "pi_hold_edit_pending" not in ss
+
+
+def test_update_hold_mail_replaces_same_row():
+    import os
+    import tempfile
+
+    from price_increase_tab import append_hold_mail, load_hold_mail, update_hold_mail
+
+    folder = tempfile.mkdtemp()
+    path = os.path.join(folder, "hold_mail.json")
+    saved = append_hold_mail(
+        {
+            "to": "nksteel@hanmail.net",
+            "cc": "",
+            "subject": "[신일가스] 단가조정의 건",
+            "body": "이전 본문",
+            "client": "신일가스",
+            "letter_kwargs": {"title": "단가조정의 건"},
+            "send": True,
+        },
+        path,
+    )
+    other = append_hold_mail(
+        {"to": "djsy7615@naver.com", "subject": "다른 메일", "body": "유지", "send": True},
+        path,
+    )
+    updated = update_hold_mail(
+        saved["id"],
+        {"subject": "[신일가스] 가격인상 조정의 건", "body": "고친 본문", "to": "nksteel@hanmail.net", "cc": "a@b.com"},
+        path,
+    )
+    rows = load_hold_mail(path)
+    assert updated is not None
+    assert updated["id"] == saved["id"]
+    assert len(rows) == 2
+    assert rows[0]["id"] == saved["id"]
+    assert rows[0]["subject"] == "[신일가스] 가격인상 조정의 건"
+    assert rows[0]["body"] == "고친 본문"
+    assert rows[0]["cc"] == "a@b.com"
+    assert rows[0]["letter_kwargs"]["title"] == "단가조정의 건"
+    assert rows[0]["ts"] != saved["ts"]
+    assert rows[1]["id"] == other["id"]
+    assert rows[1]["body"] == "유지"
+    assert update_hold_mail("없는id", {"subject": "x"}, path) is None
+
+
 def test_hold_save_refreshes_hold_list():
     src = open("price_increase_tab.py", encoding="utf-8").read()
     hold = src.split("elif do_hold", 1)[1].split("elif do_cancel", 1)[0]
@@ -348,8 +422,12 @@ def test_hold_save_refreshes_hold_list():
     assert "pi_hold_show" in hold
     assert "_pi_rerun(full=True)" in hold
     assert "def _pi_focus_hold_tab" in src
-    opened = src.split("opened_id = labels.get", 1)[1].split("send_col, drop_col", 1)[0]
+    opened = src.split("opened_id = labels.get", 1)[1].split("if do_drop", 1)[0]
     assert 'st.expander(hold_mail_label(one), expanded=True' in opened
+    assert 'st.button("수정"' in opened
+    assert "pi_hold_edit_pending" in opened
+    assert "update_hold_mail" in hold
+    assert "다시 임시저장" in src
 
 
 def test_mail_subject_body_not_wiped_on_tab_restore():
@@ -692,6 +770,7 @@ def test_hold_mail_keeps_subject_and_recipient():
     from price_increase_tab import (
         append_hold_mail,
         hold_mail_label,
+        hold_recipient_label,
         load_hold_mail,
         _pi_restore_letter_kwargs,
     )
@@ -718,7 +797,9 @@ def test_hold_mail_keeps_subject_and_recipient():
         assert rows[0]["id"] == saved["id"]
         assert rows[0]["subject"] == "제품가격 조정의 건"
         assert rows[0]["to"] == "buyer@example.com"
-        assert "제품가격 조정의 건 · buyer@example.com" in hold_mail_label(rows[0])
+        assert hold_recipient_label(rows[0]) == "경민산업 · buyer@example.com"
+        assert "제품가격 조정의 건 · 경민산업 · buyer@example.com" in hold_mail_label(rows[0])
+        assert hold_recipient_label({"to": "a@b.com"}) == "a@b.com"
         restored = _pi_restore_letter_kwargs(rows[0]["letter_kwargs"])
         assert restored["send_date"] == date(2026, 11, 1)
     finally:
