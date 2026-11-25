@@ -803,7 +803,12 @@ def test_hold_mail_keeps_subject_and_recipient():
         assert rows[0]["to"] == "buyer@example.com"
         assert hold_recipient_label(rows[0]) == "경민산업 · buyer@example.com"
         assert "제품가격 조정의 건 · 경민산업 · buyer@example.com" in hold_mail_label(rows[0])
-        assert hold_recipient_label({"to": "a@b.com"}) == "a@b.com"
+        assert hold_recipient_label({"to": "a@b.com"}, pd.DataFrame(columns=["거래처", "이메일"])) == "a@b.com"
+        book = pd.DataFrame([{"거래처": "대진에스에이", "이메일": "djsy7615@naver.com"}])
+        assert (
+            hold_recipient_label({"to": "djsy7615@naver.com", "client": "일반메일"}, book)
+            == "대진에스에이 · djsy7615@naver.com"
+        )
         restored = _pi_restore_letter_kwargs(rows[0]["letter_kwargs"])
         assert restored["send_date"] == date(2026, 11, 1)
     finally:

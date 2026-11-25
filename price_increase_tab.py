@@ -2473,11 +2473,38 @@ def update_hold_mail(hold_id: str, changes: dict, path: str | None = None) -> di
     return append_hold_mail(found, path)
 
 
-def hold_recipient_label(row: dict) -> str:
-    """임시저장 수신자. 거래처 이름이 있으면 메일 앞에 붙인다."""
+def client_names_for_emails(raw: str, mail_df: pd.DataFrame | None = None) -> str:
+    """수신 메일로 연락처의 거래처 이름을 찾는다."""
+    emails = {e.lower() for e in split_email_addrs(raw)}
+    if not emails:
+        return ""
+    if mail_df is None:
+        try:
+            mail_df = load_mail_contacts()
+        except Exception:
+            return ""
+    if mail_df is None or getattr(mail_df, "empty", True):
+        return ""
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw_name, _n, _c, em, _pc in _mail_index(mail_df):
+        if str(em or "").strip().lower() not in emails:
+            continue
+        name = str(raw_name or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        found.append(name)
+    return ", ".join(found)
+
+
+def hold_recipient_label(row: dict, mail_df: pd.DataFrame | None = None) -> str:
+    """임시저장 수신자. 거래처가 없으면 연락처에서 이름을 붙인다."""
     email = str(row.get("to") or "").strip() or "(수신 없음)"
     client = str(row.get("client") or "").strip()
     if not client or client == "일반메일":
+        client = client_names_for_emails(str(row.get("to") or ""), mail_df)
+    if not client:
         return email
     return f"{client} · {email}"
 
@@ -4823,6 +4850,10 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
             }
             saved = update_hold_mail(edit_id, changes) if edit_id else None
             if saved is None:
+                if not str(client or "").strip() or str(client).strip() == "일반메일":
+                    named = client_names_for_emails(to_addr)
+                    if named:
+                        client = named
                 saved = append_hold_mail(
                     {
                         **changes,
