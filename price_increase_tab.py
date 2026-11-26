@@ -3289,8 +3289,12 @@ def _pi_hold_open_subject(hold_id: str) -> None:
     st.session_state["pi_hold_opened_id"] = "" if cur == hid else hid
 
 
+@st.fragment
 def _render_pi_hold_mail(smtp_cfg: dict) -> None:
-    """임시저장: 왼쪽 공문(개별발송 인쇄미리보기 크기) · 오른쪽 메일 목록."""
+    """임시저장: 왼쪽 공문(개별발송 인쇄미리보기 크기) · 오른쪽 메일 목록.
+
+    fragment: 제목 클릭·발송 체크는 이 칸만 다시 그려 메일 탭 전체 로딩을 피한다.
+    """
     rows = load_hold_mail()
     flash = st.session_state.pop("pi_hold_flash", None)
     if flash:
@@ -3350,7 +3354,7 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
                     "이 메일은 첨부 공문이 없습니다. 「수정」으로 열면 메일 본문을 확인할 수 있습니다."
                 )
             else:
-                # 개별발송 왼쪽 칸과 동일 비율(반쪽) · 인쇄미리보기와 같은 렌더
+                # compact: BIND JS·큰 여백 생략 → 제목 클릭 로딩 완화
                 _render_pi_live_letter_page(
                     client=str(preview.get("client") or ""),
                     title=str(preview.get("title") or ""),
@@ -3359,6 +3363,7 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
                     effective_s=str(preview.get("effective_s") or ""),
                     letter_body=str(preview.get("letter_body") or ""),
                     items=list(preview.get("items") or []),
+                    compact=True,
                 )
         else:
             st.caption("오른쪽에서 메일 제목을 누르면 공문이 열립니다.")
@@ -5895,6 +5900,36 @@ def _pi_data_uri(path: str) -> str:
         return ""
 
 
+def _pi_letter_image_uris() -> dict[str, str]:
+    """공문 로고·도장 data-uri (세션 캐시). 제목 클릭마다 파일을 다시 읽지 않는다."""
+    try:
+        box = st.session_state.setdefault("_pi_letter_img_uri", {})
+    except Exception:
+        box = {}
+    imgs = _extract_template_images(ensure_default_template())
+    header_p = str(imgs.get("header") or "")
+    footer_p = str(imgs.get("footer") or imgs.get("header") or "")
+    stamp_p = str(imgs.get("stamp") or "")
+    key = (header_p, footer_p, stamp_p)
+    if box.get("key") == key and isinstance(box.get("header"), str):
+        return {
+            "header": str(box.get("header") or ""),
+            "footer": str(box.get("footer") or ""),
+            "stamp": str(box.get("stamp") or ""),
+        }
+    out = {
+        "key": key,
+        "header": _pi_data_uri(header_p),
+        "footer": _pi_data_uri(footer_p),
+        "stamp": _pi_data_uri(stamp_p),
+    }
+    try:
+        st.session_state["_pi_letter_img_uri"] = out
+    except Exception:
+        pass
+    return {"header": out["header"], "footer": out["footer"], "stamp": out["stamp"]}
+
+
 def _pi_sync_body_into_pack(body_key: str) -> None:
     """공문 본문만 저장한다. 미리보기 화면은 다시 그리지 않는다."""
     body = str(st.session_state.get(body_key) or "")
@@ -6113,10 +6148,10 @@ def _render_pi_live_letter_page(
     )
     send_s = send_date.strftime("%Y.%m.%d") if hasattr(send_date, "strftime") else str(send_date)
     price_block = _pi_price_preview_html(items, effective_s)
-    imgs = _extract_template_images(ensure_default_template())
-    header_src = _pi_data_uri(str(imgs.get("header") or ""))
-    footer_src = _pi_data_uri(str(imgs.get("footer") or imgs.get("header") or ""))
-    stamp_src = _pi_data_uri(str(imgs.get("stamp") or ""))
+    uris = _pi_letter_image_uris()
+    header_src = str(uris.get("header") or "")
+    footer_src = str(uris.get("footer") or "")
+    stamp_src = str(uris.get("stamp") or "")
     # 개별발송 왼쪽 칸과 비슷한 로고·여백
     header_w = 180 if compact else 240
     footer_w = 150 if compact else 200
