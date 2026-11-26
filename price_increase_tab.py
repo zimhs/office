@@ -6013,10 +6013,12 @@ def _render_pi_live_letter_page(
     letter_body: str,
     items: list[dict],
     compact: bool = False,
+    show_print: bool = False,
 ) -> None:
     """엑셀 미리보기. 본문 수정은 이 페이지 안에서만 바로 그린다.
 
     compact=True 이면 개별발송 왼쪽 인쇄 미리보기와 비슷한 폭으로 맞춘다.
+    show_print=True 이면 하단에 인쇄하기 버튼을 둔다.
     """
     body_html = "".join(
         "<div style='min-height:1.35em;line-height:1.35;'>&nbsp;</div>"
@@ -6036,7 +6038,7 @@ def _render_pi_live_letter_page(
     stamp_w = 48 if compact else 64
     pad_cm = "0.7cm" if compact else "2cm"
     max_w = 420 if compact else 0
-    iframe_h = 620 if compact else 780
+    iframe_h = (620 if compact else 780) + (56 if show_print else 0)
     font_meta = "13px" if compact else "15px"
     font_body = "12.5px" if compact else "14px"
     header_html = (
@@ -6054,7 +6056,40 @@ def _render_pi_live_letter_page(
         if stamp_src
         else ""
     )
-    page = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    print_bar = (
+        """
+<div id="pi-print-bar" style="box-sizing:border-box;width:100%;padding:0 12px 10px;text-align:center;">
+  <button type="button" id="pi-print-btn"
+    style="width:100%;max-width:420px;height:40px;border:1px solid #CBD5E1;border-radius:8px;background:#fff;color:#0F172A;font-size:14px;font-weight:600;cursor:pointer;">
+    인쇄하기
+  </button>
+</div>
+"""
+        if show_print
+        else ""
+    )
+    print_js = (
+        """
+  var printBtn = document.getElementById('pi-print-btn');
+  if (printBtn) {
+    printBtn.addEventListener('click', function(){
+      try { window.focus(); window.print(); } catch (ePrint) {}
+    });
+  }
+"""
+        if show_print
+        else ""
+    )
+    page = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+@media print {{
+  body {{ background:#fff !important; }}
+  #pi-print-bar {{ display:none !important; }}
+  #pi-a4-wrap {{ padding:0 !important; }}
+  #pi-a4 {{ border:none !important; box-shadow:none !important; }}
+}}
+</style>
+</head>
 <body style="margin:0;background:#F8FAFC;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;">
 <div id="pi-a4-wrap" style="box-sizing:border-box;padding:{pad_cm};width:100%;">
 <div id="pi-a4" style="box-sizing:border-box;width:100%;aspect-ratio:210/297;margin:0 auto;background:#fff;border:1px solid #94A3B8;display:flex;flex-direction:column;padding:12px 14px 10px;color:#111;overflow:auto;">
@@ -6081,10 +6116,12 @@ def _render_pi_live_letter_page(
 </div>
 </div>
 </div>
+{print_bar}
 <script>
 (function(){{
   var MAX_W = {int(max_w)};
   var PAD_CM = {0.7 if compact else 2.0};
+  var EXTRA_H = {56 if show_print else 0};
   function fitA4(){{
     var sheet = document.getElementById('pi-a4');
     var wrap = document.getElementById('pi-a4-wrap');
@@ -6105,7 +6142,7 @@ def _render_pi_live_letter_page(
     sheet.style.marginRight = 'auto';
     wrap.style.padding = PAD_CM + 'cm';
     wrap.style.width = '100%';
-    var px = Math.ceil(h + pad * 2);
+    var px = Math.ceil(h + pad * 2 + EXTRA_H);
     if (frame) {{
       frame.style.height = px + 'px';
       frame.setAttribute('height', String(px));
@@ -6140,6 +6177,7 @@ def _render_pi_live_letter_page(
   window.__piFillPage = fillPage;
   try {{ fitA4(); }} catch (eFit) {{}}
   window.addEventListener('resize', function(){{ try {{ fitA4(); }} catch (eFit2) {{}} }});
+{print_js}
 {_PI_LETTER_BIND_JS if not compact else ""}
 }})();
 </script>
@@ -7359,6 +7397,7 @@ def _render_pi_left_panel() -> None:
             effective_s=effective_s,
             letter_body=letter_body,
             items=items_now,
+            show_print=True,
         )
     else:
         _render_pi_left_summary(

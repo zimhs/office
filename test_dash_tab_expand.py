@@ -1,4 +1,4 @@
-"""탭 로딩: 가벼운 탭·필터 규칙과 heavy(업무일지·시장조사·메일) 지연 로딩."""
+"""탭 로딩: 가벼운 탭·필터 규칙. heavy는 필터 변경 시에만 stub."""
 from __future__ import annotations
 
 import unittest
@@ -6,7 +6,7 @@ import unittest
 
 class DashTabExpandTest(unittest.TestCase):
     def test_filter_does_not_skip_tabs(self):
-        """상단 필터가 바뀐 실행만 다른 탭을 건너뛴다. heavy는 활성 탭만 그린다."""
+        """상단 필터가 바뀐 실행만 다른 탭을 건너뛴다. 탭 이동은 이미 그린 화면을 연다."""
         with open("app.py", encoding="utf-8") as f:
             src = f.read()
         skip = src.split("def _dash_skip_inactive_on_filter", 1)[1].split("def ", 1)[0]
@@ -22,13 +22,10 @@ class DashTabExpandTest(unittest.TestCase):
         self.assertIn("_dash_filter_changed_flag", light)
         self.assertIn("return False", heavy)
         self.assertIn("return True", heavy)
-        self.assertIn("_dash_active_tab_idx", heavy)
-        self.assertIn("_dash_heavy_mounted", heavy)
+        self.assertIn("_dash_tab_is_open", heavy)
         self.assertIn("_dash_filter_changed_flag", heavy)
-        self.assertIn("_dash_force_tab_", heavy)
         self.assertIn("__dashTabsSkipped", src)
         self.assertIn("__dashReloadGuardVer", src)
-        self.assertIn("__dashHeavyTabs", src)
         self.assertIn("def _dash_mark_tabs_skipped", src)
         self.assertIn("def _dash_remember_tab", src)
         self.assertIn('key=f"_dash_remember_tab_{_i}"', src)

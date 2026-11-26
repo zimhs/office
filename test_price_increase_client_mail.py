@@ -652,6 +652,12 @@ def test_hold_save_refreshes_hold_list():
     assert "save_compose_hold" in hold
     compose = src.split("def _render_pi_left_mail_compose", 1)[1].split("\ndef ", 1)[0]
     assert '"다시 임시저장" if editing_hold else "임시저장"' in compose
+    left = src.split("def _render_pi_left_panel", 1)[1].split("\ndef ", 1)[0]
+    assert "show_print=True" in left
+    letter = src.split("def _render_pi_live_letter_page", 1)[1].split("\ndef ", 1)[0]
+    assert "인쇄하기" in letter
+    assert "window.print()" in letter
+    assert "show_print" in letter
 
 
 def test_first_hold_appends_and_edit_updates_same_mail():
