@@ -1336,10 +1336,11 @@ def test_sent_history_opens_body_from_row():
     assert 'selection_mode="single-row"' in hist
     assert "메일 본문" in hist
     assert "첨부 공문" in hist
-    assert "hold_letter_preview_fields" in hist
+    assert "sent_letter_preview_fields" in hist
     assert "_render_pi_live_letter_page" in hist
     assert "공문 PDF 다운로드" in hist
     assert "letter_kwargs" in src.split("def append_sent_log", 1)[1].split("\ndef ", 1)[0]
+    assert "def sent_letter_preview_fields" in src
     assert "_pi_dataframe_selected_rows" in src
     assert "def _pi_hist_remember_selection" in src
     # fragment 안 dataframe 선택은 본문이 안 열리는 경우가 있어 쓰지 않는다
@@ -1385,3 +1386,26 @@ def test_append_sent_log_keeps_letter_for_history():
         assert preview["title"] == "제품가격 조정의 건"
         assert "귀사의 일익" in preview["letter_body"]
         assert preview["items"][0]["품목명"] == "N2"
+
+
+def test_sent_letter_preview_restores_from_mail_body():
+    import price_increase_tab as pit
+
+    rec = {
+        "client": "드림레이저",
+        "subject": "[신일가스] 가스가격 조정의 건",
+        "date": "2026-11-26",
+        "body": (
+            "1. 귀사의 일익 번창하심을 기원하며, 항상 폐사에 베풀어 주신 후의에 감사드립니다.\n\n"
+            "2. 당사는 안정적인 가스공급에 최선을 다해왔으나 수급 불안정이 이어지고 있습니다.\n\n"
+            "3. 이에 당사는 부득이하게 공급가격을 조정하고자 하오니 깊은 이해를 부탁드립니다.\n\n"
+            "김혁수 과장"
+        ),
+        "attach_letter": None,
+        "letter_kwargs": None,
+    }
+    preview = pit.sent_letter_preview_fields(rec)
+    assert preview is not None
+    assert preview["title"] == "가스가격 조정의 건"
+    assert "귀사의 일익" in preview["letter_body"]
+    assert preview.get("from_mail_body") is True

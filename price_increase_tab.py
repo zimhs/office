@@ -2944,12 +2944,14 @@ def hold_letter_preview_fields(row: dict) -> dict | None:
     kw = _pi_restore_letter_kwargs(raw_kw)
     paras = kw.get("letter_paras") if isinstance(kw.get("letter_paras"), dict) else {}
     letter_body = _letter_paras_to_body_text(paras)
+    if not str(letter_body or "").strip():
+        letter_body = str(kw.get("body") or "").strip()
     items = list(kw.get("items") or []) if isinstance(kw.get("items"), list) else []
     attach_flag = row.get("attach_letter")
     attach_on = str(attach_flag).lower() in ("true", "1") or attach_flag is True
     has_letter = attach_on or bool(paras) or bool(items) or bool(
         str(kw.get("title") or "").strip()
-    )
+    ) or bool(str(letter_body or "").strip())
     if not has_letter:
         return None
     send_date = kw.get("send_date")
@@ -2964,6 +2966,62 @@ def hold_letter_preview_fields(row: dict) -> dict | None:
         "letter_body": letter_body,
         "items": items,
         "letter_kwargs": kw,
+    }
+
+
+def _pi_hist_letter_title(subject: str) -> str:
+    title = str(subject or "").strip()
+    for prefix in ("[신일가스] ", "[신일가스]"):
+        if title.startswith(prefix):
+            return title[len(prefix) :].strip() or title
+    return title
+
+
+def sent_letter_preview_fields(row) -> dict | None:
+    """발송이력용 공문 미리보기. 예전 로그는 메일 본문으로 공문을 복원한다."""
+    preview = hold_letter_preview_fields(row)
+    if preview is not None and str(preview.get("letter_body") or "").strip():
+        return preview
+    if row is None:
+        return None
+    try:
+        data = dict(row) if not isinstance(row, dict) else row
+    except Exception:
+        return preview
+    mail_body = _strip_mail_signature(_sent_log_body_text(data.get("body")))
+    if not mail_body.strip():
+        return preview
+    client = str(data.get("client") or "").strip()
+    title = _pi_hist_letter_title(str(data.get("subject") or ""))
+    send_date = date.today()
+    raw_date = str(data.get("date") or data.get("ts") or "")[:10]
+    if raw_date:
+        try:
+            send_date = date.fromisoformat(raw_date)
+        except ValueError:
+            pass
+    paras = _body_text_to_paras(mail_body)
+    letter_body = _letter_paras_to_body_text(paras) or mail_body
+    kw = {
+        "client": client,
+        "title": title,
+        "doc_no": "",
+        "send_date": send_date.isoformat(),
+        "effective": "",
+        "letter_paras": paras,
+        "items": [],
+        "body": letter_body,
+    }
+    return {
+        "client": client,
+        "title": title,
+        "doc_no": "",
+        "send_date": send_date,
+        "effective_s": "",
+        "letter_body": letter_body,
+        "items": [],
+        "letter_kwargs": kw,
+        "from_mail_body": True,
     }
 
 
@@ -3098,7 +3156,7 @@ def _render_pi_sent_history() -> None:
     subject = str(rec.get("subject") or "")
     when = str(rec.get("date") or "")
     body = _sent_log_body_text(rec["body"] if "body" in getattr(rec, "index", []) else "")
-    preview = hold_letter_preview_fields(rec)
+    preview = sent_letter_preview_fields(rec)
     st.markdown(f"**{client}** · {subject} · {when}")
     col_mail, col_letter = st.columns([1, 1], gap="medium")
     with col_mail:
@@ -3113,20 +3171,33 @@ def _render_pi_sent_history() -> None:
         )
     with col_letter:
         st.markdown("##### 첨부 공문")
-        if preview is None:
+        if preview is None or not str(preview.get("letter_body") or "").strip():
             st.info("이 발송은 첨부 공문 기록이 없습니다.")
         else:
-            _render_pi_live_letter_page(
-                client=str(preview.get("client") or client),
-                title=str(preview.get("title") or ""),
-                doc_no=str(preview.get("doc_no") or ""),
-                send_date=preview.get("send_date") or date.today(),
-                effective_s=str(preview.get("effective_s") or ""),
-                letter_body=str(preview.get("letter_body") or ""),
-                items=list(preview.get("items") or []),
-                compact=True,
-                show_print=True,
-            )
+            if preview.get("from_mail_body"):
+                st.caption("이전 발송은 공문 원본이 없어 메일 본문으로 공문을 복원했습니다.")
+            try:
+                _render_pi_live_letter_page(
+                    client=str(preview.get("client") or client),
+                    title=str(preview.get("title") or ""),
+                    doc_no=str(preview.get("doc_no") or ""),
+                    send_date=preview.get("send_date") or date.today(),
+                    effective_s=str(preview.get("effective_s") or ""),
+                    letter_body=str(preview.get("letter_body") or ""),
+                    items=list(preview.get("items") or []),
+                    compact=True,
+                    show_print=True,
+                )
+            except Exception as e:
+                st.warning(f"공문 미리보기 표시 실패: {e}")
+                st.text_area(
+                    "공문 본문",
+                    value=str(preview.get("letter_body") or ""),
+                    height=420,
+                    disabled=True,
+                    label_visibility="collapsed",
+                    key=f"pi_hist_letter_fallback_{pos_i}_{rec.get('ts')}",
+                )
             try:
                 pdf_bytes = _build_letter_pdf_bytes(
                     **_pi_restore_letter_kwargs(preview.get("letter_kwargs") or {})
