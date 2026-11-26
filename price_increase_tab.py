@@ -1742,11 +1742,21 @@ def _body_text_to_paras(text: str) -> dict[str, str]:
     return paras
 
 
+def _pi_clean_para_cell(raw: Any) -> str:
+    """임시저장 JSON에 따옴표가 한 겹 더 붙은 셀 값을 푼다."""
+    s = str(raw or "").strip()
+    if len(s) >= 2 and ((s[0] == s[-1] == "'") or (s[0] == s[-1] == '"')):
+        inner = s[1:-1].strip()
+        if inner:
+            return inner
+    return s
+
+
 def _letter_paras_to_body_text(paras: dict | None) -> str:
     """양식 셀 dict → 공문 입력칸 본문."""
     if not isinstance(paras, dict):
         return ""
-    lines = [str(paras.get(c) or "").strip() for c in _BODY_CELL_ORDER]
+    lines = [_pi_clean_para_cell(paras.get(c)) for c in _BODY_CELL_ORDER]
     lines = [ln for ln in lines if ln]
     return "\n\n".join(lines)
 
@@ -3032,6 +3042,8 @@ def _pi_apply_fresh_mail() -> None:
     st.session_state.pop("pi_skip_email_fill", None)
     st.session_state.pop("pi_hold_addr_lock", None)
     st.session_state.pop("pi_hold_editing_id", None)
+    st.session_state.pop("pi_hold_title_freeform", None)
+    st.session_state.pop("pi_hold_letter_body_pending", None)
     st.session_state["pi_single_clients"] = []
     st.session_state["pi_single_client"] = ""
     draft = dict(st.session_state.get("pi_mail_draft") or {})
@@ -3051,6 +3063,8 @@ def _pi_hold_letter_restore_payload(pending: dict) -> dict:
     paras = lk.get("letter_paras") if isinstance(lk.get("letter_paras"), dict) else {}
     letter_body = _letter_paras_to_body_text(paras)
     if not letter_body.strip():
+        letter_body = str(lk.get("letter_body") or "").strip()
+    if not letter_body.strip():
         letter_body = _strip_mail_signature(str(lk.get("body") or ""))
     items = list(lk.get("items") or [])
     return {
@@ -3067,14 +3081,30 @@ def _pi_hold_letter_restore_payload(pending: dict) -> dict:
     }
 
 
+def _pi_hold_client_matches(want: str, client: str) -> bool:
+    """임시저장 거래처와 현재 선택 거래처가 같은지(표기 차이 허용)."""
+    w = str(want or "").strip()
+    c = str(client or "").strip()
+    if not w or not c:
+        return not w
+    if _norm_name(w) == _norm_name(c):
+        return True
+    sw, sc = _client_stem(w), _client_stem(c)
+    return bool(sw) and sw == sc and len(sw) >= 2
+
+
 def _apply_hold_letter_restore(*, client: str, body_key: str, items_key: str) -> None:
     """임시저장에 있던 공문 본문·단가표를 오른쪽 입력에 넣는다."""
     payload = st.session_state.pop("pi_hold_letter_restore", None)
     if not isinstance(payload, dict):
         return
     want = str(payload.get("client") or "").strip()
-    if want and _norm_name(want) != _norm_name(client):
-        # 거래처 위젯이 아직 안 맞으면 다음 실행에 다시 시도
+    editing = bool(str(st.session_state.get("pi_hold_editing_id") or "").strip())
+    # 수정 중이면 표기만 달라도 공문을 넣고, 그 외에는 stem까지 맞을 때만 넣는다.
+    if want and client and not _pi_hold_client_matches(want, client) and not editing:
+        st.session_state["pi_hold_letter_restore"] = payload
+        return
+    if want and not client and not editing:
         st.session_state["pi_hold_letter_restore"] = payload
         return
     title = str(payload.get("title") or "").strip()
@@ -3084,6 +3114,8 @@ def _apply_hold_letter_restore(*, client: str, body_key: str, items_key: str) ->
         st.session_state.pop("_pi_letter_src_applied", None)
         st.session_state.pop("_pi_letter_src_token", None)
         st.session_state.pop("_pi_letter_src_body", None)
+        # 양식 selectbox 대신 복원 제목을 보이게
+        st.session_state["pi_hold_title_freeform"] = True
     doc_no = str(payload.get("doc_no") or "").strip()
     if doc_no:
         st.session_state["pi_letter_doc_no"] = doc_no
@@ -3108,8 +3140,11 @@ def _apply_hold_letter_restore(*, client: str, body_key: str, items_key: str) ->
         except ValueError:
             pass
     letter_body = str(payload.get("letter_body") or "")
-    if letter_body.strip() and body_key:
-        st.session_state[body_key] = letter_body
+    if letter_body.strip():
+        # fragment 본문칸이 같은 실행에서 읽도록 pending에도 남긴다
+        st.session_state["pi_hold_letter_body_pending"] = letter_body
+        if body_key:
+            st.session_state[body_key] = letter_body
     items = list(payload.get("items") or [])
     if items_key and items:
         st.session_state[items_key] = [dict(it) for it in items]
@@ -3118,7 +3153,7 @@ def _apply_hold_letter_restore(*, client: str, body_key: str, items_key: str) ->
     st.session_state["pi_include_letter_body"] = bool(payload.get("attach_letter", True))
     st.session_state["pi_mail_attach_letter"] = bool(payload.get("attach_letter", True))
     st.session_state["pi_include_price"] = bool(payload.get("include_price", bool(items)))
-    st.session_state["pi_body_client"] = client
+    st.session_state["pi_body_client"] = client or want
 
 
 def _consume_hold_edit_open() -> None:
@@ -7423,6 +7458,10 @@ def _render_pi_left_panel() -> None:
 @st.fragment
 def _render_pi_letter_body_box(body_key: str) -> None:
     """공문 본문만 다시 그린다. 엑셀 미리보기는 글자만 바꾼다."""
+    # 임시저장 수정 복원본은 fragment 안에서 위젯 생성 직전에 심는다.
+    pending_body = st.session_state.pop("pi_hold_letter_body_pending", None)
+    if pending_body is not None and body_key:
+        st.session_state[body_key] = str(pending_body)
     st.markdown("**1. 공문내용**")
     if st.button("기본공문양식 적용", key="pi_body_reset", use_container_width=True):
         if body_key:
@@ -7461,7 +7500,11 @@ def _render_pi_right_letter_form() -> None:
     with m3:
         letters = _pi_price_letter_choices()
         by_label = {row["label"]: row for row in letters}
-        if by_label:
+        # 임시저장 수정 시 복원 제목을 보여 준다(양식 selectbox만 있으면 빈칸으로 보임).
+        freeform_title = bool(st.session_state.get("pi_hold_title_freeform")) or bool(
+            st.session_state.get("pi_hold_editing_id")
+        )
+        if by_label and not freeform_title:
             cur_src = st.session_state.get("pi_letter_src")
             if cur_src not in (None, "") and cur_src not in by_label:
                 st.session_state["pi_letter_src"] = None
@@ -7476,7 +7519,22 @@ def _render_pi_right_letter_form() -> None:
             if chosen:
                 _pi_apply_open_letter_file(body_key, letters, _pi_letter_book_token())
         else:
-            st.text_input("제목", value=_default_letter_title(), key="pi_single_title")
+            if "pi_single_title" not in st.session_state:
+                st.session_state["pi_single_title"] = _default_letter_title()
+            st.text_input("제목", key="pi_single_title")
+            if by_label:
+                with st.expander("공문 양식에서 불러오기", expanded=False):
+                    picked = st.selectbox(
+                        "양식 제목",
+                        list(by_label),
+                        key="pi_letter_src",
+                        index=None,
+                        placeholder="공문 제목을 검색하거나 선택하세요",
+                    )
+                    chosen = by_label.get(str(picked or ""))
+                    if chosen:
+                        st.session_state.pop("pi_hold_title_freeform", None)
+                        _pi_apply_open_letter_file(body_key, letters, _pi_letter_book_token())
     with m4:
         st.date_input("시행일", value=date.today().replace(day=1), key="pi_single_eff")
     with m5:

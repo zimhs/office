@@ -457,9 +457,44 @@ def test_hold_edit_opens_in_mail_compose():
     assert ss["pi_items_신일가스"][0]["인상적용단가"] == 120
     assert "3. 조정" in ss["pi_letter_body_신일가스"]
     assert ss["pi_single_title"] == "제품가격 조정의 건"
+    assert ss.get("pi_hold_title_freeform") is True
+    assert "3. 조정" in str(ss.get("pi_hold_letter_body_pending") or ss.get("pi_letter_body_신일가스") or "")
     assert "def _pi_click_inner_tab" in open("price_increase_tab.py", encoding="utf-8").read()
     assert ss["pi_hold_open_mail_tab"] is True
     assert "pi_hold_edit_pending" not in ss
+
+
+def test_hold_letter_restore_ignores_client_alias_while_editing():
+    """대진에스아이 등 표기가 달라도 수정 중이면 공문 본문을 넣는다."""
+    from unittest import mock
+
+    import price_increase_tab as m
+
+    ss = {
+        "pi_hold_editing_id": "hold-dae",
+        "pi_hold_letter_restore": {
+            "client": "대진에스아이",
+            "title": "제품가격 조정의 건",
+            "doc_no": "신일(1)-2611-0024",
+            "contact": "010-8475-3526",
+            "letter_body": "1. 귀사의 일익 번창\n\n2. 공급가격 조정",
+            "items": [{"선택": True, "품목명": "N2", "기존단가": 1, "인상적용단가": 2}],
+            "attach_letter": True,
+            "include_price": True,
+        },
+    }
+    with mock.patch.object(m.st, "session_state", ss):
+        m._apply_hold_letter_restore(
+            client="대진에스에이",
+            body_key="pi_letter_body_대진에스에이",
+            items_key="pi_items_대진에스에이",
+        )
+    assert ss["pi_single_title"] == "제품가격 조정의 건"
+    assert ss["pi_letter_doc_no"] == "신일(1)-2611-0024"
+    assert "공급가격 조정" in ss["pi_letter_body_대진에스에이"]
+    assert "공급가격 조정" in ss["pi_hold_letter_body_pending"]
+    assert ss["pi_hold_title_freeform"] is True
+    assert "pi_hold_letter_restore" not in ss
 
 
 def test_update_hold_mail_replaces_same_row():
