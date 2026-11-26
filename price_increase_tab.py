@@ -583,7 +583,10 @@ def _sales_client_lookup(sales_df: pd.DataFrame | None) -> dict[str, Any]:
 
 
 def resolve_sales_client_name(client: str, sales_df: pd.DataFrame | None) -> str:
-    """연락처·짧은 표기를 상단 검색과 같은 매출 거래처명으로 맞춘다."""
+    """연락처·짧은 표기를 상단 검색과 같은 매출 거래처명으로 맞춘다.
+
+    비엘티(구.에스앤케이)와 에스앤케이는 다른 회사이므로 괄호 구표기로 합치지 않는다.
+    """
     want = _clean_client_label(client)
     if not want:
         return ""
@@ -3056,6 +3059,17 @@ def _pi_apply_fresh_mail() -> None:
         save_compose_live(draft)
 
 
+def _pi_title_from_hold_subject(subject: str) -> str:
+    """메일 제목에서 공문 제목을 건진다. 예: [신일가스] 가스가격 조정의 건."""
+    subj = str(subject or "").strip()
+    if not subj or subj == "(제목 없음)":
+        return ""
+    for prefix in ("[신일가스]", "[신일 가스]", "신일가스"):
+        if subj.startswith(prefix):
+            return subj[len(prefix) :].strip(" :-")
+    return subj
+
+
 def _pi_hold_letter_restore_payload(pending: dict) -> dict:
     """수정 열 때 공문·단가표를 되돌릴 값."""
     lk = _pi_restore_letter_kwargs(pending.get("letter_kwargs"))
@@ -3066,17 +3080,27 @@ def _pi_hold_letter_restore_payload(pending: dict) -> dict:
         letter_body = str(lk.get("letter_body") or "").strip()
     if not letter_body.strip():
         letter_body = _strip_mail_signature(str(lk.get("body") or ""))
+    # 공문 첨부를 끄고 저장한 건(에스앤케이. 등)은 letter_kwargs가 비어 메일 본문에서 복원
+    if not letter_body.strip():
+        letter_body = _strip_mail_signature(str(pending.get("body") or ""))
+    title = str(lk.get("title") or "").strip()
+    if not title:
+        title = _pi_title_from_hold_subject(str(pending.get("subject") or ""))
     items = list(lk.get("items") or [])
+    attach = bool(pending.get("attach_letter", True))
+    # 본문이 있으면 수정 화면에서 공문 입력을 연다(첨부가 꺼져 저장된 경우 포함)
+    if letter_body.strip():
+        attach = True
     return {
         "client": client,
-        "title": str(lk.get("title") or "").strip(),
+        "title": title,
         "doc_no": str(lk.get("doc_no") or "").strip(),
         "contact": str(lk.get("contact") or "").strip(),
         "effective": lk.get("effective"),
         "send_date": lk.get("send_date"),
         "letter_body": letter_body,
         "items": items,
-        "attach_letter": bool(pending.get("attach_letter", True)),
+        "attach_letter": attach,
         "include_price": bool(items),
     }
 
@@ -3109,7 +3133,7 @@ def _apply_hold_letter_restore(*, client: str, body_key: str, items_key: str) ->
         return
     title = str(payload.get("title") or "").strip()
     if title:
-        st.session_state["pi_single_title"] = title
+        _pi_set_single_title(title)
         st.session_state.pop("pi_letter_src", None)
         st.session_state.pop("_pi_letter_src_applied", None)
         st.session_state.pop("_pi_letter_src_token", None)
@@ -3890,6 +3914,28 @@ def _pi_price_letter_choices() -> list[dict[str, str]]:
         return []
 
 
+def _pi_set_single_title(title: str) -> None:
+    """공문 제목 session 값. 위젯이 이미 있으면 다음 실행용 pending만 남긴다."""
+    want = str(title or "").strip() or _default_letter_title()
+    st.session_state["_pi_pending_single_title"] = want
+    try:
+        st.session_state["pi_single_title"] = want
+    except Exception:
+        # StreamlitAPIException: 위젯 생성 후 수정 불가 → pending으로 다음 페인트에 반영
+        pass
+
+
+def _pi_consume_pending_single_title() -> None:
+    """제목 위젯 생성 전에 pending 제목을 넣는다."""
+    pending = st.session_state.pop("_pi_pending_single_title", None)
+    if pending is None:
+        return
+    try:
+        st.session_state["pi_single_title"] = str(pending)
+    except Exception:
+        st.session_state["_pi_pending_single_title"] = pending
+
+
 def _pi_apply_open_letter_file(body_key: str, letters: list[dict[str, str]], token: str) -> bool:
     """선택한 제목의 파일 본문이 바뀌었고 입력칸을 그대로 두면 본문을 맞춘다."""
     picked = str(st.session_state.get("pi_letter_src") or "")
@@ -3907,8 +3953,11 @@ def _pi_apply_open_letter_file(body_key: str, letters: list[dict[str, str]], tok
         new_body=new_body,
     ):
         return False
-    st.session_state["pi_single_title"] = chosen.get("title") or _default_letter_title()
-    st.session_state[body_key] = new_body
+    _pi_set_single_title(chosen.get("title") or _default_letter_title())
+    try:
+        st.session_state[body_key] = new_body
+    except Exception:
+        st.session_state["pi_hold_letter_body_pending"] = new_body
     st.session_state["_pi_letter_src_applied"] = picked
     st.session_state["_pi_letter_src_token"] = token
     st.session_state["_pi_letter_src_body"] = new_body
@@ -5592,7 +5641,8 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                 staff=staff,
                 attach_letter=bool(attach_letter),
                 pdf_name=str(pack.get("pdf_name") or pdf_name or "공문.pdf"),
-                letter_kwargs=letter_kwargs if attach_letter else {},
+                # 첨부 off여도 공문 입력은 남겨 수정 시 양식을 복원한다
+                letter_kwargs=letter_kwargs,
                 picked=picked_now,
             )
             if updated:
@@ -7528,6 +7578,7 @@ def _render_pi_right_letter_form() -> None:
                     body_key, letters, _pi_letter_book_token()
                 ):
                     st.session_state.pop("pi_hold_title_freeform", None)
+            _pi_consume_pending_single_title()
             if "pi_single_title" not in st.session_state:
                 st.session_state["pi_single_title"] = _default_letter_title()
             st.text_input("제목", key="pi_single_title")

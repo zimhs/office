@@ -497,6 +497,73 @@ def test_hold_letter_restore_ignores_client_alias_while_editing():
     assert "pi_hold_letter_restore" not in ss
 
 
+def test_hold_restore_uses_mail_body_when_letter_kwargs_empty():
+    """에스앤케이처럼 첨부 off로 저장된 건도 메일 본문·제목으로 공문을 복원한다."""
+    from price_increase_tab import _pi_hold_letter_restore_payload
+
+    payload = _pi_hold_letter_restore_payload(
+        {
+            "client": "에스앤케이.",
+            "subject": "[신일가스] 가스가격 조정의 건",
+            "body": "1. 귀사의 일익 번창하심을 기원하며.\n\n2. 공급가격을 조정하고자 하오니.",
+            "attach_letter": False,
+            "letter_kwargs": {},
+        }
+    )
+    assert payload["attach_letter"] is True
+    assert payload["title"] == "가스가격 조정의 건"
+    assert "공급가격을 조정" in payload["letter_body"]
+    assert "def _pi_set_single_title" in open("price_increase_tab.py", encoding="utf-8").read()
+    assert "def _pi_consume_pending_single_title" in open(
+        "price_increase_tab.py", encoding="utf-8"
+    ).read()
+    hold = open("price_increase_tab.py", encoding="utf-8").read().split(
+        "elif do_hold", 1
+    )[1].split("elif do_cancel", 1)[0]
+    assert "letter_kwargs=letter_kwargs," in hold
+    assert "letter_kwargs if attach_letter else {}" not in hold
+
+
+def test_blt_and_snk_are_not_merged():
+    """비엘티(구.에스앤케이)와 에스앤케이는 다른 회사 — 검색·resolve로 합치지 않는다."""
+    import pandas as pd
+
+    from price_increase_tab import (
+        _compute_latest_unit_prices,
+        list_clients_for_letter,
+        resolve_sales_client_name,
+    )
+
+    sales = pd.DataFrame(
+        {
+            "거래처": ["비엘티(구.에스앤케이)"] * 2 + ["에스앤케이."] * 2,
+            "품목명": ["N2", "Ar", "CO2", "O2"],
+            "단가": [100, 200, 80, 50],
+            "출고량": [10, 5, 3, 1],
+            "매출일": ["2026-01-01"] * 4,
+        }
+    )
+    mail = pd.DataFrame(
+        {
+            "거래처": ["에스앤케이.", "비엘티(구.에스앤케이)"],
+            "이메일": ["snk1858@naver.com", "blt@example.com"],
+        }
+    )
+    assert resolve_sales_client_name("에스앤케이.", sales) == "에스앤케이."
+    # 끝점만 다른 같은 표기는 stem으로 매출명에 맞출 수 있다
+    assert resolve_sales_client_name("에스앤케이", sales) == "에스앤케이."
+    assert resolve_sales_client_name("비엘티(구.에스앤케이)", sales) == "비엘티(구.에스앤케이)"
+    # 괄호 구표기로 에스앤케이 → 비엘티로 합치지 않는다
+    assert resolve_sales_client_name("에스앤케이.", sales) != "비엘티(구.에스앤케이)"
+    opts = list_clients_for_letter(sales, "전체", mail)
+    assert "에스앤케이." in opts
+    assert "비엘티(구.에스앤케이)" in opts
+    snk_prices = _compute_latest_unit_prices(sales, "에스앤케이.")
+    blt_prices = _compute_latest_unit_prices(sales, "비엘티(구.에스앤케이)")
+    assert set(snk_prices["품목명"]) == {"CO2", "O2"}
+    assert set(blt_prices["품목명"]) == {"N2", "Ar"}
+
+
 def test_update_hold_mail_replaces_same_row():
     import os
     import tempfile
