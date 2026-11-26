@@ -1389,6 +1389,9 @@ def test_append_sent_log_keeps_letter_for_history():
 
 
 def test_sent_letter_preview_restores_from_mail_body():
+    from unittest.mock import patch
+
+    import pandas as pd
     import price_increase_tab as pit
 
     rec = {
@@ -1404,8 +1407,19 @@ def test_sent_letter_preview_restores_from_mail_body():
         "attach_letter": None,
         "letter_kwargs": None,
     }
-    preview = pit.sent_letter_preview_fields(rec)
+    fake_prices = pd.DataFrame(
+        [{"품목명": "N2 (kg, Bulk)", "기존단가": 250.0, "월평균사용량": 100.0, "최근매출일": "2026-11-01"}]
+    )
+    with (
+        patch.object(pit.st, "session_state", {"_pi_sales_df_cache": pd.DataFrame({"거래처": ["드림레이저"]})}, create=True),
+        patch.object(pit, "latest_unit_prices", return_value=fake_prices),
+    ):
+        preview = pit.sent_letter_preview_fields(rec)
     assert preview is not None
     assert preview["title"] == "가스가격 조정의 건"
     assert "귀사의 일익" in preview["letter_body"]
     assert preview.get("from_mail_body") is True
+    assert preview["items"][0]["품목명"] == "N2 (kg, Bulk)"
+    assert float(preview["items"][0]["기존단가"]) == 250.0
+    assert float(preview["items"][0]["인상적용단가"]) == 250.0
+    assert "단가 조정 내용" in pit._pi_price_preview_html(preview["items"], "")

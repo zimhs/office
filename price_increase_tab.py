@@ -2977,20 +2977,67 @@ def _pi_hist_letter_title(subject: str) -> str:
     return title
 
 
-def sent_letter_preview_fields(row) -> dict | None:
-    """발송이력용 공문 미리보기. 예전 로그는 메일 본문으로 공문을 복원한다."""
-    preview = hold_letter_preview_fields(row)
-    if preview is not None and str(preview.get("letter_body") or "").strip():
+def _pi_hist_price_items(client: str) -> list[dict]:
+    """발송이력 공문 단가표. 세션 인상단가 → 없으면 최근 매출 단가."""
+    who = str(client or "").strip()
+    if not who:
+        return []
+    try:
+        key = _items_key(who)
+        sess = st.session_state.get(key)
+        if isinstance(sess, list) and any(
+            str((it or {}).get("품목명") or "").strip() for it in sess if isinstance(it, dict)
+        ):
+            return _selected_items(_normalize_items_selection(list(sess)))
+    except Exception:
+        pass
+    try:
+        sales_df = st.session_state.get("_pi_sales_df_cache")
+        if isinstance(sales_df, pd.DataFrame) and not sales_df.empty:
+            price_df = latest_unit_prices(sales_df, who)
+            if price_df is not None and not price_df.empty:
+                return _selected_items(_init_items_from_prices(who, price_df, 0.0))
+    except Exception:
+        pass
+    return []
+
+
+def _pi_fill_preview_items(preview: dict | None, *, client: str = "") -> dict | None:
+    """공문 미리보기에 단가표가 없으면 매출/세션 단가로 채운다."""
+    if not preview:
         return preview
+    out = dict(preview)
+    items = [dict(it) for it in (out.get("items") or []) if isinstance(it, dict)]
+    if not any(str(it.get("품목명") or "").strip() for it in items):
+        items = _pi_hist_price_items(str(out.get("client") or client or ""))
+    out["items"] = items
+    kw = dict(out.get("letter_kwargs") or {})
+    kw["items"] = items
+    if not str(kw.get("effective") or "").strip() and str(out.get("effective_s") or "").strip():
+        kw["effective"] = out["effective_s"]
+    out["letter_kwargs"] = kw
+    return out
+
+
+def sent_letter_preview_fields(row) -> dict | None:
+    """발송이력용 공문 미리보기. 예전 로그는 메일 본문·매출 단가로 복원한다."""
+    preview = hold_letter_preview_fields(row)
+    client_hint = ""
+    try:
+        client_hint = str((row.get("client") if hasattr(row, "get") else "") or "")
+    except Exception:
+        client_hint = ""
+    if preview is not None and str(preview.get("letter_body") or "").strip():
+        return _pi_fill_preview_items(preview, client=client_hint)
     if row is None:
         return None
     try:
         data = dict(row) if not isinstance(row, dict) else row
     except Exception:
-        return preview
+        return _pi_fill_preview_items(preview, client=client_hint)
     mail_body = _strip_mail_signature(_sent_log_body_text(data.get("body")))
     if not mail_body.strip():
-        return preview
+        return _pi_fill_preview_items(preview, client=client_hint)
     client = str(data.get("client") or "").strip()
     title = _pi_hist_letter_title(str(data.get("subject") or ""))
     send_date = date.today()
@@ -3002,6 +3049,7 @@ def sent_letter_preview_fields(row) -> dict | None:
             pass
     paras = _body_text_to_paras(mail_body)
     letter_body = _letter_paras_to_body_text(paras) or mail_body
+    items = _pi_hist_price_items(client)
     kw = {
         "client": client,
         "title": title,
@@ -3009,20 +3057,23 @@ def sent_letter_preview_fields(row) -> dict | None:
         "send_date": send_date.isoformat(),
         "effective": "",
         "letter_paras": paras,
-        "items": [],
+        "items": items,
         "body": letter_body,
     }
-    return {
-        "client": client,
-        "title": title,
-        "doc_no": "",
-        "send_date": send_date,
-        "effective_s": "",
-        "letter_body": letter_body,
-        "items": [],
-        "letter_kwargs": kw,
-        "from_mail_body": True,
-    }
+    return _pi_fill_preview_items(
+        {
+            "client": client,
+            "title": title,
+            "doc_no": "",
+            "send_date": send_date,
+            "effective_s": "",
+            "letter_body": letter_body,
+            "items": items,
+            "letter_kwargs": kw,
+            "from_mail_body": True,
+        },
+        client=client,
+    )
 
 
 def hold_mail_label(row: dict) -> str:
