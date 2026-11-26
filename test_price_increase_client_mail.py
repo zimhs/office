@@ -1182,7 +1182,9 @@ def test_hold_tab_sits_between_bulk_and_history():
     tabs = src.split('["개별 발송", "일괄 발송", "임시저장", "발송 이력"]', 1)
     assert len(tabs) == 2
     compose = src.split("def _render_pi_left_mail_compose", 1)[1].split("\ndef ", 1)[0]
-    assert compose.index('st.button("임시저장"') < compose.index('"최종 발송"')
+    assert compose.index('"다시 임시저장" if editing_hold else "임시저장"') < compose.index(
+        '"최종 발송"'
+    )
 
 
 def test_sent_history_opens_body_from_row():

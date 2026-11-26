@@ -550,22 +550,55 @@ def _sales_client_names(sales_df: pd.DataFrame | None) -> list[str]:
     return out
 
 
+def _sales_client_lookup(sales_df: pd.DataFrame | None) -> dict[str, Any]:
+    """매출 거래처 norm/stem 인덱스(세션 캐시). resolve·letter 목록 O(1) 조회용."""
+    names = _sales_client_names(sales_df)
+    token = ""
+    try:
+        token = str(st.session_state.get("pi_sales_cache_token") or "")
+    except Exception:
+        token = ""
+    key = (token, len(names), id(sales_df) if sales_df is not None else 0)
+    try:
+        box = st.session_state.setdefault("_pi_sales_lookup_cache", {})
+        if box.get("key") == key and isinstance(box.get("norm"), dict):
+            return box
+    except Exception:
+        box = {}
+    norm: dict[str, str] = {}
+    stem: dict[str, list[str]] = {}
+    for n in names:
+        nk = _norm_name(n)
+        if nk and nk not in norm:
+            norm[nk] = n
+        sk = _client_stem(n)
+        if sk:
+            stem.setdefault(sk, []).append(n)
+    out = {"key": key, "names": names, "norm": norm, "stem": stem}
+    try:
+        st.session_state["_pi_sales_lookup_cache"] = out
+    except Exception:
+        pass
+    return out
+
+
 def resolve_sales_client_name(client: str, sales_df: pd.DataFrame | None) -> str:
     """연락처·짧은 표기를 상단 검색과 같은 매출 거래처명으로 맞춘다."""
     want = _clean_client_label(client)
     if not want:
         return ""
-    names = _sales_client_names(sales_df)
+    lookup = _sales_client_lookup(sales_df)
+    names = lookup.get("names") or []
     if not names:
         return want
     nk = _norm_name(want)
-    for n in names:
-        if _norm_name(n) == nk:
-            return n
+    hit = (lookup.get("norm") or {}).get(nk)
+    if hit:
+        return hit
     stem = _client_stem(want)
     if len(stem) < 2:
         return want
-    stem_hits = [n for n in names if _client_stem(n) == stem]
+    stem_hits = (lookup.get("stem") or {}).get(stem) or []
     if len(stem_hits) == 1:
         return stem_hits[0]
     prefix_hits = [n for n in names if _norm_name(n).startswith(nk)]
@@ -1367,21 +1400,32 @@ def list_clients_for_letter(
     """개별 공문 거래처 검색: 매출 정식명 우선. 연락처 짧은 이름은 매출명으로 흡수."""
     sales_names = list_clients_for_staff(sales_df, staff)
     names = set(sales_names)
+    # norm 집합으로 흡수 판단 — contacts×sales O(n·m) 스캔을 피한다.
+    have_norm = {_norm_name(n) for n in names if _norm_name(n)}
     for one in list_mail_contact_names(mail_df if mail_df is not None else pd.DataFrame()):
         resolved = resolve_sales_client_name(one, sales_df)
-        # 라쿨 / 라쿨주식회사(구.신정우) → 매출의 라쿨 주식회사(구.신정우)만 남긴다.
-        if resolved and any(_norm_name(n) == _norm_name(resolved) for n in names):
+        rn = _norm_name(resolved) if resolved else ""
+        if rn and rn in have_norm:
             continue
-        names.add(one)
+        one_c = _clean_client_label(one)
+        if not one_c:
+            continue
+        names.add(one_c)
+        on = _norm_name(one_c)
+        if on:
+            have_norm.add(on)
     extras = extra if isinstance(extra, (list, tuple, set)) else [extra]
     for one in extras:
         one = _clean_client_label(one)
         if not one:
             continue
         resolved = resolve_sales_client_name(one, sales_df) or one
-        if any(_norm_name(n) == _norm_name(resolved) for n in names):
+        rn = _norm_name(resolved)
+        if rn and rn in have_norm:
             continue
         names.add(resolved)
+        if rn:
+            have_norm.add(rn)
     return sorted({_clean_client_label(n) for n in names if _clean_client_label(n)})
 
 
@@ -7537,11 +7581,14 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
             st.warning("담당자 목록이 없습니다. 매출 데이터를 확인하세요.")
             b_staff = ""
         else:
+            # index=None: 개별발송만 볼 때 일괄 표(거래처×분류)를 미리 만들지 않는다
             b_staff = st.selectbox(
                 "담당자 (필수)",
                 staff_list,
                 key="pi_bulk_staff",
-            )
+                index=None,
+                placeholder="담당자를 선택하세요",
+            ) or ""
         bulk_clients = list_clients_for_staff(sales_df, b_staff) if b_staff else []
 
         mode_bulk = st.radio(

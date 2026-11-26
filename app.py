@@ -8900,15 +8900,29 @@ def _dash_defer_light_tab_stub(title: str, tab_idx: int) -> None:
 
 
 def _dash_should_defer_heavy_tab(tab_idx: int) -> bool:
-    """상단 필터가 바뀌었고 보고 있지 않은 업무일지·시장조사·메일만 건너뛴다."""
-    if st.session_state.get("_dash_filter_changed_flag") and not _dash_tab_is_open(tab_idx):
-        return True
+    """보고 있지 않은 업무일지·시장조사·메일은 열 때까지 그리지 않는다.
+
+    새로고침마다 세 탭을 전부 그리면 메일 탭부터 로딩이 커진다.
+    활성 탭(쿠키/클릭)만 그리고, 나머지는 탭을 누를 때 remount 한다.
+    `_dash_tab_is_open`은 활성 모름(None)일 때 True라서 여기선 쓰지 않는다.
+    """
     mounted = st.session_state.setdefault("_dash_heavy_mounted", {})
-    for i in (_DASH_TAB_WORKLOG, _DASH_TAB_MARKET, _DASH_TAB_LETTER):
-        mounted[i] = True
-    st.session_state["_dash_heavy_warmed"] = True
-    mounted[tab_idx] = True
-    return False
+    if st.session_state.pop(f"_dash_force_tab_{int(tab_idx)}", None):
+        st.session_state["_dash_seen_tab"] = int(tab_idx)
+        mounted[int(tab_idx)] = True
+        st.session_state["_dash_heavy_warmed"] = True
+        return False
+    active = _dash_active_tab_idx()
+    if active is not None and int(active) == int(tab_idx):
+        mounted[int(tab_idx)] = True
+        st.session_state["_dash_heavy_warmed"] = True
+        return False
+    if st.session_state.get("_dash_filter_changed_flag"):
+        return True
+    # 세션에서 이미 연 탭은 유지(위젯 상태). 브라우저 새로고침 시 mounted 비움.
+    if mounted.get(int(tab_idx)):
+        return False
+    return True
 
 
 def _dash_defer_heavy_stub(title: str, tab_idx: int, backup_key: str, prefixes: tuple[str, ...]) -> None:
@@ -8935,22 +8949,27 @@ def _dash_install_tab_opener() -> None:
         <script>
         (function () {
           var doc = window.parent.document;
-          if (doc.__dashReloadGuardVer === 25) return;
+          if (doc.__dashReloadGuardVer === 26) return;
           var s = doc.createElement("script");
           s.textContent = [
             "(function(){",
-            "if (document.__dashReloadGuardVer === 25) return;",
-            "document.__dashReloadGuardVer = 25;",
+            "if (document.__dashReloadGuardVer === 26) return;",
+            "document.__dashReloadGuardVer = 26;",
+            "window.__dashHeavyTabs=window.__dashHeavyTabs||{9:1,10:1,11:1};",
             "var origClick=HTMLElement.prototype.click;",
             "HTMLElement.prototype.click=function(){",
             "try{",
             "var host=this.closest&&this.closest('[class*=\\"st-key-_dash_reload_tab_\\"]');",
-            "if(host && !window.__dashTabsSkipped) return;",
+            "if(host && !window.__dashTabsSkipped){",
+            "  var m=String(host.className||'').match(/st-key-_dash_reload_tab_(\\d+)/);",
+            "  var hi=m?+m[1]:-1;",
+            "  if(!(window.__dashHeavyTabs&&window.__dashHeavyTabs[hi])) return;",
+            "}",
             "}catch(eG){}",
             "return origClick.apply(this, arguments);",
             "};",
-            "if (document.__dashActiveTabCookieVer >= 22) return;",
-            "document.__dashActiveTabCookieVer = 23;",
+            "if (document.__dashActiveTabCookieVer >= 24) return;",
+            "document.__dashActiveTabCookieVer = 24;",
             "function clickRemount(idx){",
             "var btn=document.querySelector('[class*=\\"st-key-_dash_reload_tab_'+idx+'\\"] button');",
             "if(!btn) return false; try{btn.click();}catch(e){} return true;",
@@ -8966,8 +8985,14 @@ def _dash_install_tab_opener() -> None:
             "var now=Date.now(); var prev=window.__dashTabClickAt||{};",
             "if(prev.idx===idx && now-(prev.t||0)<800) return;",
             "window.__dashTabClickAt={idx:idx,t:now};",
-            "if(!window.__dashTabsSkipped) return;",
-            "setTimeout(function(){clickRemount(idx);},40);",
+            "var heavy=window.__dashHeavyTabs&&window.__dashHeavyTabs[idx];",
+            "if(!window.__dashTabsSkipped && !heavy) return;",
+            "setTimeout(function(){",
+            "  if(window.__dashTabsSkipped){clickRemount(idx);return;}",
+            "  var panel=document.querySelector('[role=\\"tabpanel\\"]:not([hidden])');",
+            "  if(panel && (panel.innerText||'').trim().length>40) return;",
+            "  clickRemount(idx);",
+            "},40);",
             "}",
             "function flushPendingTab(ev){",
             "var idx=window.__dashPendingTab;",
@@ -9101,7 +9126,12 @@ def inject_dash_active_tab_cookie_script(*, min_tabs: int = 10, heavy_indices: t
                 setTimeout(clickNow, 40);
                 return;
               }}
-              var bootKey = 'dash_tab_boot_v19_' + idx;
+              /* 이미 본문이 그려진 활성 탭은 부트 remount 생략(메일 이중 로딩 방지) */
+              try {{
+                var panel = doc.querySelector('[role="tabpanel"]:not([hidden])');
+                if (panel && (panel.innerText || '').trim().length > 40) return;
+              }} catch (ePanel) {{}}
+              var bootKey = 'dash_tab_boot_v20_' + idx;
               try {{
                 if (!sessionStorage.getItem(bootKey)) {{
                   sessionStorage.setItem(bootKey, '1');
@@ -17515,7 +17545,7 @@ def _dash_filter_and_tabs_fragment() -> None:
     # sticky/plotly 스크립트: 필터 rerun마다 재주입하면 로딩감 증가 → 버전 1회만 (맥·iPad 동일, UI 무손실)
     # 활성 탭 cookie 스크립트도 1회만 (리스너는 parent document에 유지)
     _STICKY_INJECT_VER = 101
-    _ACTIVE_TAB_INJECT_VER = 21
+    _ACTIVE_TAB_INJECT_VER = 22
     if st.session_state.pop("_dash_after_drive_boot", False):
         st.session_state["_dash_sticky_inject_ver"] = None
     if st.session_state.get("_dash_sticky_inject_ver") != _STICKY_INJECT_VER:
