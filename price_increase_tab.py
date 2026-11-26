@@ -2977,40 +2977,22 @@ def _pi_hist_letter_title(subject: str) -> str:
     return title
 
 
-def _pi_hist_price_items(client: str) -> list[dict]:
-    """발송이력 공문 단가표. 세션 인상단가 → 없으면 최근 매출 단가."""
-    who = str(client or "").strip()
-    if not who:
-        return []
-    try:
-        key = _items_key(who)
-        sess = st.session_state.get(key)
-        if isinstance(sess, list) and any(
-            str((it or {}).get("품목명") or "").strip() for it in sess if isinstance(it, dict)
-        ):
-            return _selected_items(_normalize_items_selection(list(sess)))
-    except Exception:
-        pass
-    try:
-        sales_df = st.session_state.get("_pi_sales_df_cache")
-        if isinstance(sales_df, pd.DataFrame) and not sales_df.empty:
-            price_df = latest_unit_prices(sales_df, who)
-            if price_df is not None and not price_df.empty:
-                return _selected_items(_init_items_from_prices(who, price_df, 0.0))
-    except Exception:
-        pass
-    return []
+def _pi_preview_has_price_items(items) -> bool:
+    return any(
+        str((it or {}).get("품목명") or "").strip()
+        for it in (items or [])
+        if isinstance(it, dict)
+    )
 
 
-def _pi_fill_preview_items(preview: dict | None, *, client: str = "") -> dict | None:
-    """공문 미리보기에 단가표가 없으면 매출/세션 단가로 채운다."""
+def _pi_normalize_preview_items(preview: dict | None) -> dict | None:
+    """발송 당시 저장된 단가표만 정리한다. 매출 단가로 임의 채우지 않는다."""
     if not preview:
         return preview
     out = dict(preview)
     items = [dict(it) for it in (out.get("items") or []) if isinstance(it, dict)]
-    if not any(str(it.get("품목명") or "").strip() for it in items):
-        items = _pi_hist_price_items(str(out.get("client") or client or ""))
     out["items"] = items
+    out["items_missing"] = not _pi_preview_has_price_items(items)
     kw = dict(out.get("letter_kwargs") or {})
     kw["items"] = items
     if not str(kw.get("effective") or "").strip() and str(out.get("effective_s") or "").strip():
@@ -3020,24 +3002,23 @@ def _pi_fill_preview_items(preview: dict | None, *, client: str = "") -> dict | 
 
 
 def sent_letter_preview_fields(row) -> dict | None:
-    """발송이력용 공문 미리보기. 예전 로그는 메일 본문·매출 단가로 복원한다."""
+    """발송이력용 공문 미리보기.
+
+    단가표는 발송 로그에 저장된 letter_kwargs.items 만 쓴다.
+    예전 로그(단가 미저장)는 본문만 복원하고 단가표는 비운다.
+    """
     preview = hold_letter_preview_fields(row)
-    client_hint = ""
-    try:
-        client_hint = str((row.get("client") if hasattr(row, "get") else "") or "")
-    except Exception:
-        client_hint = ""
     if preview is not None and str(preview.get("letter_body") or "").strip():
-        return _pi_fill_preview_items(preview, client=client_hint)
+        return _pi_normalize_preview_items(preview)
     if row is None:
         return None
     try:
         data = dict(row) if not isinstance(row, dict) else row
     except Exception:
-        return _pi_fill_preview_items(preview, client=client_hint)
+        return _pi_normalize_preview_items(preview)
     mail_body = _strip_mail_signature(_sent_log_body_text(data.get("body")))
     if not mail_body.strip():
-        return _pi_fill_preview_items(preview, client=client_hint)
+        return _pi_normalize_preview_items(preview)
     client = str(data.get("client") or "").strip()
     title = _pi_hist_letter_title(str(data.get("subject") or ""))
     send_date = date.today()
@@ -3049,7 +3030,8 @@ def sent_letter_preview_fields(row) -> dict | None:
             pass
     paras = _body_text_to_paras(mail_body)
     letter_body = _letter_paras_to_body_text(paras) or mail_body
-    items = _pi_hist_price_items(client)
+    # 예전 로그에 단가가 없으면 추측하지 않는다(보낸 단가와 달라짐)
+    items: list[dict] = []
     kw = {
         "client": client,
         "title": title,
@@ -3060,7 +3042,7 @@ def sent_letter_preview_fields(row) -> dict | None:
         "items": items,
         "body": letter_body,
     }
-    return _pi_fill_preview_items(
+    return _pi_normalize_preview_items(
         {
             "client": client,
             "title": title,
@@ -3071,8 +3053,7 @@ def sent_letter_preview_fields(row) -> dict | None:
             "items": items,
             "letter_kwargs": kw,
             "from_mail_body": True,
-        },
-        client=client,
+        }
     )
 
 
@@ -3227,6 +3208,12 @@ def _render_pi_sent_history() -> None:
         else:
             if preview.get("from_mail_body"):
                 st.caption("이전 발송은 공문 원본이 없어 메일 본문으로 공문을 복원했습니다.")
+            if preview.get("items_missing"):
+                st.warning(
+                    "발송 당시 단가표가 기록되지 않아 단가는 표시하지 않습니다. "
+                    "임의 단가로 채우면 메일로 보낸 표와 달라집니다. "
+                    "이후 새로 보낸 메일부터는 보낸 단가 그대로 저장됩니다."
+                )
             try:
                 _render_pi_live_letter_page(
                     client=str(preview.get("client") or client),
@@ -3687,10 +3674,17 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
         attach_letter = bool(one.get("attach_letter"))
         pdf_bytes = None
         pdf_name = str(one.get("pdf_name") or "공문.pdf")
+        letter_kw = (
+            _pi_restore_letter_kwargs(one.get("letter_kwargs")) if attach_letter else {}
+        )
+        if attach_letter and isinstance(letter_kw.get("items"), list):
+            letter_kw["items"] = _selected_items(
+                _normalize_items_selection(list(letter_kw.get("items") or []))
+            )
         try:
             if attach_letter:
                 with st.spinner("공문 PDF 준비 중…"):
-                    pdf_bytes = _build_letter_pdf_bytes(**_pi_restore_letter_kwargs(one.get("letter_kwargs")))
+                    pdf_bytes = _build_letter_pdf_bytes(**letter_kw)
             with st.spinner("메일 발송 중…"):
                 ok, msg = send_mail_smtp(
                     to_addr=to_addr,
@@ -3702,6 +3696,7 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
                 )
         except Exception as e:
             ok, msg = False, str(e)
+        sent_items = list(letter_kw.get("items") or []) if attach_letter else []
         append_sent_log(
             client=str(one.get("client") or ""),
             email=to_addr,
@@ -3709,11 +3704,11 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
             ok=ok,
             mode="hold",
             staff=str(one.get("staff") or ""),
-            items=0,
+            items=len(sent_items),
             msg=msg,
             body=str(one.get("body") or ""),
             attach_letter=attach_letter,
-            letter_kwargs=dict(one.get("letter_kwargs") or {}) if attach_letter else {},
+            letter_kwargs=letter_kw if attach_letter else {},
         )
         if ok:
             sent_ids.add(hold_id)
