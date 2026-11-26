@@ -747,6 +747,12 @@ def test_hold_save_refreshes_hold_list():
     assert "compact=True" in hold_fn
     assert "@st.fragment" in src.split("def _render_pi_hold_mail", 1)[0][-60:]
     assert "제목을 누르면 왼쪽 공문이 열립니다" in hold_fn
+    # 임시저장 발송 후 이력 탭이 갱신되도록 앱 전체 rerun
+    send_tail = hold_fn.split('key="pi_hold_send"', 1)[1]
+    assert "_pi_rerun(full=True)" in send_tail
+    hist = src.split("def _render_pi_sent_history", 1)[1].split("\ndef ", 1)[0]
+    assert "pi_sent_log_rev" in hist
+    assert "_pi_client_search_fold" in src
     assert "def _pi_letter_image_uris" in src
     assert 'st.button("수정"' in hold_fn
     assert "pi_hold_edit_{hold_id}" in hold_fn
@@ -1012,6 +1018,25 @@ def test_sent_log_stores_body_and_client_search():
         show = pit._sent_history_show(hit)
         assert "body" not in show.columns
         assert list(show.columns)[:4] == ["발송일", "거래처", "제목", "이메일"]
+        gm = pd.DataFrame(
+            [
+                {
+                    "ts": "2026-11-26T14:35:17",
+                    "date": "2026-11-26",
+                    "client": "지엠레이저",
+                    "email": "a@b.c",
+                    "subject": "가스가격",
+                    "ok": True,
+                    "mode": "hold",
+                    "staff": "",
+                    "items": 0,
+                    "msg": "",
+                    "body": "",
+                }
+            ]
+        )
+        assert not pit.filter_sent_log_by_client(gm, "지엠레이져").empty
+        assert not pit.filter_sent_log_by_client(gm, "지엠레이저").empty
 
 
 def test_picked_letter_body_stays_when_client_changes():

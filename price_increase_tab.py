@@ -2672,6 +2672,12 @@ def sent_summary_by_client(log_df: Optional[pd.DataFrame] = None) -> pd.DataFram
     return pd.DataFrame(rows).sort_values("최근발송일", ascending=False).reset_index(drop=True)
 
 
+def _pi_client_search_fold(s: str) -> str:
+    """발송이력 검색용. 레이져/레이저 표기 차이를 같게 본다."""
+    t = _norm_name(s)
+    return t.replace("레이져", "레이저")
+
+
 def filter_sent_log_by_client(log_df: Optional[pd.DataFrame], query: str) -> pd.DataFrame:
     """거래처명에 검색어가 들어 있는 발송만 남긴다."""
     if log_df is None:
@@ -2681,7 +2687,12 @@ def filter_sent_log_by_client(log_df: Optional[pd.DataFrame], query: str) -> pd.
     q = str(query or "").strip()
     if not q:
         return log_df
-    mask = log_df["client"].astype(str).str.contains(q, case=False, na=False, regex=False)
+    clients = log_df["client"].astype(str)
+    mask = clients.str.contains(q, case=False, na=False, regex=False)
+    qn = _pi_client_search_fold(q)
+    if qn:
+        folded = clients.map(_pi_client_search_fold)
+        mask = mask | folded.str.contains(qn, case=False, na=False, regex=False)
     return log_df.loc[mask].reset_index(drop=True)
 
 
@@ -2974,6 +2985,8 @@ def _sent_history_show(log_df: pd.DataFrame) -> pd.DataFrame:
 @st.fragment
 def _render_pi_sent_history() -> None:
     """발송 이력: 거래처 검색, 줄 선택 시 그 메일의 본문."""
+    # 임시저장·개별 발송 후 rev가 오르면 이 칸도 다시 읽는다
+    rev = int(st.session_state.get("pi_sent_log_rev") or 0)
     log_all = load_sent_log()
     st.text_input("거래처 검색", key="pi_hist_client_q", placeholder="거래처명")
     q = str(st.session_state.get("pi_hist_client_q") or "")
@@ -3001,7 +3014,7 @@ def _render_pi_sent_history() -> None:
         hide_index=True,
         on_select="rerun",
         selection_mode="single-row",
-        key=f"pi_sent_hist_pick_{q.strip()}",
+        key=f"pi_sent_hist_pick_{q.strip()}_{rev}",
     )
     rows = []
     try:
@@ -3483,7 +3496,9 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
     if sent_ids:
         save_hold_mail([row for row in rows if str(row.get("id") or "") not in sent_ids])
         st.session_state["pi_hold_rev"] = int(st.session_state.get("pi_hold_rev") or 0) + 1
-        _pi_rerun()
+    # fragment만 갱신하면 발송 이력 탭이 옛 목록을 유지한다 → 앱 전체 재실행
+    if chosen_ids:
+        _pi_rerun(full=True)
 
 
 def _items_key(client: str) -> str:
