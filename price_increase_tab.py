@@ -7519,22 +7519,27 @@ def _render_pi_right_letter_form() -> None:
             if chosen:
                 _pi_apply_open_letter_file(body_key, letters, _pi_letter_book_token())
         else:
+            # 양식 선택은 제목 위젯보다 먼저 반영(위젯 생성 후 pi_single_title 수정 금지)
+            if by_label:
+                cur_src = st.session_state.get("pi_letter_src")
+                if cur_src not in (None, "") and cur_src not in by_label:
+                    st.session_state["pi_letter_src"] = None
+                if st.session_state.get("pi_letter_src") and _pi_apply_open_letter_file(
+                    body_key, letters, _pi_letter_book_token()
+                ):
+                    st.session_state.pop("pi_hold_title_freeform", None)
             if "pi_single_title" not in st.session_state:
                 st.session_state["pi_single_title"] = _default_letter_title()
             st.text_input("제목", key="pi_single_title")
             if by_label:
                 with st.expander("공문 양식에서 불러오기", expanded=False):
-                    picked = st.selectbox(
+                    st.selectbox(
                         "양식 제목",
                         list(by_label),
                         key="pi_letter_src",
                         index=None,
                         placeholder="공문 제목을 검색하거나 선택하세요",
                     )
-                    chosen = by_label.get(str(picked or ""))
-                    if chosen:
-                        st.session_state.pop("pi_hold_title_freeform", None)
-                        _pi_apply_open_letter_file(body_key, letters, _pi_letter_book_token())
     with m4:
         st.date_input("시행일", value=date.today().replace(day=1), key="pi_single_eff")
     with m5:
