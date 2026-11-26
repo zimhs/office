@@ -640,8 +640,10 @@ def test_hold_save_refreshes_hold_list():
     assert "pi_hold_body_" not in hold_fn
     assert "st.selectbox" not in hold_fn
     assert "메일을 선택하면" not in hold_fn
-    assert "compact=True" in hold_fn
-    assert "제목을 누르면 첨부 공문이 열립니다" in hold_fn
+    assert "st.columns([1, 1]" in hold_fn
+    assert "공문 미리보기" in hold_fn
+    assert "compact=True" not in hold_fn
+    assert "제목을 누르면 왼쪽 공문이 열립니다" in hold_fn
     assert 'st.button("수정"' in hold_fn
     assert "pi_hold_edit_{hold_id}" in hold_fn
     assert "저장시각" in hold_fn

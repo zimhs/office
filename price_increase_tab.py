@@ -3231,7 +3231,7 @@ def _pi_hold_open_subject(hold_id: str) -> None:
 
 
 def _render_pi_hold_mail(smtp_cfg: dict) -> None:
-    """임시저장 목록. 제목을 누르면 첨부 공문이 열리고, 고른 메일만 발송한다."""
+    """임시저장: 왼쪽 공문(개별발송 인쇄미리보기 크기) · 오른쪽 메일 목록."""
     rows = load_hold_mail()
     flash = st.session_state.pop("pi_hold_flash", None)
     if flash:
@@ -3242,7 +3242,6 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
     edit_flash = st.session_state.pop("pi_hold_edit_flash", None)
     if edit_flash:
         st.info(f"개별 발송 탭에서 수정 중 · {edit_flash}")
-    st.caption("제목을 누르면 첨부 공문이 열립니다. 발송을 끄면 선택 발송에서 빠집니다.")
     if not rows:
         st.info("임시저장된 메일이 없습니다. 개별 발송에서 임시저장을 누르세요.")
         return
@@ -3272,63 +3271,27 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
         """,
         unsafe_allow_html=True,
     )
-    head = st.columns([0.55, 3.1, 2.3, 1.4, 0.7])
-    for col, title in zip(head, ("발송", "메일 제목", "수신자", "저장시각", "")):
-        col.markdown(f"**{title}**" if title else "&nbsp;", unsafe_allow_html=True)
-    chosen_ids: list[str] = []
     by_id = {str(row.get("id") or ""): row for row in rows}
     opened_id = str(st.session_state.get("pi_hold_opened_id") or "").strip()
     if opened_id and opened_id not in by_id:
         opened_id = ""
         st.session_state.pop("pi_hold_opened_id", None)
-    for row in rows:
-        hold_id = str(row.get("id") or "")
-        send_key = f"pi_hold_chk_{hold_id}"
-        if send_key not in st.session_state:
-            st.session_state[send_key] = bool(row.get("send", True))
-        c1, c2, c3, c4, c5 = st.columns([0.55, 3.1, 2.3, 1.4, 0.7])
-        with c1:
-            checked = st.checkbox(
-                "발송",
-                key=send_key,
-                label_visibility="collapsed",
-                help="켜면 선택 발송에 포함",
+
+    left, right = st.columns([1, 1], gap="medium")
+    with left:
+        st.markdown("##### 공문 미리보기")
+        if opened_id and opened_id in by_id:
+            one = by_id[opened_id]
+            st.caption(
+                f"수신 {hold_recipient_label(one)} · 참조 {one.get('cc') or '—'}"
             )
-        with c2:
-            subj = str(row.get("subject") or "(제목 없음)")
-            if hold_id == opened_id:
-                subj = f"▾ {subj}"
-            st.button(
-                subj,
-                key=f"pi_hold_open_{hold_id}",
-                use_container_width=True,
-                type="secondary",
-                help="첨부 공문 미리보기",
-                on_click=_pi_hold_open_subject,
-                args=(hold_id,),
-            )
-        with c3:
-            st.markdown(hold_recipient_label(row))
-        with c4:
-            st.markdown(str(row.get("ts") or "")[:16].replace("T", " "))
-        with c5:
-            if st.button("수정", key=f"pi_hold_edit_{hold_id}", use_container_width=True):
-                st.session_state["pi_hold_edit_pending"] = dict(row)
-                _pi_rerun(full=True)
-        if checked and hold_id:
-            chosen_ids.append(hold_id)
-    opened_id = str(st.session_state.get("pi_hold_opened_id") or "").strip()
-    if opened_id and opened_id in by_id:
-        one = by_id[opened_id]
-        st.markdown("---")
-        st.markdown(f"**수신** {hold_recipient_label(one)} · **참조** {one.get('cc') or '—'}")
-        preview = hold_letter_preview_fields(one)
-        if preview is None:
-            st.info("이 메일은 첨부 공문이 없습니다. 「수정」으로 열면 메일 본문을 확인할 수 있습니다.")
-        else:
-            # 개별발송 왼쪽 인쇄 미리보기와 비슷한 폭
-            prev_col, _spacer = st.columns([1, 1.14])
-            with prev_col:
+            preview = hold_letter_preview_fields(one)
+            if preview is None:
+                st.info(
+                    "이 메일은 첨부 공문이 없습니다. 「수정」으로 열면 메일 본문을 확인할 수 있습니다."
+                )
+            else:
+                # 개별발송 왼쪽 칸과 동일 비율(반쪽) · 인쇄미리보기와 같은 렌더
                 _render_pi_live_letter_page(
                     client=str(preview.get("client") or ""),
                     title=str(preview.get("title") or ""),
@@ -3337,13 +3300,60 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
                     effective_s=str(preview.get("effective_s") or ""),
                     letter_body=str(preview.get("letter_body") or ""),
                     items=list(preview.get("items") or []),
-                    compact=True,
                 )
-    send_col, drop_col = st.columns(2)
-    with send_col:
-        do_send = st.button("선택 발송", type="primary", use_container_width=True, key="pi_hold_send")
-    with drop_col:
-        do_drop = st.button("연 메일 삭제", use_container_width=True, key="pi_hold_drop")
+        else:
+            st.caption("오른쪽에서 메일 제목을 누르면 공문이 열립니다.")
+
+    with right:
+        st.caption("제목을 누르면 왼쪽 공문이 열립니다. 발송을 끄면 선택 발송에서 빠집니다.")
+        head = st.columns([0.55, 3.1, 2.3, 1.4, 0.7])
+        for col, title in zip(head, ("발송", "메일 제목", "수신자", "저장시각", "")):
+            col.markdown(f"**{title}**" if title else "&nbsp;", unsafe_allow_html=True)
+        chosen_ids: list[str] = []
+        for row in rows:
+            hold_id = str(row.get("id") or "")
+            send_key = f"pi_hold_chk_{hold_id}"
+            if send_key not in st.session_state:
+                st.session_state[send_key] = bool(row.get("send", True))
+            c1, c2, c3, c4, c5 = st.columns([0.55, 3.1, 2.3, 1.4, 0.7])
+            with c1:
+                checked = st.checkbox(
+                    "발송",
+                    key=send_key,
+                    label_visibility="collapsed",
+                    help="켜면 선택 발송에 포함",
+                )
+            with c2:
+                subj = str(row.get("subject") or "(제목 없음)")
+                if hold_id == opened_id:
+                    subj = f"▸ {subj}"
+                st.button(
+                    subj,
+                    key=f"pi_hold_open_{hold_id}",
+                    use_container_width=True,
+                    type="secondary",
+                    help="왼쪽 공문 미리보기",
+                    on_click=_pi_hold_open_subject,
+                    args=(hold_id,),
+                )
+            with c3:
+                st.markdown(hold_recipient_label(row))
+            with c4:
+                st.markdown(str(row.get("ts") or "")[:16].replace("T", " "))
+            with c5:
+                if st.button("수정", key=f"pi_hold_edit_{hold_id}", use_container_width=True):
+                    st.session_state["pi_hold_edit_pending"] = dict(row)
+                    _pi_rerun(full=True)
+            if checked and hold_id:
+                chosen_ids.append(hold_id)
+        send_col, drop_col = st.columns(2)
+        with send_col:
+            do_send = st.button(
+                "선택 발송", type="primary", use_container_width=True, key="pi_hold_send"
+            )
+        with drop_col:
+            do_drop = st.button("연 메일 삭제", use_container_width=True, key="pi_hold_drop")
+    opened_id = str(st.session_state.get("pi_hold_opened_id") or "").strip()
     if do_drop:
         if not opened_id:
             st.warning("삭제할 메일을 먼저 제목으로 여세요.")
