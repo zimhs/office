@@ -2507,6 +2507,8 @@ def append_sent_log(
     items: int = 0,
     msg: str = "",
     body: str = "",
+    attach_letter: bool = False,
+    letter_kwargs: dict | None = None,
 ) -> None:
     _ensure_dirs()
     row = {
@@ -2521,6 +2523,8 @@ def append_sent_log(
         "items": int(items or 0),
         "msg": msg or "",
         "body": body or "",
+        "attach_letter": bool(attach_letter),
+        "letter_kwargs": _pi_json_ready(letter_kwargs or {}),
     }
     try:
         with open(PI_SENT_LOG, "a", encoding="utf-8") as f:
@@ -2540,7 +2544,21 @@ def append_sent_log(
 
 
 def _sent_log_columns() -> list[str]:
-    return ["ts", "date", "client", "email", "subject", "ok", "mode", "staff", "items", "msg", "body"]
+    return [
+        "ts",
+        "date",
+        "client",
+        "email",
+        "subject",
+        "ok",
+        "mode",
+        "staff",
+        "items",
+        "msg",
+        "body",
+        "attach_letter",
+        "letter_kwargs",
+    ]
 
 
 def _sent_log_df_from_rows(rows: list) -> pd.DataFrame:
@@ -2909,14 +2927,27 @@ def hold_recipient_label(row: dict, mail_df: pd.DataFrame | None = None) -> str:
 
 
 def hold_letter_preview_fields(row: dict) -> dict | None:
-    """임시저장 행에서 첨부 공문 미리보기용 필드. 공문이 없으면 None."""
-    if not isinstance(row, dict):
+    """임시저장·발송이력 행에서 첨부 공문 미리보기용 필드. 공문이 없으면 None."""
+    if row is None:
         return None
-    kw = _pi_restore_letter_kwargs(row.get("letter_kwargs"))
+    if not isinstance(row, dict):
+        try:
+            row = dict(row)
+        except Exception:
+            return None
+    raw_kw = row.get("letter_kwargs")
+    if isinstance(raw_kw, str) and raw_kw.strip():
+        try:
+            raw_kw = json.loads(raw_kw)
+        except Exception:
+            raw_kw = {}
+    kw = _pi_restore_letter_kwargs(raw_kw)
     paras = kw.get("letter_paras") if isinstance(kw.get("letter_paras"), dict) else {}
     letter_body = _letter_paras_to_body_text(paras)
     items = list(kw.get("items") or []) if isinstance(kw.get("items"), list) else []
-    has_letter = bool(row.get("attach_letter")) or bool(paras) or bool(items) or bool(
+    attach_flag = row.get("attach_letter")
+    attach_on = str(attach_flag).lower() in ("true", "1") or attach_flag is True
+    has_letter = attach_on or bool(paras) or bool(items) or bool(
         str(kw.get("title") or "").strip()
     )
     if not has_letter:
@@ -2932,6 +2963,7 @@ def hold_letter_preview_fields(row: dict) -> dict | None:
         "effective_s": str(kw.get("effective") or "").strip(),
         "letter_body": letter_body,
         "items": items,
+        "letter_kwargs": kw,
     }
 
 
@@ -3040,7 +3072,7 @@ def _render_pi_sent_history() -> None:
 
     show = _sent_history_show(log_df).reset_index(drop=True)
     st.markdown("##### 전체 이력")
-    st.caption("왼쪽 체크 또는 행을 누르면 아래에 메일 본문이 열립니다.")
+    st.caption("왼쪽 체크 또는 행을 누르면 아래에 메일 본문과 첨부 공문이 같이 열립니다.")
     event = st.dataframe(
         show,
         use_container_width=True,
@@ -3065,16 +3097,51 @@ def _render_pi_sent_history() -> None:
     client = str(rec.get("client") or "")
     subject = str(rec.get("subject") or "")
     when = str(rec.get("date") or "")
-    body = _sent_log_body_text(rec["body"] if "body" in rec.index else "")
-    with st.expander(f"메일 본문 · {client} · {subject} · {when}", expanded=True):
+    body = _sent_log_body_text(rec["body"] if "body" in getattr(rec, "index", []) else "")
+    preview = hold_letter_preview_fields(rec)
+    st.markdown(f"**{client}** · {subject} · {when}")
+    col_mail, col_letter = st.columns([1, 1], gap="medium")
+    with col_mail:
+        st.markdown("##### 메일 본문")
         st.text_area(
             "메일 본문",
             value=body or "이 발송은 본문이 기록되어 있지 않습니다.",
-            height=280,
+            height=420,
             disabled=True,
             label_visibility="collapsed",
             key=f"pi_hist_body_{pos_i}_{rec.get('ts')}",
         )
+    with col_letter:
+        st.markdown("##### 첨부 공문")
+        if preview is None:
+            st.info("이 발송은 첨부 공문 기록이 없습니다.")
+        else:
+            _render_pi_live_letter_page(
+                client=str(preview.get("client") or client),
+                title=str(preview.get("title") or ""),
+                doc_no=str(preview.get("doc_no") or ""),
+                send_date=preview.get("send_date") or date.today(),
+                effective_s=str(preview.get("effective_s") or ""),
+                letter_body=str(preview.get("letter_body") or ""),
+                items=list(preview.get("items") or []),
+                compact=True,
+                show_print=True,
+            )
+            try:
+                pdf_bytes = _build_letter_pdf_bytes(
+                    **_pi_restore_letter_kwargs(preview.get("letter_kwargs") or {})
+                )
+            except Exception:
+                pdf_bytes = None
+            if pdf_bytes:
+                st.download_button(
+                    "공문 PDF 다운로드",
+                    data=pdf_bytes,
+                    file_name=f"공문_{client or '발송'}_{when or date.today().isoformat()}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key=f"pi_hist_pdf_{pos_i}_{rec.get('ts')}",
+                )
 
 
 def _pi_apply_fresh_mail() -> None:
@@ -3523,6 +3590,8 @@ def _render_pi_hold_mail(smtp_cfg: dict) -> None:
             items=0,
             msg=msg,
             body=str(one.get("body") or ""),
+            attach_letter=attach_letter,
+            letter_kwargs=dict(one.get("letter_kwargs") or {}) if attach_letter else {},
         )
         if ok:
             sent_ids.add(hold_id)
@@ -5279,6 +5348,8 @@ def _pi_mail_compose_dialog() -> None:
                         attach_letter=attach_letter,
                     ),
                 )
+            pack = st.session_state.get("_pi_left_pack") or {}
+            letter_kw = dict(pack.get("letter_kwargs") or draft.get("letter_kwargs") or {})
             append_sent_log(
                 client=client,
                 email=to_addr,
@@ -5289,6 +5360,8 @@ def _pi_mail_compose_dialog() -> None:
                 items=items_n,
                 msg=msg,
                 body=body,
+                attach_letter=attach_letter,
+                letter_kwargs=letter_kw if attach_letter else {},
             )
             _finish_pi_mail_send(
                 ok=ok,
@@ -5379,6 +5452,7 @@ def _open_mail_compose_dialog(
         "staff": staff,
         "items": items_n,
         "plain": not attach_letter,
+        "letter_kwargs": _pi_json_ready(dict(letter_kwargs or {})) if attach_letter else {},
     }
     if hold_id:
         draft_now["hold_id"] = hold_id
@@ -5659,6 +5733,8 @@ def _render_pi_left_mail_compose(*, smtp_cfg: dict) -> None:
                         items=items_n,
                         msg=msg,
                         body=body,
+                        attach_letter=attach_letter,
+                        letter_kwargs=letter_kwargs if attach_letter else {},
                     )
                     _finish_pi_mail_send(
                         ok=ok,
@@ -8001,6 +8077,16 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             attachment_bytes=pdf_b,
                             attachment_name=dl,
                         )
+                        letter_kw_b = {
+                            "client": cl,
+                            "email": em,
+                            "title": title_bulk,
+                            "body": body_b,
+                            "effective": eff_bulk_s,
+                            "contact": "031-366-0799",
+                            "items": items_b,
+                            "letter_paras": dict(_DEFAULT_LETTER_PARAS),
+                        }
                         append_sent_log(
                             client=cl,
                             email=em,
@@ -8011,6 +8097,8 @@ def render_price_increase_tab(sales_df: pd.DataFrame, latest_update_str: str = "
                             items=len(items_b),
                             msg=msg,
                             body=_with_mail_signature(body_b),
+                            attach_letter=True,
+                            letter_kwargs=letter_kw_b,
                         )
                         results.append(f"{'✅' if ok else '❌'} {cl}: {msg}")
                         prog.progress((i + 1) / max(n, 1))

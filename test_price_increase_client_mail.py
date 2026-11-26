@@ -953,7 +953,10 @@ def test_sent_log_shows_latest_client_first():
             '{"ts":"2026-10-29T09:11:04","date":"2026-10-29","client":"예성이엔지(아산)","email":"yesung@yesung-eng.com","subject":"가스 공급 단가 인상 안내의 건","ok":true,"mode":"single","staff":"","items":10,"msg":"ok"}\n',
             encoding="utf-8",
         )
-        with patch.object(pit, "PI_SENT_LOG", str(log)):
+        with (
+            patch.object(pit, "PI_SENT_LOG", str(log)),
+            patch.object(pit.st, "session_state", {}, create=True),
+        ):
             df = pit.load_sent_log()
         assert str(df.iloc[0]["client"]) == "예성이엔지(아산)"
         summary = pit.sent_summary_by_client(df)
@@ -1332,7 +1335,11 @@ def test_sent_history_opens_body_from_row():
     assert "on_select=_pi_hist_remember_selection" in hist
     assert 'selection_mode="single-row"' in hist
     assert "메일 본문" in hist
-    assert "st.expander" in hist
+    assert "첨부 공문" in hist
+    assert "hold_letter_preview_fields" in hist
+    assert "_render_pi_live_letter_page" in hist
+    assert "공문 PDF 다운로드" in hist
+    assert "letter_kwargs" in src.split("def append_sent_log", 1)[1].split("\ndef ", 1)[0]
     assert "_pi_dataframe_selected_rows" in src
     assert "def _pi_hist_remember_selection" in src
     # fragment 안 dataframe 선택은 본문이 안 열리는 경우가 있어 쓰지 않는다
@@ -1340,3 +1347,41 @@ def test_sent_history_opens_body_from_row():
     assert "@st.fragment" not in before
     assert src.count("body=body") >= 2
     assert "body=_with_mail_signature(body_b)" in src
+
+
+def test_append_sent_log_keeps_letter_for_history():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+    import price_increase_tab as pit
+
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "sent_log.jsonl"
+        with (
+            patch.object(pit, "PI_SENT_LOG", str(log)),
+            patch.object(pit, "PI_DRAFTS", td),
+            patch.object(pit, "PI_DIR", td),
+            patch.object(pit.st, "session_state", {}, create=True),
+        ):
+            pit.append_sent_log(
+                client="드림레이저",
+                email="a@b.c",
+                subject="가스가격",
+                ok=True,
+                mode="hold",
+                body="메일본문",
+                attach_letter=True,
+                letter_kwargs={
+                    "client": "드림레이저",
+                    "title": "제품가격 조정의 건",
+                    "letter_paras": {"C16": "1. 귀사의 일익 번창하심을 기원하며"},
+                    "items": [{"품목명": "N2", "인상단가": 100}],
+                },
+            )
+            df = pit.load_sent_log()
+        rec = df.iloc[0]
+        preview = pit.hold_letter_preview_fields(rec)
+        assert preview is not None
+        assert preview["title"] == "제품가격 조정의 건"
+        assert "귀사의 일익" in preview["letter_body"]
+        assert preview["items"][0]["품목명"] == "N2"
