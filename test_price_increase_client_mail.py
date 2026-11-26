@@ -1329,8 +1329,14 @@ def test_sent_history_opens_body_from_row():
     hist = src.split("def _render_pi_sent_history", 1)[1].split("\ndef ", 1)[0]
     assert "거래처 검색" in hist
     assert "filter_sent_log_by_client" in hist
-    assert 'on_select="rerun"' in hist
+    assert "on_select=_pi_hist_remember_selection" in hist
     assert 'selection_mode="single-row"' in hist
     assert "메일 본문" in hist
+    assert "st.expander" in hist
+    assert "_pi_dataframe_selected_rows" in src
+    assert "def _pi_hist_remember_selection" in src
+    # fragment 안 dataframe 선택은 본문이 안 열리는 경우가 있어 쓰지 않는다
+    before = src.split("def _render_pi_sent_history", 1)[0][-80:]
+    assert "@st.fragment" not in before
     assert src.count("body=body") >= 2
     assert "body=_with_mail_signature(body_b)" in src

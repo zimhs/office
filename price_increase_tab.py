@@ -2982,18 +2982,51 @@ def _sent_history_show(log_df: pd.DataFrame) -> pd.DataFrame:
     return show[cols]
 
 
-@st.fragment
+def _pi_dataframe_selected_rows(state) -> list[int]:
+    """st.dataframe on_select 결과/세션 상태에서 선택된 행 번호."""
+    if state is None:
+        return []
+    try:
+        if isinstance(state, dict):
+            sel = state.get("selection") or {}
+            rows = sel.get("rows") if isinstance(sel, dict) else []
+        else:
+            sel = getattr(state, "selection", None)
+            if sel is None:
+                return []
+            rows = sel.get("rows") if isinstance(sel, dict) else getattr(sel, "rows", None)
+        return [int(x) for x in list(rows or [])]
+    except Exception:
+        return []
+
+
+def _pi_hist_remember_selection() -> None:
+    """발송 이력 표에서 줄 선택을 세션에 남긴다 (fragment 안에서도 본문이 열리게)."""
+    rows = _pi_dataframe_selected_rows(st.session_state.get("pi_sent_hist_pick"))
+    if rows:
+        st.session_state["pi_hist_sel_pos"] = int(rows[0])
+        st.session_state["pi_hist_sel_q"] = str(st.session_state.get("pi_hist_client_q") or "")
+
+
 def _render_pi_sent_history() -> None:
-    """발송 이력: 거래처 검색, 줄 선택 시 그 메일의 본문."""
-    # 임시저장·개별 발송 후 rev가 오르면 이 칸도 다시 읽는다
+    """발송 이력: 거래처 검색, 줄 선택 시 그 메일의 본문.
+
+    fragment 안에서 dataframe 선택이 비는 경우가 있어 fragment를 쓰지 않는다.
+    """
     rev = int(st.session_state.get("pi_sent_log_rev") or 0)
+    if st.session_state.get("pi_hist_sel_rev") != rev:
+        st.session_state["pi_hist_sel_rev"] = rev
+        st.session_state.pop("pi_hist_sel_pos", None)
     log_all = load_sent_log()
     st.text_input("거래처 검색", key="pi_hist_client_q", placeholder="거래처명")
     q = str(st.session_state.get("pi_hist_client_q") or "")
+    if st.session_state.get("pi_hist_sel_q") != q:
+        st.session_state.pop("pi_hist_sel_pos", None)
+        st.session_state["pi_hist_sel_q"] = q
     if log_all is None or log_all.empty:
         st.info("발송 이력이 없습니다.")
         return
-    log_df = filter_sent_log_by_client(log_all, q)
+    log_df = filter_sent_log_by_client(log_all, q).reset_index(drop=True)
     if log_df.empty:
         st.info("해당하는 거래처가 없습니다.")
         return
@@ -3005,40 +3038,43 @@ def _render_pi_sent_history() -> None:
         st.caption("최신 발송이 위에 있습니다.")
         st.dataframe(summary, use_container_width=True, hide_index=True)
 
-    show = _sent_history_show(log_df)
+    show = _sent_history_show(log_df).reset_index(drop=True)
     st.markdown("##### 전체 이력")
-    st.caption("거래처명으로 찾고, 줄을 누르면 메일 본문이 열립니다.")
+    st.caption("왼쪽 체크 또는 행을 누르면 아래에 메일 본문이 열립니다.")
     event = st.dataframe(
         show,
         use_container_width=True,
         hide_index=True,
-        on_select="rerun",
+        height=min(420, 88 + 35 * min(len(show), 10)),
+        on_select=_pi_hist_remember_selection,
         selection_mode="single-row",
-        key=f"pi_sent_hist_pick_{q.strip()}_{rev}",
+        key="pi_sent_hist_pick",
     )
-    rows = []
-    try:
-        rows = list(event.selection.rows or [])
-    except Exception:
-        rows = []
+    rows = _pi_dataframe_selected_rows(event)
     if not rows:
-        return
+        rows = _pi_dataframe_selected_rows(st.session_state.get("pi_sent_hist_pick"))
+    pos = int(rows[0]) if rows else st.session_state.get("pi_hist_sel_pos")
     try:
-        rec = log_df.iloc[int(rows[0])]
-    except Exception:
+        pos_i = int(pos) if pos is not None else None
+    except (TypeError, ValueError):
+        pos_i = None
+    if pos_i is None or pos_i < 0 or pos_i >= len(log_df):
         return
+    st.session_state["pi_hist_sel_pos"] = pos_i
+    rec = log_df.iloc[pos_i]
     client = str(rec.get("client") or "")
     subject = str(rec.get("subject") or "")
     when = str(rec.get("date") or "")
-    body = _sent_log_body_text(rec.get("body") if "body" in getattr(rec, "index", []) else "")
-    st.markdown(f"**{client}** · {subject} · {when}")
-    st.text_area(
-        "메일 본문",
-        value=body or "이 발송은 본문이 기록되어 있지 않습니다.",
-        height=280,
-        disabled=True,
-        key=f"pi_hist_body_{rec.get('ts')}",
-    )
+    body = _sent_log_body_text(rec["body"] if "body" in rec.index else "")
+    with st.expander(f"메일 본문 · {client} · {subject} · {when}", expanded=True):
+        st.text_area(
+            "메일 본문",
+            value=body or "이 발송은 본문이 기록되어 있지 않습니다.",
+            height=280,
+            disabled=True,
+            label_visibility="collapsed",
+            key=f"pi_hist_body_{pos_i}_{rec.get('ts')}",
+        )
 
 
 def _pi_apply_fresh_mail() -> None:
