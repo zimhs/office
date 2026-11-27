@@ -4647,17 +4647,19 @@ def _gc_with_task_chips(
     visible = {d.isoformat() for week in month_weeks(year, month) for d in week}
     merged = {key: list(items) for key, items in (by_day or {}).items()}
     seen: set[tuple[str, str]] = set()
-    lists = load_local_task_lists().get("lists") or {}
     tasks: list[tuple[str, dict]] = []
+    box = _gc_api_box()
+    for key, items in box.items():
+        k = str(key)
+        if not k.startswith("tk:") or not isinstance(items, list):
+            continue
+        kind = "mac" if k.startswith("tk:" + _MAC_REM_PREFIX) else "task"
+        tasks.extend((kind, item) for item in items if isinstance(item, dict))
+    lists = load_local_task_lists().get("lists") or {}
     for lid, items in lists.items():
         if _is_mac_rem_list(str(lid)) or not isinstance(items, list):
             continue
         tasks.extend(("task", item) for item in items if isinstance(item, dict))
-    box = _gc_api_box()
-    for key, items in box.items():
-        if not str(key).startswith("tk:" + _MAC_REM_PREFIX) or not isinstance(items, list):
-            continue
-        tasks.extend(("mac", item) for item in items if isinstance(item, dict))
     for kind, task in tasks:
         chip = _gc_task_chip(task, kind=kind)
         if not chip or chip["day"] not in visible:
@@ -4963,6 +4965,8 @@ def _gc_take_mac_actions() -> None:
                 }
             )
             _gc_mac_remember(lid, rows)
+            if due:
+                st.session_state["_gc_cal_refresh"] = True
         except Exception as exc:
             st.session_state["_gc_mac_warn"] = _gc_mac_err_text(exc)
     pending_note = st.session_state.pop("_gc_mac_pending_note", None)
@@ -4971,10 +4975,24 @@ def _gc_take_mac_actions() -> None:
         title = str(pending_note.get("title") or "").strip()
         notes = str(pending_note.get("notes") or "")
         due = _gc_task_due_day(pending_note.get("due"))
+        old_row = next(
+            (
+                item
+                for item in (_gc_api_box().get(f"tk:{lid}") or [])
+                if isinstance(item, dict) and str(item.get("id") or "") == tid
+            ),
+            None,
+        )
+        old_due = _gc_task_due_day((old_row or {}).get("due"))
+        old_title = str((old_row or {}).get("title") or "")
         fields: dict[str, Any] = {"notes": notes, "due": due}
         if title:
             fields["title"] = title
         _gc_mac_patch(lid, tid, **fields)
+        if due != old_due or (
+            (due or old_due) and title and title != old_title
+        ):
+            st.session_state["_gc_cal_refresh"] = True
         if title:
             _MAC_BG.submit(_gc_mac_write_edit, tid, title, notes, due)
         else:
@@ -5138,90 +5156,89 @@ def _gc_render_list_tools(
 
 
 def _gc_render_mac_box() -> None:
-    """할 일 목록 아래, 이 맥의 미리 알림만 따로 보여 준다."""
-    with st.container(border=True):
-        st.markdown("**미리 알림**")
-        warn = str(st.session_state.pop("_gc_mac_warn", "") or "")
-        if warn:
-            st.warning(warn)
-        if not _mac_reminders_enabled():
-            return
-        mac_lists = _mac_reminder_lists()
-        want_mac = st.session_state.pop("_gc_pick_mac", None)
-        if want_mac:
-            for i, item in enumerate(mac_lists):
-                if str(item.get("id") or "") == str(want_mac):
-                    st.session_state["gc_mac_list"] = i
-        if not mac_lists:
-            err = str((_gc_api_box().get("mac_tlists_err") or "")).strip()
-            st.caption(err or "미리 알림 목록이 없습니다.")
-            lid = ""
+    """할 일 목록과 같은 형태로, 이 맥의 미리 알림을 보여 준다."""
+    st.markdown("**미리 알림**")
+    warn = str(st.session_state.pop("_gc_mac_warn", "") or "")
+    if warn:
+        st.warning(warn)
+    if not _mac_reminders_enabled():
+        return
+    mac_lists = _mac_reminder_lists()
+    want_mac = st.session_state.pop("_gc_pick_mac", None)
+    if want_mac:
+        for i, item in enumerate(mac_lists):
+            if str(item.get("id") or "") == str(want_mac):
+                st.session_state["gc_mac_list"] = i
+    if not mac_lists:
+        err = str((_gc_api_box().get("mac_tlists_err") or "")).strip()
+        st.caption(err or "미리 알림 목록이 없습니다.")
+        lid = ""
+    else:
+        names = [str(item.get("title") or "미리 알림") for item in mac_lists]
+        current = st.session_state.get("gc_mac_list")
+        if isinstance(current, int) and current >= len(names):
+            st.session_state["gc_mac_list"] = 0
+        picked = st.selectbox(
+            "목록",
+            options=list(range(len(names))),
+            format_func=lambda i: names[i],
+            key="gc_mac_list",
+        )
+        lid = str(mac_lists[int(picked)].get("id") or "")
+    st.session_state["_gc_mac_lid"] = lid
+    _gc_render_list_tools(
+        add_key="_gc_mac_add",
+        del_key="_gc_mac_del",
+        name_key="gc_mac_list_name",
+        add_pending="_gc_mac_pending_list_new",
+        del_pending="_gc_mac_pending_list_del",
+        selected_id=lid,
+        can_delete=bool(lid),
+    )
+    if not mac_lists:
+        return
+    tasks, _busy, err = _gc_mac_view(lid)
+    if err and not tasks:
+        st.caption(err)
+    edit_id = str(st.session_state.get("_gc_mac_note_edit") or "")
+    open_tasks = [t for t in tasks if str(t.get("status") or "") != "completed"]
+    done_tasks = [t for t in tasks if str(t.get("status") or "") == "completed"]
+    for task in open_tasks:
+        _gc_render_mac_task(task, edit_id, done=False)
+    mac_done_key = "_gc_mac_done_open"
+    mac_done_open = bool(st.session_state.get(mac_done_key))
+    if st.button(
+        f"{'▼' if mac_done_open else '▶'} 완료된 미리 알림 ({len(done_tasks)})",
+        key="gc_mac_done_toggle",
+        type="tertiary",
+    ):
+        st.session_state[mac_done_key] = not mac_done_open
+        _gc_rerun_task()
+    if mac_done_open:
+        if not done_tasks:
+            st.caption("완료된 미리 알림이 없습니다.")
+        for task in done_tasks:
+            _gc_render_mac_task(task, edit_id, done=True)
+    add_clicked, title, notes, due_s = _gc_render_task_composer(
+        title_key="gc_mr_new",
+        note_key="gc_mr_note_new",
+        due_key="gc_mr_due_new",
+        add_key="gc_mr_add",
+        title_ph="제목",
+        note_ph="세부정보",
+    )
+    if add_clicked:
+        title = (title or "").strip()
+        if len(title) < 1:
+            st.error("제목을 입력하세요.")
         else:
-            names = [str(item.get("title") or "미리 알림") for item in mac_lists]
-            current = st.session_state.get("gc_mac_list")
-            if isinstance(current, int) and current >= len(names):
-                st.session_state["gc_mac_list"] = 0
-            picked = st.selectbox(
-                "목록",
-                options=list(range(len(names))),
-                format_func=lambda i: names[i],
-                key="gc_mac_list",
-            )
-            lid = str(mac_lists[int(picked)].get("id") or "")
-        st.session_state["_gc_mac_lid"] = lid
-        _gc_render_list_tools(
-            add_key="_gc_mac_add",
-            del_key="_gc_mac_del",
-            name_key="gc_mac_list_name",
-            add_pending="_gc_mac_pending_list_new",
-            del_pending="_gc_mac_pending_list_del",
-            selected_id=lid,
-            can_delete=bool(lid),
-        )
-        if not mac_lists:
-            return
-        tasks, _busy, err = _gc_mac_view(lid)
-        if err and not tasks:
-            st.caption(err)
-        edit_id = str(st.session_state.get("_gc_mac_note_edit") or "")
-        open_tasks = [t for t in tasks if str(t.get("status") or "") != "completed"]
-        done_tasks = [t for t in tasks if str(t.get("status") or "") == "completed"]
-        for task in open_tasks:
-            _gc_render_mac_task(task, edit_id, done=False)
-        mac_done_key = "_gc_mac_done_open"
-        mac_done_open = bool(st.session_state.get(mac_done_key))
-        if st.button(
-            f"{'▼' if mac_done_open else '▶'} 완료된 미리 알림 ({len(done_tasks)})",
-            key="gc_mac_done_toggle",
-            type="tertiary",
-        ):
-            st.session_state[mac_done_key] = not mac_done_open
+            st.session_state["_gc_mac_pending_new"] = {
+                "title": title,
+                "notes": notes or "",
+                "due": due_s,
+            }
+            st.session_state["_gc_mac_show_new_note"] = False
             _gc_rerun_task()
-        if mac_done_open:
-            if not done_tasks:
-                st.caption("완료된 미리 알림이 없습니다.")
-            for task in done_tasks:
-                _gc_render_mac_task(task, edit_id, done=True)
-        add_clicked, title, notes, due_s = _gc_render_task_composer(
-            title_key="gc_mr_new",
-            note_key="gc_mr_note_new",
-            due_key="gc_mr_due_new",
-            add_key="gc_mr_add",
-            title_ph="제목",
-            note_ph="세부정보",
-        )
-        if add_clicked:
-            title = (title or "").strip()
-            if len(title) < 1:
-                st.error("제목을 입력하세요.")
-            else:
-                st.session_state["_gc_mac_pending_new"] = {
-                    "title": title,
-                    "notes": notes or "",
-                    "due": due_s,
-                }
-                st.session_state["_gc_mac_show_new_note"] = False
-                _gc_rerun_task()
 
 
 def _gc_render_mac_task(task: dict, edit_id: str, *, done: bool) -> None:
@@ -5320,7 +5337,6 @@ def _gc_task_panel() -> None:
     if _is_mac_rem_list(lid):
         lid = ""
         st.session_state["_gc_lid"] = ""
-    _gc_take_mac_actions()
     pending_new = st.session_state.pop("_gc_pending_new", None)
     if pending_new:
         st.session_state["gc_new_task"] = ""
@@ -5545,7 +5561,6 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
         can_delete=bool(lid),
     )
     if not tlists:
-        _gc_render_mac_box()
         return
     try:
         tasks = _gc_cached_tasks(lid) if lid else []
@@ -5684,6 +5699,52 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                 "due": due_s,
             }
             _gc_rerun_task()
+
+
+@st.fragment
+def _gc_mac_panel() -> None:
+    """미리 알림만 이 조각을 다시 그린다."""
+    _gc_take_mac_actions()
+    if st.session_state.pop("_gc_cal_refresh", False):
+        _gc_ping_calendar()
+    st.markdown(
+        """
+<style>
+div[class*="st-key-gc_mr_ne_"] button,
+div[class*="st-key-gc_mr_tr_"] button,
+div[class*="st-key-gc_mr_add"] button,
+div[class*="st-key-gc_mr_due_new_td"] button,
+div[class*="st-key-gc_mr_due_new_tm"] button,
+div[class*="st-key-gc_mr_due_"] button {
+  min-height: 1.55rem !important;
+  height: 1.55rem !important;
+  min-width: 0 !important;
+  padding: 0 0.4rem !important;
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  border-radius: 6px !important;
+}
+div[class*="st-key-gc_mr_add_card"] [data-testid="stTextArea"] textarea {
+  min-height: 68px !important;
+  font-size: 13px !important;
+}
+div[class*="st-key-gc_mr_due_new"] [data-testid="stDateInput"] input,
+div[class*="st-key-gc_mr_due_"] [data-testid="stDateInput"] input {
+  min-height: 1.7rem !important;
+  font-size: 12px !important;
+}
+div[class*="st-key-gc_mr_td_"] p,
+div[class*="st-key-gc_mr_td_"] label,
+div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"],
+div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
     _gc_render_mac_box()
 
 
@@ -5707,16 +5768,16 @@ def _gc_mini_panel() -> None:
 
 
 def _gc_work_panel() -> None:
-    """상단 가로 달력 아래: 왼쪽 작은 달력 · 가운데 월간 · 오른쪽 할 일."""
+    """월간 달력 좌우에 할 일 목록·미리 알림을 둔다."""
     if st.session_state.get("_gc_sync_busy"):
         _gc_sync_watch()
-    mini, cal, tasks = st.columns([0.58, 2.85, 1.15], gap="small")
-    with mini:
-        _gc_mini_panel()
-    with cal:
-        _gc_cal_panel()
+    tasks, cal, rem = st.columns([1.15, 2.55, 1.15], gap="small")
     with tasks:
         _gc_task_panel()
+    with cal:
+        _gc_cal_panel()
+    with rem:
+        _gc_mac_panel()
 
 
 def render_google_calendar_tab(

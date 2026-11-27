@@ -154,7 +154,9 @@ class GoogleCalendarTabTest(unittest.TestCase):
         self.assertIn("_gc_cached_holiday_keys", src)
         self.assertIn("gc_md_", src)
         self.assertIn("mini_month_weeks", src)
-        self.assertIn("[0.58, 2.85, 1.15]", src)
+        self.assertIn("[1.15, 2.55, 1.15]", src)
+        self.assertIn("_gc_mac_panel", src)
+        self.assertIn("_gc_task_panel", src)
         self.assertIn("_gc_mini_panel", src)
         self.assertIn("_gc_mini_set_month", src)
         self.assertIn("_gc_set_view_month", src)
@@ -926,7 +928,7 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
             gc._MAC_BG, "submit"
         ), patch.object(gc, "_gc_mac_patch"):
             gc._gc_take_mac_actions()
-        self.assertNotIn("_gc_cal_refresh", state)
+        self.assertTrue(state.get("_gc_cal_refresh"))
 
     def test_empty_reminder_lists_stay_on_screen_without_osascript(self):
         state = {
@@ -1026,6 +1028,38 @@ class GoogleCalendarGmailSyncTest(unittest.TestCase):
         rec = gc._gc_memo_record(chip)
         self.assertEqual(rec["note"], "부동침하검사. 안전변검사")
         self.assertFalse(rec["writable"])
+
+    def test_dated_box_task_and_mac_land_on_month_grid(self):
+        state = {
+            "_gc_api": {
+                "tk:g1": [
+                    {
+                        "id": "t2",
+                        "title": "할일칩",
+                        "notes": "",
+                        "status": "needsAction",
+                        "due": "2026-11-21",
+                    }
+                ],
+                "tk:macrem:r1": [
+                    {
+                        "id": "m1",
+                        "title": "알림칩",
+                        "notes": "세부",
+                        "status": "needsAction",
+                        "due": "2026-11-22",
+                    }
+                ],
+            }
+        }
+        with patch.object(gc.st, "session_state", state), patch.object(
+            gc, "load_local_task_lists", return_value={"lists": {}}
+        ):
+            shown = gc._gc_with_task_chips({}, 2026, 11)
+        self.assertEqual(shown["2026-11-21"][0]["title"], "할일칩")
+        self.assertEqual(shown["2026-11-21"][0]["cal"], "할 일")
+        self.assertEqual(shown["2026-11-22"][0]["title"], "알림칩")
+        self.assertEqual(shown["2026-11-22"][0]["cal"], "미리 알림")
 
     def test_set_sel_event_opens_memo(self):
         from datetime import date as d
