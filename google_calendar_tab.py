@@ -2437,6 +2437,38 @@ on makeDue(yText, mText, dText)
 end makeDue
 """
 
+_MAC_EDIT_SCRIPT = """
+on run argv
+  set rid to item 1 of argv
+  set titleText to item 2 of argv
+  set noteText to item 3 of argv
+  set yText to item 4 of argv
+  set mText to item 5 of argv
+  set dText to item 6 of argv
+  tell application "Reminders"
+    set r to first reminder whose id is rid
+    set name of r to titleText
+    set body of r to noteText
+    if yText is "" then
+      set due date of r to missing value
+    else
+      set due date of r to my makeDue(yText, mText, dText)
+    end if
+  end tell
+end run
+on makeDue(yText, mText, dText)
+  set dd to current date
+  set hours of dd to 9
+  set minutes of dd to 0
+  set seconds of dd to 0
+  set day of dd to 1
+  set year of dd to (yText as integer)
+  set month of dd to (mText as integer)
+  set day of dd to (dText as integer)
+  return dd
+end makeDue
+"""
+
 
 def parse_mac_reminder_dump(text: str) -> list[dict]:
     out: list[dict] = []
@@ -2682,10 +2714,34 @@ def set_mac_reminder_note_due(reminder_id: str, notes: str, due: str) -> None:
     )
 
 
+def set_mac_reminder_edit(reminder_id: str, title: str, notes: str, due: str) -> None:
+    year, month, day = _gc_due_parts(due)
+    _osascript(
+        _MAC_EDIT_SCRIPT,
+        [
+            str(reminder_id or ""),
+            str(title or ""),
+            str(notes or ""),
+            year,
+            month,
+            day,
+        ],
+        timeout=20,
+    )
+
+
 def _gc_mac_write_note_due(reminder_id: str, notes: str, due: str) -> None:
     global _MAC_WRITE_ERR
     try:
         set_mac_reminder_note_due(reminder_id, notes, due)
+    except Exception as exc:
+        _MAC_WRITE_ERR = _gc_mac_err_text(exc)
+
+
+def _gc_mac_write_edit(reminder_id: str, title: str, notes: str, due: str) -> None:
+    global _MAC_WRITE_ERR
+    try:
+        set_mac_reminder_edit(reminder_id, title, notes, due)
     except Exception as exc:
         _MAC_WRITE_ERR = _gc_mac_err_text(exc)
 
@@ -2826,6 +2882,79 @@ def _gc_due_text(value: Any) -> str:
     if isinstance(value, date):
         return value.isoformat()
     return ""
+
+
+def _gc_set_due_today(due_key: str) -> None:
+    st.session_state[str(due_key)] = datetime.now(_TZ).date()
+
+
+def _gc_set_due_tomorrow(due_key: str) -> None:
+    st.session_state[str(due_key)] = datetime.now(_TZ).date() + timedelta(days=1)
+
+
+def _gc_render_due_compact(due_key: str, *, value: date | None = None) -> date | None:
+    """오늘·내일 칩 + 작은 날짜. Google Tasks처럼 기한을 짧게 고른다."""
+    chips = st.columns([1.0, 1.0, 2.4], gap="small")
+    with chips[0]:
+        st.button(
+            "오늘",
+            key=f"{due_key}_td",
+            type="tertiary",
+            width="stretch",
+            on_click=_gc_set_due_today,
+            args=(due_key,),
+        )
+    with chips[1]:
+        st.button(
+            "내일",
+            key=f"{due_key}_tm",
+            type="tertiary",
+            width="stretch",
+            on_click=_gc_set_due_tomorrow,
+            args=(due_key,),
+        )
+    with chips[2]:
+        kwargs: dict[str, Any] = {
+            "key": due_key,
+            "label_visibility": "collapsed",
+        }
+        if due_key not in st.session_state:
+            kwargs["value"] = value
+        return st.date_input("날짜", **kwargs)
+
+
+def _gc_render_task_composer(
+    *,
+    title_key: str,
+    note_key: str,
+    due_key: str,
+    add_key: str,
+    title_ph: str = "제목",
+    note_ph: str = "세부정보",
+) -> tuple[bool, str, str, str]:
+    """제목·세부정보·작은 기한을 한 카드로 묶는다."""
+    with st.container(border=True, key=f"{add_key}_card"):
+        st.markdown(
+            "<div style='font-size:13px;font-weight:600;color:#1a73e8;"
+            "margin:0 0 6px 0'>할 일 추가</div>",
+            unsafe_allow_html=True,
+        )
+        title = st.text_input(
+            "제목",
+            key=title_key,
+            placeholder=title_ph,
+            label_visibility="collapsed",
+        )
+        notes = st.text_area(
+            "세부정보",
+            key=note_key,
+            placeholder=note_ph,
+            height=68,
+            label_visibility="collapsed",
+        )
+        due_value = _gc_render_due_compact(due_key, value=None)
+        add_clicked = st.button("추가", key=add_key, type="primary", width="stretch")
+    return add_clicked, str(title or ""), str(notes or ""), _gc_due_text(due_value)
 
 
 def _gc_cached_tasks(list_id: str, *, force: bool = False) -> list[dict]:
@@ -3211,8 +3340,8 @@ def _render_mini_month(
     st.markdown(
         """
 <style>
-div[class*="st-key-gc_mini"] { max-width: 248px !important; }
-div[class*="st-key-gc_mini"] [data-testid="stVerticalBlock"] { gap: 2px !important; }
+div[class*="st-key-gc_mini"] { max-width: 188px !important; }
+div[class*="st-key-gc_mini"] [data-testid="stVerticalBlock"] { gap: 1px !important; }
 div[class*="st-key-gc_mini"] [data-testid="stHorizontalBlock"] {
   gap: 0 !important; margin: 0 !important; flex-wrap: nowrap !important;
 }
@@ -3220,25 +3349,25 @@ div[class*="st-key-gc_mini"] [data-testid="stColumn"] {
   padding: 0 !important; min-width: 0 !important;
 }
 div[class*="st-key-gc_mini"] .gc-mini-ym {
-  font-size: 13px !important; font-weight: 600 !important;
-  color: #3c4043 !important; margin: 0 !important; padding: 4px 2px 6px;
+  font-size: 11px !important; font-weight: 600 !important;
+  color: #3c4043 !important; margin: 0 !important; padding: 2px 1px 4px;
 }
 div[class*="st-key-gc_mini"] .gc-mini-dow,
 div[class*="st-key-gc_mini"] .gc-mini-wn {
-  font-size: 10px !important; color: #70757a !important;
-  text-align: center !important; margin: 0 !important; line-height: 1.6 !important;
+  font-size: 9px !important; color: #70757a !important;
+  text-align: center !important; margin: 0 !important; line-height: 1.4 !important;
 }
 div[class*="st-key-gc_mini"] .gc-mini-dow-pink { color: #d93025 !important; }
 div[class*="st-key-gc_mini"] .gc-mini-wn { color: #9aa0a6 !important; }
 div[class*="st-key-gc_mini"] div[class*="st-key-gc_mp"],
-div[class*="st-key-gc_mini"] div[class*="st-key-gc_mn"] { width: 1.4rem !important; }
+div[class*="st-key-gc_mini"] div[class*="st-key-gc_mn"] { width: 1.15rem !important; }
 div[class*="st-key-gc_mini"] button {
-  min-height: 22px !important; height: 22px !important;
-  width: 22px !important; min-width: 22px !important;
-  padding: 0 !important; font-size: 11px !important; font-weight: 400 !important;
+  min-height: 18px !important; height: 18px !important;
+  width: 18px !important; min-width: 18px !important;
+  padding: 0 !important; font-size: 10px !important; font-weight: 400 !important;
   border: none !important; border-radius: 50% !important;
   background: transparent !important; box-shadow: none !important;
-  color: #3c4043 !important; line-height: 22px !important;
+  color: #3c4043 !important; line-height: 18px !important;
 }
 div[class*="st-key-gc_mdt_"] button {
   background: #1a73e8 !important; color: #fff !important; font-weight: 500 !important;
@@ -3252,8 +3381,8 @@ div[class*="st-key-gc_mdq_"] button {
 div[class*="st-key-gc_mdo_"] button { color: #bdc1c6 !important; }
 div[class*="st-key-gc_mds_"] button { background: #e8f0fe !important; color: #174ea6 !important; }
 div[class*="st-key-gc_mp"] button, div[class*="st-key-gc_mn"] button {
-  min-height: 1.4rem !important; height: 1.4rem !important;
-  width: 1.4rem !important; color: #5f6368 !important; font-size: 14px !important;
+  min-height: 1.15rem !important; height: 1.15rem !important;
+  width: 1.15rem !important; color: #5f6368 !important; font-size: 12px !important;
 }
 </style>
 """,
@@ -4839,10 +4968,17 @@ def _gc_take_mac_actions() -> None:
     pending_note = st.session_state.pop("_gc_mac_pending_note", None)
     if isinstance(pending_note, dict) and lid and pending_note.get("id"):
         tid = str(pending_note.get("id") or "")
+        title = str(pending_note.get("title") or "").strip()
         notes = str(pending_note.get("notes") or "")
         due = _gc_task_due_day(pending_note.get("due"))
-        _gc_mac_patch(lid, tid, notes=notes, due=due)
-        _MAC_BG.submit(_gc_mac_write_note_due, tid, notes, due)
+        fields: dict[str, Any] = {"notes": notes, "due": due}
+        if title:
+            fields["title"] = title
+        _gc_mac_patch(lid, tid, **fields)
+        if title:
+            _MAC_BG.submit(_gc_mac_write_edit, tid, title, notes, due)
+        else:
+            _MAC_BG.submit(_gc_mac_write_note_due, tid, notes, due)
     pending_done = st.session_state.pop("_gc_mac_pending_done", None)
     if pending_done and lid:
         tid = str(pending_done)
@@ -5066,20 +5202,14 @@ def _gc_render_mac_box() -> None:
                 st.caption("완료된 미리 알림이 없습니다.")
             for task in done_tasks:
                 _gc_render_mac_task(task, edit_id, done=True)
-        title = st.text_input(
-            "할 일 제목",
-            key="gc_mr_new",
-            placeholder="할 일 제목",
-            label_visibility="collapsed",
+        add_clicked, title, notes, due_s = _gc_render_task_composer(
+            title_key="gc_mr_new",
+            note_key="gc_mr_note_new",
+            due_key="gc_mr_due_new",
+            add_key="gc_mr_add",
+            title_ph="제목",
+            note_ph="세부정보",
         )
-        notes = st.text_input(
-            "세부내용",
-            key="gc_mr_note_new",
-            placeholder="세부내용",
-            label_visibility="collapsed",
-        )
-        due_value = st.date_input("날짜", value=None, key="gc_mr_due_new")
-        add_clicked = st.button("추가", key="gc_mr_add", width="content")
         if add_clicked:
             title = (title or "").strip()
             if len(title) < 1:
@@ -5088,7 +5218,7 @@ def _gc_render_mac_box() -> None:
                 st.session_state["_gc_mac_pending_new"] = {
                     "title": title,
                     "notes": notes or "",
-                    "due": _gc_due_text(due_value),
+                    "due": due_s,
                 }
                 st.session_state["_gc_mac_show_new_note"] = False
                 _gc_rerun_task()
@@ -5097,7 +5227,7 @@ def _gc_render_mac_box() -> None:
 def _gc_render_mac_task(task: dict, edit_id: str, *, done: bool) -> None:
     tid = str(task.get("id") or "")
     tw = _gc_task_widget_id(tid)
-    title = task.get("title") or "(제목 없음)"
+    title = str(task.get("title") or "(제목 없음)")
     due = str(task.get("due") or "")[:10]
     label = title if not due else f"{title}  · {due}"
     note = str(task.get("notes") or "").strip()
@@ -5133,23 +5263,31 @@ def _gc_render_mac_task(task: dict, edit_id: str, *, done: bool) -> None:
                     unsafe_allow_html=True,
                 )
             if open_this:
-                st.text_input(
-                    "메모 입력",
-                    value=note,
-                    key=f"gc_mr_note_{tw}",
-                    label_visibility="collapsed",
-                    placeholder="메모",
-                )
-                try:
-                    due_default = date.fromisoformat(due) if due else None
-                except ValueError:
-                    due_default = None
-                st.date_input(
-                    "기한",
-                    value=due_default,
-                    key=f"gc_mr_due_{tw}",
-                    label_visibility="collapsed",
-                )
+                with st.container(border=True):
+                    title_key = f"gc_mr_title_{tw}"
+                    if title_key not in st.session_state:
+                        st.session_state[title_key] = title
+                    st.text_input(
+                        "제목",
+                        key=title_key,
+                        label_visibility="collapsed",
+                        placeholder="제목",
+                    )
+                    note_key = f"gc_mr_note_{tw}"
+                    if note_key not in st.session_state:
+                        st.session_state[note_key] = note
+                    st.text_area(
+                        "세부정보",
+                        key=note_key,
+                        height=68,
+                        label_visibility="collapsed",
+                        placeholder="세부정보",
+                    )
+                    try:
+                        due_default = date.fromisoformat(due) if due else None
+                    except ValueError:
+                        due_default = None
+                    _gc_render_due_compact(f"gc_mr_due_{tw}", value=due_default)
     with row[1]:
         if done:
             if st.button("복원", key=f"gc_mr_tr_{tw}", type="tertiary", width="content"):
@@ -5157,7 +5295,7 @@ def _gc_render_mac_task(task: dict, edit_id: str, *, done: bool) -> None:
                 _gc_rerun_task()
             return
         if st.button(
-            "닫기" if open_this else "메모",
+            "저장" if open_this else "수정",
             key=f"gc_mr_ne_{tw}",
             type="tertiary",
             width="content",
@@ -5165,6 +5303,7 @@ def _gc_render_mac_task(task: dict, edit_id: str, *, done: bool) -> None:
             if open_this:
                 st.session_state["_gc_mac_pending_note"] = {
                     "id": tid,
+                    "title": st.session_state.get(f"gc_mr_title_{tw}") or title,
                     "notes": st.session_state.get(f"gc_mr_note_{tw}") or "",
                     "due": _gc_due_text(st.session_state.get(f"gc_mr_due_{tw}")),
                 }
@@ -5236,6 +5375,7 @@ def _gc_task_panel() -> None:
     elif isinstance(pending_note, dict) and lid and pending_note.get("id"):
         nid = str(pending_note.get("id") or "")
         ntxt = str(pending_note.get("notes") or "")
+        title_in = str(pending_note.get("title") or "").strip()
         has_due = "due" in pending_note
         due_in = _gc_task_due_day(pending_note.get("due")) if has_due else ""
         cur = []
@@ -5243,17 +5383,21 @@ def _gc_task_panel() -> None:
             if str(t.get("id")) == nid:
                 t = dict(t)
                 t["notes"] = ntxt
+                if title_in:
+                    t["title"] = title_in
                 if has_due:
                     t["due"] = due_in
                 if not t.get("local_only") and nid and not nid.startswith("local-"):
                     fields: dict[str, Any] = {"notes": ntxt}
+                    if title_in:
+                        fields["title"] = title_in
                     if has_due:
                         fields["due"] = _gc_google_due(due_in) or None
                     try:
                         patch_task(lid, nid, fields)
                     except Exception as e:
                         t["local_only"] = True
-                        st.warning(f"구글 메모 반영 실패, 대시보드에만 저장: {e}")
+                        st.warning(f"구글 할 일 반영 실패, 대시보드에만 저장: {e}")
             cur.append(t)
         save_local_tasks(lid, cur)
         if has_due:
@@ -5319,9 +5463,16 @@ div[class*="st-key-gc_ne_"] button,
 div[class*="st-key-gc_mr_ne_"] button,
 div[class*="st-key-gc_mr_tr_"] button,
 div[class*="st-key-gc_mr_add"] button,
+div[class*="st-key-gc_add_task"] button,
 div[class*="st-key-gc_mr_toggle_note"] button,
 div[class*="st-key-gc_ns_"] button,
-div[class*="st-key-gc_tr_"] button {
+div[class*="st-key-gc_tr_"] button,
+div[class*="st-key-gc_new_due_td"] button,
+div[class*="st-key-gc_new_due_tm"] button,
+div[class*="st-key-gc_mr_due_new_td"] button,
+div[class*="st-key-gc_mr_due_new_tm"] button,
+div[class*="st-key-gc_due_"] button,
+div[class*="st-key-gc_mr_due_"] button {
   min-height: 1.55rem !important;
   height: 1.55rem !important;
   min-width: 0 !important;
@@ -5330,6 +5481,18 @@ div[class*="st-key-gc_tr_"] button {
   line-height: 1.2 !important;
   white-space: nowrap !important;
   border-radius: 6px !important;
+}
+div[class*="st-key-gc_add_task_card"] [data-testid="stTextArea"] textarea,
+div[class*="st-key-gc_mr_add_card"] [data-testid="stTextArea"] textarea {
+  min-height: 68px !important;
+  font-size: 13px !important;
+}
+div[class*="st-key-gc_new_due"] [data-testid="stDateInput"] input,
+div[class*="st-key-gc_mr_due_new"] [data-testid="stDateInput"] input,
+div[class*="st-key-gc_due_"] [data-testid="stDateInput"] input,
+div[class*="st-key-gc_mr_due_"] [data-testid="stDateInput"] input {
+  min-height: 1.7rem !important;
+  font-size: 12px !important;
 }
 div[class*="st-key-gc_td_"] p,
 div[class*="st-key-gc_td_"] label,
@@ -5395,7 +5558,7 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
     for t in open_tasks:
         tid = str(t.get("id") or "")
         tw = _gc_task_widget_id(tid)
-        title = t.get("title") or "(제목 없음)"
+        title = str(t.get("title") or "(제목 없음)")
         due = str((t.get("due") or ""))[:10]
         label = title if not due else f"{title}  · {due}"
         note = str(t.get("notes") or "").strip()
@@ -5417,28 +5580,34 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                     unsafe_allow_html=True,
                 )
             if open_this:
-                st.text_input(
-                    "메모 입력",
-                    value=note,
-                    key=f"gc_note_{tw}",
-                    label_visibility="collapsed",
-                    placeholder="할 일 아래 메모",
-                )
-                try:
-                    due_default = date.fromisoformat(due) if due else None
-                except ValueError:
-                    due_default = None
-                due_key = f"gc_due_{tw}"
-                due_kwargs: dict[str, Any] = {
-                    "key": due_key,
-                    "label_visibility": "collapsed",
-                }
-                if due_key not in st.session_state:
-                    due_kwargs["value"] = due_default
-                st.date_input("날짜", **due_kwargs)
+                with st.container(border=True):
+                    title_key = f"gc_title_{tw}"
+                    if title_key not in st.session_state:
+                        st.session_state[title_key] = title
+                    st.text_input(
+                        "제목",
+                        key=title_key,
+                        label_visibility="collapsed",
+                        placeholder="제목",
+                    )
+                    note_key = f"gc_note_{tw}"
+                    if note_key not in st.session_state:
+                        st.session_state[note_key] = note
+                    st.text_area(
+                        "세부정보",
+                        key=note_key,
+                        height=68,
+                        label_visibility="collapsed",
+                        placeholder="세부정보",
+                    )
+                    try:
+                        due_default = date.fromisoformat(due) if due else None
+                    except ValueError:
+                        due_default = None
+                    _gc_render_due_compact(f"gc_due_{tw}", value=due_default)
         with row[1]:
             if st.button(
-                "닫기" if open_this else "메모",
+                "저장" if open_this else "수정",
                 key=f"gc_ne_{tw}",
                 type="tertiary",
                 width="content",
@@ -5446,6 +5615,7 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                 if open_this:
                     st.session_state["_gc_pending_note"] = {
                         "id": tid,
+                        "title": st.session_state.get(f"gc_title_{tw}") or title,
                         "notes": st.session_state.get(f"gc_note_{tw}") or "",
                         "due": _gc_due_text(st.session_state.get(f"gc_due_{tw}")),
                     }
@@ -5495,23 +5665,14 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
                 ):
                     st.session_state["_gc_pending_restore"] = tid
                     _gc_rerun_task()
-    add_row = st.columns([7.5, 1.15], gap="small", vertical_alignment="bottom")
-    with add_row[0]:
-        nt = st.text_input(
-            "새 할 일",
-            key="gc_new_task",
-            placeholder="할 일 제목",
-            label_visibility="collapsed",
-        )
-    with add_row[1]:
-        add_clicked = st.button("추가", key="gc_add_task", width="content")
-    nn = st.text_input(
-        "새 메모",
-        key="gc_new_note",
-        placeholder="할 일 아래 메모",
-        label_visibility="collapsed",
+    add_clicked, nt, nn, due_s = _gc_render_task_composer(
+        title_key="gc_new_task",
+        note_key="gc_new_note",
+        due_key="gc_new_due",
+        add_key="gc_add_task",
+        title_ph="제목",
+        note_ph="세부정보",
     )
-    due_new = st.date_input("날짜", value=None, key="gc_new_due")
     if add_clicked:
         title = (nt or "").strip()
         if len(title) < 1:
@@ -5520,7 +5681,7 @@ div[class*="st-key-gc_mr_td_"] [data-testid="stWidgetLabel"] p {
             st.session_state["_gc_pending_new"] = {
                 "title": title,
                 "notes": nn or "",
-                "due": _gc_due_text(due_new),
+                "due": due_s,
             }
             _gc_rerun_task()
     _gc_render_mac_box()
@@ -5549,7 +5710,7 @@ def _gc_work_panel() -> None:
     """상단 가로 달력 아래: 왼쪽 작은 달력 · 가운데 월간 · 오른쪽 할 일."""
     if st.session_state.get("_gc_sync_busy"):
         _gc_sync_watch()
-    mini, cal, tasks = st.columns([0.82, 2.70, 1.05], gap="small")
+    mini, cal, tasks = st.columns([0.58, 2.85, 1.15], gap="small")
     with mini:
         _gc_mini_panel()
     with cal:
