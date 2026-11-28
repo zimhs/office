@@ -427,6 +427,17 @@ def test_only_the_open_page_is_reread():
     assert [item["page"] for item in pending] == [15]
 
 
+def test_export_pdf_writes_outside_powerpoint_sandbox():
+    src = Path("biz_proposal_tab.py").read_text(encoding="utf-8")
+    body = src.split("def _export_pdf", 1)[1].split("\ndef ", 1)[0]
+    assert 'bppt_preview.pdf' in body
+    assert "POSIX file" in body
+    assert "active presentation" in body
+    assert "_PREVIEW_DIR" in body
+    assert "PowerPoint 보호 폴더" in body
+    assert '_run_renderer' in src
+
+
 def test_preview_deck_updates_a_copy_and_leaves_the_saved_file():
     import shutil
 

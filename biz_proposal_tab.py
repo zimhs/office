@@ -2617,30 +2617,46 @@ def _ensure_renderer() -> Path:
 
 
 def _export_pdf(pptx: Path) -> Path:
-    name = "bppt_preview.pdf"
-    candidates = [
-        Path("/tmp") / name,
-        Path.home() / "Library/Containers/com.microsoft.Powerpoint/Data/tmp" / name,
-    ]
-    for path in candidates:
-        try:
-            if path.is_file():
-                path.unlink()
-        except OSError:
-            pass
+    """PowerPoint PDF를 대시보드 폴더에 둔다. /tmp는 샌드박스라 렌더러가 못 읽는다."""
+    _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _PREVIEW_DIR / "bppt_preview.pdf"
+    try:
+        if dest.is_file():
+            dest.unlink()
+    except OSError:
+        pass
+    pptx_path = str(pptx.resolve())
+    dest_path = str(dest.resolve())
     script = (
         'tell application "Microsoft PowerPoint"\n'
-        f'open POSIX file "{pptx}"\n'
-        f'set pres to presentation "{pptx.name}"\n'
-        f'save pres in "/tmp/{name}" as save as PDF\n'
+        f'open POSIX file "{pptx_path}"\n'
+        "delay 0.3\n"
+        "set pres to active presentation\n"
+        f'save pres in POSIX file "{dest_path}" as save as PDF\n'
         "close pres saving no\n"
         "end tell\n"
     )
     subprocess.run(["osascript"], input=script, text=True, check=True, timeout=90)
-    found = [path for path in candidates if path.is_file()]
-    if not found:
+    if not dest.is_file():
+        # 예전 경로에만 남은 경우 한 번 더 찾되, 읽을 수 없으면 실패한다.
+        legacy = [
+            Path("/tmp") / "bppt_preview.pdf",
+            Path.home()
+            / "Library/Containers/com.microsoft.Powerpoint/Data/tmp/bppt_preview.pdf",
+            Path.home() / "Documents/bppt_preview.pdf",
+        ]
+        found = [path for path in legacy if path.is_file()]
+        if not found:
+            raise FileNotFoundError("미리보기 PDF를 만들지 못했습니다.")
+        try:
+            shutil.copy2(max(found, key=lambda path: path.stat().st_mtime), dest)
+        except OSError as exc:
+            raise FileNotFoundError(
+                "미리보기 PDF가 PowerPoint 보호 폴더에만 있어 읽지 못했습니다."
+            ) from exc
+    if not dest.is_file():
         raise FileNotFoundError("미리보기 PDF를 만들지 못했습니다.")
-    return max(found, key=lambda path: path.stat().st_mtime)
+    return dest
 
 
 def _build_preview_deck(specs: list[dict], dest: Path) -> None:
@@ -2673,6 +2689,18 @@ def _build_preview_deck(specs: list[dict], dest: Path) -> None:
         )
 
 
+def _run_renderer(renderer: Path, pdf: Path, page: int, png: Path) -> None:
+    proc = subprocess.run(
+        [str(renderer), str(pdf), str(page), str(png)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0 or not png.is_file():
+        detail = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+        raise RuntimeError(f"{page}페이지 렌더 실패: {detail}")
+
+
 def _render_pngs(pdf: Path) -> dict[int, bytes]:
     renderer = _ensure_renderer()
     folder = _PREVIEW_DIR / "pages"
@@ -2680,7 +2708,7 @@ def _render_pngs(pdf: Path) -> dict[int, bytes]:
     images: dict[int, bytes] = {}
     for page in PAGES:
         png = folder / f"{page}.png"
-        subprocess.run([str(renderer), str(pdf), str(page), str(png)], check=True, timeout=30)
+        _run_renderer(renderer, pdf, page, png)
         images[page] = png.read_bytes()
     return images
 
@@ -2730,7 +2758,7 @@ def _render_one_png(pdf: Path, page: int) -> bytes:
     folder = _PREVIEW_DIR / "pages"
     folder.mkdir(parents=True, exist_ok=True)
     png = folder / f"{page}.png"
-    subprocess.run([str(renderer), str(pdf), str(page), str(png)], check=True, timeout=30)
+    _run_renderer(renderer, pdf, page, png)
     return png.read_bytes()
 
 
